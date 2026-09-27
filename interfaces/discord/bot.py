@@ -96,6 +96,20 @@ def chunk_message(text: str, limit: int = 1900) -> list[str]:
         rest = rest[limit:]
     return out if out else [""]
 
+
+def chunk_codeblock_message(text: str, limit: int = 1900, fence: str = "```text\n") -> list[str]:
+    """
+    Split text into multiple Discord code blocks.
+    Each part is wrapped as:
+      ```text
+      ...
+      ```
+    """
+    closing = "\n```"
+    inner_limit = max(1, limit - len(fence) - len(closing))
+    chunks = chunk_message(text, limit=inner_limit)
+    return [f"{fence}{chunk}{closing}" for chunk in chunks]
+
 COL_BRAND = 0x5865F2
 COL_OK = 0x57F287
 COL_ERR = 0xED4245
@@ -106,12 +120,44 @@ def _lyrics_request_hint(text: str) -> bool:
     """Грубый признак запроса текста песни — включает LLM-классификатор до маршрутизации."""
     t = (text or "").lower()
     if re.search(
-        r"\b(текст\s+песн|слова\s+песн|lyrics|куплет(а|ы)?\b|реплик(а|и)\s+текст|"
-        r"дай\s+текст|найди\s+текст|покажи\s+текст|скинь\s+текст|текст\s+трека|слова\s+трека)\b",
+        r"(текст\s+песн\w*|слова\s+песн\w*|lyrics|куплет(а|ы)?\b|реплик(а|и)\s+текст|"
+        r"дай\s+текст|найди\s+текст|покажи\s+текст|скинь\s+текст|текст\s+трека|слова\s+трека|"
+        r"^(текст|слова)\s*$)",
         t,
     ):
         return True
     return False
+
+
+def _extract_lyrics_song_query(text: str) -> str:
+    """Убирает «текст песни / lyrics» — остаётся название, если пользователь его дописал."""
+    q = (text or "").strip()
+    q = re.sub(
+        r"^(пожалуйста[, ]*)?(дай|найди|покажи|скинь|выдай)?\s*"
+        r"(мне\s+)?(полный\s+|весь\s+)?"
+        r"(текст|слова|lyrics)(\s+(песн\w*|трека|трек\w*|этой\s+песн\w*|текущ\w*))?\s*"
+        r"[:\-–—]?\s*",
+        "",
+        q,
+        flags=re.IGNORECASE,
+    ).strip()
+    q = re.sub(r"^(песн[ияи]|трек[а]?)[:\s]+", "", q, flags=re.IGNORECASE).strip(" .,!?;:\"'")
+    if q.lower() in {"пожалуйста", "пж", "pls", "please", "этой", "текущей", "сейчас", "current"}:
+        return ""
+    return q
+
+
+def _soft_music_hint(text: str) -> bool:
+    """Слабый признак «про музыку/войс», даже без жёсткого глагола включи/поставь."""
+    t = (text or "").lower()
+    return bool(
+        re.search(
+            r"(музык|песн|трек|плейлист|саунд|soundcloud|spotify|youtu\.?be|"
+            r"войс|голос(ов|ой)|лавалинк|lavalink|послуш|поставь\s+что|"
+            r"давай\s+(что|трек|песн|музык)|заиграй|включи\s+что)",
+            t,
+        )
+    )
 
 
 def _normalize_intent_label(raw: str) -> str:
@@ -384,12 +430,74 @@ class NeyraDiscordBot(discord.Client):
     async def proactive_spark_before(self):
         await self.wait_until_ready()
 
+    def _current_playing_label(self, guild: Optional[discord.Guild]) -> str:
+        """Title/author of the track currently playing in this guild (wavelink Player)."""
+        if guild is None:
+            return ""
+        try:
+            vc = guild.voice_client
+            cur = getattr(vc, "current", None) if vc is not None else None
+            if cur is None:
+                return ""
+            title = str(getattr(cur, "title", "") or "").strip()
+            author = str(getattr(cur, "author", "") or "").strip()
+            # Drop common YouTube noise for lyrics search.
+            title = re.sub(
+                r"\s*[\(\[]?(official\s+audio|official\s+video|lyrics?|prod\.\s*[^)\]]+)[\)\]]?\s*",
+                " ",
+                title,
+                flags=re.IGNORECASE,
+            )
+            title = re.sub(r"\s+", " ", title).strip(" -–—")
+            if author and title:
+                if author.lower() in title.lower():
+                    return title
+                return f"{author} — {title}"
+            return title or author
+        except Exception as ex:
+            logger.debug("current playing label failed: %s", ex)
+            return ""
+
+    def _build_lyrics_chat_content(self, user_text: str, guild: Optional[discord.Guild]) -> str:
+        """
+        Build lyrics request for the agent.
+        Bare «текст песни» → use currently playing track; otherwise use the named song.
+        """
+        named = _extract_lyrics_song_query(user_text)
+        current = self._current_playing_label(guild)
+        if named:
+            song = named
+            src = "user"
+        elif current:
+            song = current
+            src = "now_playing"
+        else:
+            return (
+                "Пользователь просит текст песни, но сейчас ничего не играет и название не указано. "
+                "Коротко скажи: включи трек или напиши «текст песни <название>»."
+                + LYRICS_HIDDEN_SUFFIX
+            )
+        logger.info("Discord lyrics | src=%s song=%r", src, song)
+        # Keep song in «quotes» first so auto-websearch can extract a clean query.
+        return (
+            f"Текст песни «{song}». "
+            f"Найди полный текст через web_search (запрос вроде «{song} lyrics») "
+            f"и выдай его целиком с переносами строк. Не включай музыку и не заменяй текст ссылкой."
+            + LYRICS_HIDDEN_SUFFIX
+        )
+
     def _candidate_music_intent(self, text: str) -> Optional[dict[str, str]]:
         raw = (text or "").strip()
         if not raw:
             return None
         lowered = raw.lower()
         if re.search(r"\b(читы|чит|hack|hax|aimbot)\b", lowered):
+            return None
+        # Lyrics-only requests must not become PLAY via regex.
+        if _lyrics_request_hint(raw) and not re.search(
+            r"\b(включи|вруби|поставь|play|заиграй|в\s+войс|в\s+голос)\b",
+            lowered,
+        ):
             return None
         direct = [
             (MUSIC_PAUSE, r"\b(пауза|pause|приостанови)\b"),
@@ -403,12 +511,63 @@ class NeyraDiscordBot(discord.Client):
             if re.search(pattern, lowered):
                 return {"intent": "music_control", "action": action, "query": ""}
 
-        has_music_verb = bool(re.search(r"\b(включи|вруби|поставь|play|music|музыку|трек|track)\b", lowered))
+        # Pure "join voice" — connect only, do NOT search YouTube for that phrase.
+        if re.fullmatch(
+            r"(пожалуйста[, ]*)?(зайди|зайти|зайди\s+пожалуйста|join)\s+"
+            r"(в\s+)?(войс|голос(овой)?(\s+канал)?|voice(\s+channel)?|vc)\s*[.!]?",
+            lowered,
+        ):
+            return {
+                "intent": "music_control",
+                "action": MUSIC_PLAY,
+                "query": "",
+                "join_only": "1",
+            }
+
+        has_music_verb = bool(
+            re.search(
+                r"\b(вкл\w*|вруби|поставь|заиграй|play|music|музык[ауеи]|песн[яюи]|трек|"
+                r"track|плейлист|playlist)\b",
+                lowered,
+            )
+        )
+        wants_voice_play = bool(
+            re.search(
+                r"(в\s+войс|в\s+голос(овой)?|зайди\s+в\s+войс|зайти\s+в\s+войс|"
+                r"join\s+voice|play\s+in\s+vc)",
+                lowered,
+            )
+        )
         has_url = bool(re.search(r"https?://\S+", raw))
-        if not has_music_verb and not has_url:
+        if not has_music_verb and not has_url and not wants_voice_play:
             return None
         q = re.sub(r"^(эй\s+нейра|нейра|please|пожалуйста)[,:\s-]*", "", raw, flags=re.IGNORECASE).strip()
-        q = re.sub(r"^(включи|вруби|поставь|play|music|музыка)\s+", "", q, flags=re.IGNORECASE).strip()
+        q = re.sub(
+            r"^(вкл\w*|вруби|поставь|заиграй|play|music|музыка)\s+",
+            "",
+            q,
+            flags=re.IGNORECASE,
+        ).strip()
+        q = re.sub(
+            r"(зайди|зайти)\s+в\s+(войс|голос\w*)\s*(и\s+)?|"
+            r"\b(в\s+войс[еу]?|в\s+голос(овой)?\s*канал[еу]?)\b",
+            " ",
+            q,
+            flags=re.IGNORECASE,
+        )
+        q = re.sub(r"\s+", " ", q).strip(" .,!?;:-")
+        # Never search YouTube for leftover command crumbs / raw join text.
+        if not q or q.lower() in {
+            "музыку",
+            "музыка",
+            "песню",
+            "трек",
+            "что-нибудь",
+            "что нибудь",
+            "какую-нибудь",
+            "какой-нибудь",
+        }:
+            q = "upbeat happy music"
         return {"intent": "music_control", "action": MUSIC_PLAY, "query": q}
 
     async def _classify_intent(self, user_text: str) -> str:
@@ -417,10 +576,15 @@ class NeyraDiscordBot(discord.Client):
         Модель — openrouter.memory_model (или её fallback из конфига).
         """
         prompt = (
-            "You are an intent classifier for a Discord bot. The bot can play music in a voice channel "
-            "or chat/search the web. Analyze the user's text and reply with EXACTLY ONE word from this list: "
-            "PLAY_MUSIC (if user wants to hear/play audio), GET_LYRICS (if user specifically asks for song lyrics/text), "
-            "CHAT (for everything else). User text: "
+            "You are an intent classifier for a Discord bot that CAN join a voice channel "
+            "and play audio via Lavalink. Reply with EXACTLY ONE label:\n"
+            "PLAY_MUSIC — user wants audio played in Discord voice (include mood requests like "
+            "'включи весёлую музыку', 'зайди в войс и включи', song/artist names to play).\n"
+            "GET_LYRICS — user wants song lyrics/text only, not playback.\n"
+            "CHAT — everything else (questions, banter, links without play intent).\n"
+            "When unsure between PLAY_MUSIC and CHAT but the message mentions music/song/track/voice, "
+            "prefer PLAY_MUSIC.\n"
+            "User text: "
             + (user_text or "")
         )
         try:
@@ -713,21 +877,58 @@ class NeyraDiscordBot(discord.Client):
 
         music_candidate = self._candidate_music_intent(content)
         lyrics_hint = _lyrics_request_hint(content)
+        soft_music = _soft_music_hint(content)
+        play_verb = bool(
+            re.search(r"\b(включи|вруби|поставь|заиграй|play)\b", content, flags=re.IGNORECASE)
+        )
 
-        # Пауза/стоп/очередь/skip — только детерминированно, без классификатора.
-        if music_candidate and str(music_candidate.get("action") or "") != MUSIC_PLAY:
+        # Lyrics first: «текст песни» must not fall into play/search.
+        if lyrics_hint and not play_verb:
+            route = "GET_LYRICS"
+        # Pause/stop/queue/skip — deterministic, no classifier.
+        elif music_candidate and str(music_candidate.get("action") or "") != MUSIC_PLAY:
             route = "PLAY_MUSIC"
-        elif music_candidate or lyrics_hint:
+        elif music_candidate and not lyrics_hint:
+            # Hard play triggers ("включи музыку", URL, "в войс") — trust regex.
+            route = "PLAY_MUSIC"
+        elif music_candidate or lyrics_hint or soft_music:
             route = await self._classify_intent(content)
+            if route == "CHAT" and music_candidate and not lyrics_hint:
+                route = "PLAY_MUSIC"
+            if lyrics_hint and route == "PLAY_MUSIC" and not play_verb:
+                route = "GET_LYRICS"
         else:
             route = "CHAT"
 
-        use_music = bool(music_candidate) and route == "PLAY_MUSIC"
+        use_music = route == "PLAY_MUSIC" and not lyrics_hint and (
+            bool(music_candidate)
+            or soft_music
+        )
 
         if use_music:
-            resolved = music_candidate
+            if music_candidate and str(music_candidate.get("action") or "") != MUSIC_PLAY:
+                resolved = music_candidate
+            elif music_candidate:
+                resolved = music_candidate
+            else:
+                # Soft path: classifier said PLAY_MUSIC without hard regex — synthesize play.
+                resolved = {
+                    "intent": "music_control",
+                    "action": MUSIC_PLAY,
+                    "query": content.strip()[:180] or "music",
+                }
         else:
             resolved = None
+
+        logger.info(
+            "Discord route | route=%s use_music=%s soft=%s lyrics=%s candidate=%s query=%r",
+            route,
+            use_music,
+            soft_music,
+            lyrics_hint,
+            (music_candidate or {}).get("action") if music_candidate else None,
+            (resolved or {}).get("query") if resolved else "",
+        )
 
         if resolved:
             request_id = f"{message.id}:{int(time.time() * 1000)}"
@@ -757,6 +958,7 @@ class NeyraDiscordBot(discord.Client):
                 "randomize": randomize,
                 "random_top_k": 5,
                 "use_brain": False,
+                "join_only": str(resolved.get("join_only") or "") in ("1", "true", "True", "yes"),
             }
             result = await self._publish_music_with_fallback(payload)
             if result.get("ok"):
@@ -765,6 +967,13 @@ class NeyraDiscordBot(discord.Client):
                 status = str(res_inner.get("status") or "")
                 if status == "failed":
                     err = str(res_inner.get("error") or "unknown error")
+                    if "exceeded the timeout" in err.lower() or "unable to connect" in err.lower():
+                        err = (
+                            f"{err}\n\n"
+                            "Не успела зайти в голосовой канал. Проверь: "
+                            "права бота Connect/Speak на канал, регион войса, "
+                            "что ты уже в войсе — и повтори через пару секунд."
+                        )
                     await message.reply(
                         embed=_music_status_embed(
                             "Не получилось",
@@ -797,6 +1006,17 @@ class NeyraDiscordBot(discord.Client):
                     track = str(res_inner.get("track") or "").strip()
                     author = str(res_inner.get("author") or "").strip()
                     candidates = res_inner.get("candidates") if isinstance(res_inner.get("candidates"), list) else []
+                    if status == "joined":
+                        ch = str(res_inner.get("channel") or "voice").strip()
+                        await message.reply(
+                            embed=_music_status_embed(
+                                "В войсе",
+                                f"Зашла в **{ _clip_field(ch, 80) }**. Напиши, что включить.",
+                                color=COL_OK,
+                            ),
+                            mention_author=False,
+                        )
+                        return
                     if track and author:
                         base = f"**{author}** — **{track}**"
                     else:
@@ -878,7 +1098,7 @@ class NeyraDiscordBot(discord.Client):
 
         chat_content = content
         if route == "GET_LYRICS":
-            chat_content = content + LYRICS_HIDDEN_SUFFIX
+            chat_content = self._build_lyrics_chat_content(content, message.guild)
 
         author_display = (
             getattr(message.author, "display_name", None)
@@ -992,7 +1212,10 @@ class NeyraDiscordBot(discord.Client):
                     final_text = (
                         final_text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
                     )
-                parts = chunk_message(final_text, limit=1900)
+                if lyrics_mode:
+                    parts = chunk_codeblock_message(final_text, limit=1900)
+                else:
+                    parts = chunk_message(final_text, limit=1900)
                 await response_msg.edit(content=parts[0])
                 sent_ids: list[int] = [response_msg.id]
                 for chunk in parts[1:]:

@@ -446,7 +446,7 @@ run_initial_healthcheck() {
 run_voice_preflight() {
   # Soft-only: always continues (STT/TTS misconfig must not block core).
   say "Voice preflight (STT/TTS)..."
-  "${PY}" -c 'from core.voice.config import print_voice_preflight; raise SystemExit(print_voice_preflight())' || true
+  "${PY}" scripts/voice_preflight.py || true
   echo ""
 }
 

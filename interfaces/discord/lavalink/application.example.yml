@@ -55,8 +55,9 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
-    # Порядок клиентов: сначала клиенты без «тяжёлого» WEB cipher (меньше ошибок вида Must find sig function...),
-    # WEB/WEBEMBEDDED — запасные. В 1.18.0 TVHTML5EMBEDDED удалён upstream → используй TVHTML5_SIMPLY.
+    # TV — OAuth playback. MUSIC/ANDROID_* — search only (playback: false).
+    # В 1.18+ TVHTML5EMBEDDED удалён; TVHTML5_SIMPLY не использует OAuth.
+    # Burner Google only. First boot with empty refreshToken → device URL in Lavalink log.
     oauth:
       enabled: true
       refreshToken: ""
@@ -65,10 +66,16 @@ plugins:
     clients:
       - MUSIC
       - ANDROID_VR
-      - ANDROID_MUSIC
-      - TVHTML5_SIMPLY
+      - TV
       - WEB
       - WEBEMBEDDED
+    clientOptions:
+      MUSIC:
+        playback: false
+      ANDROID_VR:
+        playback: false
+      ANDROID_MUSIC:
+        playback: false
   lavasrc:
     providers:
       - "ytsearch:%QUERY%"

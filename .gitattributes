@@ -2,3 +2,7 @@
 
 # Keep shell launchers LF so bash/WSL does not choke on CRLF.
 *.sh text eol=lf
+
+# Windows launcher: UTF-8 (BOM preferred). Boot script is ASCII-only fallback.
+scripts/neyra_win_launcher.ps1 text working-tree-encoding=UTF-8
+scripts/neyra_win_boot.ps1 text eol=crlf
