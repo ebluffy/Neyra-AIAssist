@@ -57,14 +57,75 @@ def _normalize_play_query(raw: str) -> str:
         return ""
     # Remove command noise so Lavalink search gets a clean artist/title query.
     noise_patterns = (
-        r"^(вруби|включи|поставь|play)\s+",
-        r"^(любой|какой[- ]?нибудь)\s+",
+        r"^(вкл\w*|вруби|поставь|заиграй|play)\s+",
+        r"^(любой|какую?[- ]?нибудь|какой[- ]?нибудь)\s+",
         r"^(трек|треков|песню|музыку)\s+",
+        r"^(зайди|зайти)\s+в\s+(войс|голос\w*)\s*(и\s+)?",
     )
     for pat in noise_patterns:
         q = re.sub(pat, "", q, flags=re.IGNORECASE).strip()
+    # Pure join/voice commands are not searchable track names.
+    if re.fullmatch(
+        r"(зайди|зайти|join)\s*(в\s+)?(войс|голос\w*|voice|vc)?",
+        q,
+        flags=re.IGNORECASE,
+    ):
+        return ""
     q = q.strip(" .,!?:;\"'")
+    if q.lower() in {"музыку", "музыка", "песню", "песню", "трек", "track", "music"}:
+        return ""
     return q
+
+
+async def _connect_voice_player(
+    *,
+    wavelink_mod: Any,
+    guild: Any,
+    voice_channel: Any,
+    timeout_s: float = 20.0,
+) -> Any:
+    """Connect or reuse a wavelink Player; retry once on Discord voice timeout."""
+    player = guild.voice_client
+    if isinstance(player, wavelink_mod.Player):
+        try:
+            cur = getattr(player, "channel", None)
+            if cur is not None and getattr(cur, "id", None) != getattr(voice_channel, "id", None):
+                await player.move_to(voice_channel)
+        except Exception as move_ex:
+            logger.warning("discord.music move_to failed | error=%s", move_ex)
+        return player
+
+    if player is not None:
+        try:
+            await player.disconnect(force=True)
+        except Exception:
+            pass
+
+    last_ex: Exception | None = None
+    for attempt in range(2):
+        try:
+            return await voice_channel.connect(
+                cls=wavelink_mod.Player,
+                self_deaf=True,
+                timeout=timeout_s,
+            )
+        except Exception as ex:
+            last_ex = ex
+            logger.warning(
+                "discord.music voice connect attempt %s failed | channel=%s error=%s",
+                attempt + 1,
+                getattr(voice_channel, "name", "?"),
+                ex,
+            )
+            try:
+                leftover = guild.voice_client
+                if leftover is not None:
+                    await leftover.disconnect(force=True)
+            except Exception:
+                pass
+            await asyncio.sleep(0.8)
+    assert last_ex is not None
+    raise last_ex
 
 
 async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> list[Any]:
@@ -304,6 +365,8 @@ class MusicService:
         self.paused_by_guild: dict[str, bool] = {}
         self.recent_requests: dict[str, float] = {}
         self.last_random_pick_by_guild: dict[str, str] = {}
+        # YouTube often rejects first hit ("requires login") — keep sibling search results.
+        self.play_fallbacks_by_guild: dict[str, list[Any]] = {}
 
     def _is_duplicate(self, key: str) -> bool:
         now = time.time()
@@ -467,6 +530,32 @@ def _resolve_bot(ctx):
     return getattr(agent, "discord_client", None)
 
 
+def _track_key(track: Any) -> str:
+    return str(getattr(track, "identifier", "") or getattr(track, "title", "") or id(track))
+
+
+async def _play_next_youtube_fallback(service: MusicService, player: Any, guild_id: str) -> bool:
+    """Try next search hit after login/bot/load failure. Returns True if a play was started."""
+    leftovers = list(service.play_fallbacks_by_guild.get(guild_id) or [])
+    while leftovers:
+        nxt = leftovers.pop(0)
+        service.play_fallbacks_by_guild[guild_id] = leftovers
+        title = str(getattr(nxt, "title", "") or _track_key(nxt))
+        try:
+            await player.play(nxt, replace=True)
+            logger.info("discord.music youtube fallback started | guild=%s track=%r", guild_id, title)
+            return True
+        except Exception as ex:
+            logger.warning(
+                "discord.music youtube fallback play failed | guild=%s track=%r error=%s",
+                guild_id,
+                title,
+                ex,
+            )
+    service.play_fallbacks_by_guild.pop(guild_id, None)
+    return False
+
+
 def _attach_track_end_listener(ctx) -> None:
     bot = _resolve_bot(ctx)
     if bot is None:
@@ -474,14 +563,43 @@ def _attach_track_end_listener(ctx) -> None:
     if getattr(ctx, "_discord_plugin_track_end_listener_added", False):
         return
 
+    service = getattr(ctx, "_discord_plugin_music_service", None)
+
+    async def _on_wavelink_track_exception(payload) -> None:
+        try:
+            player = getattr(payload, "player", None)
+            if player is None:
+                return
+            guild = getattr(player, "guild", None)
+            guild_id = str(getattr(guild, "id", "") or "")
+            err = getattr(payload, "exception", None) or getattr(payload, "error", None)
+            logger.warning(
+                "discord.music track_exception | guild=%s error=%s",
+                guild_id,
+                err,
+            )
+            if service is None or not guild_id:
+                return
+            await _play_next_youtube_fallback(service, player, guild_id)
+        except Exception as ex:  # pragma: no cover
+            logger.warning("discord.music track_exception handler failed: %s", ex)
+
     async def _on_wavelink_track_end(payload) -> None:
         try:
             player = getattr(payload, "player", None)
             if player is None:
                 return
             reason = str(getattr(payload, "reason", "") or "").lower()
-            if reason and reason not in ("finished", "stopped", "replaced", "load_failed", "cleanup"):
+            guild = getattr(player, "guild", None)
+            guild_id = str(getattr(guild, "id", "") or "")
+            # loadfailed after instant rejection — try sibling search hits first
+            if service is not None and guild_id and reason in ("loadfailed", "load_failed"):
+                if await _play_next_youtube_fallback(service, player, guild_id):
+                    return
+            if reason and reason not in ("finished", "stopped", "replaced", "loadfailed", "load_failed", "cleanup"):
                 return
+            if service is not None and guild_id and reason in ("finished", "stopped", "replaced"):
+                service.play_fallbacks_by_guild.pop(guild_id, None)
             try:
                 if len(player.queue) > 0:
                     nxt = player.queue.get()
@@ -501,9 +619,10 @@ def _attach_track_end_listener(ctx) -> None:
 
     # discord.Client in this project does not expose add_listener like commands.Bot.
     # Assigning handler to event method name is enough for dispatching.
+    setattr(bot, "on_wavelink_track_exception", _on_wavelink_track_exception)
     setattr(bot, "on_wavelink_track_end", _on_wavelink_track_end)
     ctx._discord_plugin_track_end_listener_added = True
-    logger.info("discord.music attached on_wavelink_track_end listener")
+    logger.info("discord.music attached on_wavelink_track_end + track_exception listeners")
 
 
 async def _handle_action_async(ctx, service: MusicService, action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -572,8 +691,20 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                     service.adapter.mark_node_failed(cfg_id, cooldown_s=25.0)
                     logger.warning("discord.music node switch failed | node=%s error=%s", cfg_id, switch_ex)
                     continue
+                try:
+                    cur = getattr(player, "channel", None)
+                    if cur is not None and getattr(cur, "id", None) != getattr(voice_channel, "id", None):
+                        await player.move_to(voice_channel)
+                except Exception as move_ex:
+                    last_error = str(move_ex)
+                    logger.warning("discord.music move_to failed | error=%s", move_ex)
             else:
-                player = await voice_channel.connect(cls=wavelink.Player, self_deaf=True, timeout=8.0)
+                player = await _connect_voice_player(
+                    wavelink_mod=wavelink,
+                    guild=guild,
+                    voice_channel=voice_channel,
+                    timeout_s=20.0,
+                )
 
             if action == MUSIC_PAUSE:
                 await player.pause(True)
@@ -626,11 +757,24 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                     "queue_total": len(queue_titles),
                 }
 
-            # PLAY
-            local_result = service.handle(action, payload)
+            # PLAY / join-only
+            join_only = bool(payload.get("join_only"))
             query = _normalize_play_query(str(payload.get("query") or "").strip())
+            if join_only:
+                ch_name = str(getattr(voice_channel, "name", "") or "voice")
+                return {
+                    "ok": True,
+                    "status": "joined",
+                    "track": "",
+                    "author": "",
+                    "channel": ch_name,
+                    "request_id": str(payload.get("request_id") or ""),
+                }
             if not query:
-                return local_result
+                # Mood / bare "включи музыку" → searchable default, not YouTube for command text.
+                query = "upbeat happy music"
+            local_result = service.handle(action, {**payload, "query": query})
+            _ = local_result
             tracks = await _search_tracks_youtube(wavelink, query, node)
             if not tracks:
                 last_error = f"nothing found for '{query}'"
@@ -651,6 +795,11 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                 )
             else:
                 track = tracks[0]
+            # Keep other top hits so track_exception can skip "requires login" videos.
+            chosen_key = _track_key(track)
+            service.play_fallbacks_by_guild[str(guild_id)] = [
+                t for t in pool if _track_key(t) != chosen_key
+            ]
             candidates = [
                 f"{str(getattr(t, 'author', '') or 'Unknown')} - {str(getattr(t, 'title', '') or '')}".strip()
                 for t in pool

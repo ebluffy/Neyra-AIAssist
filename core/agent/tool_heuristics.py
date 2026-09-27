@@ -8,6 +8,62 @@ from typing import Any, Callable
 
 logger = logging.getLogger("neyra.agent.tool_heuristics")
 
+_LYRICS_MARKER_RE = re.compile(
+    r"\[SYSTEM HIDDEN INSTRUCTION:.*?\]",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def sanitize_websearch_query(text: str, *, max_len: int = 160) -> str:
+    """
+    Build a short search query from user/agent text.
+    Lyrics turns often include long Russian instructions + hidden marker — those must
+    never be sent to DuckDuckGo/Brave as the query string.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    cleaned = _LYRICS_MARKER_RE.sub(" ", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    # Prefer quoted song title from Discord lyrics builder / prompts.
+    m = re.search(
+        r"(?:текст\s+песн\w*|lyrics|песн[ияю])\s*[«\"“]([^»\"”]{2,100})[»\"”]",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        song = m.group(1).strip()
+        return f"{song} текст песни lyrics"[:max_len]
+
+    m = re.search(r"[«\"“]([^»\"”]{2,100})[»\"”]", cleaned)
+    if m and (
+        "lyrics" in cleaned.lower()
+        or "текст песни" in cleaned.lower()
+        or "слова песни" in cleaned.lower()
+        or "FULL lyrics" in cleaned
+        or "web_search" in cleaned.lower()
+    ):
+        song = m.group(1).strip()
+        return f"{song} текст песни lyrics"[:max_len]
+
+    # Drop instructional fluff if somehow still present.
+    cleaned = re.sub(
+        r"(?i)найди\s+через\s+web_search.*?[«\"“]",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)(не включай музыку|не предлагай ссылки|сохрани переносы|полный текст|"
+        r"you must use|do not generate|critical:|override any brevity).*$",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,;:!?-")
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 1].rsplit(" ", 1)[0] + "…"
+    return cleaned
+
 
 def collect_tool_context(
     tools: dict[str, Any],
@@ -262,8 +318,11 @@ def handle_websearch_trigger(tools: dict[str, Any], text: str) -> str:
 
     if wants_web:
         try:
-            logger.info("Авто-WebSearch: %s", text[:140])
-            out = tools["web_search"].invoke({"query": text[:500]})
+            query = sanitize_websearch_query(text)
+            if not query:
+                return ""
+            logger.info("Авто-WebSearch: %s", query[:140])
+            out = tools["web_search"].invoke({"query": query})
             if out:
                 return str(out)[:2200]
         except Exception as e:

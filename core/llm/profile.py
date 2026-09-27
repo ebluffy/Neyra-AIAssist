@@ -25,6 +25,10 @@ _OPENAI_COMPATIBLE_PRESETS: dict[str, dict[str, Any]] = {
         "base_url": "https://api.openai.com/v1",
         "api_key_env": ("OPENAI_API_KEY",),
     },
+    "aihope": {
+        "base_url": "https://aihope.fun/v1",
+        "api_key_env": ("AIHOPE_API_KEY",),
+    },
     "ollama": {
         "base_url": "http://127.0.0.1:11434/v1",
         "api_key_env": (),

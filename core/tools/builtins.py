@@ -24,6 +24,7 @@ import contextvars
 import logging
 import platform
 import subprocess
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -33,6 +34,24 @@ if TYPE_CHECKING:
     from core.memory import LongTermMemory, PeopleDB
 
 logger = logging.getLogger("neyra.tools")
+
+# Web search engine health memory (in-process).
+# Goal: stop hitting repeatedly failing backends on every lyrics request.
+_WEBSEARCH_ENGINES = (
+    "brave",
+    "google",
+    "duckduckgo",
+    "wikipedia",
+    "yahoo",
+    "mojeek",
+    "startpage",
+    "yandex",
+    "grokipedia",
+)
+_websearch_fail_count: dict[str, int] = {e: 0 for e in _WEBSEARCH_ENGINES}
+_websearch_cooldown_until: dict[str, float] = {e: 0.0 for e in _WEBSEARCH_ENGINES}
+_WEBSEARCH_FAIL_COOLDOWN_BASE_S = 120.0
+_WEBSEARCH_COOLDOWN_MAX_S = 900.0
 
 # Будут заинжектированы при инициализации агента
 _long_memory: "LongTermMemory | None" = None
@@ -176,12 +195,71 @@ def web_search(query: str) -> str:
     """
     try:
         from ddgs import DDGS
+        from core.agent.tool_heuristics import sanitize_websearch_query
 
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=3, region="ru-ru"))
+        q = sanitize_websearch_query(str(query or ""), max_len=160) or str(query or "").strip()[:160]
+        if not q:
+            return "Пустой поисковый запрос."
+        if q != str(query or "").strip()[:160]:
+            logger.info("WebSearch query sanitized | before=%r after=%r", str(query)[:120], q)
+
+        now = time.time()
+        engine_plan = sorted(
+            _WEBSEARCH_ENGINES,
+            key=lambda eng: (
+                _websearch_cooldown_until.get(eng, 0.0) > now,
+                _websearch_cooldown_until.get(eng, 0.0),
+                _websearch_fail_count.get(eng, 0),
+            ),
+        )
+        last_error = "no engine tried"
+        results = []
+        used_engine = ""
+
+        for engine in engine_plan:
+            if _websearch_cooldown_until.get(engine, 0.0) > now:
+                continue
+            try:
+                with DDGS() as ddgs:
+                    # backend=<engine> avoids waiting for all providers each call.
+                    batch = list(
+                        ddgs.text(
+                            q,
+                            max_results=3,
+                            region="ru-ru",
+                            backend=engine,
+                        )
+                    )
+                if batch:
+                    used_engine = engine
+                    results = batch
+                    _websearch_fail_count[engine] = 0
+                    _websearch_cooldown_until[engine] = 0.0
+                    break
+                last_error = f"{engine}: empty results"
+                _websearch_fail_count[engine] = int(_websearch_fail_count.get(engine, 0)) + 1
+            except Exception as e:
+                last_error = f"{engine}: {e}"
+                fails = int(_websearch_fail_count.get(engine, 0)) + 1
+                _websearch_fail_count[engine] = fails
+                cooldown_s = min(
+                    _WEBSEARCH_COOLDOWN_MAX_S,
+                    _WEBSEARCH_FAIL_COOLDOWN_BASE_S * (2 ** max(0, fails - 1)),
+                )
+                _websearch_cooldown_until[engine] = time.time() + cooldown_s
+                logger.info(
+                    "WebSearch backend fail | engine=%s fails=%s cooldown_s=%.0f err=%s",
+                    engine,
+                    fails,
+                    cooldown_s,
+                    e,
+                )
+                continue
 
         if not results:
-            return "Ничего не нашла. Попробуй переформулировать."
+            return f"Ничего не нашла (или поисковые движки недоступны). Последняя ошибка: {last_error}"
+        if used_engine:
+            logger.info("WebSearch backend success | engine=%s query=%r", used_engine, q[:120])
 
         lines = []
         for i, r in enumerate(results, 1):

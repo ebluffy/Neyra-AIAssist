@@ -437,9 +437,9 @@ def print_voice_preflight(config: Optional[dict[str, Any]] = None) -> int:
     )
     errs = collect_voice_soft_errors(config)
     if errs:
-        print("[voice] ERROR (soft — ядро не падает, STT/TTS нужно поднастроить):")
+        print("[voice] ERROR (soft - core still starts; tune STT/TTS):")
         for e in errs:
             print(f"  - {e}")
     else:
-        print("[voice] OK — выбранные полосы STT/TTS выглядят настроенными")
+        print("[voice] OK - STT/TTS lanes look configured")
     return 0

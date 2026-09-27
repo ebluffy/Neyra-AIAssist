@@ -1,4 +1,4 @@
-# Neyra Windows launcher (UTF-8). Called from run_neyra.bat — avoids cmd.exe encoding/parenthesis bugs.
+﻿# Neyra Windows launcher (UTF-8). Called from run_neyra.bat — avoids cmd.exe encoding/parenthesis bugs.
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -223,7 +223,7 @@ function Ensure-ProjectVenv {
     if (-not (Test-Path -LiteralPath $venvPy)) {
         Write-Warn "Создаю .venv_win (Windows venv; Linux/WSL использует отдельный .venv/bin)..."
         $venvPath = Join-Path $Root '.venv_win'
-        $venvEc = Invoke-PythonModule @('-m', 'venv', $venvPath)
+        $venvEc = Invoke-PythonModule -PythonArgs @('-m', 'venv', $venvPath)
         if ($venvEc -ne 0) {
             Write-Err "Не удалось создать .venv_win (проверь python-venv/pip)."
             return $false
@@ -232,7 +232,7 @@ function Ensure-ProjectVenv {
             $boot = Join-Path $env:TEMP "neyra-get-pip.py"
             try {
                 Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $boot -UseBasicParsing
-                $null = Invoke-PythonModule @($boot)
+                $null = Invoke-PythonModule -PythonArgs @($boot)
             } catch {
                 Write-Warn "ensurepip/get-pip не сработал — попробуй pip вручную."
             } finally {
@@ -242,7 +242,7 @@ function Ensure-ProjectVenv {
     }
     $script:Py = $venvPy
     $script:Pip = "$($script:Py) -m pip"
-    $pipUp = Invoke-PythonModule @('-m', 'pip', 'install', '--upgrade', 'pip')
+    $pipUp = Invoke-PythonModule -PythonArgs @('-m', 'pip', 'install', '--upgrade', 'pip')
     if ($pipUp -ne 0) {
         Write-Warn "Не удалось обновить pip в .venv_win — продолжаю."
     }
@@ -250,12 +250,24 @@ function Ensure-ProjectVenv {
     return $true
 }
 
-$Root = Split-Path -Parent $PSScriptRoot
+# $PSScriptRoot empty when loaded via neyra_win_boot.ps1 (UTF-8 ScriptBlock).
+$_launcherDir = if ($PSScriptRoot) {
+    $PSScriptRoot
+} elseif ($global:NeyraLauncherScriptRoot) {
+    [string]$global:NeyraLauncherScriptRoot
+} else {
+    Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+$Root = Split-Path -Parent $_launcherDir
 Set-Location -LiteralPath $Root
 
 Ensure-WindowsToolPath
 Sync-PathFromEnvironment
 Enable-VtIfPossible
+# Python on Windows often prints UTF-8 while the console is OEM/ANSI → � / mojibake.
+$env:PYTHONIOENCODING = 'utf-8'
+$env:PYTHONUTF8 = '1'
+try { & "$env:SystemRoot\System32\chcp.com" 65001 | Out-Null } catch { }
 
 $Py = Resolve-LauncherPython -RepoRoot $Root
 if (-not $Py) {
@@ -286,13 +298,26 @@ function Test-PythonMod($name) {
 
 function Invoke-PythonModule {
     param(
-        [Parameter(Mandatory = $true, ValueFromRemainingArguments = $true)]
+        # Named parameter only — do NOT use ValueFromRemainingArguments + splat.
+        # Splatting @('script.py', '--config', ...) makes PowerShell treat --config
+        # as a function parameter and can glue all args into one bogus path.
+        [Parameter(Mandatory = $true)]
         [string[]]$PythonArgs
     )
+    # Important: Python stdout must NOT become the function's return value.
+    # Otherwise `$ec = Invoke-PythonModule ...` gets Object[] (log lines + int),
+    # and `if ($ec -ne 0)` is always true → false "fetch_lavalink failed" etc.
     $oldEa = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $Py @PythonArgs
+        $exe = if ($script:Py) { $script:Py } else { $Py }
+        & $exe @PythonArgs 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                Write-Host $_.Exception.Message
+            } else {
+                Write-Host $_
+            }
+        }
         if ($null -ne $LASTEXITCODE) { return [int]$LASTEXITCODE }
         return 0
     } finally {
@@ -442,7 +467,7 @@ function Invoke-Preflight {
         if ($yn -match '^[yY]') {
             $reqFile = Join-Path $Root "requirements.txt"
             Write-Hi "pip install (может занять время, лог в консоли)..."
-            $pipEc = Invoke-PythonModule @('-m', 'pip', 'install', '-r', $reqFile)
+            $pipEc = Invoke-PythonModule -PythonArgs @('-m', 'pip', 'install', '-r', $reqFile)
             if ($pipEc -ne 0) {
                 $pipLog = Join-Path $env:TEMP ("neyra-pip-{0}.log" -f [guid]::NewGuid().ToString('n'))
                 $pipProc = Start-Process -FilePath $Py -ArgumentList @('-m', 'pip', 'install', '-r', $reqFile) `
@@ -458,7 +483,7 @@ function Invoke-Preflight {
                         Read-Host "Enter для выхода"
                         exit 1
                     }
-                    $pipEc2 = Invoke-PythonModule @('-m', 'pip', 'install', '-r', $reqFile)
+                    $pipEc2 = Invoke-PythonModule -PythonArgs @('-m', 'pip', 'install', '-r', $reqFile)
                     if ($pipEc2 -ne 0) {
                         Write-Err "pip install в .venv_win провалился."
                         Read-Host "Enter для выхода"
@@ -506,7 +531,10 @@ function Invoke-Preflight {
 
     Write-Host ""
     Write-Hi "Voice preflight (STT/TTS — soft only, ядро не блокируем)..."
-    $null = Invoke-PythonModule @('-c', 'from core.voice.config import print_voice_preflight; raise SystemExit(print_voice_preflight())')
+    $voiceEc = Invoke-PythonModule -PythonArgs @((Join-Path $Root 'scripts\voice_preflight.py'))
+    if ($voiceEc -ne 0) {
+        Write-Warn "Voice preflight вернул код $voiceEc (ядро всё равно можно стартовать)."
+    }
 
     Write-Hi "Нейра готова к запуску. Что будем делать дальше, босс?"
     Write-Host ""
@@ -540,7 +568,7 @@ function Start-LavalinkIfPossible {
         return
     }
     $lavCfg = Join-Path $LlHome 'application.yml'
-    $plugEc = Invoke-PythonModule @(
+    $plugEc = Invoke-PythonModule -PythonArgs @(
         (Join-Path $Root 'scripts\fetch_lavalink_plugins.py'),
         '--config', $lavCfg,
         '--latest-youtube'
@@ -572,7 +600,7 @@ while ($true) {
     switch ($choice) {
         "1" {
             Write-Ok "Запускаю консольный режим. Удачного диалога."
-            $null = Invoke-PythonModule @((Join-Path $Root "main.py"), '--mode', 'console')
+            $null = Invoke-PythonModule -PythonArgs @((Join-Path $Root "main.py"), '--mode', 'console')
             Write-Hi "Консоль завершилась. Возвращаюсь в меню."
         }
         "2" {
@@ -588,7 +616,7 @@ while ($true) {
             if ($la -match '^[yY]') { Start-LavalinkIfPossible }
             else { Write-Hi "Ок, Lavalink не трогаю — поднимай сам (п.3) или оставь уже запущенный." }
             Write-Ok "Стартую ядро: main.py --mode core"
-            $coreEc = Invoke-PythonModule @((Join-Path $Root "main.py"), '--mode', 'core')
+            $coreEc = Invoke-PythonModule -PythonArgs @((Join-Path $Root "main.py"), '--mode', 'core')
             if ($coreEc -ne 0) {
                 Write-Warn "Ядро завершилось с кодом $coreEc (часто бывает при падении torch/OpenMP или нехватке RAM — см. консоль и logs/system.log)."
             }
@@ -600,10 +628,10 @@ while ($true) {
         }
         "4" {
             Write-Hi "Качаю Lavalink.jar и JAR-плагины..."
-            $f1 = Invoke-PythonModule @((Join-Path $Root "scripts\fetch_lavalink.py"))
+            $f1 = Invoke-PythonModule -PythonArgs @((Join-Path $Root "scripts\fetch_lavalink.py"))
             if ($f1 -ne 0) { Write-Err "fetch_lavalink.py завершился с ошибкой." }
             else {
-                $f2 = Invoke-PythonModule @(
+                $f2 = Invoke-PythonModule -PythonArgs @(
                     (Join-Path $Root "scripts\fetch_lavalink_plugins.py"),
                     '--config', (Join-Path $Root "interfaces\discord\lavalink\application.yml"),
                     '--latest-youtube'

@@ -1,262 +1,217 @@
-# PLAN.md — Глобальный архитектурный план Neyra-AIAssist
+# PLAN.md — Neyra-AIAssist
+
+> Глобальный план развития: от текущего стенда к **локальному серверу + клиентскому приложению управления**.
+> Одновременно это технический roadmap ВКР (тема зафиксирована, см. §0).
+
+---
+
+## 0) Контекст и дедлайны
+
+| Что | Значение |
+|-----|----------|
+| **Продукт** | Модульный ИИ-ассистент: локальный сервер («мозги») + тонкие клиенты («лицо» / пульт) |
+| **ВКР** | «Разработка прототипа модульной информационной системы персонального ИИ-ассистента с локальным сервером и клиентским приложением управления» — **зафиксирована, не менять** |
+| **Аннотированное задание** | до **04.10.2026** |
+| **Активная разработка** | с **29.09.2026** (обновление лимитов Cursor) |
+| **Минимум к защите** | сервер + Windows-клиент Tauri + React (подключение по адресу и токену, чат со стримингом, статус health/модулей/моделей, включение/выключение модуля, мягкий рестарт) + ≥1 модуль + схемы + тесты (см. §5) |
+
+---
 
 ## 1) Стратегическая цель
 
-Построить модульную, event-driven и локально-автономную AI-платформу, где:
+Neyra — **один сервер** на своём железе (мини-ПК / старый ПК / NAS / VPS), к которому подключаются тонкие клиенты.
 
-- ядро (`core`) стабильно работает как оркестратор,
-- интерфейсы реализованы как плагины,
-- Web UI управляет системой в real-time через события,
-- память управляется как полноценный lifecycle (а не просто накопление),
-- интеграции масштабируются через MCP, без разрастания самописных адаптеров в ядре.
-
----
-
-## 2) Базовые архитектурные принципы
-
-- **Event-first:** межмодульное взаимодействие только через Event Bus контракты.
-- **Plugin-first:** интерфейсная логика живёт в `interfaces/`, ядро остаётся универсальным.
-- **Secure-by-boundary:** `core` защищён от прямой саморедактируемости; расширения — через sandbox в плагинной зоне.
-- **Local-first runtime:** облачные API опциональны; целевой режим — свой сервер (дом / NAS / VPS). Устройства — тонкие клиенты.
-- **MCP-native future:** внешние возможности подключаются стандартизированными MCP-серверами.
-
-### Двухполушарная когнитивная схема (OpenRouter)
-
-| Роль | Конфиг / факт на стенде | Назначение |
-|------|-------------------------|------------|
-| **Левое полушарие** | `brain_model.model` → `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | Tool-loop, нативное зрение при `use_brain_model_for_vision: true` |
-| **Правое полушарие** | `brain_model.model_deep` → `nvidia/nemotron-3-ultra-550b-a55b:free` | Глубокая логика / код через `delegate_to_deep_logic` |
-| **Гиппокамп** | `memory_model` → `nvidia/nemotron-3-super-120b-a12b:free` | LTM / WM / рефлексия / emotional layer |
-| **Talk** | `talk_model` → `qwen/qwen3-235b-a22b-2507` | Финальный ответ пользователю |
-
-**Зрение:** `use_brain_model_for_vision: true` — картинки в brain (Nemotron); `false` — VL-caption через `vision_model`. Live-проверка картинки — smoke при работе над UI/клиентами (не блокер закрытия прошлых этапов).  
-**Rate limit:** `memory_model` — retry с backoff на 429/timeout.
+- **Сервер** держит всё: ядро-оркестратор, память, LLM-маршрутизацию, голос, инструменты, модули, Event Bus.
+- **Клиент** — лицо и пульт: чат, статус, промпты, модули, рестарт. Минимальный клиент к защите — Windows-приложение на Tauri + React; Web UI и другие клиенты могут развиваться отдельно.
+- **Расширение** — через модули/плагины и MCP, без разрастания ядра.
+- **Самодоработка** — только через модули в песочнице; `core` сам себя не редактирует.
 
 ---
 
-## 3) Текущее состояние (сводно)
+## 2) Архитектурные принципы
 
-| Область | Состояние |
-|---------|-----------|
-| **Закрытые этапы (архив)** | **ex-1** Memory Hub + layout/refactor · **ex-2** persona/pre_context/archive/security/fast_path/OpenRouter STT — в `main` после merge [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) (+ [#1](https://github.com/KORESHon/Neyra-AIAssist/pull/1), [#6](https://github.com/KORESHon/Neyra-AIAssist/pull/6), [#7](https://github.com/KORESHon/Neyra-AIAssist/pull/7)) |
-| **Память** | Hub SQLite = source of truth; Chroma = semantic index; `rag_write_mode=important_only`; STM=10; scoped RAG; session_archive |
-| **Ядро** | `core/neyra.py` + пакеты `agent/` `memory/` `llm/` `plugins/` `reflection/` `runtime/` `tools/` `voice/` |
-| **Голос** | `voice.stt`/`voice.tts` modality + soft ERROR; STT: local / Deepgram / Groq / **OpenRouter Whisper** |
-| **Агент** | persona/appearance packs; optional PRE-CONTEXT; Fast-Path `home.*` (сервер); security-model |
-| **Интерфейсы** | Discord resident + Internal API (`:8787`) + dashboard; MCP debug-server |
-| **ADR** | [0001](docs/adr/0001-memory-hub-v2.md) Hub · [0002](docs/adr/0002-core-layout-1b.md) layout · [0003](docs/adr/0003-core-refactor-1r.md) refactor |
-| **Активный фокус** | **Foundation polish + soak** — Discord + music ~сутки на Windows, затем mini-PC. Этапы 1–2 (WS UI / автономия) — **позже** |
+- **Event-first:** модули общаются через контракты Event Bus.
+- **Plugin-first:** интерфейсы и интеграции живут в `modules/`; ядро универсально.
+- **Server-first code:** тяжёлые изменения — на сервере; клиент ничего не оркестрирует.
+- **Config-layered:** корень = короткие верхнеуровневые настройки, `config/` = глубокие, `.env` = только секреты (§4, Этап 1).
+- **Secure-by-boundary:** ядро защищено; расширения — через sandbox, allowlist, аудит.
+- **Local-first runtime:** облачные API опциональны; local и cloud равноправны и переключаются конфигом.
+- **MCP-native:** MCP-клиент — часть продукта: сервер подключает внешние MCP-серверы как модули через allowlist (Этап 4). MCP-сервер для разработки — отдельный dev-only инструмент в `devtools/`, не входит в поставку.
 
-**Windows runtime:** `.venv_win` + `run_neyra.bat` → `scripts/neyra_win_launcher.ps1`.  
-**Linux/WSL:** `run_neyra.sh` (`*.sh` → LF via `.gitattributes`); venv `.venv` или `~/neyra-venv` на `/mnt`.
+### Когнитивная схема (роли моделей)
 
-### Архив: что уже сделано (кратко)
+| Роль | Ключ конфига | Назначение |
+|------|--------------|------------|
+| **Левое полушарие** | `brain_model.model` | Tool-loop, нативное зрение при `use_brain_model_for_vision: true` |
+| **Правое полушарие** | `talk_model.model` | быстрый разговорный ответ |
+| **Гиппокамп** | `memory_model.model` | суммаризация и консолидация памяти |
+| **Глаза** | `vision_model.model` | отдельная vision-модель, если зрение не делегировано brain-модели |
 
-**ex-Этап 1 — Memory Hub + реорганизация `core/`** ✅  
-Hub SQLite (chat_log / people / diary / journal / WM), Chroma как индекс, cutover без legacy-импорта; пакетная раскладка `core/`; оркестратор `core/neyra.py`. ADR-0001…0003. PR #1 / #6 / #7.
+### OpenAI-compatible провайдеры
 
-**ex-Этап 2 — Точечные улучшения** ✅ (merge PR #10)  
-Persona/appearance; PRE-CONTEXT (user-scoped WM); session archive (scoped `chat_log`); security pass (scoped RAG, MCP redact, ContextVar turn-scope); voice modality + OpenRouter Whisper STT; Fast-Path allowlist → `home.*` (сервер; multi-client/колонка → этап 2, позже). Discord/MCP smokes закрыты. Vision live-картинка — optional smoke ниже.
-
----
-
-## 3.1) Сейчас (после merge ex-2): polish + soak, без этапов 1–2
-
-Этапы **1** (WS UI) и **2** (автономия / колонка) **отложены** — сначала стабильный стенд.
-
-**Порядок сейчас:**
-
-1. Sync docs / prompts / stubs (пути Event Bus, примеры persona, `local_voice` stub).
-2. Полировка известного Discord UX (lyrics newlines — BUG-001).
-3. Финальный PR → `main`.
-4. Soak: ядро + Discord + Lavalink/music ~сутки на Windows → потом локальный mini-PC.
-5. Только после soak — возвращаться к этапам 1–2.
+| Provider | Base URL | API key env | Примечание |
+|----------|----------|-------------|------------|
+| OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | общий каталог моделей |
+| OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` | OpenAI-compatible API |
+| AIHope | `https://aihope.fun/v1` | `AIHOPE_API_KEY` | OpenAI-compatible backend |
+| Custom | задаётся профилем | задаётся профилем | любой совместимый endpoint |
 
 ---
 
-## 4) Очередь этапов
+## 3) Текущее состояние репозитория
 
-| # | Этап | Статус |
-|---|------|--------|
-| **ex-1 / ex-2** | Hub + core layout/refactor + точечные улучшения агента/голоса | ✅ done (архив выше) |
-| **polish + soak** | Docs/prompts sync, Discord+music soak (Win → mini-PC) | ▶ **активный** |
-| **1** | Web UI как WebSocket-мост к Event Bus | очередь (**позже**, после soak) |
-| **2** | Автономный сервер + тонкие клиенты / колонка | очередь (**позже**) |
+Этот раздел фиксирует исходное состояние до Этапа 1b; после переноса актуальной структурой считается дерево из §1b и `docs/inventory.md`.
 
----
-
-## Этап 1 — Web UI как WebSocket-мост к Event Bus (позже)
-
-**Статус:** отложен до завершения soak Discord+music.
-
-**Зачем до автономии:** UI тестируется на текущем сервере (Discord/API уже есть); колонки как железа пока нет.
-
-**Цель:** браузер = real-time клиент шины — тот же класс тонких клиентов, что позже у колонки (этап 2).
-
-- Двусторонний WS-мост `Web UI ↔ Event Bus`.
-- Публикация событий (чат, музыка, плагины) + подписка на stream/статусы.
-- Задел под edge/desktop/mobile: тот же WSS-контракт (аудио / текст / события).
-- Дашборд (`frontend/`) — развивать как тонкий клиент, не дублируя оркестрацию ядра.
-
-**Критерии приёмки:**
-
-- [ ] CLI не обязателен для повседневной эксплуатации.
-- [ ] UI реагирует на операции и события в real-time.
-- [ ] Контракт WS задокументирован для переиспользования в этапе 2.
-- [ ] (опц.) Vision smoke: картинка в Discord / UI при `use_brain_model_for_vision` true/false.
-
-**Правила:** не ломать Hub / Event Bus без ADR; не тащить self-host voice stack сюда (этап 2). После slice: `compileall` + healthcheck; при касании агента — MCP `/v1/chat` или Discord.
+- Python-монолит с ядром, интеграционными модулями, server dashboard и корневыми entrypoints.
+- `main.py` импортирует модули относительно корня репозитория; после переноса все серверные entrypoints должны работать из server package либо явно задавать `PYTHONPATH`.
+- UI, который уже существует, является dashboard сервера. Он не является Windows-клиентом ВКР.
+- `memory/`, SQLite Hub и Chroma содержат пользовательские данные; в 1b их физическое расположение сохраняется.
+- MCP debug server используется инструментами разработки и не является runtime-компонентом поставки.
 
 ---
 
-## Этап 2 — Автономный сервер + тонкие клиенты
+## 4) Структура целевой конфигурации
 
-**Ориентир:** после зелёного WS-моста (этап 1). Нет стабильного стенда колонки для приёмки.
+### Корневой конфиг
 
-Neyra = **один сервер**; колонка / телефон / Web UI = micro-client.
+`server/config.yaml` содержит короткие настройки верхнего уровня: `assistant.name`, `assistant.language`, `assistant.profile`, профиль окружения, активный LLM-профиль, включение модулей, адрес сервера, уровень логов, путь к config и `paths.data_dir`.
 
-| Узел | Роль |
-|------|------|
-| **Neyra Server** | ядро, Hub, LLM, STT/TTS (local или cloud), tools, Event Bus |
-| **Колонка / edge** | mic/speaker, wake-word; Fast-Path света/сцен локально |
-| **Телефон / Web UI** | тонкий клиент по WSS (контракт этапа 1) |
+### Глубокая конфигурация
 
-### LLM
+`server/config/` содержит раздельные `llm.yaml`, `memory.yaml`, `voice.yaml`, `agent.yaml`, `runtime.yaml`, `server.yaml`, `modules.yaml` и соответствующие `*.example.yaml`. `.env` содержит только секреты. Каждый реально поддерживаемый ключ, тип и default должны быть перечислены в детальной таблице перед реализацией схемы на 1c.
 
-- OpenAI-compatible self-host (LM Studio / Ollama / vLLM / …) через профили `base_url` + model id.
-- Роли brain / talk / deep / memory / vision — независимо cloud или local.
-- Режим «только свой сервер» без обязательного OpenRouter — или слабый сервер → фундамент (OpenRouter и др.).
+### Каталог данных
 
-### Voice (переключаемые STT / TTS)
-
-Один конфиг-переключатель на роль (`voice.stt` / `voice.tts` modality уже в ядре):
-
-| Режим | STT | TTS |
-|-------|-----|-----|
-| **Local** | Whisper / faster-whisper | CosyVoice / Silero / Piper |
-| **Cloud** | Deepgram, Groq, Yandex SpeechKit, … | те же экосистемы |
-| **Фундамент** | OpenRouter `/audio/transcriptions` (Whisper turbo — уже в коде); live mic — отдельные live-провайдеры | слот провайдера без ломки агента |
-
-Cloud и local — равноправны. Колонка шлёт аудио на сервер; backend выбирается конфигом.
-
-### Память / vision на сервере
-
-- Hub + Chroma только на сервере.
-- Опционально: sqlite-vss через адаптер `search_semantic` (без ломки агента).
-
-### Fast-Path / умный дом (продолжение серверного allowlist)
-
-Серверный allowlist + `home.*` уже в коде. Здесь — e2e с реальными клиентами:
-
-- [ ] Колонка / телефон / desktop home-клиент шлёт короткие команды → Fast-Path без полного brain.
-- [ ] Изоляция «ещё раз» между разными клиентами/аккаунтами (не только MCP uid).
-- [ ] Consumer `home.*` (свет/сцены) подключён к железу или mock-плагину.
-
-### Критерии приёмки (черновик)
-
-- [ ] STT/TTS: local ↔ cloud только конфигом.
-- [ ] Слот STT через OpenRouter задокументирован или работает (база уже есть).
-- [ ] Профиль LLM local/custom **или** полный прогон на OpenRouter — оба в example config.
-- [ ] Self-host: LLM + STT + TTS без внешних API (при наличии железа); слабый сервер — через cloud.
-- [ ] Edge «включи свет» без LLM; сложный запрос — WSS → сервер (когда появится клиент).
-- [ ] В колонку не требуется полный репозиторий Neyra.
-- [ ] (опц.) Vision smoke на клиенте/колонке.
-
-### Docker / launcher
-
-- `docker-compose` / `run_neyra.bat` / `run_neyra.sh` — подъём сервера.
-- Документировать: дом vs облако, URL thin-client, ключи `voice.*` / `llm.*` для local vs cloud.
+`paths.data_dir` задаёт каталог runtime-данных; `NEYRA_DATA_DIR` переопределяет его. В 1b default обязан указывать на текущее физическое место. Позже, при упаковке, целевые defaults: `%LOCALAPPDATA%\\Neyra` на Windows и `~/.local/share/neyra` на Linux. HF-токен необязателен и остаётся закомментированным в `.env.example`: он нужен только закрытым моделям.
 
 ---
 
-## 5) Архитектурные артефакты
+## 5) Этапы и критерий защиты
 
-| Артефакт | Статус |
-|----------|--------|
-| ADR-0001 Memory Hub v2 | ✅ |
-| ADR-0002 Core layout 1B | ✅ |
-| ADR-0003 Core refactor 1R | ✅ |
-| ADR: Memory lifecycle policy (поверх Hub) | [ ] |
-| ADR: MCP integration model | [ ] |
-| ADR: Sandbox / hot-reload / rollback | [ ] |
-| ADR: единый discord-плагин (исторически) | частично (resident plugin уже есть) |
+Минимальный результат ВКР включает сервер, минимум один модуль, схемы и тесты, а также Windows-клиент на Tauri + React. Клиент обязан подключаться к серверу по адресу и токену, показывать чат со streaming-ответом и статус health/модулей/моделей, включать и выключать модуль и выполнять мягкий рестарт. Редактирование промптов и настроек — следующая очередь, не условие минимальной защиты.
 
-**Тестовые сценарии (поддерживать):**
-
-- e2e Discord text (+ music при поднятом Lavalink)
-- Memory Hub: chat_log → recall; semantic by `type`; people/diary/journal
-- WS bridge pub/sub (этап 1)
-- MCP debug + runtime MCP client
-- `scripts/test_stage2_security_offline.py` (scoped archive / ContextVar / 429)
+Формат установщиков сервера Windows/Linux в объём защиты не входит. Для демонстрации достаточно Docker Compose или systemd на mini-PC и `run_neyra.bat` на Windows.
 
 ---
 
-## 6) Чек-лист валидации после существенных изменений
+## 6) Этап 1 — Подготовка и перестройка
 
-- `python -m compileall -q core interfaces scripts main.py` (из `.venv_win` на Windows)
-- `python scripts/test_memory_hub_smoke.py` + `test_memory_cutover_offline.py`
-- `python scripts/test_stage2_security_offline.py`
-- `python scripts/healthcheck.py --mode core --skip-http`
-- Frontend: `cd frontend && npm run build` (если трогали UI)
-- Lavalink JAR: `python scripts/fetch_lavalink.py` (если музыка)
-- Live (по возможности): MCP `/v1/chat` или Discord; `/v1/debug/memory`
-- Auto Review на PR
+### Этап 1a — Инвентаризация
 
----
+Завершить `docs/inventory.md`: каталогам и файлам назначить владельца и решение; зафиксировать конфиги, env, entrypoints, runtime data, ignored-файлы и нерешённые дефекты. Перед переносами перечитать инвентаризацию и сверить её с фактическим состоянием.
 
-## 7) Риски и контроль
+### Этап 1b — Перестройка структуры
 
-- **Prune/summarize** портит retrieval → quality gates, выборочные проверки.
-- **Fast-Path** ложно срабатывает → порог уверенности + fallback в brain; allowlist интентов.
-- **MCP** расширяет атакующую поверхность → allowlist серверов, sandbox, аудит.
-- **Hot-reload** оставляет грязные подписки → lifecycle hooks + очистка listeners.
-- **Hub / Event Bus** — контракты не ломать без ADR; регрессии ловить smokes.
+Выполнить единый breaking switch в одной ветке по решениям `docs/inventory.md`:
 
----
+- серверные исходники, `core/`, модули, dashboard, конфиги и server scripts переместить в `server/`; dashboard располагается в `server/dashboard/`;
+- подготовить `client/` как отдельный пакет Windows-клиента на Tauri + React; реализация MVP-клиента входит в Этап 3 и минимальный объём защиты;
+- dev/test-инструменты, включая MCP debug server, разместить в `devtools/`;
+- оставить корневые `run_neyra.bat`, `run_neyra.sh`, deployment metadata и документацию в согласованных целевых местах;
+- `PLAN.md` переместить в `docs/PLAN.md` и обновить все ссылки;
+- не создавать legacy-алиасы и не поддерживать переходную структуру.
 
-## 7.5) Баг-трекер / известные дефекты
+Перед любыми перемещениями сделать и проверить полный внешний backup проекта и локальных runtime-данных. `git mv` не переносит ignored-файлы. Отдельным шагом сохранить и перенести ignored-файлы приложения, plugin configs, runtime-каталоги и Lavalink JAR в целевые места; сверить источники и назначения и подтвердить, что настройки и секреты доступны после переключения. В 1b физически не перемещать runtime-каталоги памяти, SQLite Hub и Chroma: сохранить текущий путь данных, меняется только чтение `paths.data_dir`.
 
-*Исторический срез логов 2026-05; пути обновлены под раскладку core. Пересмотреть при следующем стресс-прогоне.*
+Все серверные Python entrypoints после перемещения должны запускаться с working directory `server/` либо выставлять `PYTHONPATH` на `server/`. Проверить BAT, SH, launcher, Docker, CI, `healthcheck.py` и `invoke_plugin.py`.
 
-| ID | Суть | Статус | Зона / направление |
-|----|------|--------|---------------------|
-| **BUG-001** | Discord lyrics: ломаются переносы строк | ⚠️ watch (fix: instruction + unescape `\\n`) | `interfaces/discord/bot.py` + `reply_postprocess` — проверить на soak |
-| **BUG-002** | VL Alibaba `DataInspectionFailed` | ❌ open | fallback VL / другой провайдер / смягчение промпта |
-| **BUG-003** | Vision free: HTTP 429 | ❌ open | BYOK / другая модель / backoff |
-| **BUG-004** | LLM first-token timeout 6s | ⚠️ watch | `primary_first_token_timeout_seconds` |
-| **BUG-005** | Discord Gateway reconnect | ⚠️ monitor | сеть / VPN / firewall |
-| **BUG-006** | `music.play` failed | ❌ open | санитизация query, Soundcloud; нужен Lavalink на soak |
-| **BUG-007** | Частые перезапуски ядра | ❌ open | exit-код / Event Log / repro |
-| **BUG-008** | Legacy Chroma docs без `user_id` не попадают в scoped search | ⚠️ watch | переиндексация / backfill metadata; post-filter уже пропускает ambiguous dialog |
+До изменения общего загрузчика отдельно выяснить фактическое использование `local_voice/config.yaml` и сохранить его поведение при переносе.
 
-**Не баг:** `davey is not installed` (voice Discord); periodic Health monitor OK.
+**Готово, когда:**
+- [ ] внешний backup проекта и runtime-данных создан и проверен до перемещений;
+- [ ] ignored-файлы перенесены отдельным скриптом/шагом, источники и назначения сверены;
+- [ ] SQLite Hub, Chroma и прочая память физически остаются по прежнему пути;
+- [ ] все импорты, entrypoints, Docker, CI, инструкции и ссылки обновлены для единого переключения;
+- [ ] полный поиск по всему репозиторию не находит ни одного вхождения старых путей `legacy module tree/`, `legacy dashboard tree/` или `tools/mcp_server`;
+- [ ] legacy-алиасы не созданы;
+- [ ] серверные entrypoints проверены из `server/` либо с `PYTHONPATH=server/`;
+- [ ] конфиг `local_voice` и его потребитель проверены до переключения общего loader;
+- [ ] корневые `run_neyra.bat`, `run_neyra.sh` и Docker Compose запускают новый серверный пакет;
+- [ ] чек-лист §7 зелёный; отложенное внесено в §11.
 
----
+### Этап 1c — Раскладка конфигов
 
-## 7.6) Legacy и fallback (модели / конфиг)
+Первым шагом составить подробную таблицу конфигурации: каждый ключ отдельной строкой, точный тип, default, источник чтения, целевой файл и статус совместимости. Групповые строки `memory.*`/`voice.*` недостаточны для реализации проверки схемы. Уточнить результаты проверки `local_voice` из 1b до изменения loader.
 
-Перед полным отказом от обратной совместимости — вычистить после миграции всех деплоев:
+Разложить конфигурацию по `server/config.yaml` и `server/config/*.yaml`; конфиги модулей разместить рядом с соответствующими модулями. Корневой `server/config.yaml` — не более примерно 60 строк. Секреты остаются в `server/.env`; `HF_TOKEN` и `HUGGING_FACE_HUB_TOKEN` в `server/.env.example` необязательны и закомментированы.
 
-| Механизм | Назначение |
-|----------|------------|
-| `openrouter.model` / `primary_model` | старый id → talk, warning |
-| `openrouter.reflection_model` | fallback для memory, warning |
-| `async_reflection.model` в YAML | игнорируется в пользу `memory_model` |
-| Плоские ключи `openrouter.*` | параллельно с вложенными блоками |
-| `self.llm_primary` / `llm_primary_model` | = talk |
-| Корневой YAML `vision:` | ниже `openrouter.vision_model`, warning |
-| `DEPRECATED_MODEL_MAP` | подмена устаревших id |
-| `SCREEN_PROXY_SECRET` | заглушка под будущий плагин |
+`paths.data_dir` читается из корневого конфига; `NEYRA_DATA_DIR` имеет приоритет как env override. Default сохраняет текущее место данных. Перенос memory/SQLite Hub/Chroma на другой физический диск или каталог не входит в 1b и требует отдельного backup и проверки.
 
-**Долг:** «VL-ход» в логах — косметика; screen/vision — через `vision_model` / плагины.
+Загрузчик валидирует схему и сообщает файл и ключ ошибки. Миграция старого монолитного конфига поддерживает dry-run и не перезаписывает существующие файлы без `--force`.
+
+**Готово, когда:**
+- [ ] подробная таблица каждого config-ключа с типами и defaults готова до кода loader;
+- [ ] свежая установка работает из example-конфигов и `.env` без правки кода;
+- [ ] старый конфиг обрабатывается с предупреждением и инструкцией миграции;
+- [ ] `server/config.yaml` не длиннее примерно 60 строк;
+- [ ] каждый файл `server/config/` имеет example и комментарии;
+- [ ] `.env.example` соответствует используемым секретам;
+- [ ] ADR-0004 «Config layering» записан и чек-лист §7 зелёный.
 
 ---
 
-## 8) Backlog (дальний горизонт)
+## 7) Чек-лист валидации после существенных изменений
 
-- Интеграция с Obsidian — экспорт из Hub в vault `.md` (MCP или CLI).
-- Клиенты desktop / mobile-lite — [Google Docs ТЗ](https://docs.google.com/document/d/10wjeJefCRuF1ujJ0bWCwKw2tB9BwjV2ejqqd1f-vMhg/edit?tab=t.0).
-- Standalone `.exe` / server-core + lightweight clients.
-- Настройка LLM из Web UI (модель, system prompt) — после hot-reload.
-- Device-mode (AI station), open-core расширения, публичный demo/BYOK.
-- Live mic ASR / realtime WebSocket STT (не file/clip OpenRouter).
+После переноса все серверные команды выполняются из `server/` либо с `PYTHONPATH=server/`:
+
+- До 1b: `python -m compileall -q core interfaces scripts main.py` из корня.
+- После 1b: `python -m compileall -q core modules scripts main.py` из `server/`.
+- Из `server/`: `python scripts/test_memory_hub_smoke.py`, `python scripts/test_memory_cutover_offline.py`, `python scripts/test_stage2_security_offline.py`.
+- Из `server/`: `python scripts/healthcheck.py --mode core --skip-http`.
+- После переноса dev MCP: выполнить debug-server test из `devtools/` либо с корректным `PYTHONPATH`.
+- Windows-клиент: отдельная проверка сборки Tauri + React по его package-скриптам после создания client-пакета.
+- Dashboard: `npm run build` из `server/dashboard/`, если менялся dashboard.
+- Lavalink JAR: `python scripts/fetch_lavalink_plugins.py` из `server/`, если менялась музыка.
+- Live: MCP `/v1/chat` или Discord; `/v1/debug/memory`.
+
+---
+
+## 8) Legacy и fallback
+
+| Механизм | Назначение | Решение |
+|----------|------------|---------|
+| `openrouter.model` / `primary_model` | старый id → talk, warning | миграция в `server/config/llm.yaml` |
+| `openrouter.reflection_model` | fallback для memory | миграция |
+| `async_reflection.model` | игнорируется в пользу `memory_model` | удалить |
+| Плоские ключи `openrouter.*` | параллельно с вложенными | warning → удалить |
+| `self.llm_primary` / `llm_primary_model` | alias для talk | удалить после миграции |
+| Корневой `vision:` | ниже `openrouter.vision_model` | миграция |
+| `DEPRECATED_MODEL_MAP` | подмена устаревших id | оставить |
+| `SCREEN_PROXY_SECRET` | текущий код не читает | убрать из `.env.example`, оставить в backlog до появления потребителя |
+
+---
+
+## 9) Риски
+
+- **Миграция конфигов** ломает существующие деплои → совместимость, backup и скрипт миграции с dry-run.
+- **Control API** открывает управление по сети → токены с ролями, bind на LAN, аудит действий.
+- **Модули** роняют ядро или оставляют подписки → lifecycle hooks, изоляция ошибок, очистка listeners.
+- **MCP** расширяет атакующую поверхность → allowlist, sandbox, аудит.
+- **Prune/summarize** портит retrieval → quality gates.
+- **Fast-Path** ложно срабатывает → порог уверенности + fallback в brain.
+- **Уборка репозитория съедает сроки ВКР** → 1b ограничен server/client/devtools; минимум защиты из §5 важнее чистоты структуры.
+
+---
+
+## 10) Баг-трекер
+
+| ID | Суть | Статус | Зона |
+|----|------|--------|------|
+| BUG-001 | Discord lyrics: ломаются переносы строк | ⚠️ watch | `server/modules/discord/bot.py` + `reply_postprocess` |
+| BUG-002 | VL Alibaba `DataInspectionFailed` | ❌ open | fallback VL / другой провайдер |
+| BUG-003 | Vision free: HTTP 429 | ❌ open | BYOK / другая модель / backoff |
+| BUG-004 | LLM first-token timeout 6s | ⚠️ watch | `primary_first_token_timeout_seconds` |
+| BUG-005 | Discord Gateway reconnect | ⚠️ monitor | сеть / VPN / firewall |
+| BUG-006 | `music.play` failed | ❌ open | санитизация query, Soundcloud, Lavalink |
+| BUG-007 | Частые перезапуски ядра | ❌ open | exit-код / Event Log / repro |
+| BUG-008 | Legacy Chroma docs без `user_id` вне scoped search | ⚠️ watch | backfill metadata |
+
+---
+
+## 11) Backlog
+
+- Установщики отдельного server package для Windows/Linux; не входят в минимум защиты. Для демонстрации достаточно Docker Compose или systemd на mini-PC и `run_neyra.bat` на Windows.
+- Редактирование промптов и настроек из Windows-клиента после реализации обязательного MVP.
+- Telegram, screen/proxy и Yandex Search до появления подтверждённого сценария.
+- Полный local voice pipeline, external storage providers, audio API stubs и другие незавершённые функции.
+- Soundpad и TODO, не влияющие на границы пакетов.

@@ -27,7 +27,7 @@ __pycache__/
 kursovaya/
 
 # Runtime artifacts
-memory/chroma_db/f719d8db-4bdb-4a9d-a27e-26b831859017
+memory/chroma_db/05acb175-7a26-4894-bfd6-2750daf3cf81
 memory/chroma_db/*.sqlite3
 memory/journal.json
 memory/thoughts.log

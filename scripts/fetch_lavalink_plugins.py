@@ -185,15 +185,19 @@ def main() -> int:
         yt_ver = _latest_github_tag(("dev.lavalink.youtube", "youtube-plugin"))
         if yt_ver:
             print(f"[INFO] GitHub latest youtube-plugin: {yt_ver}")
-            _sync_youtube_plugin_version_in_yaml(cfg, yt_ver)
+            # Do NOT rewrite YAML until the jar download succeeds (see loop below).
             deps = [
                 (gid, aid, yt_ver if (gid, aid) == ("dev.lavalink.youtube", "youtube-plugin") else ver)
                 for gid, aid, ver in deps
             ]
         else:
-            print("[WARN] Не удалось получить latest tag для youtube-plugin — использую версии из YAML.", file=sys.stderr)
+            print(
+                "[WARN] Не удалось получить latest tag для youtube-plugin — использую версии из YAML.",
+                file=sys.stderr,
+            )
 
     need_any = False
+    failed = False
     for gid, aid, ver in deps:
         key = (gid, aid)
         tmpl = PLUGIN_DOWNLOAD_URLS.get(key)
@@ -208,18 +212,33 @@ def main() -> int:
                 _http_download(url, dest)
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
                 print(f"[ERR] Не удалось скачать {url}: {e}", file=sys.stderr)
-                return 1
+                # Keep an already-valid older youtube-plugin jar if present.
+                if key == ("dev.lavalink.youtube", "youtube-plugin"):
+                    existing = sorted(plugins_dir.glob("youtube-plugin-*.jar"), reverse=True)
+                    keep = next((p for p in existing if _is_valid_plugin_jar(p)), None)
+                    if keep is not None:
+                        m = re.search(r"youtube-plugin-([0-9.]+)\.jar$", keep.name)
+                        if m:
+                            _sync_youtube_plugin_version_in_yaml(cfg, m.group(1))
+                        print(f"[WARN] Оставляю существующий плагин: {keep.name}")
+                        continue
+                failed = True
+                continue
             if not _is_valid_plugin_jar(dest):
                 print(f"[ERR] После загрузки файл не похож на JAR: {dest}", file=sys.stderr)
-                return 1
+                failed = True
+                continue
             if key == ("dev.lavalink.youtube", "youtube-plugin"):
+                _sync_youtube_plugin_version_in_yaml(cfg, ver)
                 _prune_other_youtube_plugin_jars(plugins_dir, dest)
         else:
             print(f"[OK] Плагин уже на месте: {dest.name}")
+            if key == ("dev.lavalink.youtube", "youtube-plugin") and args.latest_youtube:
+                _sync_youtube_plugin_version_in_yaml(cfg, ver)
 
     if not need_any:
         print("Все известные плагины уже валидные JAR.")
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
