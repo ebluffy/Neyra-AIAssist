@@ -1,5 +1,5 @@
-# Neyra core: HTTP API + dashboard + resident modules (see server/main.py).
-# Build: docker compose build
+# Neyra core: HTTP API + dashboard + resident modules (see main.py).
+# From repo root: docker compose -f server/docker-compose.yml up --build
 # Memory/Chroma and logs — volumes in docker-compose.yml.
 FROM python:3.12-slim-bookworm
 
@@ -12,10 +12,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY server/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server/ /app/
+COPY . /app/
 
 EXPOSE 8787
 

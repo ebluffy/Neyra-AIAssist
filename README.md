@@ -27,7 +27,7 @@ Current stable runtime:
 - `**python server/main.py`** — core: HTTP API, web dashboard, one `NeyraAgent`, resident plugins (e.g. Discord when enabled),
 - `**python server/main.py --mode console`** — terminal-only for prompt experiments,
 - `discord` (text + music) and other interfaces ship as plugins under `server/modules/`,
-- optional **Docker** deployment via `Dockerfile` + `docker-compose.yml`.
+- optional **Docker** via `server/Dockerfile` + `server/docker-compose.yml`.
 
 ### Dashboard (frontend)
 
@@ -65,7 +65,7 @@ Typical stacks pair large **MoE** chat models (e.g. **Qwen3 235B** through OpenR
 - `main.py` — entrypoint (`core` vs `console` only).
 - `run_neyra.bat` — Windows menu (core / console / preflight).
 - `run_neyra.sh` — Linux/macOS menu (core / console / status / stop / git updates).
-- `Dockerfile` + `docker-compose.yml` — containerized deployment (ports `8787`, optional Lavalink, volumes for `config.yaml`, `server/modules/`, `memory/`, `logs/`).
+- `server/Dockerfile` + `server/docker-compose.yml` — container deploy (port `8787`, volumes under `server/`).
 
 ## Product direction
 
@@ -90,27 +90,27 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
   - Windows: `.venv\Scripts\activate`
   - Linux/macOS: `source .venv/bin/activate`
 2. Install dependencies:
-  - `pip install -r requirements.txt`
-3. Create `.env` from `.env.example` and fill secrets.
-4. Create `config.yaml` from `config.example.yaml` and adjust runtime values:
+  - `pip install -r server/requirements.txt`
+3. Create `server/.env` from `server/.env.example` and fill secrets.
+4. Create `server/config.yaml` from `server/config.example.yaml` and adjust runtime values:
   - Set `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model` (nested blocks).
 5. Copy plugin templates where needed:
   - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
   - `server/modules/internal_api/config.example.yaml` → `server/modules/internal_api/config.yaml`
   - other plugins: `server/modules/<id>/config.example.yaml` → `server/modules/<id>/config.yaml`
-6. Preflight (example): `python scripts/healthcheck.py --mode console --skip-http`
+6. Preflight (example): `cd server && python scripts/healthcheck.py --mode console --skip-http`
 7. Run:
   - Windows: `run_neyra.bat`
   - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`
-  - Direct: `python server/main.py` (core) or `python server/main.py --mode console`
+  - Direct: `cd server && python main.py` (core) or `python main.py --mode console`
 
 ### Docker (optional)
 
 ```bash
-docker compose up --build
+docker compose -f server/docker-compose.yml up --build
 ```
 
-Exposes port `8787`, mounts `config.yaml`, `server/modules/`, `memory/`, `logs/`. See `docker-compose.yml`.
+Exposes port `8787`; runtime files live under `server/` (`config.yaml`, `modules/`, `data/memory/`, `logs/`).
 
 ## Run modes (CLI)
 

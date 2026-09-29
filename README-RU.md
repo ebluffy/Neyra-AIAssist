@@ -27,7 +27,7 @@ Neyra строится как переиспользуемое ядро плюс
 - `python server/main.py` — ядро: API, дашборд, один агент, resident-плагины (например Discord при включённом конфиге),
 - `python server/main.py --mode console` — только консоль для экспериментов с промптами,
 - интерфейс `discord` (текст + музыка) и др. — плагины в `server/modules/`,
-- опциональный **Docker** через `Dockerfile` + `docker-compose.yml`.
+- опциональный **Docker** через `server/Dockerfile` + `server/docker-compose.yml`.
 
 ### Дашборд (frontend)
 
@@ -66,7 +66,7 @@ Neyra строится как переиспользуемое ядро плюс
 - `main.py` — точка входа (`core` или `console`).
 - `run_neyra.bat` — меню на Windows.
 - `run_neyra.sh` — меню на Linux/macOS (статус, остановка, git).
-- `Dockerfile` + `docker-compose.yml` — контейнерный деплой (порт `8787`, опционально Lavalink, тома для `config.yaml`, `server/modules/`, `memory/`, `logs/`).
+- `server/Dockerfile` + `server/docker-compose.yml` — контейнерный деплой (порт `8787`, тома под `server/`).
 
 ## Продуктовый вектор
 
@@ -91,9 +91,9 @@ Neyra развивается как персональный публичный 
   - Windows: `.venv\Scripts\activate`
   - Linux/macOS: `source .venv/bin/activate`
 2. Установи зависимости:
-  - `pip install -r requirements.txt`
-3. Создай `.env` из `.env.example` и заполни секреты.
-4. Создай `config.yaml` из `config.example.yaml` и настрой:
+  - `pip install -r server/requirements.txt`
+3. Создай `server/.env` из `server/.env.example` и заполни секреты.
+4. Создай `server/config.yaml` из `server/config.example.yaml` и настрой:
   - укажи вложенные блоки `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model`.
 5. Скопируй шаблоны конфигов плагинов:
   - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
@@ -108,10 +108,10 @@ Neyra развивается как персональный публичный 
 ### Docker (опционально)
 
 ```bash
-docker compose up --build
+docker compose -f server/docker-compose.yml up --build
 ```
 
-Открывает порт `8787`, монтирует `config.yaml`, `server/modules/`, `memory/`, `logs/`. См. `docker-compose.yml`.
+Порт `8787`; runtime под `server/` (`config.yaml`, `modules/`, `data/memory/`, `logs/`).
 
 ## Режимы CLI
 

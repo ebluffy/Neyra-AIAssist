@@ -88,8 +88,10 @@ docs/
 - [x] Ignored-конфиги, `.env`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/` и Lavalink JAR перенесены и проверены отдельным миграционным шагом.
 - [x] SQLite Hub, Chroma и пользовательская память доступны без потери данных по новому default path `server/data/`.
 - [x] Все entrypoints работают из `server/` или через `PYTHONPATH=server`.
+- [x] Нет дубликатов runtime в корне (`.env`, `config.yaml`, `memory/`, `logs/`); канон только под `server/`.
 - [ ] Нет переходных алиасов и fallback-импортов на старую структуру.
 - [ ] Поиск по коду, конфигам, скриптам, Docker, CI и README (кроме `docs/inventory.md` и `docs/PLAN.md`, где старые пути описывают исходное состояние) не находит `interfaces/`, `frontend/`, `tools/mcp_server`.
+- [x] Docker-файлы перенесены в `server/` (`Dockerfile`, `docker-compose.yml`, `.dockerignore`).
 - [x] Запущены compileall, healthcheck и релевантные smoke-тесты после переноса.
 - [x] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
 

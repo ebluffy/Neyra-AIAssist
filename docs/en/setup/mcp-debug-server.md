@@ -48,7 +48,7 @@ Legacy name `.venv-mcp` is obsolete; do not create it.
 ## Log file resolution
 
 1. `NEYRA_LOG_PATH` if set.
-2. Otherwise `logging.system_log` in root `config.yaml` (same as `main.py`, usually `./server/logs/system.log`).
+2. Otherwise `logging.system_log` in root `config.yaml` (same as `main.py`, usually `server/logs/system.log`).
 3. Otherwise first existing file: `logs/system.log`, then `logs/neyra.log`.
 4. Default expected path: `logs/system.log`.
 
@@ -89,12 +89,12 @@ Optional `env` for the server:
 From the repo root:
 
 ```bash
-docker compose up --build
+docker compose -f server/docker-compose.yml up --build
 ```
 
-The compose file sets `INTERNAL_API_BIND_HOST=0.0.0.0` so the HTTP API is reachable from the host at `http://127.0.0.1:8787`. Volumes mount `./server/config.yaml`, `./server/modules`, `./server/data/memory`, `./server/logs`, and optionally `./server/dashboard/dist`. Put secrets in `.env` (see `.env.example`); the compose `env_file` is optional if the file is missing.
+The compose file sets `INTERNAL_API_BIND_HOST=0.0.0.0` so the HTTP API is reachable from the host at `http://127.0.0.1:8787`. Volumes mount `./server/config.yaml`, `./server/modules`, `./server/data/memory`, `server/logs`, and optionally `./server/dashboard/dist`. Put secrets in `.env` (see `.env.example`); the compose `env_file` is optional if the file is missing.
 
-Point the MCP server at the same host URL (`NEYRA_API_BASE`). Logs written inside the container appear under the repo’s `./server/logs` on the host, so `read_neyra_logs` works when the MCP process uses that checkout (or set `NEYRA_LOG_PATH` to the host file).
+Point the MCP server at the same host URL (`NEYRA_API_BASE`). Logs written inside the container appear under the repo’s `server/logs` on the host, so `read_neyra_logs` works when the MCP process uses that checkout (or set `NEYRA_LOG_PATH` to the host file).
 
 **Note:** `docker compose config` prints interpolated variables; do not share that output if it contains secrets.
 

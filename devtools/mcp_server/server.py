@@ -16,8 +16,9 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-# devtools/mcp_server/server.py -> repository root
+# devtools/mcp_server/server.py -> repository root; runtime lives under server/
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+SERVER_ROOT = REPO_ROOT / "server"
 DEFAULT_API_BASE = "http://127.0.0.1:8787"
 
 # Key leaf names that must never appear in MCP config dumps
@@ -49,8 +50,8 @@ def _json_text(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def _parse_system_log_from_config(repo: Path) -> Path | None:
-    cfg = repo / "config.yaml"
+def _parse_system_log_from_config(server_root: Path) -> Path | None:
+    cfg = server_root / "config.yaml"
     if not cfg.is_file():
         return None
     try:
@@ -63,7 +64,7 @@ def _parse_system_log_from_config(repo: Path) -> Path | None:
     rel = m.group(1).strip().strip('"').strip("'")
     if not rel:
         return None
-    return (repo / rel).resolve()
+    return (server_root / rel).resolve()
 
 
 def resolve_system_log_path() -> Path:
@@ -72,16 +73,16 @@ def resolve_system_log_path() -> Path:
     if env:
         return Path(env).expanduser().resolve()
 
-    from_cfg = _parse_system_log_from_config(REPO_ROOT)
+    from_cfg = _parse_system_log_from_config(SERVER_ROOT)
     if from_cfg and from_cfg.is_file():
         return from_cfg
 
-    for name in ("logs/system.log", "logs/neyra.log"):
+    for name in ("server/logs/system.log", "logs/system.log", "server/logs/neyra.log", "logs/neyra.log"):
         p = (REPO_ROOT / name).resolve()
         if p.is_file():
             return p
 
-    return (REPO_ROOT / "logs" / "system.log").resolve()
+    return (SERVER_ROOT / "logs" / "system.log").resolve()
 
 
 def _tail_lines(path: Path, lines: int) -> str:
@@ -91,7 +92,7 @@ def _tail_lines(path: Path, lines: int) -> str:
         return (
             f"Файл лога не найден: {path}\n"
             f"Подсказка: задайте NEYRA_LOG_PATH или положите config.yaml с logging.system_log "
-            f"в корне репозитория ({REPO_ROOT})."
+            f"под server/ ({SERVER_ROOT})."
         )
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
@@ -124,7 +125,10 @@ def _config_yaml_path() -> Path:
     override = os.environ.get("NEYRA_CONFIG_PATH", "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    return (REPO_ROOT / "config.yaml").resolve()
+    legacy = REPO_ROOT / "config.yaml"
+    if legacy.is_file():
+        return legacy.resolve()
+    return (SERVER_ROOT / "config.yaml").resolve()
 
 
 mcp = FastMCP("neyra-mcp-debug")
