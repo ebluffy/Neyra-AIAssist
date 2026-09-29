@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ SCAN_ROOTS = (
     REPO_ROOT / "server",
     REPO_ROOT / "devtools",
     REPO_ROOT / "client",
+    REPO_ROOT / ".gitattributes",
     REPO_ROOT / "run_neyra.bat",
     REPO_ROOT / "run_neyra.sh",
     REPO_ROOT / "docker-compose.yml",
@@ -79,25 +81,43 @@ def scan_legacy_paths() -> list[str]:
                 ".ps1",
                 ".md",
                 ".json",
-            }:
+                ".example",
+            } and path.name not in {".env.example"}:
                 continue
             out.extend(_scan_file(path))
     return out
 
 
-def check_memory_layout() -> list[str]:
-    errs: list[str] = []
+def check_memory_layout(*, strict: bool) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
     mem = SERVER_ROOT / "data" / "memory"
     db = mem / "neyra_memory.db"
-    if not db.is_file():
-        errs.append(f"missing SQLite Hub: {db.relative_to(REPO_ROOT)}")
     chroma = mem / "chroma_db"
+    if not db.is_file():
+        msg = f"SQLite Hub not present: {db.relative_to(REPO_ROOT)} (run migrate or copy data)"
+        (errors if strict else warnings).append(msg)
     if not chroma.is_dir():
-        errs.append(f"missing Chroma dir: {chroma.relative_to(REPO_ROOT)}")
+        msg = f"Chroma dir not present: {chroma.relative_to(REPO_ROOT)}"
+        (errors if strict else warnings).append(msg)
     for legacy in (REPO_ROOT / "memory", REPO_ROOT / "logs", REPO_ROOT / "config.yaml", REPO_ROOT / ".env"):
         if legacy.exists():
-            errs.append(f"legacy root path still present: {legacy.relative_to(REPO_ROOT)}")
-    return errs
+            errors.append(f"legacy root path still present: {legacy.relative_to(REPO_ROOT)}")
+    return errors, warnings
+
+
+def check_data_dir() -> list[str]:
+    sys.path.insert(0, str(SERVER_ROOT))
+    from core.runtime.paths import memory_dir, resolve_data_dir
+
+    resolved = resolve_data_dir(SERVER_ROOT, {"paths": {"data_dir": "./data"}})
+    expected = (SERVER_ROOT / "data").resolve()
+    if resolved != expected:
+        return [f"resolve_data_dir mismatch: {resolved} != {expected}"]
+    mem = memory_dir(SERVER_ROOT, {"paths": {"data_dir": "./data"}})
+    if mem != expected / "memory":
+        return [f"memory_dir mismatch: {mem}"]
+    return []
 
 
 def check_local_voice_merge() -> list[str]:
@@ -116,6 +136,14 @@ def check_local_voice_merge() -> list[str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--strict-memory",
+        action="store_true",
+        help="fail if Hub/Chroma data dirs missing (use on machine after migration)",
+    )
+    args = parser.parse_args()
+
     print("== Stage 1b verify ==")
     ok = True
 
@@ -130,14 +158,27 @@ def main() -> int:
     else:
         print("OK legacy path scan (no interfaces/, frontend/, tools/mcp_server)")
 
-    mem_errs = check_memory_layout()
+    mem_errs, mem_warn = check_memory_layout(strict=args.strict_memory)
     if mem_errs:
         ok = False
         print("FAIL memory/layout:")
         for e in mem_errs:
             print(" ", e)
+    elif mem_warn:
+        for w in mem_warn:
+            print(f"WARN {w}")
+        print("OK memory layout (no root duplicates; data optional on fresh clone)")
     else:
         print("OK memory under server/data/memory, no root duplicates")
+
+    path_errs = check_data_dir()
+    if path_errs:
+        ok = False
+        print("FAIL paths.data_dir / NEYRA_DATA_DIR resolution:")
+        for e in path_errs:
+            print(" ", e)
+    else:
+        print("OK paths.data_dir resolves to server/data")
 
     lv = check_local_voice_merge()
     if lv and lv[0].startswith("SKIP"):

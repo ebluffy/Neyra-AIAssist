@@ -68,7 +68,7 @@ Example JSON (adjust paths):
   "mcpServers": {
     "neyra-debug": {
       "command": "Z:\\path\\to\\AIAssist\\.venv_win\\Scripts\\python.exe",
-      "args": ["Z:\\path\\to\\AIAssist\\tools\\mcp_server\\server.py"],
+      "args": ["Z:\\path\\to\\AIAssist\\devtools\\mcp_server\\server.py"],
       "env": {
         "NEYRA_API_BASE": "http://127.0.0.1:8787"
       }
@@ -89,10 +89,10 @@ Optional `env` for the server:
 From the repo root:
 
 ```bash
-docker compose -f server/docker-compose.yml up --build
+docker compose up --build
 ```
 
-The compose file sets `INTERNAL_API_BIND_HOST=0.0.0.0` so the HTTP API is reachable from the host at `http://127.0.0.1:8787`. Volumes mount `./server/config.yaml`, `./server/modules`, `./server/data/memory`, `server/logs`, and optionally `./server/dashboard/dist`. Put secrets in `.env` (see `.env.example`); the compose `env_file` is optional if the file is missing.
+Root `docker-compose.yml` includes `server/docker-compose.yml`. The service sets `INTERNAL_API_BIND_HOST=0.0.0.0` so the HTTP API is reachable at `http://127.0.0.1:8787`. Volumes (relative to `server/`): `config.yaml`, `modules/`, `data/memory/`, `logs/`, optional `dashboard/dist`. Secrets: `server/.env` (see `server/.env.example`).
 
 Point the MCP server at the same host URL (`NEYRA_API_BASE`). Logs written inside the container appear under the repo’s `server/logs` on the host, so `read_neyra_logs` works when the MCP process uses that checkout (or set `NEYRA_LOG_PATH` to the host file).
 
@@ -105,7 +105,7 @@ With token:
   "mcpServers": {
     "neyra-debug": {
       "command": "Z:\\path\\to\\AIAssist\\.venv_win\\Scripts\\python.exe",
-      "args": ["Z:\\path\\to\\AIAssist\\tools\\mcp_server\\server.py"],
+      "args": ["Z:\\path\\to\\AIAssist\\devtools\\mcp_server\\server.py"],
       "env": {
         "NEYRA_API_BASE": "http://127.0.0.1:8787",
         "NEYRA_API_TOKEN": "your_token_from_config"

@@ -99,7 +99,7 @@ Neyra развивается как персональный публичный 
   - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
   - `server/modules/internal_api/config.example.yaml` → `server/modules/internal_api/config.yaml`
   - при необходимости другие: `server/modules/<id>/config.example.yaml` → `server/modules/<id>/config.yaml`
-6. Preflight (пример): `python scripts/healthcheck.py --mode console --skip-http`
+6. Preflight (пример): `cd server && python scripts/healthcheck.py --mode console --skip-http`
 7. Запуск:
   - Windows: `run_neyra.bat`
   - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`

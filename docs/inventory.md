@@ -73,7 +73,7 @@ Tracked example paths сверены с деревом репозитория. R
 | `DISCORD_TOKEN` | Discord module | сохранить в server `.env` |
 | `INTERNAL_API_TOKEN`, `INTERNAL_API_VIEWER_TOKEN`, `INTERNAL_API_MAINT_TOKEN` | Control/Internal API roles | сохранить, не логировать и не печатать |
 | `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN` | доступ к gated Hugging Face models | optional, закомментировать в `.env.example`; public embeddings и Whisper не требуют токена |
-| `NEYRA_DATA_DIR` | override для `paths.data_dir` | optional; default 1b остаётся на текущем physical location |
+| `NEYRA_DATA_DIR` | override для `paths.data_dir` | optional; default после 1b — `server/data` (`./data` при cwd=`server/`) |
 | `INTERNAL_API_BIND_HOST` | bind override | default localhost; LAN только явной настройкой |
 | `SCREEN_PROXY_SECRET` | активный consumer не подтверждён | убрать из active example, оставить в backlog |
 

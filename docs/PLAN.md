@@ -75,7 +75,7 @@ docs/
 
 Путь к данным читается из `paths.data_dir` (default: `server/data` относительно корня репозитория или `./data` при работе из `server/`), override — `NEYRA_DATA_DIR`. После 1b физический default указывает на `server/data/`.
 
-До любых операций нужен полный внешний backup проекта и runtime-данных. После backup отдельным скриптом мигрируются ignored-файлы: root `config.yaml` → `server/config.yaml`, root `.env` → `server/.env`, module `config.yaml`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/` и Lavalink JAR. Скрипт сверяет источники, назначения и размеры/hashes, не перезаписывает существующие данные без явного флага и не удаляет источник до успешной проверки.
+До любых операций нужен полный внешний backup проекта и runtime-данных. Скрипт `server/scripts/migrate_runtime_layout.py`: сначала `--dry-run` (таблица), затем прогон с hash/size и `--report-memory` (Hub/Chroma). Переносит root `config.yaml`, `.env`, module configs, `memory/` → `server/data/memory/`, `logs/` → `server/logs/`, опционально legacy `Lavalink.jar` (или `fetch_lavalink.py`). Без `--force` target не перезаписывается; source удаляется только с `--remove-source` / `--cleanup-legacy-root`. Отчёт прогонов: `docs/stage-1b-evidence.md`.
 
 После переноса `main.py` все entrypoints (`run_neyra.bat`, `run_neyra.sh`, Windows launcher, Docker, `scripts/healthcheck.py`, `scripts/invoke_plugin.py`) запускаются из `server/` или задают `PYTHONPATH=server`.
 
@@ -85,7 +85,7 @@ docs/
 
 - [x] Выполнен полный backup до `git mv` и до миграции ignored-файлов.
 - [x] Серверные файлы перенесены в `server/`, создан отдельный `client/`, dev MCP перенесён в `devtools/mcp_server/`.
-- [x] Ignored-конфиги, `.env`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/` и Lavalink JAR перенесены и проверены отдельным миграционным шагом.
+- [x] Ignored-конфиги, `.env`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/` перенесены; Lavalink JAR — `.gitignore` + `fetch_lavalink.py` (опционально FILE move в migrate).
 - [x] SQLite Hub, Chroma и пользовательская память доступны без потери данных по новому default path `server/data/`.
 - [x] Все entrypoints работают из `server/` или через `PYTHONPATH=server`.
 - [x] Нет дубликатов runtime в корне (`.env`, `config.yaml`, `memory/`, `logs/`); канон только под `server/`.
@@ -94,7 +94,7 @@ docs/
 - [x] Docker: тонкий `docker-compose.yml` в корне (include), реализация в `server/` (`Dockerfile`, `docker-compose.yml`, `.dockerignore`).
 - [x] `Lavalink.jar` не в git; локально через `server/scripts/fetch_lavalink.py` (см. `.gitignore`).
 - [x] Миграция памяти на `server/data/memory/` с hash/size check в `migrate_runtime_layout.py`; Hub/Chroma доступны после переноса.
-- [x] Запущены compileall, healthcheck и релевантные smoke-тесты после переноса.
+- [x] Запущены compileall, healthcheck и smoke; логи — `docs/stage-1b-evidence.md`; CI — `.github/workflows/stage-1b-verify.yml`.
 - [x] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
 
 ## 1c. Слои конфигурации и схема
@@ -240,6 +240,6 @@ docs/
 - [ ] Каждая post-defense функция имеет отдельный issue/design и не блокирует MVP.
 - [ ] Backward compatibility и миграция данных определены до релиза.
 
-## Этап 1b — закрыт
+## Этап 1b — закрыт (PR #14)
 
-Реорганизация `server/` / `client/` / `devtools/` выполнена в PR. Приёмка: `python server/scripts/verify_stage_1b.py`, `python server/scripts/healthcheck.py --mode core --skip-http`, `docker compose config` (корневой include). Дальше — **Этап 1c** (слои конфигурации).
+Реорганизация `server/` / `client/` / `devtools/` выполнена. Приёмка владельца и политика переноса memory/logs: `docs/stage-1b-acceptance.md`. Прогоны: `docs/stage-1b-evidence.md`. Команды: `python server/scripts/verify_stage_1b.py` (на машине с данными — `--strict-memory`), `cd server && python scripts/healthcheck.py --mode core --skip-http`, `docker compose config` из корня. Дальше — **Этап 1c** (слои конфигурации).

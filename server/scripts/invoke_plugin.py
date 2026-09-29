@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Разовый запуск плагина по id из корня проекта (отладка on_demand-плагинов).
+Разовый запуск модуля по id из каталога server/ (отладка on_demand-плагинов).
 
 Пример:
-  python scripts/invoke_plugin.py hello_world
+  cd server && python scripts/invoke_plugin.py example
 
-Основной рабочий путь — ядро (`python main.py`): resident-плагины стартуют сами.
+Основной рабочий путь — ядро (`cd server && python main.py`): resident-модули стартуют сами.
 """
 
 from __future__ import annotations

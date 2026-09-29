@@ -182,7 +182,7 @@ def main() -> int:
             if hint:
                 print(f"  -> {hint}")
         print()
-        print("Повтор: python scripts/healthcheck.py --mode", args.mode, end="")
+        print("Повтор: cd server && python scripts/healthcheck.py --mode", args.mode, end="")
         if args.skip_http:
             print(" --skip-http", end="")
         print()

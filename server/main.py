@@ -485,9 +485,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Создаём нужные директории
-    for d in ["./logs", "./data/memory", "./sounds", "./data/memory/chroma_db"]:
-        Path(d).mkdir(parents=True, exist_ok=True)
+    from core.runtime.paths import ensure_runtime_dirs
+
+    ensure_runtime_dirs(_PROJECT_ROOT, config)
 
     logger.info(f"Старт | mode={args.mode} | backend={BACKEND}")
 
