@@ -6,6 +6,7 @@ import json
 import logging
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 from core.runtime.event_bus import (
@@ -47,7 +48,12 @@ class MemoryHub:
         self.mem_cfg = mem
         self.event_bus = event_bus
         self._long_memory = long_memory
-        path = str(mem.get("sqlite_path") or "./data/memory/neyra_memory.db")
+        from core.runtime.paths import resolve_memory_path
+
+        raw = str(mem.get("sqlite_path") or "./data/memory/neyra_memory.db").strip()
+        path = raw if Path(raw).is_absolute() else str(
+            resolve_memory_path(Path.cwd(), config, raw, "./data/memory/neyra_memory.db")
+        )
         self.sqlite = SqliteStore(path)
         self.rag_write_mode = str(mem.get("rag_write_mode") or "important_only").strip().lower()
         if self.rag_write_mode not in {"off", "digest", "important_only", "legacy_dialog"}:

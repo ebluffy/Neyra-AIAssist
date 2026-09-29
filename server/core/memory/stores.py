@@ -115,8 +115,17 @@ class LongTermMemory:
 
     def __init__(self, config: dict):
         self.config = config
-        mem_cfg = config.get("memory", {})
-        self.db_path = mem_cfg.get("chroma_db_path", "./data/memory/chroma_db")
+        mem_cfg = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
+        raw_chroma = mem_cfg.get("chroma_db_path", "./data/memory/chroma_db")
+        from pathlib import Path as _P
+        from core.runtime.paths import resolve_memory_path
+
+        chroma = str(raw_chroma).strip()
+        self.db_path = (
+            chroma
+            if _P(chroma).is_absolute()
+            else str(resolve_memory_path(_P.cwd(), config, chroma, "./data/memory/chroma_db"))
+        )
         self.embedding_model = mem_cfg.get(
             "embedding_model", "paraphrase-multilingual-mpnet-base-v2"
         )

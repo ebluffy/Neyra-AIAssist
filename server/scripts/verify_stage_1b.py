@@ -108,7 +108,7 @@ def check_memory_layout(*, strict: bool) -> tuple[list[str], list[str]]:
 
 def check_data_dir() -> list[str]:
     sys.path.insert(0, str(SERVER_ROOT))
-    from core.runtime.paths import memory_dir, resolve_data_dir
+    from core.runtime.paths import apply_resolved_memory_paths, memory_dir, resolve_data_dir
 
     resolved = resolve_data_dir(SERVER_ROOT, {"paths": {"data_dir": "./data"}})
     expected = (SERVER_ROOT / "data").resolve()
@@ -117,6 +117,32 @@ def check_data_dir() -> list[str]:
     mem = memory_dir(SERVER_ROOT, {"paths": {"data_dir": "./data"}})
     if mem != expected / "memory":
         return [f"memory_dir mismatch: {mem}"]
+
+    import os
+
+    prev = os.environ.get("NEYRA_DATA_DIR")
+    try:
+        os.environ["NEYRA_DATA_DIR"] = str(SERVER_ROOT / "_ci_data_override")
+        cfg: dict = {
+            "paths": {"data_dir": "./data"},
+            "memory": {
+                "sqlite_path": "./data/memory/neyra_memory.db",
+                "chroma_db_path": "./data/memory/chroma_db",
+            },
+        }
+        apply_resolved_memory_paths(cfg, SERVER_ROOT)
+        sqlite = Path(str(cfg["memory"]["sqlite_path"]))
+        chroma = Path(str(cfg["memory"]["chroma_db_path"]))
+        want_mem = (SERVER_ROOT / "_ci_data_override" / "memory").resolve()
+        if sqlite.parent != want_mem:
+            return [f"NEYRA_DATA_DIR sqlite not remapped: {sqlite}"]
+        if chroma != want_mem / "chroma_db":
+            return [f"NEYRA_DATA_DIR chroma not remapped: {chroma}"]
+    finally:
+        if prev is None:
+            os.environ.pop("NEYRA_DATA_DIR", None)
+        else:
+            os.environ["NEYRA_DATA_DIR"] = prev
     return []
 
 

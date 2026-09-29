@@ -31,6 +31,7 @@ def load_config(root: Path) -> dict:
     import yaml
 
     from core.plugins.config import merge_plugin_configs
+    from core.runtime.paths import apply_resolved_memory_paths
     from core.runtime.secrets import apply_env_secrets
 
     cfg_path = root / "config.yaml"
@@ -42,6 +43,7 @@ def load_config(root: Path) -> dict:
         return {}
     merge_plugin_configs(data, root)
     apply_env_secrets(data)
+    apply_resolved_memory_paths(data, root)
     return data
 
 

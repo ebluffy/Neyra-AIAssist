@@ -22,6 +22,11 @@ class BackupManager:
         self.local_dir = Path(str(bcfg.get("local_dir") or "./backups"))
         self.local_dir.mkdir(parents=True, exist_ok=True)
         self.sources = [Path("./data/memory"), Path("./logs")]
+        mem = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
+        # Prefer resolved absolute memory root when apply_resolved_memory_paths ran.
+        chroma = Path(str(mem.get("chroma_db_path") or "./data/memory/chroma_db"))
+        if chroma.is_absolute():
+            self.sources = [chroma.parent, Path("./logs")]
         self.external_adapter: ExternalStorageAdapter | None = build_external_storage_adapter(self.config)
 
     def _sqlite_paths(self) -> list[Path]:

@@ -2,8 +2,11 @@
 
 ## Policy change (memory / logs)
 
-Исходная формулировка на `main` запрещала физический перенос `memory/` и `logs/` в 1b.  
-**Решение владельца (Дмитрий, чат 2026-09-29):** перенос runtime под `server/data/memory/` и `server/logs/` с проверкой hash/size и сохранностью Hub/Chroma. PLAN и inventory приведены к этому решению.
+Исходная формулировка на `main` запрещала физический перенос `memory/` и `logs/` в 1b.
+
+**Решение владельца:** физический перенос runtime под `server/data/memory/` и `server/logs/` с hash/size check и сохранностью Hub/Chroma.
+
+**Подтверждение в PR #14:** Дмитрий явно подтвердил в комментарии авторевью («ДА СОГЛАСЕН…»). PLAN и inventory приведены к этому решению.
 
 ## Backup
 
@@ -23,3 +26,5 @@
 ## Evidence
 
 Фактические выводы с рабочей машины (без секретов): [`stage-1b-evidence.md`](stage-1b-evidence.md).
+
+**Важно:** migrate уже выполнен на рабочей машине до появления `--dry-run`; baseline Hub/Chroma в evidence — **post-migrate** (не «до»). Fingerprint дерева `server/data/memory` зафиксирован как приёмочный снимок после переноса.

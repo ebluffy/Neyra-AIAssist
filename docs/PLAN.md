@@ -94,7 +94,10 @@ docs/
 - [x] Docker: тонкий `docker-compose.yml` в корне (include), реализация в `server/` (`Dockerfile`, `docker-compose.yml`, `.dockerignore`).
 - [x] `Lavalink.jar` не в git; локально через `server/scripts/fetch_lavalink.py` (см. `.gitignore`).
 - [x] Миграция памяти на `server/data/memory/` с hash/size check в `migrate_runtime_layout.py`; Hub/Chroma доступны после переноса.
-- [x] Запущены compileall, healthcheck и smoke; логи — `docs/stage-1b-evidence.md`; CI — `.github/workflows/stage-1b-verify.yml`.
+- [x] Запущены compileall, healthcheck и smoke локально; логи — `docs/stage-1b-evidence.md`; CI workflow — `.github/workflows/stage-1b-verify.yml`.
+- [ ] CI `Stage 1b verify` зелёный на head PR (блокер мерджа до зелёного run).
+- [x] Политика переноса memory/logs подтверждена владельцем в PR #14 (см. `docs/stage-1b-acceptance.md`).
+- [x] `paths.data_dir` / `NEYRA_DATA_DIR` доходят до Hub/Chroma через `apply_resolved_memory_paths` (`server/core/runtime/paths.py`).
 - [x] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
 
 ## 1c. Слои конфигурации и схема
@@ -109,7 +112,7 @@ docs/
 - `server/config/server.yaml` — Internal API, bind host, port и dashboard settings.
 - `server/.env` — только секреты; `HF_TOKEN` и `HUGGING_FACE_HUB_TOKEN` optional и закомментированы в example.
 
-В начале 1c групповые записи inventory заменяются подробной таблицей: один ключ на строку, точный тип, default, источник чтения, target file, env override и compatibility status. До изменения общего loader проверяется фактический consumer и merge-поведение `interfaces/local_voice/config.yaml`.
+В начале 1c групповые записи inventory заменяются подробной таблицей: один ключ на строку, точный тип, default, источник чтения, target file, env override и compatibility status. До изменения общего loader проверяется фактический consumer и merge-поведение `server/modules/local_voice/config.yaml`.
 
 ### Готово, когда
 
@@ -117,7 +120,7 @@ docs/
 - [ ] Каждый конфигурационный ключ имеет тип, default, источник, target file и правило override.
 - [ ] Loader валидирует схему до запуска и сохраняет понятные ошибки.
 - [ ] `paths.data_dir` и `NEYRA_DATA_DIR` проверены на `server/data` после переноса memory/logs.
-- [ ] Consumer и merge-поведение `interfaces/local_voice/config.yaml` проверены до изменения loader; поведение voice не исчезает молча.
+- [ ] Consumer и merge-поведение `server/modules/local_voice/config.yaml` проверены до изменения loader; поведение voice не исчезает молча.
 - [ ] Legacy env aliases либо поддержаны с warning, либо явно документированы как миграция.
 
 ## 2. Control API поверх Internal API
@@ -240,6 +243,6 @@ docs/
 - [ ] Каждая post-defense функция имеет отдельный issue/design и не блокирует MVP.
 - [ ] Backward compatibility и миграция данных определены до релиза.
 
-## Этап 1b — закрыт (PR #14)
+## Этап 1b — в финализации (PR #14)
 
-Реорганизация `server/` / `client/` / `devtools/` выполнена. Приёмка владельца и политика переноса memory/logs: `docs/stage-1b-acceptance.md`. Прогоны: `docs/stage-1b-evidence.md`. Команды: `python server/scripts/verify_stage_1b.py` (на машине с данными — `--strict-memory`), `cd server && python scripts/healthcheck.py --mode core --skip-http`, `docker compose config` из корня. Дальше — **Этап 1c** (слои конфигурации).
+Реорганизация `server/` / `client/` / `devtools/` выполнена. Приёмка политики memory/logs: `docs/stage-1b-acceptance.md` (OK владельца в PR). Прогоны: `docs/stage-1b-evidence.md` (post-migrate baseline). Мердж — после зелёного CI `Stage 1b verify`. Дальше — **Этап 1c** (слои конфигурации).

@@ -50,6 +50,7 @@ from typing import Any
 import yaml
 
 from core.plugins import merge_plugin_configs
+from core.runtime.paths import apply_resolved_memory_paths
 
 # ─── Загрузка конфига ─────────────────────────────────────────────────────────
 
@@ -66,6 +67,7 @@ def load_config() -> dict[str, Any]:
         data = {}
     merge_plugin_configs(data, _PROJECT_ROOT)
     apply_env_secrets(data)
+    apply_resolved_memory_paths(data, _PROJECT_ROOT)
     return data
 
 

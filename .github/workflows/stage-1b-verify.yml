@@ -27,6 +27,8 @@ jobs:
       - name: healthcheck smoke (example config, skip HTTP)
         env:
           OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http
+          DISCORD_TOKEN: ci-placeholder-not-a-real-token
         run: |
           cp server/config.example.yaml server/config.yaml
+          printf '%s\n' 'OPENROUTER_API_KEY=ci-placeholder' 'DISCORD_TOKEN=ci-placeholder' > server/.env
           cd server && python scripts/healthcheck.py --mode core --skip-http
