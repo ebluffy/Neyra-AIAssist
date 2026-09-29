@@ -44,7 +44,7 @@ def check_example_layers() -> list[str]:
         return errs
     text = root_ex.read_text(encoding="utf-8")
     deep_re = re.compile(
-        r"^(BACKEND|openrouter|llm|agent|memory|backup|external_storage|"
+        r"^(BACKEND|openrouter|vision|llm|agent|memory|backup|external_storage|"
         r"voice|mcp_client|logging|health_monitor|internal_api|dashboard)\s*:"
     )
     for i, line in enumerate(text.splitlines(), 1):
@@ -163,21 +163,24 @@ def check_legacy_root_warning() -> list[str]:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "config").mkdir()
-        (root / "config" / "llm.yaml").write_text("BACKEND: openrouter\n", encoding="utf-8")
+        (root / "config" / "llm.yaml").write_text(
+            "llm:\n  talk_model:\n    provider: openrouter\n    model: x\n",
+            encoding="utf-8",
+        )
         (root / "config.yaml").write_text(
             "paths:\n  data_dir: ./data\n"
             "assistant:\n  name: Test\n"
-            "openrouter:\n  api_key: ''\n  model: x\n",
+            "agent:\n  fast_path:\n    enabled: false\n",
             encoding="utf-8",
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             cfg = load_layered_yaml(root)
         msgs = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
-        if not any("legacy root deep key 'openrouter'" in m for m in msgs):
-            errs.append(f"expected legacy root warning for openrouter, got {msgs!r}")
-        if not isinstance(cfg.get("openrouter"), dict):
-            errs.append("legacy openrouter not merged from root")
+        if not any("legacy root deep key 'agent'" in m for m in msgs):
+            errs.append(f"expected legacy root warning for agent, got {msgs!r}")
+        if not isinstance(cfg.get("agent"), dict):
+            errs.append("legacy agent not merged from root")
     return errs
 
 
@@ -240,6 +243,22 @@ def check_schema_rejects_bad() -> list[str]:
     ):
         if not any(needle in e for e in got2):
             errs.append(f"expected {needle} schema error, got {got2}")
+
+    removed = {
+        "paths": {"data_dir": "./data"},
+        "assistant": {"name": "X"},
+        "memory": {},
+        "logging": {"level": "INFO", "system_log": "x"},
+        "llm": {
+            "talk_model": {"provider": "openrouter", "model": "x"},
+        },
+        "BACKEND": "aihope",
+        "openrouter": {"model": "x"},
+    }
+    got3 = validate_config_schema(removed)
+    for needle in ("BACKEND", "openrouter"):
+        if not any(needle in e for e in got3):
+            errs.append(f"expected removed-key schema error for {needle}, got {got3}")
     return errs
 
 

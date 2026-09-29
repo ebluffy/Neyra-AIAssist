@@ -1464,7 +1464,6 @@ def build_app(
             "llm.vision_model.timeout_seconds",
             "llm.vision_model.enabled",
             "llm.vision_model.use_brain_model_for_vision",
-            "llm.vision_model.use_main_model_for_vision",
             "llm.vision_model.max_images_per_message",
             "llm.vision_model.max_image_bytes",
             "llm.vision_model.max_image_width",

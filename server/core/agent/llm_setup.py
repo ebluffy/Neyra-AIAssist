@@ -59,7 +59,6 @@ def setup_openai_compatible_llm(agent: Any) -> None:
             memory_model,
         )
     vision_model_id = resolved_vision_model_id(agent.config, conn_vision.provider)
-    agent.context_window = None  # provider-native max; no fixed yaml cap
     agent.reply_max_tokens = int(cfg.get("reply_max_tokens", 320))
     agent.vision_max_tokens = int(cfg.get("vision_max_tokens", 900))
     _refl_cap = cfg.get("reflection_max_tokens")
@@ -197,12 +196,6 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "unclosed_blocks": 0,
         "leak_detected": 0,
     }
-    if str(agent.async_reflection_cfg.get("model") or "").strip():
-        logger.warning(
-            "Deprecated: async_reflection.model игнорируется — используется llm.memory_model (%s).",
-            memory_model,
-        )
-
     dual = len({conn_talk.provider, conn_brain.provider, conn_memory.provider}) > 1
     logger.info(
         "Бэкенд LLM: default=%s%s | talk=%s@%s brain=%s@%s memory=%s@%s | "

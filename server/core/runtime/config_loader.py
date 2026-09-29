@@ -137,6 +137,14 @@ def validate_config_schema(cfg: dict[str, Any]) -> list[str]:
     if not isinstance(cfg, dict):
         return ["config: expected mapping, got %s" % type(cfg).__name__]
 
+    # Removed config shapes (no dual-read / aliases).
+    if "BACKEND" in cfg:
+        errors.append("BACKEND: removed — set llm.<role>.provider")
+    if "openrouter" in cfg:
+        errors.append("openrouter: removed — use llm.talk_model / llm.brain_model / …")
+    if "vision" in cfg:
+        errors.append("vision: removed — use llm.vision_model")
+
     def _req_dict(key: str) -> dict[str, Any] | None:
         val = cfg.get(key)
         if val is None:

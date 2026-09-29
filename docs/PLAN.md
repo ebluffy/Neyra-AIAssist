@@ -137,10 +137,12 @@ docs/
 
 ### Готово, когда
 
-- [ ] Dual-backend: talk и brain могут ходить на разные провайдеры с разными ключами/base_url.
-- [ ] AIHope chat/completions через LangChain; helpers для models/balance/images/responses/messages.
-- [ ] `/v1/llm/balance` отдаёт usage для активных провайдеров (openrouter и/или aihope).
-- [ ] `verify_stage_1d.py` и CI зелёные; локальный `llm.yaml` на dual-схеме.
+- [x] Dual-backend: talk и brain могут ходить на разные провайдеры с разными ключами/base_url.
+- [x] AIHope chat/completions через LangChain; helpers для models/balance/images/responses/messages.
+- [x] `/v1/llm/balance` отдаёт usage для активных провайдеров (openrouter и/или aihope).
+- [x] `verify_stage_1d.py` и CI зелёные; локальный `llm.yaml` на dual-схеме.
+
+**Конфиг (без legacy):** канон только `llm.*` ролей + `llm.providers.*`. Top-level `BACKEND` / `openrouter:` / `vision:` и пути `openrouter.*` в `POST /v1/config` **не** поддерживаются (нет алиасов / dual-read) — клиенты пишут `llm.talk_model` / `llm.brain_model` / ….
 
 ## 2. Control API поверх Internal API
 

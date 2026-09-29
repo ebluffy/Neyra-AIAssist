@@ -103,7 +103,6 @@ DEPRECATED_MODEL_MAP: dict[str, str] = {
 }
 
 _ROLE_KEYS = frozenset({"talk_model", "brain_model", "memory_model", "vision_model"})
-_warned_legacy_openrouter = False
 
 
 def _llm_block(cfg: dict) -> dict[str, Any]:
@@ -117,54 +116,15 @@ def _providers_block(cfg: dict) -> dict[str, Any]:
 
 
 def _models_root(cfg: dict) -> dict[str, Any]:
-    """
-    Canonical model roles live under ``llm`` (talk_model / brain_model / …).
-
-    Legacy top-level ``openrouter:`` is still read (once) if roles are missing under ``llm``.
-    """
-    global _warned_legacy_openrouter
-    llm = dict(_llm_block(cfg))
-    legacy = cfg.get("openrouter")
-    if not isinstance(legacy, dict):
-        return llm
-    # Prefer llm.* roles; fill gaps from legacy openrouter.*
-    used_legacy = False
-    for key in _ROLE_KEYS | {
-        "micro_planning",
-        "async_reflection",
-        "timeout_seconds",
-        "max_retries",
-        "temperature",
-        "top_p",
-        "reply_max_tokens",
-        "lyrics_reply_max_tokens",
-        "presence_penalty",
-        "frequency_penalty",
-        "primary_first_token_timeout_seconds",
-        "max_tokens",
-        "brain_max_tokens",
-        "reflection_max_tokens",
-        "model",
-        "primary_model",
-        "reflection_model",
-    }:
-        if key not in llm and key in legacy:
-            llm[key] = legacy[key]
-            used_legacy = True
-    if used_legacy and not _warned_legacy_openrouter:
-        _warned_legacy_openrouter = True
-        logger.warning(
-            "legacy top-level openrouter.* roles — move to llm.talk_model / llm.brain_model / …"
-        )
-    return llm
+    """Canonical model roles: only ``llm`` (talk_model / brain_model / …)."""
+    return _llm_block(cfg)
 
 
 def resolve_role_provider(cfg: dict, role: str | None = None) -> str:
     """
     Provider for a model role.
 
-    Priority: llm.<role>.provider → llm.provider → first configured role provider → aihope.
-    ``BACKEND`` is ignored (deprecated); each role should set ``provider``.
+    Priority: llm.<role>.provider → llm.provider → first role with provider → ``aihope``.
     """
     root = _models_root(cfg)
     if role:
@@ -176,16 +136,12 @@ def resolve_role_provider(cfg: dict, role: str | None = None) -> str:
     p = str(root.get("provider") or "").strip().lower()
     if p:
         return p
-    # Infer from any role that has provider set
     for rk in ("talk_model", "brain_model", "memory_model", "vision_model"):
         block = root.get(rk)
         if isinstance(block, dict):
             rp = str(block.get("provider") or "").strip().lower()
             if rp:
                 return rp
-    if cfg.get("BACKEND"):
-        logger.warning("Deprecated: BACKEND — set llm.<role>.provider instead")
-        return str(cfg.get("BACKEND") or "").strip().lower() or "aihope"
     return "aihope"
 
 
@@ -272,30 +228,17 @@ def expand_role_nested(root: dict[str, Any]) -> dict[str, Any]:
     return base
 
 
-def expand_openrouter_nested(or_block: dict[str, Any]) -> dict[str, Any]:
-    """Deprecated alias — use expand_role_nested."""
-    return expand_role_nested(or_block)
-
-
 def resolved_talk_model(cfg: dict, provider: str) -> str:
-    """Финальный текст пользователю: llm.talk_model → legacy llm.model."""
+    """Финальный текст пользователю: llm.talk_model.model (или preset default)."""
     root = _models_root(cfg)
     mid = _model_id_from_role(root, "talk_model")
     if mid:
         return DEPRECATED_MODEL_MAP.get(mid, mid)
-    if root.get("model"):
-        logger.warning("Deprecated: llm.model — задайте llm.talk_model.model")
-        return DEPRECATED_MODEL_MAP.get(str(root["model"]).strip(), str(root["model"]).strip())
     preset = _OPENAI_COMPATIBLE_PRESETS.get(provider, {})
     dm = preset.get("default_model")
     if dm:
         return str(dm).strip()
     return "gpt-4o-mini"
-
-
-def resolved_primary_model(cfg: dict, provider: str) -> str:
-    """Deprecated alias для совместимости — см. resolved_talk_model."""
-    return resolved_talk_model(cfg, provider)
 
 
 def resolved_brain_model(cfg: dict, provider: str) -> str:
@@ -320,16 +263,11 @@ def resolved_brain_model_deep(cfg: dict, provider: str) -> str:
 
 
 def resolved_memory_model(cfg: dict, provider: str) -> str:
-    """Рефлексии / LTM — llm.memory_model."""
+    """Рефлексии / LTM — llm.memory_model. Fallback: talk."""
     root = _models_root(cfg)
     mid = _model_id_from_role(root, "memory_model")
     if mid:
         return DEPRECATED_MODEL_MAP.get(mid, mid)
-    ar = root.get("async_reflection") if isinstance(root.get("async_reflection"), dict) else {}
-    if ar.get("model"):
-        logger.warning("Deprecated: async_reflection.model — задайте llm.memory_model.model")
-        raw = str(ar.get("model")).strip()
-        return DEPRECATED_MODEL_MAP.get(raw, raw)
     return resolved_talk_model(cfg, provider)
 
 
@@ -337,7 +275,6 @@ _VISION_PIPELINE_KEYS = frozenset(
     {
         "enabled",
         "use_brain_model_for_vision",
-        "use_main_model_for_vision",
         "max_images_per_message",
         "max_image_bytes",
         "max_image_width",
@@ -349,11 +286,10 @@ _VISION_PIPELINE_KEYS = frozenset(
 
 
 def merged_vision_pipeline(cfg: dict) -> dict[str, Any]:
-    """Vision pipeline settings from ``llm.vision_model`` (+ deprecated root ``vision:``)."""
+    """Vision pipeline settings from ``llm.vision_model`` only."""
     defaults: dict[str, Any] = {
         "enabled": False,
         "use_brain_model_for_vision": False,
-        "use_main_model_for_vision": False,
         "max_images_per_message": 4,
         "max_image_bytes": 8388608,
         "max_image_width": 1920,
@@ -363,15 +299,6 @@ def merged_vision_pipeline(cfg: dict) -> dict[str, Any]:
     }
     out = dict(defaults)
     root = _models_root(cfg)
-
-    legacy = cfg.get("vision") if isinstance(cfg.get("vision"), dict) else {}
-    if legacy:
-        logger.warning(
-            "Устарело: корневой блок vision: — перенесите ключи в llm.vision_model."
-        )
-        for k in _VISION_PIPELINE_KEYS:
-            if k in legacy and legacy[k] is not None:
-                out[k] = legacy[k]
 
     vm = root.get("vision_model")
     if isinstance(vm, dict):
@@ -385,15 +312,7 @@ def merged_vision_pipeline(cfg: dict) -> dict[str, Any]:
         out["enabled"] = True
 
     out["enabled"] = bool(out["enabled"])
-    if out.get("use_main_model_for_vision") and not out.get("use_brain_model_for_vision"):
-        logger.warning(
-            "Deprecated: llm.vision_model.use_main_model_for_vision — "
-            "переименуйте в use_brain_model_for_vision."
-        )
-    out["use_brain_model_for_vision"] = bool(
-        out.get("use_brain_model_for_vision") or out.get("use_main_model_for_vision")
-    )
-    out["use_main_model_for_vision"] = out["use_brain_model_for_vision"]
+    out["use_brain_model_for_vision"] = bool(out.get("use_brain_model_for_vision"))
     out["remember_last_image"] = bool(out["remember_last_image"])
     out["max_images_per_message"] = max(1, int(out["max_images_per_message"]))
     out["max_image_bytes"] = int(out["max_image_bytes"])

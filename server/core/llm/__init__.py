@@ -17,7 +17,6 @@ __all__ = [
     "aihope_list_models",
     "aihope_post",
     "ainvoke_with_rate_limit_backoff",
-    "expand_openrouter_nested",
     "expand_role_nested",
     "fetch_aihope_token_usage",
     "fetch_openrouter_key_usage",
@@ -30,7 +29,6 @@ __all__ = [
     "resolved_brain_model",
     "resolved_brain_model_deep",
     "resolved_memory_model",
-    "resolved_primary_model",
     "resolved_talk_model",
     "resolved_vision_model_id",
 ]
@@ -38,7 +36,6 @@ __all__ = [
 _PROFILE_NAMES = frozenset(
     {
         "OpenAICompatibleConnection",
-        "expand_openrouter_nested",
         "expand_role_nested",
         "is_local_openai_compatible_provider",
         "merge_llm_tuning_options",
@@ -48,7 +45,6 @@ _PROFILE_NAMES = frozenset(
         "resolved_brain_model",
         "resolved_brain_model_deep",
         "resolved_memory_model",
-        "resolved_primary_model",
         "resolved_talk_model",
         "resolved_vision_model_id",
     }
