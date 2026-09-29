@@ -76,7 +76,7 @@ export function SettingsPage() {
               <input
                 className="input"
                 onChange={(e) => setModel(e.target.value)}
-                placeholder="например qwen/qwen3-235b-a22b-2507"
+                placeholder="например qwen/qwen3.8-27b:free"
                 value={model}
               />
             </label>

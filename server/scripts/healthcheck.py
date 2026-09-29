@@ -57,20 +57,14 @@ def check_files(root: Path) -> list[str]:
 
 
 def check_llm_config_and_env(cfg: dict) -> list[str]:
-    from core.llm.profile import resolve_openai_compatible_connection
+    from core.llm.profile import iter_unique_provider_connections
 
     errs: list[str] = []
-    roles = ("talk_model", "brain_model", "memory_model", "vision_model")
-    seen: set[str] = set()
-    for role in roles:
-        try:
-            conn = resolve_openai_compatible_connection(cfg, role=role)
-        except Exception as e:
-            errs.append(f"LLM config invalid ({role}): {e}")
-            continue
-        if conn.provider in seen:
-            continue
-        seen.add(conn.provider)
+    try:
+        conns = iter_unique_provider_connections(cfg)
+    except Exception as e:
+        return [f"LLM config invalid: {e}"]
+    for conn in conns:
         ak = (conn.api_key or "").strip()
         if conn.provider == "ollama":
             continue
@@ -103,30 +97,35 @@ def check_discord_token(mode: str, cfg: dict, root: Path) -> list[str]:
 
 
 def check_llm_models_probe(cfg: dict) -> list[str]:
-    from core.llm.profile import resolve_openai_compatible_connection
+    from core.llm.profile import iter_unique_provider_connections
 
     errs: list[str] = []
     try:
-        conn = resolve_openai_compatible_connection(cfg)
+        conns = iter_unique_provider_connections(cfg)
     except Exception as e:
         errs.append(f"LLM probe skipped (bad config): {e}")
         return errs
 
-    base = conn.base_url.rstrip("/")
-    url = f"{base}/models"
-    headers: dict[str, str] = {}
-    ak = (conn.api_key or "").strip()
-    if ak and ak != "ollama":
-        headers["Authorization"] = f"Bearer {ak}"
-
     try:
         import httpx
+    except ImportError:
+        return ["LLM models probe requires httpx"]
 
-        r = httpx.get(url, headers=headers, timeout=12.0)
-        if r.status_code >= 400:
-            errs.append(f"LLM models probe failed ({conn.provider}): HTTP {r.status_code} @ {url}")
-    except Exception as e:
-        errs.append(f"LLM models probe exception ({conn.provider}): {e}")
+    for conn in conns:
+        base = conn.base_url.rstrip("/")
+        url = f"{base}/models"
+        headers: dict[str, str] = {}
+        ak = (conn.api_key or "").strip()
+        if ak and ak != "ollama":
+            headers["Authorization"] = f"Bearer {ak}"
+        try:
+            r = httpx.get(url, headers=headers, timeout=12.0)
+            if r.status_code >= 400:
+                errs.append(
+                    f"LLM models probe failed ({conn.provider}): HTTP {r.status_code} @ {url}"
+                )
+        except Exception as e:
+            errs.append(f"LLM models probe exception ({conn.provider}): {e}")
     return errs
 
 

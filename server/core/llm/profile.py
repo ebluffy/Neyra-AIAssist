@@ -103,6 +103,7 @@ DEPRECATED_MODEL_MAP: dict[str, str] = {
 }
 
 _ROLE_KEYS = frozenset({"talk_model", "brain_model", "memory_model", "vision_model"})
+LLM_ROLE_ORDER: tuple[str, ...] = ("talk_model", "brain_model", "memory_model", "vision_model")
 
 
 def _llm_block(cfg: dict) -> dict[str, Any]:
@@ -136,7 +137,7 @@ def resolve_role_provider(cfg: dict, role: str | None = None) -> str:
     p = str(root.get("provider") or "").strip().lower()
     if p:
         return p
-    for rk in ("talk_model", "brain_model", "memory_model", "vision_model"):
+    for rk in LLM_ROLE_ORDER:
         block = root.get(rk)
         if isinstance(block, dict):
             rp = str(block.get("provider") or "").strip().lower()
@@ -458,6 +459,35 @@ def resolve_openai_compatible_connection(
         default_headers=headers,
         capabilities=caps,
     )
+
+
+def iter_unique_provider_connections(cfg: dict) -> list[OpenAICompatibleConnection]:
+    """
+    One connection per distinct provider across llm roles (talk → vision order).
+
+    Used by health/console probes so dual-backend does not report OK when only talk works.
+    """
+    seen: set[str] = set()
+    out: list[OpenAICompatibleConnection] = []
+    for role in LLM_ROLE_ORDER:
+        conn = resolve_openai_compatible_connection(cfg, role=role)
+        if conn.provider in seen:
+            continue
+        seen.add(conn.provider)
+        out.append(conn)
+    if not out:
+        out.append(resolve_openai_compatible_connection(cfg))
+    return out
+
+
+def connection_for_provider(cfg: dict, provider: str) -> OpenAICompatibleConnection:
+    """Connection for ``provider`` via the first role that uses it (else default)."""
+    want = str(provider or "").strip().lower()
+    for role in LLM_ROLE_ORDER:
+        conn = resolve_openai_compatible_connection(cfg, role=role)
+        if conn.provider == want:
+            return conn
+    return resolve_openai_compatible_connection(cfg)
 
 
 def is_local_openai_compatible_provider(provider: str) -> bool:

@@ -57,6 +57,7 @@ def check_role_providers() -> list[str]:
         resolve_openai_compatible_connection,
         resolve_role_provider,
         resolved_brain_model,
+        resolved_memory_model,
         resolved_talk_model,
     )
 
@@ -66,9 +67,12 @@ def check_role_providers() -> list[str]:
         errs.append("talk provider expected openrouter")
     if resolve_role_provider(cfg, "brain_model") != "aihope":
         errs.append("brain provider expected aihope")
+    if resolve_role_provider(cfg, "memory_model") != "aihope":
+        errs.append("memory provider expected aihope")
 
     talk = resolve_openai_compatible_connection(cfg, role="talk_model")
     brain = resolve_openai_compatible_connection(cfg, role="brain_model")
+    memory = resolve_openai_compatible_connection(cfg, role="memory_model")
     if talk.provider != "openrouter" or "openrouter.ai" not in talk.base_url:
         errs.append(f"talk conn bad: {talk.provider} {talk.base_url}")
     if talk.api_key != "test-or-key":
@@ -77,11 +81,30 @@ def check_role_providers() -> list[str]:
         errs.append(f"brain conn bad: {brain.provider} {brain.base_url}")
     if brain.api_key != "test-aihope-key":
         errs.append(f"brain key expected test-aihope-key, got {brain.api_key!r}")
+    if memory.provider != "aihope" or "aihope.fun" not in memory.base_url:
+        errs.append(f"memory conn bad: {memory.provider} {memory.base_url}")
+    if memory.api_key != "test-aihope-key":
+        errs.append(f"memory key expected test-aihope-key, got {memory.api_key!r}")
+    if memory.base_url == talk.base_url:
+        errs.append("memory connection must not reuse talk (openrouter) base_url in dual cfg")
+
+    from core.llm.profile import connection_for_provider, iter_unique_provider_connections
+
+    uniq = iter_unique_provider_connections(cfg)
+    uniq_provs = {c.provider for c in uniq}
+    if uniq_provs != {"openrouter", "aihope"}:
+        errs.append(f"unique providers expected openrouter+aihope, got {uniq_provs}")
+    if connection_for_provider(cfg, "aihope").provider != "aihope":
+        errs.append("connection_for_provider(aihope) failed")
+    if connection_for_provider(cfg, "openrouter").provider != "openrouter":
+        errs.append("connection_for_provider(openrouter) failed")
 
     if resolved_talk_model(cfg, talk.provider) != "qwen/qwen3.8-27b:free":
         errs.append("talk model id mismatch")
     if resolved_brain_model(cfg, brain.provider) != "gpt-6-luna":
         errs.append("brain model id mismatch")
+    if resolved_memory_model(cfg, memory.provider) != "gpt-6-luna":
+        errs.append("memory model id mismatch")
 
     tuning = merge_llm_tuning_options(cfg)
     if "providers" in tuning:

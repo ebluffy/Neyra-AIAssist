@@ -214,38 +214,41 @@ async def run_console() -> None:
     console.print(BANNER, style="bold cyan")
     console.print("Проверяю связь с LLM backend...", style="yellow")
 
-    # Проверяем доступность OpenAI-compatible endpoint (/v1/models)
+    # Проверяем доступность OpenAI-compatible endpoint (/v1/models) по каждому dual-провайдеру
     import httpx, time as _time
 
-    from core.llm import resolve_openai_compatible_connection
+    from core.llm import iter_unique_provider_connections
 
-    conn = resolve_openai_compatible_connection(config)
-    backend_name = conn.provider.upper()
-    check_url = conn.base_url.rstrip("/")
-    check_endpoint = f"{check_url}/models"
-    start_tip = f"Проверь доступ к {check_url} и API-ключ для провайдера «{conn.provider}» (.env / config)."
+    conns = iter_unique_provider_connections(config)
+    for conn in conns:
+        backend_name = conn.provider.upper()
+        check_url = conn.base_url.rstrip("/")
+        check_endpoint = f"{check_url}/models"
+        start_tip = (
+            f"Проверь доступ к {check_url} и API-ключ для провайдера «{conn.provider}» (.env / config)."
+        )
 
-    console.print(f"Проверяю связь с LLM ({backend_name}, {check_url})...", style="yellow")
-    for attempt in range(5):
-        try:
-            headers = {}
-            ak = (conn.api_key or "").strip()
-            if ak and ak != "ollama":
-                headers["Authorization"] = f"Bearer {ak}"
-            r = httpx.get(check_endpoint, timeout=10, headers=headers)
-            console.print(f"  {backend_name} ✓", style="green")
-            models = [m.get("id", "") for m in r.json().get("data", []) if isinstance(m, dict)]
-            if models:
-                console.print(f"  Доступно: {', '.join(models[:4])}", style="dim")
-            break
-        except Exception as e:
-            if attempt < 4:
-                console.print(f"  [yellow]Попытка {attempt+1}/5: {e} — жду...[/yellow]")
-                _time.sleep(3)
-            else:
-                console.print(f"[red]{backend_name} недоступен после 5 попыток: {e}[/red]")
-                console.print(f"[yellow]{start_tip}[/yellow]")
-                sys.exit(1)
+        console.print(f"Проверяю связь с LLM ({backend_name}, {check_url})...", style="yellow")
+        for attempt in range(5):
+            try:
+                headers = {}
+                ak = (conn.api_key or "").strip()
+                if ak and ak != "ollama":
+                    headers["Authorization"] = f"Bearer {ak}"
+                r = httpx.get(check_endpoint, timeout=10, headers=headers)
+                console.print(f"  {backend_name} ✓", style="green")
+                models = [m.get("id", "") for m in r.json().get("data", []) if isinstance(m, dict)]
+                if models:
+                    console.print(f"  Доступно: {', '.join(models[:4])}", style="dim")
+                break
+            except Exception as e:
+                if attempt < 4:
+                    console.print(f"  [yellow]Попытка {attempt+1}/5: {e} — жду...[/yellow]")
+                    _time.sleep(3)
+                else:
+                    console.print(f"[red]{backend_name} недоступен после 5 попыток: {e}[/red]")
+                    console.print(f"[yellow]{start_tip}[/yellow]")
+                    sys.exit(1)
 
     console.print("Инициализирую агента...", style="yellow")
 

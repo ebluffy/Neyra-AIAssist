@@ -587,7 +587,7 @@ class NeyraDiscordBot(discord.Client):
             + (user_text or "")
         )
         try:
-            conn = resolve_openai_compatible_connection(self.config)
+            conn = resolve_openai_compatible_connection(self.config, role="memory_model")
             model = _intent_classifier_model(self.config)
             url = f"{conn.base_url}/chat/completions"
             headers: dict[str, str] = {

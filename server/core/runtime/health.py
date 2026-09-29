@@ -92,26 +92,36 @@ class HealthMonitor:
     async def _check_backend(self) -> dict:
         try:
             import httpx
-            from core.llm.profile import resolve_openai_compatible_connection
+            from core.llm.profile import iter_unique_provider_connections
 
-            conn = resolve_openai_compatible_connection(self.config)
-            base = conn.base_url.rstrip("/")
-            url = f"{base}/models"
-            headers = {}
-            if conn.api_key and conn.api_key != "ollama":
-                headers["Authorization"] = f"Bearer {conn.api_key}"
-            r = await asyncio.to_thread(
-                httpx.get,
-                url,
-                headers=headers,
-                timeout=self.llm_timeout_seconds,
-            )
-            ok = r.status_code < 400
+            providers: list[dict] = []
+            for conn in iter_unique_provider_connections(self.config):
+                base = conn.base_url.rstrip("/")
+                url = f"{base}/models"
+                headers = {}
+                if conn.api_key and conn.api_key != "ollama":
+                    headers["Authorization"] = f"Bearer {conn.api_key}"
+                r = await asyncio.to_thread(
+                    httpx.get,
+                    url,
+                    headers=headers,
+                    timeout=self.llm_timeout_seconds,
+                )
+                providers.append(
+                    {
+                        "ok": r.status_code < 400,
+                        "provider": conn.provider,
+                        "url": url,
+                        "status_code": r.status_code,
+                    }
+                )
+            ok = bool(providers) and all(p.get("ok") for p in providers)
             return {
                 "ok": ok,
-                "provider": conn.provider,
-                "url": url,
-                "status_code": r.status_code,
+                "provider": ",".join(p["provider"] for p in providers) if providers else "",
+                "providers": providers,
+                "url": providers[0]["url"] if providers else "",
+                "status_code": providers[0]["status_code"] if len(providers) == 1 else None,
             }
         except Exception as e:
             return {"ok": False, "error": str(e)[:500]}

@@ -24,6 +24,8 @@ __all__ = [
     "is_retryable_llm_error",
     "merge_llm_tuning_options",
     "merged_vision_pipeline",
+    "connection_for_provider",
+    "iter_unique_provider_connections",
     "resolve_openai_compatible_connection",
     "resolve_role_provider",
     "resolved_brain_model",
@@ -31,13 +33,17 @@ __all__ = [
     "resolved_memory_model",
     "resolved_talk_model",
     "resolved_vision_model_id",
+    "LLM_ROLE_ORDER",
 ]
 
 _PROFILE_NAMES = frozenset(
     {
         "OpenAICompatibleConnection",
+        "LLM_ROLE_ORDER",
+        "connection_for_provider",
         "expand_role_nested",
         "is_local_openai_compatible_provider",
+        "iter_unique_provider_connections",
         "merge_llm_tuning_options",
         "merged_vision_pipeline",
         "resolve_openai_compatible_connection",

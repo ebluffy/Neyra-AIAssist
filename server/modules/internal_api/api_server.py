@@ -1321,9 +1321,9 @@ def build_app(
     @app.get("/v1/llm/balance")
     async def v1_llm_balance(request: Request, _: None = Depends(dep_viewer)):
         from core.llm import (
+            connection_for_provider,
             fetch_aihope_token_usage,
             fetch_openrouter_key_usage,
-            resolve_openai_compatible_connection,
             resolve_role_provider,
         )
 
@@ -1347,9 +1347,7 @@ def build_app(
         missing_all = True
         for prov in providers:
             if prov == "openrouter":
-                conn = resolve_openai_compatible_connection(config, role="talk_model")
-                if conn.provider != "openrouter":
-                    conn = resolve_openai_compatible_connection(config)
+                conn = connection_for_provider(config, "openrouter")
                 key = (conn.api_key or "").strip()
                 if key and key != "ollama":
                     missing_all = False
@@ -1367,9 +1365,7 @@ def build_app(
                 else:
                     out["openrouter"] = {"_error": "missing_api_key"}
             elif prov == "aihope":
-                conn = resolve_openai_compatible_connection(config, role="brain_model")
-                if conn.provider != "aihope":
-                    conn = resolve_openai_compatible_connection(config)
+                conn = connection_for_provider(config, "aihope")
                 key = (conn.api_key or "").strip()
                 if key and key != "ollama":
                     missing_all = False
