@@ -86,16 +86,23 @@ def apply_env_secrets(cfg: dict) -> None:
 
     k = _s("OPENROUTER_API_KEY")
     if k:
-        cfg.setdefault("openrouter", {})["api_key"] = k
+        plugs = cfg.setdefault("llm", {})
+        if isinstance(plugs, dict):
+            prov = plugs.setdefault("providers", {})
+            if isinstance(prov, dict):
+                orp = prov.setdefault("openrouter", {})
+                if isinstance(orp, dict) and not str(orp.get("api_key") or "").strip():
+                    orp["api_key"] = k
 
-    lk = _s("LLM_API_KEY")
-    if lk:
-        raw_llm = cfg.get("llm")
-        llm_block = raw_llm if isinstance(raw_llm, dict) else {}
-        if not str(llm_block.get("api_key") or "").strip():
-            merged = dict(llm_block)
-            merged["api_key"] = lk
-            cfg["llm"] = merged
+    ah = _s("AIHOPE_API_KEY")
+    if ah:
+        plugs = cfg.setdefault("llm", {})
+        if isinstance(plugs, dict):
+            prov = plugs.setdefault("providers", {})
+            if isinstance(prov, dict):
+                block = prov.setdefault("aihope", {})
+                if isinstance(block, dict) and not str(block.get("api_key") or "").strip():
+                    block["api_key"] = ah
 
     def _inject_stt_provider_key(provider: str, key: str) -> None:
         """

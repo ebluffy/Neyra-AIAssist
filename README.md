@@ -43,14 +43,14 @@ Single resident plugin `**server/modules/discord/`** (text gateway + music servi
 
 ### Models — four roles, nested config
 
-Fully driven by `config.yaml` under `openrouter.talk_model`, `brain_model`, `memory_model`, `vision_model`:
+Fully driven by `server/config/llm.yaml` under `llm.talk_model`, `brain_model`, `memory_model`, `vision_model` (each role sets `provider`):
 
 - **talk** — final user-facing responses (streamed, no tools),
 - **brain** — supervisor/tool-loop with `bind_tools` (MCP-aware),
 - **memory** — reflection, diary analysis, LTM summarization,
-- **vision** — VL captioning (single model via `openrouter.vision_model`).
+- **vision** — VL captioning (single model via `llm.vision_model`).
 
-Typical stacks pair large **MoE** chat models (e.g. **Qwen3 235B** through OpenRouter) for talk/brain, with dedicated models for memory. Legacy flat keys (`openrouter.model`, `reflection_model`) are supported with deprecation warnings.
+Typical dual stack: talk on OpenRouter (e.g. free Qwen), brain/memory/vision on AIHope. Keys: `OPENROUTER_API_KEY` / `AIHOPE_API_KEY` in `.env` → `llm.providers.*`.
 
 ## Architecture at a glance
 
@@ -93,7 +93,7 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
   - `pip install -r server/requirements.txt`
 3. Create `server/.env` from `server/.env.example` and fill secrets.
 4. Create `server/config.yaml` from `server/config.example.yaml` (short root: `paths`, `system`, `assistant`).
-5. Copy layer templates: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). Set models under `server/config/llm.yaml` (`openrouter.*`).
+5. Copy layer templates: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). Set models under `server/config/llm.yaml` (`llm.talk_model` / `brain_model` / …).
 6. Copy plugin templates where needed:
   - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
   - `server/modules/internal_api/config.example.yaml` → `server/modules/internal_api/config.yaml`

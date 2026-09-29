@@ -54,7 +54,7 @@ Tracked example paths сверены с деревом репозитория. R
 | Область | Фактический источник | Целевой файл после 1c |
 |---|---|---|
 | `assistant.*`, `paths.data_dir`, `system.timezone` | root consumers | `server/config.yaml` |
-| `BACKEND`, `openrouter.*`, optional `llm.*` | `core/llm/`, bootstrap | `server/config/llm.yaml` |
+| `llm.providers.*`, `llm.talk_model` / `brain_model` / `memory_model` / `vision_model` (+ `.provider`) | `core/llm/`, bootstrap; dual-backend via per-role `provider` (1d) | `server/config/llm.yaml` |
 | `agent.*` | `core/agent/` | `server/config/agent.yaml` |
 | `memory.*`, `backup.*`, `external_storage.*` | `core/memory/`, backup | `server/config/memory.yaml` |
 | `voice.*` | `core/voice/config.py` | `server/config/voice.yaml` |

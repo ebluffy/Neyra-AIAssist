@@ -43,7 +43,11 @@ class NeyraAgent:
     def __init__(self, config: dict):
         self.config = config
         # Legacy MODE больше не основной; оставляем для обратной совместимости.
-        self.mode = str(config.get("MODE") or config.get("BACKEND", "openrouter")).lower()
+        self.mode = str(
+            config.get("MODE")
+            or ((config.get("llm") or {}).get("provider") if isinstance(config.get("llm"), dict) else None)
+            or "aihope"
+        ).lower()
         # Ключ: discord channel_id → текст заметки после последнего VL-хода (пока процесс жив)
         self._last_vision_note_by_channel: dict[str, str] = {}
 
@@ -75,7 +79,7 @@ class NeyraAgent:
         setup_openai_compatible_llm(self)
 
     def _vision_pipeline_cfg(self) -> dict[str, Any]:
-        """Единый контур vision: openrouter.vision_model (см. core.llm.profile.merged_vision_pipeline)."""
+        """Единый контур vision: llm.vision_model (см. core.llm.profile.merged_vision_pipeline)."""
         from core.llm.profile import merged_vision_pipeline
 
         return merged_vision_pipeline(self.config)
@@ -867,6 +871,8 @@ class NeyraAgent:
         return {
             "mode": self.mode,
             "llm_provider": self.backend,
+            "llm_dual": bool(getattr(self, "llm_dual", False)),
+            "llm_providers": dict(getattr(self, "llm_role_providers", {}) or {}),
             "model": self.llm_model,
             "talk_model": getattr(self, "llm_talk_model", self.llm_model),
             "brain_model": getattr(self, "llm_brain_model", None),

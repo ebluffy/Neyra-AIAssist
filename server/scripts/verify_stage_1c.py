@@ -44,7 +44,7 @@ def check_example_layers() -> list[str]:
         return errs
     text = root_ex.read_text(encoding="utf-8")
     deep_re = re.compile(
-        r"^(BACKEND|openrouter|llm|agent|memory|backup|external_storage|"
+        r"^(BACKEND|openrouter|vision|llm|agent|memory|backup|external_storage|"
         r"voice|mcp_client|logging|health_monitor|internal_api|dashboard)\s*:"
     )
     for i, line in enumerate(text.splitlines(), 1):
@@ -75,10 +75,9 @@ def check_loader_from_examples() -> list[str]:
         (root / "modules").mkdir()
 
         cfg = load_layered_yaml(root)
-        if str(cfg.get("BACKEND", "")).lower() != "openrouter":
-            errs.append(f"BACKEND expected openrouter, got {cfg.get('BACKEND')!r}")
-        if not isinstance(cfg.get("openrouter"), dict):
-            errs.append("openrouter missing after layer load")
+        llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+        if not isinstance(llm.get("talk_model"), dict):
+            errs.append("llm.talk_model missing after layer load")
         if not isinstance(cfg.get("memory"), dict):
             errs.append("memory missing after layer load")
         if not isinstance(cfg.get("assistant"), dict):
@@ -164,21 +163,24 @@ def check_legacy_root_warning() -> list[str]:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "config").mkdir()
-        (root / "config" / "llm.yaml").write_text("BACKEND: openrouter\n", encoding="utf-8")
+        (root / "config" / "llm.yaml").write_text(
+            "llm:\n  talk_model:\n    provider: openrouter\n    model: x\n",
+            encoding="utf-8",
+        )
         (root / "config.yaml").write_text(
             "paths:\n  data_dir: ./data\n"
             "assistant:\n  name: Test\n"
-            "openrouter:\n  api_key: ''\n  model: x\n",
+            "agent:\n  fast_path:\n    enabled: false\n",
             encoding="utf-8",
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             cfg = load_layered_yaml(root)
         msgs = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
-        if not any("legacy root deep key 'openrouter'" in m for m in msgs):
-            errs.append(f"expected legacy root warning for openrouter, got {msgs!r}")
-        if not isinstance(cfg.get("openrouter"), dict):
-            errs.append("legacy openrouter not merged from root")
+        if not any("legacy root deep key 'agent'" in m for m in msgs):
+            errs.append(f"expected legacy root warning for agent, got {msgs!r}")
+        if not isinstance(cfg.get("agent"), dict):
+            errs.append("legacy agent not merged from root")
     return errs
 
 
@@ -231,17 +233,33 @@ def check_schema_rejects_bad() -> list[str]:
         "assistant": {"name": "X"},
         "memory": {},
         "logging": {},
-        "BACKEND": "openrouter",
-        "openrouter": {},
+        "llm": {},
     }
     got2 = validate_config_schema(thin)
     for needle in (
         "logging.level",
         "logging.system_log",
-        "openrouter.talk_model",
+        "llm.talk_model",
     ):
         if not any(needle in e for e in got2):
             errs.append(f"expected {needle} schema error, got {got2}")
+
+    removed = {
+        "paths": {"data_dir": "./data"},
+        "assistant": {"name": "X"},
+        "memory": {},
+        "logging": {"level": "INFO", "system_log": "x"},
+        "llm": {
+            "talk_model": {"provider": "openrouter", "model": "x"},
+        },
+        "BACKEND": "aihope",
+        "openrouter": {"model": "x"},
+        "vision": {"enabled": True},
+    }
+    got3 = validate_config_schema(removed)
+    for needle in ("BACKEND", "openrouter", "vision"):
+        if not any(needle in e for e in got3):
+            errs.append(f"expected removed-key schema error for {needle}, got {got3}")
     return errs
 
 
@@ -254,9 +272,9 @@ def check_deep_merge_preserves_layer_nested() -> list[str]:
         root = Path(td)
         (root / "config").mkdir()
         (root / "config" / "llm.yaml").write_text(
-            "BACKEND: openrouter\n"
-            "openrouter:\n"
+            "llm:\n"
             "  talk_model:\n"
+            "    provider: openrouter\n"
             "    model: layer-model\n"
             "    temperature: 0.7\n"
             "    timeout_seconds: 30\n",
@@ -265,7 +283,7 @@ def check_deep_merge_preserves_layer_nested() -> list[str]:
         (root / "config.yaml").write_text(
             "paths:\n  data_dir: ./data\n"
             "assistant:\n  name: Test\n"
-            "openrouter:\n"
+            "llm:\n"
             "  talk_model:\n"
             "    model: root-model\n",
             encoding="utf-8",
@@ -273,7 +291,7 @@ def check_deep_merge_preserves_layer_nested() -> list[str]:
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             cfg = load_layered_yaml(root)
-        talk = ((cfg.get("openrouter") or {}).get("talk_model") or {})
+        talk = ((cfg.get("llm") or {}).get("talk_model") or {})
         if talk.get("model") != "root-model":
             errs.append(f"root should win talk_model.model, got {talk.get('model')!r}")
         if talk.get("temperature") != 0.7:

@@ -1,4 +1,4 @@
-name: Stage 1b verify
+name: Stage 1d verify
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ on:
       - "**.md"
   push:
     branches:
-      - refactor/stage-1b-layout
+      - feature/stage-1d-aihope-dual-backend
       - main
 
 jobs:
@@ -18,13 +18,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install server deps (minimal for compileall)
-        run: pip install -q pyyaml python-dotenv httpx
+      - name: Install server deps (minimal + langchain for security smoke)
+        run: pip install -q pyyaml python-dotenv httpx langchain-core langchain-openai
       - name: compileall
-        run: python -m compileall -q server devtools/mcp_server
-      - name: verify_stage_1b (fresh clone mode)
-        run: python server/scripts/verify_stage_1b.py
-      - name: healthcheck smoke (example config, skip HTTP)
+        run: python -m compileall -q server
+      - name: verify_stage_1c (layers regression)
+        run: python server/scripts/verify_stage_1c.py
+      - name: verify_stage_1d (dual backend)
+        run: python server/scripts/verify_stage_1d.py
+      - name: offline memory / security smokes
+        run: |
+          cd server
+          python scripts/test_memory_hub_smoke.py
+          python scripts/test_memory_cutover_offline.py
+          python scripts/test_stage2_security_offline.py
+      - name: healthcheck smoke (layered examples, skip HTTP)
         env:
           OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http
           AIHOPE_API_KEY: ci-placeholder-not-used-with-skip-http

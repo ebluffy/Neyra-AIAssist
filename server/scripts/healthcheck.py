@@ -57,23 +57,22 @@ def check_files(root: Path) -> list[str]:
 
 
 def check_llm_config_and_env(cfg: dict) -> list[str]:
-    from core.llm.profile import resolve_openai_compatible_connection
+    from core.llm.profile import iter_unique_provider_connections
 
     errs: list[str] = []
     try:
-        conn = resolve_openai_compatible_connection(cfg)
+        conns = iter_unique_provider_connections(cfg)
     except Exception as e:
-        errs.append(f"LLM config invalid: {e}")
-        return errs
-
-    ak = (conn.api_key or "").strip()
-    if conn.provider == "ollama":
-        return errs
-    if not ak or ak == "ollama":
-        errs.append(
-            f"LLM API key missing for provider '{conn.provider}' "
-            "(set llm.api_key / openrouter.api_key or provider env / LLM_API_KEY)"
-        )
+        return [f"LLM config invalid: {e}"]
+    for conn in conns:
+        ak = (conn.api_key or "").strip()
+        if conn.provider == "ollama":
+            continue
+        if not ak or ak == "ollama":
+            errs.append(
+                f"LLM API key missing for provider '{conn.provider}' "
+                "(set AIHOPE_API_KEY / OPENROUTER_API_KEY in .env)"
+            )
     return errs
 
 
@@ -98,30 +97,35 @@ def check_discord_token(mode: str, cfg: dict, root: Path) -> list[str]:
 
 
 def check_llm_models_probe(cfg: dict) -> list[str]:
-    from core.llm.profile import resolve_openai_compatible_connection
+    from core.llm.profile import iter_unique_provider_connections
 
     errs: list[str] = []
     try:
-        conn = resolve_openai_compatible_connection(cfg)
+        conns = iter_unique_provider_connections(cfg)
     except Exception as e:
         errs.append(f"LLM probe skipped (bad config): {e}")
         return errs
 
-    base = conn.base_url.rstrip("/")
-    url = f"{base}/models"
-    headers: dict[str, str] = {}
-    ak = (conn.api_key or "").strip()
-    if ak and ak != "ollama":
-        headers["Authorization"] = f"Bearer {ak}"
-
     try:
         import httpx
+    except ImportError:
+        return ["LLM models probe requires httpx"]
 
-        r = httpx.get(url, headers=headers, timeout=12.0)
-        if r.status_code >= 400:
-            errs.append(f"LLM models probe failed ({conn.provider}): HTTP {r.status_code} @ {url}")
-    except Exception as e:
-        errs.append(f"LLM models probe exception ({conn.provider}): {e}")
+    for conn in conns:
+        base = conn.base_url.rstrip("/")
+        url = f"{base}/models"
+        headers: dict[str, str] = {}
+        ak = (conn.api_key or "").strip()
+        if ak and ak != "ollama":
+            headers["Authorization"] = f"Bearer {ak}"
+        try:
+            r = httpx.get(url, headers=headers, timeout=12.0)
+            if r.status_code >= 400:
+                errs.append(
+                    f"LLM models probe failed ({conn.provider}): HTTP {r.status_code} @ {url}"
+                )
+        except Exception as e:
+            errs.append(f"LLM models probe exception ({conn.provider}): {e}")
     return errs
 
 
@@ -130,8 +134,8 @@ def _hint_for_error(msg: str) -> str | None:
     m = msg.lower()
     if "missing required file" in m:
         return "Репозиторий скопирован не полностью — сверь с git / архивом."
-    if "api key missing" in m or "openrouter" in m:
-        return "Секреты: .env → OPENROUTER_API_KEY (шаблон .env.example)."
+    if "api key missing" in m or "aihope" in m or "openrouter" in m:
+        return "Секреты: .env → AIHOPE_API_KEY и/или OPENROUTER_API_KEY (см. .env.example)."
     if "discord" in m and "token" in m:
         return "Секреты: .env → DISCORD_TOKEN; или отключи discord в modules/discord/plugin.yaml."
     if "llm config invalid" in m:

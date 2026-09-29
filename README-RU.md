@@ -43,14 +43,14 @@ Neyra строится как переиспользуемое ядро плюс
 
 ### Модели — четыре роли, вложенный конфиг
 
-Всё задаётся в `config.yaml` во вложенных блоках `openrouter.talk_model`, `brain_model`, `memory_model`, `vision_model`:
+Всё задаётся в `server/config/llm.yaml` во вложенных блоках `llm.talk_model`, `brain_model`, `memory_model`, `vision_model` (у каждой роли — `provider`):
 
 - **talk** — финальный ответ пользователю (стрим, без инструментов),
 - **brain** — супервизор с `bind_tools` (MCP-aware tool-loop),
 - **memory** — рефлексия, анализ дневника, сжатие LTM,
-- **vision** — VL-описание изображений (единая модель через `openrouter.vision_model`).
+- **vision** — VL-описание изображений (единая модель через `llm.vision_model`).
 
-Типичный стек — мощные **MoE** для диалога/анализа (класс **Qwen3 235B** через OpenRouter) для talk/brain, отдельные модели для memory. Старые плоские ключи (`openrouter.model`, `reflection_model`) поддерживаются с предупреждениями.
+Типичный dual-стек: talk на OpenRouter (например free Qwen), brain/memory/vision на AIHope. Ключи: `OPENROUTER_API_KEY` / `AIHOPE_API_KEY` в `.env` → `llm.providers.*`.
 
 ## Архитектура (кратко)
 
@@ -94,7 +94,7 @@ Neyra развивается как персональный публичный 
   - `pip install -r server/requirements.txt`
 3. Создай `server/.env` из `server/.env.example` и заполни секреты.
 4. Создай `server/config.yaml` из `server/config.example.yaml` (короткий корень: `paths`, `system`, `assistant`).
-5. Скопируй слои: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). Модели — в `server/config/llm.yaml` (`openrouter.*`).
+5. Скопируй слои: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). Модели — в `server/config/llm.yaml` (`llm.talk_model` / `brain_model` / …).
 6. Скопируй шаблоны конфигов плагинов:
   - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
   - `server/modules/internal_api/config.example.yaml` → `server/modules/internal_api/config.yaml`

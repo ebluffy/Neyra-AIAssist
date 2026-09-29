@@ -123,6 +123,27 @@ docs/
 - [x] Consumer и merge-поведение `server/modules/local_voice/config.yaml` проверены; поведение voice не исчезает молча (`verify_stage_1c.py`).
 - [x] Legacy env aliases поддержаны с warning once (`YANDEX_ID_KEY`, `HUGGING_FACE_HUB_TOKEN`).
 
+## 1d. Dual LLM backend (AIHope + OpenRouter)
+
+Цель: полноценный AIHope (OpenAI-compatible) как основной бэкенд для brain/memory/vision и dual-role: talk на OpenRouter (бесплатный Qwen с меньшей цензурой).
+
+### Объём
+
+- Пресет `aihope` → `https://aihope.fun/v1`; роли под `llm.talk_model` / `llm.brain_model` / … с полем `provider` (без `BACKEND` и без обёртки `openrouter:`).
+- Баланс AIHope + dual `/v1/llm/balance` (503 если нет ключей).
+- Ключи только из `.env` (`AIHOPE_API_KEY` / `OPENROUTER_API_KEY`); в yaml нет `api_key` / `context_window` / глобального `max_tokens`.
+- Example: talk=`qwen/qwen3.8-27b:free`@openrouter, brain=`gpt-6-luna`@aihope.
+- Offline `verify_stage_1d.py` + CI; backlog: секреты → системный env ОС.
+
+### Готово, когда
+
+- [x] Dual-backend: talk и brain могут ходить на разные провайдеры с разными ключами/base_url.
+- [x] AIHope chat/completions через LangChain; helpers для models/balance/images/responses/messages.
+- [x] `/v1/llm/balance` отдаёт usage для активных провайдеров (openrouter и/или aihope).
+- [x] `verify_stage_1d.py` и CI зелёные; локальный `llm.yaml` на dual-схеме.
+
+**Конфиг (без legacy):** канон только `llm.*` ролей + `llm.providers.*`. Top-level `BACKEND` / `openrouter:` / `vision:` и пути `openrouter.*` в `POST /v1/config` **не** поддерживаются (нет алиасов / dual-read) — клиенты пишут `llm.talk_model` / `llm.brain_model` / ….
+
 ## 2. Control API поверх Internal API
 
 Этап 2 строит Control API поверх текущего Internal API, не дублируя агентскую оркестрацию.
@@ -249,4 +270,8 @@ docs/
 
 ## Этап 1c — закрыт (PR #15)
 
-Слои `server/config/*.yaml`, короткий root, `config_loader` + schema, inventory в `docs/config-keys.md`, `verify_stage_1c.py` + CI. Дальше — **Этап 2** (Control API поверх Internal API).
+Слои `server/config/*.yaml`, короткий root, `config_loader` + schema, inventory в `docs/config-keys.md`, `verify_stage_1c.py` + CI.
+
+## Этап 1d — закрыт (PR #16)
+
+Dual-backend: `llm.<role>.provider` (talk→OpenRouter, brain/memory/vision→AIHope), баланс dual, keys only from `.env`, `verify_stage_1d.py` + CI. Без legacy `BACKEND` / `openrouter:` / dual-read.

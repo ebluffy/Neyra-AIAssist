@@ -295,14 +295,18 @@ class STTEngine:
                 self._primary_lane,
             )
 
-        # OpenRouter STT (Stage 2F): same OPENROUTER_API_KEY as LLM
+        # OpenRouter STT: OPENROUTER_API_KEY or llm.providers.openrouter.api_key
         or_stt = rt["openrouter"]
         self._openrouter_stt = or_stt
-        or_root = config.get("openrouter") if isinstance(config.get("openrouter"), dict) else {}
+        llm = config.get("llm") if isinstance(config.get("llm"), dict) else {}
+        providers = llm.get("providers") if isinstance(llm.get("providers"), dict) else {}
+        or_prov = providers.get("openrouter") if isinstance(providers.get("openrouter"), dict) else {}
         env_or = _normalize_api_key(os.environ.get("OPENROUTER_API_KEY", ""))
-        cfg_or = _normalize_api_key(str(or_root.get("api_key") or ""))
+        cfg_or = _normalize_api_key(str(or_prov.get("api_key") or ""))
         self.or_api_key = env_or or cfg_or
-        cfg_base = str(or_stt.get("base_url") or or_root.get("base_url") or "").strip().rstrip("/")
+        cfg_base = str(
+            or_stt.get("base_url") or or_prov.get("base_url") or ""
+        ).strip().rstrip("/")
         self.or_base_url = cfg_base or "https://openrouter.ai/api/v1"
         self.or_model = str(
             or_stt.get("model") or "openai/whisper-large-v3-turbo"

@@ -177,10 +177,9 @@ def _normalize_intent_label(raw: str) -> str:
 
 
 def _intent_classifier_model(cfg: dict) -> str:
-    from core.llm.profile import resolved_memory_model
+    from core.llm.profile import resolve_role_provider, resolved_memory_model
 
-    llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
-    prov = str(llm.get("provider") or cfg.get("BACKEND") or "openrouter").strip().lower()
+    prov = resolve_role_provider(cfg, "memory_model")
     return resolved_memory_model(cfg, prov)
 
 
@@ -573,7 +572,7 @@ class NeyraDiscordBot(discord.Client):
     async def _classify_intent(self, user_text: str) -> str:
         """
         Микро-классификатор для маршрутизации Discord: музыка vs текст песни vs обычный чат.
-        Модель — openrouter.memory_model (или её fallback из конфига).
+        Модель — llm.memory_model (provider + id из той же роли).
         """
         prompt = (
             "You are an intent classifier for a Discord bot that CAN join a voice channel "
@@ -588,7 +587,7 @@ class NeyraDiscordBot(discord.Client):
             + (user_text or "")
         )
         try:
-            conn = resolve_openai_compatible_connection(self.config)
+            conn = resolve_openai_compatible_connection(self.config, role="memory_model")
             model = _intent_classifier_model(self.config)
             url = f"{conn.base_url}/chat/completions"
             headers: dict[str, str] = {

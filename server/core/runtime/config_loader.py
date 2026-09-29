@@ -137,6 +137,14 @@ def validate_config_schema(cfg: dict[str, Any]) -> list[str]:
     if not isinstance(cfg, dict):
         return ["config: expected mapping, got %s" % type(cfg).__name__]
 
+    # Removed config shapes (no dual-read / aliases).
+    if "BACKEND" in cfg:
+        errors.append("BACKEND: removed — set llm.<role>.provider")
+    if "openrouter" in cfg:
+        errors.append("openrouter: removed — use llm.talk_model / llm.brain_model / …")
+    if "vision" in cfg:
+        errors.append("vision: removed — use llm.vision_model")
+
     def _req_dict(key: str) -> dict[str, Any] | None:
         val = cfg.get(key)
         if val is None:
@@ -180,19 +188,16 @@ def validate_config_schema(cfg: dict[str, Any]) -> list[str]:
     _req_dict("assistant")
     _req_dict("memory")
 
-    backend = str(cfg.get("BACKEND", "openrouter") or "openrouter").strip().lower()
-    if backend == "openrouter":
-        or_cfg = _req_dict("openrouter")
-        if or_cfg is not None:
-            talk = or_cfg.get("talk_model")
-            if talk is None:
-                errors.append("openrouter.talk_model: missing (expected dict)")
-            elif not isinstance(talk, dict):
-                errors.append(
-                    f"openrouter.talk_model: expected dict, got {type(talk).__name__}"
-                )
-            elif not str(talk.get("model") or "").strip():
-                errors.append("openrouter.talk_model.model: expected non-empty str")
+    llm_cfg = _req_dict("llm")
+    if llm_cfg is not None:
+        talk = llm_cfg.get("talk_model")
+        if not isinstance(talk, dict):
+            errors.append("llm.talk_model: missing (expected dict with model + provider)")
+        else:
+            if not str(talk.get("model") or "").strip():
+                errors.append("llm.talk_model.model: expected non-empty str")
+            if not str(talk.get("provider") or "").strip():
+                errors.append("llm.talk_model.provider: expected non-empty str")
 
     _opt_dict("agent")
     _opt_dict("voice")

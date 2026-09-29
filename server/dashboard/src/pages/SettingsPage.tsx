@@ -18,8 +18,8 @@ export function SettingsPage() {
     try {
       await apiPost<ApiEnvelope<unknown>>('/v1/config/update', {
         updates: {
-          'openrouter.talk_model.model': model,
-          'openrouter.talk_model.temperature': Number(temperature),
+          'llm.talk_model.model': model,
+          'llm.talk_model.temperature': Number(temperature),
         },
       })
       setStatus('Настройки применены')
@@ -72,16 +72,16 @@ export function SettingsPage() {
           </div>
           <div className="stack">
             <label className="label">
-              <span className="label-text">openrouter.talk_model.model</span>
+              <span className="label-text">llm.talk_model.model</span>
               <input
                 className="input"
                 onChange={(e) => setModel(e.target.value)}
-                placeholder="например qwen/qwen3-235b-a22b-2507"
+                placeholder="например qwen/qwen3.8-27b:free"
                 value={model}
               />
             </label>
             <label className="label">
-              <span className="label-text">openrouter.talk_model.temperature</span>
+              <span className="label-text">llm.talk_model.temperature</span>
               <input
                 className="input input-mono"
                 onChange={(e) => setTemperature(e.target.value)}

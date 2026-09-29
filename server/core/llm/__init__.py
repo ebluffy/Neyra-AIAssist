@@ -11,41 +11,61 @@ from __future__ import annotations
 from typing import Any
 
 __all__ = [
+    "AIHOPE_API_BASE",
+    "AIHOPE_BALANCE_URL",
     "OpenAICompatibleConnection",
+    "aihope_list_models",
+    "aihope_post",
     "ainvoke_with_rate_limit_backoff",
-    "expand_openrouter_nested",
+    "expand_role_nested",
+    "fetch_aihope_token_usage",
     "fetch_openrouter_key_usage",
     "is_local_openai_compatible_provider",
     "is_retryable_llm_error",
     "merge_llm_tuning_options",
     "merged_vision_pipeline",
+    "connection_for_provider",
+    "iter_unique_provider_connections",
     "resolve_openai_compatible_connection",
+    "resolve_role_provider",
     "resolved_brain_model",
     "resolved_brain_model_deep",
     "resolved_memory_model",
-    "resolved_primary_model",
     "resolved_talk_model",
     "resolved_vision_model_id",
+    "LLM_ROLE_ORDER",
 ]
 
 _PROFILE_NAMES = frozenset(
     {
         "OpenAICompatibleConnection",
-        "expand_openrouter_nested",
+        "LLM_ROLE_ORDER",
+        "connection_for_provider",
+        "expand_role_nested",
         "is_local_openai_compatible_provider",
+        "iter_unique_provider_connections",
         "merge_llm_tuning_options",
         "merged_vision_pipeline",
         "resolve_openai_compatible_connection",
+        "resolve_role_provider",
         "resolved_brain_model",
         "resolved_brain_model_deep",
         "resolved_memory_model",
-        "resolved_primary_model",
         "resolved_talk_model",
         "resolved_vision_model_id",
     }
 )
 _RETRY_NAMES = frozenset({"ainvoke_with_rate_limit_backoff", "is_retryable_llm_error"})
 _BALANCE_NAMES = frozenset({"fetch_openrouter_key_usage"})
+_AIHOPE_NAMES = frozenset(
+    {
+        "AIHOPE_API_BASE",
+        "AIHOPE_BALANCE_URL",
+        "aihope_list_models",
+        "aihope_post",
+        "fetch_aihope_token_usage",
+    }
+)
 
 
 def __getattr__(name: str) -> Any:
@@ -59,6 +79,10 @@ def __getattr__(name: str) -> Any:
         return getattr(mod, name)
     if name in _BALANCE_NAMES:
         from core.llm import openrouter_balance as mod
+
+        return getattr(mod, name)
+    if name in _AIHOPE_NAMES:
+        from core.llm import aihope as mod
 
         return getattr(mod, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
