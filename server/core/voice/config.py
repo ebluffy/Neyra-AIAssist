@@ -363,7 +363,11 @@ def collect_voice_soft_errors(config: dict[str, Any]) -> list[str]:
                 )
         if prov == "openrouter":
             import os
-            from_cfg = str((_as_dict(config.get("openrouter")).get("api_key") or "")).strip()
+
+            llm = _as_dict(config.get("llm"))
+            providers = _as_dict(llm.get("providers"))
+            or_prov = _as_dict(providers.get("openrouter"))
+            from_cfg = str(or_prov.get("api_key") or "").strip()
             if not from_cfg and not (os.environ.get("OPENROUTER_API_KEY") or "").strip():
                 out.append(
                     "STT(cloud/openrouter): нет OPENROUTER_API_KEY — cloud STT не заработает"

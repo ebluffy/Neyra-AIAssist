@@ -18,8 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install server deps (minimal)
-        run: pip install -q pyyaml python-dotenv httpx
+      - name: Install server deps (minimal + langchain for security smoke)
+        run: pip install -q pyyaml python-dotenv httpx langchain-core langchain-openai
       - name: compileall
         run: python -m compileall -q server
       - name: verify_stage_1c (layers regression)

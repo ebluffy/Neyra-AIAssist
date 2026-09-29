@@ -86,7 +86,6 @@ def apply_env_secrets(cfg: dict) -> None:
 
     k = _s("OPENROUTER_API_KEY")
     if k:
-        cfg.setdefault("openrouter", {})["api_key"] = k
         plugs = cfg.setdefault("llm", {})
         if isinstance(plugs, dict):
             prov = plugs.setdefault("providers", {})

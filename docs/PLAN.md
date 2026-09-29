@@ -129,13 +129,11 @@ docs/
 
 ### Объём
 
-- Пресет `aihope` → `https://aihope.fun/v1` (`/models`, `/chat/completions`, `/responses`, `/messages`, `/images/generations`).
-- Баланс AIHope: `GET https://aihope.fun/api/usage/token/` + dual `/v1/llm/balance`.
-- Per-role `openrouter.<role>.provider` (talk → openrouter, brain/memory/vision → aihope).
-- `llm.providers.<name>.{base_url,api_key}` + env `AIHOPE_API_KEY` / `OPENROUTER_API_KEY`.
-- Пример и локальный `server/config/llm.yaml`: BACKEND=aihope, talk=`qwen/qwen3.8-27b:free`, brain=`gpt-6-luna`.
-- Offline `verify_stage_1d.py` + CI; offline memory/security smokes в GitHub Actions.
-- Backlog (не в этом этапе): секреты из `.env` → системные переменные окружения ОС (Windows/Linux) для прод-безопасности.
+- Пресет `aihope` → `https://aihope.fun/v1`; роли под `llm.talk_model` / `llm.brain_model` / … с полем `provider` (без `BACKEND` и без обёртки `openrouter:`).
+- Баланс AIHope + dual `/v1/llm/balance` (503 если нет ключей).
+- Ключи только из `.env` (`AIHOPE_API_KEY` / `OPENROUTER_API_KEY`); в yaml нет `api_key` / `context_window` / глобального `max_tokens`.
+- Example: talk=`qwen/qwen3.8-27b:free`@openrouter, brain=`gpt-6-luna`@aihope.
+- Offline `verify_stage_1d.py` + CI; backlog: секреты → системный env ОС.
 
 ### Готово, когда
 

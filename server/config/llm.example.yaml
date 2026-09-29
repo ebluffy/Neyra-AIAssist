@@ -1,32 +1,14 @@
 # Neyra config layer: config/llm.yaml
-# EN/RU: see docs/PLAN.md §1d and docs/config-keys.md
+# Dual-backend: roles under llm.*; keys only from .env (AIHOPE_API_KEY / OPENROUTER_API_KEY)
 #
-# Dual-backend (recommended for RU):
-#   BACKEND: aihope  — default for brain / memory / vision
-#   openrouter.talk_model.provider: openrouter — free Qwen talk lane
-#
-BACKEND: aihope
-
-# Optional per-provider overrides (api_key usually from .env).
 llm:
   providers:
     aihope:
       base_url: "https://aihope.fun/v1"
-      # api_key: from AIHOPE_API_KEY
     openrouter:
       base_url: "https://openrouter.ai/api/v1"
-      # api_key: from OPENROUTER_API_KEY
-
-# Role models live under `openrouter:` for backward compatibility (name = historical).
-# Each role may set `provider:` to override BACKEND.
-openrouter:
-  api_key: ""
-  context_window: 16384
-  timeout_seconds: 30.0
-  max_retries: 1
 
   talk_model:
-    # Free low-censorship talk on OpenRouter (Qwen 3.8).
     provider: openrouter
     model: "qwen/qwen3.8-27b:free"
     reply_max_tokens: 220
@@ -40,7 +22,6 @@ openrouter:
     primary_first_token_timeout_seconds: 8.0
 
   brain_model:
-    # AIHope — GPT-6 Luna (friend gateway; easy top-up from RU).
     provider: aihope
     model: "gpt-6-luna"
     model_deep: "gpt-6-luna"
@@ -81,19 +62,12 @@ openrouter:
     anchor_reply: "SAY:"
 
   async_reflection:
-    enabled: true
+    enabled: false
     temperature: 0.6
     max_tokens: 1200
     timeout_seconds: 60
     max_retries: 1
     max_note_chars: 1200
 
-  max_tokens: 1500
-
-# AIHope OpenAI-compatible surface (used via base_url https://aihope.fun/v1):
-#   GET  /models
-#   POST /chat/completions   ← agent default (LangChain ChatOpenAI)
-#   POST /responses
-#   POST /messages           (Claude-compatible)
-#   POST /images/generations
-# Balance (non-/v1): GET https://aihope.fun/api/usage/token/
+# AIHope (https://aihope.fun/v1): /models /chat/completions /responses /messages /images/generations
+# Balance: GET https://aihope.fun/api/usage/token/

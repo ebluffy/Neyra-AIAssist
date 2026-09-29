@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage 1d: AIHope dual-backend resolution (offline)."""
+"""Stage 1d: AIHope dual-backend under llm.* roles (offline)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ if str(SERVER_ROOT) not in sys.path:
 
 def _cfg_dual() -> dict:
     return {
-        "BACKEND": "aihope",
         "llm": {
             "providers": {
                 "aihope": {
@@ -25,13 +24,12 @@ def _cfg_dual() -> dict:
                     "base_url": "https://openrouter.ai/api/v1",
                     "api_key": "test-or-key",
                 },
-            }
-        },
-        "openrouter": {
+            },
             "talk_model": {
                 "provider": "openrouter",
                 "model": "qwen/qwen3.8-27b:free",
                 "temperature": 0.8,
+                "reply_max_tokens": 220,
             },
             "brain_model": {
                 "provider": "aihope",
@@ -55,16 +53,15 @@ def _cfg_dual() -> dict:
 
 def check_role_providers() -> list[str]:
     from core.llm.profile import (
+        merge_llm_tuning_options,
         resolve_openai_compatible_connection,
         resolve_role_provider,
-        resolved_talk_model,
         resolved_brain_model,
+        resolved_talk_model,
     )
 
     errs: list[str] = []
     cfg = _cfg_dual()
-    if resolve_role_provider(cfg, None) != "aihope":
-        errs.append("default provider expected aihope")
     if resolve_role_provider(cfg, "talk_model") != "openrouter":
         errs.append("talk provider expected openrouter")
     if resolve_role_provider(cfg, "brain_model") != "aihope":
@@ -85,6 +82,14 @@ def check_role_providers() -> list[str]:
         errs.append("talk model id mismatch")
     if resolved_brain_model(cfg, brain.provider) != "gpt-6-luna":
         errs.append("brain model id mismatch")
+
+    tuning = merge_llm_tuning_options(cfg)
+    if "providers" in tuning:
+        errs.append("providers must not leak into tuning options")
+    if tuning.get("reply_max_tokens") != 220:
+        errs.append(f"reply_max_tokens from talk_model expected 220, got {tuning.get('reply_max_tokens')}")
+    if "context_window" in tuning or "max_tokens" in tuning:
+        errs.append("obsolete context_window/max_tokens must not appear in tuning")
     return errs
 
 
@@ -126,11 +131,14 @@ def check_env_injection() -> list[str]:
     os.environ["OPENROUTER_API_KEY"] = "env-or"
     os.environ["AIHOPE_API_KEY"] = "env-ah"
     try:
-        cfg: dict = {"openrouter": {}, "llm": {}}
+        cfg: dict = {"llm": {}}
         apply_env_secrets(cfg)
-        if (cfg.get("openrouter") or {}).get("api_key") != "env-or":
-            errs.append("OPENROUTER not injected into openrouter.api_key")
+        or_key = (((cfg.get("llm") or {}).get("providers") or {}).get("openrouter") or {}).get(
+            "api_key"
+        )
         ah = (((cfg.get("llm") or {}).get("providers") or {}).get("aihope") or {}).get("api_key")
+        if or_key != "env-or":
+            errs.append(f"OPENROUTER not injected into llm.providers.openrouter, got {or_key!r}")
         if ah != "env-ah":
             errs.append(f"AIHOPE not injected into llm.providers.aihope, got {ah!r}")
     finally:
@@ -145,11 +153,28 @@ def check_env_injection() -> list[str]:
     return errs
 
 
+def check_no_backend_required() -> list[str]:
+    from core.llm.profile import resolve_role_provider
+    from core.runtime.config_loader import validate_config_schema
+
+    errs: list[str] = []
+    cfg = _cfg_dual()
+    if "BACKEND" in cfg:
+        errs.append("test cfg must not set BACKEND")
+    if resolve_role_provider(cfg, None) not in {"openrouter", "aihope"}:
+        errs.append("default provider inference failed")
+    schema = validate_config_schema(cfg)
+    if schema:
+        errs.extend(f"schema: {e}" for e in schema)
+    return errs
+
+
 def main() -> int:
     checks = [
         ("role providers / dual conn", check_role_providers),
         ("aihope endpoint constants", check_aihope_constants),
         ("env secret injection", check_env_injection),
+        ("no BACKEND required", check_no_backend_required),
     ]
     failed = 0
     for name, fn in checks:

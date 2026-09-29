@@ -75,11 +75,9 @@ def check_loader_from_examples() -> list[str]:
         (root / "modules").mkdir()
 
         cfg = load_layered_yaml(root)
-        backend = str(cfg.get("BACKEND", "")).lower()
-        if backend not in {"openrouter", "aihope"}:
-            errs.append(f"BACKEND expected openrouter|aihope, got {cfg.get('BACKEND')!r}")
-        if not isinstance(cfg.get("openrouter"), dict):
-            errs.append("openrouter missing after layer load")
+        llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+        if not isinstance(llm.get("talk_model"), dict):
+            errs.append("llm.talk_model missing after layer load")
         if not isinstance(cfg.get("memory"), dict):
             errs.append("memory missing after layer load")
         if not isinstance(cfg.get("assistant"), dict):
@@ -232,14 +230,13 @@ def check_schema_rejects_bad() -> list[str]:
         "assistant": {"name": "X"},
         "memory": {},
         "logging": {},
-        "BACKEND": "openrouter",
-        "openrouter": {},
+        "llm": {},
     }
     got2 = validate_config_schema(thin)
     for needle in (
         "logging.level",
         "logging.system_log",
-        "openrouter.talk_model",
+        "llm.talk_model",
     ):
         if not any(needle in e for e in got2):
             errs.append(f"expected {needle} schema error, got {got2}")
@@ -255,9 +252,9 @@ def check_deep_merge_preserves_layer_nested() -> list[str]:
         root = Path(td)
         (root / "config").mkdir()
         (root / "config" / "llm.yaml").write_text(
-            "BACKEND: openrouter\n"
-            "openrouter:\n"
+            "llm:\n"
             "  talk_model:\n"
+            "    provider: openrouter\n"
             "    model: layer-model\n"
             "    temperature: 0.7\n"
             "    timeout_seconds: 30\n",
@@ -266,7 +263,7 @@ def check_deep_merge_preserves_layer_nested() -> list[str]:
         (root / "config.yaml").write_text(
             "paths:\n  data_dir: ./data\n"
             "assistant:\n  name: Test\n"
-            "openrouter:\n"
+            "llm:\n"
             "  talk_model:\n"
             "    model: root-model\n",
             encoding="utf-8",
@@ -274,7 +271,7 @@ def check_deep_merge_preserves_layer_nested() -> list[str]:
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             cfg = load_layered_yaml(root)
-        talk = ((cfg.get("openrouter") or {}).get("talk_model") or {})
+        talk = ((cfg.get("llm") or {}).get("talk_model") or {})
         if talk.get("model") != "root-model":
             errs.append(f"root should win talk_model.model, got {talk.get('model')!r}")
         if talk.get("temperature") != 0.7:

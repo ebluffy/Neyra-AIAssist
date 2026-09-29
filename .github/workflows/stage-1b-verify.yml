@@ -27,6 +27,7 @@ jobs:
       - name: healthcheck smoke (example config, skip HTTP)
         env:
           OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http
+          AIHOPE_API_KEY: ci-placeholder-not-used-with-skip-http
           DISCORD_TOKEN: ci-placeholder-not-a-real-token
         run: |
           cp server/config.example.yaml server/config.yaml
@@ -34,5 +35,5 @@ jobs:
           for f in llm agent memory voice modules runtime server; do
             cp "server/config/${f}.example.yaml" "server/config/${f}.yaml"
           done
-          printf '%s\n' 'OPENROUTER_API_KEY=ci-placeholder' 'DISCORD_TOKEN=ci-placeholder' > server/.env
+          printf '%s\n' 'OPENROUTER_API_KEY=ci-placeholder' 'AIHOPE_API_KEY=ci-placeholder' 'DISCORD_TOKEN=ci-placeholder' > server/.env
           cd server && python scripts/healthcheck.py --mode core --skip-http

@@ -69,7 +69,13 @@ def load_config() -> dict[str, Any]:
 
 
 config = load_config()
-BACKEND = str(config.get("BACKEND", "openrouter")).lower()
+BACKEND = ""
+try:
+    from core.llm.profile import resolve_role_provider
+
+    BACKEND = resolve_role_provider(config, None)
+except Exception:
+    BACKEND = "aihope"
 
 # Hugging Face: токен не обязателен, если модели уже в кэше; даёт выше лимиты на скачивание
 _mem = config.get("memory") or {}

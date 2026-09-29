@@ -521,7 +521,7 @@ async def delegate_to_deep_logic(detailed_prompt: str) -> str:
     создание или модификацию плагинов ядра Neyra, решение сложных многоуровневых логических
     или математических задач. Передай в detailed_prompt развёрнутое техническое задание
     (контекст, ограничения, ожидаемый формат ответа). Инструмент вызывает глубокую модель
-    (openrouter.brain_model.model_deep) и возвращает готовый код или аналитику.
+    (llm.brain_model.model_deep) и возвращает готовый код или аналитику.
     """
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_openai import ChatOpenAI

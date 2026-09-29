@@ -18,6 +18,7 @@ __all__ = [
     "aihope_post",
     "ainvoke_with_rate_limit_backoff",
     "expand_openrouter_nested",
+    "expand_role_nested",
     "fetch_aihope_token_usage",
     "fetch_openrouter_key_usage",
     "is_local_openai_compatible_provider",
@@ -38,6 +39,7 @@ _PROFILE_NAMES = frozenset(
     {
         "OpenAICompatibleConnection",
         "expand_openrouter_nested",
+        "expand_role_nested",
         "is_local_openai_compatible_provider",
         "merge_llm_tuning_options",
         "merged_vision_pipeline",

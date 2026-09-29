@@ -180,7 +180,8 @@ def _intent_classifier_model(cfg: dict) -> str:
     from core.llm.profile import resolved_memory_model
 
     llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
-    prov = str(llm.get("provider") or cfg.get("BACKEND") or "openrouter").strip().lower()
+    talk = llm.get("talk_model") if isinstance(llm.get("talk_model"), dict) else {}
+    prov = str(talk.get("provider") or llm.get("provider") or "aihope").strip().lower()
     return resolved_memory_model(cfg, prov)
 
 

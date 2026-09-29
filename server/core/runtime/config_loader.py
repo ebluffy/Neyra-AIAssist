@@ -180,19 +180,16 @@ def validate_config_schema(cfg: dict[str, Any]) -> list[str]:
     _req_dict("assistant")
     _req_dict("memory")
 
-    backend = str(cfg.get("BACKEND", "openrouter") or "openrouter").strip().lower()
-    if backend in {"openrouter", "aihope"}:
-        or_cfg = _req_dict("openrouter")
-        if or_cfg is not None:
-            talk = or_cfg.get("talk_model")
-            if talk is None:
-                errors.append("openrouter.talk_model: missing (expected dict)")
-            elif not isinstance(talk, dict):
-                errors.append(
-                    f"openrouter.talk_model: expected dict, got {type(talk).__name__}"
-                )
-            elif not str(talk.get("model") or "").strip():
-                errors.append("openrouter.talk_model.model: expected non-empty str")
+    llm_cfg = _req_dict("llm")
+    if llm_cfg is not None:
+        talk = llm_cfg.get("talk_model")
+        if not isinstance(talk, dict):
+            errors.append("llm.talk_model: missing (expected dict with model + provider)")
+        else:
+            if not str(talk.get("model") or "").strip():
+                errors.append("llm.talk_model.model: expected non-empty str")
+            if not str(talk.get("provider") or "").strip():
+                errors.append("llm.talk_model.provider: expected non-empty str")
 
     _opt_dict("agent")
     _opt_dict("voice")

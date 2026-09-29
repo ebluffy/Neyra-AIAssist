@@ -60,20 +60,25 @@ def check_llm_config_and_env(cfg: dict) -> list[str]:
     from core.llm.profile import resolve_openai_compatible_connection
 
     errs: list[str] = []
-    try:
-        conn = resolve_openai_compatible_connection(cfg)
-    except Exception as e:
-        errs.append(f"LLM config invalid: {e}")
-        return errs
-
-    ak = (conn.api_key or "").strip()
-    if conn.provider == "ollama":
-        return errs
-    if not ak or ak == "ollama":
-        errs.append(
-            f"LLM API key missing for provider '{conn.provider}' "
-            "(set llm.api_key / openrouter.api_key or provider env / LLM_API_KEY)"
-        )
+    roles = ("talk_model", "brain_model", "memory_model", "vision_model")
+    seen: set[str] = set()
+    for role in roles:
+        try:
+            conn = resolve_openai_compatible_connection(cfg, role=role)
+        except Exception as e:
+            errs.append(f"LLM config invalid ({role}): {e}")
+            continue
+        if conn.provider in seen:
+            continue
+        seen.add(conn.provider)
+        ak = (conn.api_key or "").strip()
+        if conn.provider == "ollama":
+            continue
+        if not ak or ak == "ollama":
+            errs.append(
+                f"LLM API key missing for provider '{conn.provider}' "
+                "(set AIHOPE_API_KEY / OPENROUTER_API_KEY in .env)"
+            )
     return errs
 
 
@@ -130,8 +135,8 @@ def _hint_for_error(msg: str) -> str | None:
     m = msg.lower()
     if "missing required file" in m:
         return "Репозиторий скопирован не полностью — сверь с git / архивом."
-    if "api key missing" in m or "openrouter" in m:
-        return "Секреты: .env → OPENROUTER_API_KEY (шаблон .env.example)."
+    if "api key missing" in m or "aihope" in m or "openrouter" in m:
+        return "Секреты: .env → AIHOPE_API_KEY и/или OPENROUTER_API_KEY (см. .env.example)."
     if "discord" in m and "token" in m:
         return "Секреты: .env → DISCORD_TOKEN; или отключи discord в modules/discord/plugin.yaml."
     if "llm config invalid" in m:

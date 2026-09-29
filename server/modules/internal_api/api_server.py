@@ -1329,20 +1329,22 @@ def build_app(
 
         trace_id = _trace_id(request)
         default_prov = resolve_role_provider(config, None)
+        roles = {
+            "talk": resolve_role_provider(config, "talk_model"),
+            "brain": resolve_role_provider(config, "brain_model"),
+            "memory": resolve_role_provider(config, "memory_model"),
+            "vision": resolve_role_provider(config, "vision_model"),
+        }
         out: dict[str, Any] = {
             "default_provider": default_prov,
-            "roles": {
-                "talk": resolve_role_provider(config, "talk_model"),
-                "brain": resolve_role_provider(config, "brain_model"),
-                "memory": resolve_role_provider(config, "memory_model"),
-                "vision": resolve_role_provider(config, "vision_model"),
-            },
+            "roles": roles,
             "openrouter": None,
             "aihope": None,
         }
 
-        # Collect unique providers used by roles + default
-        providers = {default_prov, *out["roles"].values()}
+        providers = {default_prov, *roles.values()}
+        any_ok = False
+        missing_all = True
         for prov in providers:
             if prov == "openrouter":
                 conn = resolve_openai_compatible_connection(config, role="talk_model")
@@ -1350,11 +1352,18 @@ def build_app(
                     conn = resolve_openai_compatible_connection(config)
                 key = (conn.api_key or "").strip()
                 if key and key != "ollama":
+                    missing_all = False
                     raw = await fetch_openrouter_key_usage(key)
                     if raw.get("_error"):
-                        out["openrouter"] = {"_error": raw.get("_error"), "detail": str(raw)[:400]}
+                        out["openrouter"] = {
+                            "_error": raw.get("_error"),
+                            "detail": str(raw)[:400],
+                        }
                     else:
-                        out["openrouter"] = {k: v for k, v in raw.items() if not str(k).startswith("_")}
+                        any_ok = True
+                        out["openrouter"] = {
+                            k: v for k, v in raw.items() if not str(k).startswith("_")
+                        }
                 else:
                     out["openrouter"] = {"_error": "missing_api_key"}
             elif prov == "aihope":
@@ -1363,14 +1372,33 @@ def build_app(
                     conn = resolve_openai_compatible_connection(config)
                 key = (conn.api_key or "").strip()
                 if key and key != "ollama":
+                    missing_all = False
                     raw = await fetch_aihope_token_usage(key)
                     if raw.get("_error"):
-                        out["aihope"] = {"_error": raw.get("_error"), "detail": str(raw)[:400]}
+                        out["aihope"] = {
+                            "_error": raw.get("_error"),
+                            "detail": str(raw)[:400],
+                        }
                     else:
-                        out["aihope"] = {k: v for k, v in raw.items() if not str(k).startswith("_")}
+                        any_ok = True
+                        out["aihope"] = {
+                            k: v for k, v in raw.items() if not str(k).startswith("_")
+                        }
                 else:
                     out["aihope"] = {"_error": "missing_api_key"}
 
+        if missing_all:
+            raise ApiError(
+                "config_error",
+                "No API key configured for active LLM providers (AIHOPE_API_KEY / OPENROUTER_API_KEY)",
+                503,
+            )
+        if not any_ok:
+            raise ApiError(
+                "provider_error",
+                "LLM balance request failed for all active providers",
+                502,
+            )
         return {"ok": True, "trace_id": trace_id, "data": out}
 
     @app.get("/v1/docs/markdown/{doc_id}", response_class=PlainTextResponse)
@@ -1409,45 +1437,47 @@ def build_app(
         trace_id = _trace_id(request)
         _audit("config_update", trace_id, api_role, {"keys": list(body.updates.keys())})
         allowed = {
-            "openrouter.model",
-            "openrouter.talk_model",
-            "openrouter.brain_model",
-            "openrouter.memory_model",
-            "openrouter.vision_model",
-            "openrouter.temperature",
-            "openrouter.top_p",
-            "openrouter.reply_max_tokens",
-            "openrouter.brain_max_tokens",
-            "openrouter.reflection_max_tokens",
-            "openrouter.talk_model.model",
-            "openrouter.talk_model.reply_max_tokens",
-            "openrouter.talk_model.lyrics_reply_max_tokens",
-            "openrouter.talk_model.temperature",
-            "openrouter.talk_model.timeout_seconds",
-            "openrouter.brain_model.model",
-            "openrouter.brain_model.model_deep",
-            "openrouter.brain_model.max_tokens",
-            "openrouter.brain_model.temperature",
-            "openrouter.brain_model.timeout_seconds",
-            "openrouter.memory_model.model",
-            "openrouter.memory_model.max_tokens",
-            "openrouter.memory_model.temperature",
-            "openrouter.vision_model.model",
-            "openrouter.vision_model.max_tokens",
-            "openrouter.vision_model.temperature",
-            "openrouter.vision_model.timeout_seconds",
-            "openrouter.vision_model.enabled",
-            "openrouter.vision_model.use_brain_model_for_vision",
-            "openrouter.vision_model.use_main_model_for_vision",
-            "openrouter.vision_model.max_images_per_message",
-            "openrouter.vision_model.max_image_bytes",
-            "openrouter.vision_model.max_image_width",
-            "openrouter.vision_model.max_image_height",
-            "openrouter.vision_model.remember_last_image",
-            "openrouter.vision_model.last_image_note_max_chars",
-            "llm.model",
+            "llm.talk_model",
+            "llm.brain_model",
+            "llm.memory_model",
+            "llm.vision_model",
+            "llm.talk_model.model",
+            "llm.talk_model.provider",
+            "llm.talk_model.reply_max_tokens",
+            "llm.talk_model.lyrics_reply_max_tokens",
+            "llm.talk_model.temperature",
+            "llm.talk_model.timeout_seconds",
+            "llm.brain_model.model",
+            "llm.brain_model.provider",
+            "llm.brain_model.model_deep",
+            "llm.brain_model.max_tokens",
+            "llm.brain_model.temperature",
+            "llm.brain_model.timeout_seconds",
+            "llm.memory_model.model",
+            "llm.memory_model.provider",
+            "llm.memory_model.max_tokens",
+            "llm.memory_model.temperature",
+            "llm.vision_model.model",
+            "llm.vision_model.provider",
+            "llm.vision_model.max_tokens",
+            "llm.vision_model.temperature",
+            "llm.vision_model.timeout_seconds",
+            "llm.vision_model.enabled",
+            "llm.vision_model.use_brain_model_for_vision",
+            "llm.vision_model.use_main_model_for_vision",
+            "llm.vision_model.max_images_per_message",
+            "llm.vision_model.max_image_bytes",
+            "llm.vision_model.max_image_width",
+            "llm.vision_model.max_image_height",
+            "llm.vision_model.remember_last_image",
+            "llm.vision_model.last_image_note_max_chars",
+            "llm.providers.aihope.base_url",
+            "llm.providers.openrouter.base_url",
             "llm.provider",
             "llm.base_url",
+            "agent.fast_path.enabled",
+            "logging.level",
+            "memory.rag_write_mode",
             "health_monitor.enabled",
             "health_monitor.interval_seconds",
         }

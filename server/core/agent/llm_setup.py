@@ -1,6 +1,6 @@
 """OpenAI-compatible LLM wiring for NeyraAgent (talk / brain / memory / vision).
 
-Supports dual-backend: each role may set ``openrouter.<role>.provider``
+Supports dual-backend: each role sets ``llm.<role>.provider``
 (e.g. talk → openrouter, brain/memory/vision → aihope).
 """
 
@@ -59,9 +59,9 @@ def setup_openai_compatible_llm(agent: Any) -> None:
             memory_model,
         )
     vision_model_id = resolved_vision_model_id(agent.config, conn_vision.provider)
-    agent.context_window = cfg.get("context_window", 16384)
-    agent.reply_max_tokens = int(cfg.get("reply_max_tokens", cfg.get("max_tokens", 320)))
-    agent.vision_max_tokens = int(cfg.get("vision_max_tokens", cfg.get("max_tokens", 900)))
+    agent.context_window = None  # provider-native max; no fixed yaml cap
+    agent.reply_max_tokens = int(cfg.get("reply_max_tokens", 320))
+    agent.vision_max_tokens = int(cfg.get("vision_max_tokens", 900))
     _refl_cap = cfg.get("reflection_max_tokens")
     agent.reflection_max_tokens = int(_refl_cap) if _refl_cap is not None else None
     agent.lyrics_reply_max_tokens = int(cfg.get("lyrics_reply_max_tokens", 4096))
@@ -81,8 +81,8 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         if not conn.api_key or conn.api_key == "ollama":
             if conn.provider != "ollama":
                 logger.error(
-                    "API ключ LLM (%s/%s) не найден — задай llm.providers.%s.api_key / "
-                    "openrouter.api_key или env для провайдера",
+                    "API ключ LLM (%s/%s) не найден — задай env AIHOPE_API_KEY / OPENROUTER_API_KEY "
+                    "или llm.providers.%s.api_key",
                     label,
                     conn.provider,
                     conn.provider,
@@ -199,14 +199,14 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     }
     if str(agent.async_reflection_cfg.get("model") or "").strip():
         logger.warning(
-            "Deprecated: async_reflection.model игнорируется — используется openrouter.memory_model (%s).",
+            "Deprecated: async_reflection.model игнорируется — используется llm.memory_model (%s).",
             memory_model,
         )
 
     dual = len({conn_talk.provider, conn_brain.provider, conn_memory.provider}) > 1
     logger.info(
         "Бэкенд LLM: default=%s%s | talk=%s@%s brain=%s@%s memory=%s@%s | "
-        "timeout talk=%ss retries=%s | max_ctx: %s",
+        "timeout talk=%ss retries=%s | context=provider-max",
         conn_default.provider,
         " (dual)" if dual else "",
         talk_model,
@@ -217,7 +217,6 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         conn_memory.provider,
         talk_timeout,
         talk_retries,
-        agent.context_window,
     )
     logger.info(
         "LLM token budgets | reply=%s | brain=%s | lyrics_cap=%s | vision=%s | memory/reflection=%s | async_reflection_note_max=%s",
