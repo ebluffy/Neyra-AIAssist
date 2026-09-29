@@ -152,3 +152,6 @@ server/data/memory/**
 !server/data/memory/.gitkeep
 server/logs/**
 !server/logs/.gitkeep
+
+*.bak_ci
+server/config.yaml.bak*
