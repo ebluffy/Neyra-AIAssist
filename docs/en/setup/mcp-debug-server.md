@@ -33,7 +33,7 @@ You still need the **admin** Bearer token (`INTERNAL_API_TOKEN` / `internal_api.
 
 ## Install
 
-Prefer the **main project venv** (Windows: `.venv_win`, Linux/WSL: `.venv` or `~/neyra-venv`) — `mcp` / `httpx` are already covered by root `requirements.txt` when that env is fully installed. Point Cursor MCP at that interpreter + `devtools/mcp_server/server.py`.
+Prefer the **main project venv** (Windows: `.venv_win`, Linux/WSL: `.venv` or `~/neyra-venv`) — `mcp` / `httpx` are already covered by `server/requirements.txt` when that env is fully installed. Point Cursor MCP at that interpreter + `devtools/mcp_server/server.py`.
 
 Optional dedicated env (only if you want isolation):
 

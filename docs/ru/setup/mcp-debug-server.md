@@ -28,7 +28,7 @@
 
 ## Установка
 
-Предпочтительно **основной venv проекта** (Windows: `.venv_win`, Linux/WSL: `.venv` или `~/neyra-venv`) — пакеты `mcp`/`httpx` уже есть при полной установке root `requirements.txt`. В Cursor MCP указывайте этот интерпретатор и `devtools/mcp_server/server.py`.
+Предпочтительно **основной venv проекта** (Windows: `.venv_win`, Linux/WSL: `.venv` или `~/neyra-venv`) — пакеты `mcp`/`httpx` уже есть при полной установке `server/requirements.txt`. В Cursor MCP указывайте этот интерпретатор и `devtools/mcp_server/server.py`.
 
 Cursor поднимает MCP **параллельно с IDE** (stdio) при вызове tools; ядро Нейры должно быть запущено отдельно (`main.py --mode core`), иначе HTTP-tools к `http://127.0.0.1:8787` не достучатся.
 

@@ -27,7 +27,7 @@ Current stable runtime:
 - `**python server/main.py`** — core: HTTP API, web dashboard, one `NeyraAgent`, resident plugins (e.g. Discord when enabled),
 - `**python server/main.py --mode console`** — terminal-only for prompt experiments,
 - `discord` (text + music) and other interfaces ship as plugins under `server/modules/`,
-- optional **Docker** via `server/Dockerfile` + `server/docker-compose.yml`.
+- optional **Docker** via root `docker-compose.yml` (includes `server/`).
 
 ### Dashboard (frontend)
 
@@ -65,7 +65,7 @@ Typical stacks pair large **MoE** chat models (e.g. **Qwen3 235B** through OpenR
 - `main.py` — entrypoint (`core` vs `console` only).
 - `run_neyra.bat` — Windows menu (core / console / preflight).
 - `run_neyra.sh` — Linux/macOS menu (core / console / status / stop / git updates).
-- `server/Dockerfile` + `server/docker-compose.yml` — container deploy (port `8787`, volumes under `server/`).
+- `docker-compose.yml` (root) + `server/Dockerfile` — container deploy (port `8787`, volumes under `server/`).
 
 ## Product direction
 
@@ -107,7 +107,7 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
 ### Docker (optional)
 
 ```bash
-docker compose -f server/docker-compose.yml up --build
+docker compose up --build
 ```
 
 Exposes port `8787`; runtime files live under `server/` (`config.yaml`, `modules/`, `data/memory/`, `logs/`).

@@ -215,7 +215,7 @@ def cleanup_legacy_root(*, force_memory_logs: bool) -> bool:
     legacy_interfaces = REPO_ROOT / "interfaces"
     if legacy_interfaces.is_dir() and not any(legacy_interfaces.iterdir()):
         legacy_interfaces.rmdir()
-        print("REMOVE empty legacy interfaces/")
+        print("REMOVE empty legacy modules tree directory")
 
     backups = REPO_ROOT / "backups"
     if backups.is_dir():

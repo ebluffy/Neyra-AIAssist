@@ -27,7 +27,7 @@ Neyra строится как переиспользуемое ядро плюс
 - `python server/main.py` — ядро: API, дашборд, один агент, resident-плагины (например Discord при включённом конфиге),
 - `python server/main.py --mode console` — только консоль для экспериментов с промптами,
 - интерфейс `discord` (текст + музыка) и др. — плагины в `server/modules/`,
-- опциональный **Docker** через `server/Dockerfile` + `server/docker-compose.yml`.
+- опциональный **Docker** через корневой `docker-compose.yml` (include `server/`).
 
 ### Дашборд (frontend)
 
@@ -66,7 +66,7 @@ Neyra строится как переиспользуемое ядро плюс
 - `main.py` — точка входа (`core` или `console`).
 - `run_neyra.bat` — меню на Windows.
 - `run_neyra.sh` — меню на Linux/macOS (статус, остановка, git).
-- `server/Dockerfile` + `server/docker-compose.yml` — контейнерный деплой (порт `8787`, тома под `server/`).
+- `docker-compose.yml` (корень) + `server/Dockerfile` — контейнерный деплой (порт `8787`, тома под `server/`).
 
 ## Продуктовый вектор
 
@@ -108,7 +108,7 @@ Neyra развивается как персональный публичный 
 ### Docker (опционально)
 
 ```bash
-docker compose -f server/docker-compose.yml up --build
+docker compose up --build
 ```
 
 Порт `8787`; runtime под `server/` (`config.yaml`, `modules/`, `data/memory/`, `logs/`).

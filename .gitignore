@@ -92,6 +92,7 @@ logs/*.jsonl.bz2
 logs/voice_tmp/
 
 server/modules/discord/lavalink/application.yml
+server/modules/discord/lavalink/Lavalink.jar
 server/modules/discord/lavalink/plugins/*.jar
 server/modules/discord/lavalink/logs/
 server/modules/discord/lavalink/lavalink.log

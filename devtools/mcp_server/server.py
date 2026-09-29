@@ -125,9 +125,6 @@ def _config_yaml_path() -> Path:
     override = os.environ.get("NEYRA_CONFIG_PATH", "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    legacy = REPO_ROOT / "config.yaml"
-    if legacy.is_file():
-        return legacy.resolve()
     return (SERVER_ROOT / "config.yaml").resolve()
 
 

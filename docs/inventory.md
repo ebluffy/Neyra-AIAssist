@@ -21,7 +21,7 @@
 | `interfaces/discord/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/discord/config.yaml` | мигрировать отдельно; tracked example указан ниже |
 | `interfaces/internal_api/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/internal_api/config.yaml` | мигрировать отдельно; tracked example указан ниже |
 | `interfaces/local_voice/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/local_voice/config.yaml` | до смены loader выяснить consumer и merge behavior |
-| `interfaces/discord/lavalink/Lavalink.jar` (локальный/ignored runtime artifact, проверить наличие) | `server/modules/discord/lavalink/Lavalink.jar` либо документированный server runtime path | сверить наличие и launcher; не терять и не коммитить автоматически |
+| `interfaces/discord/lavalink/Lavalink.jar` (локальный/ignored runtime artifact, проверить наличие) | `server/modules/discord/lavalink/Lavalink.jar` | `.gitignore`; скачать `python server/scripts/fetch_lavalink.py`, не коммитить |
 | `main.py`, root entrypoints и Docker Compose | server entrypoints под `server/`; thin launch/deploy files могут остаться в root | выполнять из `server/` либо выставлять `PYTHONPATH=server` |
 | корневой `PLAN.md` | удалить | канон — `docs/PLAN.md`; дубликат в корне не нужен |
 | `docs/inventory.md` | `docs/inventory.md` | карта аудита остаётся в docs; исключена из legacy-path scan по условию 1b |

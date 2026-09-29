@@ -1,0 +1,4 @@
+# Thin Docker entrypoint (inventory §1: compose in repo root, runtime under server/).
+# Equivalent: docker compose -f server/docker-compose.yml up --build
+include:
+  - path: server/docker-compose.yml

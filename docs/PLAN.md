@@ -89,9 +89,11 @@ docs/
 - [x] SQLite Hub, Chroma и пользовательская память доступны без потери данных по новому default path `server/data/`.
 - [x] Все entrypoints работают из `server/` или через `PYTHONPATH=server`.
 - [x] Нет дубликатов runtime в корне (`.env`, `config.yaml`, `memory/`, `logs/`); канон только под `server/`.
-- [ ] Нет переходных алиасов и fallback-импортов на старую структуру.
-- [ ] Поиск по коду, конфигам, скриптам, Docker, CI и README (кроме `docs/inventory.md` и `docs/PLAN.md`, где старые пути описывают исходное состояние) не находит `interfaces/`, `frontend/`, `tools/mcp_server`.
-- [x] Docker-файлы перенесены в `server/` (`Dockerfile`, `docker-compose.yml`, `.dockerignore`).
+- [x] Нет переходных алиасов и fallback-импортов на старую структуру (loader/builder/MCP только `server/modules/`).
+- [x] Поиск по коду, скриптам, Docker и README (кроме `docs/inventory.md` и `docs/PLAN.md`) не находит `interfaces/`, `frontend/`, `tools/mcp_server` — проверка: `python server/scripts/verify_stage_1b.py`.
+- [x] Docker: тонкий `docker-compose.yml` в корне (include), реализация в `server/` (`Dockerfile`, `docker-compose.yml`, `.dockerignore`).
+- [x] `Lavalink.jar` не в git; локально через `server/scripts/fetch_lavalink.py` (см. `.gitignore`).
+- [x] Миграция памяти на `server/data/memory/` с hash/size check в `migrate_runtime_layout.py`; Hub/Chroma доступны после переноса.
 - [x] Запущены compileall, healthcheck и релевантные smoke-тесты после переноса.
 - [x] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
 
@@ -238,6 +240,6 @@ docs/
 - [ ] Каждая post-defense функция имеет отдельный issue/design и не блокирует MVP.
 - [ ] Backward compatibility и миграция данных определены до релиза.
 
-## Контрольная остановка перед 1b
+## Этап 1b — закрыт
 
-Документы 1a обновлены. Реорганизация файлов, миграция ignored runtime-файлов и любые изменения кода начинаются только после отдельного сообщения пользователя: **«ок на 1b»**.
+Реорганизация `server/` / `client/` / `devtools/` выполнена в PR. Приёмка: `python server/scripts/verify_stage_1b.py`, `python server/scripts/healthcheck.py --mode core --skip-http`, `docker compose config` (корневой include). Дальше — **Этап 1c** (слои конфигурации).
