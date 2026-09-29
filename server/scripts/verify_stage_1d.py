@@ -128,19 +128,24 @@ def check_env_injection() -> list[str]:
     errs: list[str] = []
     prev_or = os.environ.get("OPENROUTER_API_KEY")
     prev_ah = os.environ.get("AIHOPE_API_KEY")
+    prev_llm = os.environ.get("LLM_API_KEY")
     os.environ["OPENROUTER_API_KEY"] = "env-or"
     os.environ["AIHOPE_API_KEY"] = "env-ah"
+    os.environ["LLM_API_KEY"] = "env-generic-dead"
     try:
         cfg: dict = {"llm": {}}
         apply_env_secrets(cfg)
-        or_key = (((cfg.get("llm") or {}).get("providers") or {}).get("openrouter") or {}).get(
-            "api_key"
-        )
-        ah = (((cfg.get("llm") or {}).get("providers") or {}).get("aihope") or {}).get("api_key")
+        llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+        or_key = (((llm.get("providers") or {}).get("openrouter") or {}).get("api_key"))
+        ah = (((llm.get("providers") or {}).get("aihope") or {}).get("api_key"))
         if or_key != "env-or":
             errs.append(f"OPENROUTER not injected into llm.providers.openrouter, got {or_key!r}")
         if ah != "env-ah":
             errs.append(f"AIHOPE not injected into llm.providers.aihope, got {ah!r}")
+        if llm.get("api_key"):
+            errs.append(
+                f"LLM_API_KEY must not inject dead llm.api_key, got {llm.get('api_key')!r}"
+            )
     finally:
         if prev_or is None:
             os.environ.pop("OPENROUTER_API_KEY", None)
@@ -150,6 +155,10 @@ def check_env_injection() -> list[str]:
             os.environ.pop("AIHOPE_API_KEY", None)
         else:
             os.environ["AIHOPE_API_KEY"] = prev_ah
+        if prev_llm is None:
+            os.environ.pop("LLM_API_KEY", None)
+        else:
+            os.environ["LLM_API_KEY"] = prev_llm
     return errs
 
 

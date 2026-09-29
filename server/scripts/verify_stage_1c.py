@@ -254,9 +254,10 @@ def check_schema_rejects_bad() -> list[str]:
         },
         "BACKEND": "aihope",
         "openrouter": {"model": "x"},
+        "vision": {"enabled": True},
     }
     got3 = validate_config_schema(removed)
-    for needle in ("BACKEND", "openrouter"):
+    for needle in ("BACKEND", "openrouter", "vision"):
         if not any(needle in e for e in got3):
             errs.append(f"expected removed-key schema error for {needle}, got {got3}")
     return errs
