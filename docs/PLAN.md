@@ -68,25 +68,30 @@ docs/
 | `sounds/` | `server/sounds/` | перенести серверные звуки; UI-звуки клиента входят в client bundle |
 | `models/` | `server/models/` или внешний runtime cache | классифицировать; кэш не включать в package без необходимости |
 | `tools/mcp_server/` | `devtools/mcp_server/` | переместить dev-only MCP, не включать в server/client package |
+| `memory/` | `server/data/memory/` | SQLite Hub, Chroma и пользовательская память; перенос только migration helper с проверкой hashes |
+| `logs/` | `server/logs/` | runtime logs; перенос migration helper с проверкой |
 | отсутствующий продуктовый `client/` | `client/` | создать отдельный Tauri-проект, не переиспользовать `frontend/` |
-| `PLAN.md` | `docs/PLAN.md` | перенести канонический план |
+| корневой `PLAN.md` | удалить | канон уже в `docs/PLAN.md`; дубликат не оставлять |
 
-Физическое перемещение пользовательской памяти в 1b запрещено: SQLite Hub, Chroma, `memory/` и `logs/` остаются на прежнем месте. Путь к данным читается из `paths.data_dir`, override задаётся через `NEYRA_DATA_DIR`, а default в 1b указывает на текущее место.
+Путь к данным читается из `paths.data_dir` (default: `server/data` относительно корня репозитория или `./data` при работе из `server/`), override — `NEYRA_DATA_DIR`. После 1b физический default указывает на `server/data/`.
 
-До любых операций нужен полный внешний backup проекта и runtime-данных. После backup отдельным скриптом мигрируются ignored-файлы: root `config.yaml`, root `.env`, module `config.yaml`, `memory/`, `logs/` и Lavalink JAR. Скрипт сверяет источники, назначения и размеры/hashes, не перезаписывает существующие данные без явного флага и не удаляет источник до успешной проверки.
+До любых операций нужен полный внешний backup проекта и runtime-данных. После backup отдельным скриптом мигрируются ignored-файлы: root `config.yaml` → `server/config.yaml`, root `.env` → `server/.env`, module `config.yaml`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/` и Lavalink JAR. Скрипт сверяет источники, назначения и размеры/hashes, не перезаписывает существующие данные без явного флага и не удаляет источник до успешной проверки.
 
 После переноса `main.py` все entrypoints (`run_neyra.bat`, `run_neyra.sh`, Windows launcher, Docker, `scripts/healthcheck.py`, `scripts/invoke_plugin.py`) запускаются из `server/` или задают `PYTHONPATH=server`.
 
+Замечание: ADR `docs/adr/0002-core-layout-1b.md` описывает **другой**, уже принятый этап упаковки пакетов внутри `core/` (`core.memory`, `core.plugins`, …). Этап **1b этого PLAN** — перестройка `server/` / `client/` / `devtools/`; это не одно и то же.
+
 ### Готово, когда
 
-- [ ] Выполнен полный backup до `git mv` и до миграции ignored-файлов.
+- [x] Выполнен полный backup до `git mv` и до миграции ignored-файлов.
 - [ ] Серверные файлы перенесены в `server/`, создан отдельный `client/`, dev MCP перенесён в `devtools/mcp_server/`.
-- [ ] Ignored-конфиги, `.env`, runtime data и Lavalink JAR перенесены и проверены отдельным миграционным шагом.
-- [ ] SQLite Hub, Chroma и пользовательская память доступны без потери данных; физический default path в 1b не изменён.
+- [ ] Ignored-конфиги, `.env`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/` и Lavalink JAR перенесены и проверены отдельным миграционным шагом.
+- [ ] SQLite Hub, Chroma и пользовательская память доступны без потери данных по новому default path `server/data/`.
 - [ ] Все entrypoints работают из `server/` или через `PYTHONPATH=server`.
 - [ ] Нет переходных алиасов и fallback-импортов на старую структуру.
 - [ ] Поиск по коду, конфигам, скриптам, Docker, CI и README (кроме `docs/inventory.md` и `docs/PLAN.md`, где старые пути описывают исходное состояние) не находит `interfaces/`, `frontend/`, `tools/mcp_server`.
 - [ ] Запущены compileall, healthcheck и релевантные smoke-тесты после переноса.
+- [ ] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
 
 ## 1c. Слои конфигурации и схема
 
@@ -107,7 +112,7 @@ docs/
 - [ ] `server/config.yaml` не содержит дублирующей глубокой конфигурации и сохраняет совместимые defaults.
 - [ ] Каждый конфигурационный ключ имеет тип, default, источник, target file и правило override.
 - [ ] Loader валидирует схему до запуска и сохраняет понятные ошибки.
-- [ ] `paths.data_dir` и `NEYRA_DATA_DIR` проверены без физического переноса памяти.
+- [ ] `paths.data_dir` и `NEYRA_DATA_DIR` проверены на `server/data` после переноса memory/logs.
 - [ ] Consumer и merge-поведение `interfaces/local_voice/config.yaml` проверены до изменения loader; поведение voice не исчезает молча.
 - [ ] Legacy env aliases либо поддержаны с warning, либо явно документированы как миграция.
 
