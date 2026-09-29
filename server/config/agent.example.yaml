@@ -1,0 +1,31 @@
+# Neyra config layer: config/agent.yaml
+# EN/RU: see docs/PLAN.md §1c and docs/config-keys.md
+#
+agent:
+  # EN: Regex allowlist for unambiguous home commands (before brain). Off by default.
+  # RU: Allowlist однозначных команд умного дома до brain. Выкл. по умолчанию.
+  # EN: home.* is published + logged; real hardware/mock consumer → plan stage 2.
+  # RU: home.* публикуется и логируется; реальный/mock consumer → этап 2 плана.
+  fast_path:
+    enabled: false
+    min_confidence: 1.0
+    intents:
+      - name: light_off
+        patterns:
+          - '(?i)^\s*(выключи|погаси)\s+(свет|лампу)\s*[.!?]?\s*$'
+        event_type: home.light.turn_off
+        target: default_light
+        reply: "Выключаю свет."
+      - name: light_on
+        patterns:
+          - '(?i)^\s*(включи|зажги)\s+(свет|лампу)\s*[.!?]?\s*$'
+        event_type: home.light.turn_on
+        target: default_light
+        reply: "Включаю свет."
+      - name: repeat_last
+        patterns:
+          - '(?i)^\s*(ещ[её]\s+раз|то\s+же|повтори)\s*[.!?]?\s*$'
+        event_type: home.repeat_last
+        target: ""
+        reply: ""
+

@@ -1,0 +1,74 @@
+# Neyra config layer: config/voice.yaml
+# EN/RU: see docs/PLAN.md §1c and docs/config-keys.md
+#
+voice:
+  # EN: Default language (ISO-639-1).
+  # RU: Язык по умолчанию (ISO-639-1).
+  language: "ru"
+
+  stt:
+    # EN: When both local and cloud are enabled — try this lane first.
+    # RU: Если оба включены — сначала этот lane.
+    prefer: cloud
+    local:
+      enable: false
+      # EN: faster-whisper model size + device.
+      # RU: размер модели faster-whisper + device.
+      model: "small"
+      device: "cpu"
+    cloud:
+      enable: true
+      # EN: Active cloud STT provider.
+      # RU: Активный облачный STT.
+      provider: "deepgram"
+      timeout_seconds: 30.0
+      max_retries: 1
+
+      openrouter:
+        # EN: ~$0.04/hour audio. Same OPENROUTER_API_KEY as LLM.
+        # RU: ~$0.04/час. Тот же OPENROUTER_API_KEY, что у LLM.
+        # Docs: https://openrouter.ai/docs/guides/overview/multimodal/stt
+        model: "openai/whisper-large-v3-turbo"
+        base_url: ""
+        temperature: 0.0
+        # EN: multipart = OpenAI-compatible file upload; json = input_audio base64.
+        # RU: multipart = как OpenAI file; json = input_audio base64.
+        upload_mode: "multipart"
+
+      deepgram:
+        model: "nova-3"
+        base_url: "https://api.deepgram.com/v1"
+        # EN: api_key from DEEPGRAM_API_KEY (apply_env_secrets) — do not put secrets in YAML.
+        # RU: api_key из DEEPGRAM_API_KEY — не хранить секреты в YAML.
+        smart_format: true
+        punctuate: true
+        upload_payload: "linear16"
+        use_detect_language: false
+
+      groq:
+        model: "whisper-large-v3-turbo"
+        base_url: "https://api.groq.com/openai/v1"
+        # EN: api_key from GROQ_API_KEY.
+        # RU: api_key из GROQ_API_KEY.
+        temperature: 0.0
+        filter_hallucinations: true
+
+  tts:
+    prefer: cloud
+    local:
+      enable: false
+      # EN: Local TTS placeholder (Silero/Piper/… — Stage 4).
+      # RU: Заглушка локального TTS (этап 4).
+      provider: ""
+    cloud:
+      enable: true
+      # EN: Cloud TTS provider.
+      # RU: Облачный TTS.
+      provider: "yandex"
+      endpoint: "https://tts.api.cloud.yandex.net/tts/v3/utteranceSynthesis"
+      voice: "masha"
+      role: "friendly"
+      speed: 1.1
+      pitch_shift_hz: 50.0
+      timeout_seconds: 60.0
+

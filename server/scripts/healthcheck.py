@@ -28,23 +28,16 @@ def load_dotenv(root: Path) -> None:
 
 
 def load_config(root: Path) -> dict:
-    import yaml
-
-    from core.plugins.config import merge_plugin_configs
-    from core.runtime.paths import apply_resolved_memory_paths
-    from core.runtime.secrets import apply_env_secrets
+    from core.runtime.config_loader import load_layered_config
 
     cfg_path = root / "config.yaml"
     if not cfg_path.is_file():
         return {}
-    with cfg_path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        return {}
-    merge_plugin_configs(data, root)
-    apply_env_secrets(data)
-    apply_resolved_memory_paths(data, root)
-    return data
+    try:
+        return load_layered_config(root, validate=True)
+    except ValueError as e:
+        print(f"[FATAL] {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def check_files(root: Path) -> list[str]:
@@ -142,7 +135,7 @@ def _hint_for_error(msg: str) -> str | None:
     if "discord" in m and "token" in m:
         return "Секреты: .env → DISCORD_TOKEN; или отключи discord в modules/discord/plugin.yaml."
     if "llm config invalid" in m:
-        return "Конфиг: config.yaml → openrouter.* / llm.* (см. config.example.yaml)."
+        return "Конфиг: layered server/config/*.yaml + short config.yaml (см. config.example.yaml)."
     if "models probe failed" in m or "probe exception" in m:
         return "Сеть/API: ключ OpenRouter, base_url, доступ к https://openrouter.ai/api/v1/models."
     return None

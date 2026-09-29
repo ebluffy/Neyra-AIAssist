@@ -1,0 +1,33 @@
+# Neyra config layer: config/runtime.yaml
+# EN/RU: see docs/PLAN.md §1c and docs/config-keys.md
+#
+logging:
+  # EN: Path to user/assistant dialog log.
+  # RU: Путь к логу диалогов пользователя и ассистента.
+  chat_log: "./logs/chat.log"
+
+  # EN: Path to system/runtime log.
+  # RU: Путь к системному логу рантайма.
+  system_log: "./logs/system.log"
+
+  # EN: Log level: DEBUG | INFO | WARNING | ERROR.
+  # RU: Уровень логов: DEBUG | INFO | WARNING | ERROR.
+  level: "INFO"
+
+health_monitor:
+  # EN: Enables periodic health checks and module self-healing.
+  # RU: Включает периодические health-проверки и самовосстановление модулей.
+  enabled: true
+
+  # EN: Run interval in seconds (3600 = hourly monitor).
+  # RU: Интервал запуска в секундах (3600 = проверка раз в час).
+  interval_seconds: 3600
+
+  # EN: Timeout for backend /v1/models probe.
+  # RU: Таймаут проверки backend через /v1/models.
+  llm_timeout_seconds: 10
+
+  # EN: JSONL status report file.
+  # RU: Файл JSONL с отчётами состояния.
+  status_log: "./logs/health_status.jsonl"
+

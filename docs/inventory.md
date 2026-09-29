@@ -20,7 +20,7 @@
 | root `.env` (ignored runtime file) | `server/.env` | перенести секреты без печати и коммита |
 | `interfaces/discord/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/discord/config.yaml` | мигрировать отдельно; tracked example указан ниже |
 | `interfaces/internal_api/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/internal_api/config.yaml` | мигрировать отдельно; tracked example указан ниже |
-| `interfaces/local_voice/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/local_voice/config.yaml` | до смены loader выяснить consumer и merge behavior |
+| `interfaces/local_voice/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/local_voice/config.yaml` | merge → `plugins.local_voice`; stub uses `wake_word` (см. `docs/config-keys.md`) |
 | `interfaces/discord/lavalink/Lavalink.jar` (локальный/ignored runtime artifact, проверить наличие) | `server/modules/discord/lavalink/Lavalink.jar` | `.gitignore`; скачать `python server/scripts/fetch_lavalink.py`, не коммитить |
 | `main.py`, root entrypoints и Docker Compose | server entrypoints под `server/`; thin launch/deploy files могут остаться в root | выполнять из `server/` либо выставлять `PYTHONPATH=server` |
 | корневой `PLAN.md` | удалить | канон — `docs/PLAN.md`; дубликат в корне не нужен |
@@ -35,7 +35,7 @@ Tracked example paths сверены с деревом репозитория. R
 |---|---|---|---|
 | `interfaces/discord/config.yaml` (ignored; наличие проверить локально) | `interfaces/discord/config.example.yaml` | `server/modules/discord/config.yaml` и соседний `config.example.yaml` | Discord/music/Lavalink module; перенести реальный конфиг отдельным migration step |
 | `interfaces/internal_api/config.yaml` (ignored; наличие проверить локально) | `interfaces/internal_api/config.example.yaml` | `server/modules/internal_api/config.yaml` и соседний `config.example.yaml` | Internal API module; сохранить текущие tokens, bind и port |
-| `interfaces/local_voice/config.yaml` (ignored; наличие проверить локально) | `interfaces/local_voice/config.example.yaml` | `server/modules/local_voice/config.yaml` и соседний `config.example.yaml` | Сначала найти точного consumer; не менять общий loader до проверки merge path |
+| `interfaces/local_voice/config.yaml` (ignored; наличие проверить локально) | `interfaces/local_voice/config.example.yaml` | `server/modules/local_voice/config.yaml` и соседний `config.example.yaml` | Consumer: `merge_plugin_configs` → `plugins.local_voice`; stub читает `wake_word` |
 | runtime-конфига у example module нет в tracked tree | `interfaces/000EXAMPLE/` (`plugin.yaml`, `core/main.py`, README/help files) | `server/modules/000EXAMPLE/` | реальный example module и template; сохранить как developer template |
 | `tools/mcp_server/server.py`, `tools/mcp_server/requirements.txt` | source tree `tools/mcp_server/` | `devtools/mcp_server/` | dev tooling, не продуктовый модуль |
 
@@ -47,21 +47,22 @@ Tracked example paths сверены с деревом репозитория. R
 
 ## 4. Конфигурация: ключи и env
 
-В этой инвентаризации группировка ниже задаёт области аудита. В начале 1c каждый конкретный ключ должен быть отдельной строкой с точным type, default, source, target file, env override и compatibility status. Defaults не выдумывать: снять из текущих loaders и config examples.
+Подробная таблица ключей (type / default / source / target / env / compatibility) — [`docs/config-keys.md`](config-keys.md) (Этап 1c).
 
-| Область | Фактический источник сейчас | Целевой файл после 1c |
+Группы ниже — обзор областей; канон файлов после 1c:
+
+| Область | Фактический источник | Целевой файл после 1c |
 |---|---|---|
-| `assistant.name`, `assistant.language`, `assistant.profile` | root config consumers в `core/agent/persona.py` и bootstrap | `server/config.yaml` |
-| provider/model roles: `MODE`, `BACKEND`, OpenRouter/AiHope profile, talk/brain/memory/vision models | `core/llm/profile.py`, `core/agent/llm_setup.py`, bootstrap | `server/config/llm.yaml` |
-| generation, retry/fallback, timeout and context settings | `core/agent/llm_setup.py`, `core/llm/` | `server/config/llm.yaml` |
-| agent, prompt runtime, reflection/planning, vision and fast path | `core/agent/`, `core/llm/` | `server/config/agent.yaml` |
-| `memory.*`, external storage and backup policies | `core/memory/`, runtime storage/backup consumers | `server/config/memory.yaml` |
-| voice/STT/TTS, including legacy voice aliases | `core/voice/config.py`, `core/voice/stt.py` | `server/config/voice.yaml` |
-| module enablement and MCP allowlist | `core/plugins/config.py`, `core/runtime/mcp_client.py` | `server/config/modules.yaml` |
-| logging, health monitor, timezone/runtime settings | bootstrap, `core/runtime/health.py`, memory hub | `server/config/runtime.yaml` |
-| Internal API, bind host and dashboard server settings | `interfaces/internal_api/`, server runtime and `frontend/` consumers | `server/config/server.yaml` |
-| Discord-specific settings | `interfaces/discord/` | `server/modules/discord/config.yaml` |
-| data path | memory/runtime path consumers | `server/config.yaml` key `paths.data_dir` |
+| `assistant.*`, `paths.data_dir`, `system.timezone` | root consumers | `server/config.yaml` |
+| `BACKEND`, `openrouter.*`, optional `llm.*` | `core/llm/`, bootstrap | `server/config/llm.yaml` |
+| `agent.*` | `core/agent/` | `server/config/agent.yaml` |
+| `memory.*`, `backup.*`, `external_storage.*` | `core/memory/`, backup | `server/config/memory.yaml` |
+| `voice.*` | `core/voice/config.py` | `server/config/voice.yaml` |
+| `mcp_client.*` | MCP client | `server/config/modules.yaml` |
+| `logging.*`, `health_monitor.*` | bootstrap, health | `server/config/runtime.yaml` |
+| `internal_api.*`, `dashboard.*` | Internal API module (+ layer defaults) | `server/config/server.yaml` + `modules/internal_api/config.yaml` |
+| Discord | Discord module | `server/modules/discord/config.yaml` |
+| `local_voice` | `merge_plugin_configs` → `plugins.local_voice`; stub reads `wake_word` | `server/modules/local_voice/config.yaml` |
 
 ### 4.1 Environment variables
 
@@ -124,8 +125,8 @@ Dev MCP env перечисляется отдельно только после 
 ### Проверить до миграции
 
 - Локальное наличие ignored root/module configs, `.env`, `memory/`, `logs/`, SQLite/Chroma data и Lavalink JAR; сделать backup до переноса.
-- Точный consumer `interfaces/local_voice/config.yaml` и почему конфиг не попадает в общий merge.
-- До 1c собрать отдельную строку на каждый config key с type/default/source/target/env override.
+- Точный consumer `interfaces/local_voice/config.yaml` — зафиксирован: `merge_plugin_configs` → `plugins.local_voice` (см. `docs/config-keys.md`).
+- До 1c собрать отдельную строку на каждый config key — см. `docs/config-keys.md`.
 - Source paths для шаблона, Internal API, Discord и MCP сверены по фактическому tracked tree в разделе 2.
 
 Начало Этапа 1b — только после отдельного сообщения пользователя «ок на 1b».

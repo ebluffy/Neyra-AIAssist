@@ -6,7 +6,8 @@
 Запуск (ядро должно быть поднято: main.py --mode core):
   python scripts/inject_memes_2026.py
 
-Токен: internal_api.token в config.yaml или INTERNAL_API_TOKEN / переменные из .env (через load_config).
+Токен: internal_api.token (слои config/server.yaml + modules/internal_api)
+или INTERNAL_API_TOKEN / переменные из .env (через load_layered_config).
 """
 
 from __future__ import annotations
@@ -22,22 +23,18 @@ if str(ROOT) not in sys.path:
 
 
 def load_config_dict() -> dict:
-    import yaml
+    from core.runtime.config_loader import load_layered_config
+    from core.runtime.secrets import load_dotenv_file
 
-    from core.plugins.config import merge_plugin_configs
-    from core.runtime.secrets import apply_env_secrets
-
-    p = ROOT / "config.yaml"
-    if not p.is_file():
+    if not (ROOT / "config.yaml").is_file():
         print("[FATAL] config.yaml не найден", file=sys.stderr)
         sys.exit(1)
-    with p.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        data = {}
-    merge_plugin_configs(data, ROOT)
-    apply_env_secrets(data)
-    return data
+    load_dotenv_file(ROOT)
+    try:
+        return load_layered_config(ROOT, validate=True)
+    except ValueError as e:
+        print(f"[FATAL] {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def api_base_and_token(cfg: dict) -> tuple[str, str]:

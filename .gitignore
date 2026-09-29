@@ -1,6 +1,8 @@
 # Secrets and local config (under server/ after Stage 1b)
 server/.env
 server/config.yaml
+server/config/*.yaml
+!server/config/*.example.yaml
 .env
 config.yaml
 

@@ -43,21 +43,19 @@ def main() -> int:
         print("internal_api is started by the core process: python main.py", file=sys.stderr)
         return 1
 
-    import yaml
-
     cfg_path = root / "config.yaml"
     if not cfg_path.is_file():
         print("config.yaml not found", file=sys.stderr)
         return 1
-    from core.plugins.config import merge_plugin_configs
-    from core.runtime.secrets import apply_env_secrets, load_dotenv_file
+    from core.runtime.config_loader import load_layered_config
+    from core.runtime.secrets import load_dotenv_file
 
     load_dotenv_file(root)
-    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    if not isinstance(cfg, dict):
-        cfg = {}
-    merge_plugin_configs(cfg, root)
-    apply_env_secrets(cfg)
+    try:
+        cfg = load_layered_config(root, validate=True)
+    except ValueError as e:
+        print(f"[FATAL] {e}", file=sys.stderr)
+        return 1
 
     agent = None
     if manifest.id == "discord":

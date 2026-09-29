@@ -35,7 +35,7 @@ from core.runtime.win_runtime import apply_runtime_patches
 
 apply_runtime_patches()
 # Секреты из .env (см. .env.example) — до CUDA и до загрузки config.yaml
-from core.runtime.secrets import apply_env_secrets, load_dotenv_file
+from core.runtime.secrets import load_dotenv_file
 
 load_dotenv_file(_PROJECT_ROOT)
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -47,10 +47,7 @@ import logging
 import subprocess
 from typing import Any
 
-import yaml
-
-from core.plugins import merge_plugin_configs
-from core.runtime.paths import apply_resolved_memory_paths
+from core.runtime.config_loader import load_layered_config
 
 # ─── Загрузка конфига ─────────────────────────────────────────────────────────
 
@@ -61,14 +58,14 @@ def load_config() -> dict[str, Any]:
     if not CONFIG_PATH.exists():
         print(f"[FATAL] Конфиг не найден: {CONFIG_PATH}")
         sys.exit(1)
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        data = {}
-    merge_plugin_configs(data, _PROJECT_ROOT)
-    apply_env_secrets(data)
-    apply_resolved_memory_paths(data, _PROJECT_ROOT)
-    return data
+    try:
+        return load_layered_config(_PROJECT_ROOT, validate=True)
+    except ValueError as e:
+        print(f"[FATAL] {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"[FATAL] Config load failed: {e}")
+        sys.exit(1)
 
 
 config = load_config()

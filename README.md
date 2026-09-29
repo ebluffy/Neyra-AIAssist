@@ -92,14 +92,14 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
 2. Install dependencies:
   - `pip install -r server/requirements.txt`
 3. Create `server/.env` from `server/.env.example` and fill secrets.
-4. Create `server/config.yaml` from `server/config.example.yaml` and adjust runtime values:
-  - Set `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model` (nested blocks).
-5. Copy plugin templates where needed:
+4. Create `server/config.yaml` from `server/config.example.yaml` (short root: `paths`, `system`, `assistant`).
+5. Copy layer templates: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). Set models under `server/config/llm.yaml` (`openrouter.*`).
+6. Copy plugin templates where needed:
   - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
   - `server/modules/internal_api/config.example.yaml` → `server/modules/internal_api/config.yaml`
   - other plugins: `server/modules/<id>/config.example.yaml` → `server/modules/<id>/config.yaml`
-6. Preflight (example): `cd server && python scripts/healthcheck.py --mode console --skip-http`
-7. Run:
+7. Preflight (example): `cd server && python scripts/healthcheck.py --mode console --skip-http`
+8. Run:
   - Windows: `run_neyra.bat`
   - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`
   - Direct: `cd server && python main.py` (core) or `python main.py --mode console`
@@ -140,10 +140,10 @@ Optional (future voice integrations):
 
 ## Configuration files
 
-- Public template: `config.example.yaml`
-- Local private runtime config: `config.yaml` (ignored by git)
-- Plugin settings: `server/modules/<plugin_id>/config.yaml` (optional; copy from `config.example.yaml` in that folder). HTTP bind + dashboard: `server/modules/internal_api/config.yaml`.
-- Secret values: `.env` (ignored by git)
+- Short root template: `server/config.example.yaml` → `server/config.yaml` (`paths`, `system`, `assistant`)
+- Layer templates: `server/config/*.example.yaml` → `server/config/*.yaml` (see `docs/config-keys.md`)
+- Plugin settings: `server/modules/<plugin_id>/config.yaml` (optional; copy from `config.example.yaml` in that folder). HTTP bind + dashboard: `server/modules/internal_api/config.yaml` (overrides `server/config/server.yaml`).
+- Secret values: `server/.env` (ignored by git)
 
 ## System prompts and behavior tuning
 
