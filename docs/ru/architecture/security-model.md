@@ -24,11 +24,11 @@
 - RAG в `prepare_turn` идёт через тот же user-scoped поиск.
 
 ## Плагины
-- Plugin builder пишет только внутрь `interfaces/<plugin_id>/` (path jail, без `../`).
+- Plugin builder пишет только внутрь `server/modules/<plugin_id>/` (path jail, без `../`).
 - MCP расширяет поверхность атаки — allowlist серверов и аудит tools.
 
 ## Бэкапы и ops — не коммитить
-- `.env`, корневой и `interfaces/**/config.yaml`
+- `.env`, корневой и `server/modules/**/config.yaml`
 - `memory/*.db*`, Chroma, `memory/working_memory/`, артефакты diary/journal
 - `logs/*` (в т.ч. `webhooks_state.json` — могут быть payload’ы)
 - `backups/` — как PII; хранить шифрованно / с контролем доступа

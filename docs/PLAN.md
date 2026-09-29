@@ -68,25 +68,37 @@ docs/
 | `sounds/` | `server/sounds/` | перенести серверные звуки; UI-звуки клиента входят в client bundle |
 | `models/` | `server/models/` или внешний runtime cache | классифицировать; кэш не включать в package без необходимости |
 | `tools/mcp_server/` | `devtools/mcp_server/` | переместить dev-only MCP, не включать в server/client package |
+| `memory/` | `server/data/memory/` | SQLite Hub, Chroma и пользовательская память; перенос только migration helper с проверкой hashes |
+| `logs/` | `server/logs/` | runtime logs; перенос migration helper с проверкой |
 | отсутствующий продуктовый `client/` | `client/` | создать отдельный Tauri-проект, не переиспользовать `frontend/` |
-| `PLAN.md` | `docs/PLAN.md` | перенести канонический план |
+| корневой `PLAN.md` | удалить | канон уже в `docs/PLAN.md`; дубликат не оставлять |
 
-Физическое перемещение пользовательской памяти в 1b запрещено: SQLite Hub, Chroma, `memory/` и `logs/` остаются на прежнем месте. Путь к данным читается из `paths.data_dir`, override задаётся через `NEYRA_DATA_DIR`, а default в 1b указывает на текущее место.
+Путь к данным читается из `paths.data_dir` (default: `server/data` относительно корня репозитория или `./data` при работе из `server/`), override — `NEYRA_DATA_DIR`. После 1b физический default указывает на `server/data/`.
 
-До любых операций нужен полный внешний backup проекта и runtime-данных. После backup отдельным скриптом мигрируются ignored-файлы: root `config.yaml`, root `.env`, module `config.yaml`, `memory/`, `logs/` и Lavalink JAR. Скрипт сверяет источники, назначения и размеры/hashes, не перезаписывает существующие данные без явного флага и не удаляет источник до успешной проверки.
+До любых операций нужен полный внешний backup проекта и runtime-данных. Скрипт `server/scripts/migrate_runtime_layout.py`: сначала `--dry-run` (таблица), затем прогон с hash/size и `--report-memory` (Hub/Chroma). Переносит root `config.yaml`, `.env`, module configs, `memory/` → `server/data/memory/`, `logs/` → `server/logs/`, опционально legacy `Lavalink.jar` (или `fetch_lavalink.py`). Без `--force` target не перезаписывается; source удаляется только с `--remove-source` / `--cleanup-legacy-root`. Отчёт прогонов: `docs/stage-1b-evidence.md`.
 
 После переноса `main.py` все entrypoints (`run_neyra.bat`, `run_neyra.sh`, Windows launcher, Docker, `scripts/healthcheck.py`, `scripts/invoke_plugin.py`) запускаются из `server/` или задают `PYTHONPATH=server`.
 
+Замечание: ADR `docs/adr/0002-core-layout-1b.md` описывает **другой**, уже принятый этап упаковки пакетов внутри `core/` (`core.memory`, `core.plugins`, …). Этап **1b этого PLAN** — перестройка `server/` / `client/` / `devtools/`; это не одно и то же.
+
 ### Готово, когда
 
-- [ ] Выполнен полный backup до `git mv` и до миграции ignored-файлов.
-- [ ] Серверные файлы перенесены в `server/`, создан отдельный `client/`, dev MCP перенесён в `devtools/mcp_server/`.
-- [ ] Ignored-конфиги, `.env`, runtime data и Lavalink JAR перенесены и проверены отдельным миграционным шагом.
-- [ ] SQLite Hub, Chroma и пользовательская память доступны без потери данных; физический default path в 1b не изменён.
-- [ ] Все entrypoints работают из `server/` или через `PYTHONPATH=server`.
-- [ ] Нет переходных алиасов и fallback-импортов на старую структуру.
-- [ ] Поиск по коду, конфигам, скриптам, Docker, CI и README (кроме `docs/inventory.md` и `docs/PLAN.md`, где старые пути описывают исходное состояние) не находит `interfaces/`, `frontend/`, `tools/mcp_server`.
-- [ ] Запущены compileall, healthcheck и релевантные smoke-тесты после переноса.
+- [x] Выполнен полный backup до `git mv` и до миграции ignored-файлов.
+- [x] Серверные файлы перенесены в `server/`, создан отдельный `client/`, dev MCP перенесён в `devtools/mcp_server/`.
+- [x] Ignored-конфиги, `.env`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/` перенесены; Lavalink JAR — `.gitignore` + `fetch_lavalink.py` (опционально FILE move в migrate).
+- [x] SQLite Hub, Chroma и пользовательская память доступны без потери данных по новому default path `server/data/`.
+- [x] Все entrypoints работают из `server/` или через `PYTHONPATH=server`.
+- [x] Нет дубликатов runtime в корне (`.env`, `config.yaml`, `memory/`, `logs/`); канон только под `server/`.
+- [x] Нет переходных алиасов и fallback-импортов на старую структуру (loader/builder/MCP только `server/modules/`).
+- [x] Поиск по коду, скриптам, Docker и README (кроме `docs/inventory.md` и `docs/PLAN.md`) не находит `interfaces/`, `frontend/`, `tools/mcp_server` — проверка: `python server/scripts/verify_stage_1b.py`.
+- [x] Docker: тонкий `docker-compose.yml` в корне (include), реализация в `server/` (`Dockerfile`, `docker-compose.yml`, `.dockerignore`).
+- [x] `Lavalink.jar` не в git; локально через `server/scripts/fetch_lavalink.py` (см. `.gitignore`).
+- [x] Миграция памяти на `server/data/memory/` с hash/size check в `migrate_runtime_layout.py`; Hub/Chroma доступны после переноса.
+- [x] Запущены compileall, healthcheck и smoke локально; логи — `docs/stage-1b-evidence.md`; CI workflow — `.github/workflows/stage-1b-verify.yml`.
+- [x] CI `Stage 1b verify` зелёный на head PR.
+- [x] Политика переноса memory/logs подтверждена владельцем в PR #14 (см. `docs/stage-1b-acceptance.md`).
+- [x] `paths.data_dir` / `NEYRA_DATA_DIR` доходят до Hub/Chroma через `apply_resolved_memory_paths` (`server/core/runtime/paths.py`).
+- [x] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
 
 ## 1c. Слои конфигурации и схема
 
@@ -100,15 +112,15 @@ docs/
 - `server/config/server.yaml` — Internal API, bind host, port и dashboard settings.
 - `server/.env` — только секреты; `HF_TOKEN` и `HUGGING_FACE_HUB_TOKEN` optional и закомментированы в example.
 
-В начале 1c групповые записи inventory заменяются подробной таблицей: один ключ на строку, точный тип, default, источник чтения, target file, env override и compatibility status. До изменения общего loader проверяется фактический consumer и merge-поведение `interfaces/local_voice/config.yaml`.
+В начале 1c групповые записи inventory заменяются подробной таблицей: один ключ на строку, точный тип, default, источник чтения, target file, env override и compatibility status. До изменения общего loader проверяется фактический consumer и merge-поведение `server/modules/local_voice/config.yaml`.
 
 ### Готово, когда
 
 - [ ] `server/config.yaml` не содержит дублирующей глубокой конфигурации и сохраняет совместимые defaults.
 - [ ] Каждый конфигурационный ключ имеет тип, default, источник, target file и правило override.
 - [ ] Loader валидирует схему до запуска и сохраняет понятные ошибки.
-- [ ] `paths.data_dir` и `NEYRA_DATA_DIR` проверены без физического переноса памяти.
-- [ ] Consumer и merge-поведение `interfaces/local_voice/config.yaml` проверены до изменения loader; поведение voice не исчезает молча.
+- [ ] `paths.data_dir` и `NEYRA_DATA_DIR` проверены на `server/data` после переноса memory/logs.
+- [ ] Consumer и merge-поведение `server/modules/local_voice/config.yaml` проверены до изменения loader; поведение voice не исчезает молча.
 - [ ] Legacy env aliases либо поддержаны с warning, либо явно документированы как миграция.
 
 ## 2. Control API поверх Internal API
@@ -231,6 +243,6 @@ docs/
 - [ ] Каждая post-defense функция имеет отдельный issue/design и не блокирует MVP.
 - [ ] Backward compatibility и миграция данных определены до релиза.
 
-## Контрольная остановка перед 1b
+## Этап 1b — закрыт (PR #14)
 
-Документы 1a обновлены. Реорганизация файлов, миграция ignored runtime-файлов и любые изменения кода начинаются только после отдельного сообщения пользователя: **«ок на 1b»**.
+Реорганизация `server/` / `client/` / `devtools/` выполнена. Приёмка политики memory/logs: `docs/stage-1b-acceptance.md` (OK владельца в PR). Прогоны: `docs/stage-1b-evidence.md` (post-migrate baseline). CI `Stage 1b verify` зелёный. Дальше — **Этап 1c** (слои конфигурации).

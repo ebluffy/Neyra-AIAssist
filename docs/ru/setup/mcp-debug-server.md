@@ -5,7 +5,7 @@
 
 ---
 
-# MCP debug-сервер (`tools/mcp_server`)
+# MCP debug-сервер (`devtools/mcp_server`)
 
 Официальный Python SDK MCP (`mcp`): подключение Cursor к Нейре для логов, вызовов Internal API, инъекции событий и инспекции памяти.
 
@@ -24,11 +24,11 @@
 
 **Lifecycle (`neyra_lifecycle`):** по умолчанию выключен (API вернёт **403**), пока не задано `internal_api.debug_lifecycle_enabled: true` или переменная `NEYRA_DEBUG_LIFECYCLE=1`/`true`/`yes` (в `docker-compose.yml` для сервиса задаётся автоматически). Нужен **admin** Bearer (`INTERNAL_API_TOKEN`). Действия **stop** и **restart** завершают процесс Python; повторный запуск в Docker даёт политика `restart: unless-stopped` или ручной `docker compose restart`.
 
-**Docker Desktop:** из корня репозитория `docker compose up --build`; на хосте MCP указывает `NEYRA_API_BASE=http://127.0.0.1:8787`. Логи в томе `./logs` на хосте совпадают с путём репозитория — `read_neyra_logs` работает из того же чекаута или через `NEYRA_LOG_PATH`. Секреты — в `.env` (см. `.env.example`). Не публикуйте вывод `docker compose config`, если в нём подставляются секреты из `.env`.
+**Docker Desktop:** из корня репозитория: `docker compose up --build` (тонкий include → `server/docker-compose.yml`). На хосте MCP указывает `NEYRA_API_BASE=http://127.0.0.1:8787`. Логи — `server/logs/` на хосте; `read_neyra_logs` читает `server/config.yaml` / `NEYRA_LOG_PATH`. Секреты — `server/.env` (шаблон `server/.env.example`). Не публикуйте вывод `docker compose config`, если в нём есть секреты.
 
 ## Установка
 
-Предпочтительно **основной venv проекта** (Windows: `.venv_win`, Linux/WSL: `.venv` или `~/neyra-venv`) — пакеты `mcp`/`httpx` уже есть при полной установке root `requirements.txt`. В Cursor MCP указывайте этот интерпретатор и `tools/mcp_server/server.py`.
+Предпочтительно **основной venv проекта** (Windows: `.venv_win`, Linux/WSL: `.venv` или `~/neyra-venv`) — пакеты `mcp`/`httpx` уже есть при полной установке `server/requirements.txt`. В Cursor MCP указывайте этот интерпретатор и `devtools/mcp_server/server.py`.
 
 Cursor поднимает MCP **параллельно с IDE** (stdio) при вызове tools; ядро Нейры должно быть запущено отдельно (`main.py --mode core`), иначе HTTP-tools к `http://127.0.0.1:8787` не достучатся.
 
@@ -37,7 +37,7 @@ Cursor поднимает MCP **параллельно с IDE** (stdio) при �
 ```bash
 python -m venv .venv_mcp
 .venv_mcp\Scripts\activate
-pip install -r tools/mcp_server/requirements.txt
+pip install -r devtools/mcp_server/requirements.txt
 ```
 
 Имя `.venv-mcp` устарело — не создавайте его.
@@ -45,16 +45,16 @@ pip install -r tools/mcp_server/requirements.txt
 ## Путь к логу
 
 1. Переменная `NEYRA_LOG_PATH`.
-2. Иначе `logging.system_log` в корневом `config.yaml` (как у `main.py`, обычно `./logs/system.log`).
-3. Иначе первый существующий файл: `logs/system.log`, затем `logs/neyra.log`.
-4. Иначе ожидаемый путь по умолчанию: `logs/system.log`.
+2. Иначе `logging.system_log` в `server/config.yaml` (обычно `./logs/system.log` при cwd=`server/`).
+3. Иначе `server/logs/system.log`, затем `server/logs/neyra.log`.
+4. Иначе ожидаемый default: `server/logs/system.log`.
 
 ## Подключение в Cursor
 
 **Cursor Settings → MCP**, сервер **stdio**:
 
 - **Command:** интерпретатор Python с установленными зависимостями.
-- **Args:** полный путь к `tools/mcp_server/server.py`.
+- **Args:** полный путь к `devtools/mcp_server/server.py`.
 
 Пример `env`: `NEYRA_LOG_PATH`, `NEYRA_API_BASE` (`http://127.0.0.1:8787`), `NEYRA_API_TOKEN` (если задан `internal_api.token`), `NEYRA_CONFIG_PATH`.
 
@@ -62,4 +62,4 @@ pip install -r tools/mcp_server/requirements.txt
 
 ## Реализация
 
-Файлы: `tools/mcp_server/server.py`, `tools/mcp_server/requirements.txt`.
+Файлы: `devtools/mcp_server/server.py`, `devtools/mcp_server/requirements.txt`.

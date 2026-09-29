@@ -14,16 +14,16 @@
 | `prompts/` | `server/prompts/` | системные prompts и persona assets |
 | `sounds/` | `server/sounds/` | звуки ответа сервера; UI-звуки клиента принадлежат `client/` bundle |
 | `models/` | `server/models/` или внешний runtime cache | проверить вес/назначение; не включать скачиваемый cache в package без необходимости |
-| `memory/` | остаётся в текущем physical location в 1b | SQLite Hub, Chroma и пользовательская память; не перемещать физически без backup и отдельной миграции |
-| `logs/` | остаётся в текущем physical location в 1b | runtime logs; backup и проверить сохранность |
+| `memory/` | `server/data/memory/` | SQLite Hub, Chroma и пользовательская память; перенос migration helper с hash/size check после backup |
+| `logs/` | `server/logs/` | runtime logs; перенос migration helper с проверкой |
 | root `config.yaml` (ignored runtime file) | `server/config.yaml` | перенести с сохранением пользовательских значений |
 | root `.env` (ignored runtime file) | `server/.env` | перенести секреты без печати и коммита |
 | `interfaces/discord/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/discord/config.yaml` | мигрировать отдельно; tracked example указан ниже |
 | `interfaces/internal_api/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/internal_api/config.yaml` | мигрировать отдельно; tracked example указан ниже |
 | `interfaces/local_voice/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/local_voice/config.yaml` | до смены loader выяснить consumer и merge behavior |
-| `interfaces/discord/lavalink/Lavalink.jar` (локальный/ignored runtime artifact, проверить наличие) | `server/modules/discord/lavalink/Lavalink.jar` либо документированный server runtime path | сверить наличие и launcher; не терять и не коммитить автоматически |
+| `interfaces/discord/lavalink/Lavalink.jar` (локальный/ignored runtime artifact, проверить наличие) | `server/modules/discord/lavalink/Lavalink.jar` | `.gitignore`; скачать `python server/scripts/fetch_lavalink.py`, не коммитить |
 | `main.py`, root entrypoints и Docker Compose | server entrypoints под `server/`; thin launch/deploy files могут остаться в root | выполнять из `server/` либо выставлять `PYTHONPATH=server` |
-| root `PLAN.md` | `docs/PLAN.md` | перенести канонический roadmap |
+| корневой `PLAN.md` | удалить | канон — `docs/PLAN.md`; дубликат в корне не нужен |
 | `docs/inventory.md` | `docs/inventory.md` | карта аудита остаётся в docs; исключена из legacy-path scan по условию 1b |
 | отсутствующий продуктовый `client/` | `client/` | новый Tauri 2 + React + TypeScript Windows control client |
 
@@ -43,7 +43,7 @@ Tracked example paths сверены с деревом репозитория. R
 
 `git mv` переносит только tracked files. До 1b нужен полный внешний backup проекта и локальных runtime-данных. После backup отдельный migration helper переносит найденные ignored files из источника в соответствующее назначение, выводит список source/destination, сверяет размеры или hashes, не перезаписывает target без явного флага и сохраняет source до успешного запуска.
 
-Обязательный набор проверки: root `config.yaml`, root `.env`, все module `config.yaml`, `memory/`, `logs/`, SQLite Hub, Chroma persistence и Lavalink JAR. Отсутствующий путь отмечается как отсутствующий и не создаётся поверх другой копии автоматически. После переноса проверить чтение Hub/Chroma, server startup, Internal API, Discord/Lavalink и local voice config consumer. Физический каталог пользовательской памяти в 1b остаётся прежним.
+Обязательный набор проверки и переноса: root `config.yaml` → `server/config.yaml`, root `.env` → `server/.env`, все module `config.yaml`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/`, SQLite Hub, Chroma persistence и Lavalink JAR. Отсутствующий путь отмечается как отсутствующий и не создаётся поверх другой копии автоматически. После переноса проверить чтение Hub/Chroma по новому path, server startup, Internal API, Discord/Lavalink и local voice config consumer. Default `paths.data_dir` после 1b — `server/data` (override `NEYRA_DATA_DIR`).
 
 ## 4. Конфигурация: ключи и env
 
@@ -73,7 +73,7 @@ Tracked example paths сверены с деревом репозитория. R
 | `DISCORD_TOKEN` | Discord module | сохранить в server `.env` |
 | `INTERNAL_API_TOKEN`, `INTERNAL_API_VIEWER_TOKEN`, `INTERNAL_API_MAINT_TOKEN` | Control/Internal API roles | сохранить, не логировать и не печатать |
 | `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN` | доступ к gated Hugging Face models | optional, закомментировать в `.env.example`; public embeddings и Whisper не требуют токена |
-| `NEYRA_DATA_DIR` | override для `paths.data_dir` | optional; default 1b остаётся на текущем physical location |
+| `NEYRA_DATA_DIR` | override для `paths.data_dir` | optional; default после 1b — `server/data` (`./data` при cwd=`server/`) |
 | `INTERNAL_API_BIND_HOST` | bind override | default localhost; LAN только явной настройкой |
 | `SCREEN_PROXY_SECRET` | активный consumer не подтверждён | убрать из active example, оставить в backlog |
 
@@ -103,7 +103,7 @@ Dev MCP env перечисляется отдельно только после 
 | provider contracts с `NotImplementedError` | сохранить contracts; отсутствующие реализации — backlog |
 | `interfaces/000EXAMPLE/` | сохранить как реальный module SDK/template |
 | `frontend/` | перенести в `server/dashboard/`; не смешивать с новым `client/` |
-| SQLite Hub, Chroma, `memory/`, `logs/` | backup, migration check и сохранение; физический data path в 1b не менять |
+| SQLite Hub, Chroma, `memory/`, `logs/` | backup → `server/data/memory/` и `server/logs/` с hash/size check; default `paths.data_dir` = `server/data` |
 | `tools/mcp_server/` | переместить в `devtools/mcp_server/`, не удалять и не ставить как runtime dependency |
 
 ## 7. Решения и вопросы перед 1b
@@ -116,7 +116,9 @@ Dev MCP env перечисляется отдельно только после 
 - Локальные client data: адрес сервера, токен в Windows Credential Manager, тема, размер окна и кэш последнего статуса.
 - Control API использует текущие Internal API tokens/roles; default localhost, LAN только явной настройкой.
 - Server installer — backlog; client NSIS installer/updater входят в Этап 3, но в минимум защиты входит только рабочий `setup.exe`.
-- `paths.data_dir` + `NEYRA_DATA_DIR`; физический data path не меняется в 1b.
+- `paths.data_dir` + `NEYRA_DATA_DIR`; после 1b default data path — `server/data` (`memory/` → `server/data/memory/`, `logs/` → `server/logs/`).
+- Корневой `PLAN.md` удаляется; канон только `docs/PLAN.md`.
+- ADR `0002-core-layout-1b` — историческая упаковка пакетов внутри `core/`, не путать с Этапом 1b (server/client/devtools) этого PLAN.
 - HF tokens optional и закомментированы в `.env.example`.
 
 ### Проверить до миграции

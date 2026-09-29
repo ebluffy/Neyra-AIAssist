@@ -1,0 +1,50 @@
+# Copy to `config.yaml` in this folder. Merged into root config as `discord.*`.
+# RU: Скопируйте в config.yaml в этой папке — попадает в общий конфиг как `discord`.
+#
+# EN: Bot token only via DISCORD_TOKEN in project .env (not in this file).
+# RU: Токен бота только через DISCORD_TOKEN в .env проекта (не в этом файле).
+#
+# EN: Enable/disable in modules/discord/plugin.yaml (`enabled:`).
+# RU: Вкл/выкл — в modules/discord/plugin.yaml (`enabled:`).
+
+# EN: List of channel IDs where bot can answer without mention.
+channel_ids: []
+
+# EN: true = answer only when bot is mentioned.
+mention_only: false
+
+# EN: Per-user cooldown in seconds.
+cooldown_seconds: 3.0
+
+# EN: Stream edit interval for partial message updates.
+stream_edit_interval: 0.7
+
+# EN: Output mode: stream | final_only
+stream_output_mode: "stream"
+
+# EN: Optional guild ID for faster slash command sync; null for global sync.
+slash_sync_guild_id: null
+
+# EN: Max wait for MUSIC_RESULT after publishing a music command (seconds).
+music_result_timeout_seconds: 25.0
+
+# EN: Proactive chat (stage B5) — periodic messages via Internal API POST /v1/chat only (no core edits).
+# RU: Спонтанные реплики — только HTTP к ядру; нужны запущенный internal_api и при необходимости INTERNAL_API_TOKEN.
+#     Интервал — случайная пауза между сообщениями (минуты). Канал: proactive.channel_id или первый из channel_ids.
+proactive:
+  enabled: false
+  min_interval_minutes: 10
+  max_interval_minutes: 30
+  channel_id: null
+  request_timeout_seconds: 180
+  username: "neyra_proactive"
+  platform_user_id: "discord_proactive"
+  author_display_name: "Нейра"
+  # prompt: "..."  # optional override; default — короткая спонтанная реплика / мемы (см. bot.py)
+
+# EN: Lavalink nodes (read by interfaces.discord.music). Legacy: plugins.discord_music in config.
+music:
+  nodes:
+    - identifier: "local-lavalink"
+      uri: "http://127.0.0.1:2333"
+      password: "youshallnotpass"

@@ -7,7 +7,7 @@
 
 # Web UI (React dashboard)
 
-The dashboard is a **React + Vite + Tailwind CSS** SPA served by the same FastAPI process as the core (`python main.py`). Source lives under `frontend/src/`; production assets are built into `frontend/dist`.
+The dashboard is a **React + Vite + Tailwind CSS** SPA served by the same FastAPI process as the core (`python server/main.py`). Source lives under `server/dashboard/src/`; production assets are built into `server/dashboard/dist`.
 
 Real-time parity with the Event Bus for every dashboard action is **planned** as Stage 1 (bidirectional WebSocket bridge — see `PLAN.md`; deferred until after soak). Today the UI primarily talks to the core over HTTP `/v1`.
 
@@ -23,7 +23,7 @@ Real-time parity with the Event Bus for every dashboard action is **planned** as
 ## Development
 
 ```bash
-cd frontend
+cd server/dashboard
 npm install
 npm run dev
 ```
@@ -33,8 +33,8 @@ The dev server proxies API routes in `vite.config.ts` (`/v1`, `/docs`, `/redoc`,
 ## Production build
 
 ```bash
-cd frontend
+cd server/dashboard
 npm run build
 ```
 
-Output goes to `frontend/dist` and is served by Internal API static mounting.
+Output goes to `server/dashboard/dist` and is served by Internal API static mounting.

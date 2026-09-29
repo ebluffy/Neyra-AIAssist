@@ -7,7 +7,7 @@
 
 # Config и секреты плагинов
 
-- Параметры плагина: `interfaces/<id>/config.yaml`.
+- Параметры плагина: `server/modules/<id>/config.yaml`.
 - Секреты: `.env` и `core/secrets_loader.py`.
 - Не храните токены в `config.yaml` плагина.
 

@@ -3,7 +3,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$ROOT"
+SERVER="${ROOT}/server"
+cd "$SERVER"
 
 if [[ -t 1 ]]; then
   _R=$'\033[31m'
@@ -106,8 +107,8 @@ if ! select_python; then
 fi
 
 PIP="${PY} -m pip"
-LL_DIR="${ROOT}/interfaces/discord/lavalink"
-LOG_SYS="${ROOT}/logs/system.log"
+LL_DIR="${SERVER}/modules/discord/lavalink"
+LOG_SYS="${SERVER}/logs/system.log"
 
 say() { echo "${_C}${*}${_Z}"; }
 ok()  { echo "${_G}[OK]${_Z} ${*}"; }
@@ -367,13 +368,13 @@ check_frontend_deps() {
     return 0
   fi
   if [[ ! -d "${fr}/node_modules" ]]; then
-    warn "Нет каталога frontend/node_modules."
-    read -r -p "Запустить npm ci в frontend/? [y/N]: " yn
+    warn "Нет каталога dashboard/node_modules."
+    read -r -p "Запустить npm ci в dashboard/? [y/N]: " yn
     if [[ "${yn}" =~ ^[yY]$ ]]; then
       (cd "${fr}" && npm ci) || (cd "${fr}" && npm install) || warn "npm install/ci не удался — проверь вывод выше."
     fi
   else
-    ok "frontend/node_modules на месте."
+    ok "dashboard/node_modules на месте."
   fi
 }
 

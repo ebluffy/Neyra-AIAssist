@@ -1,0 +1,24 @@
+# Neyra in Docker Desktop (Windows/Mac/Linux).
+# From repo root: docker compose -f server/docker-compose.yml up --build
+#
+# Setup: copy server/.env.example → server/.env
+# API from host: http://127.0.0.1:8787/v1/health
+
+services:
+  neyra:
+    build: .
+    ports:
+      - "8787:8787"
+    env_file:
+      - path: ./.env
+        required: false
+    environment:
+      INTERNAL_API_BIND_HOST: "0.0.0.0"
+      NEYRA_DEBUG_LIFECYCLE: "1"
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./modules:/app/modules
+      - ./data/memory:/app/data/memory
+      - ./logs:/app/logs
+      - ./dashboard/dist:/app/dashboard/dist:ro
+    restart: unless-stopped

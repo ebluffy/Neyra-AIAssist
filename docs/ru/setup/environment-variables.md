@@ -11,7 +11,7 @@
 
 ## Критичные
 - `OPENROUTER_API_KEY` — ключ LLM провайдера.
-- `DISCORD_TOKEN` — токен Discord-бота (если плагин `discord` включён в `interfaces/discord/plugin.yaml`).
+- `DISCORD_TOKEN` — токен Discord-бота (если плагин `discord` включён в `server/modules/discord/plugin.yaml`).
 
 ## Internal API
 - `INTERNAL_API_TOKEN` — опциональный Bearer для `/v1` и WS.

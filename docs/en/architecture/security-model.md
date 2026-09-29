@@ -24,11 +24,11 @@
 - Prompt RAG in `prepare_turn` uses the same user-scoped search.
 
 ## Plugins
-- Plugin builder path-jails writes under `interfaces/<plugin_id>/` (no `../` escape).
+- Plugin builder path-jails writes under `server/modules/<plugin_id>/` (no `../` escape).
 - MCP servers expand attack surface — allowlist servers and audit tools.
 
 ## Backups & ops — do not commit
-- `.env`, root/`interfaces/**/config.yaml`
+- `.env`, root/`server/modules/**/config.yaml`
 - `memory/*.db*`, Chroma dirs, `memory/working_memory/`, diary/journal artifacts
 - `logs/*` (including `webhooks_state.json` — may hold payloads)
 - `backups/` — treat as PII; store encrypted / access-controlled

@@ -14,9 +14,9 @@
 2. Скопируйте `.env.example` -> `.env` и заполните ключи.
 3. Скопируйте `config.example.yaml` -> `config.yaml`.
 4. Для плагинов скопируйте:
-   - `interfaces/discord/config.example.yaml` -> `interfaces/discord/config.yaml`
-   - `interfaces/internal_api/config.example.yaml` -> `interfaces/internal_api/config.yaml`
+   - `server/modules/discord/config.example.yaml` -> `server/modules/discord/config.yaml`
+   - `server/modules/internal_api/config.example.yaml` -> `server/modules/internal_api/config.yaml`
 5. (опционально) frontend:
-   - `cd frontend && npm install && npm run build`
+   - `cd server/dashboard && npm install && npm run build`
 6. Запуск:
-   - `python main.py`
+   - `python server/main.py`

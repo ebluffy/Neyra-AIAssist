@@ -7,7 +7,7 @@
 
 # Vocard (апстрим, справка)
 
-Ранее в репозитории лежало вендорное дерево `interfaces/Vocard-main/` как **референс** экосистемы Vocard; оно удалено как шум. Актуальная интеграция Discord в Neyra — плагин `interfaces/discord/`. Исходники Vocard: [ChocoMeow/Vocard](https://github.com/ChocoMeow/Vocard) и [docs.vocard.xyz](https://docs.vocard.xyz/latest/bot/setup).
+Ранее в репозитории лежало вендорное дерево `interfaces/Vocard-main/` как **референс** экосистемы Vocard; оно удалено как шум. Актуальная интеграция Discord в Neyra — плагин `server/modules/discord/`. Исходники Vocard: [ChocoMeow/Vocard](https://github.com/ChocoMeow/Vocard) и [docs.vocard.xyz](https://docs.vocard.xyz/latest/bot/setup).
 
 Ниже сохранён англоязычный README апстрима для атрибуции и справки. Полный текст см. также [vocard-upstream.md](../../en/reference/vocard-upstream.md) (EN).
 

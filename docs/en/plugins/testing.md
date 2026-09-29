@@ -9,7 +9,7 @@
 
 ## Smoke
 - `python scripts/invoke_plugin.py <plugin_id>`
-- `python scripts/healthcheck.py --mode core`
+- `cd server && python scripts/healthcheck.py --mode core --skip-http`
 
 ## Рекомендации
 - Unit tests для функций трансформации payload.

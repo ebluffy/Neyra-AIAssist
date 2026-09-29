@@ -9,7 +9,7 @@
 
 ## Источники
 1. Корневой `config.yaml`.
-2. Файлы плагинов `interfaces/<id>/config.yaml`.
+2. Файлы плагинов `server/modules/<id>/config.yaml`.
 3. Секреты `.env`.
 
 ## Merge-порядок
