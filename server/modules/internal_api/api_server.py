@@ -1320,32 +1320,58 @@ def build_app(
 
     @app.get("/v1/llm/balance")
     async def v1_llm_balance(request: Request, _: None = Depends(dep_viewer)):
-        from core.llm import fetch_openrouter_key_usage, resolve_openai_compatible_connection
+        from core.llm import (
+            fetch_aihope_token_usage,
+            fetch_openrouter_key_usage,
+            resolve_openai_compatible_connection,
+            resolve_role_provider,
+        )
 
         trace_id = _trace_id(request)
-        conn = resolve_openai_compatible_connection(config)
-        if conn.provider.lower() != "openrouter":
-            return {
-                "ok": True,
-                "trace_id": trace_id,
-                "data": {
-                    "provider": conn.provider,
-                    "openrouter": None,
-                    "hint": "Баланс OpenRouter доступен при провайдере openrouter (BACKEND / llm.provider).",
-                },
-            }
-        key = (conn.api_key or "").strip()
-        if not key or key == "ollama":
-            raise ApiError("config_error", "OpenRouter API key is not configured", 503)
-        raw = await fetch_openrouter_key_usage(key)
-        err = raw.get("_error")
-        if err:
-            if err == "missing_api_key":
-                raise ApiError("config_error", "OpenRouter API key is not configured", 503)
-            detail = raw.get("body") or raw.get("detail") or str(err)
-            raise ApiError("openrouter_error", str(detail)[:600], 502)
-        out = {k: v for k, v in raw.items() if not str(k).startswith("_")}
-        return {"ok": True, "trace_id": trace_id, "data": {"provider": "openrouter", **out}}
+        default_prov = resolve_role_provider(config, None)
+        out: dict[str, Any] = {
+            "default_provider": default_prov,
+            "roles": {
+                "talk": resolve_role_provider(config, "talk_model"),
+                "brain": resolve_role_provider(config, "brain_model"),
+                "memory": resolve_role_provider(config, "memory_model"),
+                "vision": resolve_role_provider(config, "vision_model"),
+            },
+            "openrouter": None,
+            "aihope": None,
+        }
+
+        # Collect unique providers used by roles + default
+        providers = {default_prov, *out["roles"].values()}
+        for prov in providers:
+            if prov == "openrouter":
+                conn = resolve_openai_compatible_connection(config, role="talk_model")
+                if conn.provider != "openrouter":
+                    conn = resolve_openai_compatible_connection(config)
+                key = (conn.api_key or "").strip()
+                if key and key != "ollama":
+                    raw = await fetch_openrouter_key_usage(key)
+                    if raw.get("_error"):
+                        out["openrouter"] = {"_error": raw.get("_error"), "detail": str(raw)[:400]}
+                    else:
+                        out["openrouter"] = {k: v for k, v in raw.items() if not str(k).startswith("_")}
+                else:
+                    out["openrouter"] = {"_error": "missing_api_key"}
+            elif prov == "aihope":
+                conn = resolve_openai_compatible_connection(config, role="brain_model")
+                if conn.provider != "aihope":
+                    conn = resolve_openai_compatible_connection(config)
+                key = (conn.api_key or "").strip()
+                if key and key != "ollama":
+                    raw = await fetch_aihope_token_usage(key)
+                    if raw.get("_error"):
+                        out["aihope"] = {"_error": raw.get("_error"), "detail": str(raw)[:400]}
+                    else:
+                        out["aihope"] = {k: v for k, v in raw.items() if not str(k).startswith("_")}
+                else:
+                    out["aihope"] = {"_error": "missing_api_key"}
+
+        return {"ok": True, "trace_id": trace_id, "data": out}
 
     @app.get("/v1/docs/markdown/{doc_id}", response_class=PlainTextResponse)
     async def v1_docs_markdown(doc_id: str, request: Request, _: None = Depends(dep_viewer)):

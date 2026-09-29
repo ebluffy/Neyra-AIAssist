@@ -110,6 +110,37 @@ def _openrouter_block(cfg: dict) -> dict[str, Any]:
     return o if isinstance(o, dict) else {}
 
 
+def _llm_block(cfg: dict) -> dict[str, Any]:
+    llm = cfg.get("llm")
+    return llm if isinstance(llm, dict) else {}
+
+
+def _providers_block(cfg: dict) -> dict[str, Any]:
+    raw = _llm_block(cfg).get("providers")
+    return raw if isinstance(raw, dict) else {}
+
+
+def resolve_role_provider(cfg: dict, role: str | None = None) -> str:
+    """
+    Provider for a model role (talk_model / brain_model / memory_model / vision_model).
+
+    Priority: openrouter.<role>.provider → llm.provider → BACKEND → openrouter.
+    Enables dual-backend: e.g. talk on openrouter, brain/memory/vision on aihope.
+    """
+    if role:
+        or_block = _openrouter_block(cfg)
+        role_cfg = or_block.get(role)
+        if isinstance(role_cfg, dict):
+            p = str(role_cfg.get("provider") or "").strip().lower()
+            if p:
+                return p
+    llm = _llm_block(cfg)
+    p = str(llm.get("provider") or "").strip().lower()
+    if p:
+        return p
+    return str(cfg.get("BACKEND") or "openrouter").strip().lower() or "openrouter"
+
+
 def _model_id_from_role(or_block: dict[str, Any], role_key: str) -> str:
     """ID модели: строка в корне роли или dict с ключами model / id."""
     raw = or_block.get(role_key)
@@ -384,21 +415,21 @@ def merge_llm_tuning_options(cfg: dict) -> dict[str, Any]:
     return out
 
 
-def resolve_openai_compatible_connection(cfg: dict) -> OpenAICompatibleConnection:
+def resolve_openai_compatible_connection(
+    cfg: dict,
+    *,
+    role: str | None = None,
+) -> OpenAICompatibleConnection:
     """
     Собирает base_url / api_key / заголовки для OpenAI-compatible клиента.
 
-    Приоритет провайдера: llm.provider -> BACKEND -> openrouter.
+    Приоритет провайдера: openrouter.<role>.provider → llm.provider → BACKEND → openrouter.
+    Per-provider overrides: llm.providers.<name>.{base_url,api_key,default_headers}.
     """
     if not isinstance(cfg, dict):
         raise TypeError("config must be a dict")
 
-    backend = str(cfg.get("BACKEND") or "openrouter").strip().lower()
-    llm = cfg.get("llm") or {}
-    if not isinstance(llm, dict):
-        llm = {}
-
-    provider = str(llm.get("provider") or backend).strip().lower()
+    provider = resolve_role_provider(cfg, role)
     if not provider:
         provider = "openrouter"
 
@@ -411,14 +442,22 @@ def resolve_openai_compatible_connection(cfg: dict) -> OpenAICompatibleConnectio
         )
 
     preset = _OPENAI_COMPATIBLE_PRESETS[provider]
-    or_block = cfg.get("openrouter") or {}
-    if not isinstance(or_block, dict):
-        or_block = {}
+    llm = _llm_block(cfg)
+    or_block = _openrouter_block(cfg)
+    prov_over = _providers_block(cfg).get(provider)
+    if not isinstance(prov_over, dict):
+        prov_over = {}
 
-    base_url = str(llm.get("base_url") or or_block.get("base_url") or preset.get("base_url") or "").strip()
+    base_url = str(
+        prov_over.get("base_url")
+        or llm.get("base_url")
+        or (or_block.get("base_url") if provider == "openrouter" else "")
+        or preset.get("base_url")
+        or ""
+    ).strip()
     if preset.get("requires_base_url") and not base_url:
         raise ValueError(
-            f"Провайдер '{provider}' требует явного llm.base_url (или openrouter.base_url) "
+            f"Провайдер '{provider}' требует явного llm.base_url / llm.providers.{provider}.base_url "
             "на OpenAI-compatible endpoint."
         )
     if preset.get("requires_openai_compatible_base_url") and not base_url:
@@ -427,7 +466,12 @@ def resolve_openai_compatible_connection(cfg: dict) -> OpenAICompatibleConnectio
             "Укажите llm.base_url на OpenAI-compatible шлюз (например OpenRouter, LiteLLM proxy)."
         )
 
-    api_key = str(llm.get("api_key") or or_block.get("api_key") or "").strip()
+    api_key = str(
+        prov_over.get("api_key")
+        or (or_block.get("api_key") if provider == "openrouter" else "")
+        or llm.get("api_key")
+        or ""
+    ).strip()
     if not api_key:
         for env_name in preset.get("api_key_env") or ():
             api_key = _first_env(env_name)
@@ -435,8 +479,9 @@ def resolve_openai_compatible_connection(cfg: dict) -> OpenAICompatibleConnectio
                 break
     if not api_key and provider == "openrouter":
         api_key = _first_env("OPENROUTER_API_KEY")
+    if not api_key and provider == "aihope":
+        api_key = _first_env("AIHOPE_API_KEY")
     if not api_key and provider == "ollama":
-        # Ollama часто не требует ключа; LangChain принимает placeholder.
         api_key = "ollama"
 
     caps = dict(_DEFAULT_CAPABILITIES)
@@ -449,6 +494,10 @@ def resolve_openai_compatible_connection(cfg: dict) -> OpenAICompatibleConnectio
     headers: dict[str, str] = {}
     if isinstance(llm.get("default_headers"), dict):
         for hk, hv in llm["default_headers"].items():
+            if hk and hv is not None:
+                headers[str(hk)] = str(hv)
+    if isinstance(prov_over.get("default_headers"), dict):
+        for hk, hv in prov_over["default_headers"].items():
             if hk and hv is not None:
                 headers[str(hk)] = str(hv)
 

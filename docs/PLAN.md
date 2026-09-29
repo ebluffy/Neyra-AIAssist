@@ -123,6 +123,27 @@ docs/
 - [x] Consumer и merge-поведение `server/modules/local_voice/config.yaml` проверены; поведение voice не исчезает молча (`verify_stage_1c.py`).
 - [x] Legacy env aliases поддержаны с warning once (`YANDEX_ID_KEY`, `HUGGING_FACE_HUB_TOKEN`).
 
+## 1d. Dual LLM backend (AIHope + OpenRouter)
+
+Цель: полноценный AIHope (OpenAI-compatible) как основной бэкенд для brain/memory/vision и dual-role: talk на OpenRouter (бесплатный Qwen с меньшей цензурой).
+
+### Объём
+
+- Пресет `aihope` → `https://aihope.fun/v1` (`/models`, `/chat/completions`, `/responses`, `/messages`, `/images/generations`).
+- Баланс AIHope: `GET https://aihope.fun/api/usage/token/` + dual `/v1/llm/balance`.
+- Per-role `openrouter.<role>.provider` (talk → openrouter, brain/memory/vision → aihope).
+- `llm.providers.<name>.{base_url,api_key}` + env `AIHOPE_API_KEY` / `OPENROUTER_API_KEY`.
+- Пример и локальный `server/config/llm.yaml`: BACKEND=aihope, talk=`qwen/qwen3.8-27b:free`, brain=`gpt-6-luna`.
+- Offline `verify_stage_1d.py` + CI; offline memory/security smokes в GitHub Actions.
+- Backlog (не в этом этапе): секреты из `.env` → системные переменные окружения ОС (Windows/Linux) для прод-безопасности.
+
+### Готово, когда
+
+- [ ] Dual-backend: talk и brain могут ходить на разные провайдеры с разными ключами/base_url.
+- [ ] AIHope chat/completions через LangChain; helpers для models/balance/images/responses/messages.
+- [ ] `/v1/llm/balance` отдаёт usage для активных провайдеров (openrouter и/или aihope).
+- [ ] `verify_stage_1d.py` и CI зелёные; локальный `llm.yaml` на dual-схеме.
+
 ## 2. Control API поверх Internal API
 
 Этап 2 строит Control API поверх текущего Internal API, не дублируя агентскую оркестрацию.
@@ -249,4 +270,4 @@ docs/
 
 ## Этап 1c — закрыт (PR #15)
 
-Слои `server/config/*.yaml`, короткий root, `config_loader` + schema, inventory в `docs/config-keys.md`, `verify_stage_1c.py` + CI. Дальше — **Этап 2** (Control API поверх Internal API).
+Слои `server/config/*.yaml`, короткий root, `config_loader` + schema, inventory в `docs/config-keys.md`, `verify_stage_1c.py` + CI. Дальше — **Этап 1d** (dual LLM: AIHope + OpenRouter talk).

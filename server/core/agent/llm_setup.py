@@ -1,4 +1,8 @@
-"""OpenAI-compatible LLM wiring for NeyraAgent (talk / brain / memory / vision)."""
+"""OpenAI-compatible LLM wiring for NeyraAgent (talk / brain / memory / vision).
+
+Supports dual-backend: each role may set ``openrouter.<role>.provider``
+(e.g. talk → openrouter, brain/memory/vision → aihope).
+"""
 
 from __future__ import annotations
 
@@ -13,16 +17,20 @@ DEPRECATED_OPENROUTER_MODELS: dict[str, str] = {
 
 
 def setup_llm_connection(agent: Any) -> None:
-    """Resolve provider connection and build ChatOpenAI clients on ``agent``."""
-    from core.llm.profile import resolve_openai_compatible_connection
+    """Resolve default + per-role provider connections and build ChatOpenAI clients."""
+    from core.llm.profile import resolve_openai_compatible_connection, resolve_role_provider
 
     agent._llm_connection = resolve_openai_compatible_connection(agent.config)
-    agent.backend = agent._llm_connection.provider
+    agent._llm_conn_talk = resolve_openai_compatible_connection(agent.config, role="talk_model")
+    agent._llm_conn_brain = resolve_openai_compatible_connection(agent.config, role="brain_model")
+    agent._llm_conn_memory = resolve_openai_compatible_connection(agent.config, role="memory_model")
+    agent._llm_conn_vision = resolve_openai_compatible_connection(agent.config, role="vision_model")
+    agent.backend = resolve_role_provider(agent.config, None)
     setup_openai_compatible_llm(agent)
 
 
 def setup_openai_compatible_llm(agent: Any) -> None:
-    """Single path: ChatOpenAI against base_url with provider api_key."""
+    """Build ChatOpenAI clients; each role may use a different provider connection."""
     from langchain_openai import ChatOpenAI
 
     from core.llm.profile import (
@@ -33,11 +41,16 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         resolved_vision_model_id,
     )
 
-    conn = agent._llm_connection
+    conn_default = agent._llm_connection
+    conn_talk = getattr(agent, "_llm_conn_talk", None) or conn_default
+    conn_brain = getattr(agent, "_llm_conn_brain", None) or conn_default
+    conn_memory = getattr(agent, "_llm_conn_memory", None) or conn_default
+    conn_vision = getattr(agent, "_llm_conn_vision", None) or conn_default
+
     cfg = merge_llm_tuning_options(agent.config)
-    talk_model = resolved_talk_model(agent.config, conn.provider)
-    brain_model = resolved_brain_model(agent.config, conn.provider)
-    memory_model_raw = resolved_memory_model(agent.config, conn.provider)
+    talk_model = resolved_talk_model(agent.config, conn_talk.provider)
+    brain_model = resolved_brain_model(agent.config, conn_brain.provider)
+    memory_model_raw = resolved_memory_model(agent.config, conn_memory.provider)
     memory_model = DEPRECATED_OPENROUTER_MODELS.get(memory_model_raw, memory_model_raw)
     if memory_model != memory_model_raw:
         logger.warning(
@@ -45,10 +58,8 @@ def setup_openai_compatible_llm(agent: Any) -> None:
             memory_model_raw,
             memory_model,
         )
-    vision_model_id = resolved_vision_model_id(agent.config, conn.provider)
+    vision_model_id = resolved_vision_model_id(agent.config, conn_vision.provider)
     agent.context_window = cfg.get("context_window", 16384)
-    base_url = conn.base_url
-    api_key = conn.api_key
     agent.reply_max_tokens = int(cfg.get("reply_max_tokens", cfg.get("max_tokens", 320)))
     agent.vision_max_tokens = int(cfg.get("vision_max_tokens", cfg.get("max_tokens", 900)))
     _refl_cap = cfg.get("reflection_max_tokens")
@@ -61,13 +72,21 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     agent.brain_max_tokens = int(_brain_cap) if _brain_cap is not None else None
     agent.brain_temperature = float(cfg.get("brain_temperature", 0.35))
 
-    if not api_key or api_key == "ollama":
-        if conn.provider != "ollama":
-            logger.error(
-                "API ключ LLM не найден — задай в конфиге llm.api_key / openrouter.api_key "
-                "или переменную окружения для провайдера %s",
-                conn.provider,
-            )
+    for label, conn in (
+        ("talk", conn_talk),
+        ("brain", conn_brain),
+        ("memory", conn_memory),
+        ("vision", conn_vision),
+    ):
+        if not conn.api_key or conn.api_key == "ollama":
+            if conn.provider != "ollama":
+                logger.error(
+                    "API ключ LLM (%s/%s) не найден — задай llm.providers.%s.api_key / "
+                    "openrouter.api_key или env для провайдера",
+                    label,
+                    conn.provider,
+                    conn.provider,
+                )
 
     talk_timeout = float(cfg.get("timeout_seconds", cfg.get("primary_timeout_seconds", 120.0)))
     talk_retries = int(cfg.get("max_retries", cfg.get("primary_max_retries", 1)))
@@ -86,10 +105,10 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     if "include_reasoning" in cfg:
         extra_body["include_reasoning"] = bool(cfg.get("include_reasoning"))
 
-    hdr_talk = dict(conn.default_headers)
+    hdr_talk = dict(conn_talk.default_headers)
     agent.llm_talk = ChatOpenAI(
-        base_url=base_url,
-        api_key=api_key,
+        base_url=conn_talk.base_url,
+        api_key=conn_talk.api_key,
         model=talk_model,
         temperature=cfg.get("temperature", 0.75),
         top_p=float(cfg.get("top_p", 1.0)),
@@ -113,11 +132,11 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         ]
     )
 
-    hdr_brain = dict(conn.default_headers)
+    hdr_brain = dict(conn_brain.default_headers)
     hdr_brain["X-Title"] = "Neyra Brain"
     brain_llm_kwargs: dict[str, Any] = {
-        "base_url": base_url,
-        "api_key": api_key,
+        "base_url": conn_brain.base_url,
+        "api_key": conn_brain.api_key,
         "model": brain_model,
         "temperature": agent.brain_temperature,
         "top_p": float(cfg.get("brain_top_p", cfg.get("top_p", 1.0))),
@@ -131,11 +150,11 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         brain_llm_kwargs["max_tokens"] = agent.brain_max_tokens
     agent.llm_brain = ChatOpenAI(**brain_llm_kwargs)
 
-    hdr_memory = dict(conn.default_headers)
+    hdr_memory = dict(conn_memory.default_headers)
     hdr_memory["X-Title"] = "Neyra Memory"
     memory_llm_kwargs: dict[str, Any] = {
-        "base_url": base_url,
-        "api_key": api_key,
+        "base_url": conn_memory.base_url,
+        "api_key": conn_memory.api_key,
         "model": memory_model,
         "temperature": agent.reflection_temperature,
         "streaming": False,
@@ -184,12 +203,18 @@ def setup_openai_compatible_llm(agent: Any) -> None:
             memory_model,
         )
 
+    dual = len({conn_talk.provider, conn_brain.provider, conn_memory.provider}) > 1
     logger.info(
-        "Бэкенд LLM: %s | talk=%s brain=%s memory=%s | timeout talk=%ss retries=%s | max_ctx: %s",
-        conn.provider,
+        "Бэкенд LLM: default=%s%s | talk=%s@%s brain=%s@%s memory=%s@%s | "
+        "timeout talk=%ss retries=%s | max_ctx: %s",
+        conn_default.provider,
+        " (dual)" if dual else "",
         talk_model,
+        conn_talk.provider,
         brain_model,
+        conn_brain.provider,
         memory_model,
+        conn_memory.provider,
         talk_timeout,
         talk_retries,
         agent.context_window,
@@ -203,7 +228,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         agent.reflection_max_tokens,
         int(agent.async_reflection_cfg.get("max_tokens", 500)),
     )
-    logger.info("LLM vision_model id (resolved)=%s", vision_model_id)
+    logger.info("LLM vision_model id (resolved)=%s @%s", vision_model_id, conn_vision.provider)
     if agent.async_reflection_enabled:
         logger.info(
             "Async reflection включен | memory_model=%s (поведение из async_reflection.*)",
@@ -211,7 +236,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         )
 
     agent.llm_with_tools = agent.llm_brain
-    agent.llm_capabilities = dict(conn.capabilities)
+    agent.llm_capabilities = dict(conn_default.capabilities)
 
     from core.llm.profile import merged_vision_pipeline
 
@@ -221,16 +246,17 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         if vis.get("use_brain_model_for_vision"):
             agent.llm_vision = agent.llm_brain
             logger.info(
-                "Зрение: unified brain — нативный мультимодальный ввод (%s).",
+                "Зрение: unified brain — нативный мультимодальный ввод (%s@%s).",
                 brain_model,
+                conn_brain.provider,
             )
         else:
             vmodel = str(vision_model_id).strip()
-            hdr_vision = dict(conn.default_headers)
+            hdr_vision = dict(conn_vision.default_headers)
             hdr_vision["X-Title"] = "Neyra AI Vision"
             agent.llm_vision = ChatOpenAI(
-                base_url=base_url,
-                api_key=api_key,
+                base_url=conn_vision.base_url,
+                api_key=conn_vision.api_key,
                 model=vmodel,
                 temperature=float(cfg.get("vision_temperature", cfg.get("temperature", 0.75))),
                 max_tokens=agent.vision_max_tokens,
@@ -239,4 +265,4 @@ def setup_openai_compatible_llm(agent: Any) -> None:
                 model_kwargs={"extra_body": extra_body} if extra_body else {},
                 default_headers=hdr_vision,
             )
-            logger.info("Зрение: VL-модель (%s) — %s", conn.provider, vmodel)
+            logger.info("Зрение: VL-модель (%s) — %s", conn_vision.provider, vmodel)

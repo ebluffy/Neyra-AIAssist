@@ -181,7 +181,7 @@ def validate_config_schema(cfg: dict[str, Any]) -> list[str]:
     _req_dict("memory")
 
     backend = str(cfg.get("BACKEND", "openrouter") or "openrouter").strip().lower()
-    if backend == "openrouter":
+    if backend in {"openrouter", "aihope"}:
         or_cfg = _req_dict("openrouter")
         if or_cfg is not None:
             talk = or_cfg.get("talk_model")

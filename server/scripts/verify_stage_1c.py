@@ -75,8 +75,9 @@ def check_loader_from_examples() -> list[str]:
         (root / "modules").mkdir()
 
         cfg = load_layered_yaml(root)
-        if str(cfg.get("BACKEND", "")).lower() != "openrouter":
-            errs.append(f"BACKEND expected openrouter, got {cfg.get('BACKEND')!r}")
+        backend = str(cfg.get("BACKEND", "")).lower()
+        if backend not in {"openrouter", "aihope"}:
+            errs.append(f"BACKEND expected openrouter|aihope, got {cfg.get('BACKEND')!r}")
         if not isinstance(cfg.get("openrouter"), dict):
             errs.append("openrouter missing after layer load")
         if not isinstance(cfg.get("memory"), dict):

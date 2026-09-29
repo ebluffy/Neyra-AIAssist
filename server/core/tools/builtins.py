@@ -536,7 +536,7 @@ async def delegate_to_deep_logic(detailed_prompt: str) -> str:
     if not cfg:
         return "delegate_to_deep_logic: конфиг ядра не инициализирован (init_tools)."
     try:
-        conn = resolve_openai_compatible_connection(cfg)
+        conn = resolve_openai_compatible_connection(cfg, role="brain_model")
         tuning = merge_llm_tuning_options(cfg)
         deep_id = resolved_brain_model_deep(cfg, conn.provider)
         brain_timeout = float(
