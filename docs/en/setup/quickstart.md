@@ -11,12 +11,13 @@
    - `python -m venv .venv`
    - `.venv\\Scripts\\activate` (Windows)
    - `pip install -r requirements.txt`
-2. Скопируйте `.env.example` -> `.env` и заполните ключи.
-3. Скопируйте `config.example.yaml` -> `config.yaml`.
-4. Для плагинов скопируйте:
-   - `server/modules/discord/config.example.yaml` -> `server/modules/discord/config.yaml`
-   - `server/modules/internal_api/config.example.yaml` -> `server/modules/internal_api/config.yaml`
-5. (опционально) frontend:
-   - `cd server/dashboard && npm install && npm run build`
-6. Запуск:
-   - `python server/main.py`
+2. Copy `.env.example` → `.env` and fill secrets (under `server/`).
+3. Copy short root: `config.example.yaml` → `config.yaml`.
+4. Copy layers: `config/*.example.yaml` → `config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). See `docs/config-keys.md`.
+5. For plugins copy:
+   - `modules/discord/config.example.yaml` → `modules/discord/config.yaml`
+   - `modules/internal_api/config.example.yaml` → `modules/internal_api/config.yaml`
+6. (optional) dashboard:
+   - `cd dashboard && npm install && npm run build`
+7. Run from `server/`:
+   - `python main.py`

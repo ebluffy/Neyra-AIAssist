@@ -6,7 +6,8 @@
 Запуск (ядро должно быть поднято: main.py --mode core):
   python scripts/inject_memes_2026.py
 
-Токен: internal_api.token в config.yaml или INTERNAL_API_TOKEN / переменные из .env (через load_config).
+Токен: internal_api.token (слои config/server.yaml + modules/internal_api)
+или INTERNAL_API_TOKEN / переменные из .env (через load_layered_config).
 """
 
 from __future__ import annotations

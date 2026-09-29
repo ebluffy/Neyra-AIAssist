@@ -135,7 +135,7 @@ def _hint_for_error(msg: str) -> str | None:
     if "discord" in m and "token" in m:
         return "Секреты: .env → DISCORD_TOKEN; или отключи discord в modules/discord/plugin.yaml."
     if "llm config invalid" in m:
-        return "Конфиг: config.yaml → openrouter.* / llm.* (см. config.example.yaml)."
+        return "Конфиг: layered server/config/*.yaml + short config.yaml (см. config.example.yaml)."
     if "models probe failed" in m or "probe exception" in m:
         return "Сеть/API: ключ OpenRouter, base_url, доступ к https://openrouter.ai/api/v1/models."
     return None

@@ -17,6 +17,7 @@ services:
       NEYRA_DEBUG_LIFECYCLE: "1"
     volumes:
       - ./config.yaml:/app/config.yaml
+      - ./config:/app/config
       - ./modules:/app/modules
       - ./data/memory:/app/data/memory
       - ./logs:/app/logs
