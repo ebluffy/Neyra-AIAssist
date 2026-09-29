@@ -18,14 +18,31 @@ DEPRECATED_OPENROUTER_MODELS: dict[str, str] = {
 
 def setup_llm_connection(agent: Any) -> None:
     """Resolve default + per-role provider connections and build ChatOpenAI clients."""
-    from core.llm.profile import resolve_openai_compatible_connection, resolve_role_provider
+    from core.llm.profile import resolve_openai_compatible_connection
 
-    agent._llm_connection = resolve_openai_compatible_connection(agent.config)
     agent._llm_conn_talk = resolve_openai_compatible_connection(agent.config, role="talk_model")
     agent._llm_conn_brain = resolve_openai_compatible_connection(agent.config, role="brain_model")
     agent._llm_conn_memory = resolve_openai_compatible_connection(agent.config, role="memory_model")
     agent._llm_conn_vision = resolve_openai_compatible_connection(agent.config, role="vision_model")
-    agent.backend = resolve_role_provider(agent.config, None)
+    agent._llm_connection = agent._llm_conn_talk
+    agent.backend = agent._llm_conn_talk.provider
+    agent.llm_role_providers = {
+        "talk": agent._llm_conn_talk.provider,
+        "brain": agent._llm_conn_brain.provider,
+        "memory": agent._llm_conn_memory.provider,
+        "vision": agent._llm_conn_vision.provider,
+    }
+    agent.llm_dual = (
+        len(
+            {
+                agent._llm_conn_talk.provider,
+                agent._llm_conn_brain.provider,
+                agent._llm_conn_memory.provider,
+                agent._llm_conn_vision.provider,
+            }
+        )
+        > 1
+    )
     setup_openai_compatible_llm(agent)
 
 
@@ -196,11 +213,13 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "unclosed_blocks": 0,
         "leak_detected": 0,
     }
-    dual = len({conn_talk.provider, conn_brain.provider, conn_memory.provider}) > 1
+    dual = bool(getattr(agent, "llm_dual", False)) or (
+        len({conn_talk.provider, conn_brain.provider, conn_memory.provider}) > 1
+    )
     logger.info(
-        "Бэкенд LLM: default=%s%s | talk=%s@%s brain=%s@%s memory=%s@%s | "
+        "Бэкенд LLM: talk_provider=%s%s | talk=%s@%s brain=%s@%s memory=%s@%s | "
         "timeout talk=%ss retries=%s | context=provider-max",
-        conn_default.provider,
+        conn_talk.provider,
         " (dual)" if dual else "",
         talk_model,
         conn_talk.provider,
@@ -228,7 +247,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         )
 
     agent.llm_with_tools = agent.llm_brain
-    agent.llm_capabilities = dict(conn_default.capabilities)
+    agent.llm_capabilities = dict(conn_talk.capabilities)
 
     from core.llm.profile import merged_vision_pipeline
 

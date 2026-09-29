@@ -159,26 +159,73 @@ export function DashboardPage() {
           <Wallet size={15} className="card-icon card-icon-pink" />
           <span className="card-title">Баланс LLM</span>
         </div>
+        {balance?.roles && (
+          <p style={{ fontSize: '0.82rem', color: 'var(--muted)', marginBottom: '0.75rem' }}>
+            Roles:{' '}
+            <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>
+              {Object.entries(balance.roles).map(([k, v]) => `${k}=${v}`).join(' · ') || '—'}
+            </span>
+          </p>
+        )}
         {balance?.hint && <p style={{ fontSize: '0.82rem', color: 'var(--muted)', marginBottom: '0.75rem' }}>{balance.hint}</p>}
-        <div className="grid-4">
-          {[
-            { label: 'Provider',    value: balance?.provider },
-            { label: 'Остаток',    value: balance?.limit_remaining },
-            { label: 'Лимит',      value: balance?.limit },
-            { label: 'Usage total',value: balance?.usage },
-          ].map(({ label, value }) => (
-            <div key={label} className="stat-tile">
-              <p className="stat-label">{label}</p>
-              <p className="stat-value-md">{String(value ?? '—')}</p>
+        {([
+          ['OpenRouter', balance?.openrouter],
+          ['AIHope', balance?.aihope],
+        ] as const)
+          .filter(([, block]) => block != null)
+          .map(([name, block]) => (
+            <div key={name} className="stack-sm" style={{ marginBottom: '0.75rem' }}>
+              <p style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text)' }}>{name}</p>
+              {block?._error ? (
+                <InlineFeedback tone="error">{block._error}{block.detail ? `: ${block.detail}` : ''}</InlineFeedback>
+              ) : (
+                <>
+                  <div className="grid-4">
+                    {[
+                      { label: 'Остаток', value: block?.limit_remaining },
+                      { label: 'Лимит', value: block?.limit },
+                      { label: 'Usage total', value: block?.usage },
+                      { label: 'Label', value: block?.label },
+                    ].map(({ label, value }) => (
+                      <div key={label} className="stat-tile">
+                        <p className="stat-label">{label}</p>
+                        <p className="stat-value-md">{String(value ?? '—')}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                    День / Неделя / Месяц:{' '}
+                    <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>
+                      {block?.usage_daily ?? '—'} / {block?.usage_weekly ?? '—'} / {block?.usage_monthly ?? '—'}
+                    </span>
+                  </p>
+                </>
+              )}
             </div>
           ))}
-        </div>
-        <p style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: 'var(--muted)' }}>
-          День / Неделя / Месяц:{' '}
-          <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>
-            {balance?.usage_daily ?? '—'} / {balance?.usage_weekly ?? '—'} / {balance?.usage_monthly ?? '—'}
-          </span>
-        </p>
+        {!balance?.openrouter && !balance?.aihope && (
+          <>
+            <div className="grid-4">
+              {[
+                { label: 'Provider', value: balance?.provider ?? balance?.default_provider },
+                { label: 'Остаток', value: balance?.limit_remaining },
+                { label: 'Лимит', value: balance?.limit },
+                { label: 'Usage total', value: balance?.usage },
+              ].map(({ label, value }) => (
+                <div key={label} className="stat-tile">
+                  <p className="stat-label">{label}</p>
+                  <p className="stat-value-md">{String(value ?? '—')}</p>
+                </div>
+              ))}
+            </div>
+            <p style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: 'var(--muted)' }}>
+              День / Неделя / Месяц:{' '}
+              <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>
+                {balance?.usage_daily ?? '—'} / {balance?.usage_weekly ?? '—'} / {balance?.usage_monthly ?? '—'}
+              </span>
+            </p>
+          </>
+        )}
       </div>
 
       {/* LTM maintenance */}

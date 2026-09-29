@@ -59,8 +59,26 @@ export type PluginRow = {
   plugin_dir: string
 }
 
+/** Per-provider usage block from GET /v1/llm/balance (dual-backend). */
+export type ProviderBalance = {
+  _error?: string
+  detail?: string
+  limit?: number | null
+  limit_remaining?: number | null
+  usage?: number
+  usage_daily?: number
+  usage_weekly?: number
+  usage_monthly?: number
+  label?: string
+}
+
 export type BalanceData = {
-  provider: string
+  default_provider?: string
+  roles?: Record<string, string>
+  openrouter?: ProviderBalance | null
+  aihope?: ProviderBalance | null
+  /** Legacy single-provider fields (pre-1d); optional fallback. */
+  provider?: string
   hint?: string
   limit?: number | null
   limit_remaining?: number | null

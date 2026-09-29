@@ -70,12 +70,16 @@ def load_config() -> dict[str, Any]:
 
 config = load_config()
 BACKEND = ""
+LLM_PROVIDERS_LABEL = ""
 try:
-    from core.llm.profile import resolve_role_provider
+    from core.llm.profile import iter_unique_provider_connections, resolve_role_provider
 
-    BACKEND = resolve_role_provider(config, None)
+    BACKEND = resolve_role_provider(config, "talk_model")
+    uniq = [c.provider for c in iter_unique_provider_connections(config)]
+    LLM_PROVIDERS_LABEL = "+".join(uniq) if len(uniq) > 1 else (uniq[0] if uniq else BACKEND)
 except Exception:
     BACKEND = "aihope"
+    LLM_PROVIDERS_LABEL = BACKEND
 
 # Hugging Face: токен не обязателен, если модели уже в кэше; даёт выше лимиты на скачивание
 _mem = config.get("memory") or {}
@@ -137,7 +141,7 @@ except Exception:
 BANNER = f"""
 ╔════════════════════════════════════════════════════╗
 ║        CYBER-CORE  //  Ассистент «Нейра»          ║
-║  Backend: {BACKEND.upper():<9}  Model: {'loading...':<16}║
+║  Backend: {LLM_PROVIDERS_LABEL.upper()[:9]:<9}  Model: {'loading...':<16}║
 ╚════════════════════════════════════════════════════╝
 """
 
@@ -259,7 +263,7 @@ async def run_console() -> None:
         await agent.start_mcp_clients()
     except Exception as e:
         console.print(f"[red]ОШИБКА инициализации агента: {e}[/red]")
-        console.print("[yellow]Проверь OPENROUTER_API_KEY в .env и доступ к интернету.[/yellow]")
+        console.print("[yellow]Проверь AIHOPE_API_KEY / OPENROUTER_API_KEY в .env и доступ к интернету.[/yellow]")
         logger.exception(e)
         sys.exit(1)
 
@@ -279,10 +283,15 @@ async def run_console() -> None:
     # Обновляем баннер с реальной моделью
     stats = agent.get_stats()
     console.clear()
+    providers = stats.get("llm_providers") if isinstance(stats.get("llm_providers"), dict) else {}
+    if stats.get("llm_dual") and providers:
+        llm_label = "+".join(dict.fromkeys(str(p) for p in providers.values() if p))
+    else:
+        llm_label = str(stats.get("llm_provider", BACKEND) or BACKEND)
     banner_updated = (
         f"\n╔════════════════════════════════════════════════════╗\n"
         f"║        CYBER-CORE  //  Ассистент «Нейра»          ║\n"
-        f"║  LLM: {str(stats.get('llm_provider', BACKEND)).upper():<12}  Model: {stats['model'][:16]:<16}║\n"
+        f"║  LLM: {llm_label.upper()[:12]:<12}  Model: {stats['model'][:16]:<16}║\n"
         f"╚════════════════════════════════════════════════════╝\n"
     )
     console.print(banner_updated, style="bold cyan")
@@ -497,7 +506,7 @@ def main() -> None:
 
     ensure_runtime_dirs(_PROJECT_ROOT, config)
 
-    logger.info(f"Старт | mode={args.mode} | backend={BACKEND}")
+    logger.info(f"Старт | mode={args.mode} | backend={LLM_PROVIDERS_LABEL or BACKEND}")
 
     mode_map = {
         "core": run_http_stack,

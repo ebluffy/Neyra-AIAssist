@@ -871,6 +871,8 @@ class NeyraAgent:
         return {
             "mode": self.mode,
             "llm_provider": self.backend,
+            "llm_dual": bool(getattr(self, "llm_dual", False)),
+            "llm_providers": dict(getattr(self, "llm_role_providers", {}) or {}),
             "model": self.llm_model,
             "talk_model": getattr(self, "llm_talk_model", self.llm_model),
             "brain_model": getattr(self, "llm_brain_model", None),

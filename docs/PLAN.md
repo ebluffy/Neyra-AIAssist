@@ -270,4 +270,8 @@ docs/
 
 ## Этап 1c — закрыт (PR #15)
 
-Слои `server/config/*.yaml`, короткий root, `config_loader` + schema, inventory в `docs/config-keys.md`, `verify_stage_1c.py` + CI. Дальше — **Этап 1d** (dual LLM: AIHope + OpenRouter talk).
+Слои `server/config/*.yaml`, короткий root, `config_loader` + schema, inventory в `docs/config-keys.md`, `verify_stage_1c.py` + CI.
+
+## Этап 1d — закрыт (PR #16)
+
+Dual-backend: `llm.<role>.provider` (talk→OpenRouter, brain/memory/vision→AIHope), баланс dual, keys only from `.env`, `verify_stage_1d.py` + CI. Без legacy `BACKEND` / `openrouter:` / dual-read.
