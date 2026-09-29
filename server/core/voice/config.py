@@ -409,19 +409,16 @@ def print_voice_preflight(config: Optional[dict[str, Any]] = None) -> int:
     """
     if config is None:
         from pathlib import Path
-        import yaml
-        from core.runtime.secrets import apply_env_secrets, load_dotenv_file
+
+        from core.runtime.config_loader import load_layered_config
+        from core.runtime.secrets import load_dotenv_file
 
         root = Path(__file__).resolve().parents[2]
         load_dotenv_file(root)
-        cfg_path = root / "config.yaml"
-        if not cfg_path.is_file():
-            cfg_path = root / "config.example.yaml"
-        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.is_file() else {}
-        if not isinstance(data, dict):
-            data = {}
-        apply_env_secrets(data)
-        config = data
+        try:
+            config = load_layered_config(root, validate=False)
+        except FileNotFoundError:
+            config = {}
 
     stt = resolve_stt_runtime(config)
     tts = resolve_tts_runtime(config)

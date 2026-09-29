@@ -1,0 +1,145 @@
+# Neyra config layer: config/llm.yaml
+# EN/RU: see docs/PLAN.md §1c and docs/config-keys.md
+#
+BACKEND: openrouter
+
+openrouter:
+  # EN: API key can be injected from .env; keep empty in template.
+  # RU: API ключ подставляется из .env; в шаблоне оставляем пустым.
+  api_key: ""
+
+  # EN: Per-role settings (nested). Keys model/id + sampling budgets. Legacy flat openrouter.* still works.
+  # RU: Настройки по ролям (вложенные dict). Ключ model или id — ID на OpenRouter.
+
+  talk_model:
+    model: "qwen/qwen3-235b-a22b-2507"
+    reply_max_tokens: 220
+    lyrics_reply_max_tokens: 4096
+    temperature: 0.8
+    top_p: 1.0
+    presence_penalty: 0.3
+    frequency_penalty: 0.3
+    timeout_seconds: 30.0
+    max_retries: 1
+    primary_first_token_timeout_seconds: 8.0
+
+  brain_model:
+    # Левое полушарие: быстрый мультимодальный маршрутизатор + tool-loop
+    # WARNING: :free endpoints may log/reuse content — do not send PII/voice/faces without consent.
+    # RU: :free может логироваться у провайдера — не слать PII/голос/лица без согласия.
+    model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+    # Правое полушарие: глубокая логика (инструмент delegate_to_deep_logic)
+    model_deep: "openai/gpt-oss-120b:free"
+    # max_tokens не задан — нативный лимит генерации провайдера
+    temperature: 0.35
+    top_p: 1.0
+    timeout_seconds: 30.0
+    max_retries: 1
+
+  memory_model:
+    # Гиппокамп: LTM, working memory, рефлексии (большой контекст; retry при 429)
+    # Если openrouter/owl-alpha даёт 404 — замените на qwen/qwen3-next-80b-a3b-instruct:free
+    model: "qwen/qwen3-next-80b-a3b-instruct:free"
+    # max_tokens не задан — нативный лимит провайдера
+    temperature: 0.6
+    timeout_seconds: 60.0
+    max_retries: 1
+
+  # EN: VL + pipeline (Discord attachments, image limits, last-screen memory). Single source for vision.
+  # RU: VL-модель и весь контур зрения — только здесь (корневого vision: больше нет).
+  vision_model:
+    enabled: true
+    use_brain_model_for_vision: true
+    model: "qwen/qwen3.5-flash-02-23"
+    max_tokens: 800
+    temperature: 0.75
+    timeout_seconds: 180.0
+    max_images_per_message: 4
+    max_image_bytes: 8388608
+    max_image_width: 1920
+    max_image_height: 1080
+    remember_last_image: true
+    last_image_note_max_chars: 1200
+
+  # EN: Deprecated flat aliases (omit when using nested blocks above).
+  # model / brain_max_tokens / reply_max_tokens at root — см. expand_openrouter_nested в core/llm_profile.py
+
+  # EN: OpenRouter API base URL.
+  # RU: Базовый URL OpenRouter API.
+  base_url: "https://openrouter.ai/api/v1"
+
+  # EN: Approximate context budget expected by orchestration logic.
+  # RU: Ожидаемый контекстный бюджет для оркестратора.
+  context_window: 16384
+
+  # EN: HTTP timeout fallback when not set inside talk_model (same for max_retries).
+  # RU: Запасной таймаут, если не задан в talk_model.
+  timeout_seconds: 30.0
+
+  max_retries: 1
+
+  # -------------------------
+  # Hidden micro-planning / Внутреннее микро-планирование
+  # -------------------------
+  micro_planning:
+    # EN: Enables hidden internal planning that is stripped from final user text.
+    # RU: Включает внутренний скрытый план, который вырезается из финального ответа.
+    enabled: false
+
+    # EN: Internal format mode: "tags" or "anchor".
+    # RU: Режим внутреннего формата: "tags" или "anchor".
+    mode: "tags"
+
+    # EN: Optional assistant prefill to stabilize plan format.
+    # RU: Опциональный prefill assistant-сообщения для стабилизации формата плана.
+    prefill_enabled: false
+
+    # EN: Opening tag for tags-mode internal plan.
+    # RU: Открывающий тег для внутреннего плана в tags-режиме.
+    start_tag: "[PLAN]"
+
+    # EN: Closing tag for tags-mode internal plan.
+    # RU: Закрывающий тег для внутреннего плана в tags-режиме.
+    end_tag: "[/PLAN]"
+
+    # EN: Prefix used in anchor-mode plan section.
+    # RU: Префикс плана в anchor-режиме.
+    anchor_plan: "PLAN:"
+
+    # EN: Prefix used for visible reply section in anchor-mode.
+    # RU: Префикс видимой части ответа в anchor-режиме.
+    anchor_reply: "SAY:"
+
+  # -------------------------
+  # Async reflection (behavior only — model is openrouter.memory_model)
+  # -------------------------
+  # EN:
+  #   When enabled: after EACH user-visible reply, a short background call using memory_model
+  #   → one diary note (source async_reflection). Does NOT replace nightly ReflectionEngine.
+  # RU:
+  #   После каждого ответа — короткий фоновый вызов на memory_model → заметка в дневник.
+  async_reflection:
+    # EN: Master switch for post-reply background diary notes (not the nightly journal job).
+    # RU: Включить фоновые заметки после каждого ответа (не путать с ночным журналом).
+    enabled: false
+
+    # EN: Temperature for async reflection text.
+    # RU: Температура для текста фоновой рефлексии.
+    temperature: 0.6
+
+    # EN: Max token budget for async reflection.
+    # RU: Лимит токенов для фоновой рефлексии.
+    max_tokens: 900
+
+    # EN: Timeout for async reflection requests.
+    # RU: Таймаут фоновых запросов рефлексии.
+    timeout_seconds: 60
+
+    # EN: Retry count for async reflection requests.
+    # RU: Количество повторов для фоновой рефлексии.
+    max_retries: 1
+
+    # EN: Max saved diary note length from async reflection.
+    # RU: Максимальная длина заметки в дневник из фоновой рефлексии.
+    max_note_chars: 1200
+

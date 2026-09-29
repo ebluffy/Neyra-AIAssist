@@ -116,12 +116,12 @@ docs/
 
 ### Готово, когда
 
-- [ ] `server/config.yaml` не содержит дублирующей глубокой конфигурации и сохраняет совместимые defaults.
-- [ ] Каждый конфигурационный ключ имеет тип, default, источник, target file и правило override.
-- [ ] Loader валидирует схему до запуска и сохраняет понятные ошибки.
-- [ ] `paths.data_dir` и `NEYRA_DATA_DIR` проверены на `server/data` после переноса memory/logs.
-- [ ] Consumer и merge-поведение `server/modules/local_voice/config.yaml` проверены до изменения loader; поведение voice не исчезает молча.
-- [ ] Legacy env aliases либо поддержаны с warning, либо явно документированы как миграция.
+- [x] `server/config.yaml` не содержит дублирующей глубокой конфигурации и сохраняет совместимые defaults.
+- [x] Каждый конфигурационный ключ имеет тип, default, источник, target file и правило override (`docs/config-keys.md`).
+- [x] Loader валидирует схему до запуска и сохраняет понятные ошибки.
+- [x] `paths.data_dir` и `NEYRA_DATA_DIR` проверены на `server/data` после переноса memory/logs.
+- [x] Consumer и merge-поведение `server/modules/local_voice/config.yaml` проверены; поведение voice не исчезает молча (`verify_stage_1c.py`).
+- [x] Legacy env aliases поддержаны с warning once (`YANDEX_ID_KEY`, `HUGGING_FACE_HUB_TOKEN`).
 
 ## 2. Control API поверх Internal API
 
@@ -245,4 +245,8 @@ docs/
 
 ## Этап 1b — закрыт (PR #14)
 
-Реорганизация `server/` / `client/` / `devtools/` выполнена. Приёмка политики memory/logs: `docs/stage-1b-acceptance.md` (OK владельца в PR). Прогоны: `docs/stage-1b-evidence.md` (post-migrate baseline). CI `Stage 1b verify` зелёный. Дальше — **Этап 1c** (слои конфигурации).
+Реорганизация `server/` / `client/` / `devtools/` выполнена. Приёмка политики memory/logs: `docs/stage-1b-acceptance.md` (OK владельца в PR). Прогоны: `docs/stage-1b-evidence.md` (post-migrate baseline). CI `Stage 1b verify` зелёный.
+
+## Этап 1c — закрыт (PR #15)
+
+Слои `server/config/*.yaml`, короткий root, `config_loader` + schema, inventory в `docs/config-keys.md`, `verify_stage_1c.py` + CI. Дальше — **Этап 2** (Control API поверх Internal API).

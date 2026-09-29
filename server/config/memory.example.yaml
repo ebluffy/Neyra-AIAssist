@@ -1,0 +1,199 @@
+# Neyra config layer: config/memory.yaml
+# EN/RU: see docs/PLAN.md §1c and docs/config-keys.md
+#
+memory:
+  # EN: SQLite Memory Hub (source of truth for chat_log / structured memory). See docs/adr/0001-memory-hub-v2.md
+  # RU: SQLite Memory Hub (истина chat_log / структурированной памяти). См. docs/adr/0001-memory-hub-v2.md
+  sqlite_path: "./data/memory/neyra_memory.db"
+
+  # EN: Semantic RAG write policy: off | digest | important_only (no raw full-chat embed). Escape: legacy_dialog.
+  # RU: Политика записи в семантический индекс: off | digest | important_only (без сырого full-chat). Аварийно: legacy_dialog.
+  rag_write_mode: "important_only"
+
+  # EN: Optional TTL for SQLite chat_log prune (0 = keep forever).
+  # RU: Опциональный TTL prune для chat_log (0 = без автоудаления).
+  chat_log_retention_days: 0
+
+  # EN: Short-term memory sliding window size (message pairs kept in RAM).
+  # RU: Размер скользящего окна STM (сообщений в RAM).
+  stm_max_messages: 10
+
+  # EN: ChromaDB storage directory for vector memory.
+  # RU: Папка ChromaDB для векторной памяти.
+  chroma_db_path: "./data/memory/chroma_db"
+
+  # EN: [Deprecated] Ignored as a store — journal is Hub SQLite only (or in-memory when no Hub).
+  #     Key kept for backward compatibility with existing config files; safe to remove.
+  # RU: [Устарело] Не используется как стор — журнал только в Hub SQLite (или in-memory без Hub).
+  #     Ключ оставлен для совместимости со старыми конфигами; можно удалить.
+  journal_path: "./data/memory/journal.json"
+
+  # EN: [Deprecated] No longer read or written by NeyraDiary — Hub SQLite is the sole diary
+  #     store when a Hub is attached; without a Hub, entries are kept in-memory only. Key kept
+  #     only for backward compatibility with existing config files; safe to remove.
+  # RU: [Устарело] Больше не читается и не пишется NeyraDiary — при подключённом Hub
+  #     единственный стор дневника — SQLite; без Hub записи живут только в памяти процесса.
+  #     Ключ оставлен только для совместимости со старыми конфигами; можно удалить.
+  diary_path: "./data/memory/neyra_diary.jsonl"
+
+  # EN: File path for internal thought logs (debug/analysis).
+  # RU: Путь к логу внутренних рассуждений (debug/анализ).
+  thoughts_log: "./data/memory/thoughts.log"
+
+  # EN: Hard limit for number of diary entries kept.
+  # RU: Жёсткий лимит хранимых записей дневника.
+  diary_max_entries: 5000
+
+  # EN: Enables hourly automatic diary notes.
+  # RU: Включает почасовые автоматические заметки в дневник.
+  diary_hourly_enabled: true
+
+  # EN: Minimum chat-log lines required to write hourly note.
+  # RU: Минимум строк в логе для создания почасовой заметки.
+  diary_hourly_min_lines: 6
+
+  # EN: Enables RAG long-term memory retrieval.
+  # RU: Включает RAG-поиск по долгосрочной памяти.
+  rag_enabled: true
+
+  # EN: Initializes RAG asynchronously at startup.
+  # RU: Инициализирует RAG в фоне при старте.
+  rag_init_in_background: true
+
+  # EN: Sentence-transformer model used for embeddings.
+  # RU: Модель sentence-transformer для эмбеддингов.
+  embedding_model: "paraphrase-multilingual-mpnet-base-v2"
+
+  # EN: Number of top similar memory chunks to retrieve.
+  # RU: Количество наиболее похожих фрагментов памяти для подмешивания.
+  rag_top_k: 3
+
+  # EN: Intended max long-term records (cleanup policy depends on runtime code).
+  # RU: Целевой максимум записей в памяти (очистка зависит от runtime-логики).
+  max_records: 10000
+
+  # EN: Subdirectory (under the Chroma parent path) for cold JSONL archives from /v1/memory/summarize.
+  # RU: Подкаталог (рядом с Chroma) для JSONL-архивов при summarize.
+  ltm_archive_dir: "ltm_archive"
+
+  # EN: Max tokens for LLM digest when running POST /v1/memory/summarize with compress_with_llm.
+  # RU: Лимит токенов digest при summarize с LLM.
+  ltm_summarize_max_tokens: 2048
+
+  # EN: Embedding-similarity clustering before LTM digest (sleep consolidation). Disabling falls back to one big digest.
+  # RU: Кластеризация по эмбеддингам перед digest LTM; выключение — один общий digest как раньше.
+  ltm_cluster_merge:
+    enabled: true
+    similarity_threshold: 0.86
+    max_cluster_chars: 95000
+    log_dir: "./data/memory/ltm_consolidation"
+
+  # EN: Short-horizon (1–3 days) working memory: markdown file rewritten by memory_model; injected before RAG.
+  # RU: Рабочая память на 1–3 дня: markdown, переписывается memory_model; подмешивается в промпт до RAG.
+  working_memory:
+    enabled: false
+    per_user: true
+    storage_dir: "./data/memory/working_memory"
+    shared_file_path: "./data/memory/working_memory.md"
+    max_chars_in_prompt: 3500
+    update_every_n_turns: 2
+    update_after_context_trim: true
+    min_interval_seconds: 45
+    max_file_chars: 12000
+    llm_max_tokens: 1200
+
+  # EN: Short PRE-CONTEXT hint (diary + user-scoped WM). Off = previous behavior.
+  # RU: Короткий PRE-CONTEXT (дневник + WM пользователя). Off = как раньше.
+  # EN: WM always requires internal_user_id (never global latest snapshot).
+  # RU: WM всегда с internal_user_id (никогда глобальный latest snapshot).
+  # EN: `semantic` listed but skipped until user-scoped semantic API exists.
+  pre_context:
+    enabled: false
+    max_chars: 600
+    sources: [diary, wm]
+    inject_lane: talk   # talk | brain | both
+
+  # EN: Archive STM before overflow trim / /reset (off by default).
+  # RU: Архив STM перед trim при overflow / /reset (выкл. по умолчанию).
+  # EN: LTM path writes digest only (never raw full-chat into Chroma).
+  # RU: в LTM пишется только digest, не сырой полный чат.
+  session_archive:
+    enabled: false
+    on_overflow: true
+    on_manual_reset: true
+    on_stm_threshold: false
+    threshold_messages: 0      # 0 = off; else archive when len(STM) >= N
+    write_diary: true
+    write_ltm_digest: false    # LLM call — keep false unless needed
+    clear_stm_after: false     # overflow/threshold: true = clear STM; false = keep trim
+    max_window_chars: 8000
+    max_diary_chars: 1200
+
+  # EN: Persona affect in diary / PeopleDB / LTM metadata (memory_model). ltm_emotion_sync adds latency per turn.
+  # RU: Эмоции персоны в дневнике / досье / метаданные LTM; ltm_emotion_sync — доп. задержка на ход.
+  emotional_layer:
+    enabled: false
+    diary_after_turn: true
+    diary_emotion_min_interval_seconds: 90
+    max_diary_emotion_chars: 480
+    diary_emotion_max_tokens: 350
+    ltm_emotion_sync: false
+    ltm_emotion_max_tokens: 180
+
+  # EN: Background LTM prune (same APScheduler as reflection).
+  # RU: Фоновый prune LTM (тот же APScheduler, что и рефлексия).
+  ltm_auto_prune:
+    enabled: true
+    interval_hours: 168
+    older_than_days: 90
+    dry_run: false
+
+  # EN: Background cold-archive + optional LLM digest (costly; often disabled).
+  # RU: Фоновый архив + digest LLM (дорого по токенам; часто выключено).
+  ltm_auto_summarize:
+    enabled: false
+    interval_hours: 720
+    older_than_days: 60
+    max_entries: 500
+    compress_with_llm: true
+    dry_run: false
+    # EN: After successful nightly diary reflection, run the same LTM summarize job (requires enabled: true).
+    # RU: После успешной ночной рефлексии запустить summarize LTM (нужно enabled: true).
+    run_after_nightly_reflection: false
+
+  # EN: Nightly reflection schedule (HH:MM, local time).
+  # RU: Расписание ночной рефлексии (HH:MM, локальное время).
+  reflection_time: "04:00"
+
+backup:
+  # EN: Local backup archive directory.
+  # RU: Локальная директория архивов бэкапа.
+  local_dir: "./backups"
+
+external_storage:
+  # EN: Global switch for remote storage adapter.
+  # RU: Глобальный переключатель адаптера внешнего хранилища.
+  enabled: false
+
+  # EN: Provider id: local_folder | google_drive
+  # RU: Провайдер: local_folder | google_drive
+  provider: "local_folder"
+
+  # EN: Run auto backup sync after big reflection.
+  # RU: Автосинхронизация бэкапа после большой рефлексии.
+  sync_after_big_reflection: true
+
+  local_folder:
+    # EN: Pseudo-remote target dir for local tests/dev.
+    # RU: Псевдо-удалённая папка для локальных тестов/разработки.
+    path: "./external_storage"
+
+  google_drive:
+    # EN: Service account credentials json path.
+    # RU: Путь к service account credentials json.
+    credentials_json: "./secrets/google-drive-service-account.json"
+
+    # EN: Target Google Drive folder id.
+    # RU: ID целевой папки Google Drive.
+    folder_id: ""
+

@@ -93,14 +93,14 @@ Neyra развивается как персональный публичный 
 2. Установи зависимости:
   - `pip install -r server/requirements.txt`
 3. Создай `server/.env` из `server/.env.example` и заполни секреты.
-4. Создай `server/config.yaml` из `server/config.example.yaml` и настрой:
-  - укажи вложенные блоки `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model`.
-5. Скопируй шаблоны конфигов плагинов:
+4. Создай `server/config.yaml` из `server/config.example.yaml` (короткий корень: `paths`, `system`, `assistant`).
+5. Скопируй слои: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). Модели — в `server/config/llm.yaml` (`openrouter.*`).
+6. Скопируй шаблоны конфигов плагинов:
   - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
   - `server/modules/internal_api/config.example.yaml` → `server/modules/internal_api/config.yaml`
   - при необходимости другие: `server/modules/<id>/config.example.yaml` → `server/modules/<id>/config.yaml`
-6. Preflight (пример): `cd server && python scripts/healthcheck.py --mode console --skip-http`
-7. Запуск:
+7. Preflight (пример): `cd server && python scripts/healthcheck.py --mode console --skip-http`
+8. Запуск:
   - Windows: `run_neyra.bat`
   - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`
   - Напрямую: `python server/main.py` (ядро) или `python server/main.py --mode console`

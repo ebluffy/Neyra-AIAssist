@@ -2,9 +2,25 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("neyra.secrets")
+
+_warned_legacy_env: set[str] = set()
+
+
+def _warn_legacy_env_once(name: str, replacement: str) -> None:
+    if name in _warned_legacy_env:
+        return
+    _warned_legacy_env.add(name)
+    logger.warning(
+        "legacy env %s — prefer %s (behavior unchanged)",
+        name,
+        replacement,
+    )
 
 
 def load_dotenv_file(root: Path) -> None:
@@ -145,7 +161,10 @@ def apply_env_secrets(cfg: dict) -> None:
     if d:
         cfg.setdefault("discord", {})["token"] = d
 
-    hf = _s("HF_TOKEN") or _s("HUGGING_FACE_HUB_TOKEN")
+    hf = _s("HF_TOKEN")
+    if not hf and _s("HUGGING_FACE_HUB_TOKEN"):
+        _warn_legacy_env_once("HUGGING_FACE_HUB_TOKEN", "HF_TOKEN")
+        hf = _s("HUGGING_FACE_HUB_TOKEN")
     if hf:
         cfg.setdefault("memory", {})["hf_token"] = hf
 
@@ -189,7 +208,10 @@ def apply_env_secrets(cfg: dict) -> None:
         cfg.setdefault("internal_api", {})["webhook_inbound_secret"] = wh_in
 
     yk = _s("YANDEX_API_KEY")
-    yf = _s("YANDEX_FOLDER_ID") or _s("YANDEX_ID_KEY")
+    yf = _s("YANDEX_FOLDER_ID")
+    if not yf and _s("YANDEX_ID_KEY"):
+        _warn_legacy_env_once("YANDEX_ID_KEY", "YANDEX_FOLDER_ID")
+        yf = _s("YANDEX_ID_KEY")
     if yk or yf:
         voice = cfg.get("voice")
         if not isinstance(voice, dict):

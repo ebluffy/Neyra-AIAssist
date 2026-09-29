@@ -1,4 +1,4 @@
-name: Stage 1b verify
+name: Stage 1c verify
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ on:
       - "**.md"
   push:
     branches:
-      - refactor/stage-1b-layout
+      - refactor/stage-1c-config-layers
       - main
 
 jobs:
@@ -18,13 +18,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install server deps (minimal for compileall)
+      - name: Install server deps (minimal)
         run: pip install -q pyyaml python-dotenv httpx
       - name: compileall
         run: python -m compileall -q server devtools/mcp_server
-      - name: verify_stage_1b (fresh clone mode)
+      - name: verify_stage_1b (layout regression)
         run: python server/scripts/verify_stage_1b.py
-      - name: healthcheck smoke (example config, skip HTTP)
+      - name: verify_stage_1c (layers + local_voice + schema)
+        run: python server/scripts/verify_stage_1c.py
+      - name: healthcheck smoke (layered examples, skip HTTP)
         env:
           OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http
           DISCORD_TOKEN: ci-placeholder-not-a-real-token
