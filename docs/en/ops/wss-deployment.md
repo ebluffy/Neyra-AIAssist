@@ -16,7 +16,7 @@ Neyra gateway exposes:
 
 ## Local development
 
-- Start core (includes API): `python main.py`
+- Start core (includes API): `python server/main.py`
 - Use `ws://127.0.0.1:8787/v1/ws/chat` and `ws://127.0.0.1:8787/v1/ws/audio`
 
 ## Production

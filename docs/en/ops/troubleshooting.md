@@ -8,14 +8,14 @@
 # Troubleshooting
 
 ## API не отвечает
-- Проверьте, что `python main.py` запущен.
-- Проверьте host/port в `interfaces/internal_api/config.yaml`.
+- Проверьте, что `python server/main.py` запущен.
+- Проверьте host/port в `server/modules/internal_api/config.yaml`.
 
 ## 401 Unauthorized
 - Либо задайте корректный Bearer, либо очистите `INTERNAL_API_TOKEN`.
 
 ## Discord plugin не стартует
-- Проверьте `interfaces/discord/plugin.yaml` (`enabled: true`).
+- Проверьте `server/modules/discord/plugin.yaml` (`enabled: true`).
 - Проверьте `DISCORD_TOKEN` в `.env`.
 
 ## Ошибки вебхуков

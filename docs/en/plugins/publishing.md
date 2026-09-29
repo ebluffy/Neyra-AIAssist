@@ -8,7 +8,7 @@
 # Публикация плагинов
 
 ## Минимум для публикации
-- Полная папка `interfaces/<id>/`.
+- Полная папка `server/modules/<id>/`.
 - `plugin.yaml`, `main.py`, `config.example.yaml`.
 - README по установке и env переменным.
 

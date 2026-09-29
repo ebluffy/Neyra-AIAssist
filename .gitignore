@@ -1,10 +1,19 @@
+# Secrets and local config (under server/ after Stage 1b)
+server/.env
+server/config.yaml
 .env
 config.yaml
-# Private persona/appearance (examples live in prompts/*.example.md)
+
+# Private persona/appearance (examples live in server/prompts/*.example.md)
+server/prompts/persona.md
+server/prompts/appearance.md
 prompts/persona.md
 prompts/appearance.md
-# Локальные overrides плагинов (в репо — только config.example.yaml в каждой папке)
+
+# Module local overrides (repo keeps only config.example.yaml)
+server/modules/**/config.yaml
 interfaces/**/config.yaml
+
 Gemini.md
 Diplom.md
 .venv/
@@ -26,7 +35,23 @@ __pycache__/
 .cursor/
 kursovaya/
 
-# Runtime artifacts
+# Runtime artifacts (server data layout)
+server/data/memory/chroma_db/*.sqlite3
+server/data/memory/journal.json
+server/data/memory/thoughts.log
+server/data/memory/people_db/*.json
+server/data/memory/neyra_diary.jsonl
+server/data/memory/reflection_last.json
+server/data/memory/plugin_backups/
+server/data/memory/memory.zip
+server/data/memory/neyra_memory.db
+server/data/memory/neyra_memory.db-*
+server/data/memory/*.db-wal
+server/data/memory/*.db-shm
+server/data/memory/working_memory/
+server/data/memory/ltm_consolidation/
+
+# Legacy root memory paths (pre-1b; keep ignore during transition)
 memory/chroma_db/05acb175-7a26-4894-bfd6-2750daf3cf81
 memory/chroma_db/*.sqlite3
 memory/journal.json
@@ -42,6 +67,18 @@ memory/*.db-wal
 memory/*.db-shm
 memory/working_memory/
 memory/ltm_consolidation/
+
+server/logs/*.log
+server/logs/*.json
+server/logs/*.txt
+server/logs/*.html
+server/logs/*.xml
+server/logs/*.yaml
+server/logs/*.yml
+server/logs/*.jsonl
+server/logs/*.jsonl.gz
+server/logs/*.jsonl.bz2
+server/logs/voice_tmp/
 logs/*.log
 logs/*.json
 logs/*.txt
@@ -53,15 +90,31 @@ logs/*.jsonl
 logs/*.jsonl.gz
 logs/*.jsonl.bz2
 logs/voice_tmp/
-interfaces/discord_music/lavalink/application.yml
-interfaces/discord_music/lavalink/logs/
-interfaces/discord_music/lavalink/lavalink.log
+
+server/modules/discord/lavalink/application.yml
+server/modules/discord/lavalink/plugins/*.jar
+server/modules/discord/lavalink/logs/
+server/modules/discord/lavalink/lavalink.log
 interfaces/discord/lavalink/application.yml
 interfaces/discord/lavalink/plugins/*.jar
 interfaces/discord/lavalink/logs/
 interfaces/discord/lavalink/lavalink.log
+interfaces/discord_music/lavalink/application.yml
+interfaces/discord_music/lavalink/logs/
+interfaces/discord_music/lavalink/lavalink.log
+
 *.wav
 *.mp3
+server/sounds/*.wav
+server/sounds/*.mp3
+server/sounds/*.ogg
+server/sounds/*.flac
+server/sounds/*.aac
+server/sounds/*.m4a
+server/sounds/*.m4b
+server/sounds/*.m4p
+server/sounds/*.m4v
+server/sounds/src/
 sounds/*.wav
 sounds/*.mp3
 sounds/*.ogg
@@ -71,7 +124,6 @@ sounds/*.m4a
 sounds/*.m4b
 sounds/*.m4p
 sounds/*.m4v
-sounds/*.m4b
 sounds/src/
 sounds/src/*.wav
 sounds/src/*.mp3
@@ -82,14 +134,20 @@ sounds/src/*.m4a
 sounds/src/*.m4b
 sounds/src/*.m4p
 sounds/src/*.m4v
-sounds/src/*.m4b
-sounds/src/*.m4p
-sounds/src/*.m4v
 
 # Build / packaging
 build/
 dist/
+server/dashboard/node_modules/
+server/dashboard/dist/
 frontend/node_modules/
+client/node_modules/
+client/dist/
+client/src-tauri/target/
 *.egg-info/
 
-
+# Entire runtime data trees (keep layout local; do not commit)
+server/data/memory/**
+!server/data/memory/.gitkeep
+server/logs/**
+!server/logs/.gitkeep

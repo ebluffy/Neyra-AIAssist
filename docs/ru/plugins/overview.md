@@ -7,7 +7,7 @@
 
 # Plugin System Overview
 
-Плагин = папка `interfaces/<plugin_id>/`:
+Плагин = папка `server/modules/<plugin_id>/`:
 - `plugin.yaml` — манифест и lifecycle.
 - `main.py` — входная точка `run_plugin(ctx)`.
 - `config.example.yaml` — шаблон параметров.

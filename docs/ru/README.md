@@ -22,4 +22,4 @@
 
 
 Корень репозитория: `README.md`, `README-RU.md`, `PLAN.md`, `Diplom.md`.  
-Примеры плагина не переносятся: `interfaces/000EXAMPLE/`.
+Примеры плагина не переносятся: `server/modules/000EXAMPLE/`.

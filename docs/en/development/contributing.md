@@ -24,7 +24,7 @@ Thanks for contributing to Neyra.
 
 - Keep runtime model-first.
 - Do not add Discord voice receive/send into the stable path.
-- New interface work belongs in `interfaces/` as isolated plugins; see `interfaces/000EXAMPLE/HELP.md` (EN) and `interfaces/000EXAMPLE/HELP-RU.md` (RU).
+- New interface work belongs in `server/modules/` as isolated plugins; see `server/modules/000EXAMPLE/HELP.md` (EN) and `server/modules/000EXAMPLE/HELP-RU.md` (RU).
 - Keep secrets out of code and default config; use `.env`.
 
 ## Code style

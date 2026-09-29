@@ -20,9 +20,9 @@
 - `logging`
 
 ## Вынесено в плагины
-- `discord` -> `interfaces/discord/config.yaml`
-- `internal_api`, `dashboard` -> `interfaces/internal_api/config.yaml`
-- локальные plugin settings -> `interfaces/<id>/config.yaml`
+- `discord` -> `server/modules/discord/config.yaml`
+- `internal_api`, `dashboard` -> `server/modules/internal_api/config.yaml`
+- локальные plugin settings -> `server/modules/<id>/config.yaml`
 
 ## Запрещено хранить в yaml
 - API keys и токены. Используйте `.env`.

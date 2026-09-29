@@ -24,22 +24,22 @@ Neyra строится как переиспользуемое ядро плюс
 
 Текущий стабильный runtime:
 
-- `python main.py` — ядро: API, дашборд, один агент, resident-плагины (например Discord при включённом конфиге),
-- `python main.py --mode console` — только консоль для экспериментов с промптами,
-- интерфейс `discord` (текст + музыка) и др. — плагины в `interfaces/`,
+- `python server/main.py` — ядро: API, дашборд, один агент, resident-плагины (например Discord при включённом конфиге),
+- `python server/main.py --mode console` — только консоль для экспериментов с промптами,
+- интерфейс `discord` (текст + музыка) и др. — плагины в `server/modules/`,
 - опциональный **Docker** через `Dockerfile` + `docker-compose.yml`.
 
 ### Дашборд (frontend)
 
-Веб-интерфейс: **React + Vite + Tailwind CSS** в каталоге `frontend/`. Сборка — `frontend/dist`, раздаётся Internal API (`npm install && npm run build` перед продакшеном).
+Веб-интерфейс: **React + Vite + Tailwind CSS** в каталоге `server/dashboard/`. Сборка — `server/dashboard/dist`, раздаётся Internal API (`npm install && npm run build` перед продакшеном).
 
 ### MCP debug (IDE)
 
-Опциональный **Model Context Protocol** debug-сервер в `tools/mcp_server/` (stdio MCP для Cursor): хвост логов, вызовы `/v1`, инъекция событий в шину (`POST /v1/debug/fire_event`), снимок памяти (`GET /v1/debug/memory`). Настройка: `docs/ru/setup/mcp-debug-server.md`.
+Опциональный **Model Context Protocol** debug-сервер в `devtools/mcp_server/` (stdio MCP для Cursor): хвост логов, вызовы `/v1`, инъекция событий в шину (`POST /v1/debug/fire_event`), снимок памяти (`GET /v1/debug/memory`). Настройка: `docs/ru/setup/mcp-debug-server.md`.
 
 ### Discord и музыка
 
-Один resident-плагин `**interfaces/discord/`** (текст + музыка). Воспроизведение через **Lavalink 4.x** и актуальные **YouTube/source-плагины**; в конфиге Lavalink часто задают клиент вроде **ANDROID_VR**, если провайдер режет доступ.
+Один resident-плагин `**server/modules/discord/`** (текст + музыка). Воспроизведение через **Lavalink 4.x** и актуальные **YouTube/source-плагины**; в конфиге Lavalink часто задают клиент вроде **ANDROID_VR**, если провайдер режет доступ.
 
 ### Модели — четыре роли, вложенный конфиг
 
@@ -58,15 +58,15 @@ Neyra строится как переиспользуемое ядро плюс
   - `core/mcp_client.py` — **MCP-клиент** (stdio + SSE, динамические инструменты LangChain).
   - `core/ltm_maintenance.py` — жизненный цикл LTM: TTL prune, сжатие → cold archive.
   - `core/voice/` — voice-адаптеры и будущие фабрики STT/TTS.
-- `frontend/` — исходники React+Vite+Tailwind; продакшен-сборка в `frontend/dist`.
-- `interfaces/` — плагины (`plugin.yaml` + `main.py` + опционально `config.yaml`): `**discord`** (единый текст+музыка), internal API, local voice, screen и шаблон `000EXAMPLE`.
-- `tools/mcp_server/` — **MCP debug-сервер** (stdio MCP для Cursor): логи, API, fire_event, снимок памяти.
-- **Документация Plugin SDK** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md) (русский туториал), [HELP.md](interfaces/000EXAMPLE/HELP.md) (English).
+- `server/dashboard/` — исходники React+Vite+Tailwind; продакшен-сборка в `server/dashboard/dist`.
+- `server/modules/` — плагины (`plugin.yaml` + `main.py` + опционально `config.yaml`): `**discord`** (единый текст+музыка), internal API, local voice, screen и шаблон `000EXAMPLE`.
+- `devtools/mcp_server/` — **MCP debug-сервер** (stdio MCP для Cursor): логи, API, fire_event, снимок памяти.
+- **Документация Plugin SDK** — [HELP-RU.md](server/modules/000EXAMPLE/HELP-RU.md) (русский туториал), [HELP.md](server/modules/000EXAMPLE/HELP.md) (English).
 - `scripts/` — эксплуатационные скрипты (healthcheck и вспомогательные утилиты, `inject_memes_2026.py`).
 - `main.py` — точка входа (`core` или `console`).
 - `run_neyra.bat` — меню на Windows.
 - `run_neyra.sh` — меню на Linux/macOS (статус, остановка, git).
-- `Dockerfile` + `docker-compose.yml` — контейнерный деплой (порт `8787`, опционально Lavalink, тома для `config.yaml`, `interfaces/`, `memory/`, `logs/`).
+- `Dockerfile` + `docker-compose.yml` — контейнерный деплой (порт `8787`, опционально Lavalink, тома для `config.yaml`, `server/modules/`, `memory/`, `logs/`).
 
 ## Продуктовый вектор
 
@@ -96,14 +96,14 @@ Neyra развивается как персональный публичный 
 4. Создай `config.yaml` из `config.example.yaml` и настрой:
   - укажи вложенные блоки `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model`.
 5. Скопируй шаблоны конфигов плагинов:
-  - `interfaces/discord/config.example.yaml` → `interfaces/discord/config.yaml`
-  - `interfaces/internal_api/config.example.yaml` → `interfaces/internal_api/config.yaml`
-  - при необходимости другие: `interfaces/<id>/config.example.yaml` → `interfaces/<id>/config.yaml`
+  - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
+  - `server/modules/internal_api/config.example.yaml` → `server/modules/internal_api/config.yaml`
+  - при необходимости другие: `server/modules/<id>/config.example.yaml` → `server/modules/<id>/config.yaml`
 6. Preflight (пример): `python scripts/healthcheck.py --mode console --skip-http`
 7. Запуск:
   - Windows: `run_neyra.bat`
   - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`
-  - Напрямую: `python main.py` (ядро) или `python main.py --mode console`
+  - Напрямую: `python server/main.py` (ядро) или `python server/main.py --mode console`
 
 ### Docker (опционально)
 
@@ -111,7 +111,7 @@ Neyra развивается как персональный публичный 
 docker compose up --build
 ```
 
-Открывает порт `8787`, монтирует `config.yaml`, `interfaces/`, `memory/`, `logs/`. См. `docker-compose.yml`.
+Открывает порт `8787`, монтирует `config.yaml`, `server/modules/`, `memory/`, `logs/`. См. `docker-compose.yml`.
 
 ## Режимы CLI
 
@@ -150,5 +150,5 @@ docker compose up --build
 - `README-RU.md` — публичный обзор (RU).
 - `PLAN.md` — дорожная карта: закрыты Hub/core + точечные улучшения агента/голоса; активный фокус — Web UI WS-мост, затем автономный сервер/колонка.
 - `docs/en/README.md` / `docs/ru/README.md` — индекс документации (архитектура, настройка, API, эксплуатация, плагины, MCP, Web UI).
-- **Как писать плагины** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md), [HELP.md](interfaces/000EXAMPLE/HELP.md).
+- **Как писать плагины** — [HELP-RU.md](server/modules/000EXAMPLE/HELP-RU.md), [HELP.md](server/modules/000EXAMPLE/HELP.md).
 

@@ -7,7 +7,7 @@
 
 # Web UI (дашборд на React)
 
-Дашборд — SPA на **React + Vite + Tailwind CSS**, раздаётся тем же процессом FastAPI, что и ядро (`python main.py`). Исходники — `frontend/src/`, сборка — `frontend/dist`.
+Дашборд — SPA на **React + Vite + Tailwind CSS**, раздаётся тем же процессом FastAPI, что и ядро (`python server/main.py`). Исходники — `server/dashboard/src/`, сборка — `server/dashboard/dist`.
 
 Полное real-time совпадение с Event Bus для всех действий UI запланировано на **этап 1** (двусторонний WebSocket-мост — см. `PLAN.md`; сейчас отложен до после soak). Сейчас панель в основном использует HTTP `/v1`.
 
@@ -23,7 +23,7 @@
 ## Разработка
 
 ```bash
-cd frontend
+cd server/dashboard
 npm install
 npm run dev
 ```
@@ -33,8 +33,8 @@ Proxy на backend настраивается в `vite.config.ts` (`/v1`, `/docs
 ## Сборка
 
 ```bash
-cd frontend
+cd server/dashboard
 npm run build
 ```
 
-Сборка попадает в `frontend/dist` и раздаётся из Internal API.
+Сборка попадает в `server/dashboard/dist` и раздаётся из Internal API.

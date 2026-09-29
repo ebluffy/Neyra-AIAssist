@@ -11,7 +11,7 @@
 Нет. Это локальный API процесса Neyra на вашей машине/сервере.
 
 ## Где включать/выключать плагины?
-В `interfaces/<id>/plugin.yaml`, поле `enabled`.
+В `server/modules/<id>/plugin.yaml`, поле `enabled`.
 
 ## Где хранить токены?
 Только в `.env`.

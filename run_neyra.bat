@@ -1,6 +1,5 @@
 @echo off
-REM Thin wrapper: UTF-8 PowerShell menu via ASCII bootstrap (scripts\neyra_win_boot.ps1).
-REM Boot loads neyra_win_launcher.ps1 as UTF-8 — survives editors that strip UTF-8 BOM.
+REM Thin wrapper: UTF-8 PowerShell menu via ASCII bootstrap (server\scripts\neyra_win_boot.ps1).
 setlocal EnableExtensions
 cd /d "%~dp0"
 
@@ -13,5 +12,5 @@ if not exist "%_PS%" (
 )
 
 title Neyra control deck
-"%_PS%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\neyra_win_boot.ps1"
+"%_PS%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0server\scripts\neyra_win_boot.ps1"
 exit /b %ERRORLEVEL%

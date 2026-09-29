@@ -1,6 +1,6 @@
-# Neyra core: HTTP API + дашборд + resident-плагины (см. main.py).
-# Сборка: docker compose build
-# Память/Chroma и логи — через volumes в docker-compose.yml.
+# Neyra core: HTTP API + dashboard + resident modules (see server/main.py).
+# Build: docker compose build
+# Memory/Chroma and logs — volumes in docker-compose.yml.
 FROM python:3.12-slim-bookworm
 
 WORKDIR /app
@@ -12,10 +12,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY server/ /app/
 
 EXPOSE 8787
 

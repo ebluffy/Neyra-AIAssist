@@ -1,9 +1,9 @@
-# Neyra в Docker Desktop (Windows/Mac/Linux).
-# Запуск: скопируйте .env из .env.example, затем: docker compose up --build
+# Neyra in Docker Desktop (Windows/Mac/Linux).
+# Setup: copy server/.env.example → server/.env, then: docker compose up --build
 #
-# API с хоста: http://127.0.0.1:8787/v1/health
-# MCP (Cursor на хосте): NEYRA_API_BASE=http://127.0.0.1:8787, NEYRA_API_TOKEN=<INTERNAL_API_TOKEN>
-# Логи MCP read_neyra_logs: укажите NEYRA_LOG_PATH на файл в примонтированной ./logs или откройте репозиторий на хосте.
+# API from host: http://127.0.0.1:8787/v1/health
+# MCP (Cursor on host): NEYRA_API_BASE=http://127.0.0.1:8787, NEYRA_API_TOKEN=<INTERNAL_API_TOKEN>
+# MCP logs: point NEYRA_LOG_PATH at a file under ./server/logs or open the repo on the host.
 
 services:
   neyra:
@@ -11,18 +11,18 @@ services:
     ports:
       - "8787:8787"
     env_file:
-      - path: .env
+      - path: ./server/.env
         required: false
     environment:
-      # Слушать все интерфейсы внутри контейнера (обязательно для проброса порта).
+      # Listen on all interfaces inside the container (required for port publish).
       INTERNAL_API_BIND_HOST: "0.0.0.0"
-      # Разрешить POST /v1/debug/lifecycle (stop/restart процесса); без этого endpoint вернёт 403.
+      # Allow POST /v1/debug/lifecycle (stop/restart); without it the endpoint returns 403.
       NEYRA_DEBUG_LIFECYCLE: "1"
     volumes:
-      - ./config.yaml:/app/config.yaml
-      - ./interfaces:/app/interfaces
-      - ./memory:/app/memory
-      - ./logs:/app/logs
-      # Опционально: уже собранный дашборд
-      - ./frontend/dist:/app/frontend/dist:ro
+      - ./server/config.yaml:/app/config.yaml
+      - ./server/modules:/app/modules
+      - ./server/data/memory:/app/data/memory
+      - ./server/logs:/app/logs
+      # Optional: prebuilt dashboard
+      - ./server/dashboard/dist:/app/dashboard/dist:ro
     restart: unless-stopped

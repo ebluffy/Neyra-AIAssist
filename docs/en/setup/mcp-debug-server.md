@@ -5,7 +5,7 @@
 
 ---
 
-# MCP debug server (`tools/mcp_server`)
+# MCP debug server (`devtools/mcp_server`)
 
 Official Python MCP SDK (`mcp` package): connect Cursor (or any MCP client) to Neyra for logs, Internal API calls, event injection, and memory inspection.
 
@@ -33,14 +33,14 @@ You still need the **admin** Bearer token (`INTERNAL_API_TOKEN` / `internal_api.
 
 ## Install
 
-Prefer the **main project venv** (Windows: `.venv_win`, Linux/WSL: `.venv` or `~/neyra-venv`) — `mcp` / `httpx` are already covered by root `requirements.txt` when that env is fully installed. Point Cursor MCP at that interpreter + `tools/mcp_server/server.py`.
+Prefer the **main project venv** (Windows: `.venv_win`, Linux/WSL: `.venv` or `~/neyra-venv`) — `mcp` / `httpx` are already covered by root `requirements.txt` when that env is fully installed. Point Cursor MCP at that interpreter + `devtools/mcp_server/server.py`.
 
 Optional dedicated env (only if you want isolation):
 
 ```bash
 python -m venv .venv_mcp
 # Windows: .venv_mcp\Scripts\activate
-pip install -r tools/mcp_server/requirements.txt
+pip install -r devtools/mcp_server/requirements.txt
 ```
 
 Legacy name `.venv-mcp` is obsolete; do not create it.
@@ -48,7 +48,7 @@ Legacy name `.venv-mcp` is obsolete; do not create it.
 ## Log file resolution
 
 1. `NEYRA_LOG_PATH` if set.
-2. Otherwise `logging.system_log` in root `config.yaml` (same as `main.py`, usually `./logs/system.log`).
+2. Otherwise `logging.system_log` in root `config.yaml` (same as `main.py`, usually `./server/logs/system.log`).
 3. Otherwise first existing file: `logs/system.log`, then `logs/neyra.log`.
 4. Default expected path: `logs/system.log`.
 
@@ -57,7 +57,7 @@ Legacy name `.venv-mcp` is obsolete; do not create it.
 In **Cursor Settings → MCP**, add a stdio server:
 
 - **Command:** Python from the main project venv (e.g. `.venv_win\Scripts\python.exe`) or optional `.venv_mcp`.
-- **Args:** full path to `tools/mcp_server/server.py`.
+- **Args:** full path to `devtools/mcp_server/server.py`.
 
 Cursor starts this MCP **alongside** the IDE (stdio) whenever tools are used; the Neyra **core** must be running separately (`main.py --mode core`) so HTTP tools can reach `http://127.0.0.1:8787`.
 
@@ -92,9 +92,9 @@ From the repo root:
 docker compose up --build
 ```
 
-The compose file sets `INTERNAL_API_BIND_HOST=0.0.0.0` so the HTTP API is reachable from the host at `http://127.0.0.1:8787`. Volumes mount `./config.yaml`, `./interfaces`, `./memory`, `./logs`, and optionally `./frontend/dist`. Put secrets in `.env` (see `.env.example`); the compose `env_file` is optional if the file is missing.
+The compose file sets `INTERNAL_API_BIND_HOST=0.0.0.0` so the HTTP API is reachable from the host at `http://127.0.0.1:8787`. Volumes mount `./server/config.yaml`, `./server/modules`, `./server/data/memory`, `./server/logs`, and optionally `./server/dashboard/dist`. Put secrets in `.env` (see `.env.example`); the compose `env_file` is optional if the file is missing.
 
-Point the MCP server at the same host URL (`NEYRA_API_BASE`). Logs written inside the container appear under the repo’s `./logs` on the host, so `read_neyra_logs` works when the MCP process uses that checkout (or set `NEYRA_LOG_PATH` to the host file).
+Point the MCP server at the same host URL (`NEYRA_API_BASE`). Logs written inside the container appear under the repo’s `./server/logs` on the host, so `read_neyra_logs` works when the MCP process uses that checkout (or set `NEYRA_LOG_PATH` to the host file).
 
 **Note:** `docker compose config` prints interpolated variables; do not share that output if it contains secrets.
 
@@ -119,4 +119,4 @@ Restart MCP / Cursor. Verify `read_neyra_logs`, then `neyra_api_request` with `G
 
 ## Implementation
 
-Runtime files: `tools/mcp_server/server.py`, `tools/mcp_server/requirements.txt`.
+Runtime files: `devtools/mcp_server/server.py`, `devtools/mcp_server/requirements.txt`.

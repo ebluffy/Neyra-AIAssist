@@ -1,0 +1,40 @@
+# Copy to `config.yaml` in this folder. Merged into root config (internal_api + dashboard).
+# RU: Скопируйте в config.yaml здесь. Подмешивается в корень как internal_api и dashboard.
+#
+# EN: Bearer token for /v1: INTERNAL_API_TOKEN in project .env (not in this file).
+# RU: Bearer для /v1 — INTERNAL_API_TOKEN в .env проекта (не в этом файле).
+
+internal_api:
+  # EN: Also exposes GET /v1/llm/balance when provider is openrouter.
+  # RU: Также GET /v1/llm/balance при провайдере openrouter.
+  host: "127.0.0.1"
+  port: 8787
+
+  # EN: Optional global RPM limit per client IP (0 = disabled). Applies to /v1 HTTP except /v1/ws.
+  # RU: Опциональный лимит запросов/мин на IP (0 = выкл.), для /v1 кроме WebSocket.
+  rate_limit_requests_per_minute: 0
+
+  # EN: If set, POST /v1/webhooks/in/... requires header X-Neyra-Signature: sha256=<hex> (HMAC-SHA256 of raw body).
+  # RU: Если задан — входящий webhook только с подписью (см. также WEBHOOK_INBOUND_SECRET в .env).
+  # webhook_inbound_secret: ""
+
+  # EN: Append-only JSONL audit for sensitive API ops (set false to disable file writes).
+  # RU: JSONL-аудит критичных операций (false — не писать файл).
+  audit_log_enabled: true
+  audit_log_path: "./logs/api_audit.jsonl"
+
+  # EN: Allow POST /v1/debug/lifecycle (stop/restart process). In Docker prefer env NEYRA_DEBUG_LIFECYCLE=1.
+  # RU: Разрешить остановку процесса через API (в Docker удобнее NEYRA_DEBUG_LIFECYCLE=1 в compose).
+  debug_lifecycle_enabled: false
+
+  websocket:
+    idle_timeout_seconds: 60
+    ping_interval_seconds: 20
+    close_grace_seconds: 5
+
+  level: "INFO"
+
+dashboard:
+  enabled: true
+  dist_path: "dashboard/dist"
+  require_build: false

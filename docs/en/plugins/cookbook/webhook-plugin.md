@@ -16,4 +16,4 @@
 - `main.py`: валидация запроса, нормализация payload, публикация `CoreEvent`.
 
 ## Практика
-Для HTTP endpoint-ов предпочитайте реализацию внутри `interfaces/internal_api/api_server.py`, а плагин используйте для бизнес-обработки событий.
+Для HTTP endpoint-ов предпочитайте реализацию внутри `server/modules/internal_api/api_server.py`, а плагин используйте для бизнес-обработки событий.

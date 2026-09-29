@@ -23,4 +23,4 @@ English docs live under `docs/en/**`.
 | [reference/](reference/vocard-upstream.md) | Upstream references (e.g. Vocard) |
 
 Root project files: `README.md`, `README-RU.md`, `PLAN.md`, `Diplom.md`.  
-Plugin examples (do not relocate): `interfaces/000EXAMPLE/`.
+Plugin examples (do not relocate): `server/modules/000EXAMPLE/`.

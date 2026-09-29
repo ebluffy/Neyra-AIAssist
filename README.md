@@ -24,22 +24,22 @@ Key goals:
 
 Current stable runtime:
 
-- `**python main.py`** — core: HTTP API, web dashboard, one `NeyraAgent`, resident plugins (e.g. Discord when enabled),
-- `**python main.py --mode console`** — terminal-only for prompt experiments,
-- `discord` (text + music) and other interfaces ship as plugins under `interfaces/`,
+- `**python server/main.py`** — core: HTTP API, web dashboard, one `NeyraAgent`, resident plugins (e.g. Discord when enabled),
+- `**python server/main.py --mode console`** — terminal-only for prompt experiments,
+- `discord` (text + music) and other interfaces ship as plugins under `server/modules/`,
 - optional **Docker** deployment via `Dockerfile` + `docker-compose.yml`.
 
 ### Dashboard (frontend)
 
-Web UI: **React + Vite + Tailwind CSS** under `frontend/`. Production build outputs to `frontend/dist` and is served by Internal API (`npm install && npm run build` before shipping).
+Web UI: **React + Vite + Tailwind CSS** under `server/dashboard/`. Production build outputs to `server/dashboard/dist` and is served by Internal API (`npm install && npm run build` before shipping).
 
 ### MCP debug (IDE tooling)
 
-Optional **Model Context Protocol** debug server in `tools/mcp_server/` (stdio MCP for Cursor): tail logs, issue Internal API requests, inject Event Bus events (`POST /v1/debug/fire_event`), inspect memory snapshots. Configure via `docs/en/setup/mcp-debug-server.md`.
+Optional **Model Context Protocol** debug server in `devtools/mcp_server/` (stdio MCP for Cursor): tail logs, issue Internal API requests, inject Event Bus events (`POST /v1/debug/fire_event`), inspect memory snapshots. Configure via `docs/en/setup/mcp-debug-server.md`.
 
 ### Discord and music
 
-Single resident plugin `**interfaces/discord/`** (text gateway + music service). Music path uses **Lavalink 4.x** with up-to-date **YouTube / source plugins**; deployments often set Lavalink client identifiers such as **ANDROID_VR** where needed to avoid provider-side breakage.
+Single resident plugin `**server/modules/discord/`** (text gateway + music service). Music path uses **Lavalink 4.x** with up-to-date **YouTube / source plugins**; deployments often set Lavalink client identifiers such as **ANDROID_VR** where needed to avoid provider-side breakage.
 
 ### Models — four roles, nested config
 
@@ -58,14 +58,14 @@ Typical stacks pair large **MoE** chat models (e.g. **Qwen3 235B** through OpenR
   - `core/mcp_client.py` — **MCP client manager** (stdio + SSE servers, dynamic LangChain tools).
   - `core/ltm_maintenance.py` — LTM lifecycle: TTL prune, summarization → cold archive.
   - `core/voice/` — voice adapters and factories (cloud/local evolution path).
-- `frontend/` — React+Vite+Tailwind sources; production bundle in `frontend/dist`.
-- `interfaces/` — plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: `**discord`** (unified text+music), `internal_api`, `local_voice`; template `**000EXAMPLE/`** (see Plugin SDK links below).
-- `tools/mcp_server/` — **MCP debug server** (stdio MCP for Cursor): logs, API calls, fire_event, memory snapshot.
+- `server/dashboard/` — React+Vite+Tailwind sources; production bundle in `server/dashboard/dist`.
+- `server/modules/` — plugins (`server/modules/<id>/plugin.yaml` + `main.py`); shipped: `**discord`** (unified text+music), `internal_api`, `local_voice`; template `**000EXAMPLE/`** (see Plugin SDK links below).
+- `devtools/mcp_server/` — **MCP debug server** (stdio MCP for Cursor): logs, API calls, fire_event, memory snapshot.
 - `scripts/` — ops helpers (health checks, maintenance, `inject_memes_2026.py`).
 - `main.py` — entrypoint (`core` vs `console` only).
 - `run_neyra.bat` — Windows menu (core / console / preflight).
 - `run_neyra.sh` — Linux/macOS menu (core / console / status / stop / git updates).
-- `Dockerfile` + `docker-compose.yml` — containerized deployment (ports `8787`, optional Lavalink, volumes for `config.yaml`, `interfaces/`, `memory/`, `logs/`).
+- `Dockerfile` + `docker-compose.yml` — containerized deployment (ports `8787`, optional Lavalink, volumes for `config.yaml`, `server/modules/`, `memory/`, `logs/`).
 
 ## Product direction
 
@@ -95,14 +95,14 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
 4. Create `config.yaml` from `config.example.yaml` and adjust runtime values:
   - Set `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model` (nested blocks).
 5. Copy plugin templates where needed:
-  - `interfaces/discord/config.example.yaml` → `interfaces/discord/config.yaml`
-  - `interfaces/internal_api/config.example.yaml` → `interfaces/internal_api/config.yaml`
-  - other plugins: `interfaces/<id>/config.example.yaml` → `interfaces/<id>/config.yaml`
+  - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
+  - `server/modules/internal_api/config.example.yaml` → `server/modules/internal_api/config.yaml`
+  - other plugins: `server/modules/<id>/config.example.yaml` → `server/modules/<id>/config.yaml`
 6. Preflight (example): `python scripts/healthcheck.py --mode console --skip-http`
 7. Run:
   - Windows: `run_neyra.bat`
   - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`
-  - Direct: `python main.py` (core) or `python main.py --mode console`
+  - Direct: `python server/main.py` (core) or `python server/main.py --mode console`
 
 ### Docker (optional)
 
@@ -110,14 +110,14 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
 docker compose up --build
 ```
 
-Exposes port `8787`, mounts `config.yaml`, `interfaces/`, `memory/`, `logs/`. See `docker-compose.yml`.
+Exposes port `8787`, mounts `config.yaml`, `server/modules/`, `memory/`, `logs/`. See `docker-compose.yml`.
 
 ## Run modes (CLI)
 
 - `**core`** (default) — HTTP API, dashboard, resident plugins.
 - `**console`** — terminal chat only.
 
-Plugins start **with** the core from root `config.yaml`, optional per-plugin `interfaces/<id>/config.yaml`, and `**plugin.yaml`** (enable/disable and lifecycle only there). There is no separate `--mode discord` CLI.
+Plugins start **with** the core from root `config.yaml`, optional per-plugin `server/modules/<id>/config.yaml`, and `**plugin.yaml`** (enable/disable and lifecycle only there). There is no separate `--mode discord` CLI.
 
 ## Environment variables
 
@@ -127,7 +127,7 @@ Required for cloud model:
 
 - `OPENROUTER_API_KEY`
 
-Required when `discord` is enabled in `interfaces/discord/plugin.yaml`:
+Required when `discord` is enabled in `server/modules/discord/plugin.yaml`:
 
 - `DISCORD_TOKEN` in `.env` (optional legacy: `discord.token` merged from old configs)
 
@@ -142,7 +142,7 @@ Optional (future voice integrations):
 
 - Public template: `config.example.yaml`
 - Local private runtime config: `config.yaml` (ignored by git)
-- Plugin settings: `interfaces/<plugin_id>/config.yaml` (optional; copy from `config.example.yaml` in that folder). HTTP bind + dashboard: `interfaces/internal_api/config.yaml`.
+- Plugin settings: `server/modules/<plugin_id>/config.yaml` (optional; copy from `config.example.yaml` in that folder). HTTP bind + dashboard: `server/modules/internal_api/config.yaml`.
 - Secret values: `.env` (ignored by git)
 
 ## System prompts and behavior tuning
@@ -175,7 +175,7 @@ Recommendation:
 - `README-RU.md` - public product/technical overview (Russian).
 - `PLAN.md` - roadmap: Hub/core + agent/voice improvements done; active focus — Web UI Event Bus bridge, then autonomous server/column.
 - `docs/en/README.md` / `docs/ru/README.md` - documentation index (architecture, setup, API, ops, usage, plugins, MCP, Web UI).
-- **Plugin SDK (tutorial & reference)** — [HELP.md (English)](interfaces/000EXAMPLE/HELP.md) · [HELP-RU.md (Русский)](interfaces/000EXAMPLE/HELP-RU.md).
+- **Plugin SDK (tutorial & reference)** — [HELP.md (English)](server/modules/000EXAMPLE/HELP.md) · [HELP-RU.md (Русский)](server/modules/000EXAMPLE/HELP-RU.md).
 
 ## Notes
 

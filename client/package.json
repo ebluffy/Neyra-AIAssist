@@ -1,0 +1,12 @@
+{
+  "name": "neyra-client",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Neyra Windows control client (Tauri 2 + React + TypeScript). Scaffold — MVP in Stage 3.",
+  "type": "module",
+  "scripts": {
+    "dev": "echo \"Client scaffold only — Stage 3 wires Tauri + Vite\"",
+    "build": "echo \"Client scaffold only — Stage 3 wires Tauri + Vite\"",
+    "tauri": "echo \"Client scaffold only — Stage 3 wires Tauri + Vite\""
+  }
+}

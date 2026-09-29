@@ -84,14 +84,14 @@ docs/
 ### Готово, когда
 
 - [x] Выполнен полный backup до `git mv` и до миграции ignored-файлов.
-- [ ] Серверные файлы перенесены в `server/`, создан отдельный `client/`, dev MCP перенесён в `devtools/mcp_server/`.
-- [ ] Ignored-конфиги, `.env`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/` и Lavalink JAR перенесены и проверены отдельным миграционным шагом.
-- [ ] SQLite Hub, Chroma и пользовательская память доступны без потери данных по новому default path `server/data/`.
-- [ ] Все entrypoints работают из `server/` или через `PYTHONPATH=server`.
+- [x] Серверные файлы перенесены в `server/`, создан отдельный `client/`, dev MCP перенесён в `devtools/mcp_server/`.
+- [x] Ignored-конфиги, `.env`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/` и Lavalink JAR перенесены и проверены отдельным миграционным шагом.
+- [x] SQLite Hub, Chroma и пользовательская память доступны без потери данных по новому default path `server/data/`.
+- [x] Все entrypoints работают из `server/` или через `PYTHONPATH=server`.
 - [ ] Нет переходных алиасов и fallback-импортов на старую структуру.
 - [ ] Поиск по коду, конфигам, скриптам, Docker, CI и README (кроме `docs/inventory.md` и `docs/PLAN.md`, где старые пути описывают исходное состояние) не находит `interfaces/`, `frontend/`, `tools/mcp_server`.
-- [ ] Запущены compileall, healthcheck и релевантные smoke-тесты после переноса.
-- [ ] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
+- [x] Запущены compileall, healthcheck и релевантные smoke-тесты после переноса.
+- [x] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
 
 ## 1c. Слои конфигурации и схема
 
