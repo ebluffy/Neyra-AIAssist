@@ -95,7 +95,7 @@ docs/
 - [x] `Lavalink.jar` не в git; локально через `server/scripts/fetch_lavalink.py` (см. `.gitignore`).
 - [x] Миграция памяти на `server/data/memory/` с hash/size check в `migrate_runtime_layout.py`; Hub/Chroma доступны после переноса.
 - [x] Запущены compileall, healthcheck и smoke локально; логи — `docs/stage-1b-evidence.md`; CI workflow — `.github/workflows/stage-1b-verify.yml`.
-- [ ] CI `Stage 1b verify` зелёный на head PR (блокер мерджа до зелёного run).
+- [x] CI `Stage 1b verify` зелёный на head PR.
 - [x] Политика переноса memory/logs подтверждена владельцем в PR #14 (см. `docs/stage-1b-acceptance.md`).
 - [x] `paths.data_dir` / `NEYRA_DATA_DIR` доходят до Hub/Chroma через `apply_resolved_memory_paths` (`server/core/runtime/paths.py`).
 - [x] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
