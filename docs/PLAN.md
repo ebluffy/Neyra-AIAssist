@@ -243,6 +243,6 @@ docs/
 - [ ] Каждая post-defense функция имеет отдельный issue/design и не блокирует MVP.
 - [ ] Backward compatibility и миграция данных определены до релиза.
 
-## Этап 1b — в финализации (PR #14)
+## Этап 1b — закрыт (PR #14)
 
-Реорганизация `server/` / `client/` / `devtools/` выполнена. Приёмка политики memory/logs: `docs/stage-1b-acceptance.md` (OK владельца в PR). Прогоны: `docs/stage-1b-evidence.md` (post-migrate baseline). Мердж — после зелёного CI `Stage 1b verify`. Дальше — **Этап 1c** (слои конфигурации).
+Реорганизация `server/` / `client/` / `devtools/` выполнена. Приёмка политики memory/logs: `docs/stage-1b-acceptance.md` (OK владельца в PR). Прогоны: `docs/stage-1b-evidence.md` (post-migrate baseline). CI `Stage 1b verify` зелёный. Дальше — **Этап 1c** (слои конфигурации).
