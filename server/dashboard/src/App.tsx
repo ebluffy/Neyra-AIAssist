@@ -1,25 +1,24 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import {
-  BookOpenText, Gauge, House, Menu, PlugZap, Settings, Webhook, X, Cpu,
+  BookOpenText, Gauge, LogOut, Menu, PlugZap, Settings, Webhook, X, Cpu,
 } from 'lucide-react'
+import { clearDashboardGateKey, DashboardAuthGate } from './components/DashboardAuthGate'
 import { DashboardPage } from './pages/DashboardPage'
 import { DocsPage } from './pages/DocsPage'
-import { HomePage } from './pages/HomePage'
 import { PluginsPage } from './pages/PluginsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { WebhooksPage } from './pages/WebhooksPage'
 
 const NAV = [
-  { to: '/home',     label: 'Микро-сайт',  icon: House },
-  { to: '/dashboard',label: 'Дашборд',     icon: Gauge },
-  { to: '/plugins',  label: 'Плагины',     icon: PlugZap },
-  { to: '/settings', label: 'Настройки',   icon: Settings },
-  { to: '/webhooks', label: 'Вебхуки',     icon: Webhook },
-  { to: '/api-docs', label: 'API Docs',    icon: BookOpenText },
+  { to: '/dashboard', label: 'Дашборд',   icon: Gauge },
+  { to: '/plugins',   label: 'Плагины',   icon: PlugZap },
+  { to: '/settings',  label: 'Настройки', icon: Settings },
+  { to: '/webhooks',  label: 'Вебхуки',   icon: Webhook },
+  { to: '/api-docs',  label: 'API Docs',  icon: BookOpenText },
 ]
 
-export default function App() {
+function Shell() {
   const [open, setOpen] = useState(false)
   const [mobile, setMobile] = useState(false)
 
@@ -32,9 +31,13 @@ export default function App() {
 
   useEffect(() => { if (!mobile) setOpen(false) }, [mobile])
 
+  function logout() {
+    clearDashboardGateKey()
+    window.location.reload()
+  }
+
   return (
     <div className="app-shell">
-      {/* Mobile toggle */}
       {mobile && (
         <button
           aria-label="Открыть меню"
@@ -46,7 +49,6 @@ export default function App() {
         </button>
       )}
 
-      {/* Overlay */}
       {mobile && open && (
         <div
           aria-hidden
@@ -55,7 +57,6 @@ export default function App() {
         />
       )}
 
-      {/* Sidebar */}
       <aside className={`sidebar${open ? ' open' : ''}`}>
         <div className="sidebar-logo">
           <div className="sidebar-logo-icon">
@@ -95,23 +96,34 @@ export default function App() {
         </nav>
 
         <div className="sidebar-footer">
-          v0.9 · local instance
+          <button className="sidebar-logout" onClick={logout} type="button">
+            <LogOut size={14} />
+            Выйти
+          </button>
+          <span>v0.9 · local</span>
         </div>
       </aside>
 
-      {/* Main */}
       <main className="main-area">
         <Routes>
-          <Route element={<Navigate replace to="/home" />} path="/" />
-          <Route element={<HomePage />}      path="/home" />
+          <Route element={<Navigate replace to="/dashboard" />} path="/" />
+          <Route element={<Navigate replace to="/dashboard" />} path="/home" />
           <Route element={<DashboardPage />} path="/dashboard" />
           <Route element={<PluginsPage />}   path="/plugins" />
           <Route element={<SettingsPage />}  path="/settings" />
           <Route element={<WebhooksPage />}  path="/webhooks" />
           <Route element={<DocsPage />}      path="/api-docs" />
-          <Route element={<Navigate replace to="/home" />} path="*" />
+          <Route element={<Navigate replace to="/dashboard" />} path="*" />
         </Routes>
       </main>
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <DashboardAuthGate>
+      <Shell />
+    </DashboardAuthGate>
   )
 }
