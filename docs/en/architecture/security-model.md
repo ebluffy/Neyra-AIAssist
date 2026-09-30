@@ -9,7 +9,7 @@
 
 ## Trust boundary
 - Internal API binds to `127.0.0.1` by default. Treat anything non-local as hostile unless locked down.
-- If **none** of `INTERNAL_API_TOKEN` / `INTERNAL_API_VIEWER_TOKEN` / `INTERNAL_API_MAINT_TOKEN` are set, the API is **anonymous** (dev convenience). For any shared or remote host, set tokens.
+- If **none** of `API_TOKEN` / `API_VIEWER_TOKEN` / `API_MAINT_TOKEN` are set, the API is **anonymous** (dev convenience). For any shared or remote host, set tokens.
 - Role sketch: `viewer` can read memory/search/people; `admin` can chat and mutate. Prefer least privilege.
 
 ## Secrets

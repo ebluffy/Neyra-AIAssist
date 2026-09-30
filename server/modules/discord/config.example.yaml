@@ -29,7 +29,7 @@ slash_sync_guild_id: null
 music_result_timeout_seconds: 25.0
 
 # EN: Proactive chat (stage B5) — periodic messages via Internal API POST /v1/chat only (no core edits).
-# RU: Спонтанные реплики — только HTTP к ядру; нужны запущенный internal_api и при необходимости INTERNAL_API_TOKEN.
+# RU: Спонтанные реплики — только HTTP к ядру; нужен запущенный core API и при необходимости API_TOKEN.
 #     Интервал — случайная пауза между сообщениями (минуты). Канал: proactive.channel_id или первый из channel_ids.
 proactive:
   enabled: false

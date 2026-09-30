@@ -590,7 +590,7 @@ def create_or_edit_plugin(plugin_id: str, task: str, api_key: str = "") -> str:
       Не трать tool-calls на `web_search` для таких запросов.
 
     - Пишет СТРОГО внутри `modules/<plugin_id>` (Path Jail).
-    - Блокирует изменения критических плагинов: discord, internal_api.
+    - Блокирует изменения критических плагинов: discord.
     - Генерация кода делегируется облачной модели OpenRouter.
 
     api_key: опционально. Если пусто — берётся из OPENROUTER_API_KEY (env/.env).

@@ -189,7 +189,7 @@ def neyra_read_config() -> str:
 
 @mcp.tool()
 def neyra_write_config(config_updates: dict[str, Any]) -> str:
-    """Точечное обновление через POST /v1/config/update (только разрешённые пути ядра, см. internal_api)."""
+    """Точечное обновление через POST /v1/config/update (только разрешённые пути ядра, см. core.api)."""
     return neyra_api_request("POST", "/v1/config/update", {"updates": config_updates})
 
 

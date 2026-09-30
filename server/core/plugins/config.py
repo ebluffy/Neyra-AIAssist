@@ -15,8 +15,9 @@ def merge_plugin_configs(config: dict[str, Any], root: Path) -> None:
     """
     Для каждого modules/<id>/config.yaml:
     - discord → ключ `discord` (поверх корневого config.yaml)
-    - internal_api → секции `internal_api` и `dashboard` в корне (см. config.example.yaml в папке плагина)
     - остальные id → config.plugins[id]
+
+    Core API (`api:` / `dashboard:`) lives in config/server.yaml — not a module.
     """
     if not isinstance(config, dict):
         return
@@ -42,17 +43,6 @@ def merge_plugin_configs(config: dict[str, Any], root: Path) -> None:
             prev = config.get("discord")
             prev_d: dict[str, Any] = prev if isinstance(prev, dict) else {}
             config["discord"] = {**prev_d, **raw}
-        elif pid == "internal_api":
-            ia = raw.get("internal_api")
-            dash = raw.get("dashboard")
-            if isinstance(ia, dict):
-                prev = config.get("internal_api")
-                prev_d = prev if isinstance(prev, dict) else {}
-                config["internal_api"] = {**prev_d, **ia}
-            if isinstance(dash, dict):
-                prev = config.get("dashboard")
-                prev_d = prev if isinstance(prev, dict) else {}
-                config["dashboard"] = {**prev_d, **dash}
         else:
             plugs = config.get("plugins")
             if not isinstance(plugs, dict):

@@ -7,15 +7,20 @@
 
 # WebSocket Chat
 
-Endpoint: `ws://127.0.0.1:8787/v1/ws/chat`
+Endpoint: `ws://127.0.0.1:8787/v1/ws/chat`  
+Public (example): `wss://neyra.owyx.site/api/v1/ws/chat`
 
-## Клиент -> сервер
+Auth: same Bearer roles as REST (`API_TOKEN` / viewer / maint). Viewer+ may stream.
+
+Reconnect: open a **new** WebSocket (hello includes `"reconnect":"open_new_socket"`). No server-side resume buffer in Wave 1.
+
+## Client → server
 - `{"type":"ping"}`
 - `{"type":"chat","text":"...","username":"...","platform_user_id":"...","channel_id":"..."}`
 
-## Сервер -> клиент
-- `hello`
+## Server → client
+- `hello` (protocol `neyra.ws.chat.v1`, role, idle/ping timeouts)
 - `pong`
 - `token` (stream chunk)
-- `done` (финал + sounds)
+- `done` (final + sounds)
 - `error`

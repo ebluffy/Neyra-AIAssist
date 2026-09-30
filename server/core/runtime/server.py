@@ -18,7 +18,6 @@ from fastapi import FastAPI
 
 from core.neyra import NeyraAgent
 from core.runtime.backup import BackupManager
-from core.runtime.health import HealthMonitor
 from core.plugins import PluginContext, PluginLoader, run_plugin_entrypoint
 from core.reflection import ReflectionEngine
 from core.runtime.health import HealthMonitor
@@ -27,15 +26,13 @@ logger = logging.getLogger("neyra.server")
 
 
 def project_root() -> Path:
-    # core/runtime/server.py → parents[2] = repo root
+    # core/runtime/server.py → parents[2] = server/
     return Path(__file__).resolve().parents[2]
 
 
 def _start_resident_plugin_threads(config: dict, root: Path, agent: NeyraAgent) -> None:
     loader = PluginLoader(root)
     for manifest in loader.discover_manifests():
-        if manifest.id == "internal_api":
-            continue
         if manifest.lifecycle != "resident":
             continue
         if not manifest.enabled:
@@ -66,7 +63,7 @@ def _start_resident_plugin_threads(config: dict, root: Path, agent: NeyraAgent) 
 
 
 def attach_resident_plugins(app: FastAPI, config: dict, root: Path, agent: NeyraAgent) -> None:
-    """Регистрирует второй startup: фоновые потоки для lifecycle=resident (кроме internal_api)."""
+    """Регистрирует startup: фоновые потоки для lifecycle=resident."""
 
     @app.on_event("startup")
     async def _resident_startup() -> None:
@@ -80,7 +77,8 @@ def run_neyra_server(config: dict) -> None:
     """
     import uvicorn
 
-    from modules.internal_api.api_server import _dashboard_dist_path, build_app
+    from core.api import build_app
+    from core.api.app import _dashboard_dist_path
 
     root = project_root()
     dash_cfg = config.get("dashboard") or {}
@@ -107,9 +105,14 @@ def run_neyra_server(config: dict) -> None:
     )
     attach_resident_plugins(app, config, root, agent)
 
-    api_cfg = config.get("internal_api") or {}
+    api_cfg = config.get("api") or {}
     host = str(api_cfg.get("host") or "127.0.0.1")
     port = int(api_cfg.get("port") or 8787)
     log_level = str(api_cfg.get("level") or "info").lower()
     logger.info("Neyra core server | http://%s:%s/ (dashboard + /v1)", host, port)
-    uvicorn.run(app, host=host, port=port, log_level=log_level if log_level in ("debug", "info", "warning", "error") else "info")
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level=log_level if log_level in ("debug", "info", "warning", "error") else "info",
+    )

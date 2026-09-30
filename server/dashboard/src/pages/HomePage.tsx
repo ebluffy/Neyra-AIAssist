@@ -46,7 +46,7 @@ export function HomePage() {
             <p style={{ fontSize: '0.82rem', color: '#9090b0', lineHeight: 1.65 }}>
               Internal API поднимается вместе с{' '}
               <span className="inline-code">python main.py</span> и использует конфиг{' '}
-              <span className="inline-code">server/modules/internal_api/config.yaml</span>.
+              <span className="inline-code">server/config/server.yaml</span> (<span className="inline-code">api:</span>).
             </p>
             <p style={{ marginTop: '0.75rem', fontSize: '0.75rem', color: 'var(--muted)', display: 'flex', gap: 6, alignItems: 'center' }}>
               <Cable size={13} />

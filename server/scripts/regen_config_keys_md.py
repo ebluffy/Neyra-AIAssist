@@ -27,11 +27,12 @@ ENV = {
     "llm.providers.aihope.api_key": "AIHOPE_API_KEY",
     "memory.hf_token": "HF_TOKEN (legacy: HUGGING_FACE_HUB_TOKEN)",
     "paths.data_dir": "NEYRA_DATA_DIR",
-    "internal_api.host": "INTERNAL_API_BIND_HOST",
-    "internal_api.token": "INTERNAL_API_TOKEN",
-    "internal_api.viewer_token": "INTERNAL_API_VIEWER_TOKEN",
-    "internal_api.maint_token": "INTERNAL_API_MAINT_TOKEN",
-    "internal_api.webhook_inbound_secret": "WEBHOOK_INBOUND_SECRET",
+    "api.host": "API_BIND_HOST",
+    "api.public_base_url": "API_PUBLIC_BASE_URL",
+    "api.token": "API_TOKEN",
+    "api.viewer_token": "API_VIEWER_TOKEN",
+    "api.maint_token": "API_MAINT_TOKEN",
+    "api.webhook_inbound_secret": "WEBHOOK_INBOUND_SECRET",
     "voice.stt.cloud.groq.api_key": "GROQ_API_KEY",
     "voice.stt.cloud.deepgram.api_key": "DEEPGRAM_API_KEY",
     "voice.tts.cloud.api_key": "YANDEX_API_KEY",
@@ -64,8 +65,8 @@ SOURCE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("mcp_client.", "core/runtime/mcp_client.py"),
     ("logging.", "main.py bootstrap"),
     ("health_monitor.", "core/runtime/health.py"),
-    ("internal_api.", "modules/internal_api/"),
-    ("dashboard.", "modules/internal_api/ (dashboard)"),
+    ("api.", "core/api/"),
+    ("dashboard.", "core/api/ (dashboard static)"),
 )
 
 
@@ -203,9 +204,8 @@ def main() -> None:
             "| Module | Merged as |\n",
             "|---|---|\n",
             "| `modules/discord/config.yaml` | top-level `discord` |\n",
-            "| `modules/internal_api/config.yaml` | `internal_api`, `dashboard` "
-            "(overrides `server.yaml`) |\n",
             "| other `modules/<id>/config.yaml` | `plugins.<id>` |\n",
+            "| Core API / dashboard | `config/server.yaml` → `api:` / `dashboard:` |\n",
         ]
     )
     OUT.write_text("".join(lines), encoding="utf-8")

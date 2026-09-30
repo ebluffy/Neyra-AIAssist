@@ -22,7 +22,7 @@
 | `neyra_write_config` | `POST /v1/config/update` — только разрешённые поля ядра |
 | `neyra_inspect_memory` | `GET /v1/debug/memory` — STM + статистика + RAG |
 
-**Lifecycle (`neyra_lifecycle`):** по умолчанию выключен (API вернёт **403**), пока не задано `internal_api.debug_lifecycle_enabled: true` или переменная `NEYRA_DEBUG_LIFECYCLE=1`/`true`/`yes` (в `docker-compose.yml` для сервиса задаётся автоматически). Нужен **admin** Bearer (`INTERNAL_API_TOKEN`). Действия **stop** и **restart** завершают процесс Python; повторный запуск в Docker даёт политика `restart: unless-stopped` или ручной `docker compose restart`.
+**Lifecycle (`neyra_lifecycle`):** по умолчанию выключен (API вернёт **403**), пока не задано `api.debug_lifecycle_enabled: true` или переменная `NEYRA_DEBUG_LIFECYCLE=1`/`true`/`yes` (в `docker-compose.yml` для сервиса задаётся автоматически). Нужен **admin** Bearer (`API_TOKEN`). Действия **stop** и **restart** завершают процесс Python; повторный запуск в Docker даёт политика `restart: unless-stopped` или ручной `docker compose restart`.
 
 **Docker Desktop:** из корня репозитория: `docker compose up --build` (тонкий include → `server/docker-compose.yml`). На хосте MCP указывает `NEYRA_API_BASE=http://127.0.0.1:8787`. Логи — `server/logs/` на хосте; `read_neyra_logs` читает `server/config.yaml` / `NEYRA_LOG_PATH`. Секреты — `server/.env` (шаблон `server/.env.example`). Не публикуйте вывод `docker compose config`, если в нём есть секреты.
 
@@ -56,7 +56,7 @@ pip install -r devtools/mcp_server/requirements.txt
 - **Command:** интерпретатор Python с установленными зависимостями.
 - **Args:** полный путь к `devtools/mcp_server/server.py`.
 
-Пример `env`: `NEYRA_LOG_PATH`, `NEYRA_API_BASE` (`http://127.0.0.1:8787`), `NEYRA_API_TOKEN` (если задан `internal_api.token`), `NEYRA_CONFIG_PATH`.
+Пример `env`: `NEYRA_LOG_PATH`, `NEYRA_API_BASE` (`http://127.0.0.1:8787`), `NEYRA_API_TOKEN` (если задан `api.token`), `NEYRA_CONFIG_PATH`.
 
 Подробный пример JSON см. в английской версии: [mcp-debug-server.md](../../en/setup/mcp-debug-server.md) (блоки с `mcpServers`).
 

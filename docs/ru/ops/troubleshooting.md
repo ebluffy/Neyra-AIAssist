@@ -9,10 +9,10 @@
 
 ## API не отвечает
 - Проверьте, что `python server/main.py` запущен.
-- Проверьте host/port в `server/modules/internal_api/config.yaml`.
+- Проверьте host/port в `server/config/server.yaml (api:)`.
 
 ## 401 Unauthorized
-- Либо задайте корректный Bearer, либо очистите `INTERNAL_API_TOKEN`.
+- Либо задайте корректный Bearer, либо очистите `API_TOKEN`.
 
 ## Discord plugin не стартует
 - Проверьте `server/modules/discord/plugin.yaml` (`enabled: true`).

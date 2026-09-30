@@ -39,8 +39,8 @@ def main() -> int:
     if not manifest.enabled:
         print(f"Plugin {args.plugin_id} is disabled in plugin.yaml", file=sys.stderr)
         return 1
-    if manifest.id == "internal_api":
-        print("internal_api is started by the core process: python main.py", file=sys.stderr)
+    if manifest.id in ("api", "internal_api"):
+        print("HTTP API is part of the core process: python main.py", file=sys.stderr)
         return 1
 
     cfg_path = root / "config.yaml"

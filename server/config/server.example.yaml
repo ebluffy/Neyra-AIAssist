@@ -1,11 +1,19 @@
 # Neyra config layer: config/server.yaml
-# Defaults for Internal API + dashboard; modules/internal_api/config.yaml can override.
+# Core API (core.api) + dashboard static defaults.
 #
-internal_api:
-  # EN: Also exposes GET /v1/llm/balance when provider is openrouter.
-  # RU: Также GET /v1/llm/balance при провайдере openrouter.
+api:
+  # EN: Also exposes GET /v1/llm/balance for active providers; GET /v1/meta, /v1/llm/models.
+  # RU: Также GET /v1/llm/balance; GET /v1/meta, /v1/llm/models.
   host: "127.0.0.1"
   port: 8787
+
+  # EN: Public origin for clients / OpenAPI servers / future VPS (no secrets).
+  #     Empty = local-only (relative URLs). Easy to change subdomain/domain.
+  # RU: Публичный origin для клиентов / OpenAPI / будущего VPS. Пусто = только localhost.
+  public_base_url: "https://neyra.owyx.site"
+  # EN: Path prefix in front of /v1 (reverse proxy). Full public API: {public_base_url}{public_path_prefix}/v1
+  # RU: Префикс перед /v1. Итого: https://neyra.owyx.site/api/v1
+  public_path_prefix: "/api"
 
   # EN: Optional global RPM limit per client IP (0 = disabled). Applies to /v1 HTTP except /v1/ws.
   # RU: Опциональный лимит запросов/мин на IP (0 = выкл.), для /v1 кроме WebSocket.
@@ -20,8 +28,8 @@ internal_api:
   audit_log_enabled: true
   audit_log_path: "./logs/api_audit.jsonl"
 
-  # EN: Allow POST /v1/debug/lifecycle (stop/restart process). In Docker prefer env NEYRA_DEBUG_LIFECYCLE=1.
-  # RU: Разрешить остановку процесса через API (в Docker удобнее NEYRA_DEBUG_LIFECYCLE=1 в compose).
+  # EN: Allow POST /v1/debug/lifecycle (stop/restart process). Prefer POST /v1/system/restart (maint+).
+  # RU: Разрешить debug lifecycle. Предпочтительнее POST /v1/system/restart (maint+).
   debug_lifecycle_enabled: false
 
   websocket:

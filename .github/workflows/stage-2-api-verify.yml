@@ -1,0 +1,43 @@
+name: Stage 2 API verify
+
+on:
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  push:
+    branches:
+      - feature/stage-2-neyra-api
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install server deps (minimal)
+        run: pip install -q pyyaml python-dotenv httpx
+      - name: compileall
+        run: python -m compileall -q server
+      - name: verify_stage_1c (layers regression)
+        run: python server/scripts/verify_stage_1c.py
+      - name: verify_stage_1d (dual backend)
+        run: python server/scripts/verify_stage_1d.py
+      - name: verify_stage_2_api (core api)
+        run: python server/scripts/verify_stage_2_api.py
+      - name: healthcheck smoke (layered examples, skip HTTP)
+        env:
+          OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http
+          AIHOPE_API_KEY: ci-placeholder-not-used-with-skip-http
+          DISCORD_TOKEN: ci-placeholder-not-a-real-token
+        run: |
+          cp server/config.example.yaml server/config.yaml
+          mkdir -p server/config
+          for f in llm agent memory voice modules runtime server; do
+            cp "server/config/${f}.example.yaml" "server/config/${f}.yaml"
+          done
+          printf '%s\n' 'OPENROUTER_API_KEY=ci-placeholder' 'AIHOPE_API_KEY=ci-placeholder' 'DISCORD_TOKEN=ci-placeholder' > server/.env
+          cd server && python scripts/healthcheck.py --mode core --skip-http

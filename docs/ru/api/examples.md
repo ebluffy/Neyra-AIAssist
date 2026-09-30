@@ -11,7 +11,7 @@
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/chat \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $INTERNAL_API_TOKEN" \
+  -H "Authorization: Bearer $API_TOKEN" \
   -d '{"text":"Привет","username":"demo"}'
 ```
 

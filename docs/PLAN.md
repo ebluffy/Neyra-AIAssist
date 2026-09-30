@@ -144,31 +144,29 @@ docs/
 
 **Конфиг (без legacy):** канон только `llm.*` ролей + `llm.providers.*`. Top-level `BACKEND` / `openrouter:` / `vision:` и пути `openrouter.*` в `POST /v1/config` **не** поддерживаются (нет алиасов / dual-read) — клиенты пишут `llm.talk_model` / `llm.brain_model` / ….
 
-## 2. Control API поверх Internal API
+## 2. Единый Neyra API (core)
 
-Этап 2 строит Control API поверх текущего Internal API, не дублируя агентскую оркестрацию.
+Этап 2 делает HTTP/WS control plane частью ядра: пакет [`server/core/api/`](../server/core/api/), конфиг `api:` в [`server/config/server.yaml`](../server/config/server.example.yaml). Отдельного второго API и модуля `modules/internal_api/` нет.
 
-### Объём
+### Объём (Wave 1)
 
-- чат со streaming-ответом через WebSocket или SSE;
-- health, модули, модели и версия API;
-- список модулей, включение/выключение, start/stop;
-- мягкий рестарт;
-- токенная авторизация с ролями `viewer`, `maint`, `admin` через существующие `INTERNAL_API_*_TOKEN`;
-- bind по умолчанию только на localhost;
-- LAN только через явную настройку `INTERNAL_API_BIND_HOST` в `server/config/server.yaml` или env override;
+- чат со streaming через **WebSocket** (`/v1/ws/chat`); SSE — backlog;
+- health, meta (`/v1/meta`), модели (`/v1/llm/models`), модули/плагины;
+- мягкий рестарт: `POST /v1/system/restart` (maint+);
+- токены `API_TOKEN` / `API_VIEWER_TOKEN` / `API_MAINT_TOKEN`; bind default localhost; `API_BIND_HOST` для LAN/Docker;
+- публичный URL: `api.public_base_url` + `api.public_path_prefix` (пример `https://neyra.owyx.site` + `/api`);
 - аудит изменяющих действий.
 
-Вторая очередь Control API: GET/PUT конфигурации с серверной schema validation, hot reload и rollback при ошибке; список/чтение/сохранение промптов; логи.
+Вторая очередь (Wave 2): GET/PUT конфигурации с schema validation, hot reload и rollback; промпты; логи.
 
 ### Готово, когда
 
-- [ ] Опубликован versioned API contract для chat, health, modules, models и restart.
-- [ ] Streaming работает через WebSocket или SSE и имеет reconnect/error semantics.
-- [ ] Viewer не может менять состояние; maint/admin могут только разрешённые операции.
-- [ ] localhost является default bind, LAN доступен только через явную настройку.
-- [ ] Изменяющие действия пишутся в аудит без записи секретов.
-- [ ] Пройдены API tests, auth tests и smoke через `server/scripts/healthcheck.py`.
+- [x] API в `server/core/api` (не module); конфиг `api:` + public URL.
+- [x] Versioned contract: meta/models/health enrichment; docs sync.
+- [x] Streaming WebSocket с role auth как REST; reconnect = новый сокет.
+- [x] Viewer не мутирует; soft restart без silent plugin stubs.
+- [x] localhost default; LAN через явный bind / proxy recipe.
+- [x] `verify_stage_2_api.py` + CI; healthcheck smoke.
 
 ## 3. Windows-клиент
 

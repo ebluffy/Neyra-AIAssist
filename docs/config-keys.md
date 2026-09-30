@@ -26,44 +26,44 @@
 | `assistant.persona_in_brain` | bool | True | core/agent/persona.py | `server/config.yaml` | — | current |
 | `assistant.persona_brain_max_chars` | int | 600 | core/agent/persona.py | `server/config.yaml` | — | current |
 | `assistant.system_prompt` | str | see config.example.yaml | core/agent/persona.py | `server/config.yaml` | — | current |
-| `llm.providers.aihope.base_url` | str | "https://aihope.fun/v1" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.providers.openrouter.base_url` | str | "https://openrouter.ai/api/v1" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.talk_model.provider` | str | "openrouter" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.talk_model.model` | str | "qwen/qwen3.8-27b:free" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.talk_model.reply_max_tokens` | int | 220 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.talk_model.lyrics_reply_max_tokens` | int | 4096 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.talk_model.temperature` | float | 0.8 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.talk_model.top_p` | float | 1.0 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.talk_model.presence_penalty` | float | 0.3 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.talk_model.frequency_penalty` | float | 0.3 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.talk_model.timeout_seconds` | float | 30.0 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.talk_model.max_retries` | int | 1 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.talk_model.primary_first_token_timeout_seconds` | float | 8.0 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.brain_model.provider` | str | "aihope" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.brain_model.model` | str | "gpt-6-luna" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.brain_model.model_deep` | str | "gpt-6-luna" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.brain_model.temperature` | float | 0.35 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.brain_model.top_p` | float | 1.0 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.brain_model.timeout_seconds` | float | 30.0 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.brain_model.max_retries` | int | 1 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.memory_model.provider` | str | "aihope" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.memory_model.model` | str | "gpt-6-luna" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.memory_model.temperature` | float | 0.6 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.memory_model.timeout_seconds` | float | 60.0 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.memory_model.max_retries` | int | 1 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.enabled` | bool | True | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.use_brain_model_for_vision` | bool | True | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.provider` | str | "aihope" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.model` | str | "gpt-6-luna" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.max_tokens` | int | 800 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.temperature` | float | 0.75 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.timeout_seconds` | float | 180.0 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.max_images_per_message` | int | 4 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.max_image_bytes` | int | 8388608 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.max_image_width` | int | 1920 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.max_image_height` | int | 1080 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.remember_last_image` | bool | True | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.vision_model.last_image_note_max_chars` | int | 1200 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.providers.aihope.base_url` | str | "https://aihope.fun/v1" | core/llm/profile.py + secrets (.env) | `server/config/llm.yaml` | — | current |
+| `llm.providers.openrouter.base_url` | str | "https://openrouter.ai/api/v1" | core/llm/profile.py + secrets (.env) | `server/config/llm.yaml` | — | current |
+| `llm.talk_model.provider` | str | "openrouter" | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.talk_model.model` | str | "qwen/qwen3.8-27b:free" | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.talk_model.reply_max_tokens` | int | 220 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.talk_model.lyrics_reply_max_tokens` | int | 4096 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.talk_model.temperature` | float | 0.8 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.talk_model.top_p` | float | 1.0 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.talk_model.presence_penalty` | float | 0.3 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.talk_model.frequency_penalty` | float | 0.3 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.talk_model.timeout_seconds` | float | 30.0 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.talk_model.max_retries` | int | 1 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.talk_model.primary_first_token_timeout_seconds` | float | 8.0 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.brain_model.provider` | str | "aihope" | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.brain_model.model` | str | "gpt-6-luna" | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.brain_model.model_deep` | str | "gpt-6-luna" | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.brain_model.temperature` | float | 0.35 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.brain_model.top_p` | float | 1.0 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.brain_model.timeout_seconds` | float | 30.0 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.brain_model.max_retries` | int | 1 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.memory_model.provider` | str | "aihope" | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.memory_model.model` | str | "gpt-6-luna" | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.memory_model.temperature` | float | 0.6 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.memory_model.timeout_seconds` | float | 60.0 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.memory_model.max_retries` | int | 1 | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.enabled` | bool | True | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.use_brain_model_for_vision` | bool | True | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.provider` | str | "aihope" | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.model` | str | "gpt-6-luna" | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.max_tokens` | int | 800 | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.temperature` | float | 0.75 | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.timeout_seconds` | float | 180.0 | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.max_images_per_message` | int | 4 | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.max_image_bytes` | int | 8388608 | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.max_image_width` | int | 1920 | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.max_image_height` | int | 1080 | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.remember_last_image` | bool | True | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
+| `llm.vision_model.last_image_note_max_chars` | int | 1200 | core/agent/llm_setup.py + vision pipeline | `server/config/llm.yaml` | — | current |
 | `llm.micro_planning.enabled` | bool | False | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
 | `llm.micro_planning.mode` | str | "tags" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
 | `llm.micro_planning.prefill_enabled` | bool | False | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
@@ -194,19 +194,21 @@
 | `health_monitor.interval_seconds` | int | 3600 | core/runtime/health.py | `server/config/runtime.yaml` | — | current |
 | `health_monitor.llm_timeout_seconds` | int | 10 | core/runtime/health.py | `server/config/runtime.yaml` | — | current |
 | `health_monitor.status_log` | str | "./logs/health_status.jsonl" | core/runtime/health.py | `server/config/runtime.yaml` | — | current |
-| `internal_api.host` | str | "127.0.0.1" | modules/internal_api/ | `server/config/server.yaml` | INTERNAL_API_BIND_HOST | current |
-| `internal_api.port` | int | 8787 | modules/internal_api/ | `server/config/server.yaml` | — | current |
-| `internal_api.rate_limit_requests_per_minute` | int | 0 | modules/internal_api/ | `server/config/server.yaml` | — | current |
-| `internal_api.audit_log_enabled` | bool | True | modules/internal_api/ | `server/config/server.yaml` | — | current |
-| `internal_api.audit_log_path` | str | "./logs/api_audit.jsonl" | modules/internal_api/ | `server/config/server.yaml` | — | current |
-| `internal_api.debug_lifecycle_enabled` | bool | False | modules/internal_api/ | `server/config/server.yaml` | — | current |
-| `internal_api.websocket.idle_timeout_seconds` | int | 60 | modules/internal_api/ | `server/config/server.yaml` | — | current |
-| `internal_api.websocket.ping_interval_seconds` | int | 20 | modules/internal_api/ | `server/config/server.yaml` | — | current |
-| `internal_api.websocket.close_grace_seconds` | int | 5 | modules/internal_api/ | `server/config/server.yaml` | — | current |
-| `internal_api.level` | str | "INFO" | modules/internal_api/ | `server/config/server.yaml` | — | current |
-| `dashboard.enabled` | bool | True | modules/internal_api/ (dashboard) | `server/config/server.yaml` | — | current |
-| `dashboard.dist_path` | str | "dashboard/dist" | modules/internal_api/ (dashboard) | `server/config/server.yaml` | — | current |
-| `dashboard.require_build` | bool | False | modules/internal_api/ (dashboard) | `server/config/server.yaml` | — | current |
+| `api.host` | str | "127.0.0.1" | core/api/ | `server/config/server.yaml` | API_BIND_HOST | current |
+| `api.port` | int | 8787 | core/api/ | `server/config/server.yaml` | — | current |
+| `api.public_base_url` | str | "https://neyra.owyx.site" | core/api/ | `server/config/server.yaml` | API_PUBLIC_BASE_URL | current |
+| `api.public_path_prefix` | str | "/api" | core/api/ | `server/config/server.yaml` | — | current |
+| `api.rate_limit_requests_per_minute` | int | 0 | core/api/ | `server/config/server.yaml` | — | current |
+| `api.audit_log_enabled` | bool | True | core/api/ | `server/config/server.yaml` | — | current |
+| `api.audit_log_path` | str | "./logs/api_audit.jsonl" | core/api/ | `server/config/server.yaml` | — | current |
+| `api.debug_lifecycle_enabled` | bool | False | core/api/ | `server/config/server.yaml` | — | current |
+| `api.websocket.idle_timeout_seconds` | int | 60 | core/api/ | `server/config/server.yaml` | — | current |
+| `api.websocket.ping_interval_seconds` | int | 20 | core/api/ | `server/config/server.yaml` | — | current |
+| `api.websocket.close_grace_seconds` | int | 5 | core/api/ | `server/config/server.yaml` | — | current |
+| `api.level` | str | "INFO" | core/api/ | `server/config/server.yaml` | — | current |
+| `dashboard.enabled` | bool | True | core/api/ (dashboard static) | `server/config/server.yaml` | — | current |
+| `dashboard.dist_path` | str | "dashboard/dist" | core/api/ (dashboard static) | `server/config/server.yaml` | — | current |
+| `dashboard.require_build` | bool | False | core/api/ (dashboard static) | `server/config/server.yaml` | — | current |
 | `plugins.local_voice.wake_word` | str | "neyra" | merge_plugin_configs → plugins.local_voice; stub.py | `server/modules/local_voice/config.yaml` | — | current |
 | `plugins.local_voice.input_device` | str | "" | merge_plugin_configs → plugins.local_voice; stub.py | `server/modules/local_voice/config.yaml` | — | current |
 | `plugins.local_voice.output_device` | str | "" | merge_plugin_configs → plugins.local_voice; stub.py | `server/modules/local_voice/config.yaml` | — | current |
@@ -225,5 +227,5 @@
 | Module | Merged as |
 |---|---|
 | `modules/discord/config.yaml` | top-level `discord` |
-| `modules/internal_api/config.yaml` | `internal_api`, `dashboard` (overrides `server.yaml`) |
 | other `modules/<id>/config.yaml` | `plugins.<id>` |
+| Core API / dashboard | `config/server.yaml` → `api:` / `dashboard:` |

@@ -19,7 +19,7 @@
 | root `config.yaml` (ignored runtime file) | `server/config.yaml` | перенести с сохранением пользовательских значений |
 | root `.env` (ignored runtime file) | `server/.env` | перенести секреты без печати и коммита |
 | `interfaces/discord/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/discord/config.yaml` | мигрировать отдельно; tracked example указан ниже |
-| `interfaces/internal_api/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/internal_api/config.yaml` | мигрировать отдельно; tracked example указан ниже |
+| `interfaces/internal_api/config.yaml` (ignored runtime file, проверить наличие) | `server/config/server.yaml` → `api:` / `dashboard:` (Stage 2: API в `core/api`, не module) | настройки bind/public URL в слое server; tokens — `.env` (`API_*`) |
 | `interfaces/local_voice/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/local_voice/config.yaml` | merge → `plugins.local_voice`; stub uses `wake_word` (см. `docs/config-keys.md`) |
 | `interfaces/discord/lavalink/Lavalink.jar` (локальный/ignored runtime artifact, проверить наличие) | `server/modules/discord/lavalink/Lavalink.jar` | `.gitignore`; скачать `python server/scripts/fetch_lavalink.py`, не коммитить |
 | `main.py`, root entrypoints и Docker Compose | server entrypoints под `server/`; thin launch/deploy files могут остаться в root | выполнять из `server/` либо выставлять `PYTHONPATH=server` |
@@ -34,7 +34,7 @@ Tracked example paths сверены с деревом репозитория. R
 | Откуда (runtime) | Откуда (tracked example/module) | Куда после 1b | Примечание |
 |---|---|---|---|
 | `interfaces/discord/config.yaml` (ignored; наличие проверить локально) | `interfaces/discord/config.example.yaml` | `server/modules/discord/config.yaml` и соседний `config.example.yaml` | Discord/music/Lavalink module; перенести реальный конфиг отдельным migration step |
-| `interfaces/internal_api/config.yaml` (ignored; наличие проверить локально) | `interfaces/internal_api/config.example.yaml` | `server/modules/internal_api/config.yaml` и соседний `config.example.yaml` | Internal API module; сохранить текущие tokens, bind и port |
+| `interfaces/internal_api/config.yaml` (ignored; наличие проверить локально) | `interfaces/internal_api/config.example.yaml` (legacy) | `server/config/server.yaml` (`api:`, `dashboard:`) + `server/core/api/` | Stage 2: API — ядро; tokens в `API_*` env |
 | `interfaces/local_voice/config.yaml` (ignored; наличие проверить локально) | `interfaces/local_voice/config.example.yaml` | `server/modules/local_voice/config.yaml` и соседний `config.example.yaml` | Consumer: `merge_plugin_configs` → `plugins.local_voice`; stub читает `wake_word` |
 | runtime-конфига у example module нет в tracked tree | `interfaces/000EXAMPLE/` (`plugin.yaml`, `core/main.py`, README/help files) | `server/modules/000EXAMPLE/` | реальный example module и template; сохранить как developer template |
 | `tools/mcp_server/server.py`, `tools/mcp_server/requirements.txt` | source tree `tools/mcp_server/` | `devtools/mcp_server/` | dev tooling, не продуктовый модуль |
@@ -60,7 +60,7 @@ Tracked example paths сверены с деревом репозитория. R
 | `voice.*` | `core/voice/config.py` | `server/config/voice.yaml` |
 | `mcp_client.*` | MCP client | `server/config/modules.yaml` |
 | `logging.*`, `health_monitor.*` | bootstrap, health | `server/config/runtime.yaml` |
-| `internal_api.*`, `dashboard.*` | Internal API module (+ layer defaults) | `server/config/server.yaml` + `modules/internal_api/config.yaml` |
+| `api.*`, `dashboard.*` | `core/api/`, bootstrap | `server/config/server.yaml` |
 | Discord | Discord module | `server/modules/discord/config.yaml` |
 | `local_voice` | `merge_plugin_configs` → `plugins.local_voice`; stub reads `wake_word` | `server/modules/local_voice/config.yaml` |
 
@@ -72,10 +72,10 @@ Tracked example paths сверены с деревом репозитория. R
 | `AIHOPE_API_KEY` | AiHope-compatible provider secret | оставить один раз в inventory и server `.env` |
 | `DEEPGRAM_API_KEY`, `GROQ_API_KEY`, `YANDEX_API_KEY`, `YANDEX_FOLDER_ID`, `YANDEX_ID_KEY` | voice/STT/TTS providers | сохранить используемые значения и aliases |
 | `DISCORD_TOKEN` | Discord module | сохранить в server `.env` |
-| `INTERNAL_API_TOKEN`, `INTERNAL_API_VIEWER_TOKEN`, `INTERNAL_API_MAINT_TOKEN` | Control/Internal API roles | сохранить, не логировать и не печатать |
+| `API_TOKEN`, `API_VIEWER_TOKEN`, `API_MAINT_TOKEN` | Neyra API roles | сохранить, не логировать и не печатать |
 | `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN` | доступ к gated Hugging Face models | optional, закомментировать в `.env.example`; public embeddings и Whisper не требуют токена |
 | `NEYRA_DATA_DIR` | override для `paths.data_dir` | optional; default после 1b — `server/data` (`./data` при cwd=`server/`) |
-| `INTERNAL_API_BIND_HOST` | bind override | default localhost; LAN только явной настройкой |
+| `API_BIND_HOST` | bind override | default localhost; LAN только явной настройкой |
 | `SCREEN_PROXY_SECRET` | активный consumer не подтверждён | убрать из active example, оставить в backlog |
 
 Dev MCP env перечисляется отдельно только после сверки фактических имён с `tools/mcp_server/server.py` и связанным dev config; секреты dev MCP не относятся к server/client product `.env`.
@@ -99,7 +99,7 @@ Dev MCP env перечисляется отдельно только после 
 | Компонент | Решение |
 |---|---|
 | `interfaces/local_voice/` | перенести; проверить реальное чтение `config.yaml` и не терять config behavior |
-| `interfaces/internal_api/` | перенести весь модуль, включая существующие API contracts и незавершённые handlers; stubs документировать, не удалять автоматически |
+| `interfaces/internal_api/` | Stage 1b перенос → `modules/internal_api/`; Stage 2 → `server/core/api/` + конфиг `api:` (модуль удалён) |
 | `interfaces/discord/` | перенести весь Discord/music/Lavalink integration и его примеры конфигов |
 | provider contracts с `NotImplementedError` | сохранить contracts; отсутствующие реализации — backlog |
 | `interfaces/000EXAMPLE/` | сохранить как реальный module SDK/template |

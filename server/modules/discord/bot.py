@@ -318,8 +318,8 @@ class NeyraDiscordBot(discord.Client):
 
         self.agent.event_bus.subscribe(MUSIC_RESULT, self._on_music_result)
 
-    def _internal_api_base_url(self) -> str:
-        ia = self.config.get("internal_api") or {}
+    def _core_api_base_url(self) -> str:
+        ia = self.config.get("api") or {}
         host = str(ia.get("host") or "127.0.0.1")
         port = int(ia.get("port") or 8787)
         return f"http://{host}:{port}".rstrip("/")
@@ -338,7 +338,7 @@ class NeyraDiscordBot(discord.Client):
                 return ch
         return None
 
-    async def _internal_api_chat(
+    async def _core_api_chat(
         self,
         *,
         text: str,
@@ -347,8 +347,8 @@ class NeyraDiscordBot(discord.Client):
         platform_user_id: str,
         author_display_name: str,
     ) -> Optional[str]:
-        """Этап B5: спонтанное сообщение только через Internal API (`POST /v1/chat`), без прямого вызова ядра."""
-        ia = self.config.get("internal_api") or {}
+        """Этап B5: спонтанное сообщение только через core API (`POST /v1/chat`), без прямого вызова ядра."""
+        ia = self.config.get("api") or {}
         token = str(ia.get("token") or "").strip()
         headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
         if token:
@@ -363,7 +363,7 @@ class NeyraDiscordBot(discord.Client):
         disc = self.config.get("discord") or {}
         proactive = disc.get("proactive") if isinstance(disc.get("proactive"), dict) else {}
         timeout = float(proactive.get("request_timeout_seconds") or ia.get("proactive_chat_timeout_seconds") or 180.0)
-        url = f"{self._internal_api_base_url()}/v1/chat"
+        url = f"{self._core_api_base_url()}/v1/chat"
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 r = await client.post(url, headers=headers, json=body)
@@ -407,7 +407,7 @@ class NeyraDiscordBot(discord.Client):
         pid = str(proactive.get("platform_user_id") or "discord_proactive").strip() or "discord_proactive"
         adisp = str(proactive.get("author_display_name") or "Нейра").strip() or "Нейра"
 
-        reply = await self._internal_api_chat(
+        reply = await self._core_api_chat(
             text=prompt,
             channel_id=int(channel.id),
             username=uname,

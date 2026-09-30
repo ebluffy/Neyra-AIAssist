@@ -11,7 +11,7 @@ Neyra состоит из стабильного ядра и плагинов в
 
 ## Слои
 - `core/`: агент, память, рефлексия, event bus, health monitor.
-- `server/modules/internal_api/`: HTTP API + WebSocket + статическая раздача SPA (`server/dashboard/dist`, React + Vite + Tailwind).
+- `server/core/api/`: HTTP API + WebSocket + статическая раздача SPA (`server/dashboard/dist`, React + Vite + Tailwind).
 - `server/modules/discord/`: единый resident-плагин Discord (текст + музыка через Lavalink 4.x, события `MUSIC_*` на шине).
 - `server/modules/*`: прочие расширения через Plugin SDK.
 

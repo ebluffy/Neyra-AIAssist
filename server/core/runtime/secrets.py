@@ -194,25 +194,29 @@ def apply_env_secrets(cfg: dict) -> None:
     if apk:
         cfg.setdefault("agent_proxy", {})["secret_key"] = apk
 
-    iat = _s("INTERNAL_API_TOKEN")
+    iat = _s("API_TOKEN")
     if iat:
-        cfg.setdefault("internal_api", {})["token"] = iat
+        cfg.setdefault("api", {})["token"] = iat
 
-    bind_h = _s("INTERNAL_API_BIND_HOST")
+    bind_h = _s("API_BIND_HOST")
     if bind_h:
-        cfg.setdefault("internal_api", {})["host"] = bind_h
+        cfg.setdefault("api", {})["host"] = bind_h
 
-    iv = _s("INTERNAL_API_VIEWER_TOKEN")
+    iv = _s("API_VIEWER_TOKEN")
     if iv:
-        cfg.setdefault("internal_api", {})["viewer_token"] = iv
+        cfg.setdefault("api", {})["viewer_token"] = iv
 
-    im = _s("INTERNAL_API_MAINT_TOKEN")
+    im = _s("API_MAINT_TOKEN")
     if im:
-        cfg.setdefault("internal_api", {})["maint_token"] = im
+        cfg.setdefault("api", {})["maint_token"] = im
+
+    pub = _s("API_PUBLIC_BASE_URL")
+    if pub:
+        cfg.setdefault("api", {})["public_base_url"] = pub
 
     wh_in = _s("WEBHOOK_INBOUND_SECRET")
     if wh_in:
-        cfg.setdefault("internal_api", {})["webhook_inbound_secret"] = wh_in
+        cfg.setdefault("api", {})["webhook_inbound_secret"] = wh_in
 
     yk = _s("YANDEX_API_KEY")
     yf = _s("YANDEX_FOLDER_ID")
