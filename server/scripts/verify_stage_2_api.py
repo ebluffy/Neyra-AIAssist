@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Stage 2: core API package, api: config, meta/models helpers (offline)."""
+"""Stage 2: core API package, api: config, auth matrix (offline)."""
 
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
 from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 SERVER_ROOT = Path(__file__).resolve().parent.parent
 if str(SERVER_ROOT) not in sys.path:
@@ -48,21 +52,42 @@ def check_public_url_helper() -> list[str]:
     return errs
 
 
+def _load_example_layers() -> dict[str, Any]:
+    """Load only tracked *.example.yaml into a temp tree (CI-safe, no local config/*.yaml)."""
+    from core.runtime.config_loader import LAYER_FILES, load_layered_yaml
+
+    tmp = Path(tempfile.mkdtemp(prefix="neyra_s2_"))
+    try:
+        shutil.copy2(SERVER_ROOT / "config.example.yaml", tmp / "config.yaml")
+        cfg_dir = tmp / "config"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        for name in LAYER_FILES:
+            stem = name.replace(".yaml", "")
+            src = SERVER_ROOT / "config" / f"{stem}.example.yaml"
+            if src.is_file():
+                shutil.copy2(src, cfg_dir / name)
+        return load_layered_yaml(tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def check_config_key_api() -> list[str]:
-    from core.runtime.config_loader import load_layered_yaml, validate_config_schema
+    from core.runtime.config_loader import validate_config_schema
 
     errs: list[str] = []
-    cfg = load_layered_yaml(SERVER_ROOT)
+    cfg = _load_example_layers()
     if "internal_api" in cfg:
         errs.append("layered cfg still has internal_api")
     api = cfg.get("api")
     if not isinstance(api, dict):
-        errs.append("api: section missing from layered load")
+        errs.append("api: section missing from example layers")
     else:
         if "host" not in api or "port" not in api:
             errs.append("api.host/port missing")
         if "public_base_url" not in api:
             errs.append("api.public_base_url missing from example layer")
+        if str(api.get("public_base_url") or "").strip():
+            errs.append("example public_base_url should be empty by default")
     bad = {
         "paths": {"data_dir": "./data"},
         "assistant": {"name": "X"},
@@ -91,6 +116,8 @@ def check_build_app_routes() -> list[str]:
             errs.append(f"missing route decorator {need}")
     if "not_supported" not in text:
         errs.append("plugin reload/restart should raise not_supported")
+    if "hmac.compare_digest" not in text and "_token_eq" not in text:
+        errs.append("token compare should use constant-time helper")
     return errs
 
 
@@ -106,6 +133,190 @@ def check_no_legacy_imports() -> list[str]:
     return errs
 
 
+def check_bind_gate() -> list[str]:
+    from core.api import assert_api_bind_safe
+
+    errs: list[str] = []
+    try:
+        assert_api_bind_safe({"api": {"host": "0.0.0.0"}})
+        errs.append("expected refuse 0.0.0.0 without tokens")
+    except RuntimeError:
+        pass
+    try:
+        assert_api_bind_safe({"api": {"host": "127.0.0.1"}})
+    except Exception as e:
+        errs.append(f"loopback without tokens should be ok: {e}")
+    try:
+        assert_api_bind_safe({"api": {"host": "0.0.0.0", "token": "x"}})
+    except Exception as e:
+        errs.append(f"non-loopback with token should be ok: {e}")
+    return errs
+
+
+def check_auth_matrix() -> list[str]:
+    """Behavioral auth checks via TestClient (no real LLM/memory)."""
+    from fastapi.testclient import TestClient
+
+    from core.api import build_app
+    import core.api.app as api_mod
+
+    errs: list[str] = []
+
+    agent = MagicMock()
+    agent.chat = AsyncMock(return_value={"reply": "ok"})
+    agent.chat_stream = AsyncMock()
+    agent.start_mcp_clients = AsyncMock()
+    agent.stop_mcp_clients = AsyncMock()
+    agent.memory_hub = None
+    agent.long_memory = MagicMock(count=MagicMock(return_value=0))
+
+    monitor = MagicMock()
+    monitor.start = MagicMock()
+    monitor.run_once = AsyncMock(return_value={"status": "ok"})
+
+    backup = MagicMock()
+
+    cfg = {
+        "api": {
+            "host": "127.0.0.1",
+            "port": 8787,
+            "token": "admin-secret",
+            "viewer_token": "viewer-secret",
+            "maint_token": "maint-secret",
+            "public_base_url": "",
+            "public_path_prefix": "/api",
+            "audit_log_enabled": False,
+            "rate_limit_requests_per_minute": 0,
+            "websocket": {
+                "idle_timeout_seconds": 5,
+                "ping_interval_seconds": 20,
+                "close_grace_seconds": 1,
+            },
+        },
+        "dashboard": {"enabled": False},
+        "llm": {
+            "talk_model": {"provider": "openrouter", "model": "x"},
+            "brain_model": {"provider": "openrouter", "model": "x"},
+            "memory_model": {"provider": "openrouter", "model": "x"},
+            "vision_model": {"provider": "openrouter", "model": "x"},
+            "providers": {"openrouter": {"model": "x"}},
+        },
+    }
+
+    app = build_app(
+        cfg,
+        shared_agent=agent,
+        shared_monitor=monitor,
+        shared_backup_manager=backup,
+    )
+
+    scheduled: list[str] = []
+
+    def _fake_exit(reason: str = "system_restart") -> None:
+        scheduled.append(reason)
+
+    orig_exit = api_mod._schedule_exit_after_response
+    api_mod._schedule_exit_after_response = _fake_exit  # type: ignore[assignment]
+    try:
+        with TestClient(app) as client:
+            r = client.get("/v1/health")
+            if r.status_code != 401:
+                errs.append(f"no token → health want 401, got {r.status_code}")
+
+            r = client.get("/v1/health", headers={"Authorization": "Bearer viewer-secret"})
+            if r.status_code != 200:
+                errs.append(f"viewer health want 200, got {r.status_code}")
+
+            r = client.get("/v1/meta", headers={"Authorization": "Bearer viewer-secret"})
+            if r.status_code != 200:
+                errs.append(f"viewer meta want 200, got {r.status_code}")
+            else:
+                data = (r.json().get("data") or {})
+                if "bind" in data:
+                    errs.append("meta must not expose bind")
+                if data.get("api_version") != api_mod.API_VERSION:
+                    errs.append("meta api_version mismatch")
+
+            r = client.post(
+                "/v1/system/restart",
+                headers={"Authorization": "Bearer viewer-secret"},
+            )
+            if r.status_code != 403:
+                errs.append(f"viewer restart want 403, got {r.status_code}")
+
+            r = client.post(
+                "/v1/system/restart",
+                headers={"Authorization": "Bearer maint-secret"},
+            )
+            if r.status_code != 200:
+                errs.append(f"maint restart want 200, got {r.status_code}")
+            elif not scheduled:
+                errs.append("maint restart did not schedule exit")
+
+            r = client.post(
+                "/v1/plugins/nope/reload",
+                headers={"Authorization": "Bearer admin-secret"},
+            )
+            if r.status_code not in (404, 501):
+                errs.append(f"plugin reload want 404/501, got {r.status_code}")
+
+            viewer_ws_ok = False
+            try:
+                with client.websocket_connect(
+                    "/v1/ws/chat",
+                    headers={"Authorization": "Bearer viewer-secret"},
+                ) as ws:
+                    msg = ws.receive_json()
+                    if msg.get("type") == "hello":
+                        errs.append("viewer must not get ws chat hello")
+                    viewer_ws_ok = True
+            except Exception:
+                # Rejected / closed before hello — expected for viewer.
+                viewer_ws_ok = False
+            if viewer_ws_ok and not errs:
+                pass  # hello already flagged
+
+            with client.websocket_connect(
+                "/v1/ws/chat",
+                headers={"Authorization": "Bearer admin-secret"},
+            ) as ws:
+                hello = ws.receive_json()
+                if hello.get("type") != "hello":
+                    errs.append(f"admin ws hello missing: {hello}")
+                elif hello.get("role") != "admin":
+                    errs.append(f"admin ws role bad: {hello.get('role')}")
+                elif hello.get("reconnect") != "open_new_socket":
+                    errs.append("ws hello missing reconnect hint")
+    finally:
+        api_mod._schedule_exit_after_response = orig_exit  # type: ignore[assignment]
+
+    return errs
+
+
+def check_legacy_env_failfast() -> list[str]:
+    import os
+
+    from core.runtime.secrets import apply_env_secrets
+
+    errs: list[str] = []
+    key = "INTERNAL_API_TOKEN"
+    prev = os.environ.get(key)
+    os.environ[key] = "legacy-should-fail"
+    try:
+        try:
+            apply_env_secrets({})
+            errs.append("INTERNAL_API_TOKEN should raise RuntimeError")
+        except RuntimeError as e:
+            if "API_TOKEN" not in str(e):
+                errs.append(f"fail-fast message unclear: {e}")
+    finally:
+        if prev is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = prev
+    return errs
+
+
 def main() -> int:
     checks = [
         ("package layout", check_package_layout),
@@ -113,13 +324,16 @@ def main() -> int:
         ("config api key", check_config_key_api),
         ("no legacy imports", check_no_legacy_imports),
         ("build_app routes", check_build_app_routes),
+        ("bind gate", check_bind_gate),
+        ("legacy env failfast", check_legacy_env_failfast),
+        ("auth matrix", check_auth_matrix),
     ]
     failed = 0
     for name, fn in checks:
         try:
             errs = fn()
         except Exception as e:
-            print(f"FAIL {name}: {e}")
+            print(f"FAIL {name}: {type(e).__name__}: {e}")
             failed += 1
             continue
         if errs:

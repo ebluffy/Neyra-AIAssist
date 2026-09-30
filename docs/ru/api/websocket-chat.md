@@ -10,7 +10,9 @@
 Endpoint: `ws://127.0.0.1:8787/v1/ws/chat`  
 Публично (пример): `wss://neyra.owyx.site/api/v1/ws/chat`
 
-Auth: те же Bearer-роли, что у REST (`API_TOKEN` / viewer / maint). Viewer+ может стримить.
+Auth: те же Bearer-роли, что у REST. Предпочтительно `Authorization: Bearer <token>` (`?token=` может попасть в access-логи — только fallback).
+
+**Роль:** чат по WebSocket — только **admin** (как `POST /v1/chat`). Viewer/maint получают close `1008` (нельзя писать в память / жечь LLM).
 
 Reconnect: открыть **новый** WebSocket (в hello есть `"reconnect":"open_new_socket"`). Буфера resume на сервере в Wave 1 нет.
 

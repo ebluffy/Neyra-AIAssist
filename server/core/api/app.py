@@ -40,7 +40,10 @@ from core.runtime import HealthMonitor
 
 logger = logging.getLogger("neyra.api")
 
-API_VERSION = "1.0.0"
+API_VERSION = "1.1.0"
+
+# Set by run_neyra_server so soft-restart can ask uvicorn to shut down cleanly.
+_uvicorn_server: Any = None
 
 
 def _project_root() -> Path:
@@ -103,17 +106,62 @@ def _debug_lifecycle_allowed(cfg: dict) -> bool:
     return bool(ia.get("debug_lifecycle_enabled", False))
 
 
-def _schedule_exit_after_response() -> None:
-    """После отправки ответа клиенту завершает процесс (os._exit)."""
+def _schedule_exit_after_response(reason: str = "system_restart") -> None:
+    """After the HTTP response is sent, shut down the process (prefer uvicorn graceful exit)."""
 
     def _run() -> None:
-        import time
-
         time.sleep(0.35)
-        logger.info("Завершение процесса по POST /v1/debug/lifecycle")
-        os._exit(0)
+        logger.info("Process shutdown requested via %s", reason)
+        server = _uvicorn_server
+        if server is not None:
+            try:
+                server.should_exit = True
+                return
+            except Exception:
+                logger.exception("Failed to signal uvicorn should_exit; falling back to os._exit")
+        # Non-zero so systemd Restart=on-failure also comes back; Docker unless-stopped always restarts.
+        os._exit(1)
 
-    threading.Thread(target=_run, daemon=False, name="neyra-debug-lifecycle-exit").start()
+    threading.Thread(target=_run, daemon=False, name="neyra-api-exit").start()
+
+
+def _token_eq(got: str, expected: str) -> bool:
+    """Constant-time compare; different lengths never match."""
+    if not expected:
+        return False
+    a = got.encode("utf-8")
+    b = expected.encode("utf-8")
+    if len(a) != len(b):
+        return False
+    return hmac.compare_digest(a, b)
+
+
+def _is_loopback_host(host: str) -> bool:
+    h = (host or "").strip().lower()
+    return h in ("127.0.0.1", "::1", "localhost") or h.startswith("127.")
+
+
+def api_tokens_configured(cfg: dict) -> bool:
+    api = _api_cfg(cfg)
+    return bool(
+        str(api.get("token") or "").strip()
+        or str(api.get("viewer_token") or "").strip()
+        or str(api.get("maint_token") or "").strip()
+    )
+
+
+def assert_api_bind_safe(cfg: dict) -> None:
+    """Refuse non-loopback bind when no API tokens are set (fail-closed for LAN/public)."""
+    api = _api_cfg(cfg)
+    host = str(api.get("host") or "127.0.0.1")
+    if _is_loopback_host(host):
+        return
+    if api_tokens_configured(cfg):
+        return
+    raise RuntimeError(
+        f"api.host={host!r} is not loopback but API_TOKEN / API_VIEWER_TOKEN / "
+        "API_MAINT_TOKEN are empty. Set tokens or bind 127.0.0.1."
+    )
 
 
 def _err_payload(trace_id: str, code: str, message: str) -> dict[str, Any]:
@@ -129,8 +177,8 @@ _ROLE_RANK = {"anon": 0, "viewer": 1, "maint": 2, "admin": 3}
 
 
 def _resolve_role(authorization: Optional[str], cfg: dict) -> str:
-    """anon — токены не заданы (открытый доступ как раньше). Иначе нужен Bearer и один из известных токенов."""
-    api = cfg.get("api") if isinstance(cfg.get("api"), dict) else {}
+    """anon — tokens unset (local loopback only; see assert_api_bind_safe). Else Bearer required."""
+    api = _api_cfg(cfg)
     primary = str(api.get("token") or "").strip()
     viewer = str(api.get("viewer_token") or "").strip()
     maint = str(api.get("maint_token") or "").strip()
@@ -140,11 +188,11 @@ def _resolve_role(authorization: Optional[str], cfg: dict) -> str:
     if not raw.startswith("Bearer "):
         raise ApiError("unauthorized", "Missing bearer token", 401)
     got = raw.removeprefix("Bearer ").strip()
-    if primary and got == primary:
+    if _token_eq(got, primary):
         return "admin"
-    if maint and got == maint:
+    if _token_eq(got, maint):
         return "maint"
-    if viewer and got == viewer:
+    if _token_eq(got, viewer):
         return "viewer"
     raise ApiError("unauthorized", "Invalid bearer token", 401)
 
@@ -157,8 +205,8 @@ def _role_at_least(role: str, minimum: str) -> bool:
 
 def _require_ws_auth(token_qs: Optional[str], authorization: Optional[str], cfg: dict) -> str:
     """
-    Same token roles as REST. Returns role name (anon/viewer/maint/admin).
-    Chat stream is allowed for viewer+.
+    Same token roles as REST. Prefer Authorization: Bearer (query ?token= may hit access logs).
+    Returns role name (anon/viewer/maint/admin).
     """
     api = _api_cfg(cfg)
     primary = str(api.get("token") or "").strip()
@@ -167,17 +215,17 @@ def _require_ws_auth(token_qs: Optional[str], authorization: Optional[str], cfg:
     if not primary and not viewer and not maint:
         return "anon"
     got = ""
-    if token_qs and str(token_qs).strip():
-        got = str(token_qs).strip()
-    elif authorization and authorization.strip().startswith("Bearer "):
+    if authorization and authorization.strip().startswith("Bearer "):
         got = authorization.removeprefix("Bearer ").strip()
+    elif token_qs and str(token_qs).strip():
+        got = str(token_qs).strip()
     else:
         raise ApiError("unauthorized", "Missing bearer token for WebSocket", 401)
-    if primary and got == primary:
+    if _token_eq(got, primary):
         return "admin"
-    if maint and got == maint:
+    if _token_eq(got, maint):
         return "maint"
-    if viewer and got == viewer:
+    if _token_eq(got, viewer):
         return "viewer"
     raise ApiError("unauthorized", "Invalid bearer token for WebSocket", 401)
 
@@ -688,6 +736,7 @@ def build_app(
         path = request.url.path or ""
         if rate_rpm <= 0 or not path.startswith("/v1") or path.startswith("/v1/ws"):
             return await call_next(request)
+        # With uvicorn proxy_headers=True, request.client is the real client behind the proxy.
         ip = request.client.host if request.client else "unknown"
         if not await _rate_limit_allow(f"http:{ip}", rate_rpm):
             tid = _trace_id(request)
@@ -879,7 +928,7 @@ def build_app(
             if body.action == "restart"
             else "Процесс будет завершён."
         )
-        _schedule_exit_after_response()
+        _schedule_exit_after_response(reason=f"debug_lifecycle:{body.action}")
         return {"ok": True, "trace_id": trace_id, "data": {"action": body.action, "note": note}}
 
     @app.post("/v1/debug/reset_context")
@@ -974,7 +1023,6 @@ def build_app(
     @app.get("/v1/meta")
     async def v1_meta(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
-        api = _api_cfg(config)
         pub = api_public_root(config)
         return {
             "ok": True,
@@ -983,10 +1031,6 @@ def build_app(
                 "api_version": API_VERSION,
                 "public_url": pub or None,
                 "public_v1": api_public_v1(config) or None,
-                "bind": {
-                    "host": str(api.get("host") or "127.0.0.1"),
-                    "port": int(api.get("port") or 8787),
-                },
                 "features": {
                     "ws_chat": True,
                     "ws_audio_stub": True,
@@ -1037,23 +1081,23 @@ def build_app(
                     c.provider for c in iter_unique_provider_connections(config)
                 ]
             except Exception:
-                pass
+                logger.debug("health llm_providers enrichment failed", exc_info=True)
         return {"ok": True, "trace_id": trace_id, "data": rep}
 
     @app.post("/v1/system/restart")
     async def v1_system_restart(request: Request, api_role: str = Depends(dep_maint)):
-        """Soft process restart: exit after response; Docker/systemd bring the process back."""
+        """Soft process restart: graceful uvicorn exit after response; Docker/systemd bring it back."""
         trace_id = _trace_id(request)
         _audit("system_restart", trace_id, api_role)
-        _schedule_exit_after_response()
+        _schedule_exit_after_response(reason="POST /v1/system/restart")
         return {
             "ok": True,
             "trace_id": trace_id,
             "data": {
                 "action": "restart",
                 "note": (
-                    "Process will exit shortly. With docker compose restart:unless-stopped "
-                    "(or systemd), the service comes back automatically."
+                    "Process will shut down shortly (uvicorn should_exit; fallback exit code 1). "
+                    "Use docker compose restart:unless-stopped or systemd Restart=always / on-failure."
                 ),
             },
         }
@@ -1808,8 +1852,9 @@ def build_app(
         authorization = websocket.headers.get("authorization")
         try:
             ws_role = _require_ws_auth(token, authorization, config)
-            if not _role_at_least(ws_role, "viewer"):
-                raise ApiError("forbidden", "WebSocket chat requires viewer+", 403)
+            # Same bar as POST /v1/chat (admin): viewer must not mutate memory / spend LLM.
+            if not _role_at_least(ws_role, "admin"):
+                raise ApiError("forbidden", "WebSocket chat requires admin (same as POST /v1/chat)", 403)
         except ApiError:
             # 1008: Policy Violation
             await websocket.close(code=1008, reason="unauthorized")

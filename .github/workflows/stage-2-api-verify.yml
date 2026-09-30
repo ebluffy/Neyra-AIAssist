@@ -7,8 +7,10 @@ on:
       - "**.md"
   push:
     branches:
-      - feature/stage-2-neyra-api
       - main
+
+permissions:
+  contents: read
 
 jobs:
   verify:
@@ -18,14 +20,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install server deps (minimal)
-        run: pip install -q pyyaml python-dotenv httpx
+      - name: Install deps for Stage 2 verify
+        run: pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette
       - name: compileall
         run: python -m compileall -q server
       - name: verify_stage_1c (layers regression)
         run: python server/scripts/verify_stage_1c.py
       - name: verify_stage_1d (dual backend)
-        run: python server/scripts/verify_stage_1d.py
+        run: |
+          pip install -q langchain-core langchain-openai
+          python server/scripts/verify_stage_1d.py
       - name: verify_stage_2_api (core api)
         run: python server/scripts/verify_stage_2_api.py
       - name: healthcheck smoke (layered examples, skip HTTP)

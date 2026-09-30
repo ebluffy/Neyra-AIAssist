@@ -78,9 +78,12 @@ def run_neyra_server(config: dict) -> None:
     import uvicorn
 
     from core.api import build_app
-    from core.api.app import _dashboard_dist_path
+    from core.api import app as api_app
+    from core.api.app import _dashboard_dist_path, assert_api_bind_safe
 
     root = project_root()
+    assert_api_bind_safe(config)
+
     dash_cfg = config.get("dashboard") or {}
     dist = _dashboard_dist_path(config)
     if bool(dash_cfg.get("enabled", True)) and bool(dash_cfg.get("require_build", False)):
@@ -110,9 +113,18 @@ def run_neyra_server(config: dict) -> None:
     port = int(api_cfg.get("port") or 8787)
     log_level = str(api_cfg.get("level") or "info").lower()
     logger.info("Neyra core server | http://%s:%s/ (dashboard + /v1)", host, port)
-    uvicorn.run(
+
+    uvi_cfg = uvicorn.Config(
         app,
         host=host,
         port=port,
         log_level=log_level if log_level in ("debug", "info", "warning", "error") else "info",
+        proxy_headers=True,
+        forwarded_allow_ips="127.0.0.1",
     )
+    server = uvicorn.Server(uvi_cfg)
+    api_app._uvicorn_server = server
+    try:
+        server.run()
+    finally:
+        api_app._uvicorn_server = None

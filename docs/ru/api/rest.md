@@ -7,13 +7,21 @@
 
 # REST Endpoints
 
+## Breaking changes (API 1.1.0)
+
+- Env: `INTERNAL_API_*` → `API_*` (старт падает, если старые имена заданы; dual-read нет).
+- `POST /v1/plugins/{id}/reload|restart` → **501** `not_supported` (используйте `POST /v1/system/restart`).
+- Health входящего webhook `GET .../health` требует viewer+, если токены настроены.
+- WebSocket-чат — только **admin** (как `POST /v1/chat`).
+- Bind не loopback без токенов → процесс не стартует.
+
 ## Core
 - `GET /v1/meta` — api_version, public_url, features
 - `GET /v1/health`
 - `GET /v1/llm/models` — provider + model id по ролям
 - `GET /v1/llm/balance`
-- `POST /v1/chat`
-- `POST /v1/system/restart` (maint+) — мягкий рестарт процесса
+- `POST /v1/chat` (admin)
+- `POST /v1/system/restart` (maint+) — мягкий рестарт процесса (uvicorn should_exit)
 - `POST /v1/memory/search`
 - `POST /v1/memory/write`
 - `POST /v1/notify`

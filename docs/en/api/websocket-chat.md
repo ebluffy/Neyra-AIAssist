@@ -10,7 +10,9 @@
 Endpoint: `ws://127.0.0.1:8787/v1/ws/chat`  
 Public (example): `wss://neyra.owyx.site/api/v1/ws/chat`
 
-Auth: same Bearer roles as REST (`API_TOKEN` / viewer / maint). Viewer+ may stream.
+Auth: same Bearer roles as REST. Prefer `Authorization: Bearer <token>` (query `?token=` may appear in access logs — fallback only).
+
+**Role:** WebSocket chat requires **admin** (same as `POST /v1/chat`). Viewer/maint receive close `1008` — they must not stream chat (memory writes / LLM spend).
 
 Reconnect: open a **new** WebSocket (hello includes `"reconnect":"open_new_socket"`). No server-side resume buffer in Wave 1.
 

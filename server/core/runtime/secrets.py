@@ -194,6 +194,25 @@ def apply_env_secrets(cfg: dict) -> None:
     if apk:
         cfg.setdefault("agent_proxy", {})["secret_key"] = apk
 
+    # Fail-fast: old INTERNAL_API_* names are not dual-read (no silent empty-token open API).
+    legacy_api_env = [
+        n
+        for n in (
+            "INTERNAL_API_TOKEN",
+            "INTERNAL_API_VIEWER_TOKEN",
+            "INTERNAL_API_MAINT_TOKEN",
+            "INTERNAL_API_BIND_HOST",
+            "INTERNAL_API_PUBLIC_BASE_URL",
+        )
+        if _s(n)
+    ]
+    if legacy_api_env:
+        raise RuntimeError(
+            "Removed env vars (rename to API_*): "
+            + ", ".join(legacy_api_env)
+            + ". Example: INTERNAL_API_TOKEN → API_TOKEN. No legacy dual-read."
+        )
+
     iat = _s("API_TOKEN")
     if iat:
         cfg.setdefault("api", {})["token"] = iat

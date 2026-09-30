@@ -7,12 +7,13 @@ api:
   host: "127.0.0.1"
   port: 8787
 
-  # EN: Public origin for clients / OpenAPI servers / future VPS (no secrets).
-  #     Empty = local-only (relative URLs). Easy to change subdomain/domain.
-  # RU: Публичный origin для клиентов / OpenAPI / будущего VPS. Пусто = только localhost.
-  public_base_url: "https://neyra.owyx.site"
+  # EN: Public origin for clients / OpenAPI / future VPS (no secrets).
+  #     Empty = local-only (relative URLs). Set via API_PUBLIC_BASE_URL or here for a real host.
+  # RU: Публичный origin. Пусто = только localhost. Домен — API_PUBLIC_BASE_URL или эта строка.
+  public_base_url: ""
   # EN: Path prefix in front of /v1 (reverse proxy). Full public API: {public_base_url}{public_path_prefix}/v1
-  # RU: Префикс перед /v1. Итого: https://neyra.owyx.site/api/v1
+  #     Example when publishing: public_base_url=https://neyra.owyx.site + prefix=/api → …/api/v1
+  # RU: Префикс перед /v1. Пример: https://neyra.owyx.site + /api → …/api/v1
   public_path_prefix: "/api"
 
   # EN: Optional global RPM limit per client IP (0 = disabled). Applies to /v1 HTTP except /v1/ws.

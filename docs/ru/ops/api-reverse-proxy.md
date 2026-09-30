@@ -50,3 +50,6 @@ server {
 - Согласовать `api.public_*` с реальным DNS.
 
 Деплой процесса на VPS — этап 4 / ops; для Stage 2 достаточно этого recipe.
+
+Uvicorn стартует с `proxy_headers=True` и `forwarded_allow_ips=127.0.0.1`, чтобы `api.rate_limit_*` видел реальный IP из `X-Forwarded-For`. В проде лимиты лучше держать и на прокси.
+`api.public_base_url` в example пустой — задайте домен в yaml или `API_PUBLIC_BASE_URL`.

@@ -157,16 +157,16 @@ docs/
 - публичный URL: `api.public_base_url` + `api.public_path_prefix` (пример `https://neyra.owyx.site` + `/api`);
 - аудит изменяющих действий.
 
-Вторая очередь (Wave 2): GET/PUT конфигурации с schema validation, hot reload и rollback; промпты; логи.
+Вторая очередь (Wave 2): GET/PUT конфигурации с schema validation, hot reload и rollback; промпты; логи; **start/stop/reload плагинов in-process** (в Wave 1 → HTTP 501, использовать `POST /v1/system/restart`).
 
 ### Готово, когда
 
 - [x] API в `server/core/api` (не module); конфиг `api:` + public URL.
 - [x] Versioned contract: meta/models/health enrichment; docs sync.
-- [x] Streaming WebSocket с role auth как REST; reconnect = новый сокет.
-- [x] Viewer не мутирует; soft restart без silent plugin stubs.
-- [x] localhost default; LAN через явный bind / proxy recipe.
-- [x] `verify_stage_2_api.py` + CI; healthcheck smoke.
+- [x] Streaming WebSocket: auth как REST; **чат = admin** (как `POST /v1/chat`); reconnect = новый сокет.
+- [x] Viewer не мутирует; soft restart без silent plugin stubs; fail-closed bind без токенов.
+- [x] localhost default; LAN через явный bind + tokens / proxy recipe.
+- [ ] `verify_stage_2_api.py` + CI зелёные на head; ручной `/docs` + `meta.public_url`.
 
 ## 3. Windows-клиент
 

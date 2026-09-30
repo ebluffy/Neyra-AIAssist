@@ -7,6 +7,7 @@ from core.api.app import (
     ApiError,
     api_public_root,
     api_public_v1,
+    assert_api_bind_safe,
     build_app,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "ApiError",
     "api_public_root",
     "api_public_v1",
+    "assert_api_bind_safe",
     "build_app",
 ]
