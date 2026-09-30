@@ -7,14 +7,14 @@
 
 # FAQ
 
-## Internal API — это внешний облачный сервис?
-Нет. Это локальный API процесса Neyra на вашей машине/сервере.
+## Control API — это внешний облачный сервис?
+Нет. Это HTTP/WebSocket-стек в `server/core/api/` процесса Neyra на вашей машине (или мини-ПК). Публичный URL (`https://neyra.owyx.site/api/v1`) — только если вы сами настроили DNS, frp и reverse proxy.
 
 ## Где включать/выключать плагины?
 В `server/modules/<id>/plugin.yaml`, поле `enabled`.
 
 ## Где хранить токены?
-Только в `.env`.
+Только в `server/.env`.
 
 ## Почему плагин не стартует после изменения config?
 Проверьте `plugin.yaml` (`enabled/lifecycle`) и перезапустите процесс для resident-плагина.

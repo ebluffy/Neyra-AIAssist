@@ -11,21 +11,22 @@
 
 ## Окружение разработки
 
-1. Виртуальное окружение:
-   - `python -m venv .venv`
-   - Windows: `.venv\Scripts\activate`
+1. Виртуальное окружение (из корня репозитория):
+   - `python -m venv .venv_win` (Windows) или `.venv`
+   - Windows: `.venv_win\Scripts\activate`
 2. Зависимости:
-   - `pip install -r requirements.txt`
-3. Скопируйте `.env` из `.env.example`.
+   - `pip install -r server/requirements.txt`
+3. Скопируйте `server/.env` из `server/.env.example`.
 4. Проверка:
-   - `.venv\Scripts\python.exe scripts\healthcheck.py`
+   - `python server/scripts/healthcheck.py` (или из `server/` cwd: `python scripts/healthcheck.py`)
 
 ## Границы и архитектура
 
 - Рантайм ориентирован на модель и ядро.
 - Не добавляйте приём/отправку голоса Discord в стабильный контур без явной необходимости.
-- Новые интерфейсы — в `server/modules/` изолированными плагинами; см. `server/modules/000EXAMPLE/HELP-RU.md` и `HELP.md`.
-- Секреты только в `.env`, не в коде и дефолтных конфигах.
+- Новые интерфейсы — в `server/modules/` изолированными плагинами; см. `server/modules/000EXAMPLE/HELP.md` (EN) и `server/modules/000EXAMPLE/HELP-RU.md` (RU).
+- Control API — `server/core/api/`, не модуль; bind и dashboard — `server/config/server.yaml`.
+- Секреты только в `server/.env`, не в коде и дефолтных конфигах.
 
 ## Стиль кода
 
@@ -37,4 +38,4 @@
 
 - Проверки синтаксиса / тесты затронутых мест.
 - Скрипт healthcheck.
-- Обновите документацию (`README.md`, `PLAN.md`, `.env.example`), если поменялось поведение.
+- Обновите документацию (`README.md`, [`docs/PLAN.md`](../../PLAN.md), `server/.env.example`), если поменялось поведение.

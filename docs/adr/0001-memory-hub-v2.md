@@ -1,8 +1,8 @@
 # ADR-0001 — Memory Hub v2 (SQLite truth + Chroma semantic index)
 
-**Status:** Accepted (Phase 1A in progress)  
+**Status:** Accepted (implemented; Hub under `server/core/memory/`, data under `server/data/memory/`)  
 **Date:** 2026-07-21  
-**Context:** `PLAN.md` Stage 1 / Phase 1A
+**Context:** [`docs/PLAN.md`](../PLAN.md) Stage 1 / Phase 1A (historical); layout later moved in Stage 1b
 
 ## Decision
 

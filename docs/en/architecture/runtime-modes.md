@@ -1,21 +1,24 @@
 <!-- co-authored-cursor-badge -->
 [![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
 
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
 
 ---
 
-# Режимы рантайма
+# Runtime modes
 
 ## `python server/main.py` (core)
-- Запускает Internal API (`/v1`), WebSocket и веб-интерфейс.
-- Создаёт один `NeyraAgent`.
-- Поднимает resident-плагины в daemon thread.
+
+- Starts the Control API in `server/core/api/` (`/v1`), WebSocket endpoints, and the web dashboard static files.
+- Creates one `NeyraAgent`.
+- Starts resident plugins in a daemon thread.
 
 ## `python server/main.py --mode console`
-- Терминальный чат для отладки промптов.
-- Без HTTP-стека и без веб-панели.
+
+- Terminal chat for prompt debugging.
+- No HTTP stack and no web dashboard.
 
 ## Resident vs on_demand
-- `resident`: плагин стартует при запуске ядра.
-- `on_demand`: плагин вызывается через API/инструменты по требованию.
+
+- `resident`: plugin starts when the core starts.
+- `on_demand`: plugin is invoked via API/tools on demand.

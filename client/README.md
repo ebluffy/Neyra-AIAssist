@@ -1,13 +1,15 @@
 # Neyra Windows Client
 
-Thin control app for the local Neyra server. **Tauri 2 + React + TypeScript**.
+Thin control app for the local (or publicly published) Neyra server. **Tauri 2 + React + TypeScript**.
 
-This package does **not** orchestrate the agent, store memory, or hold server secrets.
-It talks to the server Control / Internal API with an address + token (Windows Credential Manager).
+Does **not** orchestrate the agent, store memory, or hold server secrets.
+Talks to the same Control API as the server dashboard (`/v1`, WebSocket chat).
 
-## Status (Stage 1b)
+## Status
 
-Scaffold only. MVP screens (Connect, Chat, Status, Modules) land in Stage 3 of `docs/PLAN.md`.
+**Scaffold only.** MVP screens (Connect, Chat, Status, Modules), Credential Manager for tokens, NSIS installer, and updater land in **Stage 3** — see [docs/PLAN.md](../docs/PLAN.md) §3.
+
+Default server URL comes from **user settings**, not a hardcoded build-time host. For demos the public origin may be `https://neyra.owyx.site` (frp publish; data stays on the specialist mini-PC).
 
 ## Layout (target)
 
@@ -18,4 +20,4 @@ client/
   src-tauri/           # Tauri 2 shell
 ```
 
-Bootstrap the full Tauri app in Stage 3; keep this folder as the product client root (do not reuse `server/dashboard/`).
+Do not reuse `server/dashboard/` sources for this package.

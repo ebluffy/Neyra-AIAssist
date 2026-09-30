@@ -1,20 +1,24 @@
 <!-- co-authored-cursor-badge -->
 [![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
 
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
 
 ---
 
-# Гайд интегратора
+# Integrator guide
 
-## Через REST
-- Отправляйте пользовательские сообщения в `POST /v1/chat`.
-- Получайте контекстные события через `POST /v1/notify`.
+- Send user messages to `POST /v1/chat` (admin token when configured).
+- Push contextual events via `POST /v1/notify`.
+- Read health/meta: `GET /v1/health`, `GET /v1/meta` (`public_url`, `dashboard_url` when set).
 
-## Через WebSocket
-- Для потокового UX используйте `/v1/ws/chat`.
-- Для аудио-кейсов используйте `/v1/ws/audio`.
+## Streaming
 
-## Через Webhooks
+- For streaming UX use `/v1/ws/chat` (admin; public example `wss://neyra.owyx.site/api/v1/ws/chat`).
+- For audio use `/v1/ws/audio`.
+
+## Webhooks
+
 - Inbound: `POST /v1/webhooks/in/{provider}/{endpoint_id}`.
-- Outbound: маршруты `event_type -> target_url` через `/v1/webhooks/out/routes`.
+- Outbound: routes `event_type -> target_url` via `/v1/webhooks/out/routes`.
+
+Base URL is always your Neyra Control API (`server/core/api/`), not a separate module service.

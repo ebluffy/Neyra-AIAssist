@@ -1,7 +1,7 @@
 <!-- co-authored-cursor-badge -->
 [![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
 
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
 
 ---
 
@@ -22,5 +22,7 @@ English docs live under `docs/en/**`.
 | [development/](development/contributing.md) | Contributing |
 | [reference/](reference/vocard-upstream.md) | Upstream references (e.g. Vocard) |
 
-Root project files: `README.md`, `README-RU.md`, `PLAN.md`, `Diplom.md`.  
+**Repository:** [github.com/ebluffy/Neyra-AIAssist](https://github.com/ebluffy/Neyra-AIAssist)
+
+Root project files: `README.md`, `README-RU.md`, roadmap in [`docs/PLAN.md`](../PLAN.md).  
 Plugin examples (do not relocate): `server/modules/000EXAMPLE/`.

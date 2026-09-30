@@ -1,30 +1,37 @@
 <!-- co-authored-cursor-badge -->
 [![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
 
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
 
 ---
 
-# Архитектура Neyra
+# Neyra architecture
 
-Neyra состоит из стабильного ядра и плагинов в `server/modules/`.
+Neyra is a stable core plus plugins under `server/modules/`.
 
-## Слои
-- `core/`: агент, память, рефлексия, event bus, health monitor.
-- `server/core/api/`: HTTP API + WebSocket + статическая раздача SPA (`server/dashboard/dist`, React + Vite + Tailwind).
-- `server/modules/discord/`: единый resident-плагин Discord (текст + музыка через Lavalink 4.x, события `MUSIC_*` на шине).
-- `server/modules/*`: прочие расширения через Plugin SDK.
+## Layers
 
-Опционально для IDE: MCP debug-сервер в `devtools/mcp_server/` (логи, вызовы `/v1`, инъекция событий) — см. `docs/en/setup/mcp-debug-server.md`.
+- `server/core/`: agent, memory, reflection, event bus, health monitor.
+- `server/core/api/`: HTTP Control API + WebSocket + static SPA (`server/dashboard/dist`, React + Vite + Tailwind).
+- `server/modules/discord/`: resident Discord plugin (text + music via Lavalink 4.x, `MUSIC_*` on the bus).
+- `server/modules/*`: other extensions via the Plugin SDK (`local_voice`, `000EXAMPLE`, …).
+- `server/config/*.yaml` + `server/config.yaml`: layered configuration; HTTP bind and dashboard settings in `server/config/server.yaml` (`api:`, `dashboard:`).
+- `client/`: Tauri 2 + React scaffold (Stage 3 product client; separate from `server/dashboard/`).
+- `devtools/mcp_server/`: optional IDE MCP (not shipped with runtime).
 
-## Поток данных
-1. `main.py` загружает `config.yaml`.
-2. `core/plugins/config.py` подмешивает `server/modules/<id>/config.yaml`.
-3. `core/secrets_loader.py` подставляет секреты из `.env`.
-4. `core/runtime/server.py` запускает FastAPI и resident-плагины.
-5. UI и внешние клиенты работают через `/v1` и `/v1/ws/*`.
+## Data flow
 
-## Принципы
-- Вкл/выкл плагина: только `plugin.yaml`.
-- Настройки плагина: `server/modules/<id>/config.yaml`.
-- Секреты: только `.env`.
+1. `server/main.py` loads `server/config.yaml` and layered files under `server/config/`.
+2. `server/core/plugins/config.py` merges `server/modules/<id>/config.yaml`.
+3. `server/core/secrets_loader.py` applies secrets from `server/.env`.
+4. `server/core/runtime/server.py` starts FastAPI (Control API) and resident plugins.
+5. Web dashboard, integrations, and the future Tauri client use `/v1` and `/v1/ws/*`.
+
+## Principles
+
+- Enable/disable a plugin: `server/modules/<id>/plugin.yaml` only.
+- Plugin settings: `server/modules/<id>/config.yaml`.
+- Secrets: `server/.env` only.
+- Runtime data: `server/data/` (memory under `server/data/memory/`), logs under `server/logs/`.
+
+Optional IDE tooling: MCP debug server in `devtools/mcp_server/` — see [mcp-debug-server](../setup/mcp-debug-server.md).

@@ -9,5 +9,5 @@
 
 - Используйте `python server/main.py`.
 - По умолчанию API на `127.0.0.1:8787`.
-- Frontend статика берётся из `server/dashboard/dist` (если собрана).
+- Статика дашборда — из `server/dashboard/dist` (если собрана); Control API — `server/core/api/`.
 - Для разработки фронтенда: `cd server/dashboard && npm run dev` (proxy на backend).

@@ -4,151 +4,103 @@
 
 # Neyra - AIAssist
 
-AI Assisted
+Модульный персональный ИИ-ассистент: локальный **Neyra Server** и опциональный Windows-клиент управления.
 
-**Репозиторий:** [github.com/KORESHon/Neyra-AIAssist](https://github.com/KORESHon/Neyra-AIAssist)
+**Репозиторий:** [github.com/ebluffy/Neyra-AIAssist](https://github.com/ebluffy/Neyra-AIAssist)
 
-Модульная платформа ИИ-ассистента с приоритетом на стабильное ядро.
+**English:** [README.md](README.md) · **План:** [docs/PLAN.md](docs/PLAN.md) · **Документация:** [docs/ru/README.md](docs/ru/README.md)
 
 ## Обзор
 
-Neyra строится как переиспользуемое ядро плюс подключаемые интеграции.
+- Стабильное ядро: LLM (четыре роли), память, рефлексия, инструменты, Event Bus
+- Dual-провайдеры через `server/config/llm.yaml` (например talk → OpenRouter, brain/memory/vision → AIHope)
+- Control API в `server/core/api/` (REST + WebSocket-чат) — не плагин
+- Плагины в `server/modules/` (`discord`, `local_voice`, шаблон `000EXAMPLE`)
+- Веб-дашборд сервера в `server/dashboard/` (React + Vite + Tailwind; gate по access key)
+- Dev MCP в `devtools/mcp_server/` (отладка в Cursor; не часть runtime-пакетов)
+- Продуктовый Windows-клиент — scaffold в `client/` (MVP = Этап 3)
 
-Ключевые цели:
+## Структура
 
-- стабильное ядро (`LLM + Memory + Reflection + Tools`),
-- поддержка облачных и локальных backend,
-- событийная интеграция, webhooks и **MCP-native** расширения,
-- расширяемость через плагины без переписывания ядра,
-- локальный приоритет (local-first) с опциональными облачными провайдерами.
-
-Текущий стабильный runtime:
-
-- `python server/main.py` — ядро: API, дашборд, один агент, resident-плагины (например Discord при включённом конфиге),
-- `python server/main.py --mode console` — только консоль для экспериментов с промптами,
-- интерфейс `discord` (текст + музыка) и др. — плагины в `server/modules/`,
-- опциональный **Docker** через корневой `docker-compose.yml` (include `server/`).
-
-### Дашборд (frontend)
-
-Веб-интерфейс: **React + Vite + Tailwind CSS** в каталоге `server/dashboard/`. Сборка — `server/dashboard/dist`, раздаётся Internal API (`npm install && npm run build` перед продакшеном).
-
-### MCP debug (IDE)
-
-Опциональный **Model Context Protocol** debug-сервер в `devtools/mcp_server/` (stdio MCP для Cursor): хвост логов, вызовы `/v1`, инъекция событий в шину (`POST /v1/debug/fire_event`), снимок памяти (`GET /v1/debug/memory`). Настройка: `docs/ru/setup/mcp-debug-server.md`.
-
-### Discord и музыка
-
-Один resident-плагин `**server/modules/discord/`** (текст + музыка). Воспроизведение через **Lavalink 4.x** и актуальные **YouTube/source-плагины**; в конфиге Lavalink часто задают клиент вроде **ANDROID_VR**, если провайдер режет доступ.
-
-### Модели — четыре роли, вложенный конфиг
-
-Всё задаётся в `server/config/llm.yaml` во вложенных блоках `llm.talk_model`, `brain_model`, `memory_model`, `vision_model` (у каждой роли — `provider`):
-
-- **talk** — финальный ответ пользователю (стрим, без инструментов),
-- **brain** — супервизор с `bind_tools` (MCP-aware tool-loop),
-- **memory** — рефлексия, анализ дневника, сжатие LTM,
-- **vision** — VL-описание изображений (единая модель через `llm.vision_model`).
-
-Типичный dual-стек: talk на OpenRouter (например free Qwen), brain/memory/vision на AIHope. Ключи: `OPENROUTER_API_KEY` / `AIHOPE_API_KEY` в `.env` → `llm.providers.*`.
-
-## Архитектура (кратко)
-
-- `core/` — модель, память (STM/LTM/PeopleDB/Diary), рефлексия, инструменты, загрузка секретов.
-  - `core/mcp_client.py` — **MCP-клиент** (stdio + SSE, динамические инструменты LangChain).
-  - `core/ltm_maintenance.py` — жизненный цикл LTM: TTL prune, сжатие → cold archive.
-  - `core/voice/` — voice-адаптеры и будущие фабрики STT/TTS.
-- `server/dashboard/` — исходники React+Vite+Tailwind; продакшен-сборка в `server/dashboard/dist`.
-- `server/modules/` — плагины (`plugin.yaml` + `main.py` + опционально `config.yaml`): `**discord`** (единый текст+музыка), internal API, local voice, screen и шаблон `000EXAMPLE`.
-- `devtools/mcp_server/` — **MCP debug-сервер** (stdio MCP для Cursor): логи, API, fire_event, снимок памяти.
-- **Документация Plugin SDK** — [HELP-RU.md](server/modules/000EXAMPLE/HELP-RU.md) (русский туториал), [HELP.md](server/modules/000EXAMPLE/HELP.md) (English).
-- `scripts/` — эксплуатационные скрипты (healthcheck и вспомогательные утилиты, `inject_memes_2026.py`).
-- `main.py` — точка входа (`core` или `console`).
-- `run_neyra.bat` — меню на Windows.
-- `run_neyra.sh` — меню на Linux/macOS (статус, остановка, git).
-- `docker-compose.yml` (корень) + `server/Dockerfile` — контейнерный деплой (порт `8787`, тома под `server/`).
-
-## Продуктовый вектор
-
-Neyra развивается как персональный публичный ассистент:
-
-- desktop-приложение ассистента с управлением ОС (через безопасные политики),
-- mobile-lite клиент (чат/уведомления через API),
-- микро-сайт с дашбордом, статусами и документацией API,
-- внешние хранилища (в первую очередь Google Drive) для backup/restore,
-- модульное расширение (voice/screen/music/plugins),
-- **MCP-native интеграции** — внешние возможности через стандартные MCP-серверы,
-- **vision pipeline** — понимание экрана через VL-модели (caption → brain tool-loop → ответ talk).
-
-Форм-фактор "ИИ-станции" оставлен в future backlog и не входит в текущую реализацию.
+```text
+server/          # ядро, модули, dashboard, конфиг, скрипты, data, logs
+client/          # Tauri control app (scaffold до Этапа 3)
+devtools/        # MCP debug-сервер
+docs/            # PLAN, config-keys, EN/RU гайды, ADR
+```
 
 ## Быстрый старт
 
-### Python (напрямую)
+1. `python -m venv .venv` и активация (Windows: `.venv\Scripts\activate`)
+2. `pip install -r server/requirements.txt`
+3. `server/.env.example` → `server/.env`, заполнить секреты
+4. `server/config.example.yaml` → `server/config.yaml`
+5. Слои: `server/config/*.example.yaml` → `server/config/*.yaml`
+6. При необходимости: `server/modules/<id>/config.example.yaml` → `config.yaml`
+7. Дашборд: `cd server/dashboard && npm install && npm run build`
+8. Запуск: `cd server && python main.py` (или `run_neyra.bat` / `./run_neyra.sh`)
 
-1. Создай и активируй venv:
-  - `python -m venv .venv`
-  - Windows: `.venv\Scripts\activate`
-  - Linux/macOS: `source .venv/bin/activate`
-2. Установи зависимости:
-  - `pip install -r server/requirements.txt`
-3. Создай `server/.env` из `server/.env.example` и заполни секреты.
-4. Создай `server/config.yaml` из `server/config.example.yaml` (короткий корень: `paths`, `system`, `assistant`).
-5. Скопируй слои: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). Модели — в `server/config/llm.yaml` (`llm.talk_model` / `brain_model` / …).
-6. Скопируй шаблоны конфигов плагинов:
-  - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
-  - `server/config/server.example.yaml` → `server/config/server.yaml (api:)`
-  - при необходимости другие: `server/modules/<id>/config.example.yaml` → `server/modules/<id>/config.yaml`
-7. Preflight (пример): `cd server && python scripts/healthcheck.py --mode console --skip-http`
-8. Запуск:
-  - Windows: `run_neyra.bat`
-  - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`
-  - Напрямую: `python server/main.py` (ядро) или `python server/main.py --mode console`
+API по умолчанию: `http://127.0.0.1:8787` · OpenAPI: `/docs`
 
-### Docker (опционально)
+Docker: `docker compose up --build`.
 
-```bash
-docker compose up --build
-```
+## Конфигурация
 
-Порт `8787`; runtime под `server/` (`config.yaml`, `modules/`, `data/memory/`, `logs/`).
+| Что | Где |
+|-----|-----|
+| Короткий корень | `server/config.yaml` |
+| Слои | `server/config/*.yaml` |
+| Bind, public URL, dashboard | `server/config/server.yaml` (`api:`, `dashboard:`) |
+| Секреты | только `server/.env` |
+| Инвентарь ключей | [docs/config-keys.md](docs/config-keys.md) |
 
-## Режимы CLI
+Без legacy dual-read: роли `llm.*_model` с полем `provider` — не top-level `BACKEND` / `openrouter:`.
 
-- `core` (по умолчанию) — HTTP, дашборд, resident-плагины.
-- `console` — только консоль.
+## Дашборд
 
-Отдельных `--mode discord` и т.п. больше нет: плагины поднимаются вместе с ядром по конфигу.
+SPA раздаётся Control API из `server/dashboard/dist`.
 
-## 💖 Поддержать проект
+- Первый визит: создать access key (≥ 8 символов или hex-32). Хеш PBKDF2 в SQLite под `server/data/`.
+- Далее — логин. При bind не на loopback первичная настройка только с loopback-клиента.
+- Отдельно от API Bearer (`API_TOKEN` / viewer / maint).
 
-Если вам нравится проект и вы хотите поддержать его развитие (или просто скинуть автору на кофе), вы можете сделать это через криптовалюту. Адреса совпадают с кошельками в Trust Wallet и TG Wallet.
+## Модели
 
-- **TON (сеть: TON):** `UQD6p87_YQNeZmGduBHnkWBF3AbvyNOwt_xt8fn1Vd3zBSYa`
-- **USDT (сеть: TON):** `UQD6p87_YQNeZmGduBHnkWBF3AbvyNOwt_xt8fn1Vd3zBSYa`
-- **USDT (сеть: TRC20):** `TU467q2tsQLH58u6KVh3LyGwx7sqn2WyPQ`
-- **USDT (сеть: ERC20):** `0xf834f04668b947eeb56b433c54173f311a06392a`
-- **ETH (Ethereum Mainnet):** `0xf834f04668b947eeb56b433c54173f311a06392a`
-- **BTC (Bitcoin Network):** `bc1qevu7yty2l4u3n54gjkvj9nrtypj303ejd7e0z3`
+В `server/config/llm.yaml`: **talk**, **brain**, **memory**, **vision**.
 
-*Обязательно проверяйте сеть при отправке! Спасибо за вашу поддержку 🚀*
+## Плагины
 
-Ядро остаётся open-source под лицензией MIT независимо от донатов.
+Поставляются: `discord` (текст + Lavalink), `local_voice`, `000EXAMPLE`.
 
-## О роли ИИ в проекте (AI-assisted development)
+Вкл/выкл — только `plugin.yaml`. Lavalink JAR: `python server/scripts/fetch_lavalink.py`.
 
-Этот проект — практическое исследование в области **prompt engineering** и взаимодействия со сложными ИИ-системами в реальном коде.
+SDK: [HELP-RU.md](server/modules/000EXAMPLE/HELP-RU.md) · [HELP.md](server/modules/000EXAMPLE/HELP.md)
 
-- **Архитектура, системный дизайн и интеграция модулей** спроектированы и направляются человеком.
-- **Рутинный код, обвязка и значительная часть реализации** выполнялись с активным использованием AI-агентов (Cursor, LLM-ассистенты).
+## Клиент (Этап 3)
 
-Я считаю, что будущее разработки — это синергия человека-архитектора и ИИ-реализации. Если вы найдёте неоптимальные или шероховатые сгенерированные участки — открывайте Issue или PR: код-ревью от живых разработчиков только приветствуется.
+`client/` — только scaffold. Этап 3: Tauri 2 + React (Connect / Chat / Status / Modules) и публикация `https://neyra.owyx.site` через frp. См. [docs/PLAN.md](docs/PLAN.md) §3.
 
-## Файлы планирования и документации
+## Статус
 
-- `README.md` — публичный обзор (EN).
-- `README-RU.md` — публичный обзор (RU).
-- `PLAN.md` — дорожная карта: закрыты Hub/core + точечные улучшения агента/голоса; активный фокус — Web UI WS-мост, затем автономный сервер/колонка.
-- `docs/en/README.md` / `docs/ru/README.md` — индекс документации (архитектура, настройка, API, эксплуатация, плагины, MCP, Web UI).
-- **Как писать плагины** — [HELP-RU.md](server/modules/000EXAMPLE/HELP-RU.md), [HELP.md](server/modules/000EXAMPLE/HELP.md).
+| Закрыто | Дальше |
+|---------|--------|
+| 1b layout, 1c конфиг, 1d dual LLM, Stage 2 API Wave 1, dashboard gate | Этап 3 клиент + хостинг домена |
 
+## Поддержка
+
+Крипто (проверяйте сеть):
+
+- **TON / USDT (TON):** `UQD6p87_YQNeZmGduBHnkWBF3AbvyNOwt_xt8fn1Vd3zBSYa`
+- **USDT (TRC20):** `TU467q2tsQLH58u6KVh3LyGwx7sqn2WyPQ`
+- **USDT (ERC20) / ETH:** `0xf834f04668b947eeb56b433c54173f311a06392a`
+- **BTC:** `bc1qevu7yty2l4u3n54gjkvj9nrtypj303ejd7e0z3`
+
+Ядро остаётся MIT независимо от донатов.
+
+## ИИ в разработке
+
+Архитектура и интеграция — под управлением человека; значительная часть реализации — с AI-агентами. Issue и PR приветствуются.
+
+## Лицензия
+
+MIT (см. `LICENSE`).

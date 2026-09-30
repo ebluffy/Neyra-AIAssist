@@ -22,11 +22,19 @@ api:
 
 DNS **не** в yaml Нейры — у провайдера. В конфиге — уже настроенный домен.
 
-1. Cloudflare DNS зоны.
-2. Запись **A**: Name `neyra`, IP VPS.
+1. Cloudflare DNS зоны (например `owyx.site`).
+2. Запись **A**: Name `neyra` → IP VPS.
 3. Прописать `api.public_base_url` в `server/config/server.yaml`.
 4. На VPS: снаружи 80/443; uvicorn на localhost; Caddy/nginx.
-5. Токены — в `.env`; публичный URL — в yaml.
+5. Токены — в `server/.env` (`API_TOKEN` / `API_KEY`); публичный URL — в yaml.
+
+## frp (мини-ПК + VPS) — Этап 3
+
+Канон для `neyra.owyx.site`: процесс Neyra на **мини-ПК**, наружу через **frpc** → **frps** на VPS → **Caddy** или nginx (TLS). Память (`server/data/memory/`), `server/.env`, логи и модели остаются на мини-ПК; на VPS — только reverse proxy и frps, **без** копирования runtime-данных.
+
+Цепочка: клиент → `https://neyra.owyx.site` / `wss://neyra.owyx.site/api/v1/ws/chat` → TLS на VPS → frps → frpc → Control API `127.0.0.1:8787`.
+
+Пример `frpc.toml`, чеклист и требования к токенам — [`docs/PLAN.md`](../../PLAN.md) §3.
 
 ## Caddy
 
@@ -72,10 +80,13 @@ server {
 }
 ```
 
+Trailing slash у `proxy_pass` под `/api/` снимает префикс `/api/`.
+
 ## Перед выходом в интернет
 
-- `API_TOKEN` или `API_KEY` в `.env`.
-- TLS на edge; firewall 80/443.
-- `api.public_base_url` = реальный DNS.
+- `API_TOKEN` или `API_KEY` в `server/.env`.
+- TLS на edge; firewall 80/443; uvicorn только на localhost.
+- `api.public_base_url` совпадает с DNS (в examples по умолчанию пусто).
+- Uvicorn: `proxy_headers=True`, `forwarded_allow_ips=127.0.0.1`.
 
-Деплой процесса на VPS — этап 4 / ops.
+Полный деплой процесса Neyra на VPS (без frp) — Этап 4 / ops; для персонального ассистента предпочтителен сценарий мини-ПК + frp.

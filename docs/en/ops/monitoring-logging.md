@@ -1,15 +1,15 @@
 <!-- co-authored-cursor-badge -->
 [![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
 
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
 
 ---
 
-# Мониторинг и логи
+# Monitoring and logs
 
-- Health monitor: `core/health_monitor.py`.
-- Статус отчёты: `logs/health_status.jsonl`.
-- Системные логи: путь из `logging.system_log`.
-- Диалоговые логи: путь из `logging.chat_log`.
+- Health monitor: `server/core/health_monitor.py`.
+- Status reports: `server/logs/health_status.jsonl` (or path from `server/config/runtime.yaml` / root logging keys).
+- System logs: path from `logging.system_log` (default under `server/logs/`).
+- Chat logs: path from `logging.chat_log`.
 
-Для алертов в интеграции используйте webhook routes и отслеживайте `deliveries`/`dlq`.
+For alerts in integrations, use webhook routes and track `deliveries` / `dlq`.

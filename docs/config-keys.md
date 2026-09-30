@@ -1,7 +1,9 @@
 # Config keys inventory (Stage 1c)
 
 > One row per leaf key. Defaults from tracked `*.example.yaml` only (not invented).
+> Paths assume the `server/` tree (cwd `server/` or prefixes as written).
 > Loader: `config/*.yaml` → short root → `modules/*/config.yaml` → env secrets → resolved memory paths → schema.
+> Roadmap: [`PLAN.md`](PLAN.md). Historical path map: [`inventory.md`](inventory.md).
 
 ## `local_voice` merge
 
@@ -229,4 +231,4 @@
 |---|---|
 | `modules/discord/config.yaml` | top-level `discord` |
 | other `modules/<id>/config.yaml` | `plugins.<id>` |
-| Core API / dashboard | `config/server.yaml` → `api:` / `dashboard:` |
+| Core API / dashboard | `server/config/server.yaml` → `api:` / `dashboard:` |
