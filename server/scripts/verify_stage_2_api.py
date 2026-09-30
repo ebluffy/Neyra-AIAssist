@@ -162,12 +162,14 @@ def check_bind_gate() -> list[str]:
 
 def check_auth_matrix() -> list[str]:
     """Behavioral auth checks via TestClient (no real LLM/memory)."""
+    import tempfile
     from fastapi.testclient import TestClient
 
     from core.api import build_app
     import core.api.app as api_mod
 
     errs: list[str] = []
+    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_api_test_"))
 
     agent = MagicMock()
     agent.chat = AsyncMock(return_value={"reply": "ok"})
@@ -184,6 +186,7 @@ def check_auth_matrix() -> list[str]:
     backup = MagicMock()
 
     cfg = {
+        "paths": {"data_dir": str(data_tmp)},
         "api": {
             "host": "127.0.0.1",
             "port": 8787,
@@ -226,6 +229,27 @@ def check_auth_matrix() -> list[str]:
     api_mod._schedule_exit_after_response = _fake_exit  # type: ignore[assignment]
     try:
         with TestClient(app) as client:
+            r = client.get("/v1/dashboard/auth/status")
+            if r.status_code != 200:
+                errs.append(f"dash auth status want 200, got {r.status_code}")
+            else:
+                data = (r.json().get("data") or {})
+                if data.get("configured") is not False:
+                    errs.append(f"fresh app dash auth should be unconfigured: {data}")
+
+            r = client.post("/v1/dashboard/auth/setup", json={"key": "dash-key-1234"})
+            if r.status_code != 200:
+                errs.append(f"dash auth setup want 200, got {r.status_code} {r.text}")
+            r = client.post("/v1/dashboard/auth/setup", json={"key": "other-key-9999"})
+            if r.status_code != 409:
+                errs.append(f"second setup want 409, got {r.status_code}")
+            r = client.post("/v1/dashboard/auth/login", json={"key": "wrong-key-0000"})
+            if r.status_code != 401:
+                errs.append(f"bad dash login want 401, got {r.status_code}")
+            r = client.post("/v1/dashboard/auth/login", json={"key": "dash-key-1234"})
+            if r.status_code != 200:
+                errs.append(f"good dash login want 200, got {r.status_code}")
+
             r = client.get("/v1/health")
             if r.status_code != 401:
                 errs.append(f"no token → health want 401, got {r.status_code}")
@@ -352,6 +376,42 @@ def check_api_key_alias() -> list[str]:
     return errs
 
 
+def check_dashboard_gate_store() -> list[str]:
+    import tempfile
+    from pathlib import Path
+
+    from core.api.dashboard_auth import DashboardAuthStore
+
+    errs: list[str] = []
+    tmp = Path(tempfile.mkdtemp(prefix="neyra_dash_auth_")) / "gate.sqlite"
+    store = DashboardAuthStore(tmp)
+    if store.is_configured():
+        errs.append("fresh store should be unconfigured")
+    try:
+        store.setup("ab")
+        errs.append("short key should fail")
+    except ValueError:
+        pass
+    try:
+        store.setup("short7!")
+        errs.append("7-char key should fail (min 8)")
+    except ValueError:
+        pass
+    store.setup("my-secret-key")
+    if not store.is_configured():
+        errs.append("after setup should be configured")
+    if not store.verify("my-secret-key"):
+        errs.append("correct key should verify")
+    if store.verify("wrong-key"):
+        errs.append("wrong key must not verify")
+    try:
+        store.setup("another-longer")
+        errs.append("second setup should fail")
+    except RuntimeError:
+        pass
+    return errs
+
+
 def check_public_url_env_rejected() -> list[str]:
     import os
 
@@ -386,6 +446,7 @@ def main() -> int:
         ("bind gate", check_bind_gate),
         ("legacy env failfast", check_legacy_env_failfast),
         ("API_KEY alias", check_api_key_alias),
+        ("dashboard gate store", check_dashboard_gate_store),
         ("public URL env rejected", check_public_url_env_rejected),
         ("auth matrix", check_auth_matrix),
     ]

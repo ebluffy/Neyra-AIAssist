@@ -184,6 +184,124 @@ body::after {
   font-size: 0.7rem;
   color: var(--muted);
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.sidebar-logout {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.sidebar-logout:hover {
+  color: var(--text);
+  border-color: var(--border-hi);
+}
+
+/* ── Dashboard gate (login / first-key setup) ─────────── */
+.dash-auth {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background:
+    radial-gradient(ellipse at 20% 0%, rgba(168, 85, 247, 0.12), transparent 50%),
+    radial-gradient(ellipse at 80% 100%, rgba(34, 211, 238, 0.08), transparent 45%),
+    var(--bg);
+}
+.dash-auth-card {
+  width: min(420px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 1.75rem 1.5rem 1.5rem;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.dash-auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin-bottom: 1.25rem;
+}
+.dash-auth-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--purple), var(--pink));
+}
+.dash-auth-title {
+  font-size: 1.15rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.dash-auth-sub {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.dash-auth-lead {
+  font-size: 0.88rem;
+  color: var(--muted);
+  line-height: 1.55;
+  margin-bottom: 1.15rem;
+}
+.dash-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+.dash-auth-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.dash-auth-label svg { display: inline; vertical-align: -2px; margin-right: 4px; }
+.dash-auth-input {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 0.65rem 0.8rem;
+  font-size: 0.95rem;
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+}
+.dash-auth-input:focus {
+  outline: none;
+  border-color: var(--purple);
+}
+.dash-auth-error {
+  color: var(--danger);
+  font-size: 0.8rem;
+}
+.dash-auth-generate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+}
+.dash-auth-hint {
+  margin-top: 1rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.dash-auth-muted {
+  color: var(--muted);
+  text-align: center;
 }
 
 /* ── Main content area ────────────────────────────────── */

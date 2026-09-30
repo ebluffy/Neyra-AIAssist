@@ -30,9 +30,11 @@ from core.runtime.win_runtime import apply_runtime_patches
 
 apply_runtime_patches()
 
+from core.api.dashboard_auth import DashboardAuthStore
 from core.neyra import NeyraAgent
 from core.runtime.backup import BackupManager
 from core.runtime.event_bus import CoreEvent
+from core.runtime.paths import resolve_data_dir
 from core.memory.ltm_maintenance import execute_ltm_summarize
 from core.plugins import PluginContext, PluginLoader, run_plugin_entrypoint
 from core.reflection import ReflectionEngine
@@ -297,6 +299,10 @@ class ChatRequest(BaseModel):
     platform_user_id: Optional[str] = Field(default=None, max_length=120)
     channel_id: Optional[str] = Field(default=None, max_length=120)
     author_display_name: Optional[str] = Field(default=None, max_length=120)
+
+
+class DashboardGateKeyRequest(BaseModel):
+    key: str = Field(min_length=8, max_length=256)
 
 
 class MemorySearchRequest(BaseModel):
@@ -685,6 +691,8 @@ def build_app(
     root = _project_root()
     webhook_store = WebhookStore(root)
     plugin_ops: dict[str, dict[str, Any]] = {}
+    dash_auth = DashboardAuthStore(resolve_data_dir(root, config) / "dashboard_auth.sqlite")
+    app.state.dashboard_auth = dash_auth
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -1031,6 +1039,51 @@ def build_app(
             },
         }
 
+    @app.get("/v1/dashboard/auth/status")
+    async def v1_dashboard_auth_status(request: Request):
+        """Public: whether the web UI access key has been created."""
+        trace_id = _trace_id(request)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"configured": dash_auth.is_configured()},
+        }
+
+    @app.post("/v1/dashboard/auth/setup")
+    async def v1_dashboard_auth_setup(body: DashboardGateKeyRequest, request: Request):
+        """
+        Create the dashboard access key once.
+        If the API binds non-loopback, setup is only allowed from a loopback client
+        (first-setup window; prevents remote race to claim the key).
+        """
+        trace_id = _trace_id(request)
+        bind_host = str((_api_cfg(config).get("host") or "127.0.0.1"))
+        if not _is_loopback_host(bind_host):
+            client_host = request.client.host if request.client else ""
+            if not _is_loopback_host(client_host):
+                raise ApiError(
+                    "forbidden",
+                    "Dashboard key setup is only allowed from localhost when API bind is not loopback",
+                    403,
+                )
+        try:
+            dash_auth.setup(body.key)
+        except RuntimeError as e:
+            raise ApiError("already_configured", str(e), 409) from e
+        except ValueError as e:
+            raise ApiError("bad_request", str(e), 400) from e
+        return {"ok": True, "trace_id": trace_id, "data": {"configured": True}}
+
+    @app.post("/v1/dashboard/auth/login")
+    async def v1_dashboard_auth_login(body: DashboardGateKeyRequest, request: Request):
+        """Public: verify dashboard access key."""
+        trace_id = _trace_id(request)
+        if not dash_auth.is_configured():
+            raise ApiError("setup_required", "Create a dashboard access key first", 400)
+        if not dash_auth.verify(body.key):
+            raise ApiError("unauthorized", "Invalid access key", 401)
+        return {"ok": True, "trace_id": trace_id, "data": {"authenticated": True}}
+
     @app.get("/v1/meta")
     async def v1_meta(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
@@ -1049,6 +1102,7 @@ def build_app(
                     "ws_audio_stub": True,
                     "dual_llm": True,
                     "sse": False,
+                    "dashboard_gate": True,
                 },
             },
         }

@@ -152,6 +152,8 @@ client/src-tauri/target/
 # Entire runtime data trees (keep layout local; do not commit)
 server/data/memory/**
 !server/data/memory/.gitkeep
+server/data/dashboard_auth.sqlite
+server/data/dashboard_auth.sqlite-*
 server/logs/**
 !server/logs/.gitkeep
 
