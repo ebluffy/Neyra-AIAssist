@@ -196,7 +196,7 @@
 | `health_monitor.status_log` | str | "./logs/health_status.jsonl" | core/runtime/health.py | `server/config/runtime.yaml` | — | current |
 | `api.host` | str | "127.0.0.1" | core/api/ | `server/config/server.yaml` | API_BIND_HOST | current |
 | `api.port` | int | 8787 | core/api/ | `server/config/server.yaml` | — | current |
-| `api.public_base_url` | str | "" | core/api/ | `server/config/server.yaml` | API_PUBLIC_BASE_URL | current |
+| `api.public_base_url` | str | "" | core/api/ | `server/config/server.yaml` | — (yaml only) | current |
 | `api.public_path_prefix` | str | "/api" | core/api/ | `server/config/server.yaml` | — | current |
 | `api.token` | str | "" | core/api/ | `server/config/server.yaml` | API_TOKEN (or API_KEY) | current |
 | `api.rate_limit_requests_per_minute` | int | 0 | core/api/ | `server/config/server.yaml` | — | current |
@@ -210,7 +210,6 @@
 | `dashboard.enabled` | bool | True | core/api/ (dashboard static) | `server/config/server.yaml` | — | current |
 | `dashboard.dist_path` | str | "dashboard/dist" | core/api/ (dashboard static) | `server/config/server.yaml` | — | current |
 | `dashboard.require_build` | bool | False | core/api/ (dashboard static) | `server/config/server.yaml` | — | current |
-| `dashboard.public_base_url` | str | "" | core/api/ | `server/config/server.yaml` | DASHBOARD_PUBLIC_BASE_URL | current |
 | `plugins.local_voice.wake_word` | str | "neyra" | merge_plugin_configs → plugins.local_voice; stub.py | `server/modules/local_voice/config.yaml` | — | current |
 | `plugins.local_voice.input_device` | str | "" | merge_plugin_configs → plugins.local_voice; stub.py | `server/modules/local_voice/config.yaml` | — | current |
 | `plugins.local_voice.output_device` | str | "" | merge_plugin_configs → plugins.local_voice; stub.py | `server/modules/local_voice/config.yaml` | — | current |

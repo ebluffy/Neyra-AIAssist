@@ -4,38 +4,29 @@
 
 | Поверхность | Публичный URL | Конфиг |
 |-------------|---------------|--------|
-| Дашборд | `https://neyra.owyx.site/` | `dashboard.public_base_url` (или наследует `api.public_base_url`) |
+| Дашборд | `https://neyra.owyx.site/` | **тот же** `api.public_base_url` |
 | API | `https://neyra.owyx.site/api/v1/...` | `api.public_base_url` + `api.public_path_prefix` (`/api`) |
 
-В **example** оба публичных URL **пустые** (только localhost). Заполняйте, когда есть реальный DNS — yaml или env (`API_PUBLIC_BASE_URL`, опционально `DASHBOARD_PUBLIC_BASE_URL`).
-
-Приложение слушает `127.0.0.1:8787`. TLS и префикс `/api` — на reverse proxy.
-
-## DNS (пример Cloudflare)
-
-DNS **не** настраивается в yaml Нейры — только у провайдера DNS. В конфиге пишется уже настроенный домен.
-
-1. Домен в Cloudflare → DNS.
-2. Запись **A** (или **AAAA**):
-   - **Name:** `neyra` (получится `neyra.owyx.site`)
-   - **IPv4:** публичный IP VPS с Нейрой
-   - **Proxy:** сначала DNS only (серое облако); orange cloud — когда TLS настроен.
-3. После пропагации в `server/config/server.yaml` или `.env`:
+Настройка **только** в `server/config/server.yaml` (не через `.env`). В example поле пустое (localhost).
 
 ```yaml
+# server/config/server.yaml
 api:
   public_base_url: "https://neyra.owyx.site"
   public_path_prefix: "/api"
-dashboard:
-  public_base_url: ""   # пусто = тот же host, что у api
 ```
 
-```env
-API_PUBLIC_BASE_URL=https://neyra.owyx.site
-API_TOKEN=...   # или API_KEY=... (admin Bearer); обязателен при bind не loopback
-```
+Приложение слушает `127.0.0.1:8787`. TLS — на reverse proxy.
 
-4. На VPS: снаружи только 80/443; uvicorn на localhost; Caddy/nginx ниже.
+## DNS (пример Cloudflare)
+
+DNS **не** в yaml Нейры — у провайдера. В конфиге — уже настроенный домен.
+
+1. Cloudflare DNS зоны.
+2. Запись **A**: Name `neyra`, IP VPS.
+3. Прописать `api.public_base_url` в `server/config/server.yaml`.
+4. На VPS: снаружи 80/443; uvicorn на localhost; Caddy/nginx.
+5. Токены — в `.env`; публичный URL — в yaml.
 
 ## Caddy
 
@@ -51,7 +42,7 @@ neyra.owyx.site {
 }
 ```
 
-WebSocket для `/api/v1/ws/chat` без доп. настроек. Предпочтительно `Authorization: Bearer`; `?token=` — fallback (маскируйте `token` в access-логах).
+WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?token=` — маскируйте в access-логах.
 
 ## nginx
 
@@ -81,14 +72,10 @@ server {
 }
 ```
 
-Слеш в конце `proxy_pass` у `/api/` снимает префикс `/api/`.
-
 ## Перед выходом в интернет
 
-- `API_TOKEN` или `API_KEY` (+ viewer/maint) в `server/.env`.
-- TLS на edge.
-- Firewall: снаружи 80/443; uvicorn на localhost.
-- `api.public_*` / `dashboard.public_base_url` = реальный DNS (в example по умолчанию пусто).
-- Uvicorn: `proxy_headers=True`, `forwarded_allow_ips=127.0.0.1`.
+- `API_TOKEN` или `API_KEY` в `.env`.
+- TLS на edge; firewall 80/443.
+- `api.public_base_url` = реальный DNS.
 
 Деплой процесса на VPS — этап 4 / ops.

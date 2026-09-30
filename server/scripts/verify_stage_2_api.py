@@ -29,7 +29,7 @@ def check_package_layout() -> list[str]:
 
 
 def check_public_url_helper() -> list[str]:
-    from core.api import api_public_root, api_public_v1, dashboard_public_root, API_VERSION
+    from core.api import api_public_root, api_public_v1, site_public_origin, API_VERSION
 
     errs: list[str] = []
     cfg = {
@@ -38,21 +38,14 @@ def check_public_url_helper() -> list[str]:
             "public_path_prefix": "/api",
             "host": "127.0.0.1",
             "port": 8787,
-        },
-        "dashboard": {"public_base_url": ""},
+        }
     }
     if api_public_root(cfg) != "https://neyra.owyx.site/api":
         errs.append(f"public root bad: {api_public_root(cfg)!r}")
     if api_public_v1(cfg) != "https://neyra.owyx.site/api/v1":
         errs.append(f"public v1 bad: {api_public_v1(cfg)!r}")
-    if dashboard_public_root(cfg) != "https://neyra.owyx.site":
-        errs.append(f"dashboard should inherit api base, got {dashboard_public_root(cfg)!r}")
-    cfg2 = {
-        "api": {"public_base_url": "https://neyra.owyx.site"},
-        "dashboard": {"public_base_url": "https://ui.example"},
-    }
-    if dashboard_public_root(cfg2) != "https://ui.example":
-        errs.append(f"dashboard override bad: {dashboard_public_root(cfg2)!r}")
+    if site_public_origin(cfg) != "https://neyra.owyx.site":
+        errs.append(f"site origin bad: {site_public_origin(cfg)!r}")
     if not API_VERSION:
         errs.append("API_VERSION empty")
     empty = api_public_root({"api": {}})
@@ -100,10 +93,8 @@ def check_config_key_api() -> list[str]:
     dash = cfg.get("dashboard")
     if not isinstance(dash, dict):
         errs.append("dashboard: section missing from example layers")
-    elif "public_base_url" not in dash:
-        errs.append("dashboard.public_base_url missing from example layer")
-    elif str(dash.get("public_base_url") or "").strip():
-        errs.append("example dashboard.public_base_url should be empty by default")
+    elif "public_base_url" in dash:
+        errs.append("dashboard.public_base_url must not exist — use api.public_base_url only")
     bad = {
         "paths": {"data_dir": "./data"},
         "assistant": {"name": "X"},
@@ -361,6 +352,30 @@ def check_api_key_alias() -> list[str]:
     return errs
 
 
+def check_public_url_env_rejected() -> list[str]:
+    import os
+
+    from core.runtime.secrets import apply_env_secrets
+
+    errs: list[str] = []
+    key = "API_PUBLIC_BASE_URL"
+    prev = os.environ.get(key)
+    os.environ[key] = "https://should-fail.example"
+    try:
+        try:
+            apply_env_secrets({})
+            errs.append("API_PUBLIC_BASE_URL must raise (yaml-only public URL)")
+        except RuntimeError as e:
+            if "server.yaml" not in str(e) and "public_base_url" not in str(e):
+                errs.append(f"public URL fail-fast message unclear: {e}")
+    finally:
+        if prev is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = prev
+    return errs
+
+
 def main() -> int:
     checks = [
         ("package layout", check_package_layout),
@@ -371,6 +386,7 @@ def main() -> int:
         ("bind gate", check_bind_gate),
         ("legacy env failfast", check_legacy_env_failfast),
         ("API_KEY alias", check_api_key_alias),
+        ("public URL env rejected", check_public_url_env_rejected),
         ("auth matrix", check_auth_matrix),
     ]
     failed = 0

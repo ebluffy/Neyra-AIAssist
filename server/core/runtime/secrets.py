@@ -202,7 +202,6 @@ def apply_env_secrets(cfg: dict) -> None:
             "INTERNAL_API_VIEWER_TOKEN",
             "INTERNAL_API_MAINT_TOKEN",
             "INTERNAL_API_BIND_HOST",
-            "INTERNAL_API_PUBLIC_BASE_URL",
         )
         if _s(n)
     ]
@@ -236,13 +235,16 @@ def apply_env_secrets(cfg: dict) -> None:
     if im:
         cfg.setdefault("api", {})["maint_token"] = im
 
-    pub = _s("API_PUBLIC_BASE_URL")
-    if pub:
-        cfg.setdefault("api", {})["public_base_url"] = pub
-
-    dash_pub = _s("DASHBOARD_PUBLIC_BASE_URL")
-    if dash_pub:
-        cfg.setdefault("dashboard", {})["public_base_url"] = dash_pub
+    pub_env = [
+        n
+        for n in ("API_PUBLIC_BASE_URL", "DASHBOARD_PUBLIC_BASE_URL", "INTERNAL_API_PUBLIC_BASE_URL")
+        if _s(n)
+    ]
+    if pub_env:
+        raise RuntimeError(
+            "Public site URL is configured only in server/config/server.yaml → api.public_base_url "
+            f"(not env). Remove: {', '.join(pub_env)}"
+        )
 
     wh_in = _s("WEBHOOK_INBOUND_SECRET")
     if wh_in:

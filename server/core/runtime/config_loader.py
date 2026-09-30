@@ -147,6 +147,12 @@ def validate_config_schema(cfg: dict[str, Any]) -> list[str]:
     if "internal_api" in cfg:
         errors.append("internal_api: removed — use api: (core API in config/server.yaml)")
 
+    dash = cfg.get("dashboard")
+    if isinstance(dash, dict) and "public_base_url" in dash:
+        errors.append(
+            "dashboard.public_base_url: removed — use api.public_base_url "
+            "(one public origin for UI + API)"
+        )
     def _req_dict(key: str) -> dict[str, Any] | None:
         val = cfg.get(key)
         if val is None:

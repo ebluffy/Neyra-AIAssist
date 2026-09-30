@@ -7,13 +7,15 @@ api:
   host: "127.0.0.1"
   port: 8787
 
-  # EN: Public origin for clients / OpenAPI / future VPS (no secrets).
-  #     Empty = local-only (relative URLs). Set via API_PUBLIC_BASE_URL or here for a real host.
-  # RU: Публичный origin. Пусто = только localhost. Домен — API_PUBLIC_BASE_URL или эта строка.
+  # EN: Single public origin for dashboard UI (/), API, OpenAPI, clients.
+  #     Empty = local-only. Set the hostname you already pointed at the VPS in DNS
+  #     (e.g. Cloudflare A record neyra → VPS IP). Not configured via .env.
+  # RU: Единый публичный origin: дашборд (/), API, OpenAPI, клиенты.
+  #     Пусто = только localhost. Пишите сюда домен, который уже есть в DNS (не через .env).
+  #     Пример: "https://neyra.owyx.site" → UI на /, API на …/api/v1
   public_base_url: ""
-  # EN: Path prefix in front of /v1 (reverse proxy). Full public API: {public_base_url}{public_path_prefix}/v1
-  #     Example when publishing: public_base_url=https://neyra.owyx.site + prefix=/api → …/api/v1
-  # RU: Префикс перед /v1. Пример: https://neyra.owyx.site + /api → …/api/v1
+  # EN: Path prefix in front of /v1 (reverse proxy). Full API: {public_base_url}{public_path_prefix}/v1
+  # RU: Префикс перед /v1. Итого при примере выше: https://neyra.owyx.site/api/v1
   public_path_prefix: "/api"
 
   # EN: Optional global RPM limit per client IP (0 = disabled). Applies to /v1 HTTP except /v1/ws.
@@ -44,8 +46,4 @@ dashboard:
   enabled: true
   dist_path: "dashboard/dist"
   require_build: false
-  # EN: Public origin of the web UI (https://neyra.owyx.site). Empty = inherit api.public_base_url.
-  #     UI is served at / on that host; API at {api.public_base_url}{api.public_path_prefix}/v1.
-  # RU: Публичный origin дашборда. Пусто = взять api.public_base_url. UI на /, API на …/api/v1.
-  #     DNS (Cloudflare A → VPS IP) настраивается у регистратора; здесь только уже купленный домен.
-  public_base_url: ""
+  # Public URL for the UI is api.public_base_url (same host). No separate dashboard domain key.

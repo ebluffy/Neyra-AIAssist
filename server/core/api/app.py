@@ -86,16 +86,11 @@ def api_public_v1(cfg: dict) -> str:
     return f"{root}/v1" if root else ""
 
 
-def dashboard_public_root(cfg: dict) -> str:
+def site_public_origin(cfg: dict) -> str:
     """
-    Public origin of the web dashboard (no path).
-    Empty dashboard.public_base_url → inherit api.public_base_url (same host, UI at /).
+    Shared public origin for dashboard UI, OpenAPI hints, clients.
+    Same value as api.public_base_url (no path). Empty = local-only.
     """
-    dash = cfg.get("dashboard") if isinstance(cfg, dict) else None
-    if isinstance(dash, dict):
-        own = str(dash.get("public_base_url") or "").strip().rstrip("/")
-        if own:
-            return own
     api = _api_cfg(cfg if isinstance(cfg, dict) else {})
     return str(api.get("public_base_url") or "").strip().rstrip("/")
 
@@ -1038,7 +1033,7 @@ def build_app(
     async def v1_meta(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         pub = api_public_root(config)
-        dash = dashboard_public_root(config)
+        site = site_public_origin(config)
         return {
             "ok": True,
             "trace_id": trace_id,
@@ -1046,7 +1041,7 @@ def build_app(
                 "api_version": API_VERSION,
                 "public_url": pub or None,
                 "public_v1": api_public_v1(config) or None,
-                "dashboard_url": dash or None,
+                "dashboard_url": site or None,
                 "features": {
                     "ws_chat": True,
                     "ws_audio_stub": True,

@@ -166,7 +166,8 @@ docs/
 - [x] Streaming WebSocket: auth как REST; **чат = admin** (как `POST /v1/chat`); reconnect = новый сокет.
 - [x] Viewer не мутирует; soft restart без silent plugin stubs; fail-closed bind без токенов.
 - [x] localhost default; LAN через явный bind + tokens / proxy recipe.
-- [x] `verify_stage_2_api.py` + CI (`CI verify` / HTTP API & auth); ручной `/docs` + `meta.public_url` / `dashboard_url`.
+- [x] `verify_stage_2_api.py` + CI (`CI verify` / HTTP API & auth).
+- [ ] Ручной смоук: `/docs`, `GET /v1/meta` (`public_url` / `dashboard_url`).
 
 ## 3. Windows-клиент
 
