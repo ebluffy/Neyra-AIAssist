@@ -36,10 +36,9 @@ MODULE_CONFIG_MOVES: list[tuple[Path, Path]] = [
         REPO_ROOT / "interfaces" / "discord" / "config.yaml",
         SERVER_ROOT / "modules" / "discord" / "config.yaml",
     ),
-    (
-        REPO_ROOT / "interfaces" / "internal_api" / "config.yaml",
-        SERVER_ROOT / "modules" / "internal_api" / "config.yaml",
-    ),
+    # Stage 2: API settings live in config/server.yaml (api:/dashboard:), not a module.
+    # Legacy interfaces/internal_api/config.yaml is not auto-merged here — copy bind/tokens manually.
+
     (
         REPO_ROOT / "interfaces" / "local_voice" / "config.yaml",
         SERVER_ROOT / "modules" / "local_voice" / "config.yaml",

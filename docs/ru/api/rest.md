@@ -7,14 +7,25 @@
 
 # REST Endpoints
 
+## Breaking changes (API 1.1.0)
+
+- Env: `INTERNAL_API_*` → `API_*` (старт падает, если старые имена заданы; dual-read нет).
+- `POST /v1/plugins/{id}/reload|restart` → **501** `not_supported` (используйте `POST /v1/system/restart`).
+- Health входящего webhook `GET .../health` требует viewer+, если токены настроены.
+- WebSocket-чат — только **admin** (как `POST /v1/chat`).
+- Bind не loopback без токенов → процесс не стартует.
+
 ## Core
-- `POST /v1/chat`
+- `GET /v1/meta` — api_version, public_url, public_v1, dashboard_url, features
+- `GET /v1/health`
+- `GET /v1/llm/models` — provider + model id по ролям
+- `GET /v1/llm/balance`
+- `POST /v1/chat` (admin)
+- `POST /v1/system/restart` (maint+) — мягкий рестарт процесса (uvicorn should_exit)
 - `POST /v1/memory/search`
 - `POST /v1/memory/write`
 - `POST /v1/notify`
-- `GET /v1/health`
 - `GET /v1/memory/stats`
-- `GET /v1/llm/balance`
 - `POST /v1/config/update`
 - `POST /v1/backup/run`
 
@@ -24,19 +35,13 @@
 - `PATCH /v1/plugins/{plugin_id}` (`enabled`)
 - `GET /v1/plugins/{plugin_id}/config`
 - `PUT /v1/plugins/{plugin_id}/config`
-- `POST /v1/plugins/{plugin_id}/reload`
-- `POST /v1/plugins/{plugin_id}/restart`
+- `POST /v1/plugins/{plugin_id}/reload` → **501** `not_supported` (используйте `/v1/system/restart`)
+- `POST /v1/plugins/{plugin_id}/restart` → **501** `not_supported`
 - `POST /v1/plugins/{plugin_id}/invoke`
 - `GET /v1/plugins/operations/{operation_id}`
 
-## Webhooks
-- `POST /v1/webhooks/in/{provider}/{endpoint_id}`
-- `GET /v1/webhooks/in/{provider}/{endpoint_id}/health`
-- `POST /v1/webhooks/out/routes`
-- `GET /v1/webhooks/out/routes`
-- `PATCH /v1/webhooks/out/routes/{route_id}`
-- `DELETE /v1/webhooks/out/routes/{route_id}`
-- `POST /v1/webhooks/out/test/{route_id}`
-- `GET /v1/webhooks/deliveries`
-- `POST /v1/webhooks/deliveries/{delivery_id}/retry`
-- `GET /v1/webhooks/dlq`
+## Webhooks / debug
+- Исходящие маршруты и deliveries под `/v1/webhooks/...`
+- Входящие: `POST /v1/webhooks/in/{provider}/{endpoint_id}` (HMAC, если задан secret)
+- Health входящего: `GET .../health` (viewer+, если токены настроены)
+- `POST /v1/debug/...` (admin; lifecycle за флагом)

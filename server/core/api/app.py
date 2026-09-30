@@ -1,8 +1,7 @@
 """
-Internal API (v1): маршруты FastAPI и сборка приложения (`build_app`).
+Neyra API (v1): FastAPI routes and ``build_app``.
 
-Процесс поднимается из ядра — `core.runtime.run_neyra_server`; папка `modules/internal_api/`
-остаётся модулем маршрутов и точкой `main_script` для PluginLoader.
+Owned by the core package (``core.api``); started via ``core.runtime.run_neyra_server``.
 """
 
 from __future__ import annotations
@@ -41,8 +40,14 @@ from core.runtime import HealthMonitor
 
 logger = logging.getLogger("neyra.api")
 
+API_VERSION = "1.1.0"
+
+# Set by run_neyra_server so soft-restart can ask uvicorn to shut down cleanly.
+_uvicorn_server: Any = None
+
 
 def _project_root() -> Path:
+    # core/api/app.py → parents[2] = server/
     return Path(__file__).resolve().parents[2]
 
 
@@ -53,6 +58,41 @@ def _dashboard_dist_path(config: dict) -> Path:
     if not p.is_absolute():
         p = (_project_root() / p).resolve()
     return p
+
+
+def _api_cfg(cfg: dict) -> dict[str, Any]:
+    raw = cfg.get("api") if isinstance(cfg, dict) else None
+    return raw if isinstance(raw, dict) else {}
+
+
+def api_public_root(cfg: dict) -> str:
+    """
+    Public API root for clients/OpenAPI, e.g. https://neyra.owyx.site/api
+    Empty public_base_url → empty string (local / relative).
+    """
+    api = _api_cfg(cfg)
+    base = str(api.get("public_base_url") or "").strip().rstrip("/")
+    if not base:
+        return ""
+    prefix = str(api.get("public_path_prefix") or "").strip()
+    if prefix and not prefix.startswith("/"):
+        prefix = "/" + prefix
+    prefix = prefix.rstrip("/")
+    return f"{base}{prefix}"
+
+
+def api_public_v1(cfg: dict) -> str:
+    root = api_public_root(cfg)
+    return f"{root}/v1" if root else ""
+
+
+def site_public_origin(cfg: dict) -> str:
+    """
+    Shared public origin for dashboard UI, OpenAPI hints, clients.
+    Same value as api.public_base_url (no path). Empty = local-only.
+    """
+    api = _api_cfg(cfg if isinstance(cfg, dict) else {})
+    return str(api.get("public_base_url") or "").strip().rstrip("/")
 
 
 class ApiError(Exception):
@@ -68,24 +108,69 @@ def _trace_id(request: Request) -> str:
 
 
 def _debug_lifecycle_allowed(cfg: dict) -> bool:
-    """Включается через internal_api.debug_lifecycle_enabled или NEYRA_DEBUG_LIFECYCLE=1 (удобно в Docker)."""
+    """Включается через api.debug_lifecycle_enabled или NEYRA_DEBUG_LIFECYCLE=1 (удобно в Docker)."""
     if os.environ.get("NEYRA_DEBUG_LIFECYCLE", "").strip().lower() in ("1", "true", "yes"):
         return True
-    ia = cfg.get("internal_api") if isinstance(cfg.get("internal_api"), dict) else {}
+    ia = cfg.get("api") if isinstance(cfg.get("api"), dict) else {}
     return bool(ia.get("debug_lifecycle_enabled", False))
 
 
-def _schedule_exit_after_response() -> None:
-    """После отправки ответа клиенту завершает процесс (os._exit)."""
+def _schedule_exit_after_response(reason: str = "system_restart") -> None:
+    """After the HTTP response is sent, shut down the process (prefer uvicorn graceful exit)."""
 
     def _run() -> None:
-        import time
-
         time.sleep(0.35)
-        logger.info("Завершение процесса по POST /v1/debug/lifecycle")
-        os._exit(0)
+        logger.info("Process shutdown requested via %s", reason)
+        server = _uvicorn_server
+        if server is not None:
+            try:
+                server.should_exit = True
+                return
+            except Exception:
+                logger.exception("Failed to signal uvicorn should_exit; falling back to os._exit")
+        # Non-zero so systemd Restart=on-failure also comes back; Docker unless-stopped always restarts.
+        os._exit(1)
 
-    threading.Thread(target=_run, daemon=False, name="neyra-debug-lifecycle-exit").start()
+    threading.Thread(target=_run, daemon=False, name="neyra-api-exit").start()
+
+
+def _token_eq(got: str, expected: str) -> bool:
+    """Constant-time compare; different lengths never match."""
+    if not expected:
+        return False
+    a = got.encode("utf-8")
+    b = expected.encode("utf-8")
+    if len(a) != len(b):
+        return False
+    return hmac.compare_digest(a, b)
+
+
+def _is_loopback_host(host: str) -> bool:
+    h = (host or "").strip().lower()
+    return h in ("127.0.0.1", "::1", "localhost") or h.startswith("127.")
+
+
+def api_tokens_configured(cfg: dict) -> bool:
+    api = _api_cfg(cfg)
+    return bool(
+        str(api.get("token") or "").strip()
+        or str(api.get("viewer_token") or "").strip()
+        or str(api.get("maint_token") or "").strip()
+    )
+
+
+def assert_api_bind_safe(cfg: dict) -> None:
+    """Refuse non-loopback bind when no API tokens are set (fail-closed for LAN/public)."""
+    api = _api_cfg(cfg)
+    host = str(api.get("host") or "127.0.0.1")
+    if _is_loopback_host(host):
+        return
+    if api_tokens_configured(cfg):
+        return
+    raise RuntimeError(
+        f"api.host={host!r} is not loopback but API_TOKEN / API_KEY / "
+        "API_VIEWER_TOKEN / API_MAINT_TOKEN are empty. Set tokens or bind 127.0.0.1."
+    )
 
 
 def _err_payload(trace_id: str, code: str, message: str) -> dict[str, Any]:
@@ -93,7 +178,7 @@ def _err_payload(trace_id: str, code: str, message: str) -> dict[str, Any]:
 
 
 def _api_token(cfg: dict) -> str:
-    api_cfg = cfg.get("internal_api") or {}
+    api_cfg = cfg.get("api") or {}
     return str(api_cfg.get("token") or "").strip()
 
 
@@ -101,8 +186,8 @@ _ROLE_RANK = {"anon": 0, "viewer": 1, "maint": 2, "admin": 3}
 
 
 def _resolve_role(authorization: Optional[str], cfg: dict) -> str:
-    """anon — токены не заданы (открытый доступ как раньше). Иначе нужен Bearer и один из известных токенов."""
-    api = cfg.get("internal_api") if isinstance(cfg.get("internal_api"), dict) else {}
+    """anon — tokens unset (local loopback only; see assert_api_bind_safe). Else Bearer required."""
+    api = _api_cfg(cfg)
     primary = str(api.get("token") or "").strip()
     viewer = str(api.get("viewer_token") or "").strip()
     maint = str(api.get("maint_token") or "").strip()
@@ -112,38 +197,48 @@ def _resolve_role(authorization: Optional[str], cfg: dict) -> str:
     if not raw.startswith("Bearer "):
         raise ApiError("unauthorized", "Missing bearer token", 401)
     got = raw.removeprefix("Bearer ").strip()
-    if primary and got == primary:
+    if _token_eq(got, primary):
         return "admin"
-    if maint and got == maint:
+    if _token_eq(got, maint):
         return "maint"
-    if viewer and got == viewer:
+    if _token_eq(got, viewer):
         return "viewer"
     raise ApiError("unauthorized", "Invalid bearer token", 401)
 
 
 def _role_at_least(role: str, minimum: str) -> bool:
+    # Wave 1: anon (no tokens configured) is full access only on loopback —
+    # enforced at process start via assert_api_bind_safe, not per-request.
     if role == "anon":
         return True
     return _ROLE_RANK.get(role, 0) >= _ROLE_RANK.get(minimum, 0)
 
 
-def _require_ws_auth(token_qs: Optional[str], authorization: Optional[str], cfg: dict) -> None:
-    api = cfg.get("internal_api") if isinstance(cfg.get("internal_api"), dict) else {}
+def _require_ws_auth(token_qs: Optional[str], authorization: Optional[str], cfg: dict) -> str:
+    """
+    Same token roles as REST. Prefer Authorization: Bearer (query ?token= may hit access logs).
+    Returns role name (anon/viewer/maint/admin).
+    """
+    api = _api_cfg(cfg)
     primary = str(api.get("token") or "").strip()
     viewer = str(api.get("viewer_token") or "").strip()
     maint = str(api.get("maint_token") or "").strip()
     if not primary and not viewer and not maint:
-        return
+        return "anon"
     got = ""
-    if token_qs and str(token_qs).strip():
-        got = str(token_qs).strip()
-    elif authorization and authorization.strip().startswith("Bearer "):
+    if authorization and authorization.strip().startswith("Bearer "):
         got = authorization.removeprefix("Bearer ").strip()
+    elif token_qs and str(token_qs).strip():
+        got = str(token_qs).strip()
     else:
         raise ApiError("unauthorized", "Missing bearer token for WebSocket", 401)
-    if primary and got == primary:
-        return
-    raise ApiError("forbidden", "WebSocket requires primary internal API token", 403)
+    if _token_eq(got, primary):
+        return "admin"
+    if _token_eq(got, maint):
+        return "maint"
+    if _token_eq(got, viewer):
+        return "viewer"
+    raise ApiError("unauthorized", "Invalid bearer token for WebSocket", 401)
 
 
 def _verify_inbound_webhook_signature(secret: str, body: bytes, signature_header: Optional[str]) -> bool:
@@ -334,7 +429,7 @@ _audit_log_lock = threading.Lock()
 
 
 def _audit_file_append(cfg: dict, root: Path, entry: dict[str, Any]) -> None:
-    ia = cfg.get("internal_api") if isinstance(cfg.get("internal_api"), dict) else {}
+    ia = cfg.get("api") if isinstance(cfg.get("api"), dict) else {}
     if not bool(ia.get("audit_log_enabled", True)):
         return
     rel = str(ia.get("audit_log_path", "./logs/api_audit.jsonl")).strip()
@@ -562,7 +657,13 @@ def build_app(
     shared_backup_manager: Optional[BackupManager] = None,
     reflection: Optional[ReflectionEngine] = None,
 ) -> FastAPI:
-    app = FastAPI(title="Neyra Internal API", version="1.0")
+    public_root = api_public_root(config)
+    openapi_servers = [{"url": public_root, "description": "public"}] if public_root else None
+    app = FastAPI(
+        title="Neyra API",
+        version=API_VERSION,
+        servers=openapi_servers,
+    )
     if shared_agent is not None:
         agent = shared_agent
         if shared_monitor is None or shared_backup_manager is None:
@@ -577,7 +678,7 @@ def build_app(
     app.state.monitor = monitor
     app.state.backup_manager = backup_manager
     app.state.config = config
-    ws_cfg = (config.get("internal_api") or {}).get("websocket") or {}
+    ws_cfg = (config.get("api") or {}).get("websocket") or {}
     ws_idle_timeout = max(5, int(ws_cfg.get("idle_timeout_seconds", 60)))
     ws_ping_interval = max(2, int(ws_cfg.get("ping_interval_seconds", 20)))
     ws_close_grace = max(1, int(ws_cfg.get("close_grace_seconds", 5)))
@@ -638,7 +739,7 @@ def build_app(
     dep_maint = RequireRole("maint")
     dep_admin = RequireRole("admin")
 
-    ia_sec = config.get("internal_api") if isinstance(config.get("internal_api"), dict) else {}
+    ia_sec = config.get("api") if isinstance(config.get("api"), dict) else {}
     rate_rpm = int(ia_sec.get("rate_limit_requests_per_minute", 0))
 
     @app.middleware("http")
@@ -646,6 +747,7 @@ def build_app(
         path = request.url.path or ""
         if rate_rpm <= 0 or not path.startswith("/v1") or path.startswith("/v1/ws"):
             return await call_next(request)
+        # With uvicorn proxy_headers=True, request.client is the real client behind the proxy.
         ip = request.client.host if request.client else "unknown"
         if not await _rate_limit_allow(f"http:{ip}", rate_rpm):
             tid = _trace_id(request)
@@ -728,7 +830,7 @@ def build_app(
             "username": body.username or "api_user",
             "discord_id": body.platform_user_id or "",
             "user_id": uid,
-            "source": "internal_api",
+            "source": "api",
         }
         hub = getattr(agent, "memory_hub", None)
         wrote = False
@@ -821,14 +923,14 @@ def build_app(
     ):
         """
         Завершает процесс ядра (этап E1 / отладка в Docker).
-        Требует admin-токен и `internal_api.debug_lifecycle_enabled` или env NEYRA_DEBUG_LIFECYCLE=1.
+        Требует admin-токен и `api.debug_lifecycle_enabled` или env NEYRA_DEBUG_LIFECYCLE=1.
         «restart» ничем не отличается от «stop» на уровне процесса; повторный запуск обеспечивает Docker/systemd.
         """
         trace_id = _trace_id(request)
         if not _debug_lifecycle_allowed(config):
             raise ApiError(
                 "lifecycle_disabled",
-                "Включите internal_api.debug_lifecycle_enabled или задайте NEYRA_DEBUG_LIFECYCLE=1",
+                "Включите api.debug_lifecycle_enabled или задайте NEYRA_DEBUG_LIFECYCLE=1",
                 403,
             )
         _audit("debug_lifecycle", trace_id, api_role, {"action": body.action})
@@ -837,7 +939,7 @@ def build_app(
             if body.action == "restart"
             else "Процесс будет завершён."
         )
-        _schedule_exit_after_response()
+        _schedule_exit_after_response(reason=f"debug_lifecycle:{body.action}")
         return {"ok": True, "trace_id": trace_id, "data": {"action": body.action, "note": note}}
 
     @app.post("/v1/debug/reset_context")
@@ -929,11 +1031,89 @@ def build_app(
             },
         }
 
+    @app.get("/v1/meta")
+    async def v1_meta(request: Request, _: None = Depends(dep_viewer)):
+        trace_id = _trace_id(request)
+        pub = api_public_root(config)
+        site = site_public_origin(config)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "api_version": API_VERSION,
+                "public_url": pub or None,
+                "public_v1": api_public_v1(config) or None,
+                "dashboard_url": site or None,
+                "features": {
+                    "ws_chat": True,
+                    "ws_audio_stub": True,
+                    "dual_llm": True,
+                    "sse": False,
+                },
+            },
+        }
+
+    @app.get("/v1/llm/models")
+    async def v1_llm_models(request: Request, _: None = Depends(dep_viewer)):
+        trace_id = _trace_id(request)
+        from core.llm.profile import (
+            resolve_role_provider,
+            resolved_brain_model,
+            resolved_memory_model,
+            resolved_talk_model,
+            resolved_vision_model_id,
+        )
+
+        roles_out: dict[str, Any] = {}
+        for role_key, resolver in (
+            ("talk_model", resolved_talk_model),
+            ("brain_model", resolved_brain_model),
+            ("memory_model", resolved_memory_model),
+            ("vision_model", resolved_vision_model_id),
+        ):
+            prov = resolve_role_provider(config, role_key)
+            mid = resolver(config, prov)
+            short = role_key.replace("_model", "")
+            roles_out[short] = {"role": role_key, "provider": prov, "model": mid}
+        return {"ok": True, "trace_id": trace_id, "data": {"roles": roles_out}}
+
     @app.get("/v1/health")
     async def v1_health(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         rep = await monitor.run_once()
+        if isinstance(rep, dict):
+            rep = dict(rep)
+            rep["api_version"] = API_VERSION
+            pub = api_public_root(config)
+            if pub:
+                rep["public_url"] = pub
+            try:
+                from core.llm.profile import iter_unique_provider_connections
+
+                rep["llm_providers"] = [
+                    c.provider for c in iter_unique_provider_connections(config)
+                ]
+            except Exception:
+                logger.debug("health llm_providers enrichment failed", exc_info=True)
         return {"ok": True, "trace_id": trace_id, "data": rep}
+
+    @app.post("/v1/system/restart")
+    async def v1_system_restart(request: Request, api_role: str = Depends(dep_maint)):
+        """Soft process restart: graceful uvicorn exit after response; Docker/systemd bring it back."""
+        trace_id = _trace_id(request)
+        _audit("system_restart", trace_id, api_role)
+        _schedule_exit_after_response(reason="POST /v1/system/restart")
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "action": "restart",
+                "note": (
+                    "Process will shut down shortly (uvicorn should_exit; fallback exit code 1). "
+                    "Use docker compose restart:unless-stopped or systemd Restart=always / on-failure."
+                ),
+            },
+        }
 
     @app.get("/v1/memory/stats")
     async def v1_memory_stats(request: Request, _: None = Depends(dep_viewer)):
@@ -1256,16 +1436,15 @@ def build_app(
         m = _find_manifest(loader, plugin_id)
         if m is None:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
-        op_id = f"op_{uuid.uuid4().hex[:12]}"
-        plugin_ops[op_id] = {
-            "operation_id": op_id,
-            "plugin_id": plugin_id,
-            "type": "reload",
-            "status": "done",
-            "note": "manifest/config reloaded from disk on next runtime cycle",
-            "ts": _utc_now(),
-        }
-        return {"ok": True, "trace_id": trace_id, "data": plugin_ops[op_id]}
+        raise ApiError(
+            "not_supported",
+            (
+                f"In-process reload of '{plugin_id}' is not supported. "
+                "Use POST /v1/system/restart for a process soft-restart, "
+                "or PATCH enabled + restart."
+            ),
+            501,
+        )
 
     @app.post("/v1/plugins/{plugin_id}/restart")
     async def v1_plugin_restart(plugin_id: str, request: Request, _: None = Depends(dep_admin)):
@@ -1274,16 +1453,14 @@ def build_app(
         m = _find_manifest(loader, plugin_id)
         if m is None:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
-        op_id = f"op_{uuid.uuid4().hex[:12]}"
-        plugin_ops[op_id] = {
-            "operation_id": op_id,
-            "plugin_id": plugin_id,
-            "type": "restart",
-            "status": "done",
-            "note": "manual restart requested; resident plugin restarts on process restart",
-            "ts": _utc_now(),
-        }
-        return {"ok": True, "trace_id": trace_id, "data": plugin_ops[op_id]}
+        raise ApiError(
+            "not_supported",
+            (
+                f"Per-plugin restart of '{plugin_id}' is not supported. "
+                "Use POST /v1/system/restart (maint+) to restart the Neyra process."
+            ),
+            501,
+        )
 
     @app.post("/v1/plugins/{plugin_id}/invoke")
     async def v1_plugin_invoke(plugin_id: str, body: PluginInvokeRequest, request: Request, _: None = Depends(dep_admin)):
@@ -1649,7 +1826,7 @@ def build_app(
     async def v1_webhooks_inbound(provider: str, endpoint_id: str, request: Request):
         trace_id = _trace_id(request)
         raw_body = await request.body()
-        ia = config.get("internal_api") if isinstance(config.get("internal_api"), dict) else {}
+        ia = config.get("api") if isinstance(config.get("api"), dict) else {}
         secret = str(ia.get("webhook_inbound_secret") or "").strip()
         if secret:
             sig = request.headers.get("x-neyra-signature") or request.headers.get("X-Neyra-Signature")
@@ -1665,8 +1842,19 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": out}
 
     @app.get("/v1/webhooks/in/{provider}/{endpoint_id}/health")
-    async def v1_webhooks_inbound_health(provider: str, endpoint_id: str):
-        return {"ok": True, "trace_id": str(uuid.uuid4()), "data": {"provider": provider, "endpoint_id": endpoint_id, "status": "ready"}}
+    async def v1_webhooks_inbound_health(
+        provider: str,
+        endpoint_id: str,
+        request: Request,
+        _: None = Depends(dep_viewer),
+    ):
+        """Requires viewer+ Bearer when API tokens are configured (same as other /v1 reads)."""
+        trace_id = _trace_id(request)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"provider": provider, "endpoint_id": endpoint_id, "status": "ready"},
+        }
 
     @app.websocket("/v1/ws/chat")
     async def ws_chat(
@@ -1676,7 +1864,10 @@ def build_app(
         trace_id = str(uuid.uuid4())
         authorization = websocket.headers.get("authorization")
         try:
-            _require_ws_auth(token, authorization, config)
+            ws_role = _require_ws_auth(token, authorization, config)
+            # Same bar as POST /v1/chat (admin): viewer must not mutate memory / spend LLM.
+            if not _role_at_least(ws_role, "admin"):
+                raise ApiError("forbidden", "WebSocket chat requires admin (same as POST /v1/chat)", 403)
         except ApiError:
             # 1008: Policy Violation
             await websocket.close(code=1008, reason="unauthorized")
@@ -1687,8 +1878,10 @@ def build_app(
                 "type": "hello",
                 "trace_id": trace_id,
                 "protocol": "neyra.ws.chat.v1",
+                "role": ws_role,
                 "ping_interval_seconds": ws_ping_interval,
                 "idle_timeout_seconds": ws_idle_timeout,
+                "reconnect": "open_new_socket",
             }
         )
         while True:
@@ -1766,7 +1959,9 @@ def build_app(
         trace_id = str(uuid.uuid4())
         authorization = websocket.headers.get("authorization")
         try:
-            _require_ws_auth(token, authorization, config)
+            ws_role = _require_ws_auth(token, authorization, config)
+            if not _role_at_least(ws_role, "viewer"):
+                raise ApiError("forbidden", "WebSocket audio requires viewer+", 403)
         except ApiError:
             await websocket.close(code=1008, reason="unauthorized")
             return
@@ -1776,6 +1971,7 @@ def build_app(
                 "type": "hello",
                 "trace_id": trace_id,
                 "protocol": "neyra.ws.audio.v1",
+                "role": ws_role,
                 "ping_interval_seconds": ws_ping_interval,
                 "idle_timeout_seconds": ws_idle_timeout,
             }
@@ -1847,10 +2043,3 @@ def build_app(
             )
 
     return app
-
-
-def run_internal_api(config: dict) -> None:
-    """Точка входа плагина `api`: делегирует в ядро `core.runtime.server.run_neyra_server`."""
-    from core.runtime import run_neyra_server
-
-    run_neyra_server(config)

@@ -59,7 +59,7 @@ Typical dual stack: talk on OpenRouter (e.g. free Qwen), brain/memory/vision on 
   - `core/ltm_maintenance.py` — LTM lifecycle: TTL prune, summarization → cold archive.
   - `core/voice/` — voice adapters and factories (cloud/local evolution path).
 - `server/dashboard/` — React+Vite+Tailwind sources; production bundle in `server/dashboard/dist`.
-- `server/modules/` — plugins (`server/modules/<id>/plugin.yaml` + `main.py`); shipped: `**discord`** (unified text+music), `internal_api`, `local_voice`; template `**000EXAMPLE/`** (see Plugin SDK links below).
+- `server/modules/` — plugins (`server/modules/<id>/plugin.yaml` + `main.py`); shipped: `**discord`** (unified text+music), `api`, `local_voice`; template `**000EXAMPLE/`** (see Plugin SDK links below).
 - `devtools/mcp_server/` — **MCP debug server** (stdio MCP for Cursor): logs, API calls, fire_event, memory snapshot.
 - `scripts/` — ops helpers (health checks, maintenance, `inject_memes_2026.py`).
 - `main.py` — entrypoint (`core` vs `console` only).
@@ -96,7 +96,7 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
 5. Copy layer templates: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). Set models under `server/config/llm.yaml` (`llm.talk_model` / `brain_model` / …).
 6. Copy plugin templates where needed:
   - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
-  - `server/modules/internal_api/config.example.yaml` → `server/modules/internal_api/config.yaml`
+  - `server/config/server.example.yaml` → `server/config/server.yaml (api:)`
   - other plugins: `server/modules/<id>/config.example.yaml` → `server/modules/<id>/config.yaml`
 7. Preflight (example): `cd server && python scripts/healthcheck.py --mode console --skip-http`
 8. Run:
@@ -142,7 +142,7 @@ Optional (future voice integrations):
 
 - Short root template: `server/config.example.yaml` → `server/config.yaml` (`paths`, `system`, `assistant`)
 - Layer templates: `server/config/*.example.yaml` → `server/config/*.yaml` (see `docs/config-keys.md`)
-- Plugin settings: `server/modules/<plugin_id>/config.yaml` (optional; copy from `config.example.yaml` in that folder). HTTP bind + dashboard: `server/modules/internal_api/config.yaml` (overrides `server/config/server.yaml`).
+- Plugin settings: `server/modules/<plugin_id>/config.yaml` (optional; copy from `config.example.yaml` in that folder). HTTP bind + dashboard: `server/config/server.yaml (api:)` (overrides `server/config/server.yaml`).
 - Secret values: `server/.env` (ignored by git)
 
 ## System prompts and behavior tuning

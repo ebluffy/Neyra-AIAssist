@@ -16,7 +16,7 @@
 4. Скопируйте слои: `config/*.example.yaml` -> `config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). См. `docs/config-keys.md`.
 5. Для плагинов скопируйте:
    - `modules/discord/config.example.yaml` -> `modules/discord/config.yaml`
-   - `modules/internal_api/config.example.yaml` -> `modules/internal_api/config.yaml`
+   - `config/server.example.yaml` -> `config/server.yaml`
 6. (опционально) dashboard:
    - `cd dashboard && npm install && npm run build`
 7. Запуск из `server/`:

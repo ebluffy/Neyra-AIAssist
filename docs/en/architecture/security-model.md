@@ -8,9 +8,9 @@
 # Security model
 
 ## Trust boundary
-- Internal API binds to `127.0.0.1` by default. Treat anything non-local as hostile unless locked down.
-- If **none** of `INTERNAL_API_TOKEN` / `INTERNAL_API_VIEWER_TOKEN` / `INTERNAL_API_MAINT_TOKEN` are set, the API is **anonymous** (dev convenience). For any shared or remote host, set tokens.
-- Role sketch: `viewer` can read memory/search/people; `admin` can chat and mutate. Prefer least privilege.
+- Neyra API (`core.api`) binds to `127.0.0.1` by default. Treat anything non-local as hostile unless locked down.
+- **Wave 1 auth policy (intentional):** if **none** of `API_TOKEN` / `API_KEY` / `API_VIEWER_TOKEN` / `API_MAINT_TOKEN` are set, role is `anon` and may call any endpoint **only while bind is loopback**. Non-loopback bind without tokens → process refuses to start (`assert_api_bind_safe`). Requiring tokens even on localhost is a later hardening option, not Wave 1.
+- When tokens are set: `viewer` reads; `maint+` soft-restart; `admin` chat/mutate. Prefer least privilege.
 
 ## Secrets
 - Store secrets in `.env` only; `apply_env_secrets` injects them at boot. Do **not** commit `config.yaml`, plugin `config.yaml`, or `.env`.

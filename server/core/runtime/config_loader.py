@@ -44,7 +44,7 @@ LEGACY_ROOT_DEEP_KEYS: frozenset[str] = frozenset(
         "mcp_client",
         "logging",
         "health_monitor",
-        "internal_api",
+        "api",
         "dashboard",
     }
 )
@@ -61,7 +61,7 @@ _LEGACY_KEY_TO_LAYER: dict[str, str] = {
     "mcp_client": "modules.yaml",
     "logging": "runtime.yaml",
     "health_monitor": "runtime.yaml",
-    "internal_api": "server.yaml",
+    "api": "server.yaml",
     "dashboard": "server.yaml",
 }
 
@@ -144,7 +144,15 @@ def validate_config_schema(cfg: dict[str, Any]) -> list[str]:
         errors.append("openrouter: removed — use llm.talk_model / llm.brain_model / …")
     if "vision" in cfg:
         errors.append("vision: removed — use llm.vision_model")
+    if "internal_api" in cfg:
+        errors.append("internal_api: removed — use api: (core API in config/server.yaml)")
 
+    dash = cfg.get("dashboard")
+    if isinstance(dash, dict) and "public_base_url" in dash:
+        errors.append(
+            "dashboard.public_base_url: removed — use api.public_base_url "
+            "(one public origin for UI + API)"
+        )
     def _req_dict(key: str) -> dict[str, Any] | None:
         val = cfg.get(key)
         if val is None:
@@ -205,7 +213,7 @@ def validate_config_schema(cfg: dict[str, Any]) -> list[str]:
     _opt_dict("external_storage")
     _opt_dict("mcp_client")
     _opt_dict("health_monitor")
-    _opt_dict("internal_api")
+    _opt_dict("api")
     _opt_dict("dashboard")
     _opt_dict("llm")
     _opt_dict("plugins")

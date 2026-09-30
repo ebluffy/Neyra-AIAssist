@@ -45,7 +45,7 @@ def check_example_layers() -> list[str]:
     text = root_ex.read_text(encoding="utf-8")
     deep_re = re.compile(
         r"^(BACKEND|openrouter|vision|llm|agent|memory|backup|external_storage|"
-        r"voice|mcp_client|logging|health_monitor|internal_api|dashboard)\s*:"
+        r"voice|mcp_client|logging|health_monitor|api|internal_api|dashboard)\s*:"
     )
     for i, line in enumerate(text.splitlines(), 1):
         if deep_re.match(line):

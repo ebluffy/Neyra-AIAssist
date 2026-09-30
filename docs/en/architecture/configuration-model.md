@@ -19,5 +19,5 @@
 
 ## Правила
 - Папка плагина `discord` → ключ верхнего уровня `discord` в общем конфиге.
-- Папка `internal_api` → секции `internal_api` и `dashboard`.
+- Продуктовый HTTP API и dashboard — слой `config/server.yaml` (`api:`, `dashboard:`), пакет `core.api` (не plugin).
 - Остальные id → `plugins.<id>`.

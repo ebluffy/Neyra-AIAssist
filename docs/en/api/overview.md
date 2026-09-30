@@ -7,22 +7,25 @@
 
 # API Overview
 
-Base URL: `http://127.0.0.1:8787`
+Core package: `server/core/api/`. Local base URL: `http://127.0.0.1:8787`.
 
-## Формат ответов
+Public (when configured): `{api.public_base_url}{api.public_path_prefix}/v1`  
+Example: `https://neyra.owyx.site/api/v1` — see [api-reverse-proxy](../ops/api-reverse-proxy.md).
+
+## Response shape
 
 - success: `{ "ok": true, "trace_id": "...", "data": ... }`
 - error: `{ "ok": false, "trace_id": "...", "error": { "code": "...", "message": "..." } }`
 
-## Авторизация
+## Auth
 
 - Header: `Authorization: Bearer <token>`
-- Для WS: `Authorization` или query `?token=...`
-- Если `INTERNAL_API_TOKEN` пуст, auth отключена.
+- WS: `Authorization` or query `?token=...`
+- Env: `API_TOKEN` (admin), `API_VIEWER_TOKEN`, `API_MAINT_TOKEN`
+- If none are set, auth is off (local/dev only)
 
-## Группы API
+## Groups
 
-- chat, memory, notify, health, balance
-- plugins management
-- webhooks inbound/outbound
-- backup and runtime config update
+- meta, health, chat (+ WS stream), memory, notify
+- plugins, llm (balance, models)
+- webhooks, backup, config update, system restart, debug

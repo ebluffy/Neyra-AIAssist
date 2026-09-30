@@ -209,7 +209,7 @@ class PluginLoader:
     def reload_plugin(self, plugin_id: str) -> tuple[bool, str]:
         """Перезагрузить модуль плагина «на горячую» (re-import main_script).
 
-        Примечание: это перезагружает Python-модуль для будущих вызовов (CLI/invoke/internal_api).
+        Примечание: это перезагружает Python-модуль для будущих вызовов (CLI/invoke).
         Для resident-плагинов, которые уже запущены в отдельном потоке, требуется отдельный lifecycle stop/start.
         """
         manifest = self._find_manifest(plugin_id)

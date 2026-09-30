@@ -15,7 +15,7 @@ export function HomePage() {
         </div>
         <p style={{ fontSize: '0.9rem', color: 'var(--muted)', lineHeight: 1.7, marginBottom: '1.25rem' }}>
           Это единая панель управления: состояние ядра, API, плагины, вебхуки и эксплуатационная документация.
-          Все компоненты работают через локальный Internal API.
+          Все компоненты работают через локальный Neyra API.
         </p>
 
         <div className="grid-2">
@@ -44,9 +44,9 @@ export function HomePage() {
               Техническая информация
             </p>
             <p style={{ fontSize: '0.82rem', color: '#9090b0', lineHeight: 1.65 }}>
-              Internal API поднимается вместе с{' '}
+              Neyra API поднимается вместе с{' '}
               <span className="inline-code">python main.py</span> и использует конфиг{' '}
-              <span className="inline-code">server/modules/internal_api/config.yaml</span>.
+              <span className="inline-code">server/config/server.yaml</span> (<span className="inline-code">api:</span>).
             </p>
             <p style={{ marginTop: '0.75rem', fontSize: '0.75rem', color: 'var(--muted)', display: 'flex', gap: 6, alignItems: 'center' }}>
               <Cable size={13} />
@@ -59,7 +59,7 @@ export function HomePage() {
       {/* Quick stats */}
       <div className="grid-3">
         {[
-          { label: 'API Версия', value: 'v1',    sub: 'Internal API',       color: 'var(--purple)' },
+          { label: 'API Версия', value: 'v1',    sub: 'core.api',           color: 'var(--purple)' },
           { label: 'Интерфейс', value: 'Local',  sub: 'localhost:8787',     color: 'var(--cyan)' },
           { label: 'Статус',    value: 'Ready',  sub: 'Сервер запущен',     color: 'var(--emerald)' },
         ].map(({ label, value, sub, color }) => (

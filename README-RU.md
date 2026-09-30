@@ -97,7 +97,7 @@ Neyra развивается как персональный публичный 
 5. Скопируй слои: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). Модели — в `server/config/llm.yaml` (`llm.talk_model` / `brain_model` / …).
 6. Скопируй шаблоны конфигов плагинов:
   - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
-  - `server/modules/internal_api/config.example.yaml` → `server/modules/internal_api/config.yaml`
+  - `server/config/server.example.yaml` → `server/config/server.yaml (api:)`
   - при необходимости другие: `server/modules/<id>/config.example.yaml` → `server/modules/<id>/config.yaml`
 7. Preflight (пример): `cd server && python scripts/healthcheck.py --mode console --skip-http`
 8. Запуск:

@@ -46,7 +46,7 @@ Plugins run **in the same Python process** as Neyra (unless you spawn a subproce
 - **Search & knowledge:** wrap **Google Custom Search**, **Bing Web Search**, **Yandex Search**, **Brave Search**, SerpAPI, etc., and feed snippets into the agent or memory (respect each provider’s Terms of Service).
 - **Media:** **YouTube Data API** (metadata, captions where allowed), Google Drive / Dropbox for user-authorized file access (OAuth in the plugin).
 - **Voice / STT / TTS:** call cloud or local APIs from your plugin; keep keys in `.env` and tuning in a **plugin-local config** (see below).
-- **Embedded HTTP servers:** FastAPI/uvicorn like `internal_api`, or a minimal webhook receiver.
+- **Embedded HTTP servers:** FastAPI/uvicorn (product HTTP lives in `core/api`), or a minimal webhook receiver.
 - **Background logic:** periodic tasks (with care not to block the whole process) — RSS, calendars, custom “if this then notify”.
 - **Core integration:** read `ctx.config` (global Neyra config); use `ctx.agent` when provided, or `NeyraAgent(ctx.config)` for assistant replies so routing and logging stay consistent.
 
@@ -228,7 +228,7 @@ modules/000EXAMPLE/
     main.py
 ```
 
-Shipped: `discord/` (unified text + music), `internal_api/`, `local_voice/`.
+Shipped: `discord/` (unified text + music), `local_voice/`. Product HTTP API: `core/api/`.
 
 ### `plugin.yaml` fields
 
@@ -300,11 +300,11 @@ Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for 
 ## Reference implementations
 
 
-| Path                                        | Role                                      |
-| ------------------------------------------- | ----------------------------------------- |
-| `modules/discord/`                       | Discord (text + music); uses injected `ctx.agent`. |
-| `modules/internal_api/`                  | FastAPI routes; app built in core (`build_app`). |
-| `modules/local_voice/` | Stub.                                    |
+| Path                   | Role                                                          |
+| ---------------------- | ------------------------------------------------------------- |
+| `modules/discord/`     | Discord (text + music); uses injected `ctx.agent`.            |
+| `core/api/`            | Product FastAPI routes; app built in core (`build_app`).      |
+| `modules/local_voice/` | Stub.                                                         |
 
 
 ---
@@ -333,7 +333,7 @@ Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for 
 `**ctx.agent` is `None`**
 
 - Expected when the core did not inject an agent (only Discord resident path injects `ctx.agent`).
-- Create one in the plugin: `NeyraAgent(ctx.config)` (same idea as `internal_api`).
+- Create one in the plugin: `NeyraAgent(ctx.config)` (same idea as `core/api`).
 
 **Duplicate `cli_modes` warning**
 

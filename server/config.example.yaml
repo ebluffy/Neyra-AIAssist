@@ -9,6 +9,11 @@
 # EN: Secrets only in .env (see .env.example). Modules: modules/<id>/config.yaml
 # RU: Секреты только в .env. Модули — modules/<id>/config.yaml
 #
+# EN: Public site URL (dashboard + API) → server/config/server.yaml → api.public_base_url (+ path_prefix)
+# RU: Публичный URL сайта (дашборд + API) → server/config/server.yaml → api.public_base_url
+#     DNS (Cloudflare A → IP VPS) у провайдера; в yaml — уже готовый домен (не .env).
+#     Example: https://neyra.owyx.site → UI / ; API …/api/v1
+#
 # Layers (loaded in order; later wins on leaf keys, nested dicts deep-merge):
 #   config/llm.yaml, agent.yaml, memory.yaml, voice.yaml,
 #   modules.yaml, runtime.yaml, server.yaml, then this file.

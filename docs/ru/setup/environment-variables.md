@@ -14,7 +14,7 @@
 - `DISCORD_TOKEN` — токен Discord-бота (если плагин `discord` включён в `server/modules/discord/plugin.yaml`).
 
 ## Internal API
-- `INTERNAL_API_TOKEN` — опциональный Bearer для `/v1` и WS.
+- `API_TOKEN` — опциональный Bearer для `/v1` и WS.
 
 ## Voice / vision / integrations
 - `DEEPGRAM_API_KEY`, `GROQ_API_KEY`, `YANDEX_API_KEY`, `YANDEX_FOLDER_ID`

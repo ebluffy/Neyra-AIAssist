@@ -14,9 +14,9 @@
 2. Copy `.env.example` → `.env` and fill secrets (under `server/`).
 3. Copy short root: `config.example.yaml` → `config.yaml`.
 4. Copy layers: `config/*.example.yaml` → `config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). See `docs/config-keys.md`.
-5. For plugins copy:
+5. For plugins / server layer copy:
    - `modules/discord/config.example.yaml` → `modules/discord/config.yaml`
-   - `modules/internal_api/config.example.yaml` → `modules/internal_api/config.yaml`
+   - `config/server.example.yaml` → `config/server.yaml` (API bind + `api.public_*`)
 6. (optional) dashboard:
    - `cd dashboard && npm install && npm run build`
 7. Run from `server/`:

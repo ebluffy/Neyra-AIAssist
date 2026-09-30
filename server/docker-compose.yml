@@ -1,20 +1,22 @@
 # Neyra in Docker Desktop (Windows/Mac/Linux).
 # From repo root: docker compose -f server/docker-compose.yml up --build
 #
-# Setup: copy server/.env.example → server/.env
+# Setup: copy server/.env.example → server/.env and set API_TOKEN (required when bind is 0.0.0.0).
 # API from host: http://127.0.0.1:8787/v1/health
 
 services:
   neyra:
     build: .
     ports:
-      - "8787:8787"
+      # Publish only on loopback of the host (not 0.0.0.0).
+      - "127.0.0.1:8787:8787"
     env_file:
       - path: ./.env
         required: false
     environment:
-      INTERNAL_API_BIND_HOST: "0.0.0.0"
-      NEYRA_DEBUG_LIFECYCLE: "1"
+      # Inside the container listen on all interfaces; host mapping stays loopback-only.
+      API_BIND_HOST: "0.0.0.0"
+      # NEYRA_DEBUG_LIFECYCLE: "1"   # opt-in only; prefer POST /v1/system/restart
     volumes:
       - ./config.yaml:/app/config.yaml
       - ./config:/app/config

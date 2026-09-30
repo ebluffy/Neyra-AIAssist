@@ -21,10 +21,10 @@ def run_plugin(ctx: PluginContext) -> None:
         ctx.root,
         "yes" if ctx.agent is not None else "no",
     )
-    # RU: Учебный пример — без сети и секретов. Реальные интерфейсы: discord, internal_api.
-    # EN: Tutorial only — no network/secrets. Real interfaces: discord, internal_api.
+    # RU: Учебный пример — без сети и секретов. Реальные модули: discord; HTTP API — core.api.
+    # EN: Tutorial only — no network/secrets. Real modules: discord; HTTP API is core.api.
     print(
-        "[000EXAMPLE] OK. See modules/discord/ or modules/internal_api/ for real plugins."
+        "[000EXAMPLE] OK. See modules/discord/ for a real plugin; API lives in core/api/."
     )
 
 

@@ -194,25 +194,61 @@ def apply_env_secrets(cfg: dict) -> None:
     if apk:
         cfg.setdefault("agent_proxy", {})["secret_key"] = apk
 
-    iat = _s("INTERNAL_API_TOKEN")
-    if iat:
-        cfg.setdefault("internal_api", {})["token"] = iat
+    # Fail-fast: old INTERNAL_API_* names are not dual-read (no silent empty-token open API).
+    legacy_api_env = [
+        n
+        for n in (
+            "INTERNAL_API_TOKEN",
+            "INTERNAL_API_VIEWER_TOKEN",
+            "INTERNAL_API_MAINT_TOKEN",
+            "INTERNAL_API_BIND_HOST",
+        )
+        if _s(n)
+    ]
+    if legacy_api_env:
+        raise RuntimeError(
+            "Removed env vars (rename to API_*): "
+            + ", ".join(legacy_api_env)
+            + ". Example: INTERNAL_API_TOKEN → API_TOKEN. No legacy dual-read."
+        )
 
-    bind_h = _s("INTERNAL_API_BIND_HOST")
+    iat = _s("API_TOKEN")
+    iak = _s("API_KEY")
+    if iat and iak and iat != iak:
+        raise RuntimeError(
+            "API_TOKEN and API_KEY both set but differ — keep one admin Bearer "
+            "(prefer API_TOKEN; API_KEY is an accepted alias when API_TOKEN is empty)."
+        )
+    admin_tok = iat or iak
+    if admin_tok:
+        cfg.setdefault("api", {})["token"] = admin_tok
+
+    bind_h = _s("API_BIND_HOST")
     if bind_h:
-        cfg.setdefault("internal_api", {})["host"] = bind_h
+        cfg.setdefault("api", {})["host"] = bind_h
 
-    iv = _s("INTERNAL_API_VIEWER_TOKEN")
+    iv = _s("API_VIEWER_TOKEN")
     if iv:
-        cfg.setdefault("internal_api", {})["viewer_token"] = iv
+        cfg.setdefault("api", {})["viewer_token"] = iv
 
-    im = _s("INTERNAL_API_MAINT_TOKEN")
+    im = _s("API_MAINT_TOKEN")
     if im:
-        cfg.setdefault("internal_api", {})["maint_token"] = im
+        cfg.setdefault("api", {})["maint_token"] = im
+
+    pub_env = [
+        n
+        for n in ("API_PUBLIC_BASE_URL", "DASHBOARD_PUBLIC_BASE_URL", "INTERNAL_API_PUBLIC_BASE_URL")
+        if _s(n)
+    ]
+    if pub_env:
+        raise RuntimeError(
+            "Public site URL is configured only in server/config/server.yaml → api.public_base_url "
+            f"(not env). Remove: {', '.join(pub_env)}"
+        )
 
     wh_in = _s("WEBHOOK_INBOUND_SECRET")
     if wh_in:
-        cfg.setdefault("internal_api", {})["webhook_inbound_secret"] = wh_in
+        cfg.setdefault("api", {})["webhook_inbound_secret"] = wh_in
 
     yk = _s("YANDEX_API_KEY")
     yf = _s("YANDEX_FOLDER_ID")

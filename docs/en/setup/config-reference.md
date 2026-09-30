@@ -21,7 +21,7 @@
 
 ## Вынесено в плагины
 - `discord` -> `server/modules/discord/config.yaml`
-- `internal_api`, `dashboard` -> `server/modules/internal_api/config.yaml`
+- `api`, `dashboard` -> `server/config/server.yaml (api:)`
 - локальные plugin settings -> `server/modules/<id>/config.yaml`
 
 ## Запрещено хранить в yaml

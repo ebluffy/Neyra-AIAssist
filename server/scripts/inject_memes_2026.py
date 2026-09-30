@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Инъекция справочника мемов Q1 2026 в Chroma через Internal API (POST /v1/memory/add).
+Инъекция справочника мемов Q1 2026 в Chroma через Neyra API (POST /v1/memory/add).
 Один HTTP-запрос на один мем — гранулярные векторы для RAG.
 
 Запуск (ядро должно быть поднято: main.py --mode core):
   python scripts/inject_memes_2026.py
 
-Токен: internal_api.token (слои config/server.yaml + modules/internal_api)
-или INTERNAL_API_TOKEN / переменные из .env (через load_layered_config).
+Токен: api.token (server/config/server.yaml) или API_TOKEN в .env
+(через load_layered_config).
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def load_config_dict() -> dict:
 
 
 def api_base_and_token(cfg: dict) -> tuple[str, str]:
-    api = cfg.get("internal_api") or {}
+    api = cfg.get("api") or {}
     host = str(api.get("host") or "127.0.0.1").strip()
     port = int(api.get("port") or 8787)
     base = f"http://{host}:{port}".rstrip("/")
