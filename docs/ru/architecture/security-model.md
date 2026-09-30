@@ -11,6 +11,7 @@
 - Neyra API (`core.api`) по умолчанию слушает `127.0.0.1`. Всё нелокальное — недоверенное, пока не закрыто.
 - **Политика Wave 1 (осознанно):** если **не задан ни один** из `API_TOKEN` / `API_KEY` / `API_VIEWER_TOKEN` / `API_MAINT_TOKEN`, роль `anon` и доступ ко всем эндпоинтам **только при bind на loopback**. Non-loopback без токенов → процесс не стартует (`assert_api_bind_safe`). Обязательные токены даже на localhost — отдельное ужесточение, не Wave 1.
 - Когда токены заданы: `viewer` — чтение; `maint+` — soft-restart; `admin` — чат/мутации. Минимум прав.
+- **Gate дашборда:** отдельный ключ (хеш PBKDF2 в `data/dashboard_auth.sqlite`). Первый `POST /v1/dashboard/auth/setup` — пока ключ не задан; при bind ≠ loopback setup дополнительно только с **loopback**-клиента. SPA держит plaintext в `sessionStorage` до «Выйти».
 
 ## Секреты
 - Секреты только в `.env`; `apply_env_secrets` подставляет при старте. **Не коммить** `config.yaml`, plugin `config.yaml`, `.env`.

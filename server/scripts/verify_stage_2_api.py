@@ -392,6 +392,11 @@ def check_dashboard_gate_store() -> list[str]:
         errs.append("short key should fail")
     except ValueError:
         pass
+    try:
+        store.setup("short7!")
+        errs.append("7-char key should fail (min 8)")
+    except ValueError:
+        pass
     store.setup("my-secret-key")
     if not store.is_configured():
         errs.append("after setup should be configured")
@@ -400,7 +405,7 @@ def check_dashboard_gate_store() -> list[str]:
     if store.verify("wrong-key"):
         errs.append("wrong key must not verify")
     try:
-        store.setup("another")
+        store.setup("another-longer")
         errs.append("second setup should fail")
     except RuntimeError:
         pass

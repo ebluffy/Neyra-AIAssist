@@ -286,6 +286,13 @@ body::after {
   color: var(--danger);
   font-size: 0.8rem;
 }
+.dash-auth-generate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+}
 .dash-auth-hint {
   margin-top: 1rem;
   font-size: 0.72rem;

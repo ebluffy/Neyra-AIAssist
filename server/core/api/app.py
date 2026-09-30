@@ -302,7 +302,7 @@ class ChatRequest(BaseModel):
 
 
 class DashboardGateKeyRequest(BaseModel):
-    key: str = Field(min_length=4, max_length=256)
+    key: str = Field(min_length=8, max_length=256)
 
 
 class MemorySearchRequest(BaseModel):
@@ -1051,8 +1051,21 @@ def build_app(
 
     @app.post("/v1/dashboard/auth/setup")
     async def v1_dashboard_auth_setup(body: DashboardGateKeyRequest, request: Request):
-        """Public once: create the dashboard access key (fails if already set)."""
+        """
+        Create the dashboard access key once.
+        If the API binds non-loopback, setup is only allowed from a loopback client
+        (first-setup window; prevents remote race to claim the key).
+        """
         trace_id = _trace_id(request)
+        bind_host = str((_api_cfg(config).get("host") or "127.0.0.1"))
+        if not _is_loopback_host(bind_host):
+            client_host = request.client.host if request.client else ""
+            if not _is_loopback_host(client_host):
+                raise ApiError(
+                    "forbidden",
+                    "Dashboard key setup is only allowed from localhost when API bind is not loopback",
+                    403,
+                )
         try:
             dash_auth.setup(body.key)
         except RuntimeError as e:
