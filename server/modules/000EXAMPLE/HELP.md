@@ -11,6 +11,8 @@
 
 This document is the **full English tutorial** for plugin authors: what plugins are, what you can realistically build (including international integrations), what is **not realistically achievable** inside a plugin alone (limits, not “rules”), how to load **your own config files** and **your own `.env` keys**, anti-patterns, Hello World, and API reference.
 
+**Layout note:** after Stage 1b the server lives under `server/`. Paths below like `modules/`, `core/`, `main.py`, and `scripts/` are relative to **`server/`** (run `cd server` first). Secrets: `server/.env`. Product Control API: `server/core/api/` (not a plugin).
+
 ---
 
 ## Table of contents
@@ -73,7 +75,7 @@ These are **limitations of reality and architecture**, not “forbidden by polic
 | Avoid                                                               | Why                                                                                                         |
 | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | Editing files under `core/` from plugin code                        | Keeps plugins removable.                                                                                    |
-| Committing secrets in `plugin.yaml` or in tracked source            | Use `.env` and document variable names in `.env.example`.                                                   |
+| Committing secrets in `plugin.yaml` or in tracked source            | Use `server/.env` and document variable names in `server/.env.example`.                                     |
 | Blocking the asyncio thread without reason                          | Prefer async I/O or a dedicated subprocess for heavy work.                                                  |
 | Bypassing `NeyraAgent` for **assistant** replies                    | Use `NeyraAgent` so models and logs stay centralized (raw HTTP to **other** APIs for search/music is fine). |
 | Duplicate non-empty `cli_modes` entries vs another plugin (invoke labels) | Keep `cli_modes: []` unless you reserve a unique invoke name. |
@@ -127,15 +129,15 @@ def run_plugin(ctx: PluginContext) -> None:
 
 ## Your own secrets from `.env`
 
-The project already calls `load_dotenv` from `**main.py`** before config load, so **at `run_plugin` time** `os.environ` contains variables from the root `.env`.
+The project already calls `load_dotenv` from `**main.py`** (under `server/`) before config load, so **at `run_plugin` time** `os.environ` contains variables from **`server/.env`**.
 
 **Example — custom Yandex Search (or any) API key:**
 
-1. User adds to `**.env`** (root of repo, next to `main.py`):
+1. User adds to **`server/.env`** (next to `server/main.py`):
   ```env
    YANDEX_SEARCH_API_KEY=your_key_here
   ```
-2. Document the same name in `**.env.example**` (commented) so others know the variable exists.
+2. Document the same name in **`server/.env.example`** (commented) so others know the variable exists.
 3. In the plugin:
   ```python
    import os
@@ -210,7 +212,7 @@ Shipped plugins attach to the **core** process (`python main.py`, default). Ther
 For a quick **manual** run of your plugin id (development):
 
 ```bash
-python scripts/invoke_plugin.py hello_world
+cd server && python scripts/invoke_plugin.py hello_world
 ```
 
 The **000EXAMPLE** template stays **enabled: false** and uses **`cli_modes: []`** so it never collides with optional invoke labels.
@@ -254,7 +256,7 @@ def run_plugin(ctx: PluginContext) -> None:
     ...
 ```
 
-- `ctx.root` — repo root.
+- `ctx.root` — server root (`server/`, where `main.py` lives).
 - `ctx.config` — full YAML after `.env` merge for **global** config.
 - `ctx.agent` — set for **Discord** when the plugin is started by the core server; else build `NeyraAgent(ctx.config)` if needed.
 
@@ -264,7 +266,7 @@ def run_plugin(ctx: PluginContext) -> None:
 
 1. **`python main.py`** (or `--mode core`) starts **`core.runtime.server.run_neyra_server`**: one FastAPI app, dashboard static files, one `NeyraAgent`, reflection scheduler, health monitor, and **resident** plugins (e.g. Discord) in background threads.
 2. **`python main.py --mode console`** runs the **terminal chat** only — no HTTP stack; use it to iterate on prompts.
-3. Plugins do **not** register separate global CLI modes. Keep **`cli_modes: []`** unless you need a reserved string for a future invoke API. For ad-hoc runs, use **`scripts/invoke_plugin.py <plugin_id>`**.
+3. Plugins do **not** register separate global CLI modes. Keep **`cli_modes: []`** unless you need a reserved string for a future invoke API. For ad-hoc runs, use **`cd server && python scripts/invoke_plugin.py <plugin_id>`**.
 
 Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for resident/on-demand hooks.
 
@@ -272,7 +274,7 @@ Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for 
 
 ## Loader API
 
-`**core/plugins/loader.py`** — class `**PluginLoader`** (construct with project root, same as `main.py`: `PluginLoader(project_root)`).
+`**core/plugins/loader.py`** — class `**PluginLoader`** (construct with the server root, same as `main.py`: `PluginLoader(server_root)`).
 
 
 | Method                            | Purpose                                                                                              |
@@ -311,7 +313,7 @@ Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for 
 
 ## Checklist before sharing your plugin
 
-- No secrets in git — document env var names in `.env.example`.
+- No secrets in git — document env var names in `server/.env.example`.
 - Unique `id`; keep `cli_modes` empty or unique per plugin.
 - Optional `config.example.yaml` for plugin-local settings.
 - Assistant replies via `NeyraAgent` unless you document an exception.
@@ -323,11 +325,11 @@ Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for 
 **Plugin not discovered**
 
 - Check that the plugin has `**enabled: true**` when you expect it.
-- Run from the **repository root** (where `main.py` lives).
+- Run the server from **`server/`** (`cd server && python main.py`).
 
 **Import errors (`ModuleNotFoundError`, `No module named 'core'`)**
 
-- Start with `python main.py` from the project root, not from inside `modules/`.
+- Start with `cd server && python main.py`, not from inside `modules/`.
 - Imports expect the usual layout: `from core...`, `from modules...`.
 
 `**ctx.agent` is `None`**
@@ -341,7 +343,7 @@ Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for 
 
 **Env var empty / “key not set”**
 
-- `.env` missing, wrong variable name, or typo — align code, `.env`, and `.env.example`.
+- `server/.env` missing, wrong variable name, or typo — align code, `server/.env`, and `server/.env.example`.
 
 **Plugin does not show up in discovery**
 

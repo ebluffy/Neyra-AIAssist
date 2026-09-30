@@ -1,28 +1,29 @@
 <!-- co-authored-cursor-badge -->
 [![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
 
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
 
 ---
 
-# Справочник config.yaml
+# `server/config.yaml` reference
 
-`config.yaml` содержит только базовый runtime-конфиг ядра.
+`server/config.yaml` holds only the short root runtime config for the core (assistant, paths, pointers to layers).
 
 ## Key sections
+
 - `assistant` — `name`, `persona_path` / `appearance_path` (persona pack), `system_prompt` fallback
-- `agent.fast_path` — regex allowlist for home commands (off by default; publishes `home.*`; multi-client e2e → plan stage 2)
-- `llm` — per-role nested blocks: **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** (VL + vision pipeline). Each role sets **`provider`**. Provider base URLs under **`llm.providers.<name>`**. No top-level `BACKEND` / `openrouter:` / `vision:`.
-- `memory` — Hub/RAG; optional `pre_context`; optional `session_archive` (STM archive on overflow/reset; off by default)
-- `voice` — per modality: `stt` / `tts` each with `prefer` + `local`/`cloud`.`enable` (soft ERROR if unset; legacy `voice_cloud` / `is_local` still normalized). Cloud STT: `provider` = `deepgram` | `groq` | `openrouter` (Whisper via `POST …/audio/transcriptions`, same `OPENROUTER_API_KEY`, optional `upload_mode`: `multipart`|`json`).
-- `health_monitor`
-- `backup`, `external_storage`
-- `logging`
+- `paths.data_dir` — runtime data root (default `server/data` from repo root; override `NEYRA_DATA_DIR`)
+- `agent.fast_path` — regex allowlist for home commands (off by default; publishes `home.*`; multi-client e2e → Stage 3+)
+- Layer files under `server/config/` — see `docs/config-keys.md` for full keys:
+  - `llm.yaml` — per-role **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** with **`provider`**; providers under **`llm.providers.<name>`**. No top-level `BACKEND` / `openrouter:` / `vision:`.
+  - `memory.yaml`, `voice.yaml`, `agent.yaml`, `modules.yaml`, `runtime.yaml`
 
-## Вынесено в плагины
-- `discord` -> `server/modules/discord/config.yaml`
-- `api`, `dashboard` -> `server/config/server.yaml (api:)`
-- локальные plugin settings -> `server/modules/<id>/config.yaml`
+## Moved out of the root file
 
-## Запрещено хранить в yaml
-- API keys и токены. Используйте `.env`.
+- `discord` → `server/modules/discord/config.yaml`
+- `api`, `dashboard` → `server/config/server.yaml` (sections `api:` and `dashboard:`)
+- Other plugin settings → `server/modules/<id>/config.yaml`
+
+## Do not store in YAML
+
+- API keys and tokens. Use `server/.env`.

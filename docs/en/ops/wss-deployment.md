@@ -1,37 +1,35 @@
 <!-- co-authored-cursor-badge -->
 [![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
 
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
 
 ---
 
 # WSS deployment notes
 
-Neyra gateway exposes:
+## Endpoints
 
-- HTTP API: `/v1/*`
-- WebSocket endpoints:
+- HTTP API: `/v1/*` (Control API in `server/core/api/`)
+- WebSocket:
   - `/v1/ws/chat`
   - `/v1/ws/audio`
 
-## Local development
+Local:
 
-- Start core (includes API): `python server/main.py`
+- Start core: `python server/main.py`
 - Use `ws://127.0.0.1:8787/v1/ws/chat` and `ws://127.0.0.1:8787/v1/ws/audio`
 
-## Production
+Public (when `api.public_base_url` + `api.public_path_prefix` are set):
 
-Use a reverse proxy (Nginx, Caddy, Traefik) with TLS termination:
+- Example chat: `wss://neyra.owyx.site/api/v1/ws/chat`
 
-- external clients connect only via `wss://...`
-- proxy upstream to local `ws://127.0.0.1:8787`
+## TLS and proxy
 
-Important:
+Deploying `wss://` in production is required for external chat/audio clients and for the Stage 3 Tauri client. Terminate TLS at Caddy/nginx on the VPS; forward WebSocket upgrades end-to-end (including through **frp** when the server runs on a home server — see [`docs/PLAN.md`](../../PLAN.md) §3 and [api-reverse-proxy](api-reverse-proxy.md)).
 
-- keep `Upgrade` and `Connection` headers for WebSocket upgrade
-- forward the `Authorization` header (or use the `?token=` query)
-- enforce external HTTPS/WSS only (no plain WS on the public interface)
+Full Event Bus ↔ dashboard WebSocket bridge is backlog; until then the React SPA relies mainly on REST `/v1`, while `/v1/ws/chat` and `/v1/ws/audio` serve programmatic clients.
 
-## Roadmap (Stage 1 — Web UI bridge)
+## Auth
 
-Deploying `wss://` in production is required for external chat/audio clients. **Stage 1** adds a **bidirectional bridge** between the React dashboard and the Event Bus (publish/subscribe over WebSocket), so the browser becomes a first-class real-time control plane — see `PLAN.md`, section «Этап 1». Currently deferred (soak Discord+music first). Until then, the SPA relies mainly on REST `/v1` while `/v1/ws/chat` and `/v1/ws/audio` serve programmatic clients.
+- WebSocket chat requires **admin** (same as `POST /v1/chat`): `Authorization: Bearer` or `?token=` (prefer header).
+- With public exposure, tokens in `server/.env` are mandatory; loopback-only anonymous access does not apply.

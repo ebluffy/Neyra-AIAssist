@@ -7,13 +7,13 @@
 
 # Переменные окружения
 
-Основной список: `.env.example`.
+Основной список: `server/.env.example` (runtime — `server/.env`).
 
 ## Критичные
 - `OPENROUTER_API_KEY` — ключ LLM провайдера.
 - `DISCORD_TOKEN` — токен Discord-бота (если плагин `discord` включён в `server/modules/discord/plugin.yaml`).
 
-## Internal API
+## Control API
 - `API_TOKEN` — опциональный Bearer для `/v1` и WS.
 
 ## Voice / vision / integrations

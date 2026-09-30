@@ -1,132 +1,46 @@
-# Инвентаризация репозитория Neyra
+# Inventory (historical Stage 1a)
 
-> Этап 1a. Ниже перечислены фактические исходные пути и целевые пути после 1b. Runtime-файлы под `.gitignore` перед миграцией сверяются локально; их отсутствие в Git не означает, что их можно удалить.
+> **Status:** completed. Physical migration finished in Stage **1b** (PR #14). This file is a **short historical map**, not an active checklist.
+> Live keys: [`config-keys.md`](config-keys.md). Roadmap: [`PLAN.md`](PLAN.md).
 
-## 1. Верхний уровень: откуда → куда
+## Current layout (canonical)
 
-| Сейчас | После 1b | Назначение и решение |
-|---|---|---|
-| `core/` | `server/core/` | ядро, агент, память, LLM, runtime, tools и Event Bus; серверный код |
-| `interfaces/` | `server/modules/` | Discord, Internal API, local voice и example module; продуктовые модули |
-| `frontend/` | `server/dashboard/` | текущий web dashboard остаётся серверным fallback UI, не Windows-клиентом |
-| `tools/mcp_server/` | `devtools/mcp_server/` | MCP для разработки и AI-агентов; не включать в runtime server/client packages |
-| `scripts/` | `server/scripts/` | server healthcheck, plugin invocation, Lavalink plugin fetch, voice preflight и migration/test scripts |
-| `prompts/` | `server/prompts/` | системные prompts и persona assets |
-| `sounds/` | `server/sounds/` | звуки ответа сервера; UI-звуки клиента принадлежат `client/` bundle |
-| `models/` | `server/models/` или внешний runtime cache | проверить вес/назначение; не включать скачиваемый cache в package без необходимости |
-| `memory/` | `server/data/memory/` | SQLite Hub, Chroma и пользовательская память; перенос migration helper с hash/size check после backup |
-| `logs/` | `server/logs/` | runtime logs; перенос migration helper с проверкой |
-| root `config.yaml` (ignored runtime file) | `server/config.yaml` | перенести с сохранением пользовательских значений |
-| root `.env` (ignored runtime file) | `server/.env` | перенести секреты без печати и коммита |
-| `interfaces/discord/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/discord/config.yaml` | мигрировать отдельно; tracked example указан ниже |
-| `interfaces/internal_api/config.yaml` (ignored runtime file, проверить наличие) | `server/config/server.yaml` → `api:` / `dashboard:` (Stage 2: API в `core/api`, не module) | настройки bind/public URL в слое server; tokens — `.env` (`API_*`) |
-| `interfaces/local_voice/config.yaml` (ignored runtime file, проверить наличие) | `server/modules/local_voice/config.yaml` | merge → `plugins.local_voice`; stub uses `wake_word` (см. `docs/config-keys.md`) |
-| `interfaces/discord/lavalink/Lavalink.jar` (локальный/ignored runtime artifact, проверить наличие) | `server/modules/discord/lavalink/Lavalink.jar` | `.gitignore`; скачать `python server/scripts/fetch_lavalink.py`, не коммитить |
-| `main.py`, root entrypoints и Docker Compose | server entrypoints под `server/`; thin launch/deploy files могут остаться в root | выполнять из `server/` либо выставлять `PYTHONPATH=server` |
-| корневой `PLAN.md` | удалить | канон — `docs/PLAN.md`; дубликат в корне не нужен |
-| `docs/inventory.md` | `docs/inventory.md` | карта аудита остаётся в docs; исключена из legacy-path scan по условию 1b |
-| отсутствующий продуктовый `client/` | `client/` | новый Tauri 2 + React + TypeScript Windows control client |
+| Path | Role |
+|------|------|
+| `server/core/` | Agent, memory, reflection, plugins runtime, **Control API** (`server/core/api/`) |
+| `server/modules/` | Product plugins: `discord`, `local_voice`, template `000EXAMPLE` |
+| `server/dashboard/` | Server web UI (React); served by Control API |
+| `server/config.yaml` + `server/config/*.yaml` | Layered configuration (Stage 1c) |
+| `server/.env` | Secrets only |
+| `server/data/` | Runtime data (`memory/`, dashboard auth DB, …); override `NEYRA_DATA_DIR` |
+| `server/logs/` | Runtime logs |
+| `client/` | Windows Tauri control app (**scaffold**; MVP = Stage 3) |
+| `devtools/mcp_server/` | Dev-only MCP for Cursor |
+| `docs/` | PLAN, guides, ADRs |
 
-## 2. Фактические module paths и конфиги
+## Legacy → current (1b move, done)
 
-Tracked example paths сверены с деревом репозитория. Runtime `config.yaml` ниже ignored и может существовать только в локальной рабочей копии.
+| Was (pre-1b) | Now |
+|--------------|-----|
+| `core/` | `server/core/` |
+| `interfaces/` | `server/modules/` |
+| `frontend/` | `server/dashboard/` |
+| `scripts/`, `prompts/`, `sounds/` | under `server/` |
+| `tools/mcp_server/` | `devtools/mcp_server/` |
+| root `memory/` | `server/data/memory/` |
+| root `logs/` | `server/logs/` |
+| root `config.yaml` / `.env` | `server/config.yaml` / `server/.env` |
+| `interfaces/internal_api/` | removed as module; API lives in `server/core/api/`, config `api:` in `server/config/server.yaml` (Stage 2) |
 
-| Откуда (runtime) | Откуда (tracked example/module) | Куда после 1b | Примечание |
-|---|---|---|---|
-| `interfaces/discord/config.yaml` (ignored; наличие проверить локально) | `interfaces/discord/config.example.yaml` | `server/modules/discord/config.yaml` и соседний `config.example.yaml` | Discord/music/Lavalink module; перенести реальный конфиг отдельным migration step |
-| `interfaces/internal_api/config.yaml` (ignored; наличие проверить локально) | `interfaces/internal_api/config.example.yaml` (legacy) | `server/config/server.yaml` (`api:`, `dashboard:`) + `server/core/api/` | Stage 2: API — ядро; tokens в `API_*` env |
-| `interfaces/local_voice/config.yaml` (ignored; наличие проверить локально) | `interfaces/local_voice/config.example.yaml` | `server/modules/local_voice/config.yaml` и соседний `config.example.yaml` | Consumer: `merge_plugin_configs` → `plugins.local_voice`; stub читает `wake_word` |
-| runtime-конфига у example module нет в tracked tree | `interfaces/000EXAMPLE/` (`plugin.yaml`, `core/main.py`, README/help files) | `server/modules/000EXAMPLE/` | реальный example module и template; сохранить как developer template |
-| `tools/mcp_server/server.py`, `tools/mcp_server/requirements.txt` | source tree `tools/mcp_server/` | `devtools/mcp_server/` | dev tooling, не продуктовый модуль |
+## Verify layout
 
-## 3. Игнорируемые данные и безопасная миграция
+```bash
+python server/scripts/verify_stage_1b.py
+```
 
-`git mv` переносит только tracked files. До 1b нужен полный внешний backup проекта и локальных runtime-данных. После backup отдельный migration helper переносит найденные ignored files из источника в соответствующее назначение, выводит список source/destination, сверяет размеры или hashes, не перезаписывает target без явного флага и сохраняет source до успешного запуска.
+Migrate helper (already applied on working machines): `server/scripts/migrate_runtime_layout.py`.
 
-Обязательный набор проверки и переноса: root `config.yaml` → `server/config.yaml`, root `.env` → `server/.env`, все module `config.yaml`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/`, SQLite Hub, Chroma persistence и Lavalink JAR. Отсутствующий путь отмечается как отсутствующий и не создаётся поверх другой копии автоматически. После переноса проверить чтение Hub/Chroma по новому path, server startup, Internal API, Discord/Lavalink и local voice config consumer. Default `paths.data_dir` после 1b — `server/data` (override `NEYRA_DATA_DIR`).
+## Notes
 
-## 4. Конфигурация: ключи и env
-
-Подробная таблица ключей (type / default / source / target / env / compatibility) — [`docs/config-keys.md`](config-keys.md) (Этап 1c).
-
-Группы ниже — обзор областей; канон файлов после 1c:
-
-| Область | Фактический источник | Целевой файл после 1c |
-|---|---|---|
-| `assistant.*`, `paths.data_dir`, `system.timezone` | root consumers | `server/config.yaml` |
-| `llm.providers.*`, `llm.talk_model` / `brain_model` / `memory_model` / `vision_model` (+ `.provider`) | `core/llm/`, bootstrap; dual-backend via per-role `provider` (1d) | `server/config/llm.yaml` |
-| `agent.*` | `core/agent/` | `server/config/agent.yaml` |
-| `memory.*`, `backup.*`, `external_storage.*` | `core/memory/`, backup | `server/config/memory.yaml` |
-| `voice.*` | `core/voice/config.py` | `server/config/voice.yaml` |
-| `mcp_client.*` | MCP client | `server/config/modules.yaml` |
-| `logging.*`, `health_monitor.*` | bootstrap, health | `server/config/runtime.yaml` |
-| `api.*`, `dashboard.*` | `core/api/`, bootstrap | `server/config/server.yaml` |
-| Discord | Discord module | `server/modules/discord/config.yaml` |
-| `local_voice` | `merge_plugin_configs` → `plugins.local_voice`; stub reads `wake_word` | `server/modules/local_voice/config.yaml` |
-
-### 4.1 Environment variables
-
-| Variable | Назначение | Решение |
-|---|---|---|
-| `OPENROUTER_API_KEY` | OpenRouter provider secret | оставить в server `.env` |
-| `AIHOPE_API_KEY` | AiHope-compatible provider secret | оставить один раз в inventory и server `.env` |
-| `DEEPGRAM_API_KEY`, `GROQ_API_KEY`, `YANDEX_API_KEY`, `YANDEX_FOLDER_ID`, `YANDEX_ID_KEY` | voice/STT/TTS providers | сохранить используемые значения и aliases |
-| `DISCORD_TOKEN` | Discord module | сохранить в server `.env` |
-| `API_TOKEN`, `API_VIEWER_TOKEN`, `API_MAINT_TOKEN` | Neyra API roles | сохранить, не логировать и не печатать |
-| `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN` | доступ к gated Hugging Face models | optional, закомментировать в `.env.example`; public embeddings и Whisper не требуют токена |
-| `NEYRA_DATA_DIR` | override для `paths.data_dir` | optional; default после 1b — `server/data` (`./data` при cwd=`server/`) |
-| `API_BIND_HOST` | bind override | default localhost; LAN только явной настройкой |
-| `SCREEN_PROXY_SECRET` | активный consumer не подтверждён | убрать из active example, оставить в backlog |
-
-Dev MCP env перечисляется отдельно только после сверки фактических имён с `tools/mcp_server/server.py` и связанным dev config; секреты dev MCP не относятся к server/client product `.env`.
-
-## 5. Реальные entrypoints и product tools
-
-| Сейчас | После 1b | Назначение |
-|---|---|---|
-| `main.py` | `server/main.py` | запуск сервера; cwd `server/` или `PYTHONPATH=server` |
-| `scripts/healthcheck.py` | `server/scripts/healthcheck.py` | health/API smoke |
-| `scripts/invoke_plugin.py` | `server/scripts/invoke_plugin.py` | вызов и диагностика server module |
-| `scripts/fetch_lavalink_plugins.py` | `server/scripts/fetch_lavalink_plugins.py` | получение Lavalink plugins |
-| `scripts/voice_preflight.py` | `server/scripts/voice_preflight.py` | проверка voice runtime prerequisites |
-| `run_neyra.bat`, `run_neyra.sh`, Windows launcher | тонкие root launchers, запускающие `server/` | сохранить пользовательский способ запуска |
-| Docker Compose и Docker metadata | deployment files в root с paths на `server/` | серверная поставка, volumes и healthchecks |
-| `tools/mcp_server/server.py` | `devtools/mcp_server/server.py` | dev-only MCP server; исключить из product runtime |
-| `core/tools/` | `server/core/tools/` | продуктовые tools, вызываемые ядром; остаются на сервере |
-
-## 6. Сохранить при переносе
-
-| Компонент | Решение |
-|---|---|
-| `interfaces/local_voice/` | перенести; проверить реальное чтение `config.yaml` и не терять config behavior |
-| `interfaces/internal_api/` | Stage 1b перенос → `modules/internal_api/`; Stage 2 → `server/core/api/` + конфиг `api:` (модуль удалён) |
-| `interfaces/discord/` | перенести весь Discord/music/Lavalink integration и его примеры конфигов |
-| provider contracts с `NotImplementedError` | сохранить contracts; отсутствующие реализации — backlog |
-| `interfaces/000EXAMPLE/` | сохранить как реальный module SDK/template |
-| `frontend/` | перенести в `server/dashboard/`; не смешивать с новым `client/` |
-| SQLite Hub, Chroma, `memory/`, `logs/` | backup → `server/data/memory/` и `server/logs/` с hash/size check; default `paths.data_dir` = `server/data` |
-| `tools/mcp_server/` | переместить в `devtools/mcp_server/`, не удалять и не ставить как runtime dependency |
-
-## 7. Решения и вопросы перед 1b
-
-### Зафиксировано
-
-- Windows client: Tauri 2 + React + TypeScript; MVP screens Подключение, Чат, Статус, Модули.
-- Client — thin UI; сервер владеет state, history, memory, prompts, configs, modules, logs, status и генерирует TTS.
-- Client bundle включает собственные UI assets; без сервера показывает «сервер недоступен».
-- Локальные client data: адрес сервера, токен в Windows Credential Manager, тема, размер окна и кэш последнего статуса.
-- Control API использует текущие Internal API tokens/roles; default localhost, LAN только явной настройкой.
-- Server installer — backlog; client NSIS installer/updater входят в Этап 3, но в минимум защиты входит только рабочий `setup.exe`.
-- `paths.data_dir` + `NEYRA_DATA_DIR`; после 1b default data path — `server/data` (`memory/` → `server/data/memory/`, `logs/` → `server/logs/`).
-- Корневой `PLAN.md` удаляется; канон только `docs/PLAN.md`.
-- ADR `0002-core-layout-1b` — историческая упаковка пакетов внутри `core/`, не путать с Этапом 1b (server/client/devtools) этого PLAN.
-- HF tokens optional и закомментированы в `.env.example`.
-
-### Проверить до миграции
-
-- Локальное наличие ignored root/module configs, `.env`, `memory/`, `logs/`, SQLite/Chroma data и Lavalink JAR; сделать backup до переноса.
-- Точный consumer `interfaces/local_voice/config.yaml` — зафиксирован: `merge_plugin_configs` → `plugins.local_voice` (см. `docs/config-keys.md`).
-- До 1c собрать отдельную строку на каждый config key — см. `docs/config-keys.md`.
-- Source paths для шаблона, Internal API, Discord и MCP сверены по фактическому tracked tree в разделе 2.
-
-Начало Этапа 1b — только после отдельного сообщения пользователя «ок на 1b».
+- Do not reintroduce `interfaces/`, `frontend/`, or `tools/mcp_server` paths in runtime code.
+- Ignored runtime artifacts (`.env`, local YAML, Lavalink JAR, memory DBs) stay outside git; see `.gitignore` and `server/scripts/fetch_lavalink.py`.

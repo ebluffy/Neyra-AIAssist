@@ -8,8 +8,8 @@
 # Тестирование плагинов
 
 ## Smoke
-- `python scripts/invoke_plugin.py <plugin_id>`
-- `cd server && python scripts/healthcheck.py --mode core --skip-http`
+- `cd server && python scripts/invoke_plugin.py <plugin_id>`
+- `cd server && python scripts/healthcheck.py`
 
 ## Рекомендации
 - Unit tests для функций трансформации payload.

@@ -1,19 +1,12 @@
 <!-- co-authored-cursor-badge -->
 [![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
 
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
 
 ---
 
-# Бэкап и восстановление
+# Backup and restore
 
-## Ручной бэкап
-- `POST /v1/backup/run`
-
-## Конфиг
-- `backup.local_dir`
-- `external_storage` секция в `config.yaml`
-
-## Рекомендации
-- Делать регулярные snapshot перед обновлениями.
-- Проверять восстановление на отдельной копии данных.
+- Trigger: `POST /v1/backup/run` (admin token).
+- Artifacts and schedules: `server/config/memory.yaml` (`backup`, `external_storage`).
+- Include `server/data/memory/`, `server/config.yaml`, `server/config/`, and `server/.env` in operational backups (never commit `.env`).

@@ -7,12 +7,14 @@
 
 # Гайд интегратора
 
+Control API живёт в `server/core/api/` (не модуль). Локально: `http://127.0.0.1:8787`. Публично (Этап 3): `https://neyra.owyx.site/api/v1` — см. [api-reverse-proxy](../ops/api-reverse-proxy.md) и [`docs/PLAN.md`](../../PLAN.md) §3. Auth: Bearer `API_TOKEN` (и роли viewer/maint).
+
 ## Через REST
 - Отправляйте пользовательские сообщения в `POST /v1/chat`.
 - Получайте контекстные события через `POST /v1/notify`.
 
 ## Через WebSocket
-- Для потокового UX используйте `/v1/ws/chat`.
+- Для потокового UX используйте `/v1/ws/chat` (публично `wss://neyra.owyx.site/api/v1/ws/chat`).
 - Для аудио-кейсов используйте `/v1/ws/audio`.
 
 ## Через Webhooks

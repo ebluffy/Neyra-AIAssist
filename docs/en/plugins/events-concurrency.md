@@ -7,7 +7,7 @@
 
 # События и конкурентность
 
-- Use `core/runtime/event_bus.py` for event exchange.
+- Use `server/core/runtime/event_bus.py` for event exchange.
 - Долгие операции выносите в `asyncio.to_thread`/отдельный процесс.
 - Resident plugins не должны блокировать event loop API.
 - Для внешних вызовов всегда ставьте timeout и retry policy.

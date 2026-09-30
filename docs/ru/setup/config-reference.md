@@ -5,24 +5,25 @@
 
 ---
 
-# Справочник config.yaml
+# Справочник `server/config.yaml`
 
-`config.yaml` содержит только базовый runtime-конфиг ядра.
+`server/config.yaml` содержит только короткий корневой runtime-конфиг ядра (assistant, paths, указатели на слои).
 
 ## Ключевые секции
-- `assistant` — `name`, `persona_path` / `appearance_path` (persona pack), `system_prompt` как fallback
-- `agent.fast_path` — allowlist команд умного дома (выкл. по умолчанию; публикует `home.*`; e2e клиенты — этап 2 плана)
-- `llm` — модели и лимиты по ролям: вложенные **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** (VL и пайплайн зрения). У каждой роли — **`provider`**. Base URL провайдеров — **`llm.providers.<name>`**. Без top-level `BACKEND` / `openrouter:` / `vision:`.
-- `memory` — Hub/RAG; опц. `pre_context`; опц. `session_archive` (архив STM при overflow/reset; выкл. по умолчанию)
-- `voice` — по модальностям: `stt` / `tts` с `prefer` + `local`/`cloud`.`enable` (soft ERROR если не настроено; legacy `voice_cloud` / `is_local` ещё нормализуются). Cloud STT: `provider` = `deepgram` | `groq` | `openrouter` (Whisper через `POST …/audio/transcriptions`, ключ `OPENROUTER_API_KEY`, опц. `upload_mode`: `multipart`|`json`).
-- `health_monitor`
-- `backup`, `external_storage`
-- `logging`
 
-## Вынесено в плагины
-- `discord` -> `server/modules/discord/config.yaml`
-- `api`, `dashboard` -> `server/config/server.yaml (api:)`
-- локальные plugin settings -> `server/modules/<id>/config.yaml`
+- `assistant` — `name`, `persona_path` / `appearance_path` (persona pack), `system_prompt` как fallback
+- `paths.data_dir` — корень runtime-данных (default `server/data` от корня репо; override — `NEYRA_DATA_DIR`)
+- `agent.fast_path` — allowlist команд умного дома (выкл. по умолчанию; публикует `home.*`; multi-client e2e — Этап 3+)
+- Слои в `server/config/` — полные ключи в `docs/config-keys.md`:
+  - `llm.yaml` — по ролям **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** с **`provider`**; провайдеры — **`llm.providers.<name>`**. Без top-level `BACKEND` / `openrouter:` / `vision:`.
+  - `memory.yaml`, `voice.yaml`, `agent.yaml`, `modules.yaml`, `runtime.yaml`
+
+## Вынесено из корневого файла
+
+- `discord` → `server/modules/discord/config.yaml`
+- `api`, `dashboard` → `server/config/server.yaml` (секции `api:` и `dashboard:`)
+- Прочие настройки плагинов → `server/modules/<id>/config.yaml`
 
 ## Запрещено хранить в yaml
-- API keys и токены. Используйте `.env`.
+
+- API keys и токены. Используйте `server/.env`.

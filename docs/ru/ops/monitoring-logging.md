@@ -7,9 +7,9 @@
 
 # Мониторинг и логи
 
-- Health monitor: `core/health_monitor.py`.
-- Статус отчёты: `logs/health_status.jsonl`.
-- Системные логи: путь из `logging.system_log`.
+- Health monitor: `server/core/health_monitor.py`.
+- Статус-отчёты: `server/logs/health_status.jsonl` (или путь из `server/config/runtime.yaml` / ключей logging в корневом конфиге).
+- Системные логи: путь из `logging.system_log` (default под `server/logs/`).
 - Диалоговые логи: путь из `logging.chat_log`.
 
-Для алертов в интеграции используйте webhook routes и отслеживайте `deliveries`/`dlq`.
+Для алертов в интеграции используйте webhook routes и отслеживайте `deliveries` / `dlq`.

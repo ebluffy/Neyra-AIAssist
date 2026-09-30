@@ -5,9 +5,9 @@
 
 ---
 
-# API Overview
+# API Overview (Control API)
 
-Пакет ядра: `server/core/api/`. Локально: `http://127.0.0.1:8787`.
+Реализация: `server/core/api/` (не модуль-плагин). Локально: `http://127.0.0.1:8787`.
 
 Публично (если задано): `{api.public_base_url}{api.public_path_prefix}/v1`  
 Пример: `https://neyra.owyx.site/api/v1` — см. [api-reverse-proxy](../ops/api-reverse-proxy.md).
@@ -22,7 +22,7 @@
 - Header: `Authorization: Bearer <token>`
 - Для WS: `Authorization` или query `?token=...`
 - Env: `API_TOKEN` (admin), `API_VIEWER_TOKEN`, `API_MAINT_TOKEN`
-- Если токены не заданы — auth выключен (только local/dev)
+- Если токены не заданы — роль `anon` и полный доступ **только при bind на loopback** (Wave 1; см. [security-model](../architecture/security-model.md))
 
 ## Группы API
 

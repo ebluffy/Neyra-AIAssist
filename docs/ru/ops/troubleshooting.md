@@ -9,14 +9,14 @@
 
 ## API не отвечает
 - Проверьте, что `python server/main.py` запущен.
-- Проверьте host/port в `server/config/server.yaml (api:)`.
+- Проверьте host/port в `server/config/server.yaml` (секция `api:`).
 
 ## 401 Unauthorized
 - Либо задайте корректный Bearer, либо очистите `API_TOKEN`.
 
 ## Discord plugin не стартует
 - Проверьте `server/modules/discord/plugin.yaml` (`enabled: true`).
-- Проверьте `DISCORD_TOKEN` в `.env`.
+- Проверьте `DISCORD_TOKEN` в `server/.env`.
 
 ## Ошибки вебхуков
 - Смотрите `/v1/webhooks/deliveries` и `/v1/webhooks/dlq`.

@@ -7,58 +7,96 @@
 
 # MCP debug-сервер (`devtools/mcp_server`)
 
-Официальный Python SDK MCP (`mcp`): подключение Cursor к Нейре для логов, вызовов Internal API, инъекции событий и инспекции памяти.
+Официальный Python SDK MCP (`mcp`): подключение Cursor (или другого MCP-клиента) к Neyra для логов, вызовов Control API, инъекции событий и инспекции памяти. Runtime-поставка сервера **не** включает этот каталог — только devtools.
 
-**Инструменты**
+## Инструменты
 
 | Tool | Назначение |
 |------|------------|
-| `read_neyra_logs` | Хвост `logs/system.log` (или путь из конфига / `NEYRA_LOG_PATH`) |
-| `neyra_api_request` | Произвольный HTTP к Internal API (`GET`/`POST`/…) |
+| `read_neyra_logs` | Хвост `server/logs/system.log` (или путь из конфига / `NEYRA_LOG_PATH`) |
+| `neyra_api_request` | Произвольный HTTP к Control API (`GET`/`POST`/…) |
 | `neyra_health` | `GET /v1/health` — быстрый ping ядра |
-| `neyra_lifecycle` | `POST /v1/debug/lifecycle` — **stop**/**restart** процесса (нужен admin-токен и включённый lifecycle; см. ниже) |
+| `neyra_lifecycle` | `POST /v1/debug/lifecycle` — **stop**/**restart** процесса (admin-токен + lifecycle; см. ниже) |
 | `neyra_fire_event` | `POST /v1/debug/fire_event` — публикация в Event Bus |
-| `neyra_read_config` | Чтение корневого `config.yaml` с маскированием секретов |
+| `neyra_read_config` | Чтение `server/config.yaml` (и слоёв) с маскированием секретов |
 | `neyra_write_config` | `POST /v1/config/update` — только разрешённые поля ядра |
 | `neyra_inspect_memory` | `GET /v1/debug/memory` — STM + статистика + RAG |
 
-**Lifecycle (`neyra_lifecycle`):** по умолчанию выключен (API вернёт **403**), пока не задано `api.debug_lifecycle_enabled: true` или переменная `NEYRA_DEBUG_LIFECYCLE=1`/`true`/`yes` (**opt-in**: раскомментируйте в `docker-compose.yml` или задайте в `.env`). Для рестарта предпочитайте `POST /v1/system/restart`. Нужен **admin** Bearer (`API_TOKEN` или `API_KEY`). Действия **stop** и **restart** завершают процесс Python; повторный запуск в Docker — `restart: unless-stopped` или `docker compose restart`.
+### Lifecycle (`neyra_lifecycle`)
 
-**Docker Desktop:** из корня репозитория: `docker compose up --build` (тонкий include → `server/docker-compose.yml`). На хосте MCP указывает `NEYRA_API_BASE=http://127.0.0.1:8787`. Логи — `server/logs/` на хосте; `read_neyra_logs` читает `server/config.yaml` / `NEYRA_LOG_PATH`. Секреты — `server/.env` (шаблон `server/.env.example`). Не публикуйте вывод `docker compose config`, если в нём есть секреты.
+По умолчанию выключен — API вернёт **403**, пока не задано:
+
+- `api.debug_lifecycle_enabled: true` в merged config, или
+- переменная `NEYRA_DEBUG_LIFECYCLE` = `1` / `true` / `yes` (**opt-in**: в `docker-compose.yml` или `server/.env`). Для рестарта предпочитайте `POST /v1/system/restart`.
+
+Нужен **admin** Bearer (`API_TOKEN` / `api.token`). Действия **stop** и **restart** завершают процесс Python; повторный запуск — process manager, Docker (`restart: unless-stopped`) или вручную `python server/main.py`.
 
 ## Установка
 
-Предпочтительно **основной venv проекта** (Windows: `.venv_win`, Linux/WSL: `.venv` или `~/neyra-venv`) — пакеты `mcp`/`httpx` уже есть при полной установке `server/requirements.txt`. В Cursor MCP указывайте этот интерпретатор и `devtools/mcp_server/server.py`.
+Предпочтительно **основной venv проекта** (Windows: `.venv_win`, Linux/WSL: `.venv`) — `mcp` / `httpx` уже в `server/requirements.txt`. В Cursor MCP укажите этот интерпретатор и `devtools/mcp_server/server.py`.
 
-Cursor поднимает MCP **параллельно с IDE** (stdio) при вызове tools; ядро Нейры должно быть запущено отдельно (`main.py --mode core`), иначе HTTP-tools к `http://127.0.0.1:8787` не достучатся.
-
-Отдельный env нужен только для изоляции:
+Отдельный env (только для изоляции):
 
 ```bash
 python -m venv .venv_mcp
-.venv_mcp\Scripts\activate
+# Windows: .venv_mcp\Scripts\activate
 pip install -r devtools/mcp_server/requirements.txt
 ```
 
 Имя `.venv-mcp` устарело — не создавайте его.
 
-## Путь к логу
+## Разрешение пути к логу
 
-1. Переменная `NEYRA_LOG_PATH`.
-2. Иначе `logging.system_log` в `server/config.yaml` (обычно `./logs/system.log` при cwd=`server/`).
-3. Иначе `server/logs/system.log`, затем `server/logs/neyra.log`.
-4. Иначе ожидаемый default: `server/logs/system.log`.
+1. `NEYRA_LOG_PATH`, если задан.
+2. Иначе `logging.system_log` в `server/config.yaml` (как у `main.py`, обычно `server/logs/system.log` при cwd=`server/`).
+3. Иначе первый существующий файл: `server/logs/system.log`, затем `server/logs/neyra.log`.
+4. Ожидаемый default: `server/logs/system.log`.
 
-## Подключение в Cursor
+## Cursor MCP (stdio)
 
 **Cursor Settings → MCP**, сервер **stdio**:
 
-- **Command:** интерпретатор Python с установленными зависимостями.
+- **Command:** Python из основного venv (например `.venv_win\Scripts\python.exe`) или опционально `.venv_mcp`.
 - **Args:** полный путь к `devtools/mcp_server/server.py`.
 
-Пример `env`: `NEYRA_LOG_PATH`, `NEYRA_API_BASE` (`http://127.0.0.1:8787`), `NEYRA_API_TOKEN` (если задан `api.token`), `NEYRA_CONFIG_PATH`.
+Cursor поднимает MCP **параллельно с IDE** (stdio); ядро Neyra должно быть запущено отдельно (`python server/main.py` из корня репо или `python main.py` из `server/`), иначе HTTP-tools не достучатся до `http://127.0.0.1:8787`.
 
-Подробный пример JSON см. в английской версии: [mcp-debug-server.md](../../en/setup/mcp-debug-server.md) (блоки с `mcpServers`).
+Пример JSON (подставьте свои пути):
+
+```json
+{
+  "mcpServers": {
+    "neyra-debug": {
+      "command": "Z:\\path\\to\\Neyra-AIAssist\\.venv_win\\Scripts\\python.exe",
+      "args": ["Z:\\path\\to\\Neyra-AIAssist\\devtools\\mcp_server\\server.py"],
+      "env": {
+        "NEYRA_API_BASE": "http://127.0.0.1:8787"
+      }
+    }
+  }
+}
+```
+
+Опциональный `env`:
+
+- `NEYRA_LOG_PATH` — явный путь к system log.
+- `NEYRA_API_BASE` — base URL API (default `http://127.0.0.1:8787`). При Docker Desktop с пробросом **8787** на хосте оставьте `http://127.0.0.1:8787` там, где работает Cursor.
+- `NEYRA_API_TOKEN` — Bearer, если задан `api.token` / `API_TOKEN`.
+- `NEYRA_CONFIG_PATH` — альтернативный путь к `server/config.yaml` для `neyra_read_config`.
+
+## Docker Desktop (Neyra в контейнере)
+
+Из корня репозитория:
+
+```bash
+docker compose up --build
+```
+
+Корневой `docker-compose.yml` включает `server/docker-compose.yml`. Сервис публикует HTTP на `http://127.0.0.1:8787`. Volumes (относительно `server/`): `config.yaml`, `modules/`, `data/memory/`, `logs/`, опционально `dashboard/dist`. Секреты: `server/.env` (шаблон `server/.env.example`).
+
+Укажите MCP тот же `NEYRA_API_BASE`. Логи контейнера видны в `server/logs/` на хосте — `read_neyra_logs` работает при checkout на хосте (или задайте `NEYRA_LOG_PATH`).
+
+**Не** публикуйте вывод `docker compose config`, если в нём есть секреты.
 
 ## Реализация
 

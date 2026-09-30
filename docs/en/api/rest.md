@@ -15,7 +15,16 @@
 - WebSocket chat requires **admin** (aligned with `POST /v1/chat`).
 - Non-loopback bind without tokens → process refuses to start.
 
+## Dashboard auth (SPA gate)
+
+- `GET /v1/dashboard/auth/status` — whether an access key exists (public)
+- `POST /v1/dashboard/auth/setup` — one-time key creation (public; loopback client if bind is non-loopback)
+- `POST /v1/dashboard/auth/login` — verify key (public)
+
+See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens.
+
 ## Core
+
 - `GET /v1/meta` — api_version, public_url, public_v1, dashboard_url, features
 - `GET /v1/health`
 - `GET /v1/llm/models` — per-role provider + model id

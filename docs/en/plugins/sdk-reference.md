@@ -8,7 +8,7 @@
 # SDK Reference
 
 ## `PluginContext`
-- `root`: путь к проекту.
+- `root`: server root (`server/`, where `main.py` lives).
 - `config`: merged runtime config.
 - `agent`: доступен там, где нужен общий агент (например Discord).
 
@@ -17,5 +17,5 @@
   - `run_plugin(ctx: PluginContext) -> None`
 
 ## Вызов
-- Core lifecycle: через `core/runtime/server.py`.
-- On-demand: через `scripts/invoke_plugin.py` или API invoke.
+- Core lifecycle: через `server/core/runtime/server.py`.
+- On-demand: `cd server && python scripts/invoke_plugin.py <plugin_id>` или API invoke.
