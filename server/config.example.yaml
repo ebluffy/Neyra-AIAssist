@@ -9,9 +9,11 @@
 # EN: Secrets only in .env (see .env.example). Modules: modules/<id>/config.yaml
 # RU: Секреты только в .env. Модули — modules/<id>/config.yaml
 #
-# EN: Public API URL (domain/subdomain) → server/config/server.yaml → api.public_base_url + api.public_path_prefix
-# RU: Публичный URL API (домен/поддомен) → server/config/server.yaml → api.public_base_url + api.public_path_prefix
-#     Example: https://neyra.owyx.site + /api → https://neyra.owyx.site/api/v1
+# EN: Public API / dashboard URL (domain) → server/config/server.yaml
+#     api.public_base_url + api.public_path_prefix (+ optional dashboard.public_base_url)
+# RU: Публичный URL API и дашборда → server/config/server.yaml
+#     DNS (Cloudflare A → IP VPS) настраивается у провайдера; в yaml — уже готовый домен.
+#     Example: https://neyra.owyx.site + /api → https://neyra.owyx.site/api/v1 ; UI → https://neyra.owyx.site/
 #
 # Layers (loaded in order; later wins on leaf keys, nested dicts deep-merge):
 #   config/llm.yaml, agent.yaml, memory.yaml, voice.yaml,

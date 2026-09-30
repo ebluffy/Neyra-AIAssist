@@ -1,0 +1,142 @@
+name: CI verify
+
+on:
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  layout:
+    name: Layout & tree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install minimal deps
+        run: pip install -q pyyaml python-dotenv httpx
+      - name: compileall (server + MCP)
+        run: python -m compileall -q server devtools/mcp_server
+      - name: Check layout / no legacy paths
+        run: python server/scripts/verify_stage_1b.py
+      - name: Healthcheck smoke (examples, skip HTTP)
+        env:
+          OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http
+          AIHOPE_API_KEY: ci-placeholder-not-used-with-skip-http
+          DISCORD_TOKEN: ci-placeholder-not-a-real-token
+        run: |
+          cp server/config.example.yaml server/config.yaml
+          mkdir -p server/config
+          for f in llm agent memory voice modules runtime server; do
+            cp "server/config/${f}.example.yaml" "server/config/${f}.yaml"
+          done
+          printf '%s\n' 'OPENROUTER_API_KEY=ci-placeholder' 'AIHOPE_API_KEY=ci-placeholder' 'DISCORD_TOKEN=ci-placeholder' > server/.env
+          cd server && python scripts/healthcheck.py --mode core --skip-http
+
+  config:
+    name: Config layers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install minimal deps
+        run: pip install -q pyyaml python-dotenv httpx
+      - name: compileall
+        run: python -m compileall -q server devtools/mcp_server
+      - name: Check layout regression
+        run: python server/scripts/verify_stage_1b.py
+      - name: Check layered config + schema + local_voice
+        run: python server/scripts/verify_stage_1c.py
+      - name: Healthcheck smoke (examples, skip HTTP)
+        env:
+          OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http
+          AIHOPE_API_KEY: ci-placeholder-not-used-with-skip-http
+          DISCORD_TOKEN: ci-placeholder-not-a-real-token
+        run: |
+          cp server/config.example.yaml server/config.yaml
+          mkdir -p server/config
+          for f in llm agent memory voice modules runtime server; do
+            cp "server/config/${f}.example.yaml" "server/config/${f}.yaml"
+          done
+          printf '%s\n' 'OPENROUTER_API_KEY=ci-placeholder' 'AIHOPE_API_KEY=ci-placeholder' 'DISCORD_TOKEN=ci-placeholder' > server/.env
+          cd server && python scripts/healthcheck.py --mode core --skip-http
+
+  llm:
+    name: LLM backends & memory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (langchain for LLM smoke)
+        run: pip install -q pyyaml python-dotenv httpx langchain-core langchain-openai
+      - name: compileall
+        run: python -m compileall -q server
+      - name: Check layered config regression
+        run: python server/scripts/verify_stage_1c.py
+      - name: Check dual LLM backends
+        run: python server/scripts/verify_stage_1d.py
+      - name: Offline memory / security smokes
+        run: |
+          cd server
+          python scripts/test_memory_hub_smoke.py
+          python scripts/test_memory_cutover_offline.py
+          python scripts/test_stage2_security_offline.py
+      - name: Healthcheck smoke (examples, skip HTTP)
+        env:
+          OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http
+          AIHOPE_API_KEY: ci-placeholder-not-used-with-skip-http
+          DISCORD_TOKEN: ci-placeholder-not-a-real-token
+        run: |
+          cp server/config.example.yaml server/config.yaml
+          mkdir -p server/config
+          for f in llm agent memory voice modules runtime server; do
+            cp "server/config/${f}.example.yaml" "server/config/${f}.yaml"
+          done
+          printf '%s\n' 'OPENROUTER_API_KEY=ci-placeholder' 'AIHOPE_API_KEY=ci-placeholder' 'DISCORD_TOKEN=ci-placeholder' > server/.env
+          cd server && python scripts/healthcheck.py --mode core --skip-http
+
+  api:
+    name: HTTP API & auth
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install API verify deps
+        run: pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette
+      - name: compileall
+        run: python -m compileall -q server
+      - name: Check layered config regression
+        run: python server/scripts/verify_stage_1c.py
+      - name: Check dual LLM backends
+        run: |
+          pip install -q langchain-core langchain-openai
+          python server/scripts/verify_stage_1d.py
+      - name: Check core API contract + auth matrix
+        run: python server/scripts/verify_stage_2_api.py
+      - name: Healthcheck smoke (examples, skip HTTP)
+        env:
+          OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http
+          AIHOPE_API_KEY: ci-placeholder-not-used-with-skip-http
+          DISCORD_TOKEN: ci-placeholder-not-a-real-token
+        run: |
+          cp server/config.example.yaml server/config.yaml
+          mkdir -p server/config
+          for f in llm agent memory voice modules runtime server; do
+            cp "server/config/${f}.example.yaml" "server/config/${f}.yaml"
+          done
+          printf '%s\n' 'OPENROUTER_API_KEY=ci-placeholder' 'AIHOPE_API_KEY=ci-placeholder' 'DISCORD_TOKEN=ci-placeholder' > server/.env
+          cd server && python scripts/healthcheck.py --mode core --skip-http

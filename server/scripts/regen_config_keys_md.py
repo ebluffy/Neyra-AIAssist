@@ -33,6 +33,7 @@ ENV = {
     "api.viewer_token": "API_VIEWER_TOKEN",
     "api.maint_token": "API_MAINT_TOKEN",
     "api.webhook_inbound_secret": "WEBHOOK_INBOUND_SECRET",
+    "dashboard.public_base_url": "DASHBOARD_PUBLIC_BASE_URL",
     "voice.stt.cloud.groq.api_key": "GROQ_API_KEY",
     "voice.stt.cloud.deepgram.api_key": "DEEPGRAM_API_KEY",
     "voice.tts.cloud.api_key": "YANDEX_API_KEY",

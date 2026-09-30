@@ -16,7 +16,7 @@
 - Bind не loopback без токенов → процесс не стартует.
 
 ## Core
-- `GET /v1/meta` — api_version, public_url, features
+- `GET /v1/meta` — api_version, public_url, public_v1, dashboard_url, features
 - `GET /v1/health`
 - `GET /v1/llm/models` — provider + model id по ролям
 - `GET /v1/llm/balance`

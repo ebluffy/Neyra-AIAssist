@@ -27,7 +27,7 @@ Official Python MCP SDK (`mcp` package): connect Cursor (or any MCP client) to N
 Disabled by default. The API returns **403** unless either:
 
 - `api.debug_lifecycle_enabled: true` in merged config, or
-- environment variable `NEYRA_DEBUG_LIFECYCLE` is `1` / `true` / `yes` (set automatically in `docker-compose.yml` for the service).
+- environment variable `NEYRA_DEBUG_LIFECYCLE` is `1` / `true` / `yes` (**opt-in**: uncomment in `docker-compose.yml` or set in `.env` / `api.debug_lifecycle_enabled`). Prefer `POST /v1/system/restart` for restarts.
 
 You still need the **admin** Bearer token (`API_TOKEN` / `api.token`). Actions **stop** and **restart** both end the Python process; there is no in-process re-exec. With Docker Compose and `restart: unless-stopped`, a **restart** request stops the container and Docker starts it again. Without Docker, use your process manager or start `main.py` manually.
 

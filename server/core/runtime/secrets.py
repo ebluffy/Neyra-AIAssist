@@ -214,8 +214,15 @@ def apply_env_secrets(cfg: dict) -> None:
         )
 
     iat = _s("API_TOKEN")
-    if iat:
-        cfg.setdefault("api", {})["token"] = iat
+    iak = _s("API_KEY")
+    if iat and iak and iat != iak:
+        raise RuntimeError(
+            "API_TOKEN and API_KEY both set but differ — keep one admin Bearer "
+            "(prefer API_TOKEN; API_KEY is an accepted alias when API_TOKEN is empty)."
+        )
+    admin_tok = iat or iak
+    if admin_tok:
+        cfg.setdefault("api", {})["token"] = admin_tok
 
     bind_h = _s("API_BIND_HOST")
     if bind_h:
@@ -232,6 +239,10 @@ def apply_env_secrets(cfg: dict) -> None:
     pub = _s("API_PUBLIC_BASE_URL")
     if pub:
         cfg.setdefault("api", {})["public_base_url"] = pub
+
+    dash_pub = _s("DASHBOARD_PUBLIC_BASE_URL")
+    if dash_pub:
+        cfg.setdefault("dashboard", {})["public_base_url"] = dash_pub
 
     wh_in = _s("WEBHOOK_INBOUND_SECRET")
     if wh_in:

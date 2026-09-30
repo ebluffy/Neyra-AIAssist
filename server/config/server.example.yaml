@@ -44,3 +44,8 @@ dashboard:
   enabled: true
   dist_path: "dashboard/dist"
   require_build: false
+  # EN: Public origin of the web UI (https://neyra.owyx.site). Empty = inherit api.public_base_url.
+  #     UI is served at / on that host; API at {api.public_base_url}{api.public_path_prefix}/v1.
+  # RU: Публичный origin дашборда. Пусто = взять api.public_base_url. UI на /, API на …/api/v1.
+  #     DNS (Cloudflare A → VPS IP) настраивается у регистратора; здесь только уже купленный домен.
+  public_base_url: ""

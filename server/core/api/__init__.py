@@ -9,6 +9,7 @@ from core.api.app import (
     api_public_v1,
     assert_api_bind_safe,
     build_app,
+    dashboard_public_root,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "api_public_v1",
     "assert_api_bind_safe",
     "build_app",
+    "dashboard_public_root",
 ]

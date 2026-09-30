@@ -16,7 +16,7 @@
 - Non-loopback bind without tokens → process refuses to start.
 
 ## Core
-- `GET /v1/meta` — api_version, public_url, features
+- `GET /v1/meta` — api_version, public_url, public_v1, dashboard_url, features
 - `GET /v1/health`
 - `GET /v1/llm/models` — per-role provider + model id
 - `GET /v1/llm/balance`

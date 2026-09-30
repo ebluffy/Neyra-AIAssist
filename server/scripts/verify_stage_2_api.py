@@ -29,7 +29,7 @@ def check_package_layout() -> list[str]:
 
 
 def check_public_url_helper() -> list[str]:
-    from core.api import api_public_root, api_public_v1, API_VERSION
+    from core.api import api_public_root, api_public_v1, dashboard_public_root, API_VERSION
 
     errs: list[str] = []
     cfg = {
@@ -38,12 +38,21 @@ def check_public_url_helper() -> list[str]:
             "public_path_prefix": "/api",
             "host": "127.0.0.1",
             "port": 8787,
-        }
+        },
+        "dashboard": {"public_base_url": ""},
     }
     if api_public_root(cfg) != "https://neyra.owyx.site/api":
         errs.append(f"public root bad: {api_public_root(cfg)!r}")
     if api_public_v1(cfg) != "https://neyra.owyx.site/api/v1":
         errs.append(f"public v1 bad: {api_public_v1(cfg)!r}")
+    if dashboard_public_root(cfg) != "https://neyra.owyx.site":
+        errs.append(f"dashboard should inherit api base, got {dashboard_public_root(cfg)!r}")
+    cfg2 = {
+        "api": {"public_base_url": "https://neyra.owyx.site"},
+        "dashboard": {"public_base_url": "https://ui.example"},
+    }
+    if dashboard_public_root(cfg2) != "https://ui.example":
+        errs.append(f"dashboard override bad: {dashboard_public_root(cfg2)!r}")
     if not API_VERSION:
         errs.append("API_VERSION empty")
     empty = api_public_root({"api": {}})
@@ -88,6 +97,13 @@ def check_config_key_api() -> list[str]:
             errs.append("api.public_base_url missing from example layer")
         if str(api.get("public_base_url") or "").strip():
             errs.append("example public_base_url should be empty by default")
+    dash = cfg.get("dashboard")
+    if not isinstance(dash, dict):
+        errs.append("dashboard: section missing from example layers")
+    elif "public_base_url" not in dash:
+        errs.append("dashboard.public_base_url missing from example layer")
+    elif str(dash.get("public_base_url") or "").strip():
+        errs.append("example dashboard.public_base_url should be empty by default")
     bad = {
         "paths": {"data_dir": "./data"},
         "assistant": {"name": "X"},
@@ -317,6 +333,34 @@ def check_legacy_env_failfast() -> list[str]:
     return errs
 
 
+def check_api_key_alias() -> list[str]:
+    import os
+
+    from core.runtime.secrets import apply_env_secrets
+
+    errs: list[str] = []
+    prev_t = os.environ.get("API_TOKEN")
+    prev_k = os.environ.get("API_KEY")
+    os.environ.pop("API_TOKEN", None)
+    os.environ["API_KEY"] = "alias-admin-token-0123456789abcdef"
+    try:
+        cfg: dict = {}
+        apply_env_secrets(cfg)
+        tok = ((cfg.get("api") or {}).get("token") or "")
+        if tok != "alias-admin-token-0123456789abcdef":
+            errs.append(f"API_KEY should map to api.token, got {tok!r}")
+    finally:
+        if prev_t is None:
+            os.environ.pop("API_TOKEN", None)
+        else:
+            os.environ["API_TOKEN"] = prev_t
+        if prev_k is None:
+            os.environ.pop("API_KEY", None)
+        else:
+            os.environ["API_KEY"] = prev_k
+    return errs
+
+
 def main() -> int:
     checks = [
         ("package layout", check_package_layout),
@@ -326,6 +370,7 @@ def main() -> int:
         ("build_app routes", check_build_app_routes),
         ("bind gate", check_bind_gate),
         ("legacy env failfast", check_legacy_env_failfast),
+        ("API_KEY alias", check_api_key_alias),
         ("auth matrix", check_auth_matrix),
     ]
     failed = 0

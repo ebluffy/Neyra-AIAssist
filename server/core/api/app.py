@@ -86,6 +86,20 @@ def api_public_v1(cfg: dict) -> str:
     return f"{root}/v1" if root else ""
 
 
+def dashboard_public_root(cfg: dict) -> str:
+    """
+    Public origin of the web dashboard (no path).
+    Empty dashboard.public_base_url → inherit api.public_base_url (same host, UI at /).
+    """
+    dash = cfg.get("dashboard") if isinstance(cfg, dict) else None
+    if isinstance(dash, dict):
+        own = str(dash.get("public_base_url") or "").strip().rstrip("/")
+        if own:
+            return own
+    api = _api_cfg(cfg if isinstance(cfg, dict) else {})
+    return str(api.get("public_base_url") or "").strip().rstrip("/")
+
+
 class ApiError(Exception):
     def __init__(self, code: str, message: str, status_code: int = 400):
         self.code = code
@@ -159,8 +173,8 @@ def assert_api_bind_safe(cfg: dict) -> None:
     if api_tokens_configured(cfg):
         return
     raise RuntimeError(
-        f"api.host={host!r} is not loopback but API_TOKEN / API_VIEWER_TOKEN / "
-        "API_MAINT_TOKEN are empty. Set tokens or bind 127.0.0.1."
+        f"api.host={host!r} is not loopback but API_TOKEN / API_KEY / "
+        "API_VIEWER_TOKEN / API_MAINT_TOKEN are empty. Set tokens or bind 127.0.0.1."
     )
 
 
@@ -1024,6 +1038,7 @@ def build_app(
     async def v1_meta(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         pub = api_public_root(config)
+        dash = dashboard_public_root(config)
         return {
             "ok": True,
             "trace_id": trace_id,
@@ -1031,6 +1046,7 @@ def build_app(
                 "api_version": API_VERSION,
                 "public_url": pub or None,
                 "public_v1": api_public_v1(config) or None,
+                "dashboard_url": dash or None,
                 "features": {
                     "ws_chat": True,
                     "ws_audio_stub": True,

@@ -94,7 +94,7 @@ docs/
 - [x] Docker: тонкий `docker-compose.yml` в корне (include), реализация в `server/` (`Dockerfile`, `docker-compose.yml`, `.dockerignore`).
 - [x] `Lavalink.jar` не в git; локально через `server/scripts/fetch_lavalink.py` (см. `.gitignore`).
 - [x] Миграция памяти на `server/data/memory/` с hash/size check в `migrate_runtime_layout.py`; Hub/Chroma доступны после переноса.
-- [x] Запущены compileall, healthcheck и smoke локально; логи — `docs/stage-1b-evidence.md`; CI workflow — `.github/workflows/stage-1b-verify.yml`.
+- [x] Запущены compileall, healthcheck и smoke локально; логи — `docs/stage-1b-evidence.md`; CI — `.github/workflows/ci-verify.yml` (job Layout & tree).
 - [x] CI `Stage 1b verify` зелёный на head PR.
 - [x] Политика переноса memory/logs подтверждена владельцем в PR #14 (см. `docs/stage-1b-acceptance.md`).
 - [x] `paths.data_dir` / `NEYRA_DATA_DIR` доходят до Hub/Chroma через `apply_resolved_memory_paths` (`server/core/runtime/paths.py`).
@@ -166,7 +166,7 @@ docs/
 - [x] Streaming WebSocket: auth как REST; **чат = admin** (как `POST /v1/chat`); reconnect = новый сокет.
 - [x] Viewer не мутирует; soft restart без silent plugin stubs; fail-closed bind без токенов.
 - [x] localhost default; LAN через явный bind + tokens / proxy recipe.
-- [ ] `verify_stage_2_api.py` + CI зелёные на head; ручной `/docs` + `meta.public_url`.
+- [x] `verify_stage_2_api.py` + CI (`CI verify` / HTTP API & auth); ручной `/docs` + `meta.public_url` / `dashboard_url`.
 
 ## 3. Windows-клиент
 
