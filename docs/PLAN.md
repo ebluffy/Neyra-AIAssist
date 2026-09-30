@@ -167,7 +167,8 @@ docs/
 - [x] Viewer не мутирует; soft restart без silent plugin stubs; fail-closed bind без токенов.
 - [x] localhost default; LAN через явный bind + tokens / proxy recipe.
 - [x] `verify_stage_2_api.py` + CI (`CI verify` / HTTP API & auth).
-- [ ] Ручной смоук: `/docs`, `GET /v1/meta` (`public_url` / `dashboard_url`).
+- [x] Ручной смоук: `/docs`, `GET /v1/meta` (`public_url` / `dashboard_url`).
+- [x] `anon` на loopback без токенов — осознанная политика Wave 1 (документировано; non-loopback без токенов запрещён).
 
 ## 3. Windows-клиент
 

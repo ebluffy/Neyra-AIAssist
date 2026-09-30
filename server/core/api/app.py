@@ -207,6 +207,8 @@ def _resolve_role(authorization: Optional[str], cfg: dict) -> str:
 
 
 def _role_at_least(role: str, minimum: str) -> bool:
+    # Wave 1: anon (no tokens configured) is full access only on loopback —
+    # enforced at process start via assert_api_bind_safe, not per-request.
     if role == "anon":
         return True
     return _ROLE_RANK.get(role, 0) >= _ROLE_RANK.get(minimum, 0)
