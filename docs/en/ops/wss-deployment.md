@@ -25,7 +25,7 @@ Public (when `api.public_base_url` + `api.public_path_prefix` are set):
 
 ## TLS and proxy
 
-Deploying `wss://` in production is required for external chat/audio clients and for the Stage 3 Tauri client. Terminate TLS at Caddy/nginx on the VPS; forward WebSocket upgrades end-to-end (including through **frp** when the server runs on a mini-PC — see [`docs/PLAN.md`](../../PLAN.md) §3 and [api-reverse-proxy](api-reverse-proxy.md)).
+Deploying `wss://` in production is required for external chat/audio clients and for the Stage 3 Tauri client. Terminate TLS at Caddy/nginx on the VPS; forward WebSocket upgrades end-to-end (including through **frp** when the server runs on a home server — see [`docs/PLAN.md`](../../PLAN.md) §3 and [api-reverse-proxy](api-reverse-proxy.md)).
 
 Full Event Bus ↔ dashboard WebSocket bridge is backlog; until then the React SPA relies mainly on REST `/v1`, while `/v1/ws/chat` and `/v1/ws/audio` serve programmatic clients.
 

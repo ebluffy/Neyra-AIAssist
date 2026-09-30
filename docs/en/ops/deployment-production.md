@@ -15,8 +15,8 @@
 - Schedule backup and watch `GET /v1/health` / health status logs under `server/logs/`.
 - Pin dependency versions; run smoke tests after upgrades (`server/scripts/healthcheck.py`).
 
-## Home mini-PC + public URL (Stage 3)
+## Home server + public URL (Stage 3)
 
-Canonical publish path: Neyra on a **mini-PC**, **frpc** → VPS **frps** → **Caddy**/nginx for `https://neyra.owyx.site` / `wss://neyra.owyx.site/api/v1/ws/chat`. Runtime data remains on the mini-PC (`server/data/memory/`, `server/.env`, `server/logs/`).
+Canonical publish path: Neyra on a **home server** (mini PC, spare desktop, laptop, …), **frpc** → VPS **frps** → **Caddy**/nginx for `https://neyra.owyx.site` / `wss://neyra.owyx.site/api/v1/ws/chat`. Runtime data remains on the home server (`server/data/memory/`, `server/.env`, `server/logs/`).
 
 Details: [`docs/PLAN.md`](../../PLAN.md) §3.

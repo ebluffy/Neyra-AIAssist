@@ -83,7 +83,7 @@ Plugin SDK: [HELP.md](server/modules/000EXAMPLE/HELP.md) · [HELP-RU.md](server/
 
 ## Client (Stage 3)
 
-`client/` is scaffold only. Stage 3 adds Tauri 2 + React MVP (Connect / Chat / Status / Modules) and public host `https://neyra.owyx.site` via frp (mini-PC → VPS). See [docs/PLAN.md](docs/PLAN.md) §3.
+`client/` is scaffold only. Stage 3 adds Tauri 2 + React MVP (Connect / Chat / Status / Modules) and public host `https://neyra.owyx.site` via frp (home server → VPS). See [docs/PLAN.md](docs/PLAN.md) §3.
 
 ## Status vs roadmap
 

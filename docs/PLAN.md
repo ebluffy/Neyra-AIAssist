@@ -12,7 +12,7 @@
 | **Цель** | разработать прототип модульной информационной системы персонального ИИ-ассистента с локальным сервером и клиентским приложением управления |
 | **Минимум к защите** | сервер, Windows-клиент Tauri 2 + React + TypeScript, подключение по адресу и токену, чат со streaming-ответом, статус health/modules/models/API, включение/выключение модуля, мягкий рестарт, минимум один рабочий модуль, схемы и тесты |
 
-Установщик сервера остаётся в backlog. Для демонстрации сервера достаточно Docker Compose или systemd на mini-PC и `run_neyra.bat` на Windows. Установщик клиента NSIS и автообновление входят в Этап 3, но не являются минимумом защиты: для защиты достаточно собранного `setup.exe`.
+Установщик сервера остаётся в backlog. Для демонстрации сервера достаточно Docker Compose или systemd на домашнем сервере и `run_neyra.bat` на Windows. Установщик клиента NSIS и автообновление входят в Этап 3, но не являются минимумом защиты: для защиты достаточно собранного `setup.exe`.
 
 ## 1. Архитектурные принципы
 
@@ -189,22 +189,23 @@ docs/
 
 ### Доступ из интернета и публикация под доменом
 
-Канонический сценарий для диплома и удалённого клиента: Neyra Server крутится на **мини-ПК специалиста**, наружу — через **frp** (frpc на мини-ПК, frps на VPS) под поддоменом `neyra.owyx.site`. DNS, frps/Caddy и frpc настраиваются **в рамках Этапа 3** вместе с Windows-клиентом: сразу хостится Control API для приложения, а не откладывается «на потом».
+Канонический сценарий для диплома и удалённого клиента: Neyra Server крутится на **домашнем сервере** (мини-ПК, старый ПК, ноутбук и т.п.), наружу — через **frp** (frpc на домашнем сервере, frps на VPS) под поддоменом `neyra.owyx.site`. DNS, frps/Caddy и frpc настраиваются **в рамках Этапа 3** вместе с Windows-клиентом: сразу хостится Control API для приложения, а не откладывается «на потом».
 
 #### Схема
 
 ```text
 Клиент (Tauri)
-  → https://neyra.owyx.site  (и wss://… для /v1/ws/chat)
+  → https://neyra.owyx.site
+  → wss://neyra.owyx.site/api/v1/ws/chat
   → Caddy или nginx на VPS (TLS Let's Encrypt)
   → frps (vhost HTTP, порт например 8080)
-  → frpc на мини-ПК
+  → frpc на домашнем сервере
   → Control API 127.0.0.1:8787
 ```
 
-WebSocket-чат (`/v1/ws/chat`) должен проходить через всю цепочку без обрыва (прокси с поддержкой Upgrade; см. также `docs/ru/ops/api-reverse-proxy.md` / `docs/ru/ops/wss-deployment.md`).
+Публичный путь чата — `wss://neyra.owyx.site/api/v1/ws/chat` (`api.public_path_prefix: /api`). За прокси префикс `/api` снимается; приложение слушает локально `/v1/ws/chat`. WebSocket должен проходить всю цепочку без обрыва (Upgrade; см. `docs/ru/ops/api-reverse-proxy.md` / `docs/ru/ops/wss-deployment.md`).
 
-#### Пример frpc.toml (мини-ПК)
+#### Пример frpc.toml (домашний сервер)
 
 ```toml
 # Общий auth.token должен совпадать с frps (не коммитить).
@@ -234,18 +235,18 @@ customDomains = ["neyra.owyx.site"]
 
 #### Данные
 
-- Память (`server/data/memory/`), `.env`, логи и модели остаются на **мини-ПК**.
+- Память (`server/data/memory/`), `.env`, логи и модели остаются на **домашнем сервере**.
 - На VPS — только reverse proxy + frps: **без** копирования памяти, секретов и runtime-данных Neyra.
 
 #### Альтернатива
 
-Тот же Docker Compose на VPS — **запасной стенд** (демонстрация / CI / fallback), не замена канону «мини-ПК + frp» для персонального ассистента с локальными данными.
+Тот же Docker Compose на VPS — **запасной стенд** (демонстрация / CI / fallback), не замена канону «домашний сервер + frp» для персонального ассистента с локальными данными.
 
 #### Чеклист Этапа 3 (хостинг API + клиент)
 
 - [ ] A-запись `neyra.owyx.site` → IP VPS.
 - [ ] frps + Caddy (или nginx) на VPS: TLS Let's Encrypt, прокси на frps vhost, WebSocket Upgrade.
-- [ ] frpc на мини-ПК как служба (NSSM / Task Scheduler / systemd) с `type=http`, `localPort=8787`, `customDomains=["neyra.owyx.site"]`, общий `auth.token` с frps.
+- [ ] frpc на домашнем сервере как служба (NSSM / Task Scheduler / systemd) с `type=http`, `localPort=8787`, `customDomains=["neyra.owyx.site"]`, общий `auth.token` с frps.
 - [ ] Проверка WebSocket через прокси: `wss://neyra.owyx.site/api/v1/ws/chat` доходит до Control API.
 - [ ] Адрес сервера в клиенте по умолчанию из **настроек** (сохранённый URL), не зашитый в сборку; для демо можно подсказать `https://neyra.owyx.site`.
 
@@ -269,8 +270,8 @@ customDomains = ["neyra.owyx.site"]
 - [ ] Собирается NSIS `setup.exe` для current user.
 - [ ] Автообновление и error state проверены на тестовом release.
 - [ ] PR CI выполняет lint, typecheck и build; release CI создаёт `latest.json`.
-- [ ] Публикация `neyra.owyx.site`: DNS + frps/Caddy на VPS + frpc-служба на мини-ПК; WSS-чат через прокси работает.
-- [ ] Клиент берёт URL сервера из настроек (не hardcoded); внешний доступ только с токенами, bind localhost, данные только на мини-ПК.
+- [ ] Публикация `neyra.owyx.site`: DNS + frps/Caddy на VPS + frpc-служба на домашнем сервере; WSS-чат через прокси работает.
+- [ ] Клиент берёт URL сервера из настроек (не hardcoded); внешний доступ только с токенами, bind localhost, данные только на домашнем сервере.
 
 ## 4. Серверная поставка и модульная эксплуатация
 

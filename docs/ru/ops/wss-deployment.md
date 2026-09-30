@@ -35,9 +35,9 @@
 - пробрасывайте `Authorization` (или используйте `?token=` в query)
 - на публичном интерфейсе только HTTPS/WSS (без plain WS)
 
-## frp (мини-ПК → VPS)
+## frp (домашний сервер → VPS)
 
-Канон публикации для удалённого Tauri-клиента (Этап 3): Neyra на **мини-ПК**, наружу через **frpc** → **frps** на VPS → Caddy/nginx (TLS). WebSocket должен проходить всю цепочку без обрыва. Подробности — [`docs/PLAN.md`](../../PLAN.md) §3 и [api-reverse-proxy](api-reverse-proxy.md).
+Канон публикации для удалённого Tauri-клиента (Этап 3): Neyra на **домашнем сервере**, наружу через **frpc** → **frps** на VPS → Caddy/nginx (TLS). WebSocket должен проходить всю цепочку без обрыва. Подробности — [`docs/PLAN.md`](../../PLAN.md) §3 и [api-reverse-proxy](api-reverse-proxy.md).
 
 ## Дашборд и дорожная карта
 

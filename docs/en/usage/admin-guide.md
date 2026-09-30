@@ -25,4 +25,4 @@
 
 ## Public access
 
-Configure `server/config/server.yaml` (`api.public_*`), TLS reverse proxy, and **mandatory** API tokens. See [deployment-production](../ops/deployment-production.md) and [`docs/PLAN.md`](../../PLAN.md) §3 for frp + mini-PC layout.
+Configure `server/config/server.yaml` (`api.public_*`), TLS reverse proxy, and **mandatory** API tokens. See [deployment-production](../ops/deployment-production.md) and [`docs/PLAN.md`](../../PLAN.md) §3 for frp + home-server layout.

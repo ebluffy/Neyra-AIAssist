@@ -78,7 +78,7 @@ SDK: [HELP-RU.md](server/modules/000EXAMPLE/HELP-RU.md) · [HELP.md](server/modu
 
 ## Клиент (Этап 3)
 
-`client/` — только scaffold. Этап 3: Tauri 2 + React (Connect / Chat / Status / Modules) и публикация `https://neyra.owyx.site` через frp. См. [docs/PLAN.md](docs/PLAN.md) §3.
+`client/` — только scaffold. Этап 3: Tauri 2 + React (Connect / Chat / Status / Modules) и публикация `https://neyra.owyx.site` через frp (домашний сервер → VPS). См. [docs/PLAN.md](docs/PLAN.md) §3.
 
 ## Статус
 
