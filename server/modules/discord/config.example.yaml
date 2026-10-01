@@ -42,8 +42,12 @@ proactive:
   author_display_name: "Нейра"
   # prompt: "..."  # optional override; default — короткая спонтанная реплика / мемы (см. bot.py)
 
-# EN: Lavalink nodes (read by interfaces.discord.music). Legacy: plugins.discord_music in config.
+# EN: Lavalink nodes (read by modules.discord.music).
+# RU: Узлы Lavalink. Если URI — loopback и порт свободен, при managed_lavalink=true Discord сам поднимет Lavalink.jar.
 music:
+  managed_lavalink: true
+  managed_lavalink_ready_seconds: 90
+  # java_path: ""
   nodes:
     - identifier: "local-lavalink"
       uri: "http://127.0.0.1:2333"

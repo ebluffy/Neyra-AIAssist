@@ -7,6 +7,7 @@ import logging
 import random
 import re
 import time
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -920,6 +921,19 @@ def bootstrap_resident(ctx) -> None:
         logger.warning("discord.music resident mode requires agent context")
         return
 
+    # Bring up local Lavalink.jar when Discord is enabled (managed_lavalink default on).
+    try:
+        from modules.discord.lavalink_process import ensure_managed_lavalink
+
+        plugin_dir = Path(__file__).resolve().parent
+        ok, detail = ensure_managed_lavalink(getattr(ctx, "config", None) or {}, plugin_dir)
+        if ok:
+            logger.info("discord.lavalink: %s", detail)
+        else:
+            logger.error("discord.lavalink: %s", detail)
+    except Exception:
+        logger.exception("discord.lavalink: ensure_managed_lavalink failed")
+
     _ctx_service(ctx)
 
     def _startup_node_preflight() -> None:
@@ -947,6 +961,7 @@ def bootstrap_resident(ctx) -> None:
     for ev in (MUSIC_PLAY, MUSIC_PAUSE, MUSIC_RESUME, MUSIC_SKIP, MUSIC_QUEUE, MUSIC_STOP, MUSIC_CLEAR):
         ctx.agent.event_bus.subscribe(ev, _event_handler(ctx, ev))
     logger.info("discord.music resident subscribed to MUSIC_* events (lazy lavalink connect)")
+
 
 
 def run_plugin(ctx) -> None:
