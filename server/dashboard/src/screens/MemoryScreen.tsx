@@ -13,8 +13,6 @@ type Profile = {
   last_name?: string
   birth_date?: string
   city?: string
-  occupation?: string
-  relation?: string
 }
 
 type PersonRow = {
@@ -29,12 +27,10 @@ type DiaryNote = Record<string, unknown>
 type JournalEntry = Record<string, unknown>
 
 const PROFILE_FIELDS: Array<{ key: keyof Profile; label: string; placeholder: string }> = [
-  { key: 'first_name', label: 'Имя', placeholder: 'Имя' },
-  { key: 'last_name', label: 'Фамилия', placeholder: 'Фамилия' },
-  { key: 'birth_date', label: 'Дата рождения', placeholder: '2004 / 12.03.2004' },
-  { key: 'city', label: 'Город', placeholder: 'Город' },
-  { key: 'occupation', label: 'Занятие', placeholder: 'Учёба / работа' },
-  { key: 'relation', label: 'Связь', placeholder: 'друг, одноклассник…' },
+  { key: 'first_name', label: 'Имя', placeholder: 'реальное имя, если известно' },
+  { key: 'last_name', label: 'Фамилия', placeholder: 'необязательно' },
+  { key: 'birth_date', label: 'Дата рождения', placeholder: '2004 / 12.03.2004 / пусто' },
+  { key: 'city', label: 'Город', placeholder: 'из разговора или пусто' },
 ]
 
 const emptyProfile = (): Profile => ({
@@ -42,8 +38,6 @@ const emptyProfile = (): Profile => ({
   last_name: '',
   birth_date: '',
   city: '',
-  occupation: '',
-  relation: '',
 })
 
 export function MemoryScreen() {
@@ -56,8 +50,6 @@ export function MemoryScreen() {
   const [people, setPeople] = useState<PersonRow[]>([])
   const [selectedPerson, setSelectedPerson] = useState('')
   const [profile, setProfile] = useState<Profile>(emptyProfile())
-  const [aliases, setAliases] = useState('')
-  const [discordIds, setDiscordIds] = useState('')
   const [facts, setFacts] = useState<PersonFact[]>([])
   const [legacyHints, setLegacyHints] = useState<string[]>([])
   const [newFact, setNewFact] = useState('')
@@ -113,8 +105,6 @@ export function MemoryScreen() {
   const loadPerson = useCallback(async (pid: string) => {
     if (!pid) {
       setProfile(emptyProfile())
-      setAliases('')
-      setDiscordIds('')
       setFacts([])
       setLegacyHints([])
       return
@@ -131,8 +121,6 @@ export function MemoryScreen() {
       const person = r.data.person
       const pr = { ...emptyProfile(), ...(r.data.profile || person?.profile || {}) }
       setProfile(pr)
-      setAliases((person?.names ?? []).join(', '))
-      setDiscordIds((person?.discord_ids ?? []).join(', '))
       setFacts(r.data.facts ?? [])
       setLegacyHints(r.data.legacy_fact_hints ?? [])
     } catch (e) {
@@ -157,9 +145,9 @@ export function MemoryScreen() {
     setStatus('')
     setError(null)
     try {
+      const display = [profile.first_name, profile.last_name].filter(Boolean).join(' ').trim()
       await apiPatch(`/v1/memory/people/${encodeURIComponent(selectedPerson)}`, {
-        names: aliases.split(',').map((s) => s.trim()).filter(Boolean),
-        discord_ids: discordIds.split(',').map((s) => s.trim()).filter(Boolean),
+        names: display ? [display] : undefined,
         profile,
       })
       setStatus('Карточка сохранена')
@@ -174,10 +162,10 @@ export function MemoryScreen() {
     setError(null)
     setStatus('')
     try {
+      const display = [profile.first_name, profile.last_name].filter(Boolean).join(' ').trim()
       const r = await apiPost<ApiEnvelope<{ person?: PersonRow }>>('/v1/memory/people', {
         id: newPersonId.trim() || undefined,
-        names: aliases.split(',').map((s) => s.trim()).filter(Boolean),
-        discord_ids: discordIds.split(',').map((s) => s.trim()).filter(Boolean),
+        names: display ? [display] : [],
         profile,
       })
       const id = String(r.data.person?.id || newPersonId || '')
@@ -366,8 +354,6 @@ export function MemoryScreen() {
                   setCreating(true)
                   setSelectedPerson('')
                   setProfile(emptyProfile())
-                  setAliases('')
-                  setDiscordIds('')
                   setFacts([])
                   setLegacyHints([])
                 }}
@@ -424,14 +410,10 @@ export function MemoryScreen() {
                     </label>
                   ))}
                 </div>
-                <label className="label">
-                  <span className="label-text">Псевдонимы (через запятую)</span>
-                  <input className="input" onChange={(e) => setAliases(e.target.value)} value={aliases} />
-                </label>
-                <label className="label">
-                  <span className="label-text">Discord ID (через запятую)</span>
-                  <input className="input input-mono" onChange={(e) => setDiscordIds(e.target.value)} value={discordIds} />
-                </label>
+                <p style={{ fontSize: '0.78rem', color: 'var(--muted)', lineHeight: 1.45 }}>
+                  Сводка короткая и необязательная. Ники, Discord, работа, связь, привычки — только в фактах.
+                  Нейра сама дописывает профиль и факты из разговора.
+                </p>
                 <div className="row" style={{ flexWrap: 'wrap' }}>
                   {creating ? (
                     <Button onClick={() => void createPerson()} type="button">

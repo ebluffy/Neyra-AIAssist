@@ -355,16 +355,19 @@ def _test_person_profile_split() -> None:
             "birth_year": 2004,
             "city": "Киров",
             "car": "Ауди",
-            "games": ["Dota", "CS2"],
+            "occupation": "таксист",
+            "relation": "друг",
             "first_name": "Максим",
         }
     )
+    assert set(PROFILE_KEYS) == {"first_name", "last_name", "birth_date", "city"}
     assert profile["first_name"] == "Максим"
     assert profile["birth_date"] == "2004"
     assert profile["city"] == "Киров"
-    assert all(k in PROFILE_KEYS for k in profile)
-    assert any("car" in x.lower() or "Ауди" in x for x in leftovers)
-    assert any("Dota" in x for x in leftovers)
+    assert "occupation" not in profile or not profile.get("occupation")
+    assert any("Ауди" in x for x in leftovers)
+    assert any("таксист" in x for x in leftovers)
+    assert any("друг" in x or "Связь" in x for x in leftovers)
 
 
 def main() -> int:

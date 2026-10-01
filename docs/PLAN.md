@@ -187,7 +187,7 @@ docs/
 
 `server/dashboard/` — **главная рабочая среда Neyra** (статус, модули, память, система, вебхуки, настройки, документация): локально и удалённо (VPS / публичный домен), пока нет полноценного десктоп-клиента. Это не «временный чат», а ops/admin control plane — в том числе для сценария, когда кто-то развернёт Neyra как удалённый или публичный сервис. Экраны лежат в `screens/`, `components/ui/`, `api/`, `styles/` как переносимый слой; Stage 3 переносит их в `client/` (или shared-пакет), а не монтирует всю SPA целиком. Shell/gate (sessionStorage) — только веб. Двуязычный UI (ru/en) — позже; сейчас интерфейс на русском.
 
-**Люди (память):** каноническая сводка в `meta.static_facts` — только `first_name`, `last_name`, `birth_date`, `city`, `occupation`, `relation` (`core.memory.person_profile`). Всё остальное — в `person_facts`. Дашборд и Control API умеют CRUD людей/фактов/дневника/журнала.
+**Люди (память):** каноническая сводка в `meta.static_facts` — только необязательные `first_name`, `last_name`, `birth_date`, `city` (`core.memory.person_profile`). Ники, Discord, занятие, связь и всё остальное — в `person_facts`. Нейра сама создаёт/обновляет досье через tools `update_person_profile` / `update_person_fact`. Дашборд умеет CRUD людей/фактов/дневника/журнала.
 
 Вторая очередь: Monaco-редактор промптов и конфигов, логи и настройки приложения.
 

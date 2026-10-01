@@ -10,7 +10,8 @@ from core.memory.person_profile import coerce_profile
 
 logger = logging.getLogger("neyra.agent.people_seed")
 
-# Canonical profile keys only in static_facts; free-form → seed_facts (person_facts).
+# Canonical profile: first_name / last_name / birth_date / city only.
+# Everything else → seed_facts (person_facts).
 DEFAULT_PEOPLE: list[dict[str, Any]] = [
     {
         "id": "maxim",
@@ -20,9 +21,9 @@ DEFAULT_PEOPLE: list[dict[str, Any]] = [
             "first_name": "Максим",
             "birth_date": "2004",
             "city": "Киров",
-            "occupation": "безработный",
         },
         "seed_facts": [
+            "Занятие: безработный",
             "Живёт: квартира на кирпичке с мамой, бабушкой и братом Димой ~4г",
             "Игры: Roblox, Dota 2, CS2",
             "Аниме на аве. Подкалывать за безработность и Роблокс.",
@@ -38,9 +39,9 @@ DEFAULT_PEOPLE: list[dict[str, Any]] = [
             "last_name": "Кутырин",
             "birth_date": "2005",
             "city": "Киров",
-            "occupation": "таксист",
         },
         "seed_facts": [
+            "Занятие: таксист",
             "Живёт с девушкой, каблук",
             "Машина: старая Ауди",
             "Игры: Dota 2, CS2",
@@ -55,11 +56,11 @@ DEFAULT_PEOPLE: list[dict[str, Any]] = [
         "discord_ids": [],
         "static_facts": {
             "first_name": "Тимофей",
-            "birth_date": "~19 лет",
+            "birth_date": "~2007",
             "city": "Волгоград",
-            "occupation": "пилот БПЛА, колледж/шарага",
         },
         "seed_facts": [
+            "Занятие: пилот БПЛА, колледж/шарага",
             "Игры: Garry's Mod (Postbellum ~4k ч), Dota 2",
             "Черты: везучее говно, говноед. Везёт на смены региона в Роблокс.",
             "Аниме на аве. Можно жёстко стебать — не обижается.",
@@ -73,9 +74,9 @@ DEFAULT_PEOPLE: list[dict[str, Any]] = [
         "static_facts": {
             "first_name": "Андрей",
             "last_name": "Гриникс",
-            "occupation": "11 класс",
         },
         "seed_facts": [
+            "Занятие: 11 класс",
             "Черты: немного тупенький, молчит или мычит",
             "Игры: Genshin Impact, Dota 2",
             "Девушка: Вика (иногда писали ей в ВК чтоб отпустила)",
@@ -88,9 +89,9 @@ DEFAULT_PEOPLE: list[dict[str, Any]] = [
         "discord_ids": [],
         "static_facts": {
             "first_name": "Богдан",
-            "relation": "одноклассник Тимофея",
         },
         "seed_facts": [
+            "Связь: одноклассник Тимофея",
             "Черты: толстый (сам шутит — говорит сиськи >3 размера)",
             "Заходит редко",
             "Правило: КАК ТОЛЬКО ПОЯВЛЯЕТСЯ В ВОЙСЕ — СЛАТЬ НАХУЙ",
@@ -106,9 +107,9 @@ DEFAULT_PEOPLE: list[dict[str, Any]] = [
             "last_name": "Иванцов",
             "birth_date": "~2005",
             "city": "Киров",
-            "occupation": "бывший курьер, теперь перекуп",
         },
         "seed_facts": [
+            "Занятие: бывший курьер, теперь перекуп",
             "Машина: Шевроле Нива 2005 — ПОДАРОК ОТЦА, ТАБУ",
             "Девушка: Ксюша (никому не нравится характер)",
             "В дискорде не сидит. Про Ниву — МОЛЧАТЬ. Про Ксюшу только если сами начали.",
@@ -122,9 +123,10 @@ DEFAULT_PEOPLE: list[dict[str, Any]] = [
         "static_facts": {
             "first_name": "Эрик",
             "last_name": "Арзоян",
-            "city": "Киров (рядом с Димой)",
+            "city": "Киров",
         },
         "seed_facts": [
+            "Рядом с Димой",
             "Машина: Lada",
             "Клички принимает и не обижается",
             "В дискорде не сидит.",
