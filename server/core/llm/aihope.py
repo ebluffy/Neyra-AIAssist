@@ -28,13 +28,22 @@ def _auth_headers(api_key: str) -> dict[str, str]:
 
 
 async def fetch_aihope_token_usage(api_key: str) -> dict[str, Any]:
-    """GET https://aihope.fun/api/usage/token/ — usage / balance for the key."""
+    """GET https://aihope.fun/api/usage/token/ — usage / balance for the key.
+
+    Normalizes AIHope nested ``data`` into the same shape as OpenRouter balance
+    (``limit``, ``limit_remaining``, ``usage``, ``label``) for the dashboard.
+    """
     key = (api_key or "").strip()
     if not key:
         return {"_error": "missing_api_key"}
 
+    headers = {
+        **_auth_headers(key),
+        "Accept": "application/json",
+        "User-Agent": "Neyra/1.0 (+dashboard balance)",
+    }
     async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.get(AIHOPE_BALANCE_URL, headers=_auth_headers(key))
+        r = await client.get(AIHOPE_BALANCE_URL, headers=headers)
 
     try:
         payload = r.json() if r.content else {}
@@ -48,9 +57,29 @@ async def fetch_aihope_token_usage(api_key: str) -> dict[str, Any]:
             "body": str(payload)[:800],
         }
 
-    if isinstance(payload, dict):
-        return {k: v for k, v in payload.items()}
-    return {"_error": "unexpected_response", "raw": payload}
+    if not isinstance(payload, dict):
+        return {"_error": "unexpected_response", "raw": payload}
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if not isinstance(data, dict):
+        return {"_error": "unexpected_response", "raw": payload}
+
+    granted = data.get("tokens_granted", data.get("total_granted", data.get("limit")))
+    available = data.get(
+        "tokens_available", data.get("total_available", data.get("limit_remaining"))
+    )
+    used = data.get("tokens_used", data.get("total_used", data.get("usage")))
+    return {
+        "label": data.get("name") or data.get("label"),
+        "limit": granted,
+        "limit_remaining": available,
+        "usage": used,
+        "usage_daily": data.get("usage_daily"),
+        "usage_weekly": data.get("usage_weekly"),
+        "usage_monthly": data.get("usage_monthly"),
+        "tokens_description": data.get("tokens_description"),
+        "unlimited_quota": data.get("unlimited_quota"),
+    }
 
 
 async def aihope_list_models(api_key: str, *, base_url: str = AIHOPE_API_BASE) -> dict[str, Any]:

@@ -1,10 +1,3 @@
-<!-- co-authored-cursor-badge -->
-[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
-
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Гайд интегратора
 
 Control API живёт в `server/core/api/` (не модуль). Локально: `http://127.0.0.1:8787`. Публично (Этап 3): `https://neyra.owyx.site/api/v1` — см. [api-reverse-proxy](../ops/api-reverse-proxy.md) и [`docs/PLAN.md`](../../PLAN.md) §3. Auth: Bearer `API_TOKEN` (и роли viewer/maint).

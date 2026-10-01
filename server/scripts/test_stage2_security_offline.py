@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -239,6 +241,250 @@ def _test_memory_model_429_backoff() -> None:
     asyncio.run(run())
 
 
+def _test_dashboard_session_store() -> None:
+    """Session tokens verify/revoke without importing FastAPI (LLM CI job has no fastapi)."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from core.api.dashboard_auth import MIN_KEY_LEN, DashboardAuthStore
+
+    td = tempfile.mkdtemp()
+    try:
+        db = Path(td) / "dash.sqlite"
+        store = DashboardAuthStore(db)
+        key = "a" * MIN_KEY_LEN
+        store.setup(key)
+        assert store.verify(key)
+        session = store.issue_session()
+        assert store.verify_session(session)
+        assert not store.verify_session(key), "raw gate key must not be a session"
+        session2 = store.issue_session()
+        assert store.verify_session(session2)
+        assert not store.verify_session(session), "new login must revoke prior sessions"
+        # Persist across process-like reinit (same SQLite file).
+        store2 = DashboardAuthStore(db)
+        assert store2.verify_session(session2), "session must survive store reinit"
+        store2.revoke_session(session2)
+        assert not store2.verify_session(session2)
+        store3 = DashboardAuthStore(db)
+        assert not store3.verify_session(session2)
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def _test_resolve_client_ip() -> None:
+    """Loopback peer may trust CF / X-Real-IP; public peer ignores forgeable CF."""
+    from core.api.client_ip import (
+        has_edge_client_headers,
+        is_console_local_client,
+        resolve_client_ip,
+    )
+
+    assert resolve_client_ip(peer="127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"}) == "203.0.113.9"
+    assert resolve_client_ip(peer="127.0.0.1", headers={"x-real-ip": "198.51.100.1"}) == "198.51.100.1"
+    assert resolve_client_ip(peer="127.0.0.1", headers={"x-forwarded-for": "9.9.9.9"}) == "127.0.0.1"
+    # XFF must never create a separate client identity (uvicorn must not rewrite peer either).
+    assert resolve_client_ip(peer="127.0.0.1", headers={"x-forwarded-for": "203.0.113.1"}) == resolve_client_ip(
+        peer="127.0.0.1", headers={}
+    )
+    # Forged loopback edge IP must not replace peer for rate-limit/logs
+    assert resolve_client_ip(peer="127.0.0.1", headers={"cf-connecting-ip": "127.0.0.1"}) == "127.0.0.1"
+    assert resolve_client_ip(peer="127.0.0.1", headers={"x-real-ip": "::1"}) == "127.0.0.1"
+    assert (
+        resolve_client_ip(peer="203.0.113.50", headers={"cf-connecting-ip": "1.2.3.4"}) == "203.0.113.50"
+    )
+    assert is_console_local_client(peer="127.0.0.1", headers={}) is True
+    assert is_console_local_client(peer="127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"}) is False
+    assert is_console_local_client(peer="127.0.0.1", headers={"cf-connecting-ip": "127.0.0.1"}) is False
+    assert is_console_local_client(peer="127.0.0.1", headers={"x-real-ip": "10.0.0.1"}) is False
+    assert is_console_local_client(peer="203.0.113.9", headers={}) is False
+    assert has_edge_client_headers({"CF-Connecting-IP": "1.1.1.1"}) is True
+    assert has_edge_client_headers({}) is False
+
+
+def _test_docs_catalog_resolve_allowlist() -> None:
+    """Markdown resolve: docs trees + legacy only; no arbitrary server_root .md; no .. escape."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from core.api.docs_catalog import build_docs_catalog, resolve_doc_path, sanitize_markdown_text
+
+    td = Path(tempfile.mkdtemp())
+    try:
+        (td / "docs" / "ru" / "api").mkdir(parents=True)
+        (td / "docs" / "en" / "api").mkdir(parents=True)
+        (td / "docs" / "ru" / "api" / "overview.md").write_text("# RU API\n", encoding="utf-8")
+        (td / "docs" / "en" / "api" / "overview.md").write_text("# EN API\n", encoding="utf-8")
+        (td / "docs" / "ru" / "architecture").mkdir(parents=True)
+        dirty = (
+            "<!-- co-authored-cursor-badge -->\n"
+            "[![Cursor AI assist](https://img.shields.io/badge/x)](https://cursor.com)\n\n"
+            "<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>\n\n"
+            "---\n\n# web\n"
+        )
+        (td / "docs" / "ru" / "architecture" / "web-ui.md").write_text(dirty, encoding="utf-8")
+        (td / "README-RU.md").write_text("# readme\n", encoding="utf-8")
+        (td / "secret.md").write_text("leak\n", encoding="utf-8")
+        (td / "config").mkdir()
+        (td / "config" / "notes.md").write_text("nope\n", encoding="utf-8")
+
+        cat = build_docs_catalog(td)
+        ids = {s["id"] for s in cat["sections"]}
+        assert "api-ru" in ids and "api-en" in ids
+        assert "api" not in ids
+        api_ru = next(s for s in cat["sections"] if s["id"] == "api-ru")
+        assert any(i["id"] == "ru/api/overview" for i in api_ru["items"])
+
+        assert resolve_doc_path(td, "ru/architecture/web-ui") is not None
+        assert resolve_doc_path(td, "readme-ru") is not None
+        assert resolve_doc_path(td, "secret") is None
+        assert resolve_doc_path(td, "config/notes") is None
+        assert resolve_doc_path(td, "../secret") is None
+        assert resolve_doc_path(td, "ru/../en/api/overview") is None
+
+        cleaned = sanitize_markdown_text(dirty, doc_id="ru/architecture/web-ui")
+        assert "co-authored-cursor-badge" not in cleaned
+        assert "Соавторство" not in cleaned
+        assert cleaned.lstrip().startswith("# web")
+        kept = sanitize_markdown_text(dirty, doc_id="readme-ru")
+        assert "Соавторство" in kept
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def _test_setup_guard_resolved_ip() -> None:
+    """Setup local = console loopback without edge headers; forged CF loopback is remote."""
+    from core.api.client_ip import is_console_local_client, resolve_client_ip
+
+    # frpc peer + public CF → treated as remote client for resolve + setup
+    remote = resolve_client_ip(peer="127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"})
+    assert remote == "203.0.113.9"
+    assert is_console_local_client(peer="127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"}) is False
+    # forged loopback CF must not unlock setup
+    assert is_console_local_client(peer="127.0.0.1", headers={"cf-connecting-ip": "127.0.0.1"}) is False
+    # true local console
+    assert is_console_local_client(peer="127.0.0.1", headers={}) is True
+    local = resolve_client_ip(peer="127.0.0.1", headers={})
+    assert local == "127.0.0.1"
+
+
+def _test_persist_allowlisted_updates() -> None:
+    from core.runtime.config_loader import _load_yaml_file, persist_allowlisted_updates
+
+    td = Path(tempfile.mkdtemp(prefix="neyra_persist_"))
+    try:
+        (td / "config").mkdir()
+        (td / "config" / "llm.yaml").write_text(
+            "llm:\n  talk_model:\n    provider: openrouter\n    model: old\n"
+            "  providers:\n    aihope: {}\n    openrouter: {}\n",
+            encoding="utf-8",
+        )
+        (td / "config" / "runtime.yaml").write_text(
+            "logging:\n  level: INFO\n",
+            encoding="utf-8",
+        )
+        touched = persist_allowlisted_updates(
+            td,
+            {
+                "llm.talk_model.provider": "aihope",
+                "llm.talk_model.model": "gpt-6-luna",
+                "logging.level": "DEBUG",
+            },
+        )
+        assert set(touched) == {"config/llm.yaml", "config/runtime.yaml"}, touched
+        data = _load_yaml_file(td / "config" / "llm.yaml")
+        assert data["llm"]["talk_model"]["provider"] == "aihope"
+        assert data["llm"]["talk_model"]["model"] == "gpt-6-luna"
+        assert "providers" in data["llm"]
+        rt = _load_yaml_file(td / "config" / "runtime.yaml")
+        assert rt["logging"]["level"] == "DEBUG"
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def _test_message_content_to_text() -> None:
+    from core.llm.message_content import message_content_to_text
+
+    assert message_content_to_text("hi") == "hi"
+    assert message_content_to_text([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "a\nb"
+    assert message_content_to_text([{"type": "output_text", "text": "x"}]) == "x"
+    assert message_content_to_text(None) == ""
+
+
+def _test_plan_talk_vision() -> None:
+    from core.agent.turn_prep import plan_talk_vision
+
+    imgs = [("image/jpeg", "abc")]
+
+    # brain-native + talk shares model → pixels to talk, no caption
+    p = plan_talk_vision(
+        imgs,
+        brain_native_vis=True,
+        talk_model="gpt-6-luna",
+        brain_model="gpt-6-luna",
+        has_vision_llm=True,
+        talk_is_vision_client=False,
+        vision_is_brain_client=True,
+    )
+    assert p.talk_can_vl is True
+    assert p.need_talk_caption is False
+    assert p.talk_vm is imgs
+    assert p.has_vis_prompt is True
+
+    # brain-native + talk ≠ brain → caption, talk_vm None
+    p2 = plan_talk_vision(
+        imgs,
+        brain_native_vis=True,
+        talk_model="qwen/qwen3.8-27b:free",
+        brain_model="gpt-6-luna",
+        has_vision_llm=True,
+        talk_is_vision_client=False,
+        vision_is_brain_client=True,
+    )
+    assert p2.talk_can_vl is False
+    assert p2.need_talk_caption is True
+    assert p2.talk_vm is None
+    assert p2.has_vis_prompt is False
+
+    # separate VL caption lane (vision client ≠ brain)
+    p3 = plan_talk_vision(
+        imgs,
+        brain_native_vis=False,
+        talk_model="qwen",
+        brain_model="gpt",
+        has_vision_llm=True,
+        talk_is_vision_client=False,
+        vision_is_brain_client=False,
+    )
+    assert p3.need_talk_caption is True
+    assert p3.talk_vm is None
+
+
+def _test_person_profile_split() -> None:
+    from core.memory.person_profile import PROFILE_KEYS, split_static_facts
+
+    profile, leftovers = split_static_facts(
+        {
+            "birth_year": 2004,
+            "city": "Киров",
+            "car": "Ауди",
+            "occupation": "таксист",
+            "relation": "друг",
+            "first_name": "Максим",
+        }
+    )
+    assert set(PROFILE_KEYS) == {"first_name", "last_name", "birth_date", "city"}
+    assert profile["first_name"] == "Максим"
+    assert profile["birth_date"] == "2004"
+    assert profile["city"] == "Киров"
+    assert "occupation" not in profile or not profile.get("occupation")
+    assert any("Ауди" in x for x in leftovers)
+    assert any("таксист" in x for x in leftovers)
+    assert any("друг" in x or "Связь" in x for x in leftovers)
+
+
 def main() -> int:
     _test_diary_digest_no_user_lines()
     _test_contextvar_isolation()
@@ -246,6 +492,14 @@ def main() -> int:
     _test_scoped_archive_skips_foreign_stm()
     _test_diary_prompt_skips_session_archive()
     _test_memory_model_429_backoff()
+    _test_dashboard_session_store()
+    _test_resolve_client_ip()
+    _test_docs_catalog_resolve_allowlist()
+    _test_setup_guard_resolved_ip()
+    _test_persist_allowlisted_updates()
+    _test_message_content_to_text()
+    _test_plan_talk_vision()
+    _test_person_profile_split()
     print("stage2 security offline: OK")
     return 0
 

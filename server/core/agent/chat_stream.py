@@ -160,7 +160,12 @@ async def iter_chat_stream(
             ):
                 yield item
         except Exception as e:
-            err_str = str(e)
+            err_str = (str(e) or "").strip() or type(e).__name__
+            if isinstance(e, TimeoutError) or type(e).__name__ == "TimeoutError":
+                err_str = (
+                    "таймаут ответа модели (first token). "
+                    "Повтори позже или увеличь llm.talk_model.primary_first_token_timeout_seconds"
+                )
             if (
                 "context size has been exceeded" in err_str.lower()
                 or "context_length_exceeded" in err_str.lower()

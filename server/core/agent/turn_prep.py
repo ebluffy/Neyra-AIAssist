@@ -9,6 +9,51 @@ from typing import Any, Optional
 logger = logging.getLogger("neyra.agent.turn_prep")
 
 
+@dataclass(frozen=True)
+class TalkVisionPlan:
+    """How talk lane should receive images this turn."""
+
+    talk_can_vl: bool
+    need_talk_caption: bool
+    talk_vm: Optional[list[tuple[str, str]]]
+    has_vis_prompt: bool
+
+
+def plan_talk_vision(
+    vision_images: Optional[list[tuple[str, str]]],
+    *,
+    brain_native_vis: bool,
+    talk_model: str,
+    brain_model: str,
+    has_vision_llm: bool,
+    talk_is_vision_client: bool,
+    vision_is_brain_client: bool,
+) -> TalkVisionPlan:
+    """Decide talk_vm / caption need without calling LLMs (unit-testable)."""
+    imgs = vision_images if vision_images else None
+    if not imgs:
+        return TalkVisionPlan(False, False, None, False)
+
+    talk_m = (talk_model or "").strip().lower()
+    brain_m = (brain_model or "").strip().lower()
+    talk_can_vl = bool(has_vision_llm) and (
+        (bool(talk_m) and bool(brain_m) and talk_m == brain_m) or talk_is_vision_client
+    )
+    need_talk_caption = bool(has_vision_llm) and (
+        (not brain_native_vis and not vision_is_brain_client)
+        or (brain_native_vis and not talk_can_vl)
+    )
+
+    if brain_native_vis:
+        talk_vm = imgs if talk_can_vl else None
+        has_vis_prompt = bool(talk_vm)
+    else:
+        talk_vm = None if has_vision_llm else imgs
+        has_vis_prompt = bool(imgs) and not has_vision_llm
+
+    return TalkVisionPlan(talk_can_vl, need_talk_caption, talk_vm, has_vis_prompt)
+
+
 @dataclass
 class TurnPrep:
     internal_uid: str
@@ -92,26 +137,31 @@ async def prepare_turn(
 
     brain_native_vis = bool(vision_images) and agent._uses_brain_native_vision()
     attached_caption = ""
-    if vision_images and not brain_native_vis and agent.llm_vision and agent.llm_vision is not agent.llm_brain:
+    vplan = plan_talk_vision(
+        vision_images,
+        brain_native_vis=brain_native_vis,
+        talk_model=str(getattr(agent, "llm_talk_model", "") or ""),
+        brain_model=str(getattr(agent, "llm_brain_model", "") or ""),
+        has_vision_llm=agent.llm_vision is not None,
+        talk_is_vision_client=agent.llm_talk is agent.llm_vision,
+        vision_is_brain_client=agent.llm_vision is agent.llm_brain,
+    )
+    if vplan.need_talk_caption:
         try:
             attached_caption = await agent._caption_vision_images(
                 user_message, vision_images, speaker_label=speaker_label
             )
         except Exception as e:
             logger.warning("VL caption (%s): ошибка — %s", log_lane, e)
-    elif vision_images and not brain_native_vis and not agent.llm_vision:
+    elif vision_images and not agent.llm_vision:
         logger.warning(
             "Изображения в сообщении (%s), но vision/VL не настроено — ответ только по тексту.",
             log_lane,
         )
 
     caption_ok = (attached_caption or "").strip()
-    if brain_native_vis:
-        talk_vm = None
-        has_vis_prompt = False
-    else:
-        talk_vm = None if (vision_images and agent.llm_vision) else vision_images
-        has_vis_prompt = bool(vision_images) and not caption_ok and agent.llm_vision is None
+    talk_vm = vplan.talk_vm
+    has_vis_prompt = bool(vplan.has_vis_prompt) and not caption_ok
 
     from core.agent.persona import should_inject_appearance
     from core.agent.pre_context import build_pre_context, lane_wants_pre_context

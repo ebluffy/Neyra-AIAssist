@@ -1,39 +1,39 @@
-<!-- co-authored-cursor-badge -->
-[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
-
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Web UI (дашборд на React)
 
 Дашборд — SPA на **React + Vite + Tailwind CSS**, раздаётся тем же процессом FastAPI, что и ядро (из корня репо: `python server/main.py`, или из `server/` cwd: `python main.py`). Исходники — `server/dashboard/src/`, сборка — `server/dashboard/dist`.
 
 HTTP-стек живёт в **`server/core/api/`** (Control API), это не модуль-плагин. Bind, публичный URL и поведение дашборда — в **`server/config/server.yaml`** (`api:`, `dashboard:`).
 
-Полное real-time совпадение с Event Bus для всех действий UI — в backlog (двусторонний WebSocket-мост — см. [`docs/PLAN.md`](../../PLAN.md)). Сейчас SPA в основном использует HTTP `/v1`.
+**Роль:** главная рабочая среда Neyra (статус, модули, память, система, вебхуки, настройки, документация) — локально и удалённо (VPS / публичный домен). Также полигон переносимых экранов для Tauri-клиента (Этап 3): `api/`, `components/ui/`, `screens/`, `styles/`. Web-only: `shell/` (AuthGate + sessionStorage). Чата в веб-UI нет. UI сейчас на русском; двуязычность — позже.
+
+Полное real-time совпадение с Event Bus для всех действий UI — в backlog. Сейчас SPA в основном использует HTTP `/v1`.
 
 ## Gate по ключу доступа
 
 Перед любой страницей дашборда SPA проверяет **ключ доступа**:
 
-1. **Первый визит** (ключ ещё не задан): создайте ключ (минимум **8** символов; удобный вариант — случайная строка **hex-32**). На сервере хранится хеш **PBKDF2** в `server/data/dashboard_auth.sqlite`.
-2. **Повторные визиты:** вход тем же ключом. Plaintext ключ держится в **`sessionStorage`** до «Выйти».
-3. **`POST /v1/dashboard/auth/setup`** разрешён только пока ключ не задан. Если bind API **не** loopback, setup принимается **только с loopback-клиента** (защита от удалённой гонки за ключ).
-4. **`POST /v1/dashboard/auth/login`** и **`GET /v1/dashboard/auth/status`** публичны; защищённые `/v1` по-прежнему требуют Bearer (`API_TOKEN` и т.д.) — см. [security-model](security-model.md).
-
-Этот gate **отделён** от Tauri-клиента Этапа 3 (`client/`): десктопное приложение ходит в тот же Control API с URL сервера и API-токеном, а не через flow ключа дашборда.
+1. **Первый визит** (ключ ещё не задан): создайте ключ (минимум **32** символа; удобный вариант — «Сгенерировать hex (32)»). На сервере хранится хеш **PBKDF2** в `server/data/dashboard_auth.sqlite`.
+2. **Повторные визиты:** вход тем же ключом. После login SPA держит **session token** в **`sessionStorage`** (хеши сессий также в SQLite — переживают рестарт процесса).
+3. **`POST /v1/dashboard/auth/setup`** разрешён только пока ключ не задан. Без Bearer — только с консольного loopback (нет CF/X-Real); с публичного края — primary `API_TOKEN`.
+4. Login/setup выдаёт **`session_token`**; SPA шлёт его как Bearer (admin). Сырой ключ **не** принимается как Bearer. Logout отзывает session.
+5. Если session истекла или отозвана, любой `/v1/*` с **401** очищает session и возвращает на экран входа (без «залипших» ошибок на экранах).
 
 ## Разделы UI
 
-- **Home** — лендинг и обзор возможностей.
-- **Dashboard** — health, память, баланс, список плагинов.
-- **Plugins** — состояние плагинов, правка plugin config, invoke / reload / restart.
-- **Settings** — Bearer token и обновление allow-list рантайма.
-- **Webhooks** — исходящие маршруты, тесты, deliveries / DLQ.
-- **API Docs** — Swagger / ReDoc и `openapi.json`.
+| Nav | Route | Назначение |
+|-----|-------|------------|
+| Статус | `/status` | health, models, balance, soft-restart (`/dashboard` → redirect) |
+| Модули | `/modules` | list/toggle/config/invoke/reload/restart (`/plugins` → redirect; API всё ещё `/v1/plugins`) |
+| Память | `/memory` | stats, people, diary, search, LTM |
+| Система | `/system` | meta, backup, DLQ summary |
+| Вебхуки | `/webhooks` | routes, deliveries, DLQ |
+| Настройки | `/settings` | Bearer override + `GET/POST` runtime config (allowlist) |
+| API Docs | `/api-docs` | Swagger / ReDoc / Markdown |
 
-(Вкладки «Микро-сайт» нет; публичные маркетинговые страницы вне scope этой SPA.)
+## Runtime config
+
+- `GET /v1/config/runtime` — снимок allowlisted ключей (без секретов `.env`).
+- `POST /v1/config/update` — запись тех же ключей.
 
 ## Разработка
 
@@ -43,13 +43,14 @@ npm install
 npm run dev
 ```
 
-Proxy на backend настраивается в `vite.config.ts` (`/v1`, `/docs`, `/redoc`, `/openapi.json`).
+Proxy на backend — в `vite.config.ts`.
 
 ## Сборка
 
 ```bash
 cd server/dashboard
+npm install
 npm run build
 ```
 
-Сборка попадает в `server/dashboard/dist` и раздаётся статическим mount Control API.
+Сборка → `server/dashboard/dist`, раздаётся Control API.

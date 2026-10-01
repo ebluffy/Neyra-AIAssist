@@ -8,6 +8,7 @@
 # RU: Вкл/выкл — в modules/discord/plugin.yaml (`enabled:`).
 
 # EN: List of channel IDs where bot can answer without mention.
+# RU: ID каналов без @mention. Храните как строки — JS Number ломает snowflake (>2^53).
 channel_ids: []
 
 # EN: true = answer only when bot is mentioned.
@@ -42,8 +43,12 @@ proactive:
   author_display_name: "Нейра"
   # prompt: "..."  # optional override; default — короткая спонтанная реплика / мемы (см. bot.py)
 
-# EN: Lavalink nodes (read by interfaces.discord.music). Legacy: plugins.discord_music in config.
+# EN: Lavalink nodes (read by modules.discord.music).
+# RU: Узлы Lavalink. Если URI — loopback и порт свободен, при managed_lavalink=true Discord сам поднимет Lavalink.jar.
 music:
+  managed_lavalink: true
+  managed_lavalink_ready_seconds: 90
+  # java_path: ""
   nodes:
     - identifier: "local-lavalink"
       uri: "http://127.0.0.1:2333"

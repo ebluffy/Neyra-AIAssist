@@ -71,8 +71,12 @@ async def run_brain_tool_phase(
         if not use_tool_loop:
             response = await agent._ainvoke_text_with_fallback(messages, llm=brain_llm)
             agent._log_model_route(agent._extract_model_name(response), lane="brain")
-            text = response.content if hasattr(response, "content") else str(response)
-            return (text or "").strip()
+            from core.llm.message_content import message_content_to_text
+
+            text = message_content_to_text(
+                response.content if hasattr(response, "content") else response
+            )
+            return text.strip()
 
         bound = brain_llm.bind_tools(list(agent.tools.values()))
         step = 0
@@ -103,8 +107,12 @@ async def run_brain_tool_phase(
         if response is None:
             response = await agent._ainvoke_text_with_fallback(messages, llm=brain_llm)
             agent._log_model_route(agent._extract_model_name(response), lane="brain")
-        text = response.content if hasattr(response, "content") else str(response)
-        return (text or "").strip()
+        from core.llm.message_content import message_content_to_text
+
+        text = message_content_to_text(
+            response.content if hasattr(response, "content") else response
+        )
+        return text.strip()
     except Exception as e:
         logger.warning("Brain phase: ошибка, talk продолжит без сводки brain: %s", e)
         return ""

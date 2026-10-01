@@ -63,6 +63,25 @@ WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?tok
 
 ## nginx (frp — upstream = vhost frps)
 
+За Cloudflare (orange-cloud) edge должен **перезаписывать** клиентский IP и прокидывать его в frp:
+
+```nginx
+map $http_cf_connecting_ip $neyra_client_ip {
+    ""      $remote_addr;
+    default $http_cf_connecting_ip;
+}
+```
+
+В `location` (и `/api/`, и `/`):
+
+```nginx
+proxy_set_header CF-Connecting-IP $neyra_client_ip;
+proxy_set_header X-Real-IP $neyra_client_ip;
+proxy_set_header X-Forwarded-For $neyra_client_ip;
+```
+
+API доверяет `CF-Connecting-IP` / `X-Real-IP` **только** когда socket peer = loopback (типичный frpc→uvicorn), и **игнорирует** edge-значение, если оно само loopback (`127.0.0.1` / `::1`). Сырой `X-Forwarded-For` от клиента **не** читается: uvicorn `proxy_headers=False`, HTTP RPM и login rate-limit используют тот же `resolve_client_ip`. `POST /v1/dashboard/auth/setup` без Bearer разрешён только с **консольного** loopback (peer local **и** нет CF/X-Real) — подмена `CF-Connecting-IP: 127.0.0.1` не открывает setup. Smoke: неверный login с интернета → в логе ядра `dashboard login failed ip=<реальный клиент>`, не `127.0.0.1` и не подставной XFF.
+
 ```nginx
 server {
   listen 443 ssl http2;
@@ -72,8 +91,9 @@ server {
   location /api/ {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header CF-Connecting-IP $neyra_client_ip;
+    proxy_set_header X-Real-IP $neyra_client_ip;
+    proxy_set_header X-Forwarded-For $neyra_client_ip;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -83,7 +103,9 @@ server {
   location / {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header CF-Connecting-IP $neyra_client_ip;
+    proxy_set_header X-Real-IP $neyra_client_ip;
+    proxy_set_header X-Forwarded-For $neyra_client_ip;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -94,6 +116,14 @@ server {
 
 Trailing slash у `proxy_pass` под `/api/` снимает префикс `/api`.
 
+### Smoke rate-limit / client IP (публичный хост)
+
+После map: `POST /v1/dashboard/auth/login` с заведомо неверным ключом → **401**. В логе ядра на домашнем сервере должно быть:
+
+`dashboard login failed ip=<реальный клиент>`
+
+не `127.0.0.1`. На `neyra.owyx.site` smoke (2026-10-01) подтвердил реальный IP за Cloudflare/frp.
+
 ## Альтернатива: процесс Neyra на VPS (без frp)
 
 Если uvicorn на том же VPS, что и Caddy/nginx, укажите upstream `127.0.0.1:8787` вместо порта frps. Это запасной стенд (демо / CI), не канон Этапа 3 для персонального ассистента — см. [`docs/PLAN.md`](../../PLAN.md) §3 и Этап 4.
@@ -103,6 +133,6 @@ Trailing slash у `proxy_pass` под `/api/` снимает префикс `/ap
 - `API_TOKEN` или `API_KEY` в `server/.env` на домашнем сервере.
 - TLS на edge VPS; firewall 80/443; `:8787` дома только через frpc (или localhost, если процесс на VPS).
 - `api.public_base_url` совпадает с DNS (в examples по умолчанию пусто).
-- Uvicorn: `proxy_headers=True`, `forwarded_allow_ips` ограничен hop прокси/frp.
+- Uvicorn: `proxy_headers=False` (peer = TCP; клиентский IP только через CF/X-Real в `resolve_client_ip`).
 - Ключ доступа дашборда задан до публикации SPA (см. [web-ui](../architecture/web-ui.md)).
 - Smoke WebSocket: `wss://neyra.owyx.site/api/v1/ws/chat` доходит до Control API.

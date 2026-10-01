@@ -119,8 +119,9 @@ def run_neyra_server(config: dict) -> None:
         host=host,
         port=port,
         log_level=log_level if log_level in ("debug", "info", "warning", "error") else "info",
-        proxy_headers=True,
-        forwarded_allow_ips="127.0.0.1",
+        # Real TCP peer only — do not rewrite client from X-Forwarded-For.
+        # Client IP for rate-limit / setup comes from resolve_client_ip (CF/X-Real).
+        proxy_headers=False,
     )
     server = uvicorn.Server(uvi_cfg)
     api_app._uvicorn_server = server

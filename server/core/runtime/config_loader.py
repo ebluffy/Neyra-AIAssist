@@ -236,3 +236,112 @@ def load_layered_config(server_root: Path, *, validate: bool = True) -> dict[str
         if errs:
             raise ValueError("config schema validation failed:\n  - " + "\n  - ".join(errs))
     return cfg
+
+
+# Top-level key → layer file under server/config/ (dashboard runtime allowlist).
+_RUNTIME_PERSIST_LAYER: dict[str, str] = {
+    "llm": "llm.yaml",
+    "agent": "agent.yaml",
+    "memory": "memory.yaml",
+    "logging": "runtime.yaml",
+    "health_monitor": "runtime.yaml",
+}
+
+
+def _set_dotted(cfg: dict[str, Any], path: str, value: Any) -> None:
+    keys = [p for p in path.split(".") if p]
+    if not keys:
+        raise ValueError("empty config path")
+    cur: dict[str, Any] = cfg
+    for k in keys[:-1]:
+        nxt = cur.get(k)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[k] = nxt
+        cur = nxt
+    cur[keys[-1]] = value
+
+
+def persist_allowlisted_updates(server_root: Path, updates: dict[str, Any]) -> list[str]:
+    """Write dotted allowlisted keys into layer YAML files. Returns relative paths touched.
+
+    Does not touch root ``config.yaml`` or secrets. Layer comments may be rewritten by PyYAML.
+    """
+    if not updates:
+        return []
+    root = Path(server_root)
+    config_dir = root / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    by_layer: dict[str, dict[str, Any]] = {}
+    for path, value in updates.items():
+        top = str(path).split(".", 1)[0].strip()
+        layer_name = _RUNTIME_PERSIST_LAYER.get(top)
+        if not layer_name:
+            raise ValueError(f"no layer mapping for config path: {path}")
+        by_layer.setdefault(layer_name, {})[str(path)] = value
+
+    touched: list[str] = []
+    prepared: list[tuple[Path, Path, str, int]] = []  # final, tmp, rel, key_count
+    for layer_name, paths in by_layer.items():
+        layer_path = config_dir / layer_name
+        current = _load_yaml_file(layer_path) if layer_path.is_file() else {}
+        for dotted, val in paths.items():
+            _set_dotted(current, dotted, val)
+        text = yaml.safe_dump(
+            current,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+        )
+        tmp = layer_path.with_suffix(layer_path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        prepared.append((layer_path, tmp, f"config/{layer_name}", len(paths)))
+
+    # Commit all layers only after every tmp is written; on rename failure restore previous files.
+    backups: list[tuple[Path, Path | None]] = []  # (final_path, bak_or_None if newly created)
+    try:
+        for layer_path, tmp, rel, nkeys in prepared:
+            bak: Path | None = None
+            if layer_path.is_file():
+                bak = layer_path.with_suffix(layer_path.suffix + ".bak")
+                # Replace existing → bak (atomic on same filesystem).
+                layer_path.replace(bak)
+            backups.append((layer_path, bak))
+            tmp.replace(layer_path)
+            touched.append(rel)
+            logger.info("Persisted runtime config updates to %s (%s keys)", layer_path, nkeys)
+    except Exception:
+        for layer_path, bak in reversed(backups):
+            try:
+                if bak is not None and bak.is_file():
+                    bak.replace(layer_path)
+                elif layer_path.is_file() and bak is None:
+                    layer_path.unlink()
+            except OSError:
+                logger.exception("Failed to restore %s after persist error", layer_path)
+        for _layer_path, tmp, _rel, _n in prepared:
+            try:
+                if tmp.is_file():
+                    tmp.unlink()
+            except OSError:
+                pass
+        for _layer_path, bak in backups:
+            if bak is None:
+                continue
+            try:
+                if bak.is_file():
+                    bak.unlink()
+            except OSError:
+                pass
+        raise
+    else:
+        for _layer_path, bak in backups:
+            if bak is None:
+                continue
+            try:
+                if bak.is_file():
+                    bak.unlink()
+            except OSError:
+                pass
+    return touched

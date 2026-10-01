@@ -1,4 +1,4 @@
-"""Dashboard gate key store (SQLite). One access key for the web UI login."""
+"""Dashboard gate key store (SQLite) + short-lived session tokens for SPA Bearer."""
 
 from __future__ import annotations
 
@@ -8,13 +8,16 @@ import logging
 import secrets
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 logger = logging.getLogger("neyra.dashboard_auth")
 
-MIN_KEY_LEN = 8
+MIN_KEY_LEN = 32
 _PBKDF2_ITERATIONS = 210_000
 _SALT_BYTES = 16
+_SESSION_TTL_SECONDS = 12 * 3600
+_SESSION_BYTES = 32
 
 
 class DashboardAuthStore:
@@ -48,6 +51,14 @@ class DashboardAuthStore:
                     conn.execute(
                         "ALTER TABLE dashboard_gate ADD COLUMN iterations INTEGER NOT NULL DEFAULT 210000"
                     )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS dashboard_sessions (
+                        token_hash TEXT PRIMARY KEY,
+                        expires_at REAL NOT NULL
+                    )
+                    """
+                )
                 conn.commit()
 
     @staticmethod
@@ -58,6 +69,10 @@ class DashboardAuthStore:
             bytes.fromhex(salt_hex),
             int(iterations),
         ).hex()
+
+    @staticmethod
+    def _session_hash(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     def is_configured(self) -> bool:
         with self._lock:
@@ -101,3 +116,56 @@ class DashboardAuthStore:
             return hmac.compare_digest(got, str(expected))
         except Exception:
             return False
+
+    def issue_session(self) -> str:
+        """Random session token accepted as admin Bearer until TTL (no PBKDF2 per request).
+
+        Persists to SQLite and revokes all prior sessions so a new login is the only live admin Bearer.
+        """
+        token = secrets.token_urlsafe(_SESSION_BYTES)
+        th = self._session_hash(token)
+        exp = time.time() + _SESSION_TTL_SECONDS
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM dashboard_sessions")
+                conn.execute(
+                    "INSERT INTO dashboard_sessions (token_hash, expires_at) VALUES (?, ?)",
+                    (th, exp),
+                )
+                conn.commit()
+        return token
+
+    def revoke_session(self, token: str) -> None:
+        th = self._session_hash((token or "").strip())
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM dashboard_sessions WHERE token_hash = ?", (th,))
+                conn.commit()
+
+    def verify_session(self, token: str) -> bool:
+        clean = (token or "").strip()
+        if not clean:
+            return False
+        th = self._session_hash(clean)
+        now = time.time()
+        with self._lock:
+            with self._connect() as conn:
+                self._purge_sessions_locked(conn, now)
+                row = conn.execute(
+                    "SELECT expires_at FROM dashboard_sessions WHERE token_hash = ?",
+                    (th,),
+                ).fetchone()
+                if not row:
+                    return False
+                exp = float(row[0])
+                if now > exp:
+                    conn.execute("DELETE FROM dashboard_sessions WHERE token_hash = ?", (th,))
+                    conn.commit()
+                    return False
+                return True
+
+    @staticmethod
+    def _purge_sessions_locked(conn: sqlite3.Connection, now: float | None = None) -> None:
+        ts = time.time() if now is None else now
+        conn.execute("DELETE FROM dashboard_sessions WHERE expires_at < ?", (ts,))
+        conn.commit()

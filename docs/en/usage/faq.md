@@ -1,10 +1,3 @@
-<!-- co-authored-cursor-badge -->
-[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
-
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # FAQ
 
 ## Is the Control API an external cloud service?
@@ -25,4 +18,4 @@ Check `plugin.yaml` (`enabled` / lifecycle) and restart the process for resident
 
 ## What is the difference between the dashboard access key and `API_TOKEN`?
 
-The **access key** unlocks the React SPA in the browser (stored as a hash in `server/data/dashboard_auth.sqlite`). **`API_TOKEN`** authorizes `/v1` HTTP/WebSocket calls. Both may be required for full dashboard functionality when tokens are enabled.
+The **access key** unlocks the React SPA. After login the API issues a short-lived **session token** used as Bearer for `/v1` (admin). **`API_TOKEN`** remains the dedicated credential for Discord, MCP, scripts, and optional Settings override.

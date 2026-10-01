@@ -415,20 +415,112 @@ def _find_person(name_or_id: str, discord_id: str | None = None):
     return None
 
 
+def _slug_person_id(raw: str) -> str:
+    import re as _re
+
+    base = (raw or "").strip().lower()
+    slug = _re.sub(r"[^a-zA-Z0-9_\-]+", "_", base).strip("_") or "person"
+    return slug[:60]
+
+
+@tool
+def update_person_profile(
+    person_id: str,
+    first_name: str = "",
+    last_name: str = "",
+    birth_date: str = "",
+    city: str = "",
+    create_if_missing: bool = True,
+) -> str:
+    """
+    Обновляет краткую сводку человека: реальное имя, фамилия, дата рождения, город.
+    Все поля необязательны. Имя — настоящее (не ник/«Пупинос»); ники и Discord пиши через update_person_fact.
+    Если человека нет и create_if_missing=true — создаёт досье.
+    """
+    from core.memory.person_profile import coerce_profile, display_name_from_profile
+
+    if _people_db is None and _memory_hub is None:
+        return "PeopleDB не инициализирована."
+
+    pid_raw = (person_id or "").strip()
+    if not pid_raw:
+        return "Нужен person_id или имя."
+
+    person = _find_person(pid_raw)
+    pid = str((person or {}).get("id") or "").strip() or _slug_person_id(pid_raw)
+    patch = coerce_profile(
+        {
+            "first_name": first_name,
+            "last_name": last_name,
+            "birth_date": birth_date,
+            "city": city,
+        }
+    )
+    # drop empty so merge keeps previous values when tool omits a field
+    patch = {k: v for k, v in patch.items() if str(v).strip()}
+    if not patch and not create_if_missing:
+        return "Нечего обновлять — передай хотя бы одно поле сводки."
+
+    if person is None:
+        if not create_if_missing:
+            return f"Не нашла '{pid_raw}'. Создай досье или проверь ID."
+        if _memory_hub is not None:
+            display = display_name_from_profile(patch, fallback=pid)
+            names = [display] if display else [pid]
+            person = _memory_hub.save_person_dossier(
+                person_id=pid,
+                names=names,
+                profile=patch,
+                create=True,
+            )
+            if _people_db is not None:
+                _people_db._cache[pid] = dict(person)
+            return f"Создала досье [{pid}] и записала сводку: {patch}"
+        if _people_db is not None:
+            display = display_name_from_profile(patch, fallback=pid)
+            person = _people_db.add_person(pid, [display] if display else [pid])
+            person["static_facts"] = dict(patch)
+            return f"Создала досье [{pid}] и записала сводку: {patch}"
+
+    if _memory_hub is not None:
+        try:
+            person = _memory_hub.save_person_dossier(
+                person_id=pid,
+                profile=patch,
+                create=False,
+            )
+            if _people_db is not None:
+                _people_db._cache[pid] = dict(person)
+            return f"Обновила сводку [{pid}]: {patch or 'без изменений'}"
+        except KeyError:
+            return f"Не нашла человека '{pid}'."
+        except Exception as e:
+            return f"Не удалось сохранить сводку: {e}"
+
+    if _people_db is not None and pid in _people_db._cache:
+        sf = dict(_people_db._cache[pid].get("static_facts") or {})
+        sf.update(patch)
+        _people_db._cache[pid]["static_facts"] = sf
+        return f"Обновила сводку [{pid}]: {patch}"
+    return f"Не нашла человека '{pid_raw}'."
+
+
 @tool
 def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str:
     """
-    Записывает новый факт о человеке в базу досье (PeopleDB).
-    Используй когда узнала что-то новое о друге или знакомом.
-    person_id — ID человека (maxim, kutyr, timofey, andrey_griniks, bogdan, foxy, erik).
-    fact — что именно узнала (кратко, своими словами).
-    emotion_note — по желанию: как ты это переживаешь (коротко), сохранится рядом с фактом в досье.
+    Записывает свободный факт о человеке (ники, Discord, работа, связь, привычки, табу…).
+    Краткую сводку (реальное имя / фамилия / ДР / город) обновляй через update_person_profile.
+    Если человека ещё нет — создаёт досье и пишет факт.
+    person_id — ID или имя; fact — кратко своими словами.
     """
     if _people_db is None and _memory_hub is None:
         return "PeopleDB не инициализирована."
 
     emo = (emotion_note or "").strip() or None
     target_id = (person_id or "").strip()
+    if not target_id or not (fact or "").strip():
+        return "Нужны person_id и fact."
+
     if _people_db is not None and target_id in getattr(_people_db, "_cache", {}):
         success = _people_db.update_fact(target_id, fact, emotion=emo)
         if success:
@@ -440,7 +532,6 @@ def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str
         if not pid:
             return f"Не нашла человека '{person_id}' в базе. Проверь ID."
         if _people_db is not None:
-            # Ensure cache has the person (hydrate / create) so update_fact can dual-write.
             if pid not in _people_db._cache:
                 _people_db._cache[pid] = dict(person)
             success = _people_db.update_fact(pid, fact, emotion=emo)
@@ -461,6 +552,28 @@ def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str
                 return f"Записала. Теперь знаю про {pid}: {fact}"
             except Exception as e:
                 return f"Не удалось сохранить: {e}"
+
+    # New person from conversation
+    pid = _slug_person_id(target_id)
+    if _memory_hub is not None:
+        try:
+            created = _memory_hub.save_person_dossier(
+                person_id=pid,
+                names=[target_id],
+                profile={},
+                create=True,
+            )
+            _memory_hub.add_person_fact(pid, fact.strip(), emotion_note=emo, source="tool")
+            if _people_db is not None:
+                _people_db._cache[pid] = dict(created)
+            return f"Новый человек [{pid}] — создала досье и записала: {fact}"
+        except Exception as e:
+            return f"Не удалось создать досье: {e}"
+    if _people_db is not None:
+        _people_db.add_person(pid, [target_id])
+        ok = _people_db.update_fact(pid, fact, emotion=emo)
+        if ok:
+            return f"Новый человек [{pid}] — создала досье и записала: {fact}"
     return f"Не нашла человека '{person_id}' в базе. Проверь ID."
 
 
@@ -619,6 +732,7 @@ ALL_TOOLS = [
     search_memory,
     recall_chat,
     remember_knowledge,
+    update_person_profile,
     update_person_fact,
     get_person_info,
     get_character_profile,

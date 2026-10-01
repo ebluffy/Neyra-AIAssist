@@ -1,10 +1,3 @@
-<!-- co-authored-cursor-badge -->
-[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
-
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # MCP debug server (`devtools/mcp_server`)
 
 Official Python MCP SDK (`mcp` package): connect Cursor (or any MCP client) to Neyra for logs, **Control API** calls, event injection, and memory inspection. Dev-only — lives under `devtools/mcp_server/`, not in the server runtime package.

@@ -90,41 +90,67 @@ class HealthMonitor:
             await asyncio.sleep(self.interval_seconds)
 
     async def _check_backend(self) -> dict:
-        try:
-            import httpx
-            from core.llm.profile import iter_unique_provider_connections
+        import httpx
+        from core.llm.profile import iter_unique_provider_connections
 
-            providers: list[dict] = []
-            for conn in iter_unique_provider_connections(self.config):
-                base = conn.base_url.rstrip("/")
-                url = f"{base}/models"
-                headers = {}
-                if conn.api_key and conn.api_key != "ollama":
-                    headers["Authorization"] = f"Bearer {conn.api_key}"
+        conns = list(iter_unique_provider_connections(self.config))
+        if not conns:
+            return {"ok": False, "error": "no_llm_providers", "providers": []}
+
+        timeout = httpx.Timeout(self.llm_timeout_seconds, connect=min(8.0, self.llm_timeout_seconds))
+
+        async def _one(conn) -> dict:
+            base = conn.base_url.rstrip("/")
+            url = f"{base}/models"
+            headers = {}
+            if conn.api_key and conn.api_key != "ollama":
+                headers["Authorization"] = f"Bearer {conn.api_key}"
+            try:
                 r = await asyncio.to_thread(
                     httpx.get,
                     url,
                     headers=headers,
-                    timeout=self.llm_timeout_seconds,
+                    timeout=timeout,
                 )
-                providers.append(
-                    {
-                        "ok": r.status_code < 400,
-                        "provider": conn.provider,
-                        "url": url,
-                        "status_code": r.status_code,
-                    }
-                )
-            ok = bool(providers) and all(p.get("ok") for p in providers)
-            return {
-                "ok": ok,
-                "provider": ",".join(p["provider"] for p in providers) if providers else "",
-                "providers": providers,
-                "url": providers[0]["url"] if providers else "",
-                "status_code": providers[0]["status_code"] if len(providers) == 1 else None,
-            }
-        except Exception as e:
-            return {"ok": False, "error": str(e)[:500]}
+                return {
+                    "ok": r.status_code < 400,
+                    "provider": conn.provider,
+                    "url": url,
+                    "status_code": r.status_code,
+                }
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "provider": conn.provider,
+                    "url": url,
+                    "error": str(e)[:300],
+                }
+
+        providers = list(await asyncio.gather(*[_one(c) for c in conns]))
+        ok = bool(providers) and all(bool(p.get("ok")) for p in providers)
+        out: dict = {
+            "ok": ok,
+            "provider": ",".join(str(p.get("provider") or "") for p in providers),
+            "providers": providers,
+        }
+        if len(providers) == 1:
+            out["url"] = providers[0].get("url")
+            out["status_code"] = providers[0].get("status_code")
+            if providers[0].get("error"):
+                out["error"] = providers[0]["error"]
+        elif not ok:
+            # Short summary for dashboard when several providers fail.
+            bits = []
+            for p in providers:
+                if p.get("ok"):
+                    continue
+                if p.get("error"):
+                    bits.append(f"{p.get('provider')}: {p.get('error')}")
+                else:
+                    bits.append(f"{p.get('provider')}: HTTP {p.get('status_code')}")
+            if bits:
+                out["error"] = "; ".join(bits)[:500]
+        return out
 
     def _check_storage(self) -> dict:
         try:

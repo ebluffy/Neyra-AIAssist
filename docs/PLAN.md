@@ -4,13 +4,15 @@
 
 ## 0. Контекст ВКР и критерий защиты
 
-| Что | Значение |
-|---|---|
-| **Тема ВКР** | «Разработка прототипа модульной информационной системы персонального ИИ-ассистента с локальным сервером и клиентским приложением управления» |
-| **Объект** | модульная информационная система персонального ИИ-ассистента |
-| **Предмет** | архитектура, программные компоненты и способы взаимодействия локального сервера ИИ-ассистента с клиентским приложением управления |
-| **Цель** | разработать прототип модульной информационной системы персонального ИИ-ассистента с локальным сервером и клиентским приложением управления |
+
+| Что                  | Значение                                                                                                                                                                                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Тема ВКР**         | «Разработка прототипа модульной информационной системы персонального ИИ-ассистента с локальным сервером и клиентским приложением управления»                                                                                             |
+| **Объект**           | модульная информационная система персонального ИИ-ассистента                                                                                                                                                                             |
+| **Предмет**          | архитектура, программные компоненты и способы взаимодействия локального сервера ИИ-ассистента с клиентским приложением управления                                                                                                        |
+| **Цель**             | разработать прототип модульной информационной системы персонального ИИ-ассистента с локальным сервером и клиентским приложением управления                                                                                               |
 | **Минимум к защите** | сервер, Windows-клиент Tauri 2 + React + TypeScript, подключение по адресу и токену, чат со streaming-ответом, статус health/modules/models/API, включение/выключение модуля, мягкий рестарт, минимум один рабочий модуль, схемы и тесты |
+
 
 Установщик сервера остаётся в backlog. Для демонстрации сервера достаточно Docker Compose или systemd на домашнем сервере и `run_neyra.bat` на Windows. Установщик клиента NSIS и автообновление входят в Этап 3, но не являются минимумом защиты: для защиты достаточно собранного `setup.exe`.
 
@@ -25,6 +27,8 @@
 - Конфигурация разделяется по слоям; секреты не коммитятся.
 - Dev MCP отделяется от runtime-поставки.
 
+
+
 ## 1a. Аудит
 
 Результат аудита находится в `docs/inventory.md`. В нём зафиксированы реальные исходные пути, ignored-файлы, конфигурационные ключи, env-переменные, точки входа и маршруты переноса.
@@ -35,6 +39,8 @@
 - [x] Отдельно учтены `.env`, YAML-конфиги, `memory/`, `logs/` и Lavalink JAR, которые Git не переносит.
 - [x] Зафиксированы реальные пути `interfaces/discord/`, `interfaces/internal_api/`, `interfaces/local_voice/`, `interfaces/000EXAMPLE/` и `tools/mcp_server/`.
 - [x] Тема, объект, предмет и цель ВКР сверены с исходным планом и не изменены.
+
+
 
 ## 1b. Атомарная перестройка server/client/devtools
 
@@ -58,20 +64,22 @@ devtools/
 docs/
 ```
 
-| Сейчас | После 1b | Действие |
-|---|---|---|
-| `core/` | `server/core/` | перенести серверное ядро |
-| `interfaces/` | `server/modules/` | перенести серверные модули и обновить imports |
-| `frontend/` | `server/dashboard/` | перенести существующий серверный dashboard |
-| `scripts/` | `server/scripts/` | перенести серверные проверки и утилиты |
-| `prompts/` | `server/prompts/` | перенести серверные prompt/persona-файлы |
-| `sounds/` | `server/sounds/` | перенести серверные звуки; UI-звуки клиента входят в client bundle |
-| `models/` | `server/models/` или внешний runtime cache | классифицировать; кэш не включать в package без необходимости |
-| `tools/mcp_server/` | `devtools/mcp_server/` | переместить dev-only MCP, не включать в server/client package |
-| `memory/` | `server/data/memory/` | SQLite Hub, Chroma и пользовательская память; перенос только migration helper с проверкой hashes |
-| `logs/` | `server/logs/` | runtime logs; перенос migration helper с проверкой |
-| отсутствующий продуктовый `client/` | `client/` | создать отдельный Tauri-проект, не переиспользовать `frontend/` |
-| корневой `PLAN.md` | удалить | канон уже в `docs/PLAN.md`; дубликат не оставлять |
+
+| Сейчас                              | После 1b                                   | Действие                                                                                         |
+| ----------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `core/`                             | `server/core/`                             | перенести серверное ядро                                                                         |
+| `interfaces/`                       | `server/modules/`                          | перенести серверные модули и обновить imports                                                    |
+| `frontend/`                         | `server/dashboard/`                        | перенести существующий серверный dashboard                                                       |
+| `scripts/`                          | `server/scripts/`                          | перенести серверные проверки и утилиты                                                           |
+| `prompts/`                          | `server/prompts/`                          | перенести серверные prompt/persona-файлы                                                         |
+| `sounds/`                           | `server/sounds/`                           | перенести серверные звуки; UI-звуки клиента входят в client bundle                               |
+| `models/`                           | `server/models/` или внешний runtime cache | классифицировать; кэш не включать в package без необходимости                                    |
+| `tools/mcp_server/`                 | `devtools/mcp_server/`                     | переместить dev-only MCP, не включать в server/client package                                    |
+| `memory/`                           | `server/data/memory/`                      | SQLite Hub, Chroma и пользовательская память; перенос только migration helper с проверкой hashes |
+| `logs/`                             | `server/logs/`                             | runtime logs; перенос migration helper с проверкой                                               |
+| отсутствующий продуктовый `client/` | `client/`                                  | создать отдельный Tauri-проект, не переиспользовать `frontend/`                                  |
+| корневой `PLAN.md`                  | удалить                                    | канон уже в `docs/PLAN.md`; дубликат не оставлять                                                |
+
 
 Путь к данным читается из `paths.data_dir` (default: `server/data` относительно корня репозитория или `./data` при работе из `server/`), override — `NEYRA_DATA_DIR`. После 1b физический default указывает на `server/data/`.
 
@@ -100,6 +108,8 @@ docs/
 - [x] `paths.data_dir` / `NEYRA_DATA_DIR` доходят до Hub/Chroma через `apply_resolved_memory_paths` (`server/core/runtime/paths.py`).
 - [x] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
 
+
+
 ## 1c. Слои конфигурации и схема
 
 - `server/config.yaml` — короткий корневой конфиг, включая `assistant.*` и `paths.data_dir`.
@@ -123,6 +133,8 @@ docs/
 - [x] Consumer и merge-поведение `server/modules/local_voice/config.yaml` проверены; поведение voice не исчезает молча (`verify_stage_1c.py`).
 - [x] Legacy env aliases поддержаны с warning once (`YANDEX_ID_KEY`, `HUGGING_FACE_HUB_TOKEN`).
 
+
+
 ## 1d. Dual LLM backend (AIHope + OpenRouter)
 
 Цель: полноценный AIHope (OpenAI-compatible) как основной бэкенд для brain/memory/vision и dual-role: talk на OpenRouter (бесплатный Qwen с меньшей цензурой).
@@ -135,6 +147,8 @@ docs/
 - Example: talk=`qwen/qwen3.8-27b:free`@openrouter, brain=`gpt-6-luna`@aihope.
 - Offline `verify_stage_1d.py` + CI; backlog: секреты → системный env ОС.
 
+
+
 ### Готово, когда
 
 - [x] Dual-backend: talk и brain могут ходить на разные провайдеры с разными ключами/base_url.
@@ -146,7 +160,7 @@ docs/
 
 ## 2. Единый Neyra API (core)
 
-Этап 2 делает HTTP/WS control plane частью ядра: пакет [`server/core/api/`](../server/core/api/), конфиг `api:` в [`server/config/server.yaml`](../server/config/server.example.yaml). Отдельного второго API и модуля `modules/internal_api/` нет.
+Этап 2 делает HTTP/WS control plane частью ядра: пакет `[server/core/api/](../server/core/api/)`, конфиг `api:` в `[server/config/server.yaml](../server/config/server.example.yaml)`. Отдельного второго API и модуля `modules/internal_api/` нет.
 
 ### Объём (Wave 1)
 
@@ -170,11 +184,46 @@ docs/
 - [x] Ручной смоук: `/docs`, `GET /v1/meta` (`public_url` / `dashboard_url`).
 - [x] `anon` на loopback без токенов — осознанная политика Wave 1 (документировано; non-loopback без токенов запрещён).
 
-## 3. Windows-клиент
 
-Клиент — **Tauri 2 + React + TypeScript**, тонкое окно управления сервером.
 
-### MVP-экраны
+## 3. Веб + ядро, затем Windows-клиент
+
+Этап 3 делится на две части: сначала допиливаем **веб-панель и поведение Нейры**, потом отдельным подэтапом — полноценный Windows-клиент.
+
+### 3a. Веб-панель и ядро Нейры (сейчас)
+
+`server/dashboard/` — ops/admin control plane (статус, модули, память, система, вебхуки, настройки, docs), пока нет десктоп-клиента. Экраны в `screens/`, `components/ui/`, `api/`, `styles/` позже переносятся в `client/` (или shared-пакет); shell/gate — только веб. UI сейчас на русском; ru/en — позже.
+
+**Люди (память):** в `meta.static_facts` только опциональные `first_name` / `last_name` / `birth_date` / `city`; остальное — `person_facts`. CRUD в дашборде; агент обновляет через tools.
+
+Модули в вебе: действия по `lifecycle` (resident → soft-restart ядра; on_demand → invoke; общий enable/config). Scaffold/import-export модулей — полигон для 3b (shared UI → desktop Monaco): сначала шаблон + yaml, код-редактор — во второй очереди клиента.
+
+**Discord / ответ модели (закрывать в 3a):**
+- [x] Сохранять переносы строк в user-facing reply (не схлопывать `\s+` в одну строку).
+- [x] Brain-native vision: talk тоже видит картинку, если talk = VL-модель; иначе caption для talk.
+- [ ] Нормализованный Discord-контекст в payload до LLM: `current_user`, `channel`, `guild`, `message`, `addressed_to_bot`, `response_target` — не угадывать автора/адресата из текста подписи.
+- [ ] Режимы общения (кратко / подробно / техн. / без шуток) — конфиг + хинт в talk prompt.
+- [ ] Честность о модели: в ответе/логе/дашборде явный lane+model (talk/brain/vision), без «угадывания».
+
+**Бэклог идей из живого чата (после 3a-блокеров, лёгкие — раньше):**
+- Память без бардака: временный контекст / факты / устаревшее; confirm на sensitive; одна команда «забудь/поправь».
+- Персонализация и профили людей (предпочтения тона, кто любит троллинг).
+- Авто-выбор инструментов + краткий отчёт «что сделала».
+- Устойчивость к неоднозначности: один уточняющий вопрос вместо веера догадок.
+- Самопроверка ответа (противоречия / ссылки) перед send — опционально.
+
+### Готово, когда (3a)
+
+- [ ] Веб-панель закрывает ops-сценарии без десктопа (статус, модули, память, настройки, система).
+- [ ] Discord: зрение + структурированные ответы стабильны на стенде.
+- [ ] Нормализованный Discord-контекст в payload (не парсинг подписи).
+- [ ] Модули: lifecycle-UX + (опционально) scaffold шаблона.
+
+### 3b. Windows-клиент
+
+Клиент — **Tauri 2 + React + TypeScript**, тонкое окно управления сервером. Shared screens из 3a переносятся в `client/`; shell/gate веб не тащим.
+
+#### MVP-экраны
 
 - Подключение: адрес сервера и токен; токен хранится через Windows Credential Manager, не открытым текстом.
 - Чат: server-side history и streaming.
@@ -183,74 +232,11 @@ docs/
 
 Клиент открывается без сервера и показывает состояние «сервер недоступен». В сборку клиента входят UI, стили, иконки, шрифты и звуки самого приложения. Сервер отдаёт через API чат и историю, память, конфиги, промпты, модули и их состояние, логи и статус. TTS генерирует сервер, клиент только проигрывает аудио.
 
-Локально у клиента хранятся только адрес сервера, токен в Windows Credential Manager, тема, размер окна и кэш последнего статуса. `server/dashboard/` остаётся запасным web-интерфейсом; клиент его не переиспользует и ходит в тот же Control API.
+Локально у клиента хранятся только адрес сервера, токен в Windows Credential Manager, тема, размер окна и кэш последнего статуса. URL сервера — из настроек клиента (в т.ч. публичный домен из §4); frp/прокси **не** часть Этапа 3b.
 
-Вторая очередь: Monaco-редактор промптов и конфигов, логи и настройки приложения.
+Вторая очередь клиента: Monaco (промпты/конфиги/модули), логи, настройки приложения, import/export модулей.
 
-### Доступ из интернета и публикация под доменом
-
-Канонический сценарий для диплома и удалённого клиента: Neyra Server крутится на **домашнем сервере** (мини-ПК, старый ПК, ноутбук и т.п.), наружу — через **frp** (frpc на домашнем сервере, frps на VPS) под поддоменом `neyra.owyx.site`. DNS, frps/Caddy и frpc настраиваются **в рамках Этапа 3** вместе с Windows-клиентом: сразу хостится Control API для приложения, а не откладывается «на потом».
-
-#### Схема
-
-```text
-Клиент (Tauri)
-  → https://neyra.owyx.site
-  → wss://neyra.owyx.site/api/v1/ws/chat
-  → Caddy или nginx на VPS (TLS Let's Encrypt)
-  → frps (vhost HTTP, порт например 8080)
-  → frpc на домашнем сервере
-  → Control API 127.0.0.1:8787
-```
-
-Публичный путь чата — `wss://neyra.owyx.site/api/v1/ws/chat` (`api.public_path_prefix: /api`). За прокси префикс `/api` снимается; приложение слушает локально `/v1/ws/chat`. WebSocket должен проходить всю цепочку без обрыва (Upgrade; см. `docs/ru/ops/api-reverse-proxy.md` / `docs/ru/ops/wss-deployment.md`).
-
-#### Пример frpc.toml (домашний сервер)
-
-```toml
-# Общий auth.token должен совпадать с frps (не коммитить).
-serverAddr = "VPS_IP_OR_HOST"
-serverPort = 7000
-auth.method = "token"
-auth.token = "REPLACE_ME"
-
-[[proxies]]
-name = "neyra-api"
-type = "http"
-localIP = "127.0.0.1"
-localPort = 8787
-customDomains = ["neyra.owyx.site"]
-```
-
-На стороне frps — тот же `auth.token` и HTTP vhost (порт, на который смотрит Caddy/nginx). Секреты frp только в локальных конфигах / env, не в git.
-
-#### Требования к серверу при внешней публикации
-
-- Токены и роли (`API_TOKEN` / viewer / maint) **обязательны** при внешнем доступе: без токена — отказ старта или только loopback (`127.0.0.1`).
-- Bind по умолчанию `127.0.0.1`; порт **8787 наружу напрямую не открывать** (только через frpc → VPS → TLS).
-- `api.public_base_url` / `api.public_path_prefix` согласованы с доменом (пример: `https://neyra.owyx.site` + `/api`).
-- `NEYRA_DEBUG_LIFECYCLE` **не** включать в публикуемой конфигурации.
-- Rate-limit учитывает `X-Forwarded-For` за прокси (реальный клиент, не IP VPS).
-- Токен в query (`?token=`) — только если нет альтернативы (заголовок / Credential Manager в клиенте предпочтительнее; query утекает в логи прокси).
-
-#### Данные
-
-- Память (`server/data/memory/`), `.env`, логи и модели остаются на **домашнем сервере**.
-- На VPS — только reverse proxy + frps: **без** копирования памяти, секретов и runtime-данных Neyra.
-
-#### Альтернатива
-
-Тот же Docker Compose на VPS — **запасной стенд** (демонстрация / CI / fallback), не замена канону «домашний сервер + frp» для персонального ассистента с локальными данными.
-
-#### Чеклист Этапа 3 (хостинг API + клиент)
-
-- [ ] A-запись `neyra.owyx.site` → IP VPS.
-- [ ] frps + Caddy (или nginx) на VPS: TLS Let's Encrypt, прокси на frps vhost, WebSocket Upgrade.
-- [ ] frpc на домашнем сервере как служба (NSSM / Task Scheduler / systemd) с `type=http`, `localPort=8787`, `customDomains=["neyra.owyx.site"]`, общий `auth.token` с frps.
-- [ ] Проверка WebSocket через прокси: `wss://neyra.owyx.site/api/v1/ws/chat` доходит до Control API.
-- [ ] Адрес сервера в клиенте по умолчанию из **настроек** (сохранённый URL), не зашитый в сборку; для демо можно подсказать `https://neyra.owyx.site`.
-
-### Сборка и автообновление
+#### Сборка и автообновление
 
 - Tauri 2 bundler, NSIS `setup.exe`, `installMode: currentUser`; MSI не нужен.
 - Автообновление через `@tauri-apps/plugin-updater`; подпись через `tauri signer generate`.
@@ -262,7 +248,7 @@ customDomains = ["neyra.owyx.site"]
 - При подключении клиент проверяет совместимость версии API.
 - Сертификат подписи кода для SmartScreen — backlog.
 
-### Готово, когда
+#### Готово, когда (3b)
 
 - [ ] MVP-экраны подключены к Control API и не содержат server-side orchestration.
 - [ ] Клиент корректно работает при недоступном сервере.
@@ -270,23 +256,53 @@ customDomains = ["neyra.owyx.site"]
 - [ ] Собирается NSIS `setup.exe` для current user.
 - [ ] Автообновление и error state проверены на тестовом release.
 - [ ] PR CI выполняет lint, typecheck и build; release CI создаёт `latest.json`.
-- [ ] Публикация `neyra.owyx.site`: DNS + frps/Caddy на VPS + frpc-служба на домашнем сервере; WSS-чат через прокси работает.
-- [ ] Клиент берёт URL сервера из настроек (не hardcoded); внешний доступ только с токенами, bind localhost, данные только на домашнем сервере.
+- [ ] Клиент берёт URL сервера из настроек (не hardcoded); корректно работает с опубликованным Control API (см. §4).
+
+
 
 ## 4. Серверная поставка и модульная эксплуатация
 
-- Docker Compose и systemd остаются поддерживаемыми серверными способами запуска.
-- `run_neyra.bat` остаётся Windows entrypoint для локального запуска.
-- Docker contexts, volumes, healthchecks и systemd paths используют `server/`.
-- Новые интеграции добавляются как server modules через Event Bus и Control API.
-- Публичные и локальные LLM/voice providers остаются заменяемыми конфигурацией.
+- Docker Compose и systemd — поддерживаемые способы запуска; `run_neyra.bat` — Windows entrypoint.
+- Paths/volumes/healthchecks смотрят в `server/`; интеграции — modules через Event Bus и Control API.
+- **Публикация под доменом** (frp + edge) — этот этап, не клиентский §3. Детали ops: `docs/ru/ops/api-reverse-proxy.md`.
+
+
+
+### Канон публикации
+
+```text
+Клиент / браузер
+  → https://neyra.owyx.site  (+ wss://…/api/v1/ws/chat)
+  → nginx/Caddy на VPS (TLS)
+  → frps (HTTP vhost)
+  → frpc на домашнем сервере
+  → Control API 127.0.0.1:8787
+```
+
+Данные (память, `.env`, логи, модели) остаются на **домашнем** сервере; на VPS только proxy + frps. Docker Compose на VPS — запасной стенд, не замена канону. Bind по умолчанию loopback; наружу только через frp. Токены обязательны при внешнем доступе. IP/rate-limit/setup-guard — в security-model / reverse-proxy docs (не дублировать здесь).
+
+Пример `frpc` (секреты не в git): `type=http`, `localPort=8787`, `customDomains=["neyra.owyx.site"]`; `api.public_base_url` + `api.public_path_prefix: /api`.
+
+### Статус стенда
+
+- [x] `/opt/neyra` + systemd `neyra` на домашнем хосте (`127.0.0.1:8787`).
+- [x] frpc → frps (VPS сайта) → nginx `neyra.owyx.site` + LE; strip `/api`.
+- [x] DNS/Cloudflare; `api.public_base_url=https://neyra.owyx.site`.
+- [x] Dashboard gate (session Bearer), public setup-guard, RPM через `resolve_client_ip`.
+- [ ] WSS-smoke: `wss://neyra.owyx.site/api/v1/ws/chat`.
+
+
 
 ### Готово, когда
 
-- [ ] Сервер запускается через Docker Compose, systemd-документацию и Windows batch entrypoint.
-- [ ] Runtime data, secrets и модели не попадают в исходный пакет случайно.
-- [ ] Минимум один модуль проходит enable/disable и health smoke.
+- [x] Systemd на домашнем хосте; Docker Compose / Windows batch поддерживаются локально.
+- [x] Публичный URL без нестандартного порта (`https://neyra.owyx.site`).
+- [ ] Runtime data / secrets / модели не попадают в исходный пакет случайно.
+- [ ] Минимум один модуль: enable/disable + health smoke.
 - [ ] Документированы установка и восстановление после backup.
+- [ ] WSS-smoke по публичному URL зелёный.
+
+
 
 ## 5. Проверки, безопасность и качество
 
@@ -296,12 +312,16 @@ customDomains = ["neyra.owyx.site"]
 - Security boundary: localhost default, explicit LAN bind, token roles, audit и отсутствие секретов в логах.
 - Тестовая матрица: Windows client/server unavailable, incompatible API version, stream reconnect, module failure и rollback config.
 
+
+
 ### Готово, когда
 
 - [ ] Все обязательные проверки запускаются из новых каталогов и зелёные либо имеют внешний blocker.
 - [ ] Secrets scan не находит токены в Git или логах.
 - [ ] Smoke-путь «server → Control API → client» воспроизводим.
 - [ ] Не потеряны memory, Chroma, SQLite Hub, ignored configs и Lavalink state.
+
+
 
 ## 6. Документация и демонстрация
 
@@ -310,11 +330,15 @@ customDomains = ["neyra.owyx.site"]
 - Demo script покрывает запуск сервера, подключение клиента, streaming chat, status, module toggle и soft restart.
 - Отдельно описаны backlog: server installer, SmartScreen certificate, prompt/config editor и полноценный local voice loop.
 
+
+
 ### Готово, когда
 
 - [ ] Документация запуска соответствует фактическим путям.
 - [ ] Demo script укладывается в сценарий защиты.
 - [ ] Backlog не смешан с обязательным MVP.
+
+
 
 ## 7. Постзащитное развитие
 
@@ -323,20 +347,11 @@ customDomains = ["neyra.owyx.site"]
 - Редактор промптов и конфигов, логи и расширенные настройки клиента.
 - Полный local voice loop и дополнительные player integrations.
 - Расширенный MCP marketplace/allowlist и production deployment hardening.
+- **Обезличивание (AI Assist):** персона только из `assistant.*` + `prompts/persona.md`; ребренд репо/`neyra`-slug — отдельно после Stage 2, не блокер.
+
+
 
 ### Готово, когда
 
 - [ ] Каждая post-defense функция имеет отдельный issue/design и не блокирует MVP.
 - [ ] Backward compatibility и миграция данных определены до релиза.
-
-## Этап 1b — закрыт (PR #14)
-
-Реорганизация `server/` / `client/` / `devtools/` выполнена. Приёмка политики memory/logs и post-migrate baseline — в PR #14. CI `Stage 1b verify` зелёный.
-
-## Этап 1c — закрыт (PR #15)
-
-Слои `server/config/*.yaml`, короткий root, `config_loader` + schema, inventory в `docs/config-keys.md`, `verify_stage_1c.py` + CI.
-
-## Этап 1d — закрыт (PR #16)
-
-Dual-backend: `llm.<role>.provider` (talk→OpenRouter, brain/memory/vision→AIHope), баланс dual, keys only from `.env`, `verify_stage_1d.py` + CI. Без legacy `BACKEND` / `openrouter:` / dual-read.

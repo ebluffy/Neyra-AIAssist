@@ -228,7 +228,8 @@ def check_auth_matrix() -> list[str]:
     orig_exit = api_mod._schedule_exit_after_response
     api_mod._schedule_exit_after_response = _fake_exit  # type: ignore[assignment]
     try:
-        with TestClient(app) as client:
+        # Peer 127.0.0.1 so setup-guard sees console-local when no CF/X-Real headers.
+        with TestClient(app, client=("127.0.0.1", 50000)) as client:
             r = client.get("/v1/dashboard/auth/status")
             if r.status_code != 200:
                 errs.append(f"dash auth status want 200, got {r.status_code}")
@@ -237,18 +238,82 @@ def check_auth_matrix() -> list[str]:
                 if data.get("configured") is not False:
                     errs.append(f"fresh app dash auth should be unconfigured: {data}")
 
-            r = client.post("/v1/dashboard/auth/setup", json={"key": "dash-key-1234"})
+            DASH_KEY = "dash-key-1234-xxxxxxxxxxxxxxxxxxxxxx"  # >= 32
+            DASH_KEY_OTHER = "other-key-9999-xxxxxxxxxxxxxxxxxxxxx"
+            DASH_KEY_WRONG = "wrong-key-0000-xxxxxxxxxxxxxxxxxxxxx"
+
+            # Setup-guard: any CF/X-Real (incl. forged loopback) without primary Bearer → 403
+            r = client.post(
+                "/v1/dashboard/auth/setup",
+                json={"key": DASH_KEY},
+                headers={"CF-Connecting-IP": "203.0.113.9"},
+            )
+            if r.status_code != 403:
+                errs.append(
+                    f"setup with CF public IP (no Bearer) want 403, got {r.status_code} {r.text[:120]}"
+                )
+            r = client.post(
+                "/v1/dashboard/auth/setup",
+                json={"key": DASH_KEY},
+                headers={"CF-Connecting-IP": "127.0.0.1"},
+            )
+            if r.status_code != 403:
+                errs.append(
+                    f"setup with forged CF loopback (no Bearer) want 403, got {r.status_code} {r.text[:120]}"
+                )
+            r = client.post(
+                "/v1/dashboard/auth/setup",
+                json={"key": DASH_KEY},
+                headers={
+                    "CF-Connecting-IP": "203.0.113.9",
+                    "Authorization": "Bearer viewer-secret",
+                },
+            )
+            if r.status_code != 403:
+                errs.append(
+                    f"setup with CF public IP + viewer Bearer want 403, got {r.status_code} {r.text[:120]}"
+                )
+            r = client.post("/v1/dashboard/auth/setup", json={"key": DASH_KEY})
             if r.status_code != 200:
-                errs.append(f"dash auth setup want 200, got {r.status_code} {r.text}")
-            r = client.post("/v1/dashboard/auth/setup", json={"key": "other-key-9999"})
+                errs.append(
+                    f"setup from loopback without CF want 200, got {r.status_code} {r.text[:120]}"
+                )
+            else:
+                sess = (r.json().get("data") or {}).get("session_token")
+                if not sess:
+                    errs.append("loopback setup must return session_token")
+
+            # Already configured → second setup with Bearer must be 409
+            r = client.post(
+                "/v1/dashboard/auth/setup",
+                json={"key": DASH_KEY_OTHER},
+                headers={"Authorization": "Bearer admin-secret"},
+            )
             if r.status_code != 409:
                 errs.append(f"second setup want 409, got {r.status_code}")
-            r = client.post("/v1/dashboard/auth/login", json={"key": "wrong-key-0000"})
+            r = client.post("/v1/dashboard/auth/login", json={"key": DASH_KEY_WRONG})
             if r.status_code != 401:
                 errs.append(f"bad dash login want 401, got {r.status_code}")
-            r = client.post("/v1/dashboard/auth/login", json={"key": "dash-key-1234"})
+            r = client.post("/v1/dashboard/auth/login", json={"key": DASH_KEY})
             if r.status_code != 200:
                 errs.append(f"good dash login want 200, got {r.status_code}")
+            else:
+                sess = (r.json().get("data") or {}).get("session_token")
+                if not sess:
+                    errs.append("dash auth login must return session_token")
+                else:
+                    r = client.get("/v1/health", headers={"Authorization": f"Bearer {sess}"})
+                    if r.status_code != 200:
+                        errs.append(f"session Bearer health want 200, got {r.status_code}")
+                    r = client.post(
+                        "/v1/dashboard/auth/logout",
+                        headers={"Authorization": f"Bearer {sess}"},
+                    )
+                    if r.status_code != 200:
+                        errs.append(f"dash logout want 200, got {r.status_code}")
+                    r = client.get("/v1/health", headers={"Authorization": f"Bearer {sess}"})
+                    if r.status_code != 401:
+                        errs.append(f"revoked session health want 401, got {r.status_code}")
 
             r = client.get("/v1/health")
             if r.status_code != 401:
@@ -380,7 +445,7 @@ def check_dashboard_gate_store() -> list[str]:
     import tempfile
     from pathlib import Path
 
-    from core.api.dashboard_auth import DashboardAuthStore
+    from core.api.dashboard_auth import MIN_KEY_LEN, DashboardAuthStore
 
     errs: list[str] = []
     tmp = Path(tempfile.mkdtemp(prefix="neyra_dash_auth_")) / "gate.sqlite"
@@ -393,22 +458,96 @@ def check_dashboard_gate_store() -> list[str]:
     except ValueError:
         pass
     try:
-        store.setup("short7!")
-        errs.append("7-char key should fail (min 8)")
+        store.setup("x" * (MIN_KEY_LEN - 1))
+        errs.append(f"{MIN_KEY_LEN - 1}-char key should fail (min {MIN_KEY_LEN})")
     except ValueError:
         pass
-    store.setup("my-secret-key")
+    good = "my-secret-key-" + ("x" * 20)  # >= 32
+    store.setup(good)
     if not store.is_configured():
         errs.append("after setup should be configured")
-    if not store.verify("my-secret-key"):
+    if not store.verify(good):
         errs.append("correct key should verify")
     if store.verify("wrong-key"):
         errs.append("wrong key must not verify")
     try:
-        store.setup("another-longer")
+        store.setup("another-longer-key-xxxxxxxxxxxxxxxx")
         errs.append("second setup should fail")
     except RuntimeError:
         pass
+    sess = store.issue_session()
+    if not store.verify_session(sess):
+        errs.append("issued session should verify")
+    store.revoke_session(sess)
+    if store.verify_session(sess):
+        errs.append("revoked session must not verify")
+    if store.verify_session(good):
+        errs.append("raw gate key must not verify as session")
+    return errs
+
+
+def check_spa_routes() -> list[str]:
+    """Client routes must return index.html (not FastAPI JSON 404)."""
+    import tempfile
+    from fastapi.testclient import TestClient
+
+    from core.api import build_app
+
+    errs: list[str] = []
+    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_spa_test_"))
+    dist = data_tmp / "dashboard" / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>neyra</title>", encoding="utf-8")
+    (dist / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
+    (dist / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+
+    agent = MagicMock()
+    agent.start_mcp_clients = AsyncMock()
+    agent.stop_mcp_clients = AsyncMock()
+    agent.memory_hub = None
+    monitor = MagicMock()
+    monitor.start = MagicMock()
+    monitor.run_once = AsyncMock(return_value={"ok": True})
+    backup = MagicMock()
+
+    cfg = {
+        "paths": {"data_dir": str(data_tmp / "data")},
+        "api": {
+            "host": "127.0.0.1",
+            "port": 8787,
+            "token": "admin-secret",
+            "viewer_token": "",
+            "maint_token": "",
+            "public_base_url": "",
+            "public_path_prefix": "/api",
+            "audit_log_enabled": False,
+            "rate_limit_requests_per_minute": 0,
+        },
+        "dashboard": {"enabled": True, "dist_path": str(dist)},
+        "llm": {},
+    }
+    app = build_app(
+        cfg,
+        shared_agent=agent,
+        shared_monitor=monitor,
+        shared_backup_manager=backup,
+    )
+    with TestClient(app) as client:
+        for path in ("/", "/status", "/modules", "/memory", "/system", "/settings", "/dashboard", "/plugins"):
+            r = client.get(path)
+            if r.status_code != 200:
+                errs.append(f"{path} want 200, got {r.status_code}")
+            elif "neyra" not in r.text.lower() and "<!doctype html>" not in r.text.lower():
+                errs.append(f"{path} should serve SPA index.html, got: {r.text[:80]!r}")
+        r = client.get("/favicon.svg")
+        if r.status_code != 200:
+            errs.append(f"favicon.svg want 200, got {r.status_code}")
+        r = client.get("/assets/app.js")
+        if r.status_code != 200:
+            errs.append(f"/assets/app.js want 200, got {r.status_code}")
+        r = client.get("/v1/no-such-endpoint")
+        if r.status_code != 404:
+            errs.append(f"/v1/no-such-endpoint want 404, got {r.status_code}")
     return errs
 
 
@@ -436,6 +575,75 @@ def check_public_url_env_rejected() -> list[str]:
     return errs
 
 
+def check_rate_limit_xff_bucket() -> list[str]:
+    """HTTP RPM must key on resolve_client_ip — X-Forwarded-For alone must not rotate buckets."""
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi.testclient import TestClient
+
+    from core.api import build_app
+    import core.api.app as api_mod
+
+    errs: list[str] = []
+    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_rpm_"))
+    agent = MagicMock()
+    agent.start_mcp_clients = AsyncMock()
+    agent.stop_mcp_clients = AsyncMock()
+    agent.memory_hub = None
+    monitor = MagicMock()
+    monitor.start = MagicMock()
+    monitor.run_once = AsyncMock(return_value={"status": "ok"})
+    backup = MagicMock()
+    cfg = {
+        "paths": {"data_dir": str(data_tmp)},
+        "api": {
+            "host": "127.0.0.1",
+            "port": 8787,
+            "token": "admin-secret",
+            "viewer_token": "viewer-secret",
+            "maint_token": "",
+            "public_base_url": "",
+            "public_path_prefix": "/api",
+            "audit_log_enabled": False,
+            "rate_limit_requests_per_minute": 3,
+            "websocket": {
+                "idle_timeout_seconds": 5,
+                "ping_interval_seconds": 20,
+                "close_grace_seconds": 1,
+            },
+        },
+        "dashboard": {"enabled": False},
+        "llm": {},
+    }
+    app = build_app(
+        cfg,
+        shared_agent=agent,
+        shared_monitor=monitor,
+        shared_backup_manager=backup,
+    )
+    api_mod._rate_limit_buckets.clear()
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        codes: list[int] = []
+        for i in range(5):
+            r = client.get(
+                "/v1/health",
+                headers={
+                    "Authorization": "Bearer viewer-secret",
+                    "X-Forwarded-For": f"203.0.113.{i}",
+                },
+            )
+            codes.append(r.status_code)
+        # Same peer, rotating XFF → same bucket → later calls 429
+        if codes.count(429) < 2:
+            errs.append(f"rotating XFF should share RPM bucket, codes={codes}")
+        # Without XFF, same peer still limited (same bucket)
+        r = client.get("/v1/health", headers={"Authorization": "Bearer viewer-secret"})
+        if r.status_code != 429:
+            errs.append(f"same peer without XFF should still be limited, got {r.status_code}")
+    return errs
+
+
 def main() -> int:
     checks = [
         ("package layout", check_package_layout),
@@ -447,7 +655,9 @@ def main() -> int:
         ("legacy env failfast", check_legacy_env_failfast),
         ("API_KEY alias", check_api_key_alias),
         ("dashboard gate store", check_dashboard_gate_store),
+        ("spa routes", check_spa_routes),
         ("public URL env rejected", check_public_url_env_rejected),
+        ("rate limit XFF bucket", check_rate_limit_xff_bucket),
         ("auth matrix", check_auth_matrix),
     ]
     failed = 0

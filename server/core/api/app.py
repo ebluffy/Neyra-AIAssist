@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 import httpx
 import yaml
 from fastapi import Depends, FastAPI, Header, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,9 @@ from core.runtime.win_runtime import apply_runtime_patches
 apply_runtime_patches()
 
 from core.api.dashboard_auth import DashboardAuthStore
+from core.api.client_ip import is_console_local_client as _is_console_local_client
+from core.api.client_ip import is_loopback_ip as _is_loopback_ip_pure
+from core.api.client_ip import resolve_client_ip as _resolve_client_ip_pure
 from core.neyra import NeyraAgent
 from core.runtime.backup import BackupManager
 from core.runtime.event_bus import CoreEvent
@@ -43,6 +46,93 @@ from core.runtime import HealthMonitor
 logger = logging.getLogger("neyra.api")
 
 API_VERSION = "1.1.0"
+_PROCESS_STARTED_AT = time.time()
+_DASH_LOGIN_FAILS: dict[str, list[float]] = {}
+_DASH_LOGIN_LOCK = threading.Lock()
+_DASH_LOGIN_WINDOW_S = 300.0
+_DASH_LOGIN_MAX_FAILS = 10
+
+# Runtime config keys mutable via dashboard Settings (no secrets).
+CONFIG_RUNTIME_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "llm.talk_model",
+        "llm.brain_model",
+        "llm.memory_model",
+        "llm.vision_model",
+        "llm.talk_model.model",
+        "llm.talk_model.provider",
+        "llm.talk_model.reply_max_tokens",
+        "llm.talk_model.lyrics_reply_max_tokens",
+        "llm.talk_model.temperature",
+        "llm.talk_model.timeout_seconds",
+        "llm.brain_model.model",
+        "llm.brain_model.provider",
+        "llm.brain_model.model_deep",
+        "llm.brain_model.max_tokens",
+        "llm.brain_model.temperature",
+        "llm.brain_model.timeout_seconds",
+        "llm.memory_model.model",
+        "llm.memory_model.provider",
+        "llm.memory_model.max_tokens",
+        "llm.memory_model.temperature",
+        "llm.vision_model.model",
+        "llm.vision_model.provider",
+        "llm.vision_model.max_tokens",
+        "llm.vision_model.temperature",
+        "llm.vision_model.timeout_seconds",
+        "llm.vision_model.enabled",
+        "llm.vision_model.use_brain_model_for_vision",
+        "llm.vision_model.max_images_per_message",
+        "llm.vision_model.max_image_bytes",
+        "llm.vision_model.max_image_width",
+        "llm.vision_model.max_image_height",
+        "llm.vision_model.remember_last_image",
+        "llm.vision_model.last_image_note_max_chars",
+        "llm.providers.aihope.base_url",
+        "llm.providers.openrouter.base_url",
+        "llm.provider",
+        "llm.base_url",
+        "agent.fast_path.enabled",
+        "logging.level",
+        "memory.rag_write_mode",
+        "health_monitor.enabled",
+        "health_monitor.interval_seconds",
+    }
+)
+
+
+def resolve_client_ip(request: Request) -> str:
+    """Client IP for rate-limit / setup-guard behind frp (see ``core.api.client_ip``)."""
+    peer = request.client.host if request.client else "unknown"
+    return _resolve_client_ip_pure(peer=peer, headers=request.headers)
+
+
+def _config_get_path(cfg: dict, path: str) -> Any:
+    cur: Any = cfg
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def runtime_config_snapshot(cfg: dict) -> dict[str, Any]:
+    """Allowlisted runtime values only (no API keys / .env secrets)."""
+    out: dict[str, Any] = {}
+    for key in sorted(CONFIG_RUNTIME_ALLOWLIST):
+        val = _config_get_path(cfg, key)
+        if val is not None:
+            out[key] = val
+    return out
+
+
+def configured_llm_providers(cfg: dict) -> list[str]:
+    """Provider ids from ``llm.providers`` (for Settings dropdowns)."""
+    llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+    providers = llm.get("providers") if isinstance(llm, dict) else None
+    if not isinstance(providers, dict):
+        return []
+    return sorted(str(k).strip() for k in providers.keys() if str(k).strip())
 
 # Set by run_neyra_server so soft-restart can ask uvicorn to shut down cleanly.
 _uvicorn_server: Any = None
@@ -127,9 +217,14 @@ def _schedule_exit_after_response(reason: str = "system_restart") -> None:
         if server is not None:
             try:
                 server.should_exit = True
-                return
             except Exception:
                 logger.exception("Failed to signal uvicorn should_exit; falling back to os._exit")
+                os._exit(1)
+                return
+            # uvicorn often exits 0 after should_exit — systemd Restart=on-failure would stay down.
+            time.sleep(1.5)
+            os._exit(1)
+            return
         # Non-zero so systemd Restart=on-failure also comes back; Docker unless-stopped always restarts.
         os._exit(1)
 
@@ -148,8 +243,7 @@ def _token_eq(got: str, expected: str) -> bool:
 
 
 def _is_loopback_host(host: str) -> bool:
-    h = (host or "").strip().lower()
-    return h in ("127.0.0.1", "::1", "localhost") or h.startswith("127.")
+    return _is_loopback_ip_pure(host)
 
 
 def api_tokens_configured(cfg: dict) -> bool:
@@ -187,8 +281,16 @@ def _api_token(cfg: dict) -> str:
 _ROLE_RANK = {"anon": 0, "viewer": 1, "maint": 2, "admin": 3}
 
 
-def _resolve_role(authorization: Optional[str], cfg: dict) -> str:
-    """anon — tokens unset (local loopback only; see assert_api_bind_safe). Else Bearer required."""
+def _resolve_role(
+    authorization: Optional[str],
+    cfg: dict,
+    dash_auth: Optional[DashboardAuthStore] = None,
+) -> str:
+    """anon — tokens unset (local loopback only; see assert_api_bind_safe). Else Bearer required.
+
+    Accepted Bearer values: API_TOKEN / viewer / maint, or a dashboard **session**
+    token issued by POST /v1/dashboard/auth/login|setup (fast hash lookup — not PBKDF2).
+    """
     api = _api_cfg(cfg)
     primary = str(api.get("token") or "").strip()
     viewer = str(api.get("viewer_token") or "").strip()
@@ -205,6 +307,8 @@ def _resolve_role(authorization: Optional[str], cfg: dict) -> str:
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
+    if dash_auth is not None and dash_auth.verify_session(got):
+        return "admin"
     raise ApiError("unauthorized", "Invalid bearer token", 401)
 
 
@@ -216,7 +320,12 @@ def _role_at_least(role: str, minimum: str) -> bool:
     return _ROLE_RANK.get(role, 0) >= _ROLE_RANK.get(minimum, 0)
 
 
-def _require_ws_auth(token_qs: Optional[str], authorization: Optional[str], cfg: dict) -> str:
+def _require_ws_auth(
+    token_qs: Optional[str],
+    authorization: Optional[str],
+    cfg: dict,
+    dash_auth: Optional[DashboardAuthStore] = None,
+) -> str:
     """
     Same token roles as REST. Prefer Authorization: Bearer (query ?token= may hit access logs).
     Returns role name (anon/viewer/maint/admin).
@@ -240,6 +349,8 @@ def _require_ws_auth(token_qs: Optional[str], authorization: Optional[str], cfg:
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
+    if dash_auth is not None and dash_auth.verify_session(got):
+        return "admin"
     raise ApiError("unauthorized", "Invalid bearer token for WebSocket", 401)
 
 
@@ -302,6 +413,7 @@ class ChatRequest(BaseModel):
 
 
 class DashboardGateKeyRequest(BaseModel):
+    # Login may still use an older key (<32); setup enforces MIN_KEY_LEN in the store.
     key: str = Field(min_length=8, max_length=256)
 
 
@@ -335,6 +447,31 @@ class MemoryAddRequest(BaseModel):
 
     text: str = Field(min_length=1, max_length=24000)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PersonUpsertRequest(BaseModel):
+    """Create/update person dossier. Profile uses canonical keys only."""
+
+    id: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    names: Optional[list[str]] = None
+    discord_ids: Optional[list[str]] = None
+    profile: dict[str, Any] = Field(default_factory=dict)
+
+
+class PersonFactCreateRequest(BaseModel):
+    fact: str = Field(min_length=1, max_length=4000)
+    emotion_note: Optional[str] = Field(default=None, max_length=500)
+
+
+class DiaryCreateRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=12000)
+    emotion: Optional[str] = Field(default=None, max_length=120)
+
+
+class JournalCreateRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=12000)
+    title: Optional[str] = Field(default=None, max_length=240)
+    kind: Optional[str] = Field(default=None, max_length=80)
 
 
 class MemoryPruneRequest(BaseModel):
@@ -737,8 +874,16 @@ def build_app(
         def __init__(self, min_role: str):
             self.min_role = min_role
 
-        async def __call__(self, authorization: Optional[str] = Header(default=None)) -> str:
-            role = _resolve_role(authorization, config)
+        async def __call__(
+            self,
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ) -> str:
+            role = _resolve_role(
+                authorization,
+                config,
+                getattr(request.app.state, "dashboard_auth", None),
+            )
             if not _role_at_least(role, self.min_role):
                 raise ApiError("forbidden", "Insufficient API token scope", 403)
             return role
@@ -755,8 +900,8 @@ def build_app(
         path = request.url.path or ""
         if rate_rpm <= 0 or not path.startswith("/v1") or path.startswith("/v1/ws"):
             return await call_next(request)
-        # With uvicorn proxy_headers=True, request.client is the real client behind the proxy.
-        ip = request.client.host if request.client else "unknown"
+        # Same resolver as setup/login: CF/X-Real when peer loopback; never X-Forwarded-For.
+        ip = resolve_client_ip(request)
         if not await _rate_limit_allow(f"http:{ip}", rate_rpm):
             tid = _trace_id(request)
             return JSONResponse(
@@ -1039,6 +1184,23 @@ def build_app(
             },
         }
 
+    def _client_ip(request: Request) -> str:
+        return resolve_client_ip(request)
+
+    def _dash_login_rate_ok(ip: str) -> bool:
+        now = time.time()
+        with _DASH_LOGIN_LOCK:
+            hits = [t for t in _DASH_LOGIN_FAILS.get(ip, []) if now - t < _DASH_LOGIN_WINDOW_S]
+            _DASH_LOGIN_FAILS[ip] = hits
+            return len(hits) < _DASH_LOGIN_MAX_FAILS
+
+    def _dash_login_fail(ip: str) -> None:
+        now = time.time()
+        with _DASH_LOGIN_LOCK:
+            hits = [t for t in _DASH_LOGIN_FAILS.get(ip, []) if now - t < _DASH_LOGIN_WINDOW_S]
+            hits.append(now)
+            _DASH_LOGIN_FAILS[ip] = hits
+
     @app.get("/v1/dashboard/auth/status")
     async def v1_dashboard_auth_status(request: Request):
         """Public: whether the web UI access key has been created."""
@@ -1050,39 +1212,84 @@ def build_app(
         }
 
     @app.post("/v1/dashboard/auth/setup")
-    async def v1_dashboard_auth_setup(body: DashboardGateKeyRequest, request: Request):
+    async def v1_dashboard_auth_setup(
+        body: DashboardGateKeyRequest,
+        request: Request,
+        authorization: Optional[str] = Header(default=None),
+    ):
         """
         Create the dashboard access key once.
-        If the API binds non-loopback, setup is only allowed from a loopback client
-        (first-setup window; prevents remote race to claim the key).
+
+        Setup is allowed only from a *console-local* client (socket peer loopback
+        and no ``CF-Connecting-IP`` / ``X-Real-IP``), or with the primary API Bearer
+        (``API_TOKEN`` / ``api.token`` only — not viewer/maint, not a dashboard session).
+        This closes the frpc window where peer is always 127.0.0.1 and forged
+        ``CF-Connecting-IP: 127.0.0.1`` must not count as local.
         """
         trace_id = _trace_id(request)
-        bind_host = str((_api_cfg(config).get("host") or "127.0.0.1"))
-        if not _is_loopback_host(bind_host):
-            client_host = request.client.host if request.client else ""
-            if not _is_loopback_host(client_host):
-                raise ApiError(
-                    "forbidden",
-                    "Dashboard key setup is only allowed from localhost when API bind is not loopback",
-                    403,
-                )
+        peer = request.client.host if request.client else "unknown"
+        local_ok = _is_console_local_client(peer=peer, headers=request.headers)
+        api_ok = False
+        raw = (authorization or "").strip()
+        if raw.startswith("Bearer "):
+            got = raw.removeprefix("Bearer ").strip()
+            api = _api_cfg(config)
+            # Remote bootstrap: only primary API_TOKEN (not viewer/maint — avoids privilege escalation).
+            primary = str(api.get("token") or "").strip()
+            if primary and _token_eq(got, primary):
+                api_ok = True
+        if not local_ok and not api_ok:
+            raise ApiError(
+                "forbidden",
+                "Dashboard key setup requires localhost console (no proxy headers) or primary API Bearer",
+                403,
+            )
         try:
             dash_auth.setup(body.key)
         except RuntimeError as e:
             raise ApiError("already_configured", str(e), 409) from e
         except ValueError as e:
             raise ApiError("bad_request", str(e), 400) from e
-        return {"ok": True, "trace_id": trace_id, "data": {"configured": True}}
+        session = dash_auth.issue_session()
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"configured": True, "session_token": session},
+        }
 
     @app.post("/v1/dashboard/auth/login")
     async def v1_dashboard_auth_login(body: DashboardGateKeyRequest, request: Request):
-        """Public: verify dashboard access key."""
+        """Public: verify dashboard access key and issue a short-lived session Bearer."""
         trace_id = _trace_id(request)
+        ip = _client_ip(request)
+        if not _dash_login_rate_ok(ip):
+            raise ApiError("rate_limited", "Too many failed login attempts", 429)
         if not dash_auth.is_configured():
             raise ApiError("setup_required", "Create a dashboard access key first", 400)
         if not dash_auth.verify(body.key):
+            _dash_login_fail(ip)
+            logger.info("dashboard login failed ip=%s", ip)
             raise ApiError("unauthorized", "Invalid access key", 401)
-        return {"ok": True, "trace_id": trace_id, "data": {"authenticated": True}}
+        session = dash_auth.issue_session()
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"authenticated": True, "session_token": session},
+        }
+
+    @app.post("/v1/dashboard/auth/logout")
+    async def v1_dashboard_auth_logout(
+        request: Request,
+        authorization: Optional[str] = Header(default=None),
+    ):
+        """Revoke the current dashboard session Bearer (idempotent)."""
+        trace_id = _trace_id(request)
+        raw = (authorization or "").strip()
+        if raw.startswith("Bearer "):
+            tok = raw.removeprefix("Bearer ").strip()
+            if tok:
+                dash_auth.revoke_session(tok)
+        return {"ok": True, "trace_id": trace_id, "data": {"revoked": True}}
 
     @app.get("/v1/meta")
     async def v1_meta(request: Request, _: None = Depends(dep_viewer)):
@@ -1134,10 +1341,24 @@ def build_app(
     @app.get("/v1/health")
     async def v1_health(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
-        rep = await monitor.run_once()
+        # Prefer a recent cached monitor report so the dashboard stays snappy.
+        rep = monitor.last_report
+        need_refresh = not rep
+        if rep and isinstance(rep.get("timestamp"), str):
+            try:
+                ts = datetime.fromisoformat(str(rep["timestamp"]))
+                age = (datetime.now() - ts).total_seconds()
+                need_refresh = age > 120
+            except Exception:
+                need_refresh = True
+        if need_refresh:
+            rep = await monitor.run_once()
         if isinstance(rep, dict):
             rep = dict(rep)
             rep["api_version"] = API_VERSION
+            rep["version"] = API_VERSION
+            rep["status"] = "ok" if rep.get("ok") else "degraded"
+            rep["uptime_seconds"] = int(max(0, time.time() - _PROCESS_STARTED_AT))
             pub = api_public_root(config)
             if pub:
                 rep["public_url"] = pub
@@ -1163,8 +1384,8 @@ def build_app(
             "data": {
                 "action": "restart",
                 "note": (
-                    "Process will shut down shortly (uvicorn should_exit; fallback exit code 1). "
-                    "Use docker compose restart:unless-stopped or systemd Restart=always / on-failure."
+                    "Процесс скоро остановится; systemd/docker должен поднять его снова. "
+                    "Дашборд подождёт ответ health — не жмите «Обновить» сразу."
                 ),
             },
         }
@@ -1212,6 +1433,7 @@ def build_app(
                         "id": p.get("id"),
                         "names": p.get("names") or [],
                         "discord_ids": p.get("discord_ids") or [],
+                        "profile": p.get("profile") or p.get("static_facts") or {},
                     }
                 )
             return out
@@ -1219,9 +1441,54 @@ def build_app(
         people = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": {"people": people, "count": len(people)}}
 
+    @app.post("/v1/memory/people")
+    async def v1_memory_people_create(
+        body: PersonUpsertRequest,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (body.id or "").strip()
+        if not pid:
+            base = ""
+            if body.names:
+                base = str(body.names[0])
+            if not base and isinstance(body.profile, dict):
+                base = str(body.profile.get("first_name") or body.profile.get("last_name") or "")
+            import re as _re
+
+            slug = _re.sub(r"[^a-zA-Z0-9_\-]+", "_", base.strip().lower()).strip("_") or "person"
+            pid = slug[:60]
+
+        def _run() -> dict[str, Any]:
+            if hub.find_person(pid):
+                raise ApiError("person_exists", f"person '{pid}' already exists", 409)
+            person = hub.save_person_dossier(
+                person_id=pid,
+                names=list(body.names or []),
+                discord_ids=list(body.discord_ids or []),
+                profile=dict(body.profile or {}),
+                create=True,
+            )
+            pdb = getattr(agent, "people_db", None)
+            if pdb is not None:
+                pdb._cache[pid] = dict(person)
+            return {"person": person}
+
+        try:
+            data = await asyncio.to_thread(_run)
+        except ApiError:
+            raise
+        except Exception as e:
+            raise ApiError("person_create_failed", str(e), 500) from e
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
     @app.get("/v1/memory/people/{person_id}")
     async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_viewer)):
-        """Person dossier summary via Hub (static_facts + recent facts)."""
+        """Person dossier summary via Hub (profile + recent facts)."""
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
@@ -1231,28 +1498,135 @@ def build_app(
             raise ApiError("invalid_person_id", "person_id required", 400)
 
         def _run() -> dict[str, Any]:
-            # Same shape as GET /v1/memory/people (legacy id/names/discord_ids).
-            # Resolve by id, name, or discord so summary/facts use canonical person_id.
             person = hub.find_person(pid)
             if not person:
-                return {"person_id": pid, "person": None, "summary": "", "facts": []}
+                return {"person_id": pid, "person": None, "summary": "", "facts": [], "profile": {}}
             resolved = str(person.get("id") or "").strip() or pid
             summary = hub.get_person_summary(resolved)
-            facts = (
-                hub.list_person_facts(resolved, limit=20)
-                if hasattr(hub, "list_person_facts")
-                else []
-            )
+            facts = hub.list_person_facts(resolved, limit=50)
             return {
                 "person_id": resolved,
                 "person": person,
+                "profile": person.get("profile") or person.get("static_facts") or {},
                 "summary": summary,
                 "facts": facts,
+                "legacy_fact_hints": person.get("legacy_fact_hints") or [],
             }
 
         data = await asyncio.to_thread(_run)
         if not data.get("person") and not (data.get("summary") or "").strip():
             raise ApiError("person_not_found", f"person '{pid}' not found", 404)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.patch("/v1/memory/people/{person_id}")
+    async def v1_memory_person_patch(
+        person_id: str,
+        body: PersonUpsertRequest,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (person_id or "").strip()
+        if not pid:
+            raise ApiError("invalid_person_id", "person_id required", 400)
+
+        def _run() -> dict[str, Any]:
+            try:
+                person = hub.save_person_dossier(
+                    person_id=pid,
+                    names=list(body.names) if body.names is not None else None,
+                    discord_ids=list(body.discord_ids) if body.discord_ids is not None else None,
+                    profile=dict(body.profile) if body.profile is not None else None,
+                    create=False,
+                )
+            except KeyError as e:
+                raise ApiError("person_not_found", f"person '{pid}' not found", 404) from e
+            pdb = getattr(agent, "people_db", None)
+            if pdb is not None:
+                pdb._cache[pid] = dict(person)
+            return {"person": person}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.delete("/v1/memory/people/{person_id}")
+    async def v1_memory_person_delete(
+        person_id: str,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (person_id or "").strip()
+        if not pid:
+            raise ApiError("invalid_person_id", "person_id required", 400)
+
+        def _run() -> dict[str, Any]:
+            ok = hub.delete_person(pid)
+            pdb = getattr(agent, "people_db", None)
+            if pdb is not None:
+                pdb._cache.pop(pid, None)
+            if not ok:
+                raise ApiError("person_not_found", f"person '{pid}' not found", 404)
+            return {"deleted": True, "person_id": pid}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.post("/v1/memory/people/{person_id}/facts")
+    async def v1_memory_person_fact_add(
+        person_id: str,
+        body: PersonFactCreateRequest,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (person_id or "").strip()
+        if not pid:
+            raise ApiError("invalid_person_id", "person_id required", 400)
+
+        def _run() -> dict[str, Any]:
+            if not hub.find_person(pid):
+                raise ApiError("person_not_found", f"person '{pid}' not found", 404)
+            fact_id = hub.add_person_fact(
+                pid,
+                fact=body.fact.strip(),
+                emotion_note=(body.emotion_note or None),
+                source="dashboard",
+            )
+            return {"fact_id": fact_id}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.delete("/v1/memory/people/{person_id}/facts/{fact_id}")
+    async def v1_memory_person_fact_delete(
+        person_id: str,
+        fact_id: int,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (person_id or "").strip()
+
+        def _run() -> dict[str, Any]:
+            ok = hub.delete_person_fact(pid, int(fact_id))
+            if not ok:
+                raise ApiError("fact_not_found", "fact not found", 404)
+            return {"deleted": True, "fact_id": int(fact_id)}
+
+        data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/memory/diary")
@@ -1274,6 +1648,24 @@ def build_app(
         data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
+    @app.post("/v1/memory/diary")
+    async def v1_memory_diary_create(
+        body: DiaryCreateRequest,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            note_id = hub.add_diary_note(text=body.text.strip(), emotion=body.emotion, source="dashboard")
+            return {"id": note_id}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
     @app.get("/v1/memory/journal")
     async def v1_memory_journal(
         request: Request,
@@ -1288,6 +1680,28 @@ def build_app(
         def _run() -> dict[str, Any]:
             rows = hub.list_journal_entries(limit=limit, newest_first=True)
             return {"entries": rows, "count": len(rows)}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.post("/v1/memory/journal")
+    async def v1_memory_journal_create(
+        body: JournalCreateRequest,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            entry_id = hub.add_journal_entry(
+                text=body.text.strip(),
+                title=body.title,
+                kind=body.kind or "manual",
+            )
+            return {"id": entry_id}
 
         data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}
@@ -1408,6 +1822,8 @@ def build_app(
             raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
             if isinstance(raw, dict):
                 cfg = raw
+        from core.runtime.snowflake import json_safe_config
+
         return {
             "ok": True,
             "trace_id": trace_id,
@@ -1423,7 +1839,7 @@ def build_app(
                     "main_script": m.main_script,
                     "plugin_dir": str(m.plugin_dir),
                 },
-                "config": cfg,
+                "config": json_safe_config(cfg),
             },
         }
 
@@ -1434,13 +1850,45 @@ def build_app(
         ok = loader.set_enabled(plugin_id, body.enabled)
         if not ok:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        lava_note = ""
+        # Discord owns managed Lavalink: off → kill JVM; on → ensure JAR (non-blocking for event loop).
+        if str(plugin_id).strip().lower() == "discord":
+            try:
+                from modules.discord.lavalink_process import ensure_managed_lavalink, stop_managed_lavalink
+
+                discord_dir = root / "modules" / "discord"
+                if not body.enabled:
+                    lava_note = await asyncio.to_thread(stop_managed_lavalink, discord_dir)
+                    logger.info("plugin discord disabled → managed Lavalink: %s", lava_note)
+                else:
+                    # Ensure can wait up to ~90s for the port — do not block the PATCH response.
+                    async def _start_lava() -> None:
+                        try:
+                            ok_lava, detail = await asyncio.to_thread(
+                                ensure_managed_lavalink, config, discord_dir
+                            )
+                            logger.info(
+                                "plugin discord enabled → managed Lavalink ok=%s detail=%s",
+                                ok_lava,
+                                detail,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to start managed Lavalink after discord enable"
+                            )
+
+                    asyncio.create_task(_start_lava())
+                    lava_note = "managed Lavalink start requested"
+            except Exception:
+                logger.exception("Failed to sync managed Lavalink after discord toggle")
+                lava_note = "lavalink sync failed (see logs)"
         op_id = f"op_{uuid.uuid4().hex[:12]}"
         plugin_ops[op_id] = {
             "operation_id": op_id,
             "plugin_id": plugin_id,
             "type": "set_enabled",
             "status": "done",
-            "result": {"enabled": body.enabled},
+            "result": {"enabled": body.enabled, "lavalink": lava_note or None},
             "ts": _utc_now(),
         }
         _audit("plugin_set_enabled", trace_id, api_role, {"plugin_id": plugin_id, "enabled": body.enabled})
@@ -1459,7 +1907,13 @@ def build_app(
             raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
             if isinstance(raw, dict):
                 cfg = raw
-        return {"ok": True, "trace_id": trace_id, "data": {"plugin_id": m.id, "config": cfg}}
+        from core.runtime.snowflake import json_safe_config
+
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"plugin_id": m.id, "config": json_safe_config(cfg)},
+        }
 
     @app.put("/v1/plugins/{plugin_id}/config")
     async def v1_plugin_config_put(plugin_id: str, body: PluginConfigUpdateRequest, request: Request, _: None = Depends(dep_admin)):
@@ -1469,8 +1923,12 @@ def build_app(
         if m is None:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
         cfg_path = _plugin_config_path(m)
+        from core.runtime.snowflake import json_safe_config
+
+        # Persist snowflakes as strings so a later dashboard JSON round-trip cannot corrupt them.
+        safe_cfg = json_safe_config(body.config or {})
         cfg_path.write_text(
-            yaml.safe_dump(body.config or {}, allow_unicode=True, sort_keys=False),
+            yaml.safe_dump(safe_cfg, allow_unicode=True, sort_keys=False),
             encoding="utf-8",
         )
         op_id = f"op_{uuid.uuid4().hex[:12]}"
@@ -1628,22 +2086,27 @@ def build_app(
             )
         return {"ok": True, "trace_id": trace_id, "data": out}
 
-    @app.get("/v1/docs/markdown/{doc_id}", response_class=PlainTextResponse)
-    async def v1_docs_markdown(doc_id: str, request: Request, _: None = Depends(dep_viewer)):
+    @app.get("/v1/docs/catalog")
+    async def v1_docs_catalog(request: Request, _: None = Depends(dep_viewer)):
+        """List markdown docs available under docs/ (and legacy HELP/README)."""
+        from core.api.docs_catalog import build_docs_catalog
+
         trace_id = _trace_id(request)
-        rid = (doc_id or "").strip().lower()
-        mapping = {
-            "readme-ru": root / "README-RU.md",
-            "readme-en": root / "README.md",
-            "help-ru": root / "modules" / "000EXAMPLE" / "HELP-RU.md",
-            "help-en": root / "modules" / "000EXAMPLE" / "HELP.md",
-            "docs-ru-index": root / "docs" / "ru" / "README.md",
-            "docs-en-index": root / "docs" / "en" / "README.md",
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": build_docs_catalog(root),
         }
-        target = mapping.get(rid)
-        if target is None or not target.is_file():
+
+    @app.get("/v1/docs/markdown/{doc_id:path}", response_class=PlainTextResponse)
+    async def v1_docs_markdown(doc_id: str, request: Request, _: None = Depends(dep_viewer)):
+        from core.api.docs_catalog import resolve_doc_path, sanitize_markdown_text
+
+        trace_id = _trace_id(request)
+        target = resolve_doc_path(root, doc_id)
+        if target is None:
             raise ApiError("not_found", f"Unknown markdown doc: {doc_id}", 404)
-        text = target.read_text(encoding="utf-8")
+        text = sanitize_markdown_text(target.read_text(encoding="utf-8"), doc_id=doc_id)
         response = PlainTextResponse(content=text)
         response.headers["x-trace-id"] = trace_id
         return response
@@ -1659,61 +2122,86 @@ def build_app(
             cur = nxt
         cur[keys[-1]] = value
 
+    @app.get("/v1/config/runtime")
+    async def v1_config_runtime(request: Request, _: str = Depends(dep_admin)):
+        """Allowlisted runtime config snapshot for dashboard Settings (no secrets)."""
+        trace_id = _trace_id(request)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "values": runtime_config_snapshot(config),
+                "providers": configured_llm_providers(config),
+            },
+        }
+
     @app.post("/v1/config/update")
     async def v1_config_update(body: ConfigUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
+        """Apply allowlisted keys: persist to layer YAML first, then runtime + LLM rebind."""
         trace_id = _trace_id(request)
         _audit("config_update", trace_id, api_role, {"keys": list(body.updates.keys())})
-        allowed = {
-            "llm.talk_model",
-            "llm.brain_model",
-            "llm.memory_model",
-            "llm.vision_model",
-            "llm.talk_model.model",
-            "llm.talk_model.provider",
-            "llm.talk_model.reply_max_tokens",
-            "llm.talk_model.lyrics_reply_max_tokens",
-            "llm.talk_model.temperature",
-            "llm.talk_model.timeout_seconds",
-            "llm.brain_model.model",
-            "llm.brain_model.provider",
-            "llm.brain_model.model_deep",
-            "llm.brain_model.max_tokens",
-            "llm.brain_model.temperature",
-            "llm.brain_model.timeout_seconds",
-            "llm.memory_model.model",
-            "llm.memory_model.provider",
-            "llm.memory_model.max_tokens",
-            "llm.memory_model.temperature",
-            "llm.vision_model.model",
-            "llm.vision_model.provider",
-            "llm.vision_model.max_tokens",
-            "llm.vision_model.temperature",
-            "llm.vision_model.timeout_seconds",
-            "llm.vision_model.enabled",
-            "llm.vision_model.use_brain_model_for_vision",
-            "llm.vision_model.max_images_per_message",
-            "llm.vision_model.max_image_bytes",
-            "llm.vision_model.max_image_width",
-            "llm.vision_model.max_image_height",
-            "llm.vision_model.remember_last_image",
-            "llm.vision_model.last_image_note_max_chars",
-            "llm.providers.aihope.base_url",
-            "llm.providers.openrouter.base_url",
-            "llm.provider",
-            "llm.base_url",
-            "agent.fast_path.enabled",
-            "logging.level",
-            "memory.rag_write_mode",
-            "health_monitor.enabled",
-            "health_monitor.interval_seconds",
-        }
         updates_applied: dict[str, Any] = {}
         for k, v in body.updates.items():
-            if k not in allowed:
+            if k not in CONFIG_RUNTIME_ALLOWLIST:
                 raise ApiError("forbidden_update", f"Path not allowed: {k}", 403)
-            _safe_set(config, k, v)
             updates_applied[k] = v
-        return {"ok": True, "trace_id": trace_id, "data": {"updated": updates_applied}}
+
+        # Snapshot for rollback if disk write or LLM rebind fails after partial in-memory apply.
+        rollback: dict[str, Any] = {
+            k: _config_get_path(config, k) for k in updates_applied
+        }
+
+        persisted: list[str] = []
+        if updates_applied:
+            try:
+                from core.runtime.config_loader import persist_allowlisted_updates
+
+                persisted = persist_allowlisted_updates(root, updates_applied)
+            except Exception as e:
+                logger.exception("Failed to persist runtime config updates")
+                raise ApiError("persist_failed", f"Disk write failed (runtime unchanged): {e}", 500) from e
+
+        for k, v in updates_applied.items():
+            _safe_set(config, k, v)
+
+        llm_rebound = False
+        if any(str(k).startswith("llm.") for k in updates_applied):
+            try:
+                agent._setup_llm()
+                llm_rebound = True
+            except Exception as e:
+                logger.exception("LLM rebind after config update failed; rolling back memory")
+                for k, old in rollback.items():
+                    if old is None:
+                        # best-effort: set previous missing as empty-ish skip — leave key if newly created
+                        continue
+                    _safe_set(config, k, old)
+                raise ApiError(
+                    "llm_rebind_failed",
+                    (
+                        "Сохранено на диск, но LLM-клиенты не пересобраны "
+                        f"(runtime откатан; мягкий рестарт подхватит диск): {e}"
+                    ),
+                    500,
+                ) from e
+
+        if "logging.level" in updates_applied:
+            try:
+                level_name = str(updates_applied["logging.level"] or "").strip().upper()
+                if level_name:
+                    logging.getLogger().setLevel(getattr(logging, level_name, logging.INFO))
+            except Exception:
+                logger.debug("Failed to apply logging.level at runtime", exc_info=True)
+
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "updated": updates_applied,
+                "persisted": persisted,
+                "llm_rebound": llm_rebound,
+            },
+        }
 
     @app.post("/v1/backup/run")
     async def v1_backup_run(request: Request, api_role: str = Depends(dep_maint)):
@@ -1918,7 +2406,7 @@ def build_app(
         trace_id = str(uuid.uuid4())
         authorization = websocket.headers.get("authorization")
         try:
-            ws_role = _require_ws_auth(token, authorization, config)
+            ws_role = _require_ws_auth(token, authorization, config, dash_auth)
             # Same bar as POST /v1/chat (admin): viewer must not mutate memory / spend LLM.
             if not _role_at_least(ws_role, "admin"):
                 raise ApiError("forbidden", "WebSocket chat requires admin (same as POST /v1/chat)", 403)
@@ -2013,7 +2501,7 @@ def build_app(
         trace_id = str(uuid.uuid4())
         authorization = websocket.headers.get("authorization")
         try:
-            ws_role = _require_ws_auth(token, authorization, config)
+            ws_role = _require_ws_auth(token, authorization, config, dash_auth)
             if not _role_at_least(ws_role, "viewer"):
                 raise ApiError("forbidden", "WebSocket audio requires viewer+", 403)
         except ApiError:
@@ -2087,9 +2575,43 @@ def build_app(
     dash_cfg = config.get("dashboard") or {}
     if bool(dash_cfg.get("enabled", True)):
         dist = _dashboard_dist_path(config)
-        if dist.is_dir() and (dist / "index.html").is_file():
-            app.mount("/", StaticFiles(directory=str(dist), html=True), name="neyra_dashboard")
-            logger.info("Serving dashboard from %s", dist)
+        index = dist / "index.html"
+        if dist.is_dir() and index.is_file():
+            assets_dir = dist / "assets"
+            if assets_dir.is_dir():
+                app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="neyra_assets")
+
+            dist_resolved = dist.resolve()
+
+            def _spa_index() -> FileResponse:
+                return FileResponse(index)
+
+            @app.get("/")
+            async def spa_root():
+                return _spa_index()
+
+            @app.get("/{full_path:path}")
+            async def spa_fallback(full_path: str):
+                """Serve SPA index for client routes (/dashboard, /plugins, …)."""
+                low = (full_path or "").lstrip("/").lower()
+                if (
+                    low == "v1"
+                    or low.startswith("v1/")
+                    or low in ("docs", "redoc", "openapi.json")
+                    or low.startswith(("docs/", "redoc/"))
+                ):
+                    return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+                candidate = (dist / full_path).resolve()
+                try:
+                    candidate.relative_to(dist_resolved)
+                except ValueError:
+                    return JSONResponse(status_code=404, content={"detail": "Not Found"})
+                if candidate.is_file():
+                    return FileResponse(candidate)
+                return _spa_index()
+
+            logger.info("Serving dashboard SPA from %s (assets + index fallback)", dist)
         else:
             logger.warning(
                 "Dashboard enabled but no build at %s — only API (run: cd dashboard && npm install && npm run build).",

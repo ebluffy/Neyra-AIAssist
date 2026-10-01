@@ -1,23 +1,19 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Cpu, KeyRound, Lock, RefreshCw } from 'lucide-react'
-import { Button } from './ui/button'
+import { clearSessionToken, hasDashboardSession, setSessionToken } from '../api'
+import { Button } from '../components/ui/button'
 
-const GATE_KEY = 'neyra_dashboard_gate'
-const MIN_LEN = 8
+const MIN_LEN = 32
 
-export function getDashboardGateKey(): string {
-  return sessionStorage.getItem(GATE_KEY) ?? ''
-}
-
-export function setDashboardGateKey(key: string): void {
-  const s = key.trim()
-  if (s) sessionStorage.setItem(GATE_KEY, s)
-  else sessionStorage.removeItem(GATE_KEY)
+function isBrowserLocalHost(): boolean {
+  if (typeof window === 'undefined') return true
+  const h = (window.location.hostname || '').toLowerCase()
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1'
 }
 
 export function clearDashboardGateKey(): void {
-  sessionStorage.removeItem(GATE_KEY)
+  clearSessionToken()
 }
 
 function generateHexKey(): string {
@@ -26,7 +22,9 @@ function generateHexKey(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-type Mode = 'loading' | 'setup' | 'login' | 'ok'
+type Mode = 'loading' | 'setup' | 'setup_remote_blocked' | 'login' | 'ok'
+
+type AuthOk = { session_token?: string }
 
 async function fetchStatus(): Promise<boolean> {
   const r = await fetch('/v1/dashboard/auth/status', { headers: { Accept: 'application/json' } })
@@ -37,16 +35,26 @@ async function fetchStatus(): Promise<boolean> {
   return Boolean(j.data?.configured)
 }
 
-async function postKey(path: string, key: string): Promise<void> {
+async function postKey(path: string, key: string): Promise<AuthOk> {
   const r = await fetch(path, {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify({ key }),
   })
-  const j = (await r.json()) as { ok?: boolean; error?: { message?: string } }
+  const j = (await r.json()) as {
+    ok?: boolean
+    data?: AuthOk
+    error?: { message?: string }
+  }
   if (!r.ok || j.ok === false) {
     throw new Error(j.error?.message || `HTTP ${r.status}`)
   }
+  return j.data ?? {}
+}
+
+/** Persist short-lived session Bearer in sessionStorage (same lifetime as the tab). */
+function activateSession(sessionToken: string): void {
+  setSessionToken(sessionToken)
 }
 
 export function DashboardAuthGate({ children }: { children: ReactNode }) {
@@ -63,21 +71,33 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
         const configured = await fetchStatus()
         if (cancelled) return
         if (!configured) {
-          setMode('setup')
+          // Public host cannot complete first setup from the SPA (needs console-local or API_TOKEN).
+          setMode(isBrowserLocalHost() ? 'setup' : 'setup_remote_blocked')
           return
         }
-        const saved = getDashboardGateKey()
-        if (!saved) {
-          setMode('login')
+        if (hasDashboardSession()) {
+          // Revalidate session — revoked/expired tokens must not unlock the shell.
+          try {
+            const tok = sessionStorage.getItem('neyra_dashboard_session')?.trim()
+            const r = await fetch('/v1/meta', {
+              headers: {
+                Accept: 'application/json',
+                ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
+              },
+            })
+            if (r.status === 401) {
+              clearDashboardGateKey()
+              setMode('login')
+              return
+            }
+          } catch {
+            // network blip: still allow shell; first API call will fail loudly
+          }
+          setMode('ok')
           return
         }
-        try {
-          await postKey('/v1/dashboard/auth/login', saved)
-          if (!cancelled) setMode('ok')
-        } catch {
-          clearDashboardGateKey()
-          if (!cancelled) setMode('login')
-        }
+        clearDashboardGateKey()
+        setMode('login')
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : String(e))
@@ -110,11 +130,19 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
     }
     setBusy(true)
     try {
-      await postKey('/v1/dashboard/auth/setup', key)
-      setDashboardGateKey(key)
+      const data = await postKey('/v1/dashboard/auth/setup', key)
+      if (!data.session_token) throw new Error('Сервер не выдал session_token')
+      activateSession(data.session_token)
       setMode('ok')
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/403|forbidden|localhost|Bearer|API/i.test(msg)) {
+        setError(
+          `${msg} С публичного URL первый ключ создаётся на сервере (консоль / curl + API_TOKEN), не из этой формы.`,
+        )
+      } else {
+        setError(msg)
+      }
     } finally {
       setBusy(false)
     }
@@ -125,8 +153,9 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
     setError('')
     setBusy(true)
     try {
-      await postKey('/v1/dashboard/auth/login', key)
-      setDashboardGateKey(key)
+      const data = await postKey('/v1/dashboard/auth/login', key)
+      if (!data.session_token) throw new Error('Сервер не выдал session_token')
+      activateSession(data.session_token)
       setMode('ok')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -147,6 +176,52 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
     )
   }
 
+  if (mode === 'setup_remote_blocked') {
+    return (
+      <div className="dash-auth">
+        <div className="dash-auth-card">
+          <div className="dash-auth-brand">
+            <div className="dash-auth-icon">
+              <Cpu size={20} color="#fff" />
+            </div>
+            <div>
+              <h1 className="dash-auth-title">Neyra</h1>
+              <p className="dash-auth-sub">Панель управления</p>
+            </div>
+          </div>
+          <p className="dash-auth-lead">
+            Ключ доступа ещё не создан. С публичного URL первый setup из браузера недоступен (защита от удалённого
+            bootstrap).
+          </p>
+          <p className="dash-auth-hint">
+            Создай ключ на сервере: локальная консоль к API (без CF/X-Real) или{' '}
+            <span style={{ fontFamily: 'var(--mono)' }}>curl</span> с primary{' '}
+            <span style={{ fontFamily: 'var(--mono)' }}>API_TOKEN</span> на{' '}
+            <span style={{ fontFamily: 'var(--mono)' }}>POST /v1/dashboard/auth/setup</span>. После этого обнови
+            страницу и войди этим ключом.
+          </p>
+          <Button
+            disabled={busy}
+            onClick={() => {
+              setBusy(true)
+              void fetchStatus()
+                .then((configured) => {
+                  if (configured) setMode('login')
+                  else setError('Ключ всё ещё не задан на сервере')
+                })
+                .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+                .finally(() => setBusy(false))
+            }}
+            type="button"
+          >
+            {busy ? '…' : 'Проверить снова'}
+          </Button>
+          {error && <p className="dash-auth-error">{error}</p>}
+        </div>
+      </div>
+    )
+  }
+
   const isSetup = mode === 'setup'
 
   return (
@@ -158,7 +233,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
           </div>
           <div>
             <h1 className="dash-auth-title">Neyra</h1>
-            <p className="dash-auth-sub">Control Center</p>
+            <p className="dash-auth-sub">Панель управления</p>
           </div>
         </div>
 
@@ -172,7 +247,6 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
           className="dash-auth-form"
           onSubmit={isSetup ? onSetup : onLogin}
         >
-          {/* Helps password managers bind a site login */}
           <input
             autoComplete="username"
             name="username"
@@ -193,7 +267,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
               className="dash-auth-input"
               name="password"
               onChange={(ev) => setKey(ev.target.value)}
-              placeholder={isSetup ? 'минимум 8 символов или Generate' : 'ключ доступа'}
+              placeholder={isSetup ? 'минимум 32 символа или «Сгенерировать»' : 'ключ доступа'}
               type="password"
               value={key}
             />
@@ -225,14 +299,14 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
             </>
           )}
           {error && <p className="dash-auth-error">{error}</p>}
-          <Button disabled={busy || key.trim().length < MIN_LEN} type="submit">
+          <Button disabled={busy || (isSetup ? key.trim().length < MIN_LEN : key.trim().length < 8)} type="submit">
             {busy ? '…' : isSetup ? 'Создать и войти' : 'Войти'}
           </Button>
         </form>
         <p className="dash-auth-hint">
           {isSetup
-            ? 'Минимум 8 символов. На диске сервера хранится только хеш (PBKDF2). В браузере ключ держится в sessionStorage до «Выйти» — сохраните его в менеджере паролей.'
-            : 'На сервере — только хеш. В этой вкладке ключ в sessionStorage до выхода.'}
+            ? 'Минимум 32 символа. На диске сервера — только хеш (PBKDF2). Локальный setup — с этой машины к API без прокси-заголовков. С публичного URL первый ключ — только через консоль сервера или curl + API_TOKEN.'
+            : 'После входа API ходит с session-токеном (не с сырым ключом). Токен в sessionStorage до выхода / закрытия вкладки.'}
         </p>
       </div>
     </div>
