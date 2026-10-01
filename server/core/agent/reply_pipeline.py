@@ -38,10 +38,10 @@ def sanitize_raw_reply(
         agent._micro_plan_metrics["unclosed_blocks"] += 1
 
     clean_text, sounds = agent._extract_sound_tags(
-        text_no_think, preserve_line_breaks=lyrics_mode
+        text_no_think, preserve_line_breaks=True
     )
     clean_text = agent._ensure_nonempty_reply(
-        text_no_think, clean_text, preserve_line_breaks=lyrics_mode
+        text_no_think, clean_text, preserve_line_breaks=True
     )
     return clean_text, thoughts, sounds
 

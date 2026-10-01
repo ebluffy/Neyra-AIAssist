@@ -92,14 +92,28 @@ async def prepare_turn(
 
     brain_native_vis = bool(vision_images) and agent._uses_brain_native_vision()
     attached_caption = ""
-    if vision_images and not brain_native_vis and agent.llm_vision and agent.llm_vision is not agent.llm_brain:
+    talk_model = str(getattr(agent, "llm_talk_model", "") or "").strip().lower()
+    brain_model = str(getattr(agent, "llm_brain_model", "") or "").strip().lower()
+    # Talk can consume multimodal parts when it shares the VL model (same id or same client).
+    talk_can_vl = bool(vision_images) and agent.llm_vision is not None and (
+        (talk_model and brain_model and talk_model == brain_model)
+        or agent.llm_talk is agent.llm_vision
+    )
+
+    need_talk_caption = bool(vision_images) and agent.llm_vision is not None and (
+        # Separate VL caption lane (legacy)
+        (not brain_native_vis and agent.llm_vision is not agent.llm_brain)
+        # Brain-native VL but talk is a different text-only model — talk must get a caption
+        or (brain_native_vis and not talk_can_vl)
+    )
+    if need_talk_caption:
         try:
             attached_caption = await agent._caption_vision_images(
                 user_message, vision_images, speaker_label=speaker_label
             )
         except Exception as e:
             logger.warning("VL caption (%s): ошибка — %s", log_lane, e)
-    elif vision_images and not brain_native_vis and not agent.llm_vision:
+    elif vision_images and not agent.llm_vision:
         logger.warning(
             "Изображения в сообщении (%s), но vision/VL не настроено — ответ только по тексту.",
             log_lane,
@@ -107,8 +121,9 @@ async def prepare_turn(
 
     caption_ok = (attached_caption or "").strip()
     if brain_native_vis:
-        talk_vm = None
-        has_vis_prompt = False
+        # User-facing talk must see pixels when it is VL-capable; otherwise caption above.
+        talk_vm = vision_images if talk_can_vl else None
+        has_vis_prompt = bool(talk_vm)
     else:
         talk_vm = None if (vision_images and agent.llm_vision) else vision_images
         has_vis_prompt = bool(vision_images) and not caption_ok and agent.llm_vision is None

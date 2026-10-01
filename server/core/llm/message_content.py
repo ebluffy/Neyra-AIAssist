@@ -36,5 +36,5 @@ def message_content_to_text(content: Any) -> str:
                     parts.append(str(t))
             elif "text" in block and block.get("text"):
                 parts.append(str(block["text"]))
-        return "".join(parts)
+        return "\n".join(parts)
     return str(content)

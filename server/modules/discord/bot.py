@@ -867,6 +867,14 @@ class NeyraDiscordBot(discord.Client):
         self._last_response[user_id] = now
 
         vision_imgs = await self._collect_image_attachments(message)
+        if message.attachments and not vision_imgs:
+            logger.info(
+                "Discord: %s attachment(s) but 0 vision images (disabled/mime/size) | files=%s",
+                len(message.attachments),
+                [f"{a.filename}:{a.content_type}:{a.size}" for a in message.attachments[:6]],
+            )
+        elif vision_imgs:
+            logger.info("Discord: vision attachments ready | n=%s", len(vision_imgs))
         content = message.content
         for mention in message.mentions:
             content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
@@ -1207,10 +1215,10 @@ class NeyraDiscordBot(discord.Client):
                         return
 
                 final_text = done_data.get("text", full_raw).strip() or "*(пустой ответ)*"
-                if lyrics_mode:
-                    final_text = (
-                        final_text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
-                    )
+                # Models sometimes emit literal \\n; always normalize before Discord send.
+                final_text = (
+                    final_text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+                )
                 if lyrics_mode:
                     parts = chunk_codeblock_message(final_text, limit=1900)
                 else:
@@ -1252,9 +1260,8 @@ class NeyraDiscordBot(discord.Client):
         )
         text = re.sub(r"<(?:redacted_thinking|think|thought)>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r"</?(?:redacted_thinking|think|thought)>", "", text, flags=re.IGNORECASE)
-        if lyrics_mode:
-            # Models sometimes emit the two-char sequence \n instead of real newlines.
-            text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+        # Models sometimes emit the two-char sequence \n instead of real newlines.
+        text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
         if not lyrics_mode:
             text = re.sub(r"\[[^\]]*\]", "", text).strip()
         else:

@@ -408,7 +408,7 @@ def _test_message_content_to_text() -> None:
     from core.llm.message_content import message_content_to_text
 
     assert message_content_to_text("hi") == "hi"
-    assert message_content_to_text([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "ab"
+    assert message_content_to_text([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "a\nb"
     assert message_content_to_text([{"type": "output_text", "text": "x"}]) == "x"
     assert message_content_to_text(None) == ""
 
