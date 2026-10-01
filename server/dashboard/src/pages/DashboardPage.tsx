@@ -26,6 +26,47 @@ function statusLabel(raw: string): string {
   return raw
 }
 
+function collectHealthIssues(health: HealthData | null): string[] {
+  if (!health) return []
+  const issues: string[] = []
+  const backend = health.backend as Record<string, unknown> | undefined
+  if (backend && backend.ok === false) {
+    const err = backend.error != null ? String(backend.error) : ''
+    const providers = backend.providers
+    if (Array.isArray(providers) && providers.length) {
+      for (const p of providers) {
+        if (!p || typeof p !== 'object') continue
+        const row = p as Record<string, unknown>
+        if (row.ok === false) {
+          issues.push(
+            `LLM ${String(row.provider ?? '?')}: HTTP ${String(row.status_code ?? '—')}${row.url ? ` (${row.url})` : ''}`,
+          )
+        }
+      }
+    }
+    if (!issues.some((x) => x.startsWith('LLM ')) && err) {
+      issues.push(`LLM-бэкенд: ${err}`)
+    } else if (!issues.length) {
+      issues.push('LLM-бэкенд: проверка не прошла')
+    }
+  }
+  const storage = health.storage as Record<string, unknown> | undefined
+  if (storage && storage.ok === false) {
+    const missing = Array.isArray(storage.missing) ? storage.missing.map(String) : []
+    issues.push(missing.length ? `Хранилище: нет ${missing.join(', ')}` : 'Хранилище: ошибка')
+  }
+  const integrations = health.integrations as Record<string, unknown> | undefined
+  if (integrations && integrations.ok === false) {
+    const list = Array.isArray(integrations.issues) ? integrations.issues.map(String) : []
+    issues.push(list.length ? `Интеграции: ${list.join('; ')}` : 'Интеграции: ошибка')
+  }
+  const heal = health.self_healing as Record<string, unknown> | undefined
+  if (heal && heal.ok === false) {
+    issues.push('Самолечение модулей: ошибка')
+  }
+  return issues
+}
+
 function formatUptime(sec: unknown): string {
   const n = typeof sec === 'number' ? sec : Number(sec)
   if (!Number.isFinite(n) || n < 0) return '—'
@@ -134,6 +175,7 @@ export function DashboardPage() {
   const statusClass = isOk ? 'status-ok' : isUnknown ? 'status-idle' : 'status-warn'
   const dotClass = isOk ? 'status-dot-ok' : isUnknown ? 'status-dot-idle' : 'status-dot-warn'
   const version = (health?.version as string | undefined) ?? (health?.api_version as string | undefined)
+  const healthIssues = collectHealthIssues(health)
 
   const roleLabels: Record<string, string> = {
     talk: 'речь',
@@ -171,6 +213,13 @@ export function DashboardPage() {
                 <span className={`status-dot ${dotClass}`} />
                 {statusLabel(rawStatus)}
               </span>
+              {healthIssues.length > 0 && (
+                <ul style={{ margin: 0, paddingLeft: '1.1rem', fontSize: '0.78rem', color: 'var(--amber)', lineHeight: 1.45 }}>
+                  {healthIssues.map((msg) => (
+                    <li key={msg}>{msg}</li>
+                  ))}
+                </ul>
+              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', padding: '0.5rem 0.75rem', background: 'rgba(9,9,15,0.6)', borderRadius: 8, border: '1px solid var(--border)' }}>
                 <span style={{ color: 'var(--muted)' }}>Аптайм</span>
                 <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>

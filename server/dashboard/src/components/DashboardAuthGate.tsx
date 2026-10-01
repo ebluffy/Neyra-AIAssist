@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Cpu, KeyRound, Lock, RefreshCw } from 'lucide-react'
-import { clearSessionToken, getToken, setSessionToken } from '../api'
+import { clearSessionToken, hasDashboardSession, setSessionToken } from '../api'
 import { Button } from './ui/button'
 
 const GATE_FLAG = 'neyra_dashboard_gate_ok'
@@ -71,9 +71,8 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
           setMode('setup')
           return
         }
-        // Session Bearer lives in sessionStorage; if missing — show login.
-        const hasSession = Boolean(sessionStorage.getItem(GATE_FLAG))
-        if (hasSession && getToken().trim()) {
+        // Require an actual session token in sessionStorage (not Settings API_TOKEN).
+        if (hasDashboardSession()) {
           setMode('ok')
           return
         }

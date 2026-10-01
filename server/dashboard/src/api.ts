@@ -35,6 +35,14 @@ export function setSessionToken(t: string): void {
   else sessionStorage.removeItem(SESSION_TOKEN_KEY)
 }
 
+export function getSessionToken(): string {
+  return sessionStorage.getItem(SESSION_TOKEN_KEY)?.trim() ?? ''
+}
+
+export function hasDashboardSession(): boolean {
+  return Boolean(getSessionToken())
+}
+
 function headers(): HeadersInit {
   const h: Record<string, string> = { Accept: 'application/json' }
   const tok = getToken().trim()
