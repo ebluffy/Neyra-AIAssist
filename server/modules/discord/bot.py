@@ -307,7 +307,9 @@ class NeyraDiscordBot(discord.Client):
         self.reflection = reflection
         disc_cfg = config.get("discord", {}) or {}
 
-        self.active_channel_ids: set[int] = {int(c) for c in disc_cfg.get("channel_ids", [])}
+        from core.runtime.snowflake import parse_snowflake, parse_snowflake_list
+
+        self.active_channel_ids: set[int] = set(parse_snowflake_list(disc_cfg.get("channel_ids", [])))
         self.mention_only: bool = bool(disc_cfg.get("mention_only", False))
         self.stream_edit_interval: float = float(disc_cfg.get("stream_edit_interval", 0.8))
         self.stream_output_mode: str = str(disc_cfg.get("stream_output_mode", "stream")).strip().lower()
@@ -315,6 +317,7 @@ class NeyraDiscordBot(discord.Client):
         self._last_response: dict[int, float] = {}
         self._music_waiters: dict[str, asyncio.Future] = {}
         self._music_timeout_s: float = float(disc_cfg.get("music_result_timeout_seconds", 25.0))
+        self._proactive_channel_id = parse_snowflake((disc_cfg.get("proactive") or {}).get("channel_id")) if isinstance(disc_cfg.get("proactive"), dict) else None
 
         self.agent.event_bus.subscribe(MUSIC_RESULT, self._on_music_result)
 
@@ -325,11 +328,8 @@ class NeyraDiscordBot(discord.Client):
         return f"http://{host}:{port}".rstrip("/")
 
     def _resolve_proactive_text_channel(self) -> Optional[discord.TextChannel]:
-        disc = self.config.get("discord") or {}
-        proactive = disc.get("proactive") if isinstance(disc.get("proactive"), dict) else {}
-        raw_c = proactive.get("channel_id")
-        if raw_c is not None and str(raw_c).strip().lower() not in ("", "null", "none"):
-            ch = self.get_channel(int(raw_c))
+        if self._proactive_channel_id is not None:
+            ch = self.get_channel(self._proactive_channel_id)
             if isinstance(ch, discord.TextChannel):
                 return ch
         for cid in sorted(self.active_channel_ids):
@@ -837,13 +837,16 @@ class NeyraDiscordBot(discord.Client):
                 pass
 
         disc = self.config.get("discord", {}) or {}
+        from core.runtime.snowflake import parse_snowflake
+
         raw_gid = disc.get("slash_sync_guild_id")
         try:
-            if raw_gid is not None and str(raw_gid).strip().lower() not in ("", "null", "none"):
-                guild = discord.Object(id=int(raw_gid))
+            gid = parse_snowflake(raw_gid)
+            if gid is not None:
+                guild = discord.Object(id=gid)
                 self.tree.copy_global_to(guild=guild)
                 await self.tree.sync(guild=guild)
-                logger.info("Slash-команды синхронизированы для гильдии %s", raw_gid)
+                logger.info("Slash-команды синхронизированы для гильдии %s", gid)
             else:
                 await self.tree.sync()
                 logger.info("Slash-команды синхронизированы глобально")

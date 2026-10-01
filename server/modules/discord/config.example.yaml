@@ -8,6 +8,7 @@
 # RU: Вкл/выкл — в modules/discord/plugin.yaml (`enabled:`).
 
 # EN: List of channel IDs where bot can answer without mention.
+# RU: ID каналов без @mention. Храните как строки — JS Number ломает snowflake (>2^53).
 channel_ids: []
 
 # EN: true = answer only when bot is mentioned.

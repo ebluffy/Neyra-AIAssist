@@ -1822,6 +1822,8 @@ def build_app(
             raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
             if isinstance(raw, dict):
                 cfg = raw
+        from core.runtime.snowflake import json_safe_config
+
         return {
             "ok": True,
             "trace_id": trace_id,
@@ -1837,7 +1839,7 @@ def build_app(
                     "main_script": m.main_script,
                     "plugin_dir": str(m.plugin_dir),
                 },
-                "config": cfg,
+                "config": json_safe_config(cfg),
             },
         }
 
@@ -1905,7 +1907,13 @@ def build_app(
             raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
             if isinstance(raw, dict):
                 cfg = raw
-        return {"ok": True, "trace_id": trace_id, "data": {"plugin_id": m.id, "config": cfg}}
+        from core.runtime.snowflake import json_safe_config
+
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"plugin_id": m.id, "config": json_safe_config(cfg)},
+        }
 
     @app.put("/v1/plugins/{plugin_id}/config")
     async def v1_plugin_config_put(plugin_id: str, body: PluginConfigUpdateRequest, request: Request, _: None = Depends(dep_admin)):
@@ -1915,8 +1923,12 @@ def build_app(
         if m is None:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
         cfg_path = _plugin_config_path(m)
+        from core.runtime.snowflake import json_safe_config
+
+        # Persist snowflakes as strings so a later dashboard JSON round-trip cannot corrupt them.
+        safe_cfg = json_safe_config(body.config or {})
         cfg_path.write_text(
-            yaml.safe_dump(body.config or {}, allow_unicode=True, sort_keys=False),
+            yaml.safe_dump(safe_cfg, allow_unicode=True, sort_keys=False),
             encoding="utf-8",
         )
         op_id = f"op_{uuid.uuid4().hex[:12]}"

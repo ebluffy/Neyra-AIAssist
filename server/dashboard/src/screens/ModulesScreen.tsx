@@ -10,6 +10,16 @@ import { Skeleton } from '../components/ui/skeleton'
 
 type PluginDetails = { plugin: PluginRow; config: Record<string, unknown> }
 
+/** Quote 16+ digit integer literals so JSON.parse does not corrupt Discord snowflakes. */
+function parsePluginConfigJson(text: string): Record<string, unknown> {
+  const quoted = text.replace(/(?<!["\w])(-?\d{16,})(?![\d."\w])/g, '"$1"')
+  const parsed = JSON.parse(quoted) as unknown
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Конфиг должен быть JSON-объектом')
+  }
+  return parsed as Record<string, unknown>
+}
+
 export function ModulesScreen() {
   const [plugins, setPlugins] = useState<PluginRow[]>([])
   const [selected, setSelected] = useState('')
@@ -103,7 +113,7 @@ export function ModulesScreen() {
     setError(null)
     setStatus('Сохраняю...')
     try {
-      const parsed = JSON.parse(configText) as Record<string, unknown>
+      const parsed = parsePluginConfigJson(configText)
       await apiPut<ApiEnvelope<{ operation_id: string }>>(`/v1/plugins/${selected}/config`, { config: parsed })
       setStatus('Конфиг сохранён')
       await loadDetails(selected)

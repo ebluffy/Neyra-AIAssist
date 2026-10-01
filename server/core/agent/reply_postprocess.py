@@ -38,7 +38,23 @@ def extract_sound_tags(text: str, *, preserve_line_breaks: bool = True) -> tuple
         # Legacy: compact blank lines only — never squash all whitespace to one line.
         clean = re.sub(r"\n{2,}", "\n", clean).strip()
     clean = clean.replace('""', '"').replace("''", "'")
+    clean = _strip_model_garbage_tail(clean)
     return clean, tags
+
+
+def _strip_model_garbage_tail(text: str) -> str:
+    """Drop trailing model junk (end tokens / sudden CJK run after mostly Cyrillic/Latin)."""
+    t = (text or "").strip()
+    if not t:
+        return t
+    t = re.sub(r"(?:<\|endoftext\|>|<\|im_end\|>|</s>)+\s*$", "", t, flags=re.IGNORECASE).rstrip()
+    # If body is primarily Cyrillic/Latin and ends with a Han run, drop the Han run.
+    cyr_lat = len(re.findall(r"[A-Za-zА-Яа-яЁё0-9]", t))
+    if cyr_lat >= 20:
+        t2 = re.sub(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]{2,}\s*$", "", t).rstrip()
+        if t2 and t2 != t:
+            t = t2
+    return t
 
 
 def extract_think_blocks(text: str) -> tuple[str, str]:
