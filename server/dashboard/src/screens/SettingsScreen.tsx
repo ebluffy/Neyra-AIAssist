@@ -6,6 +6,7 @@ import { Button } from '../components/ui/button'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { setNavigationBlocker } from '../lib/navigation-guard'
 
 type FieldDef = { key: string; label: string; kind?: 'text' | 'bool' | 'provider' }
 
@@ -187,6 +188,14 @@ export function SettingsScreen() {
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [anyDirty])
+
+  useEffect(() => {
+    setNavigationBlocker(() => {
+      if (!anyDirty) return true
+      return window.confirm('Есть несохранённые изменения в Настройках. Уйти без применения?')
+    })
+    return () => setNavigationBlocker(null)
   }, [anyDirty])
 
   function selectTab(id: string) {

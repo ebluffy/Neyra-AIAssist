@@ -98,6 +98,7 @@ server/modules/discord/lavalink/Lavalink.jar
 server/modules/discord/lavalink/plugins/*.jar
 server/modules/discord/lavalink/logs/
 server/modules/discord/lavalink/lavalink.log
+server/modules/discord/lavalink/neyra-managed-lavalink.pid
 interfaces/discord/lavalink/application.yml
 interfaces/discord/lavalink/plugins/*.jar
 interfaces/discord/lavalink/logs/

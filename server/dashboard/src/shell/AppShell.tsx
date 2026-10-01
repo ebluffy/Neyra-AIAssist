@@ -16,6 +16,7 @@ import {
 import { apiGet, getSessionToken } from '../api'
 import type { ApiEnvelope } from '../api'
 import { clearDashboardGateKey } from './DashboardAuthGate'
+import { allowNavigation } from '../lib/navigation-guard'
 import { DocsScreen } from '../screens/DocsScreen'
 import { MemoryScreen } from '../screens/MemoryScreen'
 import { ModulesScreen } from '../screens/ModulesScreen'
@@ -157,7 +158,13 @@ export function AppShell() {
             <NavLink
               key={to}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
-              onClick={() => setOpen(false)}
+              onClick={(e) => {
+                if (!allowNavigation()) {
+                  e.preventDefault()
+                  return
+                }
+                setOpen(false)
+              }}
               to={to}
             >
               <Icon aria-hidden className="nav-item-icon" size={18} />
@@ -176,7 +183,7 @@ export function AppShell() {
       </aside>
 
       <main className="main-area" id="main-content" tabIndex={-1}>
-        <ErrorBoundary>
+        <ErrorBoundary key={location.pathname}>
           <Routes>
             <Route element={<Navigate replace to="/status" />} path="/" />
             <Route element={<Navigate replace to="/status" />} path="/home" />

@@ -1843,6 +1843,15 @@ def build_app(
         ok = loader.set_enabled(plugin_id, body.enabled)
         if not ok:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        # Discord owns managed Lavalink — disable kills the JVM so music does not linger.
+        if str(plugin_id).strip().lower() == "discord" and not body.enabled:
+            try:
+                from modules.discord.lavalink_process import stop_managed_lavalink
+
+                stop_detail = stop_managed_lavalink(root / "modules" / "discord")
+                logger.info("plugin discord disabled → managed Lavalink: %s", stop_detail)
+            except Exception:
+                logger.exception("Failed to stop managed Lavalink after discord disable")
         op_id = f"op_{uuid.uuid4().hex[:12]}"
         plugin_ops[op_id] = {
             "operation_id": op_id,

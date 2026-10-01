@@ -1,16 +1,17 @@
-"""Start local Lavalink.jar when the Discord module is enabled.
+"""Start/stop local Lavalink.jar with the Discord module.
 
-Historically Lavalink was started by hand (no systemd unit). Soft-restarts of
-``neyra.service`` never brought it back, so wavelink spammed connection errors.
-When ``discord.music.managed_lavalink`` is true (default) and a node points at
-loopback, this module ensures the JAR is listening before music preflight.
+When ``discord.music.managed_lavalink`` is true (default) and a node URI is
+loopback, Discord bootstrap ensures the JAR listens before music preflight.
+Disabling the Discord plugin via Control API stops the managed JVM.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -23,7 +24,7 @@ logger = logging.getLogger("neyra.discord.lavalink")
 
 _LOCK = threading.Lock()
 _OWNED_PROC: Optional[subprocess.Popen] = None
-_OWNED_PID_FILE: Optional[Path] = None
+_DEFAULT_PASSWORD = "youshallnotpass"
 
 
 def _music_cfg(config: dict[str, Any]) -> dict[str, Any]:
@@ -51,6 +52,11 @@ def _local_node(music: dict[str, Any]) -> Optional[dict[str, Any]]:
     return None
 
 
+def _node_password(node: dict[str, Any]) -> str:
+    pwd = str(node.get("password") or "").strip()
+    return pwd or _DEFAULT_PASSWORD
+
+
 def _port_open(host: str, port: int, timeout: float = 0.4) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -73,18 +79,6 @@ def _resolve_java(music: dict[str, Any]) -> Optional[str]:
 
 def _lavalink_dir(plugin_dir: Path) -> Path:
     return (plugin_dir / "lavalink").resolve()
-
-
-def _ensure_application_yml(lava_dir: Path) -> Path:
-    yml = lava_dir / "application.yml"
-    if yml.is_file():
-        return yml
-    example = lava_dir / "application.example.yml"
-    if example.is_file():
-        yml.write_bytes(example.read_bytes())
-        logger.info("discord.lavalink: copied application.example.yml → application.yml")
-        return yml
-    raise FileNotFoundError(f"No application.yml under {lava_dir}")
 
 
 def _pid_file(lava_dir: Path) -> Path:
@@ -118,12 +112,79 @@ def _wait_port(host: str, port: int, timeout_s: float) -> bool:
     return False
 
 
-def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[bool, str]:
-    """Ensure local Lavalink is up when Discord music expects a loopback node.
+def _terminate_pid(pid: int, *, wait_s: float = 8.0) -> None:
+    if not _pid_alive(pid):
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.2)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
 
-    Returns ``(ok, detail)``. ``ok=False`` means music will likely fail until fixed.
-    """
-    global _OWNED_PROC, _OWNED_PID_FILE
+
+def _ensure_application_yml(lava_dir: Path, *, password: str) -> Path:
+    """Create application.yml from example if missing; align password + loopback bind."""
+    yml = lava_dir / "application.yml"
+    if yml.is_file():
+        return yml
+    example = lava_dir / "application.example.yml"
+    if not example.is_file():
+        raise FileNotFoundError(f"No application.yml under {lava_dir}")
+    text = example.read_text(encoding="utf-8")
+    text, n_pwd = re.subn(
+        r'(?m)^(\s*password:\s*")[^"]*(")',
+        rf'\1{password}\2',
+        text,
+        count=1,
+    )
+    text, n_addr = re.subn(
+        r'(?m)^(\s*address:\s*)\S+',
+        r'\g<1>127.0.0.1',
+        text,
+        count=1,
+    )
+    yml.write_text(text, encoding="utf-8")
+    logger.info(
+        "discord.lavalink: created application.yml from example (password_set=%s loopback_bind=%s)",
+        n_pwd > 0,
+        n_addr > 0,
+    )
+    return yml
+
+
+def _spawn_jar(java: str, jar: Path, lava_dir: Path, log_path: Path) -> subprocess.Popen:
+    log_f = open(log_path, "a", encoding="utf-8", errors="replace")
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+            subprocess, "DETACHED_PROCESS", 0
+        )
+    try:
+        return subprocess.Popen(
+            [java, "-jar", str(jar)],
+            cwd=str(lava_dir),
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=(os.name != "nt"),
+            creationflags=creationflags,
+        )
+    except Exception:
+        log_f.close()
+        raise
+
+
+def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[bool, str]:
+    """Ensure local Lavalink is up when Discord music expects a loopback node."""
+    global _OWNED_PROC
 
     music = _music_cfg(config)
     if music.get("managed_lavalink", True) is False:
@@ -137,6 +198,8 @@ def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[b
     parsed = urlparse(uri)
     host = parsed.hostname or "127.0.0.1"
     port = int(parsed.port or 2333)
+    password = _node_password(node)
+    wait_s = float(music.get("managed_lavalink_ready_seconds") or 90)
 
     if _port_open(host, port):
         return True, f"already listening on {host}:{port}"
@@ -154,58 +217,41 @@ def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[b
         return False, "java not found on PATH (install JRE 17+ or set discord.music.java_path)"
 
     try:
-        _ensure_application_yml(lava_dir)
+        _ensure_application_yml(lava_dir, password=password)
     except FileNotFoundError as e:
         return False, str(e)
 
     pid_path = _pid_file(lava_dir)
-    existing = _read_pid(pid_path)
-    if existing and _pid_alive(existing):
-        # Process alive but port still closed — wait a bit (slow JVM boot).
-        wait_s = float(music.get("managed_lavalink_ready_seconds") or 90)
-        if _wait_port(host, port, min(wait_s, 45.0)):
-            return True, f"existing managed pid={existing} ready on {host}:{port}"
-        logger.warning(
-            "discord.lavalink: pid %s alive but %s:%s not open yet — will try new start if dead later",
-            existing,
-            host,
-            port,
-        )
-
     log_path = lava_dir / "lavalink.log"
-    wait_s = float(music.get("managed_lavalink_ready_seconds") or 90)
 
     with _LOCK:
         if _port_open(host, port):
             return True, f"already listening on {host}:{port}"
 
-        try:
-            log_f = open(log_path, "a", encoding="utf-8", errors="replace")
-        except OSError as e:
-            return False, f"cannot open {log_path}: {e}"
+        existing = _read_pid(pid_path)
+        if existing and _pid_alive(existing):
+            # Wait full budget — never spawn a second JVM while the first is alive.
+            if _wait_port(host, port, wait_s):
+                return True, f"existing managed pid={existing} ready on {host}:{port}"
+            logger.warning(
+                "discord.lavalink: pid %s alive but %s:%s never opened — terminating before restart",
+                existing,
+                host,
+                port,
+            )
+            _terminate_pid(existing)
+            try:
+                if pid_path.is_file():
+                    pid_path.unlink()
+            except OSError:
+                pass
 
         try:
-            # Detached session: soft-restart of Neyra must not kill Lavalink.
-            creationflags = 0
-            if os.name == "nt":
-                creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
-                    subprocess, "DETACHED_PROCESS", 0
-                )
-            proc = subprocess.Popen(
-                [java, "-jar", str(jar)],
-                cwd=str(lava_dir),
-                stdout=log_f,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                start_new_session=(os.name != "nt"),
-                creationflags=creationflags,
-            )
+            proc = _spawn_jar(java, jar, lava_dir, log_path)
         except OSError as e:
-            log_f.close()
             return False, f"failed to spawn Lavalink: {e}"
 
         _OWNED_PROC = proc
-        _OWNED_PID_FILE = pid_path
         try:
             pid_path.write_text(str(proc.pid), encoding="utf-8")
         except OSError:
@@ -221,7 +267,6 @@ def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[b
     if _wait_port(host, port, wait_s):
         return True, f"started pid={proc.pid} ready on {host}:{port}"
 
-    # Still booting or crashed — surface last log lines.
     tail = ""
     try:
         text = log_path.read_text(encoding="utf-8", errors="replace")
@@ -234,29 +279,48 @@ def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[b
     return False, detail
 
 
-def stop_managed_lavalink_if_owned() -> None:
-    """Best-effort stop of a process we started (optional; not used on soft restart)."""
-    global _OWNED_PROC, _OWNED_PID_FILE
+def stop_managed_lavalink(plugin_dir: Path | None = None) -> str:
+    """Stop managed Lavalink (in-memory handle and/or pid file). Safe if nothing running."""
+    global _OWNED_PROC
+
+    lava_dir = _lavalink_dir(plugin_dir or Path(__file__).resolve().parent)
+    pid_path = _pid_file(lava_dir)
+    killed: list[str] = []
+
     with _LOCK:
         proc = _OWNED_PROC
-        pid_path = _OWNED_PID_FILE
         _OWNED_PROC = None
-        _OWNED_PID_FILE = None
-    if proc is None and pid_path is not None:
-        pid = _read_pid(pid_path)
-        if pid and _pid_alive(pid):
-            try:
-                os.kill(pid, 15)
-            except OSError:
-                pass
-        return
-    if proc is None:
-        return
-    try:
-        proc.terminate()
-        proc.wait(timeout=8)
-    except Exception:
+        file_pid = _read_pid(pid_path)
+
+    if proc is not None and proc.poll() is None:
         try:
-            proc.kill()
+            proc.terminate()
+            proc.wait(timeout=8)
+            killed.append(f"proc={proc.pid}")
         except Exception:
-            pass
+            try:
+                proc.kill()
+                killed.append(f"proc_kill={proc.pid}")
+            except Exception:
+                pass
+
+    if file_pid and _pid_alive(file_pid):
+        _terminate_pid(file_pid)
+        killed.append(f"pidfile={file_pid}")
+
+    try:
+        if pid_path.is_file():
+            pid_path.unlink()
+    except OSError:
+        pass
+
+    if killed:
+        msg = "stopped " + ",".join(killed)
+        logger.info("discord.lavalink: %s", msg)
+        return msg
+    return "nothing to stop"
+
+
+# Back-compat alias
+def stop_managed_lavalink_if_owned() -> None:
+    stop_managed_lavalink()

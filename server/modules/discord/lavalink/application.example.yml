@@ -1,6 +1,7 @@
 server:
   port: 2333
-  address: 0.0.0.0
+  # Managed local default: loopback only. Change only if you intentionally expose Lavalink.
+  address: 127.0.0.1
   http2:
     enabled: false
 
@@ -14,7 +15,8 @@ lavalink:
     - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
       snapshot: false
   server:
-    password: "CHANGE_ME"
+    # Must match discord.music.nodes[].password (default youshallnotpass).
+    password: "youshallnotpass"
     sources:
       youtube: false
       bandcamp: false

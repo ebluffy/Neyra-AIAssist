@@ -9,13 +9,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from modules.discord.lavalink_process import ensure_managed_lavalink  # noqa: E402
+from modules.discord.lavalink_process import (  # noqa: E402
+    _ensure_application_yml,
+    ensure_managed_lavalink,
+    stop_managed_lavalink,
+)
 
 
 def main() -> int:
     errs: list[str] = []
 
-    # Disabled → ok without jar
     ok, detail = ensure_managed_lavalink(
         {"discord": {"music": {"managed_lavalink": False, "nodes": [{"uri": "http://127.0.0.1:2333"}]}}},
         ROOT / "modules" / "discord",
@@ -23,7 +26,6 @@ def main() -> int:
     if not ok or "disabled" not in detail:
         errs.append(f"disabled want ok+disabled, got {ok!r} {detail!r}")
 
-    # Remote-only node → skip
     ok, detail = ensure_managed_lavalink(
         {"discord": {"music": {"nodes": [{"uri": "http://10.0.0.5:2333"}]}}},
         ROOT / "modules" / "discord",
@@ -31,16 +33,31 @@ def main() -> int:
     if not ok or "skip" not in detail:
         errs.append(f"remote want ok+skip, got {ok!r} {detail!r}")
 
-    # Missing jar under empty plugin dir → fail clearly
     with tempfile.TemporaryDirectory() as td:
         plugin = Path(td)
-        (plugin / "lavalink").mkdir()
+        lava = plugin / "lavalink"
+        lava.mkdir()
         ok, detail = ensure_managed_lavalink(
             {"discord": {"music": {"nodes": [{"uri": "http://127.0.0.1:2333"}]}}},
             plugin,
         )
         if ok or "Lavalink.jar" not in detail:
             errs.append(f"missing jar want fail mention jar, got {ok!r} {detail!r}")
+
+        # Copy-from-example aligns password + loopback bind
+        example = ROOT / "modules" / "discord" / "lavalink" / "application.example.yml"
+        if example.is_file():
+            (lava / "application.example.yml").write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+            yml = _ensure_application_yml(lava, password="youshallnotpass")
+            text = yml.read_text(encoding="utf-8")
+            if 'password: "youshallnotpass"' not in text:
+                errs.append("copied yml password not aligned")
+            if "address: 127.0.0.1" not in text and "address:127.0.0.1" not in text:
+                errs.append(f"copied yml address not loopback: {text[:200]!r}")
+
+        msg = stop_managed_lavalink(plugin)
+        if "nothing" not in msg and "stopped" not in msg:
+            errs.append(f"stop unexpected: {msg!r}")
 
     if errs:
         print("FAIL")
