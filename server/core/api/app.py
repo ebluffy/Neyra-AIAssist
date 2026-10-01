@@ -1227,14 +1227,10 @@ def build_app(
         if raw.startswith("Bearer "):
             got = raw.removeprefix("Bearer ").strip()
             api = _api_cfg(config)
-            for expected in (
-                str(api.get("token") or "").strip(),
-                str(api.get("maint_token") or "").strip(),
-                str(api.get("viewer_token") or "").strip(),
-            ):
-                if expected and _token_eq(got, expected):
-                    api_ok = True
-                    break
+            # Remote bootstrap: only primary API_TOKEN (not viewer/maint — avoids privilege escalation).
+            primary = str(api.get("token") or "").strip()
+            if primary and _token_eq(got, primary):
+                api_ok = True
         if not local_ok and not api_ok:
             raise ApiError(
                 "forbidden",
@@ -2090,15 +2086,19 @@ def build_app(
 
     @app.post("/v1/config/update")
     async def v1_config_update(body: ConfigUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
-        """Apply allowlisted keys: in-memory + layer YAML + rebind LLM clients when llm.* changes."""
+        """Apply allowlisted keys: persist to layer YAML first, then runtime + LLM rebind."""
         trace_id = _trace_id(request)
         _audit("config_update", trace_id, api_role, {"keys": list(body.updates.keys())})
         updates_applied: dict[str, Any] = {}
         for k, v in body.updates.items():
             if k not in CONFIG_RUNTIME_ALLOWLIST:
                 raise ApiError("forbidden_update", f"Path not allowed: {k}", 403)
-            _safe_set(config, k, v)
             updates_applied[k] = v
+
+        # Snapshot for rollback if disk write or LLM rebind fails after partial in-memory apply.
+        rollback: dict[str, Any] = {
+            k: _config_get_path(config, k) for k in updates_applied
+        }
 
         persisted: list[str] = []
         if updates_applied:
@@ -2108,7 +2108,10 @@ def build_app(
                 persisted = persist_allowlisted_updates(root, updates_applied)
             except Exception as e:
                 logger.exception("Failed to persist runtime config updates")
-                raise ApiError("persist_failed", f"Config apply ok in memory, disk write failed: {e}", 500) from e
+                raise ApiError("persist_failed", f"Disk write failed (runtime unchanged): {e}", 500) from e
+
+        for k, v in updates_applied.items():
+            _safe_set(config, k, v)
 
         llm_rebound = False
         if any(str(k).startswith("llm.") for k in updates_applied):
@@ -2116,10 +2119,15 @@ def build_app(
                 agent._setup_llm()
                 llm_rebound = True
             except Exception as e:
-                logger.exception("LLM rebind after config update failed")
+                logger.exception("LLM rebind after config update failed; rolling back memory")
+                for k, old in rollback.items():
+                    if old is None:
+                        # best-effort: set previous missing as empty-ish skip — leave key if newly created
+                        continue
+                    _safe_set(config, k, old)
                 raise ApiError(
                     "llm_rebind_failed",
-                    f"Config saved, but LLM clients were not rebuilt: {e}",
+                    f"Config saved on disk, but LLM clients were not rebuilt (runtime rolled back): {e}",
                     500,
                 ) from e
 

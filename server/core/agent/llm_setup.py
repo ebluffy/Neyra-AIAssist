@@ -16,6 +16,27 @@ DEPRECATED_OPENROUTER_MODELS: dict[str, str] = {
 }
 
 
+def _supports_use_responses_api() -> bool:
+    try:
+        from langchain_openai import ChatOpenAI
+
+        fields = getattr(ChatOpenAI, "model_fields", None)
+        if isinstance(fields, dict) and "use_responses_api" in fields:
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _force_chat_completions(provider: str) -> dict[str, Any]:
+    """Keep OpenAI-compatible hosts on /chat/completions (not /responses)."""
+    if (provider or "").strip().lower() == "openai":
+        return {}
+    if _supports_use_responses_api():
+        return {"use_responses_api": False}
+    return {}
+
+
 def setup_llm_connection(agent: Any) -> None:
     """Resolve default + per-role provider connections and build ChatOpenAI clients."""
     from core.llm.profile import resolve_openai_compatible_connection
@@ -122,21 +143,23 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         extra_body["include_reasoning"] = bool(cfg.get("include_reasoning"))
 
     hdr_talk = dict(conn_talk.default_headers)
-    agent.llm_talk = ChatOpenAI(
-        base_url=conn_talk.base_url,
-        api_key=conn_talk.api_key,
-        model=talk_model,
-        temperature=cfg.get("temperature", 0.75),
-        top_p=float(cfg.get("top_p", 1.0)),
-        presence_penalty=float(cfg.get("presence_penalty", 0.0)),
-        frequency_penalty=float(cfg.get("frequency_penalty", 0.0)),
-        max_tokens=agent.reply_max_tokens,
-        streaming=True,
-        timeout=talk_timeout,
-        max_retries=talk_retries,
-        model_kwargs={"extra_body": extra_body} if extra_body else {},
-        default_headers=hdr_talk,
-    )
+    talk_kwargs: dict[str, Any] = {
+        "base_url": conn_talk.base_url,
+        "api_key": conn_talk.api_key,
+        "model": talk_model,
+        "temperature": cfg.get("temperature", 0.75),
+        "top_p": float(cfg.get("top_p", 1.0)),
+        "presence_penalty": float(cfg.get("presence_penalty", 0.0)),
+        "frequency_penalty": float(cfg.get("frequency_penalty", 0.0)),
+        "max_tokens": agent.reply_max_tokens,
+        "streaming": True,
+        "timeout": talk_timeout,
+        "max_retries": talk_retries,
+        "model_kwargs": {"extra_body": extra_body} if extra_body else {},
+        "default_headers": hdr_talk,
+    }
+    talk_kwargs.update(_force_chat_completions(conn_talk.provider))
+    agent.llm_talk = ChatOpenAI(**talk_kwargs)
     agent.llm_talk = agent.llm_talk.bind(
         stop=[
             "<think>",
@@ -162,6 +185,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "model_kwargs": {"extra_body": extra_body} if extra_body else {},
         "default_headers": hdr_brain,
     }
+    brain_llm_kwargs.update(_force_chat_completions(conn_brain.provider))
     if agent.brain_max_tokens is not None:
         brain_llm_kwargs["max_tokens"] = agent.brain_max_tokens
     agent.llm_brain = ChatOpenAI(**brain_llm_kwargs)
@@ -178,6 +202,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "max_retries": reflection_retries,
         "default_headers": hdr_memory,
     }
+    memory_llm_kwargs.update(_force_chat_completions(conn_memory.provider))
     if agent.reflection_max_tokens is not None:
         memory_llm_kwargs["max_tokens"] = agent.reflection_max_tokens
     agent.llm_memory = ChatOpenAI(**memory_llm_kwargs)
@@ -275,5 +300,6 @@ def setup_openai_compatible_llm(agent: Any) -> None:
                 timeout=float(cfg.get("vision_timeout_seconds", 180)),
                 model_kwargs={"extra_body": extra_body} if extra_body else {},
                 default_headers=hdr_vision,
+                **_force_chat_completions(conn_vision.provider),
             )
             logger.info("Зрение: VL-модель (%s) — %s", conn_vision.provider, vmodel)

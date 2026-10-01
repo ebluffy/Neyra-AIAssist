@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -347,6 +349,42 @@ def _test_setup_guard_resolved_ip() -> None:
     assert local == "127.0.0.1"
 
 
+def _test_persist_allowlisted_updates() -> None:
+    from core.runtime.config_loader import _load_yaml_file, persist_allowlisted_updates
+
+    td = Path(tempfile.mkdtemp(prefix="neyra_persist_"))
+    try:
+        (td / "config").mkdir()
+        (td / "config" / "llm.yaml").write_text(
+            "llm:\n  talk_model:\n    provider: openrouter\n    model: old\n"
+            "  providers:\n    aihope: {}\n    openrouter: {}\n",
+            encoding="utf-8",
+        )
+        touched = persist_allowlisted_updates(
+            td,
+            {
+                "llm.talk_model.provider": "aihope",
+                "llm.talk_model.model": "gpt-6-luna",
+            },
+        )
+        assert touched == ["config/llm.yaml"], touched
+        data = _load_yaml_file(td / "config" / "llm.yaml")
+        assert data["llm"]["talk_model"]["provider"] == "aihope"
+        assert data["llm"]["talk_model"]["model"] == "gpt-6-luna"
+        assert "providers" in data["llm"]
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def _test_message_content_to_text() -> None:
+    from core.llm.message_content import message_content_to_text
+
+    assert message_content_to_text("hi") == "hi"
+    assert message_content_to_text([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "ab"
+    assert message_content_to_text([{"type": "output_text", "text": "x"}]) == "x"
+    assert message_content_to_text(None) == ""
+
+
 def _test_person_profile_split() -> None:
     from core.memory.person_profile import PROFILE_KEYS, split_static_facts
 
@@ -381,6 +419,8 @@ def main() -> int:
     _test_resolve_client_ip()
     _test_docs_catalog_resolve_allowlist()
     _test_setup_guard_resolved_ip()
+    _test_persist_allowlisted_updates()
+    _test_message_content_to_text()
     _test_person_profile_split()
     print("stage2 security offline: OK")
     return 0

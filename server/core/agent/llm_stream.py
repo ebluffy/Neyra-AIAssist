@@ -39,6 +39,8 @@ async def astream_text_with_fallback(
     agent: Any, messages: list[Any], *, llm: Any = None
 ) -> AsyncIterator[Any]:
     """Streaming call with first-token timeout guard and one retry on the same model."""
+    from core.llm.message_content import message_content_to_text
+
     model = llm or agent.llm_talk
     first_timeout = max(0.1, float(getattr(agent, "primary_first_token_timeout", 8.0)))
     attempts = 2
@@ -50,7 +52,9 @@ async def astream_text_with_fallback(
         it = stream.__aiter__()
         try:
             first_chunk = await asyncio.wait_for(it.__anext__(), timeout=first_timeout)
-            first_token = first_chunk.content if hasattr(first_chunk, "content") else str(first_chunk)
+            first_token = message_content_to_text(
+                first_chunk.content if hasattr(first_chunk, "content") else first_chunk
+            )
             if first_token:
                 route = "primary" if attempt == 1 else "primary_retry"
                 logger.info(
@@ -63,7 +67,11 @@ async def astream_text_with_fallback(
                 yield ch
             return
         except asyncio.TimeoutError as e:
-            last_err = e
+            last_err = TimeoutError(
+                f"LLM first-token timeout after {first_timeout:.1f}s "
+                f"(attempt {attempt}/{attempts})"
+            )
+            last_err.__cause__ = e
             logger.warning(
                 "LLM first-token timeout | attempt=%s/%s | timeout=%.1fs",
                 attempt,

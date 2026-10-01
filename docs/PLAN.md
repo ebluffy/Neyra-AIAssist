@@ -337,6 +337,7 @@ customDomains = ["neyra.owyx.site"]
 - Редактор промптов и конфигов, логи и расширенные настройки клиента.
 - Полный local voice loop и дополнительные player integrations.
 - Расширенный MCP marketplace/allowlist и production deployment hardening.
+- **Обезличивание продукта (AI Assist):** дефолты без личной персоны «Нейра» — имя/пол/тон только из `assistant.*` + `prompts/persona.md` (сменные профили). Кодовые идентификаторы (`neyra` в logger/systemd/пакетных именах) можно оставить как технический slug или постепенно заменить на нейтральный `aiassist`; публичный ребренд репо (`Neyra-AIAssist` → `AIAssist`) — отдельным шагом после merge текущего PR, не блокер Stage 2.
 
 ### Готово, когда
 

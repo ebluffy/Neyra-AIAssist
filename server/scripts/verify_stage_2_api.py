@@ -259,6 +259,18 @@ def check_auth_matrix() -> list[str]:
                     errs.append(
                         f"setup with CF public IP (no Bearer) want 403, got {r.status_code} {r.text[:120]}"
                     )
+                r = client.post(
+                    "/v1/dashboard/auth/setup",
+                    json={"key": DASH_KEY},
+                    headers={
+                        "CF-Connecting-IP": "203.0.113.9",
+                        "Authorization": "Bearer viewer-secret",
+                    },
+                )
+                if r.status_code != 403:
+                    errs.append(
+                        f"setup with CF public IP + viewer Bearer want 403, got {r.status_code} {r.text[:120]}"
+                    )
                 r = client.post("/v1/dashboard/auth/setup", json={"key": DASH_KEY})
                 if r.status_code != 200:
                     errs.append(
