@@ -12,6 +12,7 @@ HTTP lives in **`server/core/api/`**. Bind / public URL / dashboard flags: **`se
 2. Later: login → **`session_token`** in `sessionStorage` (session hashes also persisted in SQLite).
 3. Setup only while unconfigured; without Bearer requires console-local loopback (no CF/X-Real); public edge needs primary `API_TOKEN`.
 4. Raw gate key is **not** accepted as Bearer. Logout revokes the session.
+5. Expired/revoked session → any `/v1/*` **401** clears sessionStorage and returns to the login gate.
 
 ## UI sections
 

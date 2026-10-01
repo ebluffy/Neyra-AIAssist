@@ -6,6 +6,7 @@ import type { ApiEnvelope } from '../api'
 import { Button } from '../components/ui/button'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
+import { Skeleton } from '../components/ui/skeleton'
 
 export function SystemScreen() {
   const [meta, setMeta] = useState<Record<string, unknown> | null>(null)
@@ -13,8 +14,10 @@ export function SystemScreen() {
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
+    setLoading(true)
     setError(null)
     try {
       const [m, d] = await Promise.all([
@@ -31,6 +34,8 @@ export function SystemScreen() {
       setDlqCount(list.length)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
     }
   }, [])
 
@@ -39,6 +44,7 @@ export function SystemScreen() {
   }, [load])
 
   async function runBackup() {
+    if (!window.confirm('Запустить бэкап сейчас?')) return
     setBusy(true)
     setStatus('')
     setError(null)
@@ -58,8 +64,8 @@ export function SystemScreen() {
         title="Система"
         subtitle="Бэкап, сведения о API и очередь ошибок вебхуков"
         actions={
-          <Button onClick={() => void load()} type="button" variant="secondary">
-            Обновить
+          <Button disabled={loading} onClick={() => void load()} type="button" variant="secondary">
+            {loading ? 'Обновление…' : 'Обновить'}
           </Button>
         }
       />
@@ -71,9 +77,16 @@ export function SystemScreen() {
             <Info size={15} className="card-icon card-icon-cyan" />
             <span className="card-title">Сведения API</span>
           </div>
-          <pre className="code-block" style={{ maxHeight: 280, overflow: 'auto' }}>
-            {meta ? JSON.stringify(meta, null, 2) : '—'}
-          </pre>
+          {loading && !meta ? (
+            <div className="stack-sm">
+              <Skeleton className="h-10" />
+              <Skeleton className="h-24" />
+            </div>
+          ) : (
+            <pre className="code-block" style={{ maxHeight: 280, overflow: 'auto' }}>
+              {meta ? JSON.stringify(meta, null, 2) : '—'}
+            </pre>
+          )}
         </div>
         <div className="card">
           <div className="card-header">
@@ -101,7 +114,9 @@ export function SystemScreen() {
         </div>
         <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '0.75rem' }}>
           Записей в очереди:{' '}
-          <strong style={{ color: 'var(--text)', fontFamily: 'var(--mono)' }}>{dlqCount ?? '—'}</strong>
+          <strong style={{ color: 'var(--text)', fontFamily: 'var(--mono)' }}>
+            {loading && dlqCount == null ? '…' : (dlqCount ?? '—')}
+          </strong>
         </p>
         <Link className="btn btn-secondary btn-sm" to="/webhooks">
           Открыть вебхуки

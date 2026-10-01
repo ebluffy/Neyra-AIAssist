@@ -16,6 +16,7 @@ HTTP-стек живёт в **`server/core/api/`** (Control API), это не м
 2. **Повторные визиты:** вход тем же ключом. После login SPA держит **session token** в **`sessionStorage`** (хеши сессий также в SQLite — переживают рестарт процесса).
 3. **`POST /v1/dashboard/auth/setup`** разрешён только пока ключ не задан. Без Bearer — только с консольного loopback (нет CF/X-Real); с публичного края — primary `API_TOKEN`.
 4. Login/setup выдаёт **`session_token`**; SPA шлёт его как Bearer (admin). Сырой ключ **не** принимается как Bearer. Logout отзывает session.
+5. Если session истекла или отозвана, любой `/v1/*` с **401** очищает session и возвращает на экран входа (без «залипших» ошибок на экранах).
 
 ## Разделы UI
 

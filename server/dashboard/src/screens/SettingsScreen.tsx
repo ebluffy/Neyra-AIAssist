@@ -5,6 +5,7 @@ import type { ApiEnvelope } from '../api'
 import { Button } from '../components/ui/button'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
+import { Skeleton } from '../components/ui/skeleton'
 
 type FieldDef = { key: string; label: string; kind?: 'text' | 'bool' | 'provider' }
 
@@ -173,6 +174,30 @@ export function SettingsScreen() {
     () => active.fields.map((f) => f.key).filter((k) => values[k] !== initial[k]),
     [active, values, initial],
   )
+  const anyDirty = useMemo(
+    () => allKeys.some((k) => values[k] !== initial[k]),
+    [allKeys, values, initial],
+  )
+
+  useEffect(() => {
+    if (!anyDirty) return
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [anyDirty])
+
+  function selectTab(id: string) {
+    if (id === tab) return
+    if (dirtyKeys.length > 0) {
+      if (!window.confirm('На этой вкладке есть несохранённые изменения. Уйти без применения?')) return
+    }
+    setTab(id)
+    setStatus('')
+    setError(null)
+  }
 
   const providerOptions = useMemo(() => {
     const cur = providers.slice()
@@ -308,13 +333,25 @@ export function SettingsScreen() {
         </p>
         <div className="tabs-row" role="tablist" aria-label="Разделы конфига">
           {TABS.map((t) => (
-            <Button key={t.id} onClick={() => setTab(t.id)} size="sm" type="button" variant={tab === t.id ? 'default' : 'secondary'}>
+            <Button
+              key={t.id}
+              aria-selected={tab === t.id}
+              onClick={() => selectTab(t.id)}
+              role="tab"
+              size="sm"
+              type="button"
+              variant={tab === t.id ? 'default' : 'secondary'}
+            >
               {t.title}
             </Button>
           ))}
         </div>
         {loading ? (
-          <p style={{ color: 'var(--muted)' }}>Загрузка…</p>
+          <div className="stack" style={{ marginTop: '0.85rem' }}>
+            <Skeleton className="h-10" />
+            <Skeleton className="h-10" />
+            <Skeleton className="h-10" />
+          </div>
         ) : (
           <div className="stack" style={{ marginTop: '0.85rem' }}>
             <div className="grid-2">{active.fields.map((f) => renderField(f))}</div>

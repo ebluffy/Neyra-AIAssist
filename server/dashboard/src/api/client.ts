@@ -54,6 +54,17 @@ function jsonHeaders(): HeadersInit {
   return { ...headers(), 'Content-Type': 'application/json' }
 }
 
+/** Expired/revoked dashboard session → clear and reopen gate (once). */
+let sessionExpiredRedirect = false
+
+function redirectToLoginOnSession401(status: number): void {
+  if (status !== 401 || sessionExpiredRedirect) return
+  if (!getSessionToken()) return
+  sessionExpiredRedirect = true
+  clearSessionToken()
+  window.location.assign('/')
+}
+
 async function parseApiResponse<T>(r: Response): Promise<T> {
   const text = await r.text()
   const trimmed = text.trimStart()
@@ -71,6 +82,7 @@ async function parseApiResponse<T>(r: Response): Promise<T> {
     throw new Error(`Не удалось разобрать ответ API (HTTP ${r.status})`)
   }
   if (!r.ok) {
+    redirectToLoginOnSession401(r.status)
     const msg = j?.error?.message ?? r.statusText
     throw new Error(msg || `HTTP ${r.status}`)
   }
@@ -89,6 +101,7 @@ export async function apiGet<T>(path: string): Promise<T> {
 export async function apiGetText(path: string): Promise<string> {
   const r = await fetch(path, { headers: headers() })
   if (!r.ok) {
+    redirectToLoginOnSession401(r.status)
     throw new Error(r.statusText || `HTTP ${r.status}`)
   }
   return r.text()

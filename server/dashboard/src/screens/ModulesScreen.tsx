@@ -24,14 +24,18 @@ export function ModulesScreen() {
     setLoadingPlugins(true)
     try {
       const r = await apiGet<ApiEnvelope<{ plugins: PluginRow[] }>>('/v1/plugins')
-      setPlugins(r.data.plugins ?? [])
-      if (!selected && r.data.plugins?.length) setSelected(r.data.plugins[0].id)
+      const list = r.data.plugins ?? []
+      setPlugins(list)
+      setSelected((prev) => {
+        if (prev && list.some((p) => p.id === prev)) return prev
+        return list[0]?.id ?? ''
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoadingPlugins(false)
     }
-  }, [selected])
+  }, [])
 
   const loadDetails = useCallback(async (id: string) => {
     setLoadingDetails(true)
@@ -109,6 +113,7 @@ export function ModulesScreen() {
 
   async function restartPlugin() {
     if (!selected) return
+    if (!window.confirm(`Перезапустить модуль «${selected}»?`)) return
     setError(null)
     setStatus('Перезапуск...')
     try {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import {
   BookOpenText,
   Brain,
@@ -23,6 +23,7 @@ import { SettingsScreen } from '../screens/SettingsScreen'
 import { StatusScreen } from '../screens/StatusScreen'
 import { SystemScreen } from '../screens/SystemScreen'
 import { WebhooksScreen } from '../screens/WebhooksScreen'
+import { ErrorBoundary } from '../components/ErrorBoundary'
 
 const NAV = [
   { to: '/status', label: 'Статус', icon: Gauge },
@@ -39,6 +40,7 @@ export function AppShell() {
   const [open, setOpen] = useState(false)
   const [mobile, setMobile] = useState(false)
   const [apiVersion, setApiVersion] = useState<string>('')
+  const location = useLocation()
 
   useEffect(() => {
     const check = () => setMobile(window.innerWidth < 768)
@@ -52,6 +54,29 @@ export function AppShell() {
   }, [mobile])
 
   useEffect(() => {
+    setOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (!open || !mobile) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prev
+    }
+  }, [open, mobile])
+
+  useEffect(() => {
+    const item = NAV.find((n) => location.pathname === n.to || location.pathname.startsWith(`${n.to}/`))
+    document.title = item ? `${item.label} · Neyra` : 'Neyra — дашборд'
+  }, [location.pathname])
+
+  useEffect(() => {
     void (async () => {
       try {
         const r = await apiGet<ApiEnvelope<{ api_version?: string; version?: string }>>('/v1/meta')
@@ -63,6 +88,7 @@ export function AppShell() {
   }, [])
 
   async function logout() {
+    if (!window.confirm('Выйти из панели? Потребуется снова ввести ключ доступа.')) return
     const tok = getSessionToken().trim()
     if (tok) {
       try {
@@ -80,8 +106,17 @@ export function AppShell() {
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        К содержимому
+      </a>
       {mobile && (
-        <button aria-label="Открыть меню" className="mobile-toggle" onClick={() => setOpen(true)} type="button">
+        <button
+          aria-expanded={open}
+          aria-label="Открыть меню"
+          className="mobile-toggle"
+          onClick={() => setOpen(true)}
+          type="button"
+        >
           <Menu size={20} />
         </button>
       )}
@@ -89,7 +124,7 @@ export function AppShell() {
 
       <aside className={`sidebar${open ? ' open' : ''}`} aria-label="Навигация">
         <div className="sidebar-logo">
-          <div className="sidebar-logo-icon">
+          <div className="sidebar-logo-icon" aria-hidden>
             <Cpu size={18} color="#fff" />
           </div>
           <div className="sidebar-logo-text">
@@ -106,7 +141,9 @@ export function AppShell() {
                 border: 'none',
                 color: 'var(--muted)',
                 cursor: 'pointer',
-                padding: '0.25rem',
+                padding: '0.5rem',
+                minWidth: 44,
+                minHeight: 44,
               }}
               type="button"
             >
@@ -123,7 +160,7 @@ export function AppShell() {
               onClick={() => setOpen(false)}
               to={to}
             >
-              <Icon className="nav-item-icon" size={18} />
+              <Icon aria-hidden className="nav-item-icon" size={18} />
               {label}
             </NavLink>
           ))}
@@ -131,28 +168,30 @@ export function AppShell() {
 
         <div className="sidebar-footer">
           <button className="sidebar-logout" onClick={() => void logout()} type="button">
-            <LogOut size={14} />
+            <LogOut size={14} aria-hidden />
             Выйти
           </button>
           <span>{apiVersion ? `API ${apiVersion}` : '…'}</span>
         </div>
       </aside>
 
-      <main className="main-area">
-        <Routes>
-          <Route element={<Navigate replace to="/status" />} path="/" />
-          <Route element={<Navigate replace to="/status" />} path="/home" />
-          <Route element={<Navigate replace to="/status" />} path="/dashboard" />
-          <Route element={<Navigate replace to="/modules" />} path="/plugins" />
-          <Route element={<StatusScreen />} path="/status" />
-          <Route element={<ModulesScreen />} path="/modules" />
-          <Route element={<MemoryScreen />} path="/memory" />
-          <Route element={<SystemScreen />} path="/system" />
-          <Route element={<WebhooksScreen />} path="/webhooks" />
-          <Route element={<SettingsScreen />} path="/settings" />
-          <Route element={<DocsScreen />} path="/api-docs" />
-          <Route element={<Navigate replace to="/status" />} path="*" />
-        </Routes>
+      <main className="main-area" id="main-content" tabIndex={-1}>
+        <ErrorBoundary>
+          <Routes>
+            <Route element={<Navigate replace to="/status" />} path="/" />
+            <Route element={<Navigate replace to="/status" />} path="/home" />
+            <Route element={<Navigate replace to="/status" />} path="/dashboard" />
+            <Route element={<Navigate replace to="/modules" />} path="/plugins" />
+            <Route element={<StatusScreen />} path="/status" />
+            <Route element={<ModulesScreen />} path="/modules" />
+            <Route element={<MemoryScreen />} path="/memory" />
+            <Route element={<SystemScreen />} path="/system" />
+            <Route element={<WebhooksScreen />} path="/webhooks" />
+            <Route element={<SettingsScreen />} path="/settings" />
+            <Route element={<DocsScreen />} path="/api-docs" />
+            <Route element={<Navigate replace to="/status" />} path="*" />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   )
