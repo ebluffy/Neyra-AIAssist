@@ -112,12 +112,15 @@ class DashboardAuthStore:
             return False
 
     def issue_session(self) -> str:
-        """Random session token accepted as admin Bearer until TTL (no PBKDF2 per request)."""
+        """Random session token accepted as admin Bearer until TTL (no PBKDF2 per request).
+
+        Revokes all prior sessions so a new login is the only live admin Bearer.
+        """
         token = secrets.token_urlsafe(_SESSION_BYTES)
         th = self._session_hash(token)
         exp = time.time() + _SESSION_TTL_SECONDS
         with self._lock:
-            self._purge_sessions_locked()
+            self._sessions.clear()
             self._sessions[th] = exp
         return token
 

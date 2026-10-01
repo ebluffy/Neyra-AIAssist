@@ -38,9 +38,14 @@ function collectHealthIssues(health: HealthData | null): string[] {
         if (!p || typeof p !== 'object') continue
         const row = p as Record<string, unknown>
         if (row.ok === false) {
-          issues.push(
-            `LLM ${String(row.provider ?? '?')}: HTTP ${String(row.status_code ?? '—')}${row.url ? ` (${row.url})` : ''}`,
-          )
+          const prov = String(row.provider ?? '?')
+          if (row.error) {
+            issues.push(`LLM ${prov}: ${String(row.error)}`)
+          } else {
+            issues.push(
+              `LLM ${prov}: HTTP ${String(row.status_code ?? '—')}${row.url ? ` (${row.url})` : ''}`,
+            )
+          }
         }
       }
     }

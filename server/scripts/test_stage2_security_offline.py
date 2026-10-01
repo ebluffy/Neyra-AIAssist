@@ -256,8 +256,11 @@ def _test_dashboard_session_store() -> None:
         session = store.issue_session()
         assert store.verify_session(session)
         assert not store.verify_session(key), "raw gate key must not be a session"
-        store.revoke_session(session)
-        assert not store.verify_session(session)
+        session2 = store.issue_session()
+        assert store.verify_session(session2)
+        assert not store.verify_session(session), "new login must revoke prior sessions"
+        store.revoke_session(session2)
+        assert not store.verify_session(session2)
     finally:
         shutil.rmtree(td, ignore_errors=True)
 

@@ -1071,17 +1071,18 @@ def build_app(
         }
 
     def _client_ip(request: Request) -> str:
-        # Prefer socket peer. Behind local frp/nginx peer is often 127.0.0.1 —
-        # only then trust CF-Connecting-IP / X-Real-IP / first XFF hop.
+        # Prefer Cloudflare's CF-Connecting-IP (set by CF on orange-cloud; not forgeable
+        # through Cloudflare). Then the socket peer. Only if peer is local (frp/nginx
+        # on same host) trust X-Real-IP that the edge overwrites from the real socket.
+        cf = (request.headers.get("cf-connecting-ip") or "").strip()
+        if cf:
+            return cf
         peer = request.client.host if request.client else "unknown"
-        if peer in ("127.0.0.1", "::1"):
-            for header in ("cf-connecting-ip", "x-real-ip"):
-                val = (request.headers.get(header) or "").strip()
-                if val:
-                    return val
-            xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-            if xff:
-                return xff
+        if peer not in ("127.0.0.1", "::1"):
+            return peer
+        xri = (request.headers.get("x-real-ip") or "").strip()
+        if xri:
+            return xri
         return peer
 
     def _dash_login_rate_ok(ip: str) -> bool:
@@ -1149,6 +1150,7 @@ def build_app(
             raise ApiError("setup_required", "Create a dashboard access key first", 400)
         if not dash_auth.verify(body.key):
             _dash_login_fail(ip)
+            logger.info("dashboard login failed ip=%s", ip)
             raise ApiError("unauthorized", "Invalid access key", 401)
         session = dash_auth.issue_session()
         return {
