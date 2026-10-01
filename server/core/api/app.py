@@ -1843,22 +1843,45 @@ def build_app(
         ok = loader.set_enabled(plugin_id, body.enabled)
         if not ok:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
-        # Discord owns managed Lavalink — disable kills the JVM so music does not linger.
-        if str(plugin_id).strip().lower() == "discord" and not body.enabled:
+        lava_note = ""
+        # Discord owns managed Lavalink: off → kill JVM; on → ensure JAR (non-blocking for event loop).
+        if str(plugin_id).strip().lower() == "discord":
             try:
-                from modules.discord.lavalink_process import stop_managed_lavalink
+                from modules.discord.lavalink_process import ensure_managed_lavalink, stop_managed_lavalink
 
-                stop_detail = stop_managed_lavalink(root / "modules" / "discord")
-                logger.info("plugin discord disabled → managed Lavalink: %s", stop_detail)
+                discord_dir = root / "modules" / "discord"
+                if not body.enabled:
+                    lava_note = await asyncio.to_thread(stop_managed_lavalink, discord_dir)
+                    logger.info("plugin discord disabled → managed Lavalink: %s", lava_note)
+                else:
+                    # Ensure can wait up to ~90s for the port — do not block the PATCH response.
+                    async def _start_lava() -> None:
+                        try:
+                            ok_lava, detail = await asyncio.to_thread(
+                                ensure_managed_lavalink, config, discord_dir
+                            )
+                            logger.info(
+                                "plugin discord enabled → managed Lavalink ok=%s detail=%s",
+                                ok_lava,
+                                detail,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to start managed Lavalink after discord enable"
+                            )
+
+                    asyncio.create_task(_start_lava())
+                    lava_note = "managed Lavalink start requested"
             except Exception:
-                logger.exception("Failed to stop managed Lavalink after discord disable")
+                logger.exception("Failed to sync managed Lavalink after discord toggle")
+                lava_note = "lavalink sync failed (see logs)"
         op_id = f"op_{uuid.uuid4().hex[:12]}"
         plugin_ops[op_id] = {
             "operation_id": op_id,
             "plugin_id": plugin_id,
             "type": "set_enabled",
             "status": "done",
-            "result": {"enabled": body.enabled},
+            "result": {"enabled": body.enabled, "lavalink": lava_note or None},
             "ts": _utc_now(),
         }
         _audit("plugin_set_enabled", trace_id, api_role, {"plugin_id": plugin_id, "enabled": body.enabled})

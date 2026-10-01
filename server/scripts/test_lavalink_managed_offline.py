@@ -44,7 +44,7 @@ def main() -> int:
         if ok or "Lavalink.jar" not in detail:
             errs.append(f"missing jar want fail mention jar, got {ok!r} {detail!r}")
 
-        # Copy-from-example aligns password + loopback bind
+        # Copy-from-example / repair aligns password + loopback bind
         example = ROOT / "modules" / "discord" / "lavalink" / "application.example.yml"
         if example.is_file():
             (lava / "application.example.yml").write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
@@ -54,6 +54,18 @@ def main() -> int:
                 errs.append("copied yml password not aligned")
             if "address: 127.0.0.1" not in text and "address:127.0.0.1" not in text:
                 errs.append(f"copied yml address not loopback: {text[:200]!r}")
+
+            # Stale yml (CHANGE_ME / 0.0.0.0) must be repaired in place
+            yml.write_text(
+                'server:\n  address: 0.0.0.0\nlavalink:\n  server:\n    password: "CHANGE_ME"\n',
+                encoding="utf-8",
+            )
+            _ensure_application_yml(lava, password="youshallnotpass")
+            fixed = yml.read_text(encoding="utf-8")
+            if 'password: "youshallnotpass"' not in fixed:
+                errs.append("stale yml password not repaired")
+            if "address: 127.0.0.1" not in fixed:
+                errs.append("stale yml address not repaired")
 
         msg = stop_managed_lavalink(plugin)
         if "nothing" not in msg and "stopped" not in msg:

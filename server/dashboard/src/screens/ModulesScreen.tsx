@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { FileCode2, Play, RefreshCw, RotateCcw, Settings2, ToggleLeft, ToggleRight } from 'lucide-react'
+import { FileCode2, Play, Power, RefreshCw, RotateCcw, Settings2, ToggleLeft, ToggleRight } from 'lucide-react'
 import { apiGet, apiPatch, apiPost, apiPut } from '../api'
 import type { ApiEnvelope, PluginRow } from '../api'
 import { Button } from '../components/ui/button'
@@ -19,6 +19,7 @@ export function ModulesScreen() {
   const [error, setError] = useState<string | null>(null)
   const [loadingPlugins, setLoadingPlugins] = useState(false)
   const [loadingDetails, setLoadingDetails] = useState(false)
+  const [restartBusy, setRestartBusy] = useState(false)
 
   const loadPlugins = useCallback(async () => {
     setLoadingPlugins(true)
@@ -57,13 +58,34 @@ export function ModulesScreen() {
     if (selected) void loadDetails(selected)
   }, [selected, loadDetails])
 
+  const isResident = (details?.plugin.lifecycle || '').toLowerCase() === 'resident'
+
   async function togglePlugin(enabled: boolean) {
     if (!selected) return
     setError(null)
-    setStatus('Применение...')
+    setStatus(enabled ? 'Включаю…' : 'Выключаю…')
     try {
-      const r = await apiPatch<ApiEnvelope<{ operation_id: string }>>(`/v1/plugins/${selected}`, { enabled })
-      setStatus(`Готово: ${r.data.operation_id}`)
+      const r = await apiPatch<
+        ApiEnvelope<{ operation_id: string; result?: { lavalink?: string | null } }>
+      >(`/v1/plugins/${selected}`, { enabled })
+      const lava = r.data.result?.lavalink
+      if (selected === 'discord') {
+        if (enabled) {
+          setStatus(
+            lava
+              ? `Discord включён. Lavalink: ${lava}. Если бот молчал после выключения — сделай «Мягкий рестарт ядра».`
+              : 'Discord включён. Если бот молчал после выключения — сделай «Мягкий рестарт ядра».',
+          )
+        } else {
+          setStatus(
+            lava
+              ? `Discord выключен в конфиге. Lavalink: ${lava}. Поток бота гасится только мягким рестартом ядра.`
+              : 'Discord выключен в конфиге. Lavalink остановлен. Поток бота гасится только мягким рестартом ядра.',
+          )
+        }
+      } else {
+        setStatus(`Готово: ${r.data.operation_id}`)
+      }
       await loadPlugins()
       await loadDetails(selected)
     } catch (e) {
@@ -86,7 +108,7 @@ export function ModulesScreen() {
   }
 
   async function invokePlugin() {
-    if (!selected) return
+    if (!selected || isResident) return
     setError(null)
     setStatus('Вызов...')
     try {
@@ -98,7 +120,7 @@ export function ModulesScreen() {
   }
 
   async function reloadPlugin() {
-    if (!selected) return
+    if (!selected || isResident) return
     setError(null)
     setStatus('Перезагрузка...')
     try {
@@ -111,24 +133,51 @@ export function ModulesScreen() {
     }
   }
 
-  async function restartPlugin() {
-    if (!selected) return
-    if (!window.confirm(`Перезапустить модуль «${selected}»?`)) return
+  async function softRestartCore() {
+    if (
+      !window.confirm(
+        'Мягкий рестарт всего процесса Neyra? Resident-модули (Discord) и Lavalink поднимутся заново. Дашборд на несколько секунд отвалится.',
+      )
+    ) {
+      return
+    }
+    setRestartBusy(true)
     setError(null)
-    setStatus('Перезапуск...')
+    setStatus('Мягкий рестарт… ждём подъёма API')
     try {
-      const r = await apiPost<ApiEnvelope<{ operation_id?: string }>>(`/v1/plugins/${selected}/restart`, {})
-      setStatus(`Перезапуск: ${r.data.operation_id ?? 'ок'}`)
-      await loadPlugins()
-      await loadDetails(selected)
+      await apiPost<ApiEnvelope<{ note?: string }>>('/v1/system/restart', {})
+      let online = false
+      for (let i = 0; i < 45; i++) {
+        await new Promise((r) => setTimeout(r, 2000))
+        try {
+          const r = await fetch('/v1/dashboard/auth/status', { headers: { Accept: 'application/json' } })
+          if (!r.ok) continue
+          const text = await r.text()
+          if (text.trimStart().startsWith('<')) continue
+          const j = JSON.parse(text) as { ok?: boolean }
+          if (j?.ok === true) {
+            online = true
+            break
+          }
+        } catch {
+          /* still down */
+        }
+      }
+      setStatus(online ? 'Сервер снова онлайн.' : 'Долго не отвечает — обнови страницу через минуту.')
+      if (online) {
+        await loadPlugins()
+        if (selected) await loadDetails(selected)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRestartBusy(false)
     }
   }
 
   return (
     <div className="page-content stack">
-      <PageHeader title="Модули" subtitle="Управление, конфиг, перезагрузка и вызов" />
+      <PageHeader title="Модули" subtitle="Включение, конфиг и жизненный цикл" />
       {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
 
       <div className="split-modules">
@@ -166,6 +215,12 @@ export function ModulesScreen() {
               <Settings2 size={15} className="card-icon card-icon-cyan" />
               <span className="card-title">Управление</span>
             </div>
+            {isResident && (
+              <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.75rem', lineHeight: 1.45 }}>
+                Resident-модуль (фон вместе с ядром). «Вызвать / перезагрузить модуль» недоступны — для Discord
+                нужен мягкий рестарт всего процесса Neyra. Выкл./вкл. сразу управляет Lavalink.
+              </p>
+            )}
             <div className="row" style={{ flexWrap: 'wrap' }}>
               <button
                 aria-label="включить или выключить модуль"
@@ -176,15 +231,47 @@ export function ModulesScreen() {
                 {details?.plugin.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
                 {details?.plugin.enabled ? 'Включен' : 'Выключен'}
               </button>
-              <Button onClick={() => void invokePlugin()} type="button" variant="secondary">
-                <Play size={14} /> Вызвать
-              </Button>
-              <Button onClick={() => void reloadPlugin()} type="button" variant="secondary">
-                <RefreshCw size={14} /> Перезагрузить
-              </Button>
-              <Button onClick={() => void restartPlugin()} type="button" variant="warn">
-                <RotateCcw size={14} /> Перезапустить
-              </Button>
+              {!isResident && (
+                <>
+                  <Button onClick={() => void invokePlugin()} type="button" variant="secondary">
+                    <Play size={14} /> Вызвать
+                  </Button>
+                  <Button onClick={() => void reloadPlugin()} type="button" variant="secondary">
+                    <RefreshCw size={14} /> Перезагрузить
+                  </Button>
+                </>
+              )}
+              {isResident ? (
+                <Button disabled={restartBusy} onClick={() => void softRestartCore()} type="button" variant="warn">
+                  <Power size={14} /> {restartBusy ? 'Рестарт…' : 'Мягкий рестарт ядра'}
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => {
+                    if (!selected) return
+                    if (!window.confirm(`Перезапустить модуль «${selected}»?`)) return
+                    void (async () => {
+                      setError(null)
+                      setStatus('Перезапуск...')
+                      try {
+                        const r = await apiPost<ApiEnvelope<{ operation_id?: string }>>(
+                          `/v1/plugins/${selected}/restart`,
+                          {},
+                        )
+                        setStatus(`Перезапуск: ${r.data.operation_id ?? 'ок'}`)
+                        await loadPlugins()
+                        await loadDetails(selected)
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : String(e))
+                      }
+                    })()
+                  }}
+                  type="button"
+                  variant="warn"
+                >
+                  <RotateCcw size={14} /> Перезапустить
+                </Button>
+              )}
               <Button onClick={() => selected && void loadDetails(selected)} type="button" variant="secondary">
                 Обновить
               </Button>

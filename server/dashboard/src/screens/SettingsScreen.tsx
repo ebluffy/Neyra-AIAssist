@@ -198,6 +198,20 @@ export function SettingsScreen() {
     return () => setNavigationBlocker(null)
   }, [anyDirty])
 
+  // Browser Back/Forward — same confirm (NavLink alone is not enough).
+  useEffect(() => {
+    if (!anyDirty) return
+    const onPopState = () => {
+      if (window.confirm('Есть несохранённые изменения в Настройках. Уйти без применения?')) return
+      window.history.pushState(null, '', window.location.href)
+    }
+    window.history.pushState({ settingsGuard: 1 }, '', window.location.href)
+    window.addEventListener('popstate', onPopState)
+    return () => {
+      window.removeEventListener('popstate', onPopState)
+    }
+  }, [anyDirty])
+
   function selectTab(id: string) {
     if (id === tab) return
     if (dirtyKeys.length > 0) {

@@ -131,32 +131,45 @@ def _terminate_pid(pid: int, *, wait_s: float = 8.0) -> None:
 
 
 def _ensure_application_yml(lava_dir: Path, *, password: str) -> Path:
-    """Create application.yml from example if missing; align password + loopback bind."""
+    """Ensure application.yml exists and matches node password + loopback bind."""
     yml = lava_dir / "application.yml"
-    if yml.is_file():
-        return yml
-    example = lava_dir / "application.example.yml"
-    if not example.is_file():
-        raise FileNotFoundError(f"No application.yml under {lava_dir}")
-    text = example.read_text(encoding="utf-8")
-    text, n_pwd = re.subn(
+    if not yml.is_file():
+        example = lava_dir / "application.example.yml"
+        if not example.is_file():
+            raise FileNotFoundError(f"No application.yml under {lava_dir}")
+        text = example.read_text(encoding="utf-8")
+        created = True
+    else:
+        text = yml.read_text(encoding="utf-8")
+        created = False
+
+    text2, n_pwd = re.subn(
         r'(?m)^(\s*password:\s*")[^"]*(")',
         rf'\1{password}\2',
         text,
         count=1,
     )
-    text, n_addr = re.subn(
+    text2, n_addr = re.subn(
         r'(?m)^(\s*address:\s*)\S+',
         r'\g<1>127.0.0.1',
-        text,
+        text2,
         count=1,
     )
-    yml.write_text(text, encoding="utf-8")
-    logger.info(
-        "discord.lavalink: created application.yml from example (password_set=%s loopback_bind=%s)",
-        n_pwd > 0,
-        n_addr > 0,
-    )
+    repaired = text2 != text
+    if created or repaired:
+        yml.write_text(text2, encoding="utf-8")
+        if created:
+            logger.info(
+                "discord.lavalink: created application.yml from example (password_set=%s loopback_bind=%s)",
+                n_pwd > 0,
+                n_addr > 0,
+            )
+        else:
+            logger.warning(
+                "discord.lavalink: repaired application.yml (password_aligned=%s loopback_bind=%s)",
+                n_pwd > 0 and repaired,
+                n_addr > 0,
+            )
     return yml
 
 
