@@ -814,3 +814,49 @@ input[type="checkbox"] {
   outline: 2px solid var(--cyan);
   outline-offset: 2px;
 }
+
+.tabs-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.85rem;
+}
+.docs-layout {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(200px, 280px) 1fr;
+}
+.docs-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 70vh;
+  overflow: auto;
+}
+.docs-nav-item {
+  text-align: left;
+  background: rgba(9,9,15,0.55);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  color: var(--text);
+  cursor: pointer;
+}
+.docs-nav-item:hover { border-color: var(--border-hi); }
+.docs-nav-item.active {
+  border-color: rgba(34,211,238,0.45);
+  background: rgba(34,211,238,0.08);
+}
+.docs-nav-title { display: block; font-size: 0.82rem; font-weight: 600; }
+.docs-nav-id {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--muted);
+  margin-top: 0.2rem;
+  word-break: break-all;
+}
+.model-role-card { min-height: 88px; }
+@media (max-width: 900px) {
+  .docs-layout { grid-template-columns: 1fr; }
+}

@@ -69,6 +69,23 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
           return
         }
         if (hasDashboardSession()) {
+          // Revalidate session — revoked/expired tokens must not unlock the shell.
+          try {
+            const tok = sessionStorage.getItem('neyra_dashboard_session')?.trim()
+            const r = await fetch('/v1/meta', {
+              headers: {
+                Accept: 'application/json',
+                ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
+              },
+            })
+            if (r.status === 401) {
+              clearDashboardGateKey()
+              setMode('login')
+              return
+            }
+          } catch {
+            // network blip: still allow shell; first API call will fail loudly
+          }
           setMode('ok')
           return
         }

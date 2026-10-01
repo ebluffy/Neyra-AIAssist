@@ -113,7 +113,7 @@ export function StatusScreen() {
   const [health, setHealth] = useState<HealthData | null>(null)
   const [balance, setBalance] = useState<BalanceData | null>(null)
   const [plugins, setPlugins] = useState<PluginRow[]>([])
-  const [models, setModels] = useState<unknown>(null)
+  const [models, setModels] = useState<{ roles?: Record<string, { role?: string; provider?: string; model?: string }> } | null>(null)
   const [restartMsg, setRestartMsg] = useState<string | null>(null)
   const [restartBusy, setRestartBusy] = useState(false)
 
@@ -125,7 +125,7 @@ export function StatusScreen() {
         apiGet<ApiEnvelope<HealthData>>('/v1/health'),
         apiGet<ApiEnvelope<BalanceData>>('/v1/llm/balance'),
         apiGet<ApiEnvelope<{ plugins: PluginRow[] }>>('/v1/plugins'),
-        apiGet<ApiEnvelope<unknown>>('/v1/llm/models'),
+        apiGet<ApiEnvelope<{ roles?: Record<string, { role?: string; provider?: string; model?: string }> }>>('/v1/llm/models'),
       ])
       setHealth(h.data)
       setBalance(b.data)
@@ -143,6 +143,9 @@ export function StatusScreen() {
   }, [load])
 
   async function softRestart() {
+    if (!window.confirm('Перезапустить процесс Neyra (soft restart)? Сессии дашборда сохранятся в SQLite, но соединение оборвётся на несколько секунд.')) {
+      return
+    }
     setRestartBusy(true)
     setRestartMsg(null)
     try {
@@ -268,9 +271,24 @@ export function StatusScreen() {
         <div className="card-header">
           <span className="card-title">Модели (роли)</span>
         </div>
-        <pre className="code-block" style={{ maxHeight: 220, overflow: 'auto' }}>
-          {models ? JSON.stringify(models, null, 2) : '—'}
-        </pre>
+        <div className="grid-2">
+          {Object.entries(models?.roles ?? {}).length === 0 && !loading && (
+            <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Нет данных ролей</p>
+          )}
+          {Object.entries(models?.roles ?? {}).map(([short, row]) => (
+            <div key={short} className="stat-tile model-role-card">
+              <p className="stat-label">{roleLabels[short] ?? short}</p>
+              <p className="stat-value-md" style={{ fontFamily: 'var(--mono)', fontSize: '0.9rem' }}>
+                {row.model ?? '—'}
+              </p>
+              <p style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: 6 }}>
+                провайдер <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>{row.provider ?? '—'}</span>
+                <span style={{ color: 'var(--border-hi)' }}> · </span>
+                <span style={{ fontFamily: 'var(--mono)' }}>{row.role ?? short}</span>
+              </p>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="card">

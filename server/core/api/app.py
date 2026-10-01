@@ -1793,20 +1793,25 @@ def build_app(
             )
         return {"ok": True, "trace_id": trace_id, "data": out}
 
-    @app.get("/v1/docs/markdown/{doc_id}", response_class=PlainTextResponse)
-    async def v1_docs_markdown(doc_id: str, request: Request, _: None = Depends(dep_viewer)):
+    @app.get("/v1/docs/catalog")
+    async def v1_docs_catalog(request: Request, _: None = Depends(dep_viewer)):
+        """List markdown docs available under docs/ (and legacy HELP/README)."""
+        from core.api.docs_catalog import build_docs_catalog
+
         trace_id = _trace_id(request)
-        rid = (doc_id or "").strip().lower()
-        mapping = {
-            "readme-ru": root / "README-RU.md",
-            "readme-en": root / "README.md",
-            "help-ru": root / "modules" / "000EXAMPLE" / "HELP-RU.md",
-            "help-en": root / "modules" / "000EXAMPLE" / "HELP.md",
-            "docs-ru-index": root / "docs" / "ru" / "README.md",
-            "docs-en-index": root / "docs" / "en" / "README.md",
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": build_docs_catalog(root),
         }
-        target = mapping.get(rid)
-        if target is None or not target.is_file():
+
+    @app.get("/v1/docs/markdown/{doc_id:path}", response_class=PlainTextResponse)
+    async def v1_docs_markdown(doc_id: str, request: Request, _: None = Depends(dep_viewer)):
+        from core.api.docs_catalog import resolve_doc_path
+
+        trace_id = _trace_id(request)
+        target = resolve_doc_path(root, doc_id)
+        if target is None:
             raise ApiError("not_found", f"Unknown markdown doc: {doc_id}", 404)
         text = target.read_text(encoding="utf-8")
         response = PlainTextResponse(content=text)

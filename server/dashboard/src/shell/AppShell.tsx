@@ -31,7 +31,7 @@ const NAV = [
   { to: '/system', label: 'Система', icon: Server },
   { to: '/webhooks', label: 'Вебхуки', icon: Webhook },
   { to: '/settings', label: 'Настройки', icon: Settings },
-  { to: '/api-docs', label: 'API Docs', icon: BookOpenText },
+  { to: '/api-docs', label: 'Документация', icon: BookOpenText },
 ]
 
 /** Web-only shell (gate + browser session). Screens below are portable to desktop. */
