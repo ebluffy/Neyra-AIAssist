@@ -31,6 +31,7 @@ from core.runtime.win_runtime import apply_runtime_patches
 apply_runtime_patches()
 
 from core.api.dashboard_auth import DashboardAuthStore
+from core.api.client_ip import resolve_client_ip as _resolve_client_ip_pure
 from core.neyra import NeyraAgent
 from core.runtime.backup import BackupManager
 from core.runtime.event_bus import CoreEvent
@@ -48,6 +49,79 @@ _DASH_LOGIN_FAILS: dict[str, list[float]] = {}
 _DASH_LOGIN_LOCK = threading.Lock()
 _DASH_LOGIN_WINDOW_S = 300.0
 _DASH_LOGIN_MAX_FAILS = 10
+
+# Runtime config keys mutable via dashboard Settings (no secrets).
+CONFIG_RUNTIME_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "llm.talk_model",
+        "llm.brain_model",
+        "llm.memory_model",
+        "llm.vision_model",
+        "llm.talk_model.model",
+        "llm.talk_model.provider",
+        "llm.talk_model.reply_max_tokens",
+        "llm.talk_model.lyrics_reply_max_tokens",
+        "llm.talk_model.temperature",
+        "llm.talk_model.timeout_seconds",
+        "llm.brain_model.model",
+        "llm.brain_model.provider",
+        "llm.brain_model.model_deep",
+        "llm.brain_model.max_tokens",
+        "llm.brain_model.temperature",
+        "llm.brain_model.timeout_seconds",
+        "llm.memory_model.model",
+        "llm.memory_model.provider",
+        "llm.memory_model.max_tokens",
+        "llm.memory_model.temperature",
+        "llm.vision_model.model",
+        "llm.vision_model.provider",
+        "llm.vision_model.max_tokens",
+        "llm.vision_model.temperature",
+        "llm.vision_model.timeout_seconds",
+        "llm.vision_model.enabled",
+        "llm.vision_model.use_brain_model_for_vision",
+        "llm.vision_model.max_images_per_message",
+        "llm.vision_model.max_image_bytes",
+        "llm.vision_model.max_image_width",
+        "llm.vision_model.max_image_height",
+        "llm.vision_model.remember_last_image",
+        "llm.vision_model.last_image_note_max_chars",
+        "llm.providers.aihope.base_url",
+        "llm.providers.openrouter.base_url",
+        "llm.provider",
+        "llm.base_url",
+        "agent.fast_path.enabled",
+        "logging.level",
+        "memory.rag_write_mode",
+        "health_monitor.enabled",
+        "health_monitor.interval_seconds",
+    }
+)
+
+
+def resolve_client_ip(request: Request) -> str:
+    """Client IP for rate-limit / setup-guard behind frp (see ``core.api.client_ip``)."""
+    peer = request.client.host if request.client else "unknown"
+    return _resolve_client_ip_pure(peer=peer, headers=request.headers)
+
+
+def _config_get_path(cfg: dict, path: str) -> Any:
+    cur: Any = cfg
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def runtime_config_snapshot(cfg: dict) -> dict[str, Any]:
+    """Allowlisted runtime values only (no API keys / .env secrets)."""
+    out: dict[str, Any] = {}
+    for key in sorted(CONFIG_RUNTIME_ALLOWLIST):
+        val = _config_get_path(cfg, key)
+        if val is not None:
+            out[key] = val
+    return out
 
 # Set by run_neyra_server so soft-restart can ask uvicorn to shut down cleanly.
 _uvicorn_server: Any = None
@@ -1071,19 +1145,7 @@ def build_app(
         }
 
     def _client_ip(request: Request) -> str:
-        # Prefer Cloudflare's CF-Connecting-IP (set by CF on orange-cloud; not forgeable
-        # through Cloudflare). Then the socket peer. Only if peer is local (frp/nginx
-        # on same host) trust X-Real-IP that the edge overwrites from the real socket.
-        cf = (request.headers.get("cf-connecting-ip") or "").strip()
-        if cf:
-            return cf
-        peer = request.client.host if request.client else "unknown"
-        if peer not in ("127.0.0.1", "::1"):
-            return peer
-        xri = (request.headers.get("x-real-ip") or "").strip()
-        if xri:
-            return xri
-        return peer
+        return resolve_client_ip(request)
 
     def _dash_login_rate_ok(ip: str) -> bool:
         now = time.time()
@@ -1762,57 +1824,23 @@ def build_app(
             cur = nxt
         cur[keys[-1]] = value
 
+    @app.get("/v1/config/runtime")
+    async def v1_config_runtime(request: Request, _: str = Depends(dep_admin)):
+        """Allowlisted runtime config snapshot for dashboard Settings (no secrets)."""
+        trace_id = _trace_id(request)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"values": runtime_config_snapshot(config)},
+        }
+
     @app.post("/v1/config/update")
     async def v1_config_update(body: ConfigUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
         _audit("config_update", trace_id, api_role, {"keys": list(body.updates.keys())})
-        allowed = {
-            "llm.talk_model",
-            "llm.brain_model",
-            "llm.memory_model",
-            "llm.vision_model",
-            "llm.talk_model.model",
-            "llm.talk_model.provider",
-            "llm.talk_model.reply_max_tokens",
-            "llm.talk_model.lyrics_reply_max_tokens",
-            "llm.talk_model.temperature",
-            "llm.talk_model.timeout_seconds",
-            "llm.brain_model.model",
-            "llm.brain_model.provider",
-            "llm.brain_model.model_deep",
-            "llm.brain_model.max_tokens",
-            "llm.brain_model.temperature",
-            "llm.brain_model.timeout_seconds",
-            "llm.memory_model.model",
-            "llm.memory_model.provider",
-            "llm.memory_model.max_tokens",
-            "llm.memory_model.temperature",
-            "llm.vision_model.model",
-            "llm.vision_model.provider",
-            "llm.vision_model.max_tokens",
-            "llm.vision_model.temperature",
-            "llm.vision_model.timeout_seconds",
-            "llm.vision_model.enabled",
-            "llm.vision_model.use_brain_model_for_vision",
-            "llm.vision_model.max_images_per_message",
-            "llm.vision_model.max_image_bytes",
-            "llm.vision_model.max_image_width",
-            "llm.vision_model.max_image_height",
-            "llm.vision_model.remember_last_image",
-            "llm.vision_model.last_image_note_max_chars",
-            "llm.providers.aihope.base_url",
-            "llm.providers.openrouter.base_url",
-            "llm.provider",
-            "llm.base_url",
-            "agent.fast_path.enabled",
-            "logging.level",
-            "memory.rag_write_mode",
-            "health_monitor.enabled",
-            "health_monitor.interval_seconds",
-        }
         updates_applied: dict[str, Any] = {}
         for k, v in body.updates.items():
-            if k not in allowed:
+            if k not in CONFIG_RUNTIME_ALLOWLIST:
                 raise ApiError("forbidden_update", f"Path not allowed: {k}", 403)
             _safe_set(config, k, v)
             updates_applied[k] = v

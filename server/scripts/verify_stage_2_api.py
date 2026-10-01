@@ -493,7 +493,7 @@ def check_spa_routes() -> list[str]:
         shared_backup_manager=backup,
     )
     with TestClient(app) as client:
-        for path in ("/", "/dashboard", "/plugins", "/settings"):
+        for path in ("/", "/status", "/modules", "/memory", "/system", "/settings", "/dashboard", "/plugins"):
             r = client.get(path)
             if r.status_code != 200:
                 errs.append(f"{path} want 200, got {r.status_code}")

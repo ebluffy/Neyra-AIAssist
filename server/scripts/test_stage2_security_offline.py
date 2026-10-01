@@ -249,7 +249,8 @@ def _test_dashboard_session_store() -> None:
 
     td = tempfile.mkdtemp()
     try:
-        store = DashboardAuthStore(Path(td) / "dash.sqlite")
+        db = Path(td) / "dash.sqlite"
+        store = DashboardAuthStore(db)
         key = "a" * MIN_KEY_LEN
         store.setup(key)
         assert store.verify(key)
@@ -259,10 +260,27 @@ def _test_dashboard_session_store() -> None:
         session2 = store.issue_session()
         assert store.verify_session(session2)
         assert not store.verify_session(session), "new login must revoke prior sessions"
-        store.revoke_session(session2)
-        assert not store.verify_session(session2)
+        # Persist across process-like reinit (same SQLite file).
+        store2 = DashboardAuthStore(db)
+        assert store2.verify_session(session2), "session must survive store reinit"
+        store2.revoke_session(session2)
+        assert not store2.verify_session(session2)
+        store3 = DashboardAuthStore(db)
+        assert not store3.verify_session(session2)
     finally:
         shutil.rmtree(td, ignore_errors=True)
+
+
+def _test_resolve_client_ip() -> None:
+    """Loopback peer may trust CF / X-Real-IP; public peer ignores forgeable CF."""
+    from core.api.client_ip import resolve_client_ip
+
+    assert resolve_client_ip(peer="127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"}) == "203.0.113.9"
+    assert resolve_client_ip(peer="127.0.0.1", headers={"x-real-ip": "198.51.100.1"}) == "198.51.100.1"
+    assert resolve_client_ip(peer="127.0.0.1", headers={"x-forwarded-for": "9.9.9.9"}) == "127.0.0.1"
+    assert (
+        resolve_client_ip(peer="203.0.113.50", headers={"cf-connecting-ip": "1.2.3.4"}) == "203.0.113.50"
+    )
 
 
 def main() -> int:
@@ -273,6 +291,7 @@ def main() -> int:
     _test_diary_prompt_skips_session_archive()
     _test_memory_model_429_backoff()
     _test_dashboard_session_store()
+    _test_resolve_client_ip()
     print("stage2 security offline: OK")
     return 0
 

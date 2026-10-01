@@ -11,29 +11,35 @@
 
 HTTP-стек живёт в **`server/core/api/`** (Control API), это не модуль-плагин. Bind, публичный URL и поведение дашборда — в **`server/config/server.yaml`** (`api:`, `dashboard:`).
 
-Полное real-time совпадение с Event Bus для всех действий UI — в backlog (двусторонний WebSocket-мост — см. [`docs/PLAN.md`](../../PLAN.md)). Сейчас SPA в основном использует HTTP `/v1`.
+**Роль:** полигон экранов будущего Tauri-клиента (Этап 3). Переносимые слои: `api/`, `components/ui/`, `screens/`, `styles/`. Web-only: `shell/` (AuthGate + sessionStorage). Чата в веб-UI нет.
+
+Полное real-time совпадение с Event Bus для всех действий UI — в backlog. Сейчас SPA в основном использует HTTP `/v1`.
 
 ## Gate по ключу доступа
 
 Перед любой страницей дашборда SPA проверяет **ключ доступа**:
 
 1. **Первый визит** (ключ ещё не задан): создайте ключ (минимум **32** символа; удобный вариант — «Сгенерировать hex (32)»). На сервере хранится хеш **PBKDF2** в `server/data/dashboard_auth.sqlite`.
-2. **Повторные визиты:** вход тем же ключом. После login SPA держит **session token** в **`sessionStorage`** до «Выйти» / закрытия вкладки (сырой ключ в storage не кладётся).
-3. **`POST /v1/dashboard/auth/setup`** разрешён только пока ключ не задан. Если bind API **не** loopback, setup принимается **только с loopback-клиента** (защита от удалённой гонки за ключ).
-4. **`POST /v1/dashboard/auth/login`** и **`GET /v1/dashboard/auth/status`** публичны. После успешного login/setup API отдаёт короткоживущий **`session_token`**; SPA шлёт его как **`Authorization: Bearer`**. `_resolve_role` принимает проверенную сессию (быстрый hash) как **admin**. Сырой ключ дашборда **не** принимается как Bearer. **`POST /v1/dashboard/auth/logout`** отзывает session. Отдельные `API_TOKEN` / viewer / maint — для Discord, MCP, скриптов и Settings.
-
-Этот gate **отделён** от Tauri-клиента Этапа 3 (`client/`): десктопное приложение ходит в тот же Control API с URL сервера и API-токеном, а не через flow ключа дашборда.
+2. **Повторные визиты:** вход тем же ключом. После login SPA держит **session token** в **`sessionStorage`** (хеши сессий также в SQLite — переживают рестарт процесса).
+3. **`POST /v1/dashboard/auth/setup`** разрешён только пока ключ не задан. Если bind API **не** loopback, setup принимается **только с loopback**-клиента.
+4. Login/setup выдаёт **`session_token`**; SPA шлёт его как Bearer (admin). Сырой ключ **не** принимается как Bearer. Logout отзывает session.
 
 ## Разделы UI
 
-- **Home** — лендинг и обзор возможностей.
-- **Dashboard** — health, память, баланс, список плагинов.
-- **Plugins** — состояние плагинов, правка plugin config, invoke / reload / restart.
-- **Settings** — Bearer token и обновление allow-list рантайма.
-- **Webhooks** — исходящие маршруты, тесты, deliveries / DLQ.
-- **API Docs** — ссылки на Swagger / ReDoc / `openapi.json` и Markdown из репозитория.
+| Nav | Route | Назначение |
+|-----|-------|------------|
+| Статус | `/status` | health, models, balance, soft-restart (`/dashboard` → redirect) |
+| Модули | `/modules` | list/toggle/config/invoke/reload/restart (`/plugins` → redirect; API всё ещё `/v1/plugins`) |
+| Память | `/memory` | stats, people, diary, search, LTM |
+| Система | `/system` | meta, backup, DLQ summary |
+| Вебхуки | `/webhooks` | routes, deliveries, DLQ |
+| Настройки | `/settings` | Bearer override + `GET/POST` runtime config (allowlist) |
+| API Docs | `/api-docs` | Swagger / ReDoc / Markdown |
 
-(Вкладки «Микро-сайт» нет; публичные маркетинговые страницы вне scope этой SPA.)
+## Runtime config
+
+- `GET /v1/config/runtime` — снимок allowlisted ключей (без секретов `.env`).
+- `POST /v1/config/update` — запись тех же ключей.
 
 ## Разработка
 
@@ -43,13 +49,14 @@ npm install
 npm run dev
 ```
 
-Proxy на backend настраивается в `vite.config.ts` (`/v1`, `/docs`, `/redoc`, `/openapi.json`).
+Proxy на backend — в `vite.config.ts`.
 
 ## Сборка
 
 ```bash
 cd server/dashboard
+npm install
 npm run build
 ```
 
-Сборка попадает в `server/dashboard/dist` и раздаётся статическим mount Control API.
+Сборка → `server/dashboard/dist`, раздаётся Control API.

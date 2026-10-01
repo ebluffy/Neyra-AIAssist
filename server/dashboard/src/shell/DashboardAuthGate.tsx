@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Cpu, KeyRound, Lock, RefreshCw } from 'lucide-react'
 import { clearSessionToken, hasDashboardSession, setSessionToken } from '../api'
-import { Button } from './ui/button'
+import { Button } from '../components/ui/button'
 
 const MIN_LEN = 32
 

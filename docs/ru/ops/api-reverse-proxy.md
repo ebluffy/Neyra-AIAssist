@@ -63,6 +63,25 @@ WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?tok
 
 ## nginx (frp — upstream = vhost frps)
 
+За Cloudflare (orange-cloud) edge должен **перезаписывать** клиентский IP и прокидывать его в frp:
+
+```nginx
+map $http_cf_connecting_ip $neyra_client_ip {
+    ""      $remote_addr;
+    default $http_cf_connecting_ip;
+}
+```
+
+В `location` (и `/api/`, и `/`):
+
+```nginx
+proxy_set_header CF-Connecting-IP $neyra_client_ip;
+proxy_set_header X-Real-IP $neyra_client_ip;
+proxy_set_header X-Forwarded-For $neyra_client_ip;
+```
+
+API доверяет `CF-Connecting-IP` / `X-Real-IP` **только** когда socket peer = loopback (типичный frpc→uvicorn). Сырой `X-Forwarded-For` от клиента не читается. Smoke: неверный login с интернета → в логе ядра `dashboard login failed ip=<реальный клиент>`, не `127.0.0.1` и не подставной XFF.
+
 ```nginx
 server {
   listen 443 ssl http2;
@@ -72,8 +91,9 @@ server {
   location /api/ {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header CF-Connecting-IP $neyra_client_ip;
+    proxy_set_header X-Real-IP $neyra_client_ip;
+    proxy_set_header X-Forwarded-For $neyra_client_ip;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -83,7 +103,9 @@ server {
   location / {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header CF-Connecting-IP $neyra_client_ip;
+    proxy_set_header X-Real-IP $neyra_client_ip;
+    proxy_set_header X-Forwarded-For $neyra_client_ip;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
