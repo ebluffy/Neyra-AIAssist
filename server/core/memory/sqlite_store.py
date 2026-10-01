@@ -273,6 +273,20 @@ class SqliteStore:
             )
             return [self._row_to_dict(r) for r in cur.fetchall()]
 
+    def delete_person_fact(self, person_id: str, fact_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM person_facts WHERE person_id = ? AND id = ?",
+                (person_id, int(fact_id)),
+            )
+            return cur.rowcount > 0
+
+    def delete_person(self, person_id: str) -> bool:
+        with self._lock:
+            self._conn.execute("DELETE FROM person_facts WHERE person_id = ?", (person_id,))
+            cur = self._conn.execute("DELETE FROM people WHERE person_id = ?", (person_id,))
+            return cur.rowcount > 0
+
     def add_diary_note(
         self,
         *,

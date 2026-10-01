@@ -1,7 +1,3 @@
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Переменные окружения
 
 Основной список: `server/.env.example` (runtime — `server/.env`).

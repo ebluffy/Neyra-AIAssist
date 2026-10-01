@@ -144,3 +144,36 @@ def resolve_doc_path(server_root: Path, doc_id: str) -> Path | None:
                 return cand
 
     return None
+
+
+_KEEP_ATTRIBUTION_IDS = frozenset({"readme-ru", "readme-en"})
+_BADGE_COMMENT = "<!-- co-authored-cursor-badge -->"
+_BADGE_PREFIX = "[![Cursor AI assist]"
+_SUB_PREFIXES = ("<sub>Соавторство:", "<sub>Co-authored with")
+
+
+def sanitize_markdown_text(text: str, *, doc_id: str = "") -> str:
+    """Drop Cursor badge / co-author sub lines except root README aliases."""
+    if (doc_id or "").strip().lower() in _KEEP_ATTRIBUTION_IDS:
+        return text
+    lines = text.splitlines(True)
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if (
+            s == _BADGE_COMMENT
+            or s.startswith(_BADGE_PREFIX)
+            or any(s.startswith(p) for p in _SUB_PREFIXES)
+        ):
+            i += 1
+            while i < len(lines) and lines[i].strip() == "":
+                i += 1
+            if i < len(lines) and lines[i].strip() == "---":
+                i += 1
+                while i < len(lines) and lines[i].strip() == "":
+                    i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+    return "".join(out)

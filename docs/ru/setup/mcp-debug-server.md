@@ -1,7 +1,3 @@
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # MCP debug-сервер (`devtools/mcp_server`)
 
 Официальный Python SDK MCP (`mcp`): подключение Cursor (или другого MCP-клиента) к Neyra для логов, вызовов Control API, инъекции событий и инспекции памяти. Runtime-поставка сервера **не** включает этот каталог — только devtools.

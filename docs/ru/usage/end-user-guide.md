@@ -1,7 +1,3 @@
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Гайд конечного пользователя
 
 - Запустите ядро: `python server/main.py` (или из cwd `server/`: `python main.py`).

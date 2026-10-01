@@ -1,7 +1,3 @@
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Request examples
 
 Local base: `http://127.0.0.1:8787`. Public example base: `https://neyra.owyx.site/api/v1`.

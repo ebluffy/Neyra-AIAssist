@@ -1,7 +1,3 @@
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Web UI (дашборд на React)
 
 Дашборд — SPA на **React + Vite + Tailwind CSS**, раздаётся тем же процессом FastAPI, что и ядро (из корня репо: `python server/main.py`, или из `server/` cwd: `python main.py`). Исходники — `server/dashboard/src/`, сборка — `server/dashboard/dist`.

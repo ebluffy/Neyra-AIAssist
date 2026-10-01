@@ -1,7 +1,3 @@
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # WebSocket Chat
 
 Endpoint: `ws://127.0.0.1:8787/v1/ws/chat`  

@@ -1,7 +1,3 @@
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Performance рекомендации
 
 - Не держите тяжёлые синхронные циклы в resident plugin без sleep/backoff.

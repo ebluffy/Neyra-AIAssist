@@ -1,7 +1,3 @@
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Contributing
 
 Thanks for contributing to [Neyra-AIAssist](https://github.com/ebluffy/Neyra-AIAssist).

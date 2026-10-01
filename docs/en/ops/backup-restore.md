@@ -1,7 +1,3 @@
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Backup and restore
 
 - Trigger: `POST /v1/backup/run` (admin token).

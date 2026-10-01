@@ -1,7 +1,3 @@
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Справочник `server/config.yaml`
 
 `server/config.yaml` содержит только короткий корневой runtime-конфиг ядра (assistant, paths, указатели на слои).

@@ -1,7 +1,3 @@
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Production deployment (baseline checklist)
 
 - Run under a process manager (systemd/supervisor/Docker `restart: unless-stopped`).

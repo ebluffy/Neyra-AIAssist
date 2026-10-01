@@ -1,7 +1,3 @@
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Vocard (upstream reference)
 
 Neyra borrows UI and Lavalink patterns from the **Vocard** Discord music bot ecosystem. A legacy vendored Vocard reference tree used to live in-repo under the old `interfaces/` layout; it was removed to reduce noise. The Neyra Discord integration lives in `server/modules/discord/`. Upstream: [ChocoMeow/Vocard](https://github.com/ChocoMeow/Vocard), docs: [docs.vocard.xyz](https://docs.vocard.xyz/latest/bot/setup).

@@ -1,7 +1,3 @@
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Neyra documentation (English)
 
 **Other language:** [Русская документация](../ru/README.md)

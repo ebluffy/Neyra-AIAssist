@@ -1,7 +1,3 @@
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Local deployment
 
 - Run `python server/main.py` (or `python main.py` from `server/` cwd).

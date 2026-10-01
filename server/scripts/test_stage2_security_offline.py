@@ -289,7 +289,7 @@ def _test_docs_catalog_resolve_allowlist() -> None:
     import tempfile
     from pathlib import Path
 
-    from core.api.docs_catalog import build_docs_catalog, resolve_doc_path
+    from core.api.docs_catalog import build_docs_catalog, resolve_doc_path, sanitize_markdown_text
 
     td = Path(tempfile.mkdtemp())
     try:
@@ -298,7 +298,13 @@ def _test_docs_catalog_resolve_allowlist() -> None:
         (td / "docs" / "ru" / "api" / "overview.md").write_text("# RU API\n", encoding="utf-8")
         (td / "docs" / "en" / "api" / "overview.md").write_text("# EN API\n", encoding="utf-8")
         (td / "docs" / "ru" / "architecture").mkdir(parents=True)
-        (td / "docs" / "ru" / "architecture" / "web-ui.md").write_text("# web\n", encoding="utf-8")
+        dirty = (
+            "<!-- co-authored-cursor-badge -->\n"
+            "[![Cursor AI assist](https://img.shields.io/badge/x)](https://cursor.com)\n\n"
+            "<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>\n\n"
+            "---\n\n# web\n"
+        )
+        (td / "docs" / "ru" / "architecture" / "web-ui.md").write_text(dirty, encoding="utf-8")
         (td / "README-RU.md").write_text("# readme\n", encoding="utf-8")
         (td / "secret.md").write_text("leak\n", encoding="utf-8")
         (td / "config").mkdir()
@@ -317,8 +323,48 @@ def _test_docs_catalog_resolve_allowlist() -> None:
         assert resolve_doc_path(td, "config/notes") is None
         assert resolve_doc_path(td, "../secret") is None
         assert resolve_doc_path(td, "ru/../en/api/overview") is None
+
+        cleaned = sanitize_markdown_text(dirty, doc_id="ru/architecture/web-ui")
+        assert "co-authored-cursor-badge" not in cleaned
+        assert "Соавторство" not in cleaned
+        assert cleaned.lstrip().startswith("# web")
+        kept = sanitize_markdown_text(dirty, doc_id="readme-ru")
+        assert "Соавторство" in kept
     finally:
         shutil.rmtree(td, ignore_errors=True)
+
+
+def _test_setup_guard_resolved_ip() -> None:
+    """Setup must use resolve_client_ip: loopback peer + CF public IP → not local."""
+    from core.api.client_ip import resolve_client_ip
+
+    # frpc peer + public CF → treated as remote client
+    remote = resolve_client_ip(peer="127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"})
+    assert remote == "203.0.113.9"
+    assert remote not in ("127.0.0.1", "::1")
+    # true local
+    local = resolve_client_ip(peer="127.0.0.1", headers={})
+    assert local == "127.0.0.1"
+
+
+def _test_person_profile_split() -> None:
+    from core.memory.person_profile import PROFILE_KEYS, split_static_facts
+
+    profile, leftovers = split_static_facts(
+        {
+            "birth_year": 2004,
+            "city": "Киров",
+            "car": "Ауди",
+            "games": ["Dota", "CS2"],
+            "first_name": "Максим",
+        }
+    )
+    assert profile["first_name"] == "Максим"
+    assert profile["birth_date"] == "2004"
+    assert profile["city"] == "Киров"
+    assert all(k in PROFILE_KEYS for k in profile)
+    assert any("car" in x.lower() or "Ауди" in x for x in leftovers)
+    assert any("Dota" in x for x in leftovers)
 
 
 def main() -> int:
@@ -331,6 +377,8 @@ def main() -> int:
     _test_dashboard_session_store()
     _test_resolve_client_ip()
     _test_docs_catalog_resolve_allowlist()
+    _test_setup_guard_resolved_ip()
+    _test_person_profile_split()
     print("stage2 security offline: OK")
     return 0
 

@@ -1,7 +1,3 @@
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # API Overview
 
 Control API package: `server/core/api/` (part of the core, not a plugin). Local base URL: `http://127.0.0.1:8787`.

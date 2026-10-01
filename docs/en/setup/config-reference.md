@@ -1,7 +1,3 @@
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # `server/config.yaml` reference
 
 `server/config.yaml` holds only the short root runtime config for the core (assistant, paths, pointers to layers).

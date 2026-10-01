@@ -1,7 +1,3 @@
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Config и секреты плагинов
 
 - Параметры плагина: `server/modules/<id>/config.yaml`.

@@ -434,6 +434,31 @@ class MemoryAddRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class PersonUpsertRequest(BaseModel):
+    """Create/update person dossier. Profile uses canonical keys only."""
+
+    id: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    names: Optional[list[str]] = None
+    discord_ids: Optional[list[str]] = None
+    profile: dict[str, Any] = Field(default_factory=dict)
+
+
+class PersonFactCreateRequest(BaseModel):
+    fact: str = Field(min_length=1, max_length=4000)
+    emotion_note: Optional[str] = Field(default=None, max_length=500)
+
+
+class DiaryCreateRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=12000)
+    emotion: Optional[str] = Field(default=None, max_length=120)
+
+
+class JournalCreateRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=12000)
+    title: Optional[str] = Field(default=None, max_length=240)
+    kind: Optional[str] = Field(default=None, max_length=80)
+
+
 class MemoryPruneRequest(BaseModel):
     older_than_days: float = Field(default=90.0, ge=0.5, le=36500.0)
     types: Optional[list[str]] = Field(default=None)
@@ -1172,22 +1197,41 @@ def build_app(
         }
 
     @app.post("/v1/dashboard/auth/setup")
-    async def v1_dashboard_auth_setup(body: DashboardGateKeyRequest, request: Request):
+    async def v1_dashboard_auth_setup(
+        body: DashboardGateKeyRequest,
+        request: Request,
+        authorization: Optional[str] = Header(default=None),
+    ):
         """
         Create the dashboard access key once.
-        If the API binds non-loopback, setup is only allowed from a loopback client
-        (first-setup window; prevents remote race to claim the key).
+
+        Setup is allowed only from a *resolved* loopback client IP, or with a valid
+        API Bearer (admin/maint/viewer primary tokens — not a dashboard session).
+        This closes the frpc window where peer is always 127.0.0.1 but CF/X-Real
+        carry the public client.
         """
         trace_id = _trace_id(request)
-        bind_host = str((_api_cfg(config).get("host") or "127.0.0.1"))
-        if not _is_loopback_host(bind_host):
-            client_host = request.client.host if request.client else ""
-            if not _is_loopback_host(client_host):
-                raise ApiError(
-                    "forbidden",
-                    "Dashboard key setup is only allowed from localhost when API bind is not loopback",
-                    403,
-                )
+        client_ip = resolve_client_ip(request)
+        local_ok = _is_loopback_host(client_ip)
+        api_ok = False
+        raw = (authorization or "").strip()
+        if raw.startswith("Bearer "):
+            got = raw.removeprefix("Bearer ").strip()
+            api = _api_cfg(config)
+            for expected in (
+                str(api.get("token") or "").strip(),
+                str(api.get("maint_token") or "").strip(),
+                str(api.get("viewer_token") or "").strip(),
+            ):
+                if expected and _token_eq(got, expected):
+                    api_ok = True
+                    break
+        if not local_ok and not api_ok:
+            raise ApiError(
+                "forbidden",
+                "Dashboard key setup requires localhost (resolved client IP) or a valid API Bearer",
+                403,
+            )
         try:
             dash_auth.setup(body.key)
         except RuntimeError as e:
@@ -1377,6 +1421,7 @@ def build_app(
                         "id": p.get("id"),
                         "names": p.get("names") or [],
                         "discord_ids": p.get("discord_ids") or [],
+                        "profile": p.get("profile") or p.get("static_facts") or {},
                     }
                 )
             return out
@@ -1384,9 +1429,54 @@ def build_app(
         people = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": {"people": people, "count": len(people)}}
 
+    @app.post("/v1/memory/people")
+    async def v1_memory_people_create(
+        body: PersonUpsertRequest,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (body.id or "").strip()
+        if not pid:
+            base = ""
+            if body.names:
+                base = str(body.names[0])
+            if not base and isinstance(body.profile, dict):
+                base = str(body.profile.get("first_name") or body.profile.get("last_name") or "")
+            import re as _re
+
+            slug = _re.sub(r"[^a-zA-Z0-9_\-]+", "_", base.strip().lower()).strip("_") or "person"
+            pid = slug[:60]
+
+        def _run() -> dict[str, Any]:
+            if hub.find_person(pid):
+                raise ApiError("person_exists", f"person '{pid}' already exists", 409)
+            person = hub.save_person_dossier(
+                person_id=pid,
+                names=list(body.names or []),
+                discord_ids=list(body.discord_ids or []),
+                profile=dict(body.profile or {}),
+                create=True,
+            )
+            pdb = getattr(agent, "people_db", None)
+            if pdb is not None:
+                pdb._cache[pid] = dict(person)
+            return {"person": person}
+
+        try:
+            data = await asyncio.to_thread(_run)
+        except ApiError:
+            raise
+        except Exception as e:
+            raise ApiError("person_create_failed", str(e), 500) from e
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
     @app.get("/v1/memory/people/{person_id}")
     async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_viewer)):
-        """Person dossier summary via Hub (static_facts + recent facts)."""
+        """Person dossier summary via Hub (profile + recent facts)."""
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
@@ -1396,28 +1486,135 @@ def build_app(
             raise ApiError("invalid_person_id", "person_id required", 400)
 
         def _run() -> dict[str, Any]:
-            # Same shape as GET /v1/memory/people (legacy id/names/discord_ids).
-            # Resolve by id, name, or discord so summary/facts use canonical person_id.
             person = hub.find_person(pid)
             if not person:
-                return {"person_id": pid, "person": None, "summary": "", "facts": []}
+                return {"person_id": pid, "person": None, "summary": "", "facts": [], "profile": {}}
             resolved = str(person.get("id") or "").strip() or pid
             summary = hub.get_person_summary(resolved)
-            facts = (
-                hub.list_person_facts(resolved, limit=20)
-                if hasattr(hub, "list_person_facts")
-                else []
-            )
+            facts = hub.list_person_facts(resolved, limit=50)
             return {
                 "person_id": resolved,
                 "person": person,
+                "profile": person.get("profile") or person.get("static_facts") or {},
                 "summary": summary,
                 "facts": facts,
+                "legacy_fact_hints": person.get("legacy_fact_hints") or [],
             }
 
         data = await asyncio.to_thread(_run)
         if not data.get("person") and not (data.get("summary") or "").strip():
             raise ApiError("person_not_found", f"person '{pid}' not found", 404)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.patch("/v1/memory/people/{person_id}")
+    async def v1_memory_person_patch(
+        person_id: str,
+        body: PersonUpsertRequest,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (person_id or "").strip()
+        if not pid:
+            raise ApiError("invalid_person_id", "person_id required", 400)
+
+        def _run() -> dict[str, Any]:
+            try:
+                person = hub.save_person_dossier(
+                    person_id=pid,
+                    names=list(body.names) if body.names is not None else None,
+                    discord_ids=list(body.discord_ids) if body.discord_ids is not None else None,
+                    profile=dict(body.profile) if body.profile is not None else None,
+                    create=False,
+                )
+            except KeyError as e:
+                raise ApiError("person_not_found", f"person '{pid}' not found", 404) from e
+            pdb = getattr(agent, "people_db", None)
+            if pdb is not None:
+                pdb._cache[pid] = dict(person)
+            return {"person": person}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.delete("/v1/memory/people/{person_id}")
+    async def v1_memory_person_delete(
+        person_id: str,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (person_id or "").strip()
+        if not pid:
+            raise ApiError("invalid_person_id", "person_id required", 400)
+
+        def _run() -> dict[str, Any]:
+            ok = hub.delete_person(pid)
+            pdb = getattr(agent, "people_db", None)
+            if pdb is not None:
+                pdb._cache.pop(pid, None)
+            if not ok:
+                raise ApiError("person_not_found", f"person '{pid}' not found", 404)
+            return {"deleted": True, "person_id": pid}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.post("/v1/memory/people/{person_id}/facts")
+    async def v1_memory_person_fact_add(
+        person_id: str,
+        body: PersonFactCreateRequest,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (person_id or "").strip()
+        if not pid:
+            raise ApiError("invalid_person_id", "person_id required", 400)
+
+        def _run() -> dict[str, Any]:
+            if not hub.find_person(pid):
+                raise ApiError("person_not_found", f"person '{pid}' not found", 404)
+            fact_id = hub.add_person_fact(
+                pid,
+                fact=body.fact.strip(),
+                emotion_note=(body.emotion_note or None),
+                source="dashboard",
+            )
+            return {"fact_id": fact_id}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.delete("/v1/memory/people/{person_id}/facts/{fact_id}")
+    async def v1_memory_person_fact_delete(
+        person_id: str,
+        fact_id: int,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (person_id or "").strip()
+
+        def _run() -> dict[str, Any]:
+            ok = hub.delete_person_fact(pid, int(fact_id))
+            if not ok:
+                raise ApiError("fact_not_found", "fact not found", 404)
+            return {"deleted": True, "fact_id": int(fact_id)}
+
+        data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/memory/diary")
@@ -1439,6 +1636,24 @@ def build_app(
         data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
+    @app.post("/v1/memory/diary")
+    async def v1_memory_diary_create(
+        body: DiaryCreateRequest,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            note_id = hub.add_diary_note(text=body.text.strip(), emotion=body.emotion, source="dashboard")
+            return {"id": note_id}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
     @app.get("/v1/memory/journal")
     async def v1_memory_journal(
         request: Request,
@@ -1453,6 +1668,28 @@ def build_app(
         def _run() -> dict[str, Any]:
             rows = hub.list_journal_entries(limit=limit, newest_first=True)
             return {"entries": rows, "count": len(rows)}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.post("/v1/memory/journal")
+    async def v1_memory_journal_create(
+        body: JournalCreateRequest,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            entry_id = hub.add_journal_entry(
+                text=body.text.strip(),
+                title=body.title,
+                kind=body.kind or "manual",
+            )
+            return {"id": entry_id}
 
         data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}
@@ -1807,13 +2044,13 @@ def build_app(
 
     @app.get("/v1/docs/markdown/{doc_id:path}", response_class=PlainTextResponse)
     async def v1_docs_markdown(doc_id: str, request: Request, _: None = Depends(dep_viewer)):
-        from core.api.docs_catalog import resolve_doc_path
+        from core.api.docs_catalog import resolve_doc_path, sanitize_markdown_text
 
         trace_id = _trace_id(request)
         target = resolve_doc_path(root, doc_id)
         if target is None:
             raise ApiError("not_found", f"Unknown markdown doc: {doc_id}", 404)
-        text = target.read_text(encoding="utf-8")
+        text = sanitize_markdown_text(target.read_text(encoding="utf-8"), doc_id=doc_id)
         response = PlainTextResponse(content=text)
         response.headers["x-trace-id"] = trace_id
         return response

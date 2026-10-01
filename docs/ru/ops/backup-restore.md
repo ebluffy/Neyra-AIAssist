@@ -1,7 +1,3 @@
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Бэкап и восстановление
 
 - Запуск: `POST /v1/backup/run` (admin token).

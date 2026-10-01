@@ -1,7 +1,3 @@
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Документация Neyra (русский)
 
 **English:** [Neyra documentation (EN)](../en/README.md)

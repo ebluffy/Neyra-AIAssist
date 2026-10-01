@@ -1,7 +1,3 @@
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Quickstart
 
 1. Create a venv and install dependencies (from repo root):

@@ -286,6 +286,58 @@ class MemoryHub:
     def list_person_facts(self, person_id: str, limit: int = 20) -> list[dict[str, Any]]:
         return self.sqlite.list_person_facts(person_id, limit=limit)
 
+    def delete_person_fact(self, person_id: str, fact_id: int) -> bool:
+        return self.sqlite.delete_person_fact(person_id, fact_id)
+
+    def delete_person(self, person_id: str) -> bool:
+        return self.sqlite.delete_person(person_id)
+
+    def save_person_dossier(
+        self,
+        *,
+        person_id: str,
+        names: list[str] | None = None,
+        discord_ids: list[str] | None = None,
+        profile: dict[str, Any] | None = None,
+        create: bool = False,
+    ) -> dict[str, Any]:
+        """Create/update person with canonical profile in meta.static_facts."""
+        from core.memory.person_profile import (
+            coerce_profile,
+            display_name_from_profile,
+            merge_profile,
+            split_static_facts,
+        )
+
+        pid = (person_id or "").strip()
+        if not pid:
+            raise ValueError("person_id required")
+        existing = self.sqlite.get_person(pid)
+        if existing is None and not create:
+            raise KeyError(pid)
+        meta: dict[str, Any] = {}
+        if existing and isinstance(existing.get("meta"), dict):
+            meta = dict(existing["meta"])
+        old_static = meta.get("static_facts") if isinstance(meta.get("static_facts"), dict) else {}
+        old_profile, _ = split_static_facts(old_static)
+        new_profile = merge_profile(old_profile, profile) if profile is not None else coerce_profile(old_profile)
+        meta["static_facts"] = {k: v for k, v in new_profile.items() if str(v).strip()}
+        if names is not None:
+            clean_names = [str(n).strip() for n in names if str(n).strip()]
+            meta["names"] = clean_names
+        else:
+            clean_names = list(meta.get("names") or [])
+            if not clean_names:
+                aliases = existing.get("aliases") if existing else None
+                if isinstance(aliases, list):
+                    clean_names = [str(n).strip() for n in aliases if str(n).strip()]
+        if discord_ids is not None:
+            meta["discord_ids"] = [str(x).strip() for x in discord_ids if str(x).strip()]
+        display = display_name_from_profile(new_profile, fallback=(clean_names[0] if clean_names else pid))
+        self.upsert_person(pid, display_name=display, aliases=clean_names or [pid], meta=meta)
+        row = self.sqlite.get_person(pid)
+        return self._person_as_legacy_dict(row) if row else {"id": pid}
+
     def add_diary_note(
         self,
         text: str,
@@ -380,6 +432,8 @@ class MemoryHub:
 
     def _person_as_legacy_dict(self, row: dict[str, Any]) -> dict[str, Any]:
         """Normalize SQLite people row to PeopleDB-shaped dict (id/names/discord_ids)."""
+        from core.memory.person_profile import coerce_profile, split_static_facts
+
         pid = str(row.get("person_id") or "").strip()
         aliases = self._aliases_list(row.get("aliases"))
         meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
@@ -390,11 +444,14 @@ class MemoryHub:
         discord_ids: list[str] = []
         if isinstance(meta.get("discord_ids"), list):
             discord_ids = [str(x).strip() for x in meta["discord_ids"] if str(x).strip()]
+        profile, leftover = split_static_facts(meta.get("static_facts"))
         return {
             "id": pid,
             "names": names,
             "discord_ids": discord_ids,
-            "static_facts": meta.get("static_facts") if isinstance(meta.get("static_facts"), dict) else {},
+            "profile": coerce_profile(profile),
+            "static_facts": {k: v for k, v in profile.items() if str(v).strip()},
+            "legacy_fact_hints": leftover,
             "dynamic_facts": list(meta.get("dynamic_facts") or [])
             if isinstance(meta.get("dynamic_facts"), list)
             else [],
@@ -441,6 +498,12 @@ class MemoryHub:
 
     def get_person_summary(self, person_id: str) -> str:
         """Prompt dossier from SQLite person+facts; legacy PeopleDB only if no Hub row."""
+        from core.memory.person_profile import (
+            display_name_from_profile,
+            profile_summary_lines,
+            split_static_facts,
+        )
+
         pid = (person_id or "").strip()
         if not pid:
             return ""
@@ -451,8 +514,6 @@ class MemoryHub:
                 names = [names]
             if not isinstance(names, list):
                 names = []
-            title = person.get("display_name") or (names[0] if names else pid)
-            lines = [f"Досье на {title}:"]
             meta = person.get("meta")
             if isinstance(meta, str) and meta.strip():
                 try:
@@ -461,27 +522,27 @@ class MemoryHub:
                     meta = {}
             if not isinstance(meta, dict):
                 meta = {}
+            profile, legacy_facts = split_static_facts(meta.get("static_facts"))
+            title = (
+                display_name_from_profile(profile)
+                or person.get("display_name")
+                or (names[0] if names else pid)
+            )
+            lines = [f"Досье на {title}:"]
             discord_ids = meta.get("discord_ids")
             if isinstance(discord_ids, list) and discord_ids:
                 raw_id = str(discord_ids[0] or "").strip()
                 if raw_id.isdigit() and 5 <= len(raw_id) <= 32:
                     lines.append(f"  Discord пинг (ИСПОЛЬЗУЙ ЧТОБЫ ТЕГНУТЬ ЕГО): <@{raw_id}>")
-            static = meta.get("static_facts") if isinstance(meta.get("static_facts"), dict) else {}
-            for key, val in static.items():
-                lines.append(f"  {key}: {val}")
-            facts = self.sqlite.list_person_facts(pid, limit=5)
-            if facts:
-                lines.append("  Новые факты:")
-                for f in reversed(facts):
-                    fact_line = str(f.get("fact") or "")
-                    emo = str(f.get("emotion_note") or "").strip()
-                    ts = str(f.get("created_at") or "")[:10]
-                    if emo:
-                        lines.append(
-                            f"    [{ts}] {fact_line} (настроение Нейры при записи: {emo})"
-                        )
-                    else:
-                        lines.append(f"    [{ts}] {fact_line}")
+            lines.extend(profile_summary_lines(profile))
+            facts = self.sqlite.list_person_facts(pid, limit=8)
+            extra = legacy_facts + [
+                str(f.get("fact") or "").strip() for f in reversed(facts) if str(f.get("fact") or "").strip()
+            ]
+            if extra:
+                lines.append("  Факты:")
+                for fact_line in extra[:12]:
+                    lines.append(f"    - {fact_line}")
             return "\n".join(lines)
         return ""
 

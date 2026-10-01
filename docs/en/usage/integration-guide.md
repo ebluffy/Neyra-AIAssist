@@ -1,7 +1,3 @@
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Integrator guide
 
 - Send user messages to `POST /v1/chat` (admin token when configured).

@@ -1,7 +1,3 @@
-<sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
-
----
-
 # Web UI (React dashboard)
 
 The dashboard is a **React + Vite + Tailwind CSS** SPA served by the same FastAPI process as the core. Source: `server/dashboard/src/`; build: `server/dashboard/dist`.
