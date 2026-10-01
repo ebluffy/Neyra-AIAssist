@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
-import { setNavigationBlocker } from '../lib/navigation-guard'
+import { allowNavigation, setNavigationBlocker } from '../lib/navigation-guard'
 
 type FieldDef = { key: string; label: string; kind?: 'text' | 'bool' | 'provider' }
 
@@ -198,14 +198,19 @@ export function SettingsScreen() {
     return () => setNavigationBlocker(null)
   }, [anyDirty])
 
-  // Browser Back/Forward — same confirm (NavLink alone is not enough).
+  // Browser Back/Forward: undo with history.go(1) when user cancels (no sentinel pushState).
   useEffect(() => {
     if (!anyDirty) return
+    let undoing = false
     const onPopState = () => {
-      if (window.confirm('Есть несохранённые изменения в Настройках. Уйти без применения?')) return
-      window.history.pushState(null, '', window.location.href)
+      if (undoing) return
+      if (allowNavigation()) return
+      undoing = true
+      window.history.go(1)
+      window.setTimeout(() => {
+        undoing = false
+      }, 0)
     }
-    window.history.pushState({ settingsGuard: 1 }, '', window.location.href)
     window.addEventListener('popstate', onPopState)
     return () => {
       window.removeEventListener('popstate', onPopState)

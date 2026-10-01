@@ -4,13 +4,15 @@
 
 ## 0. Контекст ВКР и критерий защиты
 
-| Что | Значение |
-|---|---|
-| **Тема ВКР** | «Разработка прототипа модульной информационной системы персонального ИИ-ассистента с локальным сервером и клиентским приложением управления» |
-| **Объект** | модульная информационная система персонального ИИ-ассистента |
-| **Предмет** | архитектура, программные компоненты и способы взаимодействия локального сервера ИИ-ассистента с клиентским приложением управления |
-| **Цель** | разработать прототип модульной информационной системы персонального ИИ-ассистента с локальным сервером и клиентским приложением управления |
+
+| Что                  | Значение                                                                                                                                                                                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Тема ВКР**         | «Разработка прототипа модульной информационной системы персонального ИИ-ассистента с локальным сервером и клиентским приложением управления»                                                                                             |
+| **Объект**           | модульная информационная система персонального ИИ-ассистента                                                                                                                                                                             |
+| **Предмет**          | архитектура, программные компоненты и способы взаимодействия локального сервера ИИ-ассистента с клиентским приложением управления                                                                                                        |
+| **Цель**             | разработать прототип модульной информационной системы персонального ИИ-ассистента с локальным сервером и клиентским приложением управления                                                                                               |
 | **Минимум к защите** | сервер, Windows-клиент Tauri 2 + React + TypeScript, подключение по адресу и токену, чат со streaming-ответом, статус health/modules/models/API, включение/выключение модуля, мягкий рестарт, минимум один рабочий модуль, схемы и тесты |
+
 
 Установщик сервера остаётся в backlog. Для демонстрации сервера достаточно Docker Compose или systemd на домашнем сервере и `run_neyra.bat` на Windows. Установщик клиента NSIS и автообновление входят в Этап 3, но не являются минимумом защиты: для защиты достаточно собранного `setup.exe`.
 
@@ -25,6 +27,8 @@
 - Конфигурация разделяется по слоям; секреты не коммитятся.
 - Dev MCP отделяется от runtime-поставки.
 
+
+
 ## 1a. Аудит
 
 Результат аудита находится в `docs/inventory.md`. В нём зафиксированы реальные исходные пути, ignored-файлы, конфигурационные ключи, env-переменные, точки входа и маршруты переноса.
@@ -35,6 +39,8 @@
 - [x] Отдельно учтены `.env`, YAML-конфиги, `memory/`, `logs/` и Lavalink JAR, которые Git не переносит.
 - [x] Зафиксированы реальные пути `interfaces/discord/`, `interfaces/internal_api/`, `interfaces/local_voice/`, `interfaces/000EXAMPLE/` и `tools/mcp_server/`.
 - [x] Тема, объект, предмет и цель ВКР сверены с исходным планом и не изменены.
+
+
 
 ## 1b. Атомарная перестройка server/client/devtools
 
@@ -58,20 +64,22 @@ devtools/
 docs/
 ```
 
-| Сейчас | После 1b | Действие |
-|---|---|---|
-| `core/` | `server/core/` | перенести серверное ядро |
-| `interfaces/` | `server/modules/` | перенести серверные модули и обновить imports |
-| `frontend/` | `server/dashboard/` | перенести существующий серверный dashboard |
-| `scripts/` | `server/scripts/` | перенести серверные проверки и утилиты |
-| `prompts/` | `server/prompts/` | перенести серверные prompt/persona-файлы |
-| `sounds/` | `server/sounds/` | перенести серверные звуки; UI-звуки клиента входят в client bundle |
-| `models/` | `server/models/` или внешний runtime cache | классифицировать; кэш не включать в package без необходимости |
-| `tools/mcp_server/` | `devtools/mcp_server/` | переместить dev-only MCP, не включать в server/client package |
-| `memory/` | `server/data/memory/` | SQLite Hub, Chroma и пользовательская память; перенос только migration helper с проверкой hashes |
-| `logs/` | `server/logs/` | runtime logs; перенос migration helper с проверкой |
-| отсутствующий продуктовый `client/` | `client/` | создать отдельный Tauri-проект, не переиспользовать `frontend/` |
-| корневой `PLAN.md` | удалить | канон уже в `docs/PLAN.md`; дубликат не оставлять |
+
+| Сейчас                              | После 1b                                   | Действие                                                                                         |
+| ----------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `core/`                             | `server/core/`                             | перенести серверное ядро                                                                         |
+| `interfaces/`                       | `server/modules/`                          | перенести серверные модули и обновить imports                                                    |
+| `frontend/`                         | `server/dashboard/`                        | перенести существующий серверный dashboard                                                       |
+| `scripts/`                          | `server/scripts/`                          | перенести серверные проверки и утилиты                                                           |
+| `prompts/`                          | `server/prompts/`                          | перенести серверные prompt/persona-файлы                                                         |
+| `sounds/`                           | `server/sounds/`                           | перенести серверные звуки; UI-звуки клиента входят в client bundle                               |
+| `models/`                           | `server/models/` или внешний runtime cache | классифицировать; кэш не включать в package без необходимости                                    |
+| `tools/mcp_server/`                 | `devtools/mcp_server/`                     | переместить dev-only MCP, не включать в server/client package                                    |
+| `memory/`                           | `server/data/memory/`                      | SQLite Hub, Chroma и пользовательская память; перенос только migration helper с проверкой hashes |
+| `logs/`                             | `server/logs/`                             | runtime logs; перенос migration helper с проверкой                                               |
+| отсутствующий продуктовый `client/` | `client/`                                  | создать отдельный Tauri-проект, не переиспользовать `frontend/`                                  |
+| корневой `PLAN.md`                  | удалить                                    | канон уже в `docs/PLAN.md`; дубликат не оставлять                                                |
+
 
 Путь к данным читается из `paths.data_dir` (default: `server/data` относительно корня репозитория или `./data` при работе из `server/`), override — `NEYRA_DATA_DIR`. После 1b физический default указывает на `server/data/`.
 
@@ -100,6 +108,8 @@ docs/
 - [x] `paths.data_dir` / `NEYRA_DATA_DIR` доходят до Hub/Chroma через `apply_resolved_memory_paths` (`server/core/runtime/paths.py`).
 - [x] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
 
+
+
 ## 1c. Слои конфигурации и схема
 
 - `server/config.yaml` — короткий корневой конфиг, включая `assistant.*` и `paths.data_dir`.
@@ -123,6 +133,8 @@ docs/
 - [x] Consumer и merge-поведение `server/modules/local_voice/config.yaml` проверены; поведение voice не исчезает молча (`verify_stage_1c.py`).
 - [x] Legacy env aliases поддержаны с warning once (`YANDEX_ID_KEY`, `HUGGING_FACE_HUB_TOKEN`).
 
+
+
 ## 1d. Dual LLM backend (AIHope + OpenRouter)
 
 Цель: полноценный AIHope (OpenAI-compatible) как основной бэкенд для brain/memory/vision и dual-role: talk на OpenRouter (бесплатный Qwen с меньшей цензурой).
@@ -135,6 +147,8 @@ docs/
 - Example: talk=`qwen/qwen3.8-27b:free`@openrouter, brain=`gpt-6-luna`@aihope.
 - Offline `verify_stage_1d.py` + CI; backlog: секреты → системный env ОС.
 
+
+
 ### Готово, когда
 
 - [x] Dual-backend: talk и brain могут ходить на разные провайдеры с разными ключами/base_url.
@@ -142,11 +156,11 @@ docs/
 - [x] `/v1/llm/balance` отдаёт usage для активных провайдеров (openrouter и/или aihope).
 - [x] `verify_stage_1d.py` и CI зелёные; локальный `llm.yaml` на dual-схеме.
 
-**Конфиг (без legacy):** канон только `llm.*` ролей + `llm.providers.*`. Top-level `BACKEND` / `openrouter:` / `vision:` и пути `openrouter.*` в `POST /v1/config` **не** поддерживаются (нет алиасов / dual-read) — клиенты пишут `llm.talk_model` / `llm.brain_model` / ….
+**Конфиг (без legacy):** канон только `llm.`* ролей + `llm.providers.*`. Top-level `BACKEND` / `openrouter:` / `vision:` и пути `openrouter.*` в `POST /v1/config` **не** поддерживаются (нет алиасов / dual-read) — клиенты пишут `llm.talk_model` / `llm.brain_model` / ….
 
 ## 2. Единый Neyra API (core)
 
-Этап 2 делает HTTP/WS control plane частью ядра: пакет [`server/core/api/`](../server/core/api/), конфиг `api:` в [`server/config/server.yaml`](../server/config/server.example.yaml). Отдельного второго API и модуля `modules/internal_api/` нет.
+Этап 2 делает HTTP/WS control plane частью ядра: пакет `[server/core/api/](../server/core/api/)`, конфиг `api:` в `[server/config/server.yaml](../server/config/server.example.yaml)`. Отдельного второго API и модуля `modules/internal_api/` нет.
 
 ### Объём (Wave 1)
 
@@ -170,6 +184,8 @@ docs/
 - [x] Ручной смоук: `/docs`, `GET /v1/meta` (`public_url` / `dashboard_url`).
 - [x] `anon` на loopback без токенов — осознанная политика Wave 1 (документировано; non-loopback без токенов запрещён).
 
+
+
 ## 3. Windows-клиент
 
 Клиент — **Tauri 2 + React + TypeScript**, тонкое окно управления сервером.
@@ -187,6 +203,8 @@ docs/
 
 `server/dashboard/` — ops/admin control plane (статус, модули, память, система, вебхуки, настройки, docs), пока нет десктоп-клиента. Экраны в `screens/`, `components/ui/`, `api/`, `styles/` переносятся в Stage 3 в `client/` (или shared-пакет); shell/gate — только веб. UI сейчас на русском; ru/en — позже.
 
+Модули в вебе: действия по `lifecycle` (resident → soft-restart ядра; on_demand → invoke; общий enable/config). Полный create/edit/import-export модулей — полигон для Stage 3 (shared UI → desktop Monaco), не блокер текущего PR: сначала scaffold из шаблона + yaml, код-редактор — во второй очереди клиента.
+
 **Люди (память):** в `meta.static_facts` только опциональные `first_name` / `last_name` / `birth_date` / `city`; остальное — `person_facts`. CRUD в дашборде; агент обновляет через tools.
 
 Вторая очередь клиента: Monaco (промпты/конфиги), логи, настройки приложения.
@@ -203,6 +221,8 @@ docs/
 - При подключении клиент проверяет совместимость версии API.
 - Сертификат подписи кода для SmartScreen — backlog.
 
+
+
 ### Готово, когда
 
 - [ ] MVP-экраны подключены к Control API и не содержат server-side orchestration.
@@ -213,11 +233,15 @@ docs/
 - [ ] PR CI выполняет lint, typecheck и build; release CI создаёт `latest.json`.
 - [ ] Клиент берёт URL сервера из настроек (не hardcoded); корректно работает с опубликованным Control API (см. §4).
 
+
+
 ## 4. Серверная поставка и модульная эксплуатация
 
 - Docker Compose и systemd — поддерживаемые способы запуска; `run_neyra.bat` — Windows entrypoint.
 - Paths/volumes/healthchecks смотрят в `server/`; интеграции — modules через Event Bus и Control API.
 - **Публикация под доменом** (frp + edge) — этот этап, не клиентский §3. Детали ops: `docs/ru/ops/api-reverse-proxy.md`.
+
+
 
 ### Канон публикации
 
@@ -242,6 +266,8 @@ docs/
 - [x] Dashboard gate (session Bearer), public setup-guard, RPM через `resolve_client_ip`.
 - [ ] WSS-smoke: `wss://neyra.owyx.site/api/v1/ws/chat`.
 
+
+
 ### Готово, когда
 
 - [x] Systemd на домашнем хосте; Docker Compose / Windows batch поддерживаются локально.
@@ -251,6 +277,8 @@ docs/
 - [ ] Документированы установка и восстановление после backup.
 - [ ] WSS-smoke по публичному URL зелёный.
 
+
+
 ## 5. Проверки, безопасность и качество
 
 - Python compileall и unit/integration tests для затронутых серверных частей.
@@ -259,12 +287,16 @@ docs/
 - Security boundary: localhost default, explicit LAN bind, token roles, audit и отсутствие секретов в логах.
 - Тестовая матрица: Windows client/server unavailable, incompatible API version, stream reconnect, module failure и rollback config.
 
+
+
 ### Готово, когда
 
 - [ ] Все обязательные проверки запускаются из новых каталогов и зелёные либо имеют внешний blocker.
 - [ ] Secrets scan не находит токены в Git или логах.
 - [ ] Smoke-путь «server → Control API → client» воспроизводим.
 - [ ] Не потеряны memory, Chroma, SQLite Hub, ignored configs и Lavalink state.
+
+
 
 ## 6. Документация и демонстрация
 
@@ -273,11 +305,15 @@ docs/
 - Demo script покрывает запуск сервера, подключение клиента, streaming chat, status, module toggle и soft restart.
 - Отдельно описаны backlog: server installer, SmartScreen certificate, prompt/config editor и полноценный local voice loop.
 
+
+
 ### Готово, когда
 
 - [ ] Документация запуска соответствует фактическим путям.
 - [ ] Demo script укладывается в сценарий защиты.
 - [ ] Backlog не смешан с обязательным MVP.
+
+
 
 ## 7. Постзащитное развитие
 
@@ -286,21 +322,11 @@ docs/
 - Редактор промптов и конфигов, логи и расширенные настройки клиента.
 - Полный local voice loop и дополнительные player integrations.
 - Расширенный MCP marketplace/allowlist и production deployment hardening.
-- **Обезличивание (AI Assist):** персона только из `assistant.*` + `prompts/persona.md`; ребренд репо/`neyra`-slug — отдельно после Stage 2, не блокер.
+- **Обезличивание (AI Assist):** персона только из `assistant.`* + `prompts/persona.md`; ребренд репо/`neyra`-slug — отдельно после Stage 2, не блокер.
+
+
 
 ### Готово, когда
 
 - [ ] Каждая post-defense функция имеет отдельный issue/design и не блокирует MVP.
 - [ ] Backward compatibility и миграция данных определены до релиза.
-
-## Этап 1b — закрыт (PR #14)
-
-Реорганизация `server/` / `client/` / `devtools/` выполнена. Приёмка политики memory/logs и post-migrate baseline — в PR #14. CI `Stage 1b verify` зелёный.
-
-## Этап 1c — закрыт (PR #15)
-
-Слои `server/config/*.yaml`, короткий root, `config_loader` + schema, inventory в `docs/config-keys.md`, `verify_stage_1c.py` + CI.
-
-## Этап 1d — закрыт (PR #16)
-
-Dual-backend: `llm.<role>.provider` (talk→OpenRouter, brain/memory/vision→AIHope), баланс dual, keys only from `.env`, `verify_stage_1d.py` + CI. Без legacy `BACKEND` / `openrouter:` / dual-read.

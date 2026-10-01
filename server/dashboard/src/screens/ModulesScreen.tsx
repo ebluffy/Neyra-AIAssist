@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { FileCode2, Play, Power, RefreshCw, RotateCcw, Settings2, ToggleLeft, ToggleRight } from 'lucide-react'
+import { FileCode2, Play, Power, Settings2, ToggleLeft, ToggleRight } from 'lucide-react'
 import { apiGet, apiPatch, apiPost, apiPut } from '../api'
 import type { ApiEnvelope, PluginRow } from '../api'
 import { Button } from '../components/ui/button'
@@ -58,7 +58,9 @@ export function ModulesScreen() {
     if (selected) void loadDetails(selected)
   }, [selected, loadDetails])
 
-  const isResident = (details?.plugin.lifecycle || '').toLowerCase() === 'resident'
+  const lifecycle = (details?.plugin.lifecycle || '').toLowerCase()
+  const isResident = lifecycle === 'resident'
+  const isOnDemand = lifecycle === 'on_demand'
 
   async function togglePlugin(enabled: boolean) {
     if (!selected) return
@@ -69,20 +71,13 @@ export function ModulesScreen() {
         ApiEnvelope<{ operation_id: string; result?: { lavalink?: string | null } }>
       >(`/v1/plugins/${selected}`, { enabled })
       const lava = r.data.result?.lavalink
-      if (selected === 'discord') {
-        if (enabled) {
-          setStatus(
-            lava
-              ? `Discord включён. Lavalink: ${lava}. Если бот молчал после выключения — сделай «Мягкий рестарт ядра».`
-              : 'Discord включён. Если бот молчал после выключения — сделай «Мягкий рестарт ядра».',
-          )
-        } else {
-          setStatus(
-            lava
-              ? `Discord выключен в конфиге. Lavalink: ${lava}. Поток бота гасится только мягким рестартом ядра.`
-              : 'Discord выключен в конфиге. Lavalink остановлен. Поток бота гасится только мягким рестартом ядра.',
-          )
-        }
+      if (isResident) {
+        const lavaBit = selected === 'discord' && lava ? ` Lavalink: ${lava}.` : ''
+        setStatus(
+          enabled
+            ? `Модуль включён в конфиге.${lavaBit} Поток resident поднимается только мягким рестартом ядра.`
+            : `Модуль выключен в конфиге.${lavaBit} Поток resident гасится только мягким рестартом ядра.`,
+        )
       } else {
         setStatus(`Готово: ${r.data.operation_id}`)
       }
@@ -108,26 +103,12 @@ export function ModulesScreen() {
   }
 
   async function invokePlugin() {
-    if (!selected || isResident) return
+    if (!selected || !isOnDemand) return
     setError(null)
     setStatus('Вызов...')
     try {
       await apiPost<ApiEnvelope<unknown>>(`/v1/plugins/${selected}/invoke`, { payload: {} })
       setStatus('Вызов выполнен')
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  async function reloadPlugin() {
-    if (!selected || isResident) return
-    setError(null)
-    setStatus('Перезагрузка...')
-    try {
-      const r = await apiPost<ApiEnvelope<{ operation_id?: string }>>(`/v1/plugins/${selected}/reload`, {})
-      setStatus(`Перезагрузка: ${r.data.operation_id ?? 'ок'}`)
-      await loadPlugins()
-      await loadDetails(selected)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -200,6 +181,9 @@ export function ModulesScreen() {
                   <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem' }}>
                     <span className={`status-dot ${p.enabled ? 'status-dot-ok' : 'status-dot-idle'}`} />
                     {p.enabled ? 'вкл.' : 'выкл.'}
+                    <span style={{ color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
+                      {String(p.lifecycle || '—')}
+                    </span>
                   </span>
                 </button>
               ))}
@@ -215,10 +199,14 @@ export function ModulesScreen() {
               <Settings2 size={15} className="card-icon card-icon-cyan" />
               <span className="card-title">Управление</span>
             </div>
-            {isResident && (
+            {details && (
               <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.75rem', lineHeight: 1.45 }}>
-                Resident-модуль (фон вместе с ядром). «Вызвать / перезагрузить модуль» недоступны — для Discord
-                нужен мягкий рестарт всего процесса Neyra. Выкл./вкл. сразу управляет Lavalink.
+                {isResident
+                  ? 'Resident: работает в процессе ядра. Вкл./выкл. пишет конфиг; живой поток гасится/поднимается мягким рестартом ядра.'
+                  : isOnDemand
+                    ? 'On-demand: «Вызвать» запускает entrypoint модуля. Reload/restart модуля API пока не поддерживает.'
+                    : `Lifecycle «${lifecycle || '—'}»: доступны вкл./выкл. и конфиг.`}
+                {selected === 'discord' ? ' Discord дополнительно стартует/останавливает managed Lavalink.' : ''}
               </p>
             )}
             <div className="row" style={{ flexWrap: 'wrap' }}>
@@ -231,45 +219,14 @@ export function ModulesScreen() {
                 {details?.plugin.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
                 {details?.plugin.enabled ? 'Включен' : 'Выключен'}
               </button>
-              {!isResident && (
-                <>
-                  <Button onClick={() => void invokePlugin()} type="button" variant="secondary">
-                    <Play size={14} /> Вызвать
-                  </Button>
-                  <Button onClick={() => void reloadPlugin()} type="button" variant="secondary">
-                    <RefreshCw size={14} /> Перезагрузить
-                  </Button>
-                </>
+              {isOnDemand && (
+                <Button onClick={() => void invokePlugin()} type="button" variant="secondary">
+                  <Play size={14} /> Вызвать
+                </Button>
               )}
-              {isResident ? (
+              {isResident && (
                 <Button disabled={restartBusy} onClick={() => void softRestartCore()} type="button" variant="warn">
                   <Power size={14} /> {restartBusy ? 'Рестарт…' : 'Мягкий рестарт ядра'}
-                </Button>
-              ) : (
-                <Button
-                  onClick={() => {
-                    if (!selected) return
-                    if (!window.confirm(`Перезапустить модуль «${selected}»?`)) return
-                    void (async () => {
-                      setError(null)
-                      setStatus('Перезапуск...')
-                      try {
-                        const r = await apiPost<ApiEnvelope<{ operation_id?: string }>>(
-                          `/v1/plugins/${selected}/restart`,
-                          {},
-                        )
-                        setStatus(`Перезапуск: ${r.data.operation_id ?? 'ок'}`)
-                        await loadPlugins()
-                        await loadDetails(selected)
-                      } catch (e) {
-                        setError(e instanceof Error ? e.message : String(e))
-                      }
-                    })()
-                  }}
-                  type="button"
-                  variant="warn"
-                >
-                  <RotateCcw size={14} /> Перезапустить
                 </Button>
               )}
               <Button onClick={() => selected && void loadDetails(selected)} type="button" variant="secondary">
