@@ -5,7 +5,7 @@
 - Control API Neyra (`server/core/api`) по умолчанию слушает `127.0.0.1`. Всё нелокальное — недоверенное, пока не закрыто.
 - **Политика Wave 1 (осознанно):** если **не задан ни один** из `API_TOKEN` / `API_KEY` / `API_VIEWER_TOKEN` / `API_MAINT_TOKEN`, роль `anon` и доступ ко всем эндпоинтам **только при bind на loopback**. Non-loopback без токенов → процесс не стартует (`assert_api_bind_safe`). Обязательные токены даже на localhost — отдельное ужесточение, не Wave 1.
 - Когда токены заданы: `viewer` — чтение; `maint+` — soft-restart; `admin` — чат/мутации. Минимум прав.
-- **Gate дашборда:** отдельный ключ доступа (хеш PBKDF2 в `server/data/dashboard_auth.sqlite`, минимум **32** символа при setup). Первый `POST /v1/dashboard/auth/setup` — пока ключ не задан; при bind ≠ loopback setup дополнительно только с **loopback**-клиента. Login/setup выдаёт короткоживущий **session token** (SPA — `sessionStorage`); `_resolve_role` принимает сессию как **admin** наряду с `API_TOKEN` / viewer / maint. Неудачные login — rate-limit по IP.
+- **Gate дашборда:** отдельный ключ доступа (хеш PBKDF2 в `server/data/dashboard_auth.sqlite`, минимум **32** символа при setup). Первый `POST /v1/dashboard/auth/setup` — пока ключ не задан; без Bearer — только с **консольного** loopback (нет `CF-Connecting-IP`/`X-Real-IP`); с публичного края — только primary `API_TOKEN` (не viewer/maint). Login/setup выдаёт короткоживущий **session token** (SPA — `sessionStorage`); `_resolve_role` принимает сессию как **admin** наряду с `API_TOKEN` / viewer / maint. Неудачные login — rate-limit по IP.
 
 ## Секреты
 

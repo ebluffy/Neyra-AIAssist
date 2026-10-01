@@ -14,7 +14,7 @@ HTTP-стек живёт в **`server/core/api/`** (Control API), это не м
 
 1. **Первый визит** (ключ ещё не задан): создайте ключ (минимум **32** символа; удобный вариант — «Сгенерировать hex (32)»). На сервере хранится хеш **PBKDF2** в `server/data/dashboard_auth.sqlite`.
 2. **Повторные визиты:** вход тем же ключом. После login SPA держит **session token** в **`sessionStorage`** (хеши сессий также в SQLite — переживают рестарт процесса).
-3. **`POST /v1/dashboard/auth/setup`** разрешён только пока ключ не задан. Если bind API **не** loopback, setup принимается **только с loopback**-клиента.
+3. **`POST /v1/dashboard/auth/setup`** разрешён только пока ключ не задан. Без Bearer — только с консольного loopback (нет CF/X-Real); с публичного края — primary `API_TOKEN`.
 4. Login/setup выдаёт **`session_token`**; SPA шлёт его как Bearer (admin). Сырой ключ **не** принимается как Bearer. Logout отзывает session.
 
 ## Разделы UI

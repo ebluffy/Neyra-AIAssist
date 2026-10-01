@@ -275,14 +275,28 @@ def _test_dashboard_session_store() -> None:
 
 def _test_resolve_client_ip() -> None:
     """Loopback peer may trust CF / X-Real-IP; public peer ignores forgeable CF."""
-    from core.api.client_ip import resolve_client_ip
+    from core.api.client_ip import (
+        has_edge_client_headers,
+        is_console_local_client,
+        resolve_client_ip,
+    )
 
     assert resolve_client_ip(peer="127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"}) == "203.0.113.9"
     assert resolve_client_ip(peer="127.0.0.1", headers={"x-real-ip": "198.51.100.1"}) == "198.51.100.1"
     assert resolve_client_ip(peer="127.0.0.1", headers={"x-forwarded-for": "9.9.9.9"}) == "127.0.0.1"
+    # Forged loopback edge IP must not replace peer for rate-limit/logs
+    assert resolve_client_ip(peer="127.0.0.1", headers={"cf-connecting-ip": "127.0.0.1"}) == "127.0.0.1"
+    assert resolve_client_ip(peer="127.0.0.1", headers={"x-real-ip": "::1"}) == "127.0.0.1"
     assert (
         resolve_client_ip(peer="203.0.113.50", headers={"cf-connecting-ip": "1.2.3.4"}) == "203.0.113.50"
     )
+    assert is_console_local_client(peer="127.0.0.1", headers={}) is True
+    assert is_console_local_client(peer="127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"}) is False
+    assert is_console_local_client(peer="127.0.0.1", headers={"cf-connecting-ip": "127.0.0.1"}) is False
+    assert is_console_local_client(peer="127.0.0.1", headers={"x-real-ip": "10.0.0.1"}) is False
+    assert is_console_local_client(peer="203.0.113.9", headers={}) is False
+    assert has_edge_client_headers({"CF-Connecting-IP": "1.1.1.1"}) is True
+    assert has_edge_client_headers({}) is False
 
 
 def _test_docs_catalog_resolve_allowlist() -> None:
@@ -337,14 +351,17 @@ def _test_docs_catalog_resolve_allowlist() -> None:
 
 
 def _test_setup_guard_resolved_ip() -> None:
-    """Setup must use resolve_client_ip: loopback peer + CF public IP → not local."""
-    from core.api.client_ip import resolve_client_ip
+    """Setup local = console loopback without edge headers; forged CF loopback is remote."""
+    from core.api.client_ip import is_console_local_client, resolve_client_ip
 
-    # frpc peer + public CF → treated as remote client
+    # frpc peer + public CF → treated as remote client for resolve + setup
     remote = resolve_client_ip(peer="127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"})
     assert remote == "203.0.113.9"
-    assert remote not in ("127.0.0.1", "::1")
-    # true local
+    assert is_console_local_client(peer="127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"}) is False
+    # forged loopback CF must not unlock setup
+    assert is_console_local_client(peer="127.0.0.1", headers={"cf-connecting-ip": "127.0.0.1"}) is False
+    # true local console
+    assert is_console_local_client(peer="127.0.0.1", headers={}) is True
     local = resolve_client_ip(peer="127.0.0.1", headers={})
     assert local == "127.0.0.1"
 
@@ -360,18 +377,25 @@ def _test_persist_allowlisted_updates() -> None:
             "  providers:\n    aihope: {}\n    openrouter: {}\n",
             encoding="utf-8",
         )
+        (td / "config" / "runtime.yaml").write_text(
+            "logging:\n  level: INFO\n",
+            encoding="utf-8",
+        )
         touched = persist_allowlisted_updates(
             td,
             {
                 "llm.talk_model.provider": "aihope",
                 "llm.talk_model.model": "gpt-6-luna",
+                "logging.level": "DEBUG",
             },
         )
-        assert touched == ["config/llm.yaml"], touched
+        assert set(touched) == {"config/llm.yaml", "config/runtime.yaml"}, touched
         data = _load_yaml_file(td / "config" / "llm.yaml")
         assert data["llm"]["talk_model"]["provider"] == "aihope"
         assert data["llm"]["talk_model"]["model"] == "gpt-6-luna"
         assert "providers" in data["llm"]
+        rt = _load_yaml_file(td / "config" / "runtime.yaml")
+        assert rt["logging"]["level"] == "DEBUG"
     finally:
         shutil.rmtree(td, ignore_errors=True)
 

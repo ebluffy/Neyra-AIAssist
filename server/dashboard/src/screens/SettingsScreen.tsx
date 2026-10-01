@@ -199,7 +199,11 @@ export function SettingsScreen() {
       setStatus(`Сохранено на диск и применено: ${Object.keys(updates).length} ключ(ей). LLM пересобран при смене моделей/провайдера.`)
       await load()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      setError(msg)
+      if (/диск|disk|llm_rebind|пересобран/i.test(msg)) {
+        setStatus('На диске могло сохраниться — при ошибке LLM сделай мягкий рестарт или повтори «Применить».')
+      }
     } finally {
       setSaving(false)
     }
@@ -300,7 +304,7 @@ export function SettingsScreen() {
         </div>
         <p style={{ fontSize: '0.8rem', color: 'var(--muted)', margin: '0 0 0.65rem' }}>
           «Применить» пишет в <span style={{ fontFamily: 'var(--mono)' }}>config/*.yaml</span> и сразу пересобирает LLM-клиенты
-          (без мягкого перезапуска). После рестарта значения тоже сохраняются.
+          (без мягкого перезапуска). Если LLM не пересобрался — на диске уже может быть новое значение; мягкий рестарт подхватит его.
         </p>
         <div className="tabs-row" role="tablist" aria-label="Разделы конфига">
           {TABS.map((t) => (

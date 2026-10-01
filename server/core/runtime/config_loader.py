@@ -282,6 +282,7 @@ def persist_allowlisted_updates(server_root: Path, updates: dict[str, Any]) -> l
         by_layer.setdefault(layer_name, {})[str(path)] = value
 
     touched: list[str] = []
+    prepared: list[tuple[Path, Path, str, int]] = []  # final, tmp, rel, key_count
     for layer_name, paths in by_layer.items():
         layer_path = config_dir / layer_name
         current = _load_yaml_file(layer_path) if layer_path.is_file() else {}
@@ -295,7 +296,20 @@ def persist_allowlisted_updates(server_root: Path, updates: dict[str, Any]) -> l
         )
         tmp = layer_path.with_suffix(layer_path.suffix + ".tmp")
         tmp.write_text(text, encoding="utf-8")
-        tmp.replace(layer_path)
-        touched.append(f"config/{layer_name}")
-        logger.info("Persisted runtime config updates to %s (%s keys)", layer_path, len(paths))
+        prepared.append((layer_path, tmp, f"config/{layer_name}", len(paths)))
+
+    # Commit all layers only after every tmp is written (avoid half-disk multi-layer).
+    try:
+        for layer_path, tmp, rel, nkeys in prepared:
+            tmp.replace(layer_path)
+            touched.append(rel)
+            logger.info("Persisted runtime config updates to %s (%s keys)", layer_path, nkeys)
+    except Exception:
+        for _layer_path, tmp, _rel, _n in prepared:
+            try:
+                if tmp.is_file():
+                    tmp.unlink()
+            except OSError:
+                pass
+        raise
     return touched

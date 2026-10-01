@@ -31,6 +31,8 @@ from core.runtime.win_runtime import apply_runtime_patches
 apply_runtime_patches()
 
 from core.api.dashboard_auth import DashboardAuthStore
+from core.api.client_ip import is_console_local_client as _is_console_local_client
+from core.api.client_ip import is_loopback_ip as _is_loopback_ip_pure
 from core.api.client_ip import resolve_client_ip as _resolve_client_ip_pure
 from core.neyra import NeyraAgent
 from core.runtime.backup import BackupManager
@@ -236,8 +238,7 @@ def _token_eq(got: str, expected: str) -> bool:
 
 
 def _is_loopback_host(host: str) -> bool:
-    h = (host or "").strip().lower()
-    return h in ("127.0.0.1", "::1", "localhost") or h.startswith("127.")
+    return _is_loopback_ip_pure(host)
 
 
 def api_tokens_configured(cfg: dict) -> bool:
@@ -1214,14 +1215,15 @@ def build_app(
         """
         Create the dashboard access key once.
 
-        Setup is allowed only from a *resolved* loopback client IP, or with a valid
-        API Bearer (admin/maint/viewer primary tokens — not a dashboard session).
-        This closes the frpc window where peer is always 127.0.0.1 but CF/X-Real
-        carry the public client.
+        Setup is allowed only from a *console-local* client (socket peer loopback
+        and no ``CF-Connecting-IP`` / ``X-Real-IP``), or with the primary API Bearer
+        (``API_TOKEN`` / ``api.token`` only — not viewer/maint, not a dashboard session).
+        This closes the frpc window where peer is always 127.0.0.1 and forged
+        ``CF-Connecting-IP: 127.0.0.1`` must not count as local.
         """
         trace_id = _trace_id(request)
-        client_ip = resolve_client_ip(request)
-        local_ok = _is_loopback_host(client_ip)
+        peer = request.client.host if request.client else "unknown"
+        local_ok = _is_console_local_client(peer=peer, headers=request.headers)
         api_ok = False
         raw = (authorization or "").strip()
         if raw.startswith("Bearer "):
@@ -1234,7 +1236,7 @@ def build_app(
         if not local_ok and not api_ok:
             raise ApiError(
                 "forbidden",
-                "Dashboard key setup requires localhost (resolved client IP) or a valid API Bearer",
+                "Dashboard key setup requires localhost console (no proxy headers) or primary API Bearer",
                 403,
             )
         try:
@@ -2127,7 +2129,10 @@ def build_app(
                     _safe_set(config, k, old)
                 raise ApiError(
                     "llm_rebind_failed",
-                    f"Config saved on disk, but LLM clients were not rebuilt (runtime rolled back): {e}",
+                    (
+                        "Сохранено на диск, но LLM-клиенты не пересобраны "
+                        f"(runtime откатан; мягкий рестарт подхватит диск): {e}"
+                    ),
                     500,
                 ) from e
 

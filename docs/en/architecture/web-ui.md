@@ -10,7 +10,7 @@ HTTP lives in **`server/core/api/`**. Bind / public URL / dashboard flags: **`se
 
 1. First visit: create key (min **32** chars). PBKDF2 hash in `server/data/dashboard_auth.sqlite`.
 2. Later: login → **`session_token`** in `sessionStorage` (session hashes also persisted in SQLite).
-3. Setup only while unconfigured; non-loopback bind → setup from loopback only.
+3. Setup only while unconfigured; without Bearer requires console-local loopback (no CF/X-Real); public edge needs primary `API_TOKEN`.
 4. Raw gate key is **not** accepted as Bearer. Logout revokes the session.
 
 ## UI sections
