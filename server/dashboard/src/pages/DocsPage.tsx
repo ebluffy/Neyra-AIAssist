@@ -44,16 +44,37 @@ export function DocsPage() {
     <div className="page-content stack">
       <div className="page-header">
         <h1 className="page-title">API Документация</h1>
-        <p className="page-sub">Swagger UI, OpenAPI JSON и Markdown документы</p>
+        <p className="page-sub">OpenAPI / Swagger и Markdown из репозитория</p>
       </div>
 
-      {/* Swagger + links */}
       <div className="card">
         <div className="card-header">
           <BookOpenText size={15} className="card-icon card-icon-cyan" />
-          <span className="card-title">Swagger / OpenAPI</span>
+          <span className="card-title">OpenAPI</span>
         </div>
-        <div className="row" style={{ marginBottom: '1rem' }}>
+        <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '1rem', lineHeight: 1.5 }}>
+          Интерактивный Swagger FastAPI лучше открывать отдельно — в iframe на тёмной теме он ломается.
+          Markdown ниже грузится через авторизованный API.
+        </p>
+        <div className="row" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+          <a
+            className="btn btn-secondary btn-sm"
+            href="/docs"
+            rel="noreferrer"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}
+            target="_blank"
+          >
+            Swagger UI <ExternalLink size={12} />
+          </a>
+          <a
+            className="btn btn-secondary btn-sm"
+            href="/redoc"
+            rel="noreferrer"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}
+            target="_blank"
+          >
+            ReDoc <ExternalLink size={12} />
+          </a>
           <a
             className="btn btn-secondary btn-sm"
             href="/openapi.json"
@@ -64,17 +85,8 @@ export function DocsPage() {
             OpenAPI JSON <ExternalLink size={12} />
           </a>
         </div>
-        <div style={{ borderRadius: 12, overflow: 'hidden', border: '1px solid var(--border)', background: '#fff' }}>
-          <iframe
-            className="docs-frame"
-            src="/docs"
-            style={{ minHeight: 560, border: 'none', display: 'block' }}
-            title="Neyra API docs"
-          />
-        </div>
       </div>
 
-      {/* Markdown docs */}
       <div className="card">
         <div className="card-header">
           <FileText size={15} className="card-icon" />

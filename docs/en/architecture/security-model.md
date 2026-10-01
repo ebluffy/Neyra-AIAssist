@@ -12,7 +12,7 @@
 - Neyra Control API (`server/core/api`) binds to `127.0.0.1` by default. Treat anything non-local as hostile unless locked down.
 - **Wave 1 auth policy (intentional):** if **none** of `API_TOKEN` / `API_KEY` / `API_VIEWER_TOKEN` / `API_MAINT_TOKEN` are set, role is `anon` and may call any endpoint **only while bind is loopback**. Non-loopback bind without tokens → process refuses to start (`assert_api_bind_safe`). Requiring tokens even on localhost is a later hardening option, not Wave 1.
 - When tokens are set: `viewer` reads; `maint+` soft-restart; `admin` chat/mutate. Prefer least privilege.
-- **Dashboard UI gate:** separate access key (PBKDF2 hash in `server/data/dashboard_auth.sqlite`). First-time `POST /v1/dashboard/auth/setup` is open only while the key is unset; if API bind is non-loopback, setup additionally requires a **loopback** client. SPA keeps plaintext in `sessionStorage` until logout.
+- **Dashboard UI gate:** separate access key (PBKDF2 hash in `server/data/dashboard_auth.sqlite`). First-time `POST /v1/dashboard/auth/setup` is open only while the key is unset; if API bind is non-loopback, setup additionally requires a **loopback** client. SPA keeps plaintext in `sessionStorage` until logout and sends the same key as Bearer; `_resolve_role` accepts a verified gate key as **admin** alongside `API_TOKEN` / viewer / maint.
 
 ## Secrets
 

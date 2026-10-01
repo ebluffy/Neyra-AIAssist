@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Cpu, KeyRound, Lock, RefreshCw } from 'lucide-react'
+import { clearToken, setToken } from '../api'
 import { Button } from './ui/button'
 
 const GATE_KEY = 'neyra_dashboard_gate'
@@ -18,6 +19,7 @@ export function setDashboardGateKey(key: string): void {
 
 export function clearDashboardGateKey(): void {
   sessionStorage.removeItem(GATE_KEY)
+  clearToken()
 }
 
 function generateHexKey(): string {
@@ -49,6 +51,12 @@ async function postKey(path: string, key: string): Promise<void> {
   }
 }
 
+/** After gate login, use the same key as Bearer for /v1 (server accepts gate key as admin). */
+function activateSession(key: string): void {
+  setDashboardGateKey(key)
+  setToken(key)
+}
+
 export function DashboardAuthGate({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<Mode>('loading')
   const [key, setKey] = useState('')
@@ -73,7 +81,10 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
         }
         try {
           await postKey('/v1/dashboard/auth/login', saved)
-          if (!cancelled) setMode('ok')
+          if (!cancelled) {
+            activateSession(saved)
+            setMode('ok')
+          }
         } catch {
           clearDashboardGateKey()
           if (!cancelled) setMode('login')
@@ -111,7 +122,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
     setBusy(true)
     try {
       await postKey('/v1/dashboard/auth/setup', key)
-      setDashboardGateKey(key)
+      activateSession(key)
       setMode('ok')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -126,7 +137,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
     setBusy(true)
     try {
       await postKey('/v1/dashboard/auth/login', key)
-      setDashboardGateKey(key)
+      activateSession(key)
       setMode('ok')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -232,7 +243,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
         <p className="dash-auth-hint">
           {isSetup
             ? 'Минимум 8 символов. На диске сервера хранится только хеш (PBKDF2). В браузере ключ держится в sessionStorage до «Выйти» — сохраните его в менеджере паролей.'
-            : 'На сервере — только хеш. В этой вкладке ключ в sessionStorage до выхода.'}
+            : 'На сервере — только хеш. В этой вкладке ключ в sessionStorage до выхода. Тот же ключ используется как Bearer для API дашборда.'}
         </p>
       </div>
     </div>

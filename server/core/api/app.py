@@ -187,8 +187,16 @@ def _api_token(cfg: dict) -> str:
 _ROLE_RANK = {"anon": 0, "viewer": 1, "maint": 2, "admin": 3}
 
 
-def _resolve_role(authorization: Optional[str], cfg: dict) -> str:
-    """anon — tokens unset (local loopback only; see assert_api_bind_safe). Else Bearer required."""
+def _resolve_role(
+    authorization: Optional[str],
+    cfg: dict,
+    dash_auth: Optional[DashboardAuthStore] = None,
+) -> str:
+    """anon — tokens unset (local loopback only; see assert_api_bind_safe). Else Bearer required.
+
+    Accepted Bearer values: API_TOKEN / viewer / maint, or the dashboard gate key
+    (SPA after login uses the gate key as Bearer so the UI works without a second paste).
+    """
     api = _api_cfg(cfg)
     primary = str(api.get("token") or "").strip()
     viewer = str(api.get("viewer_token") or "").strip()
@@ -205,6 +213,8 @@ def _resolve_role(authorization: Optional[str], cfg: dict) -> str:
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
+    if dash_auth is not None and dash_auth.is_configured() and dash_auth.verify(got):
+        return "admin"
     raise ApiError("unauthorized", "Invalid bearer token", 401)
 
 
@@ -216,7 +226,12 @@ def _role_at_least(role: str, minimum: str) -> bool:
     return _ROLE_RANK.get(role, 0) >= _ROLE_RANK.get(minimum, 0)
 
 
-def _require_ws_auth(token_qs: Optional[str], authorization: Optional[str], cfg: dict) -> str:
+def _require_ws_auth(
+    token_qs: Optional[str],
+    authorization: Optional[str],
+    cfg: dict,
+    dash_auth: Optional[DashboardAuthStore] = None,
+) -> str:
     """
     Same token roles as REST. Prefer Authorization: Bearer (query ?token= may hit access logs).
     Returns role name (anon/viewer/maint/admin).
@@ -240,6 +255,8 @@ def _require_ws_auth(token_qs: Optional[str], authorization: Optional[str], cfg:
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
+    if dash_auth is not None and dash_auth.is_configured() and dash_auth.verify(got):
+        return "admin"
     raise ApiError("unauthorized", "Invalid bearer token for WebSocket", 401)
 
 
@@ -737,8 +754,16 @@ def build_app(
         def __init__(self, min_role: str):
             self.min_role = min_role
 
-        async def __call__(self, authorization: Optional[str] = Header(default=None)) -> str:
-            role = _resolve_role(authorization, config)
+        async def __call__(
+            self,
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ) -> str:
+            role = _resolve_role(
+                authorization,
+                config,
+                getattr(request.app.state, "dashboard_auth", None),
+            )
             if not _role_at_least(role, self.min_role):
                 raise ApiError("forbidden", "Insufficient API token scope", 403)
             return role
@@ -1918,7 +1943,7 @@ def build_app(
         trace_id = str(uuid.uuid4())
         authorization = websocket.headers.get("authorization")
         try:
-            ws_role = _require_ws_auth(token, authorization, config)
+            ws_role = _require_ws_auth(token, authorization, config, dash_auth)
             # Same bar as POST /v1/chat (admin): viewer must not mutate memory / spend LLM.
             if not _role_at_least(ws_role, "admin"):
                 raise ApiError("forbidden", "WebSocket chat requires admin (same as POST /v1/chat)", 403)
@@ -2013,7 +2038,7 @@ def build_app(
         trace_id = str(uuid.uuid4())
         authorization = websocket.headers.get("authorization")
         try:
-            ws_role = _require_ws_auth(token, authorization, config)
+            ws_role = _require_ws_auth(token, authorization, config, dash_auth)
             if not _role_at_least(ws_role, "viewer"):
                 raise ApiError("forbidden", "WebSocket audio requires viewer+", 403)
         except ApiError:

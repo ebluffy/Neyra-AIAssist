@@ -100,7 +100,7 @@ function Shell() {
             <LogOut size={14} />
             Выйти
           </button>
-          <span>v0.9 · local</span>
+          <span>v0.9</span>
         </div>
       </aside>
 

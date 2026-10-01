@@ -189,21 +189,23 @@ docs/
 
 ### Доступ из интернета и публикация под доменом
 
-Канонический сценарий для диплома и удалённого клиента: Neyra Server крутится на **домашнем сервере** (мини-ПК, старый ПК, ноутбук и т.п.), наружу — через **frp** (frpc на домашнем сервере, frps на VPS) под поддоменом `neyra.owyx.site`. DNS, frps/Caddy и frpc настраиваются **в рамках Этапа 3** вместе с Windows-клиентом: сразу хостится Control API для приложения, а не откладывается «на потом».
+Публикация Control API (`neyra.owyx.site`, frp, edge-прокси) относится к **Этапу 4** (серверная поставка), а не к клиенту. Этап 3 — только Windows-приложение; URL сервера клиент берёт из настроек.
 
-#### Схема
+Канон: Neyra на **домашнем сервере** (мини-ПК / старый ПК / ноутбук) → **frpc** → **frps** на VPS → nginx/Caddy (TLS) → клиенты. Данные (память, `.env`) остаются на домашнем сервере.
+
+#### Схема (целевая, без порта в URL)
 
 ```text
 Клиент (Tauri)
   → https://neyra.owyx.site
   → wss://neyra.owyx.site/api/v1/ws/chat
-  → Caddy или nginx на VPS (TLS Let's Encrypt)
-  → frps (vhost HTTP, порт например 8080)
+  → nginx или Caddy на VPS (TLS Let's Encrypt, :443)
+  → frps (vhost HTTP на localhost, например :8080)
   → frpc на домашнем сервере
   → Control API 127.0.0.1:8787
 ```
 
-Публичный путь чата — `wss://neyra.owyx.site/api/v1/ws/chat` (`api.public_path_prefix: /api`). За прокси префикс `/api` снимается; приложение слушает локально `/v1/ws/chat`. WebSocket должен проходить всю цепочку без обрыва (Upgrade; см. `docs/ru/ops/api-reverse-proxy.md` / `docs/ru/ops/wss-deployment.md`).
+Публичный путь чата — `wss://neyra.owyx.site/api/v1/ws/chat` (`api.public_path_prefix: /api`). За прокси префикс `/api` снимается; приложение слушает локально `/v1/ws/chat`.
 
 #### Пример frpc.toml (домашний сервер)
 
@@ -222,33 +224,29 @@ localPort = 8787
 customDomains = ["neyra.owyx.site"]
 ```
 
-На стороне frps — тот же `auth.token` и HTTP vhost (порт, на который смотрит Caddy/nginx). Секреты frp только в локальных конфигах / env, не в git.
+На стороне frps — тот же `auth.token` и HTTP vhost (порт, на который смотрит nginx/Caddy). Секреты frp только в локальных конфигах / env, не в git.
 
 #### Требования к серверу при внешней публикации
 
-- Токены и роли (`API_TOKEN` / viewer / maint) **обязательны** при внешнем доступе: без токена — отказ старта или только loopback (`127.0.0.1`).
-- Bind по умолчанию `127.0.0.1`; порт **8787 наружу напрямую не открывать** (только через frpc → VPS → TLS).
-- `api.public_base_url` / `api.public_path_prefix` согласованы с доменом (пример: `https://neyra.owyx.site` + `/api`).
+- Токены и роли (`API_TOKEN` / viewer / maint / `API_KEY`) **обязательны** при внешнем доступе: без токена — отказ старта или только loopback (`127.0.0.1`).
+- Bind по умолчанию `127.0.0.1`; порт **8787 наружу напрямую не открывать** (только через frpc → VPS → edge).
+- `api.public_base_url` / `api.public_path_prefix` согласованы с доменом (цель: `https://neyra.owyx.site` + `/api`).
 - `NEYRA_DEBUG_LIFECYCLE` **не** включать в публикуемой конфигурации.
 - Rate-limit учитывает `X-Forwarded-For` за прокси (реальный клиент, не IP VPS).
 - Токен в query (`?token=`) — только если нет альтернативы (заголовок / Credential Manager в клиенте предпочтительнее; query утекает в логи прокси).
 
 #### Данные
 
-- Память (`server/data/memory/`), `.env`, логи и модели остаются на **домашнем сервере**.
+- Память (`server/data/memory/` / `/opt/neyra/data/memory/`), `.env`, логи и модели остаются на **домашнем сервере**.
 - На VPS — только reverse proxy + frps: **без** копирования памяти, секретов и runtime-данных Neyra.
 
 #### Альтернатива
 
-Тот же Docker Compose на VPS — **запасной стенд** (демонстрация / CI / fallback), не замена канону «домашний сервер + frp» для персонального ассистента с локальными данными.
+Тот же Docker Compose на VPS — **запасной стенд** (демонстрация / CI / fallback), не замена канону «домашний сервер + frp».
 
-#### Чеклист Этапа 3 (хостинг API + клиент)
+#### Чеклист публикации (Этап 4; см. §4)
 
-- [ ] A-запись `neyra.owyx.site` → IP VPS.
-- [ ] frps + Caddy (или nginx) на VPS: TLS Let's Encrypt, прокси на frps vhost, WebSocket Upgrade.
-- [ ] frpc на домашнем сервере как служба (NSSM / Task Scheduler / systemd) с `type=http`, `localPort=8787`, `customDomains=["neyra.owyx.site"]`, общий `auth.token` с frps.
-- [ ] Проверка WebSocket через прокси: `wss://neyra.owyx.site/api/v1/ws/chat` доходит до Control API.
-- [ ] Адрес сервера в клиенте по умолчанию из **настроек** (сохранённый URL), не зашитый в сборку; для демо можно подсказать `https://neyra.owyx.site`.
+Детали и статус выполнения — в §4. Для MVP клиента достаточно любого рабочего URL из настроек (в т.ч. временный `http://neyra.owyx.site:8080`).
 
 ### Сборка и автообновление
 
@@ -270,8 +268,7 @@ customDomains = ["neyra.owyx.site"]
 - [ ] Собирается NSIS `setup.exe` для current user.
 - [ ] Автообновление и error state проверены на тестовом release.
 - [ ] PR CI выполняет lint, typecheck и build; release CI создаёт `latest.json`.
-- [ ] Публикация `neyra.owyx.site`: DNS + frps/Caddy на VPS + frpc-служба на домашнем сервере; WSS-чат через прокси работает.
-- [ ] Клиент берёт URL сервера из настроек (не hardcoded); внешний доступ только с токенами, bind localhost, данные только на домашнем сервере.
+- [ ] Клиент берёт URL сервера из настроек (не hardcoded); корректно работает с опубликованным Control API (см. §4).
 
 ## 4. Серверная поставка и модульная эксплуатация
 
@@ -280,13 +277,30 @@ customDomains = ["neyra.owyx.site"]
 - Docker contexts, volumes, healthchecks и systemd paths используют `server/`.
 - Новые интеграции добавляются как server modules через Event Bus и Control API.
 - Публичные и локальные LLM/voice providers остаются заменяемыми конфигурацией.
+- Публикация под доменом (`neyra.owyx.site`) через frp + edge-прокси — часть этого этапа (см. §3 «Доступ из интернета» для схемы).
+
+### Публикация / домашний сервер (статус)
+
+Рабочий стенд (домашний сервер + frp):
+
+- [x] Runtime на домашнем сервере: `/opt/neyra` + `systemd` unit `neyra` (`127.0.0.1:8787`).
+- [x] frpc на домашнем сервере: прокси `neyra-api` (`type=http`, `localPort=8787`, `customDomains=["neyra.owyx.site"]`).
+- [x] frps на VPS (`vpsrus`): `vhostHTTPPort=8080`; существующие TCP/UDP-прокси (ssh/minecraft) сохранены.
+- [x] DNS A `neyra` → IP frps-VPS, Cloudflare **DNS only**.
+- [x] Локальные конфиги/`.env`/модули доставлены в `/opt/neyra`.
+- [x] frps на `owyxsite` (`/opt/frps`, `:7000` control + `:8080` HTTP vhost); UFW: 7000/8080/1337/1488/1489.
+- [x] nginx `server_name neyra.owyx.site` на `owyxsite` + Let's Encrypt; strip `/api` → frps `:8080`.
+- [x] DNS A `neyra` → `109.61.108.208` (owyxsite), Cloudflare **DNS only** (можно включить Proxied при SSL Full strict).
+- [x] `api.public_base_url=https://neyra.owyx.site`; legacy `frpc-vpsrus` и `frps` на `vpsrus` выключены. Hysteria/`panel.owyx.site` не трогали.
+- [ ] WSS-smoke: `wss://neyra.owyx.site/api/v1/ws/chat` (после edge на 443).
 
 ### Готово, когда
 
-- [ ] Сервер запускается через Docker Compose, systemd-документацию и Windows batch entrypoint.
+- [x] Сервер запускается через systemd на домашнем хосте (`/opt/neyra`); Docker Compose / Windows batch по-прежнему поддерживаются локально.
 - [ ] Runtime data, secrets и модели не попадают в исходный пакет случайно.
 - [ ] Минимум один модуль проходит enable/disable и health smoke.
 - [ ] Документированы установка и восстановление после backup.
+- [x] Публичный URL без нестандартного порта (`https://neyra.owyx.site`).
 
 ## 5. Проверки, безопасность и качество
 

@@ -20,7 +20,7 @@ HTTP-стек живёт в **`server/core/api/`** (Control API), это не м
 1. **Первый визит** (ключ ещё не задан): создайте ключ (минимум **8** символов; удобный вариант — случайная строка **hex-32**). На сервере хранится хеш **PBKDF2** в `server/data/dashboard_auth.sqlite`.
 2. **Повторные визиты:** вход тем же ключом. Plaintext ключ держится в **`sessionStorage`** до «Выйти».
 3. **`POST /v1/dashboard/auth/setup`** разрешён только пока ключ не задан. Если bind API **не** loopback, setup принимается **только с loopback-клиента** (защита от удалённой гонки за ключ).
-4. **`POST /v1/dashboard/auth/login`** и **`GET /v1/dashboard/auth/status`** публичны; защищённые `/v1` по-прежнему требуют Bearer (`API_TOKEN` и т.д.) — см. [security-model](security-model.md).
+4. **`POST /v1/dashboard/auth/login`** и **`GET /v1/dashboard/auth/status`** публичны. После успешного входа SPA кладёт ключ в storage и шлёт его как **`Authorization: Bearer`** на `/v1`; сервер принимает проверенный ключ дашборда как роль **admin** (второй paste `API_TOKEN` для UI не нужен). Отдельные `API_TOKEN` / viewer / maint остаются для Discord, MCP, скриптов и переопределения в Settings.
 
 Этот gate **отделён** от Tauri-клиента Этапа 3 (`client/`): десктопное приложение ходит в тот же Control API с URL сервера и API-токеном, а не через flow ключа дашборда.
 

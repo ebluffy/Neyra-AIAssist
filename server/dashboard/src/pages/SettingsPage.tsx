@@ -48,11 +48,16 @@ export function SettingsPage() {
                 autoComplete="off"
                 className="input input-mono"
                 onChange={(e) => setTokenInput(e.target.value)}
-                placeholder="опционально"
+                placeholder="по умолчанию = ключ дашборда; сюда — API_TOKEN для скриптов"
                 type="password"
                 value={token}
               />
             </label>
+            <p style={{ fontSize: '0.75rem', color: 'var(--muted)', lineHeight: 1.45 }}>
+              После входа ключ дашборда уже используется как Bearer. Отдельный{' '}
+              <code>API_TOKEN</code> из <code>.env</code> нужен для Discord/MCP/скриптов — сюда его
+              можно подставить, если хочешь ходить в API именно им.
+            </p>
             <div>
               <Button
                 onClick={() => { setToken(token); setStatus('Токен сохранён') }}

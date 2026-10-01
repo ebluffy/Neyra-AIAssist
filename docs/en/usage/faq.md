@@ -25,4 +25,4 @@ Check `plugin.yaml` (`enabled` / lifecycle) and restart the process for resident
 
 ## What is the difference between the dashboard access key and `API_TOKEN`?
 
-The **access key** unlocks the React SPA in the browser (stored as a hash in `server/data/dashboard_auth.sqlite`). **`API_TOKEN`** authorizes `/v1` HTTP/WebSocket calls. Both may be required for full dashboard functionality when tokens are enabled.
+The **access key** unlocks the React SPA and, after login, is sent as Bearer for `/v1` (server accepts a verified gate key as admin). **`API_TOKEN`** remains the dedicated credential for Discord, MCP, scripts, and optional Settings override — it does not have to be pasted into the dashboard for normal UI use.

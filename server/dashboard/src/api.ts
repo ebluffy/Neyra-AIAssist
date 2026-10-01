@@ -1,5 +1,9 @@
 const TOKEN_KEY = 'neyra_api_token'
 
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
 export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) ?? ''
 }
