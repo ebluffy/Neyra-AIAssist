@@ -55,13 +55,27 @@ function jsonHeaders(): HeadersInit {
 }
 
 async function parseApiResponse<T>(r: Response): Promise<T> {
-  const j = (await r.json()) as T & { ok?: boolean; error?: { message?: string } }
+  const text = await r.text()
+  const trimmed = text.trimStart()
+  if (trimmed.startsWith('<') || trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<!doctype')) {
+    throw new Error(
+      r.status >= 500 || r.status === 0
+        ? `Сервер недоступен (HTTP ${r.status || '—'}). Подождите конца перезапуска или обновите страницу.`
+        : `Ответ не JSON (HTTP ${r.status}) — сервер перезапускается или прокси вернул HTML.`,
+    )
+  }
+  let j: T & { ok?: boolean; error?: { message?: string } }
+  try {
+    j = JSON.parse(text) as T & { ok?: boolean; error?: { message?: string } }
+  } catch {
+    throw new Error(`Не удалось разобрать ответ API (HTTP ${r.status})`)
+  }
   if (!r.ok) {
-    const msg = (j as { error?: { message?: string } }).error?.message ?? r.statusText
+    const msg = j?.error?.message ?? r.statusText
     throw new Error(msg || `HTTP ${r.status}`)
   }
   if (j && typeof j === 'object' && 'ok' in j && j.ok === false) {
-    const msg = (j as { error?: { message?: string } }).error?.message ?? 'API error'
+    const msg = j.error?.message ?? 'API error'
     throw new Error(msg)
   }
   return j as T

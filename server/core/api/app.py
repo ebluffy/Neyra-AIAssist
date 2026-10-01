@@ -1381,8 +1381,8 @@ def build_app(
             "data": {
                 "action": "restart",
                 "note": (
-                    "Process will shut down shortly (uvicorn should_exit; fallback exit code 1). "
-                    "Use docker compose restart:unless-stopped or systemd Restart=always / on-failure."
+                    "Процесс скоро остановится; systemd/docker должен поднять его снова. "
+                    "Дашборд подождёт ответ health — не жмите «Обновить» сразу."
                 ),
             },
         }
@@ -2090,6 +2090,7 @@ def build_app(
 
     @app.post("/v1/config/update")
     async def v1_config_update(body: ConfigUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
+        """Apply allowlisted keys: in-memory + layer YAML + rebind LLM clients when llm.* changes."""
         trace_id = _trace_id(request)
         _audit("config_update", trace_id, api_role, {"keys": list(body.updates.keys())})
         updates_applied: dict[str, Any] = {}
@@ -2098,7 +2099,47 @@ def build_app(
                 raise ApiError("forbidden_update", f"Path not allowed: {k}", 403)
             _safe_set(config, k, v)
             updates_applied[k] = v
-        return {"ok": True, "trace_id": trace_id, "data": {"updated": updates_applied}}
+
+        persisted: list[str] = []
+        if updates_applied:
+            try:
+                from core.runtime.config_loader import persist_allowlisted_updates
+
+                persisted = persist_allowlisted_updates(root, updates_applied)
+            except Exception as e:
+                logger.exception("Failed to persist runtime config updates")
+                raise ApiError("persist_failed", f"Config apply ok in memory, disk write failed: {e}", 500) from e
+
+        llm_rebound = False
+        if any(str(k).startswith("llm.") for k in updates_applied):
+            try:
+                agent._setup_llm()
+                llm_rebound = True
+            except Exception as e:
+                logger.exception("LLM rebind after config update failed")
+                raise ApiError(
+                    "llm_rebind_failed",
+                    f"Config saved, but LLM clients were not rebuilt: {e}",
+                    500,
+                ) from e
+
+        if "logging.level" in updates_applied:
+            try:
+                level_name = str(updates_applied["logging.level"] or "").strip().upper()
+                if level_name:
+                    logging.getLogger().setLevel(getattr(logging, level_name, logging.INFO))
+            except Exception:
+                logger.debug("Failed to apply logging.level at runtime", exc_info=True)
+
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "updated": updates_applied,
+                "persisted": persisted,
+                "llm_rebound": llm_rebound,
+            },
+        }
 
     @app.post("/v1/backup/run")
     async def v1_backup_run(request: Request, api_role: str = Depends(dep_maint)):

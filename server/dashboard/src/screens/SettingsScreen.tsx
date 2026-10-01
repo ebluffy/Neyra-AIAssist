@@ -196,7 +196,7 @@ export function SettingsScreen() {
         return
       }
       await apiPost<ApiEnvelope<unknown>>('/v1/config/update', { updates })
-      setStatus(`Обновлено: ${Object.keys(updates).length} ключ(ей)`)
+      setStatus(`Сохранено на диск и применено: ${Object.keys(updates).length} ключ(ей). LLM пересобран при смене моделей/провайдера.`)
       await load()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -298,6 +298,10 @@ export function SettingsScreen() {
           <SlidersHorizontal size={15} className="card-icon card-icon-pink" />
           <span className="card-title">Runtime-конфиг</span>
         </div>
+        <p style={{ fontSize: '0.8rem', color: 'var(--muted)', margin: '0 0 0.65rem' }}>
+          «Применить» пишет в <span style={{ fontFamily: 'var(--mono)' }}>config/*.yaml</span> и сразу пересобирает LLM-клиенты
+          (без мягкого перезапуска). После рестарта значения тоже сохраняются.
+        </p>
         <div className="tabs-row" role="tablist" aria-label="Разделы конфига">
           {TABS.map((t) => (
             <Button key={t.id} onClick={() => setTab(t.id)} size="sm" type="button" variant={tab === t.id ? 'default' : 'secondary'}>

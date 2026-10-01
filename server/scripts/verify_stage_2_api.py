@@ -241,17 +241,37 @@ def check_auth_matrix() -> list[str]:
             DASH_KEY_OTHER = "other-key-9999-xxxxxxxxxxxxxxxxxxxxx"
             DASH_KEY_WRONG = "wrong-key-0000-xxxxxxxxxxxxxxxxxxxxx"
 
-            r = client.post(
-                "/v1/dashboard/auth/setup",
-                json={"key": DASH_KEY},
-                headers={"Authorization": "Bearer admin-secret"},
-            )
-            if r.status_code != 200:
-                errs.append(f"dash auth setup want 200, got {r.status_code} {r.text}")
-            else:
-                sess = (r.json().get("data") or {}).get("session_token")
-                if not sess:
-                    errs.append("dash auth setup must return session_token")
+            # Setup-guard HTTP (frpc): peer loopback + CF public IP without API Bearer → 403
+            orig_resolve = api_mod.resolve_client_ip
+
+            def _resolve_as_frpc_peer(request):  # type: ignore[no-untyped-def]
+                peer = "127.0.0.1"
+                return api_mod._resolve_client_ip_pure(peer=peer, headers=request.headers)
+
+            api_mod.resolve_client_ip = _resolve_as_frpc_peer  # type: ignore[assignment]
+            try:
+                r = client.post(
+                    "/v1/dashboard/auth/setup",
+                    json={"key": DASH_KEY},
+                    headers={"CF-Connecting-IP": "203.0.113.9"},
+                )
+                if r.status_code != 403:
+                    errs.append(
+                        f"setup with CF public IP (no Bearer) want 403, got {r.status_code} {r.text[:120]}"
+                    )
+                r = client.post("/v1/dashboard/auth/setup", json={"key": DASH_KEY})
+                if r.status_code != 200:
+                    errs.append(
+                        f"setup from loopback without CF want 200, got {r.status_code} {r.text[:120]}"
+                    )
+                else:
+                    sess = (r.json().get("data") or {}).get("session_token")
+                    if not sess:
+                        errs.append("loopback setup must return session_token")
+            finally:
+                api_mod.resolve_client_ip = orig_resolve  # type: ignore[assignment]
+
+            # Already configured → second setup with Bearer must be 409
             r = client.post(
                 "/v1/dashboard/auth/setup",
                 json={"key": DASH_KEY_OTHER},

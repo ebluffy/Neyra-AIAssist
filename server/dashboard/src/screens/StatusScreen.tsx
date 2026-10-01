@@ -116,6 +116,7 @@ export function StatusScreen() {
   const [models, setModels] = useState<{ roles?: Record<string, { role?: string; provider?: string; model?: string }> } | null>(null)
   const [restartMsg, setRestartMsg] = useState<string | null>(null)
   const [restartBusy, setRestartBusy] = useState(false)
+  const [restartTone, setRestartTone] = useState<'success' | 'info' | 'error'>('success')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -148,10 +149,38 @@ export function StatusScreen() {
     }
     setRestartBusy(true)
     setRestartMsg(null)
+    setRestartTone('info')
+    setError(null)
     try {
-      const r = await apiPost<ApiEnvelope<{ note?: string }>>('/v1/system/restart', {})
-      setRestartMsg(r.data?.note ?? 'Рестарт запланирован')
+      await apiPost<ApiEnvelope<{ note?: string }>>('/v1/system/restart', {})
+      setRestartMsg('Процесс останавливается. Ждём, пока сервер снова ответит…')
+      let online = false
+      for (let i = 0; i < 45; i++) {
+        await new Promise((r) => setTimeout(r, 2000))
+        try {
+          const r = await fetch('/v1/dashboard/auth/status', { headers: { Accept: 'application/json' } })
+          if (!r.ok) continue
+          const text = await r.text()
+          if (text.trimStart().startsWith('<')) continue
+          const j = JSON.parse(text) as { ok?: boolean }
+          if (j && j.ok === true) {
+            online = true
+            break
+          }
+        } catch {
+          /* still down */
+        }
+      }
+      if (online) {
+        setRestartTone('success')
+        setRestartMsg('Сервер снова онлайн.')
+        await load()
+      } else {
+        setRestartTone('info')
+        setRestartMsg('Сервер долго не отвечает — обновите страницу вручную через минуту.')
+      }
     } catch (e) {
+      setRestartTone('error')
       setRestartMsg(e instanceof Error ? e.message : String(e))
     } finally {
       setRestartBusy(false)
@@ -190,7 +219,7 @@ export function StatusScreen() {
       />
 
       {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
-      {restartMsg && <InlineFeedback tone="success">{restartMsg}</InlineFeedback>}
+      {restartMsg && <InlineFeedback tone={restartTone}>{restartMsg}</InlineFeedback>}
 
       <div className="split-status">
         <div className="card">

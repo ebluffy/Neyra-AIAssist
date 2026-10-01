@@ -236,3 +236,66 @@ def load_layered_config(server_root: Path, *, validate: bool = True) -> dict[str
         if errs:
             raise ValueError("config schema validation failed:\n  - " + "\n  - ".join(errs))
     return cfg
+
+
+# Top-level key → layer file under server/config/ (dashboard runtime allowlist).
+_RUNTIME_PERSIST_LAYER: dict[str, str] = {
+    "llm": "llm.yaml",
+    "agent": "agent.yaml",
+    "memory": "memory.yaml",
+    "logging": "runtime.yaml",
+    "health_monitor": "runtime.yaml",
+}
+
+
+def _set_dotted(cfg: dict[str, Any], path: str, value: Any) -> None:
+    keys = [p for p in path.split(".") if p]
+    if not keys:
+        raise ValueError("empty config path")
+    cur: dict[str, Any] = cfg
+    for k in keys[:-1]:
+        nxt = cur.get(k)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[k] = nxt
+        cur = nxt
+    cur[keys[-1]] = value
+
+
+def persist_allowlisted_updates(server_root: Path, updates: dict[str, Any]) -> list[str]:
+    """Write dotted allowlisted keys into layer YAML files. Returns relative paths touched.
+
+    Does not touch root ``config.yaml`` or secrets. Layer comments may be rewritten by PyYAML.
+    """
+    if not updates:
+        return []
+    root = Path(server_root)
+    config_dir = root / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    by_layer: dict[str, dict[str, Any]] = {}
+    for path, value in updates.items():
+        top = str(path).split(".", 1)[0].strip()
+        layer_name = _RUNTIME_PERSIST_LAYER.get(top)
+        if not layer_name:
+            raise ValueError(f"no layer mapping for config path: {path}")
+        by_layer.setdefault(layer_name, {})[str(path)] = value
+
+    touched: list[str] = []
+    for layer_name, paths in by_layer.items():
+        layer_path = config_dir / layer_name
+        current = _load_yaml_file(layer_path) if layer_path.is_file() else {}
+        for dotted, val in paths.items():
+            _set_dotted(current, dotted, val)
+        text = yaml.safe_dump(
+            current,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+        )
+        tmp = layer_path.with_suffix(layer_path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(layer_path)
+        touched.append(f"config/{layer_name}")
+        logger.info("Persisted runtime config updates to %s (%s keys)", layer_path, len(paths))
+    return touched
