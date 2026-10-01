@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 import httpx
 import yaml
 from fastapi import Depends, FastAPI, Header, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -1071,9 +1071,18 @@ def build_app(
         }
 
     def _client_ip(request: Request) -> str:
-        # Prefer socket peer (uvicorn proxy_headers=True already rewrites client
-        # from trusted proxy). Do not trust client-supplied X-Forwarded-For alone.
-        return request.client.host if request.client else "unknown"
+        # Prefer socket peer. Behind local frp/nginx peer is often 127.0.0.1 —
+        # only then trust CF-Connecting-IP / X-Real-IP / first XFF hop.
+        peer = request.client.host if request.client else "unknown"
+        if peer in ("127.0.0.1", "::1"):
+            for header in ("cf-connecting-ip", "x-real-ip"):
+                val = (request.headers.get(header) or "").strip()
+                if val:
+                    return val
+            xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+            if xff:
+                return xff
+        return peer
 
     def _dash_login_rate_ok(ip: str) -> bool:
         now = time.time()
@@ -2179,9 +2188,43 @@ def build_app(
     dash_cfg = config.get("dashboard") or {}
     if bool(dash_cfg.get("enabled", True)):
         dist = _dashboard_dist_path(config)
-        if dist.is_dir() and (dist / "index.html").is_file():
-            app.mount("/", StaticFiles(directory=str(dist), html=True), name="neyra_dashboard")
-            logger.info("Serving dashboard from %s", dist)
+        index = dist / "index.html"
+        if dist.is_dir() and index.is_file():
+            assets_dir = dist / "assets"
+            if assets_dir.is_dir():
+                app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="neyra_assets")
+
+            dist_resolved = dist.resolve()
+
+            def _spa_index() -> FileResponse:
+                return FileResponse(index)
+
+            @app.get("/")
+            async def spa_root():
+                return _spa_index()
+
+            @app.get("/{full_path:path}")
+            async def spa_fallback(full_path: str):
+                """Serve SPA index for client routes (/dashboard, /plugins, …)."""
+                low = (full_path or "").lstrip("/").lower()
+                if (
+                    low == "v1"
+                    or low.startswith("v1/")
+                    or low in ("docs", "redoc", "openapi.json")
+                    or low.startswith(("docs/", "redoc/"))
+                ):
+                    return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+                candidate = (dist / full_path).resolve()
+                try:
+                    candidate.relative_to(dist_resolved)
+                except ValueError:
+                    return JSONResponse(status_code=404, content={"detail": "Not Found"})
+                if candidate.is_file():
+                    return FileResponse(candidate)
+                return _spa_index()
+
+            logger.info("Serving dashboard SPA from %s (assets + index fallback)", dist)
         else:
             logger.warning(
                 "Dashboard enabled but no build at %s — only API (run: cd dashboard && npm install && npm run build).",

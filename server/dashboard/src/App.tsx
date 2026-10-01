@@ -4,7 +4,7 @@ import {
   BookOpenText, Gauge, LogOut, Menu, PlugZap, Settings, Webhook, X, Cpu,
 } from 'lucide-react'
 import { clearDashboardGateKey, DashboardAuthGate } from './components/DashboardAuthGate'
-import { getToken } from './api'
+import { getSessionToken } from './api'
 import { DashboardPage } from './pages/DashboardPage'
 import { DocsPage } from './pages/DocsPage'
 import { PluginsPage } from './pages/PluginsPage'
@@ -33,7 +33,7 @@ function Shell() {
   useEffect(() => { if (!mobile) setOpen(false) }, [mobile])
 
   async function logout() {
-    const tok = getToken().trim()
+    const tok = getSessionToken().trim()
     if (tok) {
       try {
         await fetch('/v1/dashboard/auth/logout', {
@@ -45,7 +45,8 @@ function Shell() {
       }
     }
     clearDashboardGateKey()
-    window.location.reload()
+    // Full navigation to `/` so SPA gate shows again (reload on /dashboard would 404 without fallback).
+    window.location.assign('/')
   }
 
   return (

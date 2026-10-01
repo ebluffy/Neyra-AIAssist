@@ -446,6 +446,71 @@ def check_dashboard_gate_store() -> list[str]:
     return errs
 
 
+def check_spa_routes() -> list[str]:
+    """Client routes must return index.html (not FastAPI JSON 404)."""
+    import tempfile
+    from fastapi.testclient import TestClient
+
+    from core.api import build_app
+
+    errs: list[str] = []
+    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_spa_test_"))
+    dist = data_tmp / "dashboard" / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>neyra</title>", encoding="utf-8")
+    (dist / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
+    (dist / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+
+    agent = MagicMock()
+    agent.start_mcp_clients = AsyncMock()
+    agent.stop_mcp_clients = AsyncMock()
+    agent.memory_hub = None
+    monitor = MagicMock()
+    monitor.start = MagicMock()
+    monitor.run_once = AsyncMock(return_value={"ok": True})
+    backup = MagicMock()
+
+    cfg = {
+        "paths": {"data_dir": str(data_tmp / "data")},
+        "api": {
+            "host": "127.0.0.1",
+            "port": 8787,
+            "token": "admin-secret",
+            "viewer_token": "",
+            "maint_token": "",
+            "public_base_url": "",
+            "public_path_prefix": "/api",
+            "audit_log_enabled": False,
+            "rate_limit_requests_per_minute": 0,
+        },
+        "dashboard": {"enabled": True, "dist_path": str(dist)},
+        "llm": {},
+    }
+    app = build_app(
+        cfg,
+        shared_agent=agent,
+        shared_monitor=monitor,
+        shared_backup_manager=backup,
+    )
+    with TestClient(app) as client:
+        for path in ("/", "/dashboard", "/plugins", "/settings"):
+            r = client.get(path)
+            if r.status_code != 200:
+                errs.append(f"{path} want 200, got {r.status_code}")
+            elif "neyra" not in r.text.lower() and "<!doctype html>" not in r.text.lower():
+                errs.append(f"{path} should serve SPA index.html, got: {r.text[:80]!r}")
+        r = client.get("/favicon.svg")
+        if r.status_code != 200:
+            errs.append(f"favicon.svg want 200, got {r.status_code}")
+        r = client.get("/assets/app.js")
+        if r.status_code != 200:
+            errs.append(f"/assets/app.js want 200, got {r.status_code}")
+        r = client.get("/v1/no-such-endpoint")
+        if r.status_code != 404:
+            errs.append(f"/v1/no-such-endpoint want 404, got {r.status_code}")
+    return errs
+
+
 def check_public_url_env_rejected() -> list[str]:
     import os
 
@@ -481,6 +546,7 @@ def main() -> int:
         ("legacy env failfast", check_legacy_env_failfast),
         ("API_KEY alias", check_api_key_alias),
         ("dashboard gate store", check_dashboard_gate_store),
+        ("spa routes", check_spa_routes),
         ("public URL env rejected", check_public_url_env_rejected),
         ("auth matrix", check_auth_matrix),
     ]

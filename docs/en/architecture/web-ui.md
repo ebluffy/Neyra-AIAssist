@@ -31,7 +31,7 @@ This gate is **separate** from the Stage 3 **Tauri client** (`client/`): the des
 - **Plugins** — plugin state, plugin config editing, invoke / reload / restart.
 - **Settings** — Bearer token and runtime allow-list updates.
 - **Webhooks** — outbound routes, tests, deliveries / DLQ.
-- **API Docs** — embedded Swagger / ReDoc and `openapi.json`.
+- **API Docs** — links to Swagger UI / ReDoc / `openapi.json`, plus Markdown docs from the repo.
 
 (There is no microsite tab; public marketing pages are out of scope for this SPA.)
 

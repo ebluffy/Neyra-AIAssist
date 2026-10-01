@@ -31,7 +31,7 @@ HTTP-стек живёт в **`server/core/api/`** (Control API), это не м
 - **Plugins** — состояние плагинов, правка plugin config, invoke / reload / restart.
 - **Settings** — Bearer token и обновление allow-list рантайма.
 - **Webhooks** — исходящие маршруты, тесты, deliveries / DLQ.
-- **API Docs** — Swagger / ReDoc и `openapi.json`.
+- **API Docs** — ссылки на Swagger / ReDoc / `openapi.json` и Markdown из репозитория.
 
 (Вкладки «Микро-сайт» нет; публичные маркетинговые страницы вне scope этой SPA.)
 

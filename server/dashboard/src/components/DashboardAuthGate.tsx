@@ -4,11 +4,9 @@ import { Cpu, KeyRound, Lock, RefreshCw } from 'lucide-react'
 import { clearSessionToken, hasDashboardSession, setSessionToken } from '../api'
 import { Button } from './ui/button'
 
-const GATE_FLAG = 'neyra_dashboard_gate_ok'
 const MIN_LEN = 32
 
 export function clearDashboardGateKey(): void {
-  sessionStorage.removeItem(GATE_FLAG)
   clearSessionToken()
 }
 
@@ -51,7 +49,6 @@ async function postKey(path: string, key: string): Promise<AuthOk> {
 /** Persist short-lived session Bearer in sessionStorage (same lifetime as the tab). */
 function activateSession(sessionToken: string): void {
   setSessionToken(sessionToken)
-  sessionStorage.setItem(GATE_FLAG, '1')
 }
 
 export function DashboardAuthGate({ children }: { children: ReactNode }) {
@@ -71,7 +68,6 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
           setMode('setup')
           return
         }
-        // Require an actual session token in sessionStorage (not Settings API_TOKEN).
         if (hasDashboardSession()) {
           setMode('ok')
           return
