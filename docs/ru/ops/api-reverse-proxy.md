@@ -116,6 +116,14 @@ server {
 
 Trailing slash у `proxy_pass` под `/api/` снимает префикс `/api`.
 
+### Smoke rate-limit / client IP (публичный хост)
+
+После map: `POST /v1/dashboard/auth/login` с заведомо неверным ключом → **401**. В логе ядра на домашнем сервере должно быть:
+
+`dashboard login failed ip=<реальный клиент>`
+
+не `127.0.0.1`. На `neyra.owyx.site` smoke (2026-10-01) подтвердил реальный IP за Cloudflare/frp.
+
 ## Альтернатива: процесс Neyra на VPS (без frp)
 
 Если uvicorn на том же VPS, что и Caddy/nginx, укажите upstream `127.0.0.1:8787` вместо порта frps. Это запасной стенд (демо / CI), не канон Этапа 3 для персонального ассистента — см. [`docs/PLAN.md`](../../PLAN.md) §3 и Этап 4.

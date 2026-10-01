@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 
-type FieldDef = { key: string; label: string }
+type FieldDef = { key: string; label: string; kind?: 'text' | 'bool' | 'provider' }
 
 const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
   {
@@ -14,7 +14,7 @@ const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
     title: 'Речь',
     fields: [
       { key: 'llm.talk_model.model', label: 'Модель речи' },
-      { key: 'llm.talk_model.provider', label: 'Провайдер' },
+      { key: 'llm.talk_model.provider', label: 'Провайдер', kind: 'provider' },
       { key: 'llm.talk_model.temperature', label: 'Температура' },
       { key: 'llm.talk_model.timeout_seconds', label: 'Таймаут (с)' },
       { key: 'llm.talk_model.reply_max_tokens', label: 'Макс. токенов ответа' },
@@ -26,7 +26,7 @@ const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
     title: 'Мозг',
     fields: [
       { key: 'llm.brain_model.model', label: 'Модель мозга' },
-      { key: 'llm.brain_model.provider', label: 'Провайдер' },
+      { key: 'llm.brain_model.provider', label: 'Провайдер', kind: 'provider' },
       { key: 'llm.brain_model.model_deep', label: 'Глубокая модель' },
       { key: 'llm.brain_model.max_tokens', label: 'Макс. токенов' },
       { key: 'llm.brain_model.temperature', label: 'Температура' },
@@ -38,7 +38,7 @@ const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
     title: 'Память',
     fields: [
       { key: 'llm.memory_model.model', label: 'Модель памяти' },
-      { key: 'llm.memory_model.provider', label: 'Провайдер' },
+      { key: 'llm.memory_model.provider', label: 'Провайдер', kind: 'provider' },
       { key: 'llm.memory_model.max_tokens', label: 'Макс. токенов' },
       { key: 'llm.memory_model.temperature', label: 'Температура' },
       { key: 'memory.rag_write_mode', label: 'Режим записи RAG' },
@@ -49,7 +49,7 @@ const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
     title: 'Зрение',
     fields: [
       { key: 'llm.vision_model.model', label: 'Модель зрения' },
-      { key: 'llm.vision_model.provider', label: 'Провайдер' },
+      { key: 'llm.vision_model.provider', label: 'Провайдер', kind: 'provider' },
       { key: 'llm.vision_model.enabled', label: 'Включено' },
       { key: 'llm.vision_model.use_brain_model_for_vision', label: 'Использовать модель мозга для зрения' },
       { key: 'llm.vision_model.max_tokens', label: 'Макс. токенов' },
@@ -69,7 +69,7 @@ const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
     fields: [
       { key: 'llm.providers.openrouter.base_url', label: 'Базовый URL OpenRouter' },
       { key: 'llm.providers.aihope.base_url', label: 'Базовый URL AIHope' },
-      { key: 'llm.provider', label: 'Провайдер по умолчанию' },
+      { key: 'llm.provider', label: 'Провайдер по умолчанию', kind: 'provider' },
       { key: 'llm.base_url', label: 'Устаревший базовый URL' },
     ],
   },
@@ -136,6 +136,7 @@ export function SettingsScreen() {
   const [tab, setTab] = useState(TABS[0].id)
   const [values, setValues] = useState<Record<string, string>>({})
   const [initial, setInitial] = useState<Record<string, string>>({})
+  const [providers, setProviders] = useState<string[]>([])
   const [status, setStatus] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -147,11 +148,15 @@ export function SettingsScreen() {
     setLoading(true)
     setError(null)
     try {
-      const r = await apiGet<ApiEnvelope<{ values: Record<string, unknown> }>>('/v1/config/runtime')
+      const r = await apiGet<ApiEnvelope<{ values: Record<string, unknown>; providers?: string[] }>>(
+        '/v1/config/runtime',
+      )
       const next: Record<string, string> = {}
       for (const k of allKeys) next[k] = serialize(r.data.values?.[k])
       setValues(next)
       setInitial(next)
+      const list = Array.isArray(r.data.providers) ? r.data.providers.map(String).filter(Boolean) : []
+      setProviders(list.length ? list : ['aihope', 'openrouter'])
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -168,6 +173,16 @@ export function SettingsScreen() {
     () => active.fields.map((f) => f.key).filter((k) => values[k] !== initial[k]),
     [active, values, initial],
   )
+
+  const providerOptions = useMemo(() => {
+    const cur = providers.slice()
+    for (const f of TABS.flatMap((t) => t.fields)) {
+      if (f.kind !== 'provider') continue
+      const v = (values[f.key] || '').trim()
+      if (v && !cur.includes(v)) cur.push(v)
+    }
+    return cur
+  }, [providers, values])
 
   async function applyRuntime() {
     setError(null)
@@ -188,6 +203,62 @@ export function SettingsScreen() {
     } finally {
       setSaving(false)
     }
+  }
+
+  function renderField(f: FieldDef) {
+    const commonLabel = (
+      <span className="label-text">
+        {f.label}{' '}
+        <span style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--muted)', fontWeight: 400 }}>
+          ({f.key})
+        </span>
+      </span>
+    )
+    if (BOOL_KEYS.has(f.key) || f.kind === 'bool') {
+      return (
+        <label key={f.key} className="label">
+          {commonLabel}
+          <select
+            className="input input-mono"
+            onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+            value={values[f.key] || 'false'}
+          >
+            <option value="true">да</option>
+            <option value="false">нет</option>
+          </select>
+        </label>
+      )
+    }
+    if (f.kind === 'provider') {
+      const current = values[f.key] || ''
+      return (
+        <label key={f.key} className="label">
+          {commonLabel}
+          <select
+            className="input input-mono"
+            onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+            value={current}
+          >
+            {!current && <option value="">— выбери —</option>}
+            {providerOptions.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </label>
+      )
+    }
+    return (
+      <label key={f.key} className="label">
+        {commonLabel}
+        <input
+          className="input input-mono"
+          onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+          value={values[f.key] ?? ''}
+        />
+      </label>
+    )
   }
 
   return (
@@ -238,34 +309,7 @@ export function SettingsScreen() {
           <p style={{ color: 'var(--muted)' }}>Загрузка…</p>
         ) : (
           <div className="stack" style={{ marginTop: '0.85rem' }}>
-            <div className="grid-2">
-              {active.fields.map((f) => (
-                <label key={f.key} className="label">
-                  <span className="label-text">
-                    {f.label}{' '}
-                    <span style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--muted)', fontWeight: 400 }}>
-                      ({f.key})
-                    </span>
-                  </span>
-                  {BOOL_KEYS.has(f.key) ? (
-                    <select
-                      className="input input-mono"
-                      onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-                      value={values[f.key] || 'false'}
-                    >
-                      <option value="true">да</option>
-                      <option value="false">нет</option>
-                    </select>
-                  ) : (
-                    <input
-                      className="input input-mono"
-                      onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-                      value={values[f.key] ?? ''}
-                    />
-                  )}
-                </label>
-              ))}
-            </div>
+            <div className="grid-2">{active.fields.map((f) => renderField(f))}</div>
             <div className="row">
               <Button disabled={saving || dirtyKeys.length === 0} onClick={() => void applyRuntime()} type="button">
                 {saving ? <Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={15} />}

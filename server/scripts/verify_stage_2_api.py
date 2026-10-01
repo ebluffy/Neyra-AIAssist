@@ -241,14 +241,22 @@ def check_auth_matrix() -> list[str]:
             DASH_KEY_OTHER = "other-key-9999-xxxxxxxxxxxxxxxxxxxxx"
             DASH_KEY_WRONG = "wrong-key-0000-xxxxxxxxxxxxxxxxxxxxx"
 
-            r = client.post("/v1/dashboard/auth/setup", json={"key": DASH_KEY})
+            r = client.post(
+                "/v1/dashboard/auth/setup",
+                json={"key": DASH_KEY},
+                headers={"Authorization": "Bearer admin-secret"},
+            )
             if r.status_code != 200:
                 errs.append(f"dash auth setup want 200, got {r.status_code} {r.text}")
             else:
                 sess = (r.json().get("data") or {}).get("session_token")
                 if not sess:
                     errs.append("dash auth setup must return session_token")
-            r = client.post("/v1/dashboard/auth/setup", json={"key": DASH_KEY_OTHER})
+            r = client.post(
+                "/v1/dashboard/auth/setup",
+                json={"key": DASH_KEY_OTHER},
+                headers={"Authorization": "Bearer admin-secret"},
+            )
             if r.status_code != 409:
                 errs.append(f"second setup want 409, got {r.status_code}")
             r = client.post("/v1/dashboard/auth/login", json={"key": DASH_KEY_WRONG})

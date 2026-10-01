@@ -123,6 +123,15 @@ def runtime_config_snapshot(cfg: dict) -> dict[str, Any]:
             out[key] = val
     return out
 
+
+def configured_llm_providers(cfg: dict) -> list[str]:
+    """Provider ids from ``llm.providers`` (for Settings dropdowns)."""
+    llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+    providers = llm.get("providers") if isinstance(llm, dict) else None
+    if not isinstance(providers, dict):
+        return []
+    return sorted(str(k).strip() for k in providers.keys() if str(k).strip())
+
 # Set by run_neyra_server so soft-restart can ask uvicorn to shut down cleanly.
 _uvicorn_server: Any = None
 
@@ -2073,7 +2082,10 @@ def build_app(
         return {
             "ok": True,
             "trace_id": trace_id,
-            "data": {"values": runtime_config_snapshot(config)},
+            "data": {
+                "values": runtime_config_snapshot(config),
+                "providers": configured_llm_providers(config),
+            },
         }
 
     @app.post("/v1/config/update")
