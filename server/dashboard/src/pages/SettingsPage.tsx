@@ -48,7 +48,7 @@ export function SettingsPage() {
                 autoComplete="off"
                 className="input input-mono"
                 onChange={(e) => setTokenInput(e.target.value)}
-                placeholder="по умолчанию = ключ дашборда; сюда — API_TOKEN для скриптов"
+                placeholder="пусто = только session после входа; сюда — API_TOKEN для скриптов"
                 type="password"
                 value={token}
               />

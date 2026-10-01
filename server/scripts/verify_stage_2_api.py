@@ -237,18 +237,43 @@ def check_auth_matrix() -> list[str]:
                 if data.get("configured") is not False:
                     errs.append(f"fresh app dash auth should be unconfigured: {data}")
 
-            r = client.post("/v1/dashboard/auth/setup", json={"key": "dash-key-1234"})
+            DASH_KEY = "dash-key-1234-xxxxxxxxxxxxxxxxxxxxxx"  # >= 32
+            DASH_KEY_OTHER = "other-key-9999-xxxxxxxxxxxxxxxxxxxxx"
+            DASH_KEY_WRONG = "wrong-key-0000-xxxxxxxxxxxxxxxxxxxxx"
+
+            r = client.post("/v1/dashboard/auth/setup", json={"key": DASH_KEY})
             if r.status_code != 200:
                 errs.append(f"dash auth setup want 200, got {r.status_code} {r.text}")
-            r = client.post("/v1/dashboard/auth/setup", json={"key": "other-key-9999"})
+            else:
+                sess = (r.json().get("data") or {}).get("session_token")
+                if not sess:
+                    errs.append("dash auth setup must return session_token")
+            r = client.post("/v1/dashboard/auth/setup", json={"key": DASH_KEY_OTHER})
             if r.status_code != 409:
                 errs.append(f"second setup want 409, got {r.status_code}")
-            r = client.post("/v1/dashboard/auth/login", json={"key": "wrong-key-0000"})
+            r = client.post("/v1/dashboard/auth/login", json={"key": DASH_KEY_WRONG})
             if r.status_code != 401:
                 errs.append(f"bad dash login want 401, got {r.status_code}")
-            r = client.post("/v1/dashboard/auth/login", json={"key": "dash-key-1234"})
+            r = client.post("/v1/dashboard/auth/login", json={"key": DASH_KEY})
             if r.status_code != 200:
                 errs.append(f"good dash login want 200, got {r.status_code}")
+            else:
+                sess = (r.json().get("data") or {}).get("session_token")
+                if not sess:
+                    errs.append("dash auth login must return session_token")
+                else:
+                    r = client.get("/v1/health", headers={"Authorization": f"Bearer {sess}"})
+                    if r.status_code != 200:
+                        errs.append(f"session Bearer health want 200, got {r.status_code}")
+                    r = client.post(
+                        "/v1/dashboard/auth/logout",
+                        headers={"Authorization": f"Bearer {sess}"},
+                    )
+                    if r.status_code != 200:
+                        errs.append(f"dash logout want 200, got {r.status_code}")
+                    r = client.get("/v1/health", headers={"Authorization": f"Bearer {sess}"})
+                    if r.status_code != 401:
+                        errs.append(f"revoked session health want 401, got {r.status_code}")
 
             r = client.get("/v1/health")
             if r.status_code != 401:
@@ -380,7 +405,7 @@ def check_dashboard_gate_store() -> list[str]:
     import tempfile
     from pathlib import Path
 
-    from core.api.dashboard_auth import DashboardAuthStore
+    from core.api.dashboard_auth import MIN_KEY_LEN, DashboardAuthStore
 
     errs: list[str] = []
     tmp = Path(tempfile.mkdtemp(prefix="neyra_dash_auth_")) / "gate.sqlite"
@@ -393,22 +418,31 @@ def check_dashboard_gate_store() -> list[str]:
     except ValueError:
         pass
     try:
-        store.setup("short7!")
-        errs.append("7-char key should fail (min 8)")
+        store.setup("x" * (MIN_KEY_LEN - 1))
+        errs.append(f"{MIN_KEY_LEN - 1}-char key should fail (min {MIN_KEY_LEN})")
     except ValueError:
         pass
-    store.setup("my-secret-key")
+    good = "my-secret-key-" + ("x" * 20)  # >= 32
+    store.setup(good)
     if not store.is_configured():
         errs.append("after setup should be configured")
-    if not store.verify("my-secret-key"):
+    if not store.verify(good):
         errs.append("correct key should verify")
     if store.verify("wrong-key"):
         errs.append("wrong key must not verify")
     try:
-        store.setup("another-longer")
+        store.setup("another-longer-key-xxxxxxxxxxxxxxxx")
         errs.append("second setup should fail")
     except RuntimeError:
         pass
+    sess = store.issue_session()
+    if not store.verify_session(sess):
+        errs.append("issued session should verify")
+    store.revoke_session(sess)
+    if store.verify_session(sess):
+        errs.append("revoked session must not verify")
+    if store.verify_session(good):
+        errs.append("raw gate key must not verify as session")
     return errs
 
 

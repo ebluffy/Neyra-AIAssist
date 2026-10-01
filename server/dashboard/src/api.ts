@@ -3,6 +3,10 @@ const SESSION_TOKEN_KEY = 'neyra_dashboard_session'
 
 export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY)
+}
+
+/** Clear dashboard session only — keep Settings API_TOKEN in localStorage. */
+export function clearSessionToken(): void {
   sessionStorage.removeItem(SESSION_TOKEN_KEY)
 }
 

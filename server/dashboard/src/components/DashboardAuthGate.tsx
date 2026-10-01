@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Cpu, KeyRound, Lock, RefreshCw } from 'lucide-react'
-import { clearToken, getToken, setSessionToken } from '../api'
+import { clearSessionToken, getToken, setSessionToken } from '../api'
 import { Button } from './ui/button'
 
 const GATE_FLAG = 'neyra_dashboard_gate_ok'
@@ -9,7 +9,7 @@ const MIN_LEN = 32
 
 export function clearDashboardGateKey(): void {
   sessionStorage.removeItem(GATE_FLAG)
-  clearToken()
+  clearSessionToken()
 }
 
 function generateHexKey(): string {

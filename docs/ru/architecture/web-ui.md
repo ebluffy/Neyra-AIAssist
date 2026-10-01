@@ -17,10 +17,10 @@ HTTP-стек живёт в **`server/core/api/`** (Control API), это не м
 
 Перед любой страницей дашборда SPA проверяет **ключ доступа**:
 
-1. **Первый визит** (ключ ещё не задан): создайте ключ (минимум **8** символов; удобный вариант — случайная строка **hex-32**). На сервере хранится хеш **PBKDF2** в `server/data/dashboard_auth.sqlite`.
-2. **Повторные визиты:** вход тем же ключом. Plaintext ключ держится в **`sessionStorage`** до «Выйти».
+1. **Первый визит** (ключ ещё не задан): создайте ключ (минимум **32** символа; удобный вариант — «Сгенерировать hex (32)»). На сервере хранится хеш **PBKDF2** в `server/data/dashboard_auth.sqlite`.
+2. **Повторные визиты:** вход тем же ключом. После login SPA держит **session token** в **`sessionStorage`** до «Выйти» / закрытия вкладки (сырой ключ в storage не кладётся).
 3. **`POST /v1/dashboard/auth/setup`** разрешён только пока ключ не задан. Если bind API **не** loopback, setup принимается **только с loopback-клиента** (защита от удалённой гонки за ключ).
-4. **`POST /v1/dashboard/auth/login`** и **`GET /v1/dashboard/auth/status`** публичны. После успешного login/setup API отдаёт короткоживущий **`session_token`**; SPA кладёт его в **`sessionStorage`** и шлёт как **`Authorization: Bearer`**. `_resolve_role` принимает проверенную сессию (быстрый hash) как **admin**. Сырой ключ дашборда **не** принимается как Bearer (без PBKDF2 на каждый poll). Отдельные `API_TOKEN` / viewer / maint — для Discord, MCP, скриптов и Settings.
+4. **`POST /v1/dashboard/auth/login`** и **`GET /v1/dashboard/auth/status`** публичны. После успешного login/setup API отдаёт короткоживущий **`session_token`**; SPA шлёт его как **`Authorization: Bearer`**. `_resolve_role` принимает проверенную сессию (быстрый hash) как **admin**. Сырой ключ дашборда **не** принимается как Bearer. **`POST /v1/dashboard/auth/logout`** отзывает session. Отдельные `API_TOKEN` / viewer / maint — для Discord, MCP, скриптов и Settings.
 
 Этот gate **отделён** от Tauri-клиента Этапа 3 (`client/`): десктопное приложение ходит в тот же Control API с URL сервера и API-токеном, а не через flow ключа дашборда.
 

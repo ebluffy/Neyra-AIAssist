@@ -17,10 +17,10 @@ Full real-time parity with the Event Bus for every dashboard action is backlog (
 
 Before any dashboard page loads, the SPA runs an **access key** gate:
 
-1. **First visit** (no key stored yet): create a key (minimum **8** characters; a random **hex-32** string is a good default). The server stores a **PBKDF2** hash in `server/data/dashboard_auth.sqlite`.
-2. **Later visits:** log in with the same key. The plaintext key is kept in **`sessionStorage`** until logout.
+1. **First visit** (no key stored yet): create a key (minimum **32** characters; use «Generate hex (32)» in the UI). The server stores a **PBKDF2** hash in `server/data/dashboard_auth.sqlite`.
+2. **Later visits:** log in with the same key. After login the SPA keeps a **session token** in **`sessionStorage`** until logout / tab close (the raw gate key is not stored).
 3. **`POST /v1/dashboard/auth/setup`** is allowed only while no key exists. If the API bind address is **not** loopback, setup is accepted **only from a loopback client** (prevents a remote race to claim the key).
-4. **`POST /v1/dashboard/auth/login`** and **`GET /v1/dashboard/auth/status`** are public. After a successful gate login/setup the API returns a short-lived **`session_token`**; the SPA stores it in **`sessionStorage`** and sends it as **`Authorization: Bearer`**. `_resolve_role` accepts a verified session (fast hash lookup) as **admin**. The raw gate key is **not** accepted as Bearer (avoids PBKDF2 on every poll). Dedicated `API_TOKEN` / viewer / maint remain for Discord, MCP, scripts, and Settings.
+4. **`POST /v1/dashboard/auth/login`** and **`GET /v1/dashboard/auth/status`** are public. After a successful gate login/setup the API returns a short-lived **`session_token`**; the SPA sends it as **`Authorization: Bearer`**. `_resolve_role` accepts a verified session (fast hash lookup) as **admin**. The raw gate key is **not** accepted as Bearer. **`POST /v1/dashboard/auth/logout`** revokes the session. Dedicated `API_TOKEN` / viewer / maint remain for Discord, MCP, scripts, and Settings.
 
 This gate is **separate** from the Stage 3 **Tauri client** (`client/`): the desktop app will talk to the same Control API with server URL + API token, not the dashboard access key flow.
 

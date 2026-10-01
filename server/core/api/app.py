@@ -1071,10 +1071,8 @@ def build_app(
         }
 
     def _client_ip(request: Request) -> str:
-        # Prefer proxy-provided client when present (nginx / Cloudflare).
-        xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        if xff:
-            return xff
+        # Prefer socket peer (uvicorn proxy_headers=True already rewrites client
+        # from trusted proxy). Do not trust client-supplied X-Forwarded-For alone.
         return request.client.host if request.client else "unknown"
 
     def _dash_login_rate_ok(ip: str) -> bool:
@@ -1149,6 +1147,20 @@ def build_app(
             "trace_id": trace_id,
             "data": {"authenticated": True, "session_token": session},
         }
+
+    @app.post("/v1/dashboard/auth/logout")
+    async def v1_dashboard_auth_logout(
+        request: Request,
+        authorization: Optional[str] = Header(default=None),
+    ):
+        """Revoke the current dashboard session Bearer (idempotent)."""
+        trace_id = _trace_id(request)
+        raw = (authorization or "").strip()
+        if raw.startswith("Bearer "):
+            tok = raw.removeprefix("Bearer ").strip()
+            if tok:
+                dash_auth.revoke_session(tok)
+        return {"ok": True, "trace_id": trace_id, "data": {"revoked": True}}
 
     @app.get("/v1/meta")
     async def v1_meta(request: Request, _: None = Depends(dep_viewer)):
