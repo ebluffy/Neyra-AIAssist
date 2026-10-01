@@ -1,24 +1,14 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Cpu, KeyRound, Lock, RefreshCw } from 'lucide-react'
-import { clearToken, setToken } from '../api'
+import { clearToken, getToken, setSessionToken } from '../api'
 import { Button } from './ui/button'
 
-const GATE_KEY = 'neyra_dashboard_gate'
-const MIN_LEN = 8
-
-export function getDashboardGateKey(): string {
-  return sessionStorage.getItem(GATE_KEY) ?? ''
-}
-
-export function setDashboardGateKey(key: string): void {
-  const s = key.trim()
-  if (s) sessionStorage.setItem(GATE_KEY, s)
-  else sessionStorage.removeItem(GATE_KEY)
-}
+const GATE_FLAG = 'neyra_dashboard_gate_ok'
+const MIN_LEN = 32
 
 export function clearDashboardGateKey(): void {
-  sessionStorage.removeItem(GATE_KEY)
+  sessionStorage.removeItem(GATE_FLAG)
   clearToken()
 }
 
@@ -30,6 +20,8 @@ function generateHexKey(): string {
 
 type Mode = 'loading' | 'setup' | 'login' | 'ok'
 
+type AuthOk = { session_token?: string }
+
 async function fetchStatus(): Promise<boolean> {
   const r = await fetch('/v1/dashboard/auth/status', { headers: { Accept: 'application/json' } })
   const j = (await r.json()) as { ok?: boolean; data?: { configured?: boolean }; error?: { message?: string } }
@@ -39,22 +31,27 @@ async function fetchStatus(): Promise<boolean> {
   return Boolean(j.data?.configured)
 }
 
-async function postKey(path: string, key: string): Promise<void> {
+async function postKey(path: string, key: string): Promise<AuthOk> {
   const r = await fetch(path, {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify({ key }),
   })
-  const j = (await r.json()) as { ok?: boolean; error?: { message?: string } }
+  const j = (await r.json()) as {
+    ok?: boolean
+    data?: AuthOk
+    error?: { message?: string }
+  }
   if (!r.ok || j.ok === false) {
     throw new Error(j.error?.message || `HTTP ${r.status}`)
   }
+  return j.data ?? {}
 }
 
-/** After gate login, use the same key as Bearer for /v1 (server accepts gate key as admin). */
-function activateSession(key: string): void {
-  setDashboardGateKey(key)
-  setToken(key)
+/** Persist short-lived session Bearer in sessionStorage (same lifetime as the tab). */
+function activateSession(sessionToken: string): void {
+  setSessionToken(sessionToken)
+  sessionStorage.setItem(GATE_FLAG, '1')
 }
 
 export function DashboardAuthGate({ children }: { children: ReactNode }) {
@@ -74,21 +71,14 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
           setMode('setup')
           return
         }
-        const saved = getDashboardGateKey()
-        if (!saved) {
-          setMode('login')
+        // Session Bearer lives in sessionStorage; if missing — show login.
+        const hasSession = Boolean(sessionStorage.getItem(GATE_FLAG))
+        if (hasSession && getToken().trim()) {
+          setMode('ok')
           return
         }
-        try {
-          await postKey('/v1/dashboard/auth/login', saved)
-          if (!cancelled) {
-            activateSession(saved)
-            setMode('ok')
-          }
-        } catch {
-          clearDashboardGateKey()
-          if (!cancelled) setMode('login')
-        }
+        clearDashboardGateKey()
+        setMode('login')
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : String(e))
@@ -121,8 +111,9 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
     }
     setBusy(true)
     try {
-      await postKey('/v1/dashboard/auth/setup', key)
-      activateSession(key)
+      const data = await postKey('/v1/dashboard/auth/setup', key)
+      if (!data.session_token) throw new Error('Сервер не выдал session_token')
+      activateSession(data.session_token)
       setMode('ok')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -136,8 +127,9 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
     setError('')
     setBusy(true)
     try {
-      await postKey('/v1/dashboard/auth/login', key)
-      activateSession(key)
+      const data = await postKey('/v1/dashboard/auth/login', key)
+      if (!data.session_token) throw new Error('Сервер не выдал session_token')
+      activateSession(data.session_token)
       setMode('ok')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -183,7 +175,6 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
           className="dash-auth-form"
           onSubmit={isSetup ? onSetup : onLogin}
         >
-          {/* Helps password managers bind a site login */}
           <input
             autoComplete="username"
             name="username"
@@ -204,7 +195,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
               className="dash-auth-input"
               name="password"
               onChange={(ev) => setKey(ev.target.value)}
-              placeholder={isSetup ? 'минимум 8 символов или Generate' : 'ключ доступа'}
+              placeholder={isSetup ? 'минимум 32 символа или «Сгенерировать»' : 'ключ доступа'}
               type="password"
               value={key}
             />
@@ -236,14 +227,14 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
             </>
           )}
           {error && <p className="dash-auth-error">{error}</p>}
-          <Button disabled={busy || key.trim().length < MIN_LEN} type="submit">
+          <Button disabled={busy || (isSetup ? key.trim().length < MIN_LEN : key.trim().length < 8)} type="submit">
             {busy ? '…' : isSetup ? 'Создать и войти' : 'Войти'}
           </Button>
         </form>
         <p className="dash-auth-hint">
           {isSetup
-            ? 'Минимум 8 символов. На диске сервера хранится только хеш (PBKDF2). В браузере ключ держится в sessionStorage до «Выйти» — сохраните его в менеджере паролей.'
-            : 'На сервере — только хеш. В этой вкладке ключ в sessionStorage до выхода. Тот же ключ используется как Bearer для API дашборда.'}
+            ? 'Минимум 32 символа. На диске сервера — только хеш (PBKDF2). После входа браузер держит короткоживущий session-токен до закрытия вкладки или «Выйти».'
+            : 'После входа API ходит с session-токеном (не с сырым ключом). Токен в sessionStorage до выхода / закрытия вкладки.'}
         </p>
       </div>
     </div>

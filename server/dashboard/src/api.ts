@@ -1,10 +1,20 @@
 const TOKEN_KEY = 'neyra_api_token'
+const SESSION_TOKEN_KEY = 'neyra_dashboard_session'
 
 export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY)
+  sessionStorage.removeItem(SESSION_TOKEN_KEY)
+}
+
+/** Explicit API_TOKEN from Settings (localStorage). */
+export function getStoredApiToken(): string {
+  return localStorage.getItem(TOKEN_KEY) ?? ''
 }
 
 export function getToken(): string {
+  // Prefer short-lived dashboard session (sessionStorage); else Settings API token.
+  const session = sessionStorage.getItem(SESSION_TOKEN_KEY)?.trim()
+  if (session) return session
   return localStorage.getItem(TOKEN_KEY) ?? ''
 }
 
@@ -12,6 +22,13 @@ export function setToken(t: string): void {
   const s = t.trim()
   if (s) localStorage.setItem(TOKEN_KEY, s)
   else localStorage.removeItem(TOKEN_KEY)
+}
+
+/** Session Bearer from gate login — sessionStorage only. */
+export function setSessionToken(t: string): void {
+  const s = t.trim()
+  if (s) sessionStorage.setItem(SESSION_TOKEN_KEY, s)
+  else sessionStorage.removeItem(SESSION_TOKEN_KEY)
 }
 
 function headers(): HeadersInit {

@@ -43,6 +43,11 @@ from core.runtime import HealthMonitor
 logger = logging.getLogger("neyra.api")
 
 API_VERSION = "1.1.0"
+_PROCESS_STARTED_AT = time.time()
+_DASH_LOGIN_FAILS: dict[str, list[float]] = {}
+_DASH_LOGIN_LOCK = threading.Lock()
+_DASH_LOGIN_WINDOW_S = 300.0
+_DASH_LOGIN_MAX_FAILS = 10
 
 # Set by run_neyra_server so soft-restart can ask uvicorn to shut down cleanly.
 _uvicorn_server: Any = None
@@ -194,8 +199,8 @@ def _resolve_role(
 ) -> str:
     """anon — tokens unset (local loopback only; see assert_api_bind_safe). Else Bearer required.
 
-    Accepted Bearer values: API_TOKEN / viewer / maint, or the dashboard gate key
-    (SPA after login uses the gate key as Bearer so the UI works without a second paste).
+    Accepted Bearer values: API_TOKEN / viewer / maint, or a dashboard **session**
+    token issued by POST /v1/dashboard/auth/login|setup (fast hash lookup — not PBKDF2).
     """
     api = _api_cfg(cfg)
     primary = str(api.get("token") or "").strip()
@@ -213,7 +218,7 @@ def _resolve_role(
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
-    if dash_auth is not None and dash_auth.is_configured() and dash_auth.verify(got):
+    if dash_auth is not None and dash_auth.verify_session(got):
         return "admin"
     raise ApiError("unauthorized", "Invalid bearer token", 401)
 
@@ -255,7 +260,7 @@ def _require_ws_auth(
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
-    if dash_auth is not None and dash_auth.is_configured() and dash_auth.verify(got):
+    if dash_auth is not None and dash_auth.verify_session(got):
         return "admin"
     raise ApiError("unauthorized", "Invalid bearer token for WebSocket", 401)
 
@@ -319,6 +324,7 @@ class ChatRequest(BaseModel):
 
 
 class DashboardGateKeyRequest(BaseModel):
+    # Login may still use an older key (<32); setup enforces MIN_KEY_LEN in the store.
     key: str = Field(min_length=8, max_length=256)
 
 
@@ -1064,6 +1070,27 @@ def build_app(
             },
         }
 
+    def _client_ip(request: Request) -> str:
+        # Prefer proxy-provided client when present (nginx / Cloudflare).
+        xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        if xff:
+            return xff
+        return request.client.host if request.client else "unknown"
+
+    def _dash_login_rate_ok(ip: str) -> bool:
+        now = time.time()
+        with _DASH_LOGIN_LOCK:
+            hits = [t for t in _DASH_LOGIN_FAILS.get(ip, []) if now - t < _DASH_LOGIN_WINDOW_S]
+            _DASH_LOGIN_FAILS[ip] = hits
+            return len(hits) < _DASH_LOGIN_MAX_FAILS
+
+    def _dash_login_fail(ip: str) -> None:
+        now = time.time()
+        with _DASH_LOGIN_LOCK:
+            hits = [t for t in _DASH_LOGIN_FAILS.get(ip, []) if now - t < _DASH_LOGIN_WINDOW_S]
+            hits.append(now)
+            _DASH_LOGIN_FAILS[ip] = hits
+
     @app.get("/v1/dashboard/auth/status")
     async def v1_dashboard_auth_status(request: Request):
         """Public: whether the web UI access key has been created."""
@@ -1097,17 +1124,31 @@ def build_app(
             raise ApiError("already_configured", str(e), 409) from e
         except ValueError as e:
             raise ApiError("bad_request", str(e), 400) from e
-        return {"ok": True, "trace_id": trace_id, "data": {"configured": True}}
+        session = dash_auth.issue_session()
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"configured": True, "session_token": session},
+        }
 
     @app.post("/v1/dashboard/auth/login")
     async def v1_dashboard_auth_login(body: DashboardGateKeyRequest, request: Request):
-        """Public: verify dashboard access key."""
+        """Public: verify dashboard access key and issue a short-lived session Bearer."""
         trace_id = _trace_id(request)
+        ip = _client_ip(request)
+        if not _dash_login_rate_ok(ip):
+            raise ApiError("rate_limited", "Too many failed login attempts", 429)
         if not dash_auth.is_configured():
             raise ApiError("setup_required", "Create a dashboard access key first", 400)
         if not dash_auth.verify(body.key):
+            _dash_login_fail(ip)
             raise ApiError("unauthorized", "Invalid access key", 401)
-        return {"ok": True, "trace_id": trace_id, "data": {"authenticated": True}}
+        session = dash_auth.issue_session()
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"authenticated": True, "session_token": session},
+        }
 
     @app.get("/v1/meta")
     async def v1_meta(request: Request, _: None = Depends(dep_viewer)):
@@ -1159,10 +1200,24 @@ def build_app(
     @app.get("/v1/health")
     async def v1_health(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
-        rep = await monitor.run_once()
+        # Prefer a recent cached monitor report so the dashboard stays snappy.
+        rep = monitor.last_report
+        need_refresh = not rep
+        if rep and isinstance(rep.get("timestamp"), str):
+            try:
+                ts = datetime.fromisoformat(str(rep["timestamp"]))
+                age = (datetime.now() - ts).total_seconds()
+                need_refresh = age > 120
+            except Exception:
+                need_refresh = True
+        if need_refresh:
+            rep = await monitor.run_once()
         if isinstance(rep, dict):
             rep = dict(rep)
             rep["api_version"] = API_VERSION
+            rep["version"] = API_VERSION
+            rep["status"] = "ok" if rep.get("ok") else "degraded"
+            rep["uptime_seconds"] = int(max(0, time.time() - _PROCESS_STARTED_AT))
             pub = api_public_root(config)
             if pub:
                 rep["public_url"] = pub

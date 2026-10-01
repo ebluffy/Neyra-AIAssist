@@ -54,16 +54,16 @@ export function PluginsPage() {
     try {
       const parsed = JSON.parse(configText) as Record<string, unknown>
       await apiPut<ApiEnvelope<{ operation_id: string }>>(`/v1/plugins/${selected}/config`, { config: parsed })
-      setStatus('Config сохранён'); await loadDetails(selected)
+      setStatus('Конфиг сохранён'); await loadDetails(selected)
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
 
   async function invokePlugin() {
     if (!selected) return
-    setError(null); setStatus('Invoke...')
+    setError(null); setStatus('Вызов...')
     try {
       await apiPost<ApiEnvelope<unknown>>(`/v1/plugins/${selected}/invoke`, { payload: {} })
-      setStatus('Invoke выполнен')
+      setStatus('Вызов выполнен')
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
 
@@ -93,7 +93,7 @@ export function PluginsPage() {
                 <span style={{ fontFamily: 'var(--mono)', fontSize: '0.8rem' }}>{p.id}</span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem' }}>
                   <span className={`status-dot ${p.enabled ? 'status-dot-ok' : 'status-dot-idle'}`} />
-                  {p.enabled ? 'on' : 'off'}
+                  {p.enabled ? 'вкл.' : 'выкл.'}
                 </span>
               </button>
             ))}
@@ -119,10 +119,10 @@ export function PluginsPage() {
                 type="button"
               >
                 {details?.plugin.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
-                {details?.plugin.enabled ? 'Enabled' : 'Disabled'}
+                {details?.plugin.enabled ? 'Включен' : 'Выключен'}
               </button>
               <Button onClick={() => void invokePlugin()} type="button" variant="secondary">
-                <Play size={14} /> Invoke
+                <Play size={14} /> Вызвать
               </Button>
               <Button onClick={() => selected && void loadDetails(selected)} type="button" variant="secondary">
                 <RefreshCw size={14} /> Обновить
@@ -156,7 +156,7 @@ export function PluginsPage() {
               value={configText}
             />
             <div className="row" style={{ marginTop: '0.75rem' }}>
-              <Button onClick={() => void saveConfig()} type="button">Сохранить config</Button>
+              <Button onClick={() => void saveConfig()} type="button">Сохранить конфиг</Button>
               <Button onClick={() => selected && void loadDetails(selected)} type="button" variant="secondary">
                 Перезагрузить из файла
               </Button>

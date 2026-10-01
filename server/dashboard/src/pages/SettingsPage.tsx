@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { KeyRound, Loader2, SlidersHorizontal, Sparkles } from 'lucide-react'
-import { apiPost, getToken, setToken } from '../api'
+import { apiPost, getStoredApiToken, setToken } from '../api'
 import { Button } from '../components/ui/button'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import type { ApiEnvelope } from '../types'
 
 export function SettingsPage() {
-  const [token, setTokenInput] = useState(getToken())
+  const [token, setTokenInput] = useState(getStoredApiToken())
   const [model, setModel] = useState('')
   const [temperature, setTemperature] = useState('0.8')
   const [status, setStatus] = useState('')
@@ -54,9 +54,8 @@ export function SettingsPage() {
               />
             </label>
             <p style={{ fontSize: '0.75rem', color: 'var(--muted)', lineHeight: 1.45 }}>
-              После входа ключ дашборда уже используется как Bearer. Отдельный{' '}
-              <code>API_TOKEN</code> из <code>.env</code> нужен для Discord/MCP/скриптов — сюда его
-              можно подставить, если хочешь ходить в API именно им.
+              После входа дашборд использует короткоживущий session-токен. Сюда можно сохранить отдельный{' '}
+              <code>API_TOKEN</code> из <code>.env</code> для Discord/MCP/скриптов (localStorage).
             </p>
             <div>
               <Button

@@ -70,6 +70,8 @@ export type ProviderBalance = {
   usage_weekly?: number
   usage_monthly?: number
   label?: string
+  tokens_description?: string
+  unlimited_quota?: boolean
 }
 
 export type BalanceData = {

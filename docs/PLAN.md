@@ -285,14 +285,10 @@ customDomains = ["neyra.owyx.site"]
 
 - [x] Runtime на домашнем сервере: `/opt/neyra` + `systemd` unit `neyra` (`127.0.0.1:8787`).
 - [x] frpc на домашнем сервере: прокси `neyra-api` (`type=http`, `localPort=8787`, `customDomains=["neyra.owyx.site"]`).
-- [x] frps на VPS (`vpsrus`): `vhostHTTPPort=8080`; существующие TCP/UDP-прокси (ssh/minecraft) сохранены.
-- [x] DNS A `neyra` → IP frps-VPS, Cloudflare **DNS only**.
-- [x] Локальные конфиги/`.env`/модули доставлены в `/opt/neyra`.
-- [x] frps на `owyxsite` (`/opt/frps`, `:7000` control + `:8080` HTTP vhost); UFW: 7000/8080/1337/1488/1489.
-- [x] nginx `server_name neyra.owyx.site` на `owyxsite` + Let's Encrypt; strip `/api` → frps `:8080`.
-- [x] DNS A `neyra` → `109.61.108.208` (owyxsite), Cloudflare **DNS only** (можно включить Proxied при SSL Full strict).
-- [x] `api.public_base_url=https://neyra.owyx.site`; legacy `frpc-vpsrus` и `frps` на `vpsrus` выключены. Hysteria/`panel.owyx.site` не трогали.
-- [ ] WSS-smoke: `wss://neyra.owyx.site/api/v1/ws/chat` (после edge на 443).
+- [x] frps на VPS сайта (`owyxsite`): control + HTTP vhost; nginx `neyra.owyx.site` + Let's Encrypt; strip `/api`.
+- [x] DNS A `neyra` → IP VPS сайта, Cloudflare (Proxied или DNS only + Full strict). Hysteria/`panel.owyx.site` на VPN-VPS не трогали.
+- [x] `api.public_base_url=https://neyra.owyx.site`; legacy frps на VPN-VPS выключен.
+- [ ] WSS-smoke: `wss://neyra.owyx.site/api/v1/ws/chat`.
 
 ### Готово, когда
 

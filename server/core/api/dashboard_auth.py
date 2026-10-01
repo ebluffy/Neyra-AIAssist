@@ -1,4 +1,4 @@
-"""Dashboard gate key store (SQLite). One access key for the web UI login."""
+"""Dashboard gate key store (SQLite) + short-lived session tokens for SPA Bearer."""
 
 from __future__ import annotations
 
@@ -8,13 +8,16 @@ import logging
 import secrets
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 logger = logging.getLogger("neyra.dashboard_auth")
 
-MIN_KEY_LEN = 8
+MIN_KEY_LEN = 32
 _PBKDF2_ITERATIONS = 210_000
 _SALT_BYTES = 16
+_SESSION_TTL_SECONDS = 12 * 3600
+_SESSION_BYTES = 32
 
 
 class DashboardAuthStore:
@@ -22,6 +25,8 @@ class DashboardAuthStore:
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # token_hash -> expiry unix
+        self._sessions: dict[str, float] = {}
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -58,6 +63,10 @@ class DashboardAuthStore:
             bytes.fromhex(salt_hex),
             int(iterations),
         ).hex()
+
+    @staticmethod
+    def _session_hash(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     def is_configured(self) -> bool:
         with self._lock:
@@ -101,3 +110,39 @@ class DashboardAuthStore:
             return hmac.compare_digest(got, str(expected))
         except Exception:
             return False
+
+    def issue_session(self) -> str:
+        """Random session token accepted as admin Bearer until TTL (no PBKDF2 per request)."""
+        token = secrets.token_urlsafe(_SESSION_BYTES)
+        th = self._session_hash(token)
+        exp = time.time() + _SESSION_TTL_SECONDS
+        with self._lock:
+            self._purge_sessions_locked()
+            self._sessions[th] = exp
+        return token
+
+    def revoke_session(self, token: str) -> None:
+        th = self._session_hash((token or "").strip())
+        with self._lock:
+            self._sessions.pop(th, None)
+
+    def verify_session(self, token: str) -> bool:
+        clean = (token or "").strip()
+        if not clean:
+            return False
+        th = self._session_hash(clean)
+        now = time.time()
+        with self._lock:
+            exp = self._sessions.get(th)
+            if exp is None:
+                return False
+            if now > exp:
+                self._sessions.pop(th, None)
+                return False
+            return True
+
+    def _purge_sessions_locked(self) -> None:
+        now = time.time()
+        dead = [k for k, exp in self._sessions.items() if now > exp]
+        for k in dead:
+            del self._sessions[k]

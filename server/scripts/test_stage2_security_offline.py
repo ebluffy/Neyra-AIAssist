@@ -239,6 +239,47 @@ def _test_memory_model_429_backoff() -> None:
     asyncio.run(run())
 
 
+def _test_dashboard_session_bearer() -> None:
+    """Gate login issues session token; PBKDF2 gate key is NOT accepted as Bearer."""
+    import tempfile
+    from pathlib import Path
+
+    from core.api.app import ApiError, _resolve_role
+    from core.api.dashboard_auth import MIN_KEY_LEN, DashboardAuthStore
+
+    td = tempfile.mkdtemp()
+    try:
+        store = DashboardAuthStore(Path(td) / "dash.sqlite")
+        key = "a" * MIN_KEY_LEN
+        store.setup(key)
+        assert store.verify(key)
+        session = store.issue_session()
+        cfg = {
+            "api": {
+                "token": "admin-token-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                "viewer_token": "viewer-token-xxxxxxxxxxxxxxxxxxxxxxx",
+                "maint_token": "",
+            }
+        }
+        assert _resolve_role(f"Bearer {session}", cfg, store) == "admin"
+        assert _resolve_role("Bearer viewer-token-xxxxxxxxxxxxxxxxxxxxxxx", cfg, store) == "viewer"
+        try:
+            _resolve_role(f"Bearer {key}", cfg, store)
+            raise AssertionError("raw gate key must not resolve as Bearer")
+        except ApiError as e:
+            assert e.code == "unauthorized"
+        try:
+            _resolve_role("Bearer not-a-real-token", cfg, store)
+            raise AssertionError("expected unauthorized")
+        except ApiError as e:
+            assert e.code == "unauthorized"
+    finally:
+        # Windows may keep SQLite WAL briefly; ignore cleanup errors.
+        import shutil
+
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def main() -> int:
     _test_diary_digest_no_user_lines()
     _test_contextvar_isolation()
@@ -246,6 +287,7 @@ def main() -> int:
     _test_scoped_archive_skips_foreign_stm()
     _test_diary_prompt_skips_session_archive()
     _test_memory_model_429_backoff()
+    _test_dashboard_session_bearer()
     print("stage2 security offline: OK")
     return 0
 
