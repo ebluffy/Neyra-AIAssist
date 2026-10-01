@@ -75,14 +75,24 @@ export function ModulesScreen() {
         const lavaBit = selected === 'discord' && lava ? ` Lavalink: ${lava}.` : ''
         setStatus(
           enabled
-            ? `Модуль включён в конфиге.${lavaBit} Поток resident поднимается только мягким рестартом ядра.`
-            : `Модуль выключен в конфиге.${lavaBit} Поток resident гасится только мягким рестартом ядра.`,
+            ? `Модуль включён в конфиге.${lavaBit} Нужен мягкий рестарт ядра, иначе поток не стартует.`
+            : `Модуль выключен в конфиге.${lavaBit} Нужен мягкий рестарт ядра, иначе поток продолжит жить.`,
         )
       } else {
         setStatus(`Готово: ${r.data.operation_id}`)
       }
       await loadPlugins()
       await loadDetails(selected)
+      if (
+        isResident &&
+        window.confirm(
+          enabled
+            ? 'Resident-модуль записан как включённый. Сделать мягкий рестарт ядра сейчас, чтобы бот реально стартовал?'
+            : 'Resident-модуль записан как выключенный. Сделать мягкий рестарт ядра сейчас, чтобы остановить поток?',
+        )
+      ) {
+        await softRestartCore(true)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -114,8 +124,9 @@ export function ModulesScreen() {
     }
   }
 
-  async function softRestartCore() {
+  async function softRestartCore(skipConfirm = false) {
     if (
+      !skipConfirm &&
       !window.confirm(
         'Мягкий рестарт всего процесса Neyra? Resident-модули (Discord) и Lavalink поднимутся заново. Дашборд на несколько секунд отвалится.',
       )
@@ -177,13 +188,13 @@ export function ModulesScreen() {
                   onClick={() => setSelected(p.id)}
                   type="button"
                 >
-                  <span style={{ fontFamily: 'var(--mono)', fontSize: '0.8rem' }}>{p.id}</span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem' }}>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: '0.8rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {p.id}
+                  </span>
+                  <span className="plugin-item-meta">
                     <span className={`status-dot ${p.enabled ? 'status-dot-ok' : 'status-dot-idle'}`} />
                     {p.enabled ? 'вкл.' : 'выкл.'}
-                    <span style={{ color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
-                      {String(p.lifecycle || '—')}
-                    </span>
+                    <span className="plugin-item-life">{String(p.lifecycle || '—')}</span>
                   </span>
                 </button>
               ))}
@@ -226,7 +237,7 @@ export function ModulesScreen() {
               )}
               {isResident && (
                 <Button disabled={restartBusy} onClick={() => void softRestartCore()} type="button" variant="warn">
-                  <Power size={14} /> {restartBusy ? 'Рестарт…' : 'Мягкий рестарт ядра'}
+                  <Power size={14} /> {restartBusy ? 'Рестарт…' : 'Рестарт ядра'}
                 </Button>
               )}
               <Button onClick={() => selected && void loadDetails(selected)} type="button" variant="secondary">

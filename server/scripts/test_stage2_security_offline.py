@@ -413,6 +413,55 @@ def _test_message_content_to_text() -> None:
     assert message_content_to_text(None) == ""
 
 
+def _test_plan_talk_vision() -> None:
+    from core.agent.turn_prep import plan_talk_vision
+
+    imgs = [("image/jpeg", "abc")]
+
+    # brain-native + talk shares model → pixels to talk, no caption
+    p = plan_talk_vision(
+        imgs,
+        brain_native_vis=True,
+        talk_model="gpt-6-luna",
+        brain_model="gpt-6-luna",
+        has_vision_llm=True,
+        talk_is_vision_client=False,
+        vision_is_brain_client=True,
+    )
+    assert p.talk_can_vl is True
+    assert p.need_talk_caption is False
+    assert p.talk_vm is imgs
+    assert p.has_vis_prompt is True
+
+    # brain-native + talk ≠ brain → caption, talk_vm None
+    p2 = plan_talk_vision(
+        imgs,
+        brain_native_vis=True,
+        talk_model="qwen/qwen3.8-27b:free",
+        brain_model="gpt-6-luna",
+        has_vision_llm=True,
+        talk_is_vision_client=False,
+        vision_is_brain_client=True,
+    )
+    assert p2.talk_can_vl is False
+    assert p2.need_talk_caption is True
+    assert p2.talk_vm is None
+    assert p2.has_vis_prompt is False
+
+    # separate VL caption lane (vision client ≠ brain)
+    p3 = plan_talk_vision(
+        imgs,
+        brain_native_vis=False,
+        talk_model="qwen",
+        brain_model="gpt",
+        has_vision_llm=True,
+        talk_is_vision_client=False,
+        vision_is_brain_client=False,
+    )
+    assert p3.need_talk_caption is True
+    assert p3.talk_vm is None
+
+
 def _test_person_profile_split() -> None:
     from core.memory.person_profile import PROFILE_KEYS, split_static_facts
 
@@ -449,6 +498,7 @@ def main() -> int:
     _test_setup_guard_resolved_ip()
     _test_persist_allowlisted_updates()
     _test_message_content_to_text()
+    _test_plan_talk_vision()
     _test_person_profile_split()
     print("stage2 security offline: OK")
     return 0

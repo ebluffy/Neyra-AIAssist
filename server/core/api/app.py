@@ -217,9 +217,14 @@ def _schedule_exit_after_response(reason: str = "system_restart") -> None:
         if server is not None:
             try:
                 server.should_exit = True
-                return
             except Exception:
                 logger.exception("Failed to signal uvicorn should_exit; falling back to os._exit")
+                os._exit(1)
+                return
+            # uvicorn often exits 0 after should_exit — systemd Restart=on-failure would stay down.
+            time.sleep(1.5)
+            os._exit(1)
+            return
         # Non-zero so systemd Restart=on-failure also comes back; Docker unless-stopped always restarts.
         os._exit(1)
 

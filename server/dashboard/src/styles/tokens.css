@@ -646,6 +646,7 @@ body::after {
 /* ── Plugin list item ─────────────────────────────────── */
 .plugin-item {
   display: flex; align-items: center; justify-content: space-between;
+  gap: 0.65rem;
   padding: 0.6rem 0.85rem;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -656,6 +657,19 @@ body::after {
   width: 100%;
   font-size: 0.85rem;
   color: var(--muted);
+}
+.plugin-item-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.plugin-item-life {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.7rem;
 }
 .plugin-item:hover { border-color: var(--border-hi); color: var(--text); }
 .plugin-item.active {

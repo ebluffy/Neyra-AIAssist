@@ -156,7 +156,7 @@ docs/
 - [x] `/v1/llm/balance` отдаёт usage для активных провайдеров (openrouter и/или aihope).
 - [x] `verify_stage_1d.py` и CI зелёные; локальный `llm.yaml` на dual-схеме.
 
-**Конфиг (без legacy):** канон только `llm.`* ролей + `llm.providers.*`. Top-level `BACKEND` / `openrouter:` / `vision:` и пути `openrouter.*` в `POST /v1/config` **не** поддерживаются (нет алиасов / dual-read) — клиенты пишут `llm.talk_model` / `llm.brain_model` / ….
+**Конфиг (без legacy):** канон только `llm.*` ролей + `llm.providers.*`. Top-level `BACKEND` / `openrouter:` / `vision:` и пути `openrouter.*` в `POST /v1/config` **не** поддерживаются (нет алиасов / dual-read) — клиенты пишут `llm.talk_model` / `llm.brain_model` / ….
 
 ## 2. Единый Neyra API (core)
 
@@ -347,7 +347,7 @@ docs/
 - Редактор промптов и конфигов, логи и расширенные настройки клиента.
 - Полный local voice loop и дополнительные player integrations.
 - Расширенный MCP marketplace/allowlist и production deployment hardening.
-- **Обезличивание (AI Assist):** персона только из `assistant.`* + `prompts/persona.md`; ребренд репо/`neyra`-slug — отдельно после Stage 2, не блокер.
+- **Обезличивание (AI Assist):** персона только из `assistant.*` + `prompts/persona.md`; ребренд репо/`neyra`-slug — отдельно после Stage 2, не блокер.
 
 
 

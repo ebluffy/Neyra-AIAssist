@@ -838,14 +838,25 @@ class NeyraDiscordBot(discord.Client):
 
         disc = self.config.get("discord", {}) or {}
         raw_gid = disc.get("slash_sync_guild_id")
-        if raw_gid is not None and str(raw_gid).strip().lower() not in ("", "null", "none"):
-            guild = discord.Object(id=int(raw_gid))
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            logger.info("Slash-команды синхронизированы для гильдии %s", raw_gid)
-        else:
-            await self.tree.sync()
-            logger.info("Slash-команды синхронизированы глобально")
+        try:
+            if raw_gid is not None and str(raw_gid).strip().lower() not in ("", "null", "none"):
+                guild = discord.Object(id=int(raw_gid))
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                logger.info("Slash-команды синхронизированы для гильдии %s", raw_gid)
+            else:
+                await self.tree.sync()
+                logger.info("Slash-команды синхронизированы глобально")
+        except discord.Forbidden as e:
+            # Wrong guild id / bot kicked / missing applications.commands — do not kill the bot.
+            logger.error(
+                "Slash sync Forbidden (%s) guild=%s — бот остаётся онлайн без обновления slash. "
+                "Проверь discord.slash_sync_guild_id и права бота в гильдии.",
+                e,
+                raw_gid,
+            )
+        except Exception:
+            logger.exception("Slash sync failed — бот остаётся онлайн")
 
     async def on_message(self, message: discord.Message):
         if message.author.bot:
