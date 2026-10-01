@@ -183,74 +183,13 @@ docs/
 
 Клиент открывается без сервера и показывает состояние «сервер недоступен». В сборку клиента входят UI, стили, иконки, шрифты и звуки самого приложения. Сервер отдаёт через API чат и историю, память, конфиги, промпты, модули и их состояние, логи и статус. TTS генерирует сервер, клиент только проигрывает аудио.
 
-Локально у клиента хранятся только адрес сервера, токен в Windows Credential Manager, тема, размер окна и кэш последнего статуса.
+Локально у клиента хранятся только адрес сервера, токен в Windows Credential Manager, тема, размер окна и кэш последнего статуса. URL сервера — из настроек клиента (в т.ч. публичный домен из §4); frp/прокси **не** часть Этапа 3.
 
-`server/dashboard/` — **главная рабочая среда Neyra** (статус, модули, память, система, вебхуки, настройки, документация): локально и удалённо (VPS / публичный домен), пока нет полноценного десктоп-клиента. Это не «временный чат», а ops/admin control plane — в том числе для сценария, когда кто-то развернёт Neyra как удалённый или публичный сервис. Экраны лежат в `screens/`, `components/ui/`, `api/`, `styles/` как переносимый слой; Stage 3 переносит их в `client/` (или shared-пакет), а не монтирует всю SPA целиком. Shell/gate (sessionStorage) — только веб. Двуязычный UI (ru/en) — позже; сейчас интерфейс на русском.
+`server/dashboard/` — ops/admin control plane (статус, модули, память, система, вебхуки, настройки, docs), пока нет десктоп-клиента. Экраны в `screens/`, `components/ui/`, `api/`, `styles/` переносятся в Stage 3 в `client/` (или shared-пакет); shell/gate — только веб. UI сейчас на русском; ru/en — позже.
 
-**Люди (память):** каноническая сводка в `meta.static_facts` — только необязательные `first_name`, `last_name`, `birth_date`, `city` (`core.memory.person_profile`). Ники, Discord, занятие, связь и всё остальное — в `person_facts`. Нейра сама создаёт/обновляет досье через tools `update_person_profile` / `update_person_fact`. Дашборд умеет CRUD людей/фактов/дневника/журнала.
+**Люди (память):** в `meta.static_facts` только опциональные `first_name` / `last_name` / `birth_date` / `city`; остальное — `person_facts`. CRUD в дашборде; агент обновляет через tools.
 
-Вторая очередь: Monaco-редактор промптов и конфигов, логи и настройки приложения.
-
-### Доступ из интернета и публикация под доменом
-
-Публикация Control API (`neyra.owyx.site`, frp, edge-прокси) относится к **Этапу 4** (серверная поставка), а не к клиенту. Этап 3 — только Windows-приложение; URL сервера клиент берёт из настроек.
-
-Канон: Neyra на **домашнем сервере** (мини-ПК / старый ПК / ноутбук) → **frpc** → **frps** на VPS → nginx/Caddy (TLS) → клиенты. Данные (память, `.env`) остаются на домашнем сервере.
-
-#### Схема (целевая, без порта в URL)
-
-```text
-Клиент (Tauri)
-  → https://neyra.owyx.site
-  → wss://neyra.owyx.site/api/v1/ws/chat
-  → nginx или Caddy на VPS (TLS Let's Encrypt, :443)
-  → frps (vhost HTTP на localhost, например :8080)
-  → frpc на домашнем сервере
-  → Control API 127.0.0.1:8787
-```
-
-Публичный путь чата — `wss://neyra.owyx.site/api/v1/ws/chat` (`api.public_path_prefix: /api`). За прокси префикс `/api` снимается; приложение слушает локально `/v1/ws/chat`.
-
-#### Пример frpc.toml (домашний сервер)
-
-```toml
-# Общий auth.token должен совпадать с frps (не коммитить).
-serverAddr = "VPS_IP_OR_HOST"
-serverPort = 7000
-auth.method = "token"
-auth.token = "REPLACE_ME"
-
-[[proxies]]
-name = "neyra-api"
-type = "http"
-localIP = "127.0.0.1"
-localPort = 8787
-customDomains = ["neyra.owyx.site"]
-```
-
-На стороне frps — тот же `auth.token` и HTTP vhost (порт, на который смотрит nginx/Caddy). Секреты frp только в локальных конфигах / env, не в git.
-
-#### Требования к серверу при внешней публикации
-
-- Токены и роли (`API_TOKEN` / viewer / maint / `API_KEY`) **обязательны** при внешнем доступе: без токена — отказ старта или только loopback (`127.0.0.1`).
-- Bind по умолчанию `127.0.0.1`; порт **8787 наружу напрямую не открывать** (только через frpc → VPS → edge).
-- `api.public_base_url` / `api.public_path_prefix` согласованы с доменом (цель: `https://neyra.owyx.site` + `/api`).
-- `NEYRA_DEBUG_LIFECYCLE` **не** включать в публикуемой конфигурации.
-- Rate-limit / setup-guard: реальный клиент через `CF-Connecting-IP` или `X-Real-IP` **только** если peer loopback (frpc); loopback-значения в этих заголовках игнорируются; `X-Forwarded-For` не читается (uvicorn `proxy_headers=False`; RPM = `resolve_client_ip`). Dashboard setup без Bearer — только консольный loopback **без** CF/X-Real (иначе primary `API_TOKEN`).
-- Токен в query (`?token=`) — только если нет альтернативы (заголовок / Credential Manager в клиенте предпочтительнее; query утекает в логи прокси).
-
-#### Данные
-
-- Память (`server/data/memory/` / `/opt/neyra/data/memory/`), `.env`, логи и модели остаются на **домашнем сервере**.
-- На VPS — только reverse proxy + frps: **без** копирования памяти, секретов и runtime-данных Neyra.
-
-#### Альтернатива
-
-Тот же Docker Compose на VPS — **запасной стенд** (демонстрация / CI / fallback), не замена канону «домашний сервер + frp».
-
-#### Чеклист публикации (Этап 4; см. §4)
-
-Детали и статус выполнения — в §4. Для MVP клиента достаточно любого рабочего URL из настроек (в т.ч. временный `http://neyra.owyx.site:8080`).
+Вторая очередь клиента: Monaco (промпты/конфиги), логи, настройки приложения.
 
 ### Сборка и автообновление
 
@@ -276,31 +215,41 @@ customDomains = ["neyra.owyx.site"]
 
 ## 4. Серверная поставка и модульная эксплуатация
 
-- Docker Compose и systemd остаются поддерживаемыми серверными способами запуска.
-- `run_neyra.bat` остаётся Windows entrypoint для локального запуска.
-- Docker contexts, volumes, healthchecks и systemd paths используют `server/`.
-- Новые интеграции добавляются как server modules через Event Bus и Control API.
-- Публичные и локальные LLM/voice providers остаются заменяемыми конфигурацией.
-- Публикация под доменом (`neyra.owyx.site`) через frp + edge-прокси — часть этого этапа (см. §3 «Доступ из интернета» для схемы).
+- Docker Compose и systemd — поддерживаемые способы запуска; `run_neyra.bat` — Windows entrypoint.
+- Paths/volumes/healthchecks смотрят в `server/`; интеграции — modules через Event Bus и Control API.
+- **Публикация под доменом** (frp + edge) — этот этап, не клиентский §3. Детали ops: `docs/ru/ops/api-reverse-proxy.md`.
 
-### Публикация / домашний сервер (статус)
+### Канон публикации
 
-Рабочий стенд (домашний сервер + frp):
+```text
+Клиент / браузер
+  → https://neyra.owyx.site  (+ wss://…/api/v1/ws/chat)
+  → nginx/Caddy на VPS (TLS)
+  → frps (HTTP vhost)
+  → frpc на домашнем сервере
+  → Control API 127.0.0.1:8787
+```
 
-- [x] Runtime на домашнем сервере: `/opt/neyra` + `systemd` unit `neyra` (`127.0.0.1:8787`).
-- [x] frpc на домашнем сервере: прокси `neyra-api` (`type=http`, `localPort=8787`, `customDomains=["neyra.owyx.site"]`).
-- [x] frps на VPS сайта (`owyxsite`): control + HTTP vhost; nginx `neyra.owyx.site` + Let's Encrypt; strip `/api`.
-- [x] DNS A `neyra` → IP VPS сайта, Cloudflare (Proxied или DNS only + Full strict). Hysteria/`panel.owyx.site` на VPN-VPS не трогали.
-- [x] `api.public_base_url=https://neyra.owyx.site`; legacy frps на VPN-VPS выключен.
+Данные (память, `.env`, логи, модели) остаются на **домашнем** сервере; на VPS только proxy + frps. Docker Compose на VPS — запасной стенд, не замена канону. Bind по умолчанию loopback; наружу только через frp. Токены обязательны при внешнем доступе. IP/rate-limit/setup-guard — в security-model / reverse-proxy docs (не дублировать здесь).
+
+Пример `frpc` (секреты не в git): `type=http`, `localPort=8787`, `customDomains=["neyra.owyx.site"]`; `api.public_base_url` + `api.public_path_prefix: /api`.
+
+### Статус стенда
+
+- [x] `/opt/neyra` + systemd `neyra` на домашнем хосте (`127.0.0.1:8787`).
+- [x] frpc → frps (VPS сайта) → nginx `neyra.owyx.site` + LE; strip `/api`.
+- [x] DNS/Cloudflare; `api.public_base_url=https://neyra.owyx.site`.
+- [x] Dashboard gate (session Bearer), public setup-guard, RPM через `resolve_client_ip`.
 - [ ] WSS-smoke: `wss://neyra.owyx.site/api/v1/ws/chat`.
 
 ### Готово, когда
 
-- [x] Сервер запускается через systemd на домашнем хосте (`/opt/neyra`); Docker Compose / Windows batch по-прежнему поддерживаются локально.
-- [ ] Runtime data, secrets и модели не попадают в исходный пакет случайно.
-- [ ] Минимум один модуль проходит enable/disable и health smoke.
-- [ ] Документированы установка и восстановление после backup.
+- [x] Systemd на домашнем хосте; Docker Compose / Windows batch поддерживаются локально.
 - [x] Публичный URL без нестандартного порта (`https://neyra.owyx.site`).
+- [ ] Runtime data / secrets / модели не попадают в исходный пакет случайно.
+- [ ] Минимум один модуль: enable/disable + health smoke.
+- [ ] Документированы установка и восстановление после backup.
+- [ ] WSS-smoke по публичному URL зелёный.
 
 ## 5. Проверки, безопасность и качество
 
@@ -337,7 +286,7 @@ customDomains = ["neyra.owyx.site"]
 - Редактор промптов и конфигов, логи и расширенные настройки клиента.
 - Полный local voice loop и дополнительные player integrations.
 - Расширенный MCP marketplace/allowlist и production deployment hardening.
-- **Обезличивание продукта (AI Assist):** дефолты без личной персоны «Нейра» — имя/пол/тон только из `assistant.*` + `prompts/persona.md` (сменные профили). Кодовые идентификаторы (`neyra` в logger/systemd/пакетных именах) можно оставить как технический slug или постепенно заменить на нейтральный `aiassist`; публичный ребренд репо (`Neyra-AIAssist` → `AIAssist`) — отдельным шагом после merge текущего PR, не блокер Stage 2.
+- **Обезличивание (AI Assist):** персона только из `assistant.*` + `prompts/persona.md`; ребренд репо/`neyra`-slug — отдельно после Stage 2, не блокер.
 
 ### Готово, когда
 
