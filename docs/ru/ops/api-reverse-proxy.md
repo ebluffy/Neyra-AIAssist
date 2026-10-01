@@ -80,7 +80,7 @@ proxy_set_header X-Real-IP $neyra_client_ip;
 proxy_set_header X-Forwarded-For $neyra_client_ip;
 ```
 
-API доверяет `CF-Connecting-IP` / `X-Real-IP` **только** когда socket peer = loopback (типичный frpc→uvicorn), и **игнорирует** edge-значение, если оно само loopback (`127.0.0.1` / `::1`). Сырой `X-Forwarded-For` от клиента не читается. `POST /v1/dashboard/auth/setup` без Bearer разрешён только с **консольного** loopback (peer local **и** нет CF/X-Real) — подмена `CF-Connecting-IP: 127.0.0.1` не открывает setup. Smoke: неверный login с интернета → в логе ядра `dashboard login failed ip=<реальный клиент>`, не `127.0.0.1` и не подставной XFF.
+API доверяет `CF-Connecting-IP` / `X-Real-IP` **только** когда socket peer = loopback (типичный frpc→uvicorn), и **игнорирует** edge-значение, если оно само loopback (`127.0.0.1` / `::1`). Сырой `X-Forwarded-For` от клиента **не** читается: uvicorn `proxy_headers=False`, HTTP RPM и login rate-limit используют тот же `resolve_client_ip`. `POST /v1/dashboard/auth/setup` без Bearer разрешён только с **консольного** loopback (peer local **и** нет CF/X-Real) — подмена `CF-Connecting-IP: 127.0.0.1` не открывает setup. Smoke: неверный login с интернета → в логе ядра `dashboard login failed ip=<реальный клиент>`, не `127.0.0.1` и не подставной XFF.
 
 ```nginx
 server {
@@ -133,6 +133,6 @@ Trailing slash у `proxy_pass` под `/api/` снимает префикс `/ap
 - `API_TOKEN` или `API_KEY` в `server/.env` на домашнем сервере.
 - TLS на edge VPS; firewall 80/443; `:8787` дома только через frpc (или localhost, если процесс на VPS).
 - `api.public_base_url` совпадает с DNS (в examples по умолчанию пусто).
-- Uvicorn: `proxy_headers=True`, `forwarded_allow_ips` ограничен hop прокси/frp.
+- Uvicorn: `proxy_headers=False` (peer = TCP; клиентский IP только через CF/X-Real в `resolve_client_ip`).
 - Ключ доступа дашборда задан до публикации SPA (см. [web-ui](../architecture/web-ui.md)).
 - Smoke WebSocket: `wss://neyra.owyx.site/api/v1/ws/chat` доходит до Control API.

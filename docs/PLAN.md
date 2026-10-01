@@ -236,7 +236,7 @@ customDomains = ["neyra.owyx.site"]
 - Bind по умолчанию `127.0.0.1`; порт **8787 наружу напрямую не открывать** (только через frpc → VPS → edge).
 - `api.public_base_url` / `api.public_path_prefix` согласованы с доменом (цель: `https://neyra.owyx.site` + `/api`).
 - `NEYRA_DEBUG_LIFECYCLE` **не** включать в публикуемой конфигурации.
-- Rate-limit / setup-guard: реальный клиент через `CF-Connecting-IP` или `X-Real-IP` **только** если peer loopback (frpc); loopback-значения в этих заголовках игнорируются; `X-Forwarded-For` не читается. Dashboard setup без Bearer — только консольный loopback **без** CF/X-Real (иначе primary `API_TOKEN`).
+- Rate-limit / setup-guard: реальный клиент через `CF-Connecting-IP` или `X-Real-IP` **только** если peer loopback (frpc); loopback-значения в этих заголовках игнорируются; `X-Forwarded-For` не читается (uvicorn `proxy_headers=False`; RPM = `resolve_client_ip`). Dashboard setup без Bearer — только консольный loopback **без** CF/X-Real (иначе primary `API_TOKEN`).
 - Токен в query (`?token=`) — только если нет альтернативы (заголовок / Credential Manager в клиенте предпочтительнее; query утекает в логи прокси).
 
 #### Данные

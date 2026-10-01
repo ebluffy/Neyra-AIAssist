@@ -575,6 +575,75 @@ def check_public_url_env_rejected() -> list[str]:
     return errs
 
 
+def check_rate_limit_xff_bucket() -> list[str]:
+    """HTTP RPM must key on resolve_client_ip — X-Forwarded-For alone must not rotate buckets."""
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi.testclient import TestClient
+
+    from core.api import build_app
+    import core.api.app as api_mod
+
+    errs: list[str] = []
+    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_rpm_"))
+    agent = MagicMock()
+    agent.start_mcp_clients = AsyncMock()
+    agent.stop_mcp_clients = AsyncMock()
+    agent.memory_hub = None
+    monitor = MagicMock()
+    monitor.start = MagicMock()
+    monitor.run_once = AsyncMock(return_value={"status": "ok"})
+    backup = MagicMock()
+    cfg = {
+        "paths": {"data_dir": str(data_tmp)},
+        "api": {
+            "host": "127.0.0.1",
+            "port": 8787,
+            "token": "admin-secret",
+            "viewer_token": "viewer-secret",
+            "maint_token": "",
+            "public_base_url": "",
+            "public_path_prefix": "/api",
+            "audit_log_enabled": False,
+            "rate_limit_requests_per_minute": 3,
+            "websocket": {
+                "idle_timeout_seconds": 5,
+                "ping_interval_seconds": 20,
+                "close_grace_seconds": 1,
+            },
+        },
+        "dashboard": {"enabled": False},
+        "llm": {},
+    }
+    app = build_app(
+        cfg,
+        shared_agent=agent,
+        shared_monitor=monitor,
+        shared_backup_manager=backup,
+    )
+    api_mod._rate_limit_buckets.clear()
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        codes: list[int] = []
+        for i in range(5):
+            r = client.get(
+                "/v1/health",
+                headers={
+                    "Authorization": "Bearer viewer-secret",
+                    "X-Forwarded-For": f"203.0.113.{i}",
+                },
+            )
+            codes.append(r.status_code)
+        # Same peer, rotating XFF → same bucket → later calls 429
+        if codes.count(429) < 2:
+            errs.append(f"rotating XFF should share RPM bucket, codes={codes}")
+        # Without XFF, same peer still limited (same bucket)
+        r = client.get("/v1/health", headers={"Authorization": "Bearer viewer-secret"})
+        if r.status_code != 429:
+            errs.append(f"same peer without XFF should still be limited, got {r.status_code}")
+    return errs
+
+
 def main() -> int:
     checks = [
         ("package layout", check_package_layout),
@@ -588,6 +657,7 @@ def main() -> int:
         ("dashboard gate store", check_dashboard_gate_store),
         ("spa routes", check_spa_routes),
         ("public URL env rejected", check_public_url_env_rejected),
+        ("rate limit XFF bucket", check_rate_limit_xff_bucket),
         ("auth matrix", check_auth_matrix),
     ]
     failed = 0

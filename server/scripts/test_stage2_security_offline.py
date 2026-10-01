@@ -284,6 +284,10 @@ def _test_resolve_client_ip() -> None:
     assert resolve_client_ip(peer="127.0.0.1", headers={"cf-connecting-ip": "203.0.113.9"}) == "203.0.113.9"
     assert resolve_client_ip(peer="127.0.0.1", headers={"x-real-ip": "198.51.100.1"}) == "198.51.100.1"
     assert resolve_client_ip(peer="127.0.0.1", headers={"x-forwarded-for": "9.9.9.9"}) == "127.0.0.1"
+    # XFF must never create a separate client identity (uvicorn must not rewrite peer either).
+    assert resolve_client_ip(peer="127.0.0.1", headers={"x-forwarded-for": "203.0.113.1"}) == resolve_client_ip(
+        peer="127.0.0.1", headers={}
+    )
     # Forged loopback edge IP must not replace peer for rate-limit/logs
     assert resolve_client_ip(peer="127.0.0.1", headers={"cf-connecting-ip": "127.0.0.1"}) == "127.0.0.1"
     assert resolve_client_ip(peer="127.0.0.1", headers={"x-real-ip": "::1"}) == "127.0.0.1"

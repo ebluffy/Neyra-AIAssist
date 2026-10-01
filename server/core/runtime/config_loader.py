@@ -298,18 +298,50 @@ def persist_allowlisted_updates(server_root: Path, updates: dict[str, Any]) -> l
         tmp.write_text(text, encoding="utf-8")
         prepared.append((layer_path, tmp, f"config/{layer_name}", len(paths)))
 
-    # Commit all layers only after every tmp is written (avoid half-disk multi-layer).
+    # Commit all layers only after every tmp is written; on rename failure restore previous files.
+    backups: list[tuple[Path, Path | None]] = []  # (final_path, bak_or_None if newly created)
     try:
         for layer_path, tmp, rel, nkeys in prepared:
+            bak: Path | None = None
+            if layer_path.is_file():
+                bak = layer_path.with_suffix(layer_path.suffix + ".bak")
+                # Replace existing → bak (atomic on same filesystem).
+                layer_path.replace(bak)
+            backups.append((layer_path, bak))
             tmp.replace(layer_path)
             touched.append(rel)
             logger.info("Persisted runtime config updates to %s (%s keys)", layer_path, nkeys)
     except Exception:
+        for layer_path, bak in reversed(backups):
+            try:
+                if bak is not None and bak.is_file():
+                    bak.replace(layer_path)
+                elif layer_path.is_file() and bak is None:
+                    layer_path.unlink()
+            except OSError:
+                logger.exception("Failed to restore %s after persist error", layer_path)
         for _layer_path, tmp, _rel, _n in prepared:
             try:
                 if tmp.is_file():
                     tmp.unlink()
             except OSError:
                 pass
+        for _layer_path, bak in backups:
+            if bak is None:
+                continue
+            try:
+                if bak.is_file():
+                    bak.unlink()
+            except OSError:
+                pass
         raise
+    else:
+        for _layer_path, bak in backups:
+            if bak is None:
+                continue
+            try:
+                if bak.is_file():
+                    bak.unlink()
+            except OSError:
+                pass
     return touched

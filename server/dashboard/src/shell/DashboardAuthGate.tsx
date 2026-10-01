@@ -6,6 +6,12 @@ import { Button } from '../components/ui/button'
 
 const MIN_LEN = 32
 
+function isBrowserLocalHost(): boolean {
+  if (typeof window === 'undefined') return true
+  const h = (window.location.hostname || '').toLowerCase()
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1'
+}
+
 export function clearDashboardGateKey(): void {
   clearSessionToken()
 }
@@ -16,7 +22,7 @@ function generateHexKey(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-type Mode = 'loading' | 'setup' | 'login' | 'ok'
+type Mode = 'loading' | 'setup' | 'setup_remote_blocked' | 'login' | 'ok'
 
 type AuthOk = { session_token?: string }
 
@@ -65,7 +71,8 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
         const configured = await fetchStatus()
         if (cancelled) return
         if (!configured) {
-          setMode('setup')
+          // Public host cannot complete first setup from the SPA (needs console-local or API_TOKEN).
+          setMode(isBrowserLocalHost() ? 'setup' : 'setup_remote_blocked')
           return
         }
         if (hasDashboardSession()) {
@@ -128,7 +135,14 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
       activateSession(data.session_token)
       setMode('ok')
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/403|forbidden|localhost|Bearer|API/i.test(msg)) {
+        setError(
+          `${msg} С публичного URL первый ключ создаётся на сервере (консоль / curl + API_TOKEN), не из этой формы.`,
+        )
+      } else {
+        setError(msg)
+      }
     } finally {
       setBusy(false)
     }
@@ -157,6 +171,52 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
       <div className="dash-auth">
         <div className="dash-auth-card">
           <p className="dash-auth-muted">Загрузка…</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (mode === 'setup_remote_blocked') {
+    return (
+      <div className="dash-auth">
+        <div className="dash-auth-card">
+          <div className="dash-auth-brand">
+            <div className="dash-auth-icon">
+              <Cpu size={20} color="#fff" />
+            </div>
+            <div>
+              <h1 className="dash-auth-title">Neyra</h1>
+              <p className="dash-auth-sub">Панель управления</p>
+            </div>
+          </div>
+          <p className="dash-auth-lead">
+            Ключ доступа ещё не создан. С публичного URL первый setup из браузера недоступен (защита от удалённого
+            bootstrap).
+          </p>
+          <p className="dash-auth-hint">
+            Создай ключ на сервере: локальная консоль к API (без CF/X-Real) или{' '}
+            <span style={{ fontFamily: 'var(--mono)' }}>curl</span> с primary{' '}
+            <span style={{ fontFamily: 'var(--mono)' }}>API_TOKEN</span> на{' '}
+            <span style={{ fontFamily: 'var(--mono)' }}>POST /v1/dashboard/auth/setup</span>. После этого обнови
+            страницу и войди этим ключом.
+          </p>
+          <Button
+            disabled={busy}
+            onClick={() => {
+              setBusy(true)
+              void fetchStatus()
+                .then((configured) => {
+                  if (configured) setMode('login')
+                  else setError('Ключ всё ещё не задан на сервере')
+                })
+                .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+                .finally(() => setBusy(false))
+            }}
+            type="button"
+          >
+            {busy ? '…' : 'Проверить снова'}
+          </Button>
+          {error && <p className="dash-auth-error">{error}</p>}
         </div>
       </div>
     )
@@ -245,7 +305,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
         </form>
         <p className="dash-auth-hint">
           {isSetup
-            ? 'Минимум 32 символа. На диске сервера — только хеш (PBKDF2). После входа браузер держит короткоживущий session-токен до закрытия вкладки или «Выйти».'
+            ? 'Минимум 32 символа. На диске сервера — только хеш (PBKDF2). Локальный setup — с этой машины к API без прокси-заголовков. С публичного URL первый ключ — только через консоль сервера или curl + API_TOKEN.'
             : 'После входа API ходит с session-токеном (не с сырым ключом). Токен в sessionStorage до выхода / закрытия вкладки.'}
         </p>
       </div>

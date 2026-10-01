@@ -104,6 +104,6 @@ If uvicorn runs on the same VPS as Caddy/nginx, point reverse_proxy / `proxy_pas
 - TLS on the VPS edge.
 - Firewall: 80/443 public on VPS; home-server `:8787` only via frpc (or localhost-only if process is on the VPS).
 - `api.public_base_url` matches DNS (empty in examples by default).
-- Uvicorn: `proxy_headers=True`, `forwarded_allow_ips` restricted to your proxy/frp hop.
+- Uvicorn: `proxy_headers=False` (peer = TCP; client IP only via CF/X-Real in `resolve_client_ip`).
 - Dashboard access key configured before exposing the SPA (see [web-ui](../architecture/web-ui.md)).
 - WebSocket smoke: `wss://neyra.owyx.site/api/v1/ws/chat` reaches Control API.

@@ -895,8 +895,8 @@ def build_app(
         path = request.url.path or ""
         if rate_rpm <= 0 or not path.startswith("/v1") or path.startswith("/v1/ws"):
             return await call_next(request)
-        # With uvicorn proxy_headers=True, request.client is the real client behind the proxy.
-        ip = request.client.host if request.client else "unknown"
+        # Same resolver as setup/login: CF/X-Real when peer loopback; never X-Forwarded-For.
+        ip = resolve_client_ip(request)
         if not await _rate_limit_allow(f"http:{ip}", rate_rpm):
             tid = _trace_id(request)
             return JSONResponse(
