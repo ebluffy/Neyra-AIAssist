@@ -1,6 +1,3 @@
-<!-- co-authored-cursor-badge -->
-[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
-
 <sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
 
 ---
@@ -11,7 +8,7 @@
 
 HTTP-стек живёт в **`server/core/api/`** (Control API), это не модуль-плагин. Bind, публичный URL и поведение дашборда — в **`server/config/server.yaml`** (`api:`, `dashboard:`).
 
-**Роль:** полигон экранов будущего Tauri-клиента (Этап 3). Переносимые слои: `api/`, `components/ui/`, `screens/`, `styles/`. Web-only: `shell/` (AuthGate + sessionStorage). Чата в веб-UI нет.
+**Роль:** главная рабочая среда Neyra (статус, модули, память, система, вебхуки, настройки, документация) — локально и удалённо (VPS / публичный домен). Также полигон переносимых экранов для Tauri-клиента (Этап 3): `api/`, `components/ui/`, `screens/`, `styles/`. Web-only: `shell/` (AuthGate + sessionStorage). Чата в веб-UI нет. UI сейчас на русском; двуязычность — позже.
 
 Полное real-time совпадение с Event Bus для всех действий UI — в backlog. Сейчас SPA в основном использует HTTP `/v1`.
 

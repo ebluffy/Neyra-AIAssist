@@ -94,7 +94,7 @@ export function AppShell() {
           </div>
           <div className="sidebar-logo-text">
             <span className="sidebar-logo-name">Neyra</span>
-            <span className="sidebar-logo-sub">Control Center</span>
+            <span className="sidebar-logo-sub">Панель управления</span>
           </div>
           {mobile && (
             <button

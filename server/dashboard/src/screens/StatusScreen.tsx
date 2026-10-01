@@ -143,7 +143,7 @@ export function StatusScreen() {
   }, [load])
 
   async function softRestart() {
-    if (!window.confirm('Перезапустить процесс Neyra (soft restart)? Сессии дашборда сохранятся в SQLite, но соединение оборвётся на несколько секунд.')) {
+    if (!window.confirm('Перезапустить процесс Neyra (мягкий перезапуск)? Сессии дашборда сохранятся в SQLite, но соединение оборвётся на несколько секунд.')) {
       return
     }
     setRestartBusy(true)
@@ -183,7 +183,7 @@ export function StatusScreen() {
             </Button>
             <Button disabled={restartBusy} onClick={() => void softRestart()} type="button" variant="warn">
               <RotateCcw size={15} />
-              Soft restart
+              Мягкий перезапуск
             </Button>
           </div>
         }
@@ -226,7 +226,7 @@ export function StatusScreen() {
               </div>
               {health?.public_url != null && (
                 <div className="kv-row">
-                  <span style={{ color: 'var(--muted)' }}>Public URL</span>
+                  <span style={{ color: 'var(--muted)' }}>Публичный URL</span>
                   <span style={{ fontFamily: 'var(--mono)', fontSize: '0.75rem', wordBreak: 'break-all' }}>
                     {String(health.public_url)}
                   </span>

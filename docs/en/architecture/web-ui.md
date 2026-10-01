@@ -1,6 +1,3 @@
-<!-- co-authored-cursor-badge -->
-[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
-
 <sub>Co-authored with [Cursor](https://cursor.com) (AI coding agent).</sub>
 
 ---
@@ -11,7 +8,7 @@ The dashboard is a **React + Vite + Tailwind CSS** SPA served by the same FastAP
 
 HTTP lives in **`server/core/api/`**. Bind / public URL / dashboard flags: **`server/config/server.yaml`** (`api:`, `dashboard:`).
 
-**Role:** polygon for Stage 3 Tauri screens. Portable layers: `api/`, `components/ui/`, `screens/`, `styles/`. Web-only: `shell/` (AuthGate + sessionStorage). No chat UI here.
+**Role:** primary Neyra ops workspace (status, modules, memory, system, webhooks, settings, docs) for local and remote (VPS / public domain) use. Also a Stage 3 Tauri screen polygon: `api/`, `components/ui/`, `screens/`, `styles/`. Web-only: `shell/` (AuthGate + sessionStorage). No chat UI. UI is Russian-first for now; bilingual dashboard later.
 
 ## Access key gate
 

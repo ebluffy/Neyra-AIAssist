@@ -56,7 +56,7 @@ export function SystemScreen() {
     <div className="page-content stack">
       <PageHeader
         title="Система"
-        subtitle="Бэкап, meta и DLQ вебхуков"
+        subtitle="Бэкап, сведения о API и очередь ошибок вебхуков"
         actions={
           <Button onClick={() => void load()} type="button" variant="secondary">
             Обновить
@@ -69,7 +69,7 @@ export function SystemScreen() {
         <div className="card">
           <div className="card-header">
             <Info size={15} className="card-icon card-icon-cyan" />
-            <span className="card-title">Meta</span>
+            <span className="card-title">Сведения API</span>
           </div>
           <pre className="code-block" style={{ maxHeight: 280, overflow: 'auto' }}>
             {meta ? JSON.stringify(meta, null, 2) : '—'}
@@ -81,7 +81,7 @@ export function SystemScreen() {
             <span className="card-title">Бэкап</span>
           </div>
           <p style={{ fontSize: '0.82rem', color: 'var(--muted)', marginBottom: '0.85rem' }}>
-            Ручной запуск `POST /v1/backup/run` (роль maint+).
+            Ручной запуск бэкапа (роль maint и выше).
           </p>
           <Button disabled={busy} onClick={() => void runBackup()} type="button">
             {busy ? 'Запуск…' : 'Запустить бэкап'}
@@ -97,10 +97,11 @@ export function SystemScreen() {
       <div className="card">
         <div className="card-header">
           <Link2 size={15} className="card-icon card-icon-pink" />
-          <span className="card-title">Webhook DLQ</span>
+          <span className="card-title">Очередь ошибок вебхуков</span>
         </div>
         <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '0.75rem' }}>
-          Записей в DLQ: <strong style={{ color: 'var(--text)', fontFamily: 'var(--mono)' }}>{dlqCount ?? '—'}</strong>
+          Записей в очереди:{' '}
+          <strong style={{ color: 'var(--text)', fontFamily: 'var(--mono)' }}>{dlqCount ?? '—'}</strong>
         </p>
         <Link className="btn btn-secondary btn-sm" to="/webhooks">
           Открыть вебхуки

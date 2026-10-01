@@ -82,7 +82,7 @@ export function DocsScreen() {
       <div className="card">
         <div className="card-header">
           <BookOpenText size={15} className="card-icon card-icon-cyan" />
-          <span className="card-title">API (OpenAPI)</span>
+          <span className="card-title">OpenAPI (интерактивно)</span>
         </div>
         <div className="row" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
           {[
@@ -107,7 +107,7 @@ export function DocsScreen() {
       <div className="card">
         <div className="card-header">
           <FileText size={15} className="card-icon" />
-          <span className="card-title">Markdown</span>
+          <span className="card-title">Markdown-документы</span>
         </div>
         {loadingCat ? (
           <Skeleton className="h-10" />

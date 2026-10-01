@@ -96,10 +96,10 @@ export function ModulesScreen() {
   async function reloadPlugin() {
     if (!selected) return
     setError(null)
-    setStatus('Reload...')
+    setStatus('Перезагрузка...')
     try {
       const r = await apiPost<ApiEnvelope<{ operation_id?: string }>>(`/v1/plugins/${selected}/reload`, {})
-      setStatus(`Reload: ${r.data.operation_id ?? 'ok'}`)
+      setStatus(`Перезагрузка: ${r.data.operation_id ?? 'ок'}`)
       await loadPlugins()
       await loadDetails(selected)
     } catch (e) {
@@ -110,10 +110,10 @@ export function ModulesScreen() {
   async function restartPlugin() {
     if (!selected) return
     setError(null)
-    setStatus('Restart...')
+    setStatus('Перезапуск...')
     try {
       const r = await apiPost<ApiEnvelope<{ operation_id?: string }>>(`/v1/plugins/${selected}/restart`, {})
-      setStatus(`Restart: ${r.data.operation_id ?? 'ok'}`)
+      setStatus(`Перезапуск: ${r.data.operation_id ?? 'ок'}`)
       await loadPlugins()
       await loadDetails(selected)
     } catch (e) {
@@ -123,7 +123,7 @@ export function ModulesScreen() {
 
   return (
     <div className="page-content stack">
-      <PageHeader title="Модули" subtitle="Управление, конфиг, reload / restart и вызов" />
+      <PageHeader title="Модули" subtitle="Управление, конфиг, перезагрузка и вызов" />
       {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
 
       <div className="split-modules">
@@ -163,7 +163,7 @@ export function ModulesScreen() {
             </div>
             <div className="row" style={{ flexWrap: 'wrap' }}>
               <button
-                aria-label="toggle module"
+                aria-label="включить или выключить модуль"
                 className={`toggle-pill ${details?.plugin.enabled ? 'toggle-on' : 'toggle-off'}`}
                 onClick={() => void togglePlugin(!Boolean(details?.plugin.enabled))}
                 type="button"
@@ -175,10 +175,10 @@ export function ModulesScreen() {
                 <Play size={14} /> Вызвать
               </Button>
               <Button onClick={() => void reloadPlugin()} type="button" variant="secondary">
-                <RefreshCw size={14} /> Reload
+                <RefreshCw size={14} /> Перезагрузить
               </Button>
               <Button onClick={() => void restartPlugin()} type="button" variant="warn">
-                <RotateCcw size={14} /> Restart
+                <RotateCcw size={14} /> Перезапустить
               </Button>
               <Button onClick={() => selected && void loadDetails(selected)} type="button" variant="secondary">
                 Обновить

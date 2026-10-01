@@ -48,15 +48,18 @@ export function MemoryScreen() {
       setMemPolicies(pol.data)
       const plist = pe.data.people ?? []
       setPeople(plist)
-      if (!selectedPerson && plist[0]?.id) setSelectedPerson(String(plist[0].id))
       setDiary(di.data.notes ?? [])
       setJournal(jo.data.entries ?? [])
+      setSelectedPerson((prev) => {
+        if (prev && plist.some((p) => String(p.id) === prev)) return prev
+        return plist[0]?.id ? String(plist[0].id) : ''
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
-  }, [selectedPerson])
+  }, [])
 
   useEffect(() => {
     void load()
@@ -136,7 +139,7 @@ export function MemoryScreen() {
             ['people', 'Люди', Users],
             ['diary', 'Дневник / журнал', NotebookPen],
             ['search', 'Поиск RAG', Search],
-            ['ltm', 'LTM', BookOpen],
+            ['ltm', 'Долгая память', BookOpen],
           ] as const
         ).map(([id, label, Icon]) => (
           <Button key={id} onClick={() => setTab(id)} size="sm" type="button" variant={tab === id ? 'default' : 'secondary'}>
@@ -160,12 +163,12 @@ export function MemoryScreen() {
           ) : (
             <div className="grid-3">
               {[
-                { label: 'STM', value: memory?.short_memory_size },
-                { label: 'Chroma', value: memory?.hub?.chroma_records ?? memory?.long_memory_records },
+                { label: 'STM (краткая)', value: memory?.short_memory_size },
+                { label: 'Chroma (RAG)', value: memory?.hub?.chroma_records ?? memory?.long_memory_records },
                 { label: 'Люди', value: memory?.people_records ?? memory?.hub?.people },
                 { label: 'Журнал чата', value: memory?.hub?.chat_log },
                 { label: 'Дневник', value: memory?.hub?.diary_notes },
-                { label: 'RAG mode', value: memory?.hub?.rag_write_mode },
+                { label: 'Режим RAG', value: memory?.hub?.rag_write_mode },
               ].map(({ label, value }) => (
                 <div key={label} className="stat-tile">
                   <p className="stat-label">{label}</p>
@@ -307,7 +310,7 @@ export function MemoryScreen() {
         <div className="card">
           <div className="card-header">
             <Brain size={15} className="card-icon" />
-            <span className="card-title">Обслуживание LTM</span>
+            <span className="card-title">Обслуживание долгой памяти</span>
           </div>
           <div className="row" style={{ marginBottom: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
             <label className="label" style={{ minWidth: 160 }}>
@@ -330,7 +333,7 @@ export function MemoryScreen() {
               type="button"
               variant="secondary"
             >
-              Очистка (dry-run)
+              Очистка (пробный запуск)
             </Button>
             <Button
               disabled={ltmBusy}
@@ -352,7 +355,7 @@ export function MemoryScreen() {
               type="button"
               variant="secondary"
             >
-              Сумм. (dry-run)
+              Суммаризация (пробный запуск)
             </Button>
             <Button
               disabled={ltmBusy}

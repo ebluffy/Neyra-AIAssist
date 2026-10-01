@@ -173,7 +173,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
           </div>
           <div>
             <h1 className="dash-auth-title">Neyra</h1>
-            <p className="dash-auth-sub">Control Center</p>
+            <p className="dash-auth-sub">Панель управления</p>
           </div>
         </div>
 

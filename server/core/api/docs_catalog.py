@@ -17,11 +17,14 @@ _LEGACY_ALIASES: dict[str, tuple[str, ...]] = {
 
 _SECTION_TITLES = {
     "ru": "Документация (RU)",
-    "en": "Documentation (EN)",
-    "api": "API",
+    "en": "Документация (EN)",
+    "api-ru": "API (RU)",
+    "api-en": "API (EN)",
     "root": "Обзор",
     "plugins": "Плагины / SDK",
 }
+
+_SECTION_ORDER = ("root", "ru", "en", "api-ru", "api-en", "plugins")
 
 
 def docs_search_roots(server_root: Path) -> list[Path]:
@@ -47,14 +50,10 @@ def _safe_under(base: Path, candidate: Path) -> bool:
 
 
 def build_docs_catalog(server_root: Path) -> dict[str, Any]:
-    """Catalog for dashboard: sections RU / EN / API / root help."""
+    """Catalog for dashboard: RU / EN / API RU|EN / root help."""
     server_root = server_root.resolve()
     sections: dict[str, dict[str, Any]] = {
-        "root": {"id": "root", "title": _SECTION_TITLES["root"], "items": []},
-        "ru": {"id": "ru", "title": _SECTION_TITLES["ru"], "items": []},
-        "en": {"id": "en", "title": _SECTION_TITLES["en"], "items": []},
-        "api": {"id": "api", "title": _SECTION_TITLES["api"], "items": []},
-        "plugins": {"id": "plugins", "title": _SECTION_TITLES["plugins"], "items": []},
+        key: {"id": key, "title": _SECTION_TITLES[key], "items": []} for key in _SECTION_ORDER
     }
 
     # Legacy / overview files on server root
@@ -97,18 +96,16 @@ def build_docs_catalog(server_root: Path) -> dict[str, Any]:
                     "id": doc_id,
                     "title": _title_from_path(rel),
                     "path": rel.as_posix(),
+                    "lang": lang,
                 }
-                # API topic bucket
                 if "/api/" in f"/{rel.as_posix()}" or rel.parts[:2] == (lang, "api"):
-                    sections["api"]["items"].append({**item, "lang": lang})
+                    sections[f"api-{lang}"]["items"].append(item)
                 else:
                     sections[lang]["items"].append(item)
 
-    # Drop empty sections; keep order
     ordered = []
-    for key in ("root", "ru", "en", "api", "plugins"):
+    for key in _SECTION_ORDER:
         sec = sections[key]
-        # dedupe by id
         seen: set[str] = set()
         uniq = []
         for it in sec["items"]:
@@ -123,19 +120,18 @@ def build_docs_catalog(server_root: Path) -> dict[str, Any]:
 
 
 def resolve_doc_path(server_root: Path, doc_id: str) -> Path | None:
-    """Resolve doc_id to a file under server root or docs trees. No path escape."""
+    """Resolve doc_id under docs trees or legacy allowlist only. No arbitrary server_root read."""
     server_root = server_root.resolve()
     rid = (doc_id or "").strip().replace("\\", "/").lstrip("/")
     if not rid or ".." in rid.split("/"):
         return None
 
-    # Legacy aliases
+    # Legacy aliases (README, HELP, docs index)
     if rid.lower() in _LEGACY_ALIASES:
         path = server_root.joinpath(*_LEGACY_ALIASES[rid.lower()])
         return path if path.is_file() else None
 
     # id like ru/architecture/web-ui → docs/.../ru/architecture/web-ui.md
-    rel = Path(rid)
     if not rid.endswith(".md"):
         candidates_rel = [Path(f"{rid}.md"), Path(rid) / "README.md"]
     else:
@@ -147,9 +143,4 @@ def resolve_doc_path(server_root: Path, doc_id: str) -> Path | None:
             if _safe_under(docs_root, cand) and cand.is_file():
                 return cand
 
-    # Direct under server root (modules help etc.)
-    for crel in candidates_rel:
-        cand = (server_root / crel).resolve()
-        if _safe_under(server_root, cand) and cand.is_file():
-            return cand
     return None

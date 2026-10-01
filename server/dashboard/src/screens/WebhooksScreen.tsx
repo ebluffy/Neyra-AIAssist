@@ -125,7 +125,7 @@ export function WebhooksScreen() {
     <div className="page-content stack">
       <PageHeader
         title="Вебхуки"
-        subtitle="Outbound маршруты, доставки и DLQ"
+        subtitle="Исходящие маршруты, доставки и очередь ошибок"
         actions={
           <Button disabled={loading} onClick={() => void load()} type="button" variant="secondary">
             <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
@@ -142,15 +142,15 @@ export function WebhooksScreen() {
         </div>
         <div className="grid-3" style={{ marginBottom: '0.85rem' }}>
           <label className="label">
-            <span className="label-text">event_type</span>
+            <span className="label-text">Тип события</span>
             <input className="input input-mono" onChange={(e) => setEventType(e.target.value)} value={eventType} />
           </label>
           <label className="label">
-            <span className="label-text">target_url</span>
+            <span className="label-text">URL назначения</span>
             <input className="input input-mono" onChange={(e) => setTargetUrl(e.target.value)} value={targetUrl} />
           </label>
           <label className="label">
-            <span className="label-text">secret (optional)</span>
+            <span className="label-text">Секрет (необязательно)</span>
             <input className="input input-mono" onChange={(e) => setSecret(e.target.value)} value={secret} />
           </label>
         </div>
@@ -173,7 +173,7 @@ export function WebhooksScreen() {
           <table className="table">
             <thead>
               <tr>
-                {['ID', 'event_type', 'target', 'enabled', 'Действия'].map((h) => (
+                {['ID', 'Событие', 'URL', 'Вкл.', 'Действия'].map((h) => (
                   <th key={h}>{h}</th>
                 ))}
               </tr>
@@ -182,7 +182,7 @@ export function WebhooksScreen() {
               {routes.length === 0 ? (
                 <tr>
                   <td colSpan={5}>
-                    <EmptyState icon={Webhook} title="Нет маршрутов" description="Создай первый route выше." />
+                    <EmptyState icon={Webhook} title="Нет маршрутов" description="Создай первый маршрут выше." />
                   </td>
                 </tr>
               ) : (
@@ -193,12 +193,12 @@ export function WebhooksScreen() {
                     </td>
                     <td style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>{r.event_type}</td>
                     <td style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem', wordBreak: 'break-all' }}>{r.target_url}</td>
-                    <td>{r.enabled ? 'yes' : 'no'}</td>
+                    <td>{r.enabled ? 'да' : 'нет'}</td>
                     <td>
                       <div className="row" style={{ gap: 6 }}>
-                        {iconBtn(r.enabled ? 'Disable' : 'Enable', () => void toggleRoute(r, !r.enabled), '', <RefreshCw size={13} />)}
-                        {iconBtn('Test', () => void testRoute(r), '', <FlaskConical size={13} />)}
-                        {iconBtn('Delete', () => void deleteRoute(r), 'btn-danger', <Trash2 size={13} />)}
+                        {iconBtn(r.enabled ? 'Выключить' : 'Включить', () => void toggleRoute(r, !r.enabled), '', <RefreshCw size={13} />)}
+                        {iconBtn('Тест', () => void testRoute(r), '', <FlaskConical size={13} />)}
+                        {iconBtn('Удалить', () => void deleteRoute(r), 'btn-danger', <Trash2 size={13} />)}
                       </div>
                     </td>
                   </tr>
@@ -211,13 +211,13 @@ export function WebhooksScreen() {
 
       <div className="card">
         <div className="card-header">
-          <span className="card-title">Deliveries</span>
+          <span className="card-title">Доставки</span>
         </div>
         <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
-                {['delivery_id', 'route_id', 'status', 'attempts', 'error', 'retry'].map((h) => (
+                {['ID доставки', 'Маршрут', 'Статус', 'Попытки', 'Ошибка', 'Повтор'].map((h) => (
                   <th key={h}>{h}</th>
                 ))}
               </tr>
@@ -237,7 +237,7 @@ export function WebhooksScreen() {
                     <td>{d.status}</td>
                     <td>{d.attempts}</td>
                     <td style={{ fontFamily: 'var(--mono)', fontSize: '0.75rem', wordBreak: 'break-all' }}>{d.error || '—'}</td>
-                    <td>{iconBtn('Retry', () => void retryDelivery(d.delivery_id), '', <RotateCcw size={13} />)}</td>
+                    <td>{iconBtn('Повторить', () => void retryDelivery(d.delivery_id), '', <RotateCcw size={13} />)}</td>
                   </tr>
                 ))
               )}
@@ -248,7 +248,7 @@ export function WebhooksScreen() {
 
       <div className="card">
         <div className="card-header">
-          <span className="card-title">DLQ ({dlq.length})</span>
+          <span className="card-title">Очередь ошибок ({dlq.length})</span>
         </div>
         <pre className="code-block" style={{ maxHeight: 240, overflow: 'auto' }}>
           {JSON.stringify(dlq.slice(0, 30), null, 2)}

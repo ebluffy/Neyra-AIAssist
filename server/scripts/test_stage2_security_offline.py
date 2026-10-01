@@ -283,6 +283,44 @@ def _test_resolve_client_ip() -> None:
     )
 
 
+def _test_docs_catalog_resolve_allowlist() -> None:
+    """Markdown resolve: docs trees + legacy only; no arbitrary server_root .md; no .. escape."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from core.api.docs_catalog import build_docs_catalog, resolve_doc_path
+
+    td = Path(tempfile.mkdtemp())
+    try:
+        (td / "docs" / "ru" / "api").mkdir(parents=True)
+        (td / "docs" / "en" / "api").mkdir(parents=True)
+        (td / "docs" / "ru" / "api" / "overview.md").write_text("# RU API\n", encoding="utf-8")
+        (td / "docs" / "en" / "api" / "overview.md").write_text("# EN API\n", encoding="utf-8")
+        (td / "docs" / "ru" / "architecture").mkdir(parents=True)
+        (td / "docs" / "ru" / "architecture" / "web-ui.md").write_text("# web\n", encoding="utf-8")
+        (td / "README-RU.md").write_text("# readme\n", encoding="utf-8")
+        (td / "secret.md").write_text("leak\n", encoding="utf-8")
+        (td / "config").mkdir()
+        (td / "config" / "notes.md").write_text("nope\n", encoding="utf-8")
+
+        cat = build_docs_catalog(td)
+        ids = {s["id"] for s in cat["sections"]}
+        assert "api-ru" in ids and "api-en" in ids
+        assert "api" not in ids
+        api_ru = next(s for s in cat["sections"] if s["id"] == "api-ru")
+        assert any(i["id"] == "ru/api/overview" for i in api_ru["items"])
+
+        assert resolve_doc_path(td, "ru/architecture/web-ui") is not None
+        assert resolve_doc_path(td, "readme-ru") is not None
+        assert resolve_doc_path(td, "secret") is None
+        assert resolve_doc_path(td, "config/notes") is None
+        assert resolve_doc_path(td, "../secret") is None
+        assert resolve_doc_path(td, "ru/../en/api/overview") is None
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def main() -> int:
     _test_diary_digest_no_user_lines()
     _test_contextvar_isolation()
@@ -292,6 +330,7 @@ def main() -> int:
     _test_memory_model_429_backoff()
     _test_dashboard_session_store()
     _test_resolve_client_ip()
+    _test_docs_catalog_resolve_allowlist()
     print("stage2 security offline: OK")
     return 0
 

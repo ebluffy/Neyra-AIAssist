@@ -11,49 +11,49 @@ type FieldDef = { key: string; label: string }
 const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
   {
     id: 'talk',
-    title: 'Talk',
+    title: 'Речь',
     fields: [
       { key: 'llm.talk_model.model', label: 'Модель речи' },
       { key: 'llm.talk_model.provider', label: 'Провайдер' },
-      { key: 'llm.talk_model.temperature', label: 'Temperature' },
+      { key: 'llm.talk_model.temperature', label: 'Температура' },
       { key: 'llm.talk_model.timeout_seconds', label: 'Таймаут (с)' },
-      { key: 'llm.talk_model.reply_max_tokens', label: 'Max tokens ответа' },
-      { key: 'llm.talk_model.lyrics_reply_max_tokens', label: 'Max tokens lyrics' },
+      { key: 'llm.talk_model.reply_max_tokens', label: 'Макс. токенов ответа' },
+      { key: 'llm.talk_model.lyrics_reply_max_tokens', label: 'Макс. токенов lyrics' },
     ],
   },
   {
     id: 'brain',
-    title: 'Brain',
+    title: 'Мозг',
     fields: [
       { key: 'llm.brain_model.model', label: 'Модель мозга' },
       { key: 'llm.brain_model.provider', label: 'Провайдер' },
-      { key: 'llm.brain_model.model_deep', label: 'Deep-модель' },
-      { key: 'llm.brain_model.max_tokens', label: 'Max tokens' },
-      { key: 'llm.brain_model.temperature', label: 'Temperature' },
+      { key: 'llm.brain_model.model_deep', label: 'Глубокая модель' },
+      { key: 'llm.brain_model.max_tokens', label: 'Макс. токенов' },
+      { key: 'llm.brain_model.temperature', label: 'Температура' },
       { key: 'llm.brain_model.timeout_seconds', label: 'Таймаут (с)' },
     ],
   },
   {
     id: 'memory',
-    title: 'Memory',
+    title: 'Память',
     fields: [
       { key: 'llm.memory_model.model', label: 'Модель памяти' },
       { key: 'llm.memory_model.provider', label: 'Провайдер' },
-      { key: 'llm.memory_model.max_tokens', label: 'Max tokens' },
-      { key: 'llm.memory_model.temperature', label: 'Temperature' },
+      { key: 'llm.memory_model.max_tokens', label: 'Макс. токенов' },
+      { key: 'llm.memory_model.temperature', label: 'Температура' },
       { key: 'memory.rag_write_mode', label: 'Режим записи RAG' },
     ],
   },
   {
     id: 'vision',
-    title: 'Vision',
+    title: 'Зрение',
     fields: [
       { key: 'llm.vision_model.model', label: 'Модель зрения' },
       { key: 'llm.vision_model.provider', label: 'Провайдер' },
       { key: 'llm.vision_model.enabled', label: 'Включено' },
-      { key: 'llm.vision_model.use_brain_model_for_vision', label: 'Использовать brain для vision' },
-      { key: 'llm.vision_model.max_tokens', label: 'Max tokens' },
-      { key: 'llm.vision_model.temperature', label: 'Temperature' },
+      { key: 'llm.vision_model.use_brain_model_for_vision', label: 'Использовать модель мозга для зрения' },
+      { key: 'llm.vision_model.max_tokens', label: 'Макс. токенов' },
+      { key: 'llm.vision_model.temperature', label: 'Температура' },
       { key: 'llm.vision_model.timeout_seconds', label: 'Таймаут (с)' },
       { key: 'llm.vision_model.max_images_per_message', label: 'Макс. изображений' },
       { key: 'llm.vision_model.max_image_bytes', label: 'Макс. байт изображения' },
@@ -65,22 +65,22 @@ const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
   },
   {
     id: 'providers',
-    title: 'Providers',
+    title: 'Провайдеры',
     fields: [
-      { key: 'llm.providers.openrouter.base_url', label: 'OpenRouter base URL' },
-      { key: 'llm.providers.aihope.base_url', label: 'AIHope base URL' },
+      { key: 'llm.providers.openrouter.base_url', label: 'Базовый URL OpenRouter' },
+      { key: 'llm.providers.aihope.base_url', label: 'Базовый URL AIHope' },
       { key: 'llm.provider', label: 'Провайдер по умолчанию' },
-      { key: 'llm.base_url', label: 'Legacy base URL' },
+      { key: 'llm.base_url', label: 'Устаревший базовый URL' },
     ],
   },
   {
     id: 'system',
     title: 'Система',
     fields: [
-      { key: 'agent.fast_path.enabled', label: 'Fast path агента' },
+      { key: 'agent.fast_path.enabled', label: 'Быстрый путь агента' },
       { key: 'logging.level', label: 'Уровень логов' },
-      { key: 'health_monitor.enabled', label: 'Health monitor' },
-      { key: 'health_monitor.interval_seconds', label: 'Интервал health (с)' },
+      { key: 'health_monitor.enabled', label: 'Монитор здоровья' },
+      { key: 'health_monitor.interval_seconds', label: 'Интервал проверки (с)' },
     ],
   },
 ]
@@ -192,12 +192,12 @@ export function SettingsScreen() {
 
   return (
     <div className="page-content stack">
-      <PageHeader title="Настройки" subtitle="Bearer и runtime-конфиг по разделам" />
+      <PageHeader title="Настройки" subtitle="Токен доступа и runtime-конфиг по разделам" />
 
       <div className="card">
         <div className="card-header">
           <KeyRound size={15} className="card-icon" />
-          <span className="card-title">Bearer Token</span>
+          <span className="card-title">Токен API</span>
         </div>
         <label className="label">
           <span className="label-text">Токен API (localStorage)</span>
@@ -225,7 +225,7 @@ export function SettingsScreen() {
       <div className="card">
         <div className="card-header">
           <SlidersHorizontal size={15} className="card-icon card-icon-pink" />
-          <span className="card-title">Runtime config</span>
+          <span className="card-title">Runtime-конфиг</span>
         </div>
         <div className="tabs-row" role="tablist" aria-label="Разделы конфига">
           {TABS.map((t) => (
@@ -253,8 +253,8 @@ export function SettingsScreen() {
                       onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
                       value={values[f.key] || 'false'}
                     >
-                      <option value="true">true</option>
-                      <option value="false">false</option>
+                      <option value="true">да</option>
+                      <option value="false">нет</option>
                     </select>
                   ) : (
                     <input
