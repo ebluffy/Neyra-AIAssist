@@ -160,16 +160,9 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     }
     talk_kwargs.update(_force_chat_completions(conn_talk.provider))
     agent.llm_talk = ChatOpenAI(**talk_kwargs)
-    agent.llm_talk = agent.llm_talk.bind(
-        stop=[
-            "<think>",
-            "</think>",
-            "<thought>",
-            "</thought>",
-            "<redacted_thinking>",
-            "</redacted_thinking>",
-        ]
-    )
+    # Do not bind stop=… here: some gateways (aihope / deepseek-v4-*) reject
+    # stop sequences with gateway_error 400 Invalid request. Think blocks are
+    # stripped in reply_postprocess.extract_think_blocks instead.
 
     hdr_brain = dict(conn_brain.default_headers)
     hdr_brain["X-Title"] = "Neyra Brain"
