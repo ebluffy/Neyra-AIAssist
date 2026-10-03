@@ -94,6 +94,7 @@ jobs:
           python scripts/test_memory_cutover_offline.py
           python scripts/test_stage2_security_offline.py
           python scripts/test_snowflake_offline.py
+          python scripts/test_discord_music_intent_offline.py
       - name: Healthcheck smoke (examples, skip HTTP)
         env:
           OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http

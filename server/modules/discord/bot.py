@@ -523,10 +523,10 @@ class NeyraDiscordBot(discord.Client):
                 "join_only": "1",
             }
 
-        has_music_verb = bool(
+        # Play verbs only — bare nouns like «трек/песня/музыка» in lyrics must NOT fire PLAY.
+        has_play_verb = bool(
             re.search(
-                r"\b(вкл\w*|вруби|поставь|заиграй|play|music|музык[ауеи]|песн[яюи]|трек|"
-                r"track|плейлист|playlist)\b",
+                r"\b(вкл\w*|вруби|поставь|заиграй|play)\b",
                 lowered,
             )
         )
@@ -538,11 +538,18 @@ class NeyraDiscordBot(discord.Client):
             )
         )
         has_url = bool(re.search(r"https?://\S+", raw))
-        if not has_music_verb and not has_url and not wants_voice_play:
+        if not has_play_verb and not has_url and not wants_voice_play:
             return None
         q = re.sub(r"^(эй\s+нейра|нейра|please|пожалуйста)[,:\s-]*", "", raw, flags=re.IGNORECASE).strip()
         q = re.sub(
             r"^(вкл\w*|вруби|поставь|заиграй|play|music|музыка)\s+",
+            "",
+            q,
+            flags=re.IGNORECASE,
+        ).strip()
+        # Strip leading music nouns left after verb removal («трек …», «песню …»).
+        q = re.sub(
+            r"^(трек|track|песн[юяуи]|музык[ауеи]|плейлист|playlist)\s+",
             "",
             q,
             flags=re.IGNORECASE,
@@ -577,12 +584,12 @@ class NeyraDiscordBot(discord.Client):
         prompt = (
             "You are an intent classifier for a Discord bot that CAN join a voice channel "
             "and play audio via Lavalink. Reply with EXACTLY ONE label:\n"
-            "PLAY_MUSIC — user wants audio played in Discord voice (include mood requests like "
-            "'включи весёлую музыку', 'зайди в войс и включи', song/artist names to play).\n"
+            "PLAY_MUSIC — user clearly wants audio played in Discord voice "
+            "(e.g. 'включи …', 'поставь трек', 'play …', 'зайди в войс и включи').\n"
             "GET_LYRICS — user wants song lyrics/text only, not playback.\n"
-            "CHAT — everything else (questions, banter, links without play intent).\n"
-            "When unsure between PLAY_MUSIC and CHAT but the message mentions music/song/track/voice, "
-            "prefer PLAY_MUSIC.\n"
+            "CHAT — everything else: banter, questions, quoting/pasting song lyrics, "
+            "or mentioning words like track/song/music without asking to play.\n"
+            "When unsure between PLAY_MUSIC and CHAT, prefer CHAT.\n"
             "User text: "
             + (user_text or "")
         )
@@ -921,10 +928,16 @@ class NeyraDiscordBot(discord.Client):
         else:
             route = "CHAT"
 
-        use_music = route == "PLAY_MUSIC" and not lyrics_hint and (
-            bool(music_candidate)
-            or soft_music
+        # Soft PLAY (classifier-only) needs a short command-like line or an explicit play verb.
+        # Long lyric pastes that merely contain «трек» must stay in CHAT.
+        soft_play_ok = soft_music and (
+            play_verb or len(re.findall(r"\w+", content, flags=re.UNICODE)) <= 8
         )
+        use_music = route == "PLAY_MUSIC" and not lyrics_hint and (
+            bool(music_candidate) or soft_play_ok
+        )
+        if route == "PLAY_MUSIC" and not use_music and not lyrics_hint:
+            route = "CHAT"
 
         if use_music:
             if music_candidate and str(music_candidate.get("action") or "") != MUSIC_PLAY:
