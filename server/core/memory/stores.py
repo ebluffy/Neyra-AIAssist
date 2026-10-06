@@ -395,7 +395,8 @@ class LongTermMemory:
         src = Path(self.db_path)
         dest_p = Path(dest)
         if not src.exists():
-            raise RuntimeError(f"chroma path missing: {src}")
+            # Nothing to back up yet (async init may not have created the dir).
+            return ""
         with self._write_lock:
             if dest_p.exists():
                 if dest_p.is_dir():

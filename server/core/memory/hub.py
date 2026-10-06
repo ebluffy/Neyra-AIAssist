@@ -465,6 +465,16 @@ class MemoryHub:
         )
         return stats
 
+    def apply_merge_proposal(self, proposal_id: int) -> dict[str, Any]:
+        """Apply pending proposal under one SQLite transaction (race-safe)."""
+        _log_id, stats = self.sqlite.merge_people_atomic(
+            survivor_id="",  # overridden from proposal inside txn
+            source_id="",
+            reason=f"proposal:{int(proposal_id)}",
+            proposal_id=int(proposal_id),
+        )
+        return stats
+
     def undo_merge(self, merge_log_id: int) -> dict[str, Any]:
         return self.sqlite.undo_merge_atomic(int(merge_log_id))
 
@@ -499,9 +509,9 @@ class MemoryHub:
                     lm = self._long_memory
                     if lm is not None and hasattr(lm, "backup_to"):
                         cdest = backup_dir / f"neyra_chroma_pre_wipe_{ts}"
-                        chroma_backup = lm.backup_to(cdest)
+                        chroma_backup = lm.backup_to(cdest) or None
                     elif lm is not None:
-                        raise RuntimeError("ltm backup unavailable")
+                        chroma_backup = None
             except RuntimeError:
                 raise
             except Exception as e:

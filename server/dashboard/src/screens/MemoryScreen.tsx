@@ -69,18 +69,25 @@ export function MemoryScreen() {
   const [sumCompress, setSumCompress] = useState(true)
   const [wipeBusy, setWipeBusy] = useState(false)
   const [proposals, setProposals] = useState<MergeProposal[]>([])
+  const [lastMergeLogId, setLastMergeLogId] = useState<number | null>(null)
+  const [recentMerges, setRecentMerges] = useState<
+    { id?: number; survivor_id?: string; source_id?: string; undone_at?: string | null }[]
+  >([])
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const [m, pol, pe, di, jo, pr] = await Promise.all([
+      const [m, pol, pe, di, jo, pr, ml] = await Promise.all([
         apiGet<ApiEnvelope<MemoryStats>>('/v1/memory/stats'),
         apiGet<ApiEnvelope<MemoryPolicies>>('/v1/memory/policies'),
         apiGet<ApiEnvelope<{ people: PersonRow[] }>>('/v1/memory/people'),
         apiGet<ApiEnvelope<{ notes: DiaryNote[] }>>('/v1/memory/diary?limit=50'),
         apiGet<ApiEnvelope<{ entries: JournalEntry[] }>>('/v1/memory/journal?limit=50'),
         apiGet<ApiEnvelope<{ proposals: MergeProposal[] }>>('/v1/memory/people/merge-proposals?status=pending'),
+        apiGet<ApiEnvelope<{ merges: { id?: number; survivor_id?: string; source_id?: string; undone_at?: string | null }[] }>>(
+          '/v1/memory/people/merge-log?limit=10',
+        ),
       ])
       setMemory(m.data)
       setMemPolicies(pol.data)
@@ -89,6 +96,7 @@ export function MemoryScreen() {
       setDiary(di.data.notes ?? [])
       setJournal(jo.data.entries ?? [])
       setProposals(pr.data.proposals ?? [])
+      setRecentMerges(ml.data.merges ?? [])
       setSelectedPerson((prev) => {
         if (prev && plist.some((p) => String(p.id) === prev)) return prev
         return plist[0]?.id ? String(plist[0].id) : ''
@@ -204,15 +212,25 @@ export function MemoryScreen() {
 
   async function mergeIntoSelected() {
     if (!selectedPerson || !mergeSource.trim()) return
-    if (!window.confirm(`Скрестить ${mergeSource.trim()} → ${selectedPerson}? Source будет удалён.`)) return
+    if (
+      !window.confirm(
+        `Скрестить ${mergeSource.trim()} → ${selectedPerson}? Source будет удалён (можно отменить).`,
+      )
+    )
+      return
     try {
-      await apiPost('/v1/memory/people/merge', {
-        survivor_id: selectedPerson,
-        source_id: mergeSource.trim(),
-        reason: 'dashboard_merge',
-      })
+      const r = await apiPost<ApiEnvelope<{ merge_log_id?: number; survivor_id?: string }>>(
+        '/v1/memory/people/merge',
+        {
+          survivor_id: selectedPerson,
+          source_id: mergeSource.trim(),
+          reason: 'dashboard_merge',
+        },
+      )
+      const mid = Number(r.data?.merge_log_id)
+      if (Number.isFinite(mid)) setLastMergeLogId(mid)
       setMergeSource('')
-      setStatus('Карточки скрещены')
+      setStatus(Number.isFinite(mid) ? `Скрещены (merge_log #${mid})` : 'Карточки скрещены')
       await load()
       await loadPerson(selectedPerson)
     } catch (e) {
@@ -221,13 +239,19 @@ export function MemoryScreen() {
   }
 
   async function applyProposal(id: number) {
-    if (!window.confirm(`Применить заявку #${id}? person_a станет survivor.`)) return
+    if (!window.confirm(`Применить заявку #${id}? person_a станет survivor (можно отменить).`)) return
     try {
-      await apiPost(`/v1/memory/people/merge-proposals/${id}/apply`, {})
-      setStatus(`Заявка #${id} применена`)
-      await load()
+      const r = await apiPost<ApiEnvelope<{ merge?: { merge_log_id?: number } }>>(
+        `/v1/memory/people/merge-proposals/${id}/apply`,
+        {},
+      )
+      const mid = Number(r.data?.merge?.merge_log_id)
+      if (Number.isFinite(mid)) setLastMergeLogId(mid)
+      setStatus(Number.isFinite(mid) ? `Заявка #${id} → merge_log #${mid}` : `Заявка #${id} применена`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      await load()
     }
   }
 
@@ -235,9 +259,23 @@ export function MemoryScreen() {
     try {
       await apiPost(`/v1/memory/people/merge-proposals/${id}/reject`, {})
       setStatus(`Заявка #${id} отклонена`)
-      await load()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      await load()
+    }
+  }
+
+  async function undoMerge(mergeLogId: number) {
+    if (!window.confirm(`Отменить merge #${mergeLogId}?`)) return
+    try {
+      await apiPost(`/v1/memory/people/merge/${mergeLogId}/undo`, {})
+      setStatus(`Merge #${mergeLogId} отменён`)
+      if (lastMergeLogId === mergeLogId) setLastMergeLogId(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      await load()
     }
   }
 
@@ -467,10 +505,10 @@ export function MemoryScreen() {
 
       {tab === 'people' && (
         <div className="split-modules">
-          {proposals.length > 0 && (
+          {(proposals.length > 0 || recentMerges.some((m) => !m.undone_at)) && (
             <div className="card" style={{ gridColumn: '1 / -1' }}>
               <div className="card-header">
-                <span className="card-title">Кандидаты на merge ({proposals.length})</span>
+                <span className="card-title">Merge: заявки и отмена</span>
               </div>
               <div className="stack-sm">
                 {proposals.map((p) => (
@@ -485,7 +523,7 @@ export function MemoryScreen() {
                     }}
                   >
                     <span style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>
-                      #{p.id}: {p.person_a} ↔ {p.person_b}
+                      заявка #{p.id}: {p.person_a} ↔ {p.person_b}
                       {p.reason ? ` — ${p.reason}` : ''}
                     </span>
                     <span style={{ display: 'inline-flex', gap: 6 }}>
@@ -498,6 +536,33 @@ export function MemoryScreen() {
                     </span>
                   </div>
                 ))}
+                {recentMerges
+                  .filter((m) => m.id != null && !m.undone_at)
+                  .slice(0, 5)
+                  .map((m) => (
+                    <div
+                      key={`ml-${m.id}`}
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 8,
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <span style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>
+                        merge_log #{m.id}: {m.source_id} → {m.survivor_id}
+                      </span>
+                      <Button onClick={() => void undoMerge(Number(m.id))} size="sm" type="button" variant="warn">
+                        Отменить merge
+                      </Button>
+                    </div>
+                  ))}
+                {lastMergeLogId != null && (
+                  <p style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>
+                    Последний merge_log: #{lastMergeLogId}
+                  </p>
+                )}
               </div>
             </div>
           )}

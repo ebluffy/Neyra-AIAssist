@@ -1537,10 +1537,11 @@ def build_app(
             data = await asyncio.to_thread(_run)
         except ApiError:
             raise
-        except KeyError as e:
-            raise ApiError("person_not_found", str(e), 404) from e
-        except Exception as e:
-            raise ApiError("merge_failed", str(e), 500) from e
+        except KeyError:
+            raise ApiError("person_not_found", "person not found", 404)
+        except Exception:
+            logger.exception("merge_failed | trace_id=%s", trace_id)
+            raise ApiError("merge_failed", "merge failed, see server log", 500)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.post("/v1/memory/people/merge/{merge_log_id}/undo")
@@ -1564,10 +1565,40 @@ def build_app(
             raise ApiError("merge_not_found", "merge log not found", 404)
         except ValueError as e:
             if "already_undone" in str(e):
-                raise ApiError("merge_already_undone", str(e), 409) from e
-            raise ApiError("merge_undo_failed", str(e), 400) from e
-        except Exception as e:
-            raise ApiError("merge_undo_failed", str(e), 500) from e
+                raise ApiError("merge_already_undone", "merge already undone", 409) from e
+            raise ApiError("merge_undo_failed", "merge undo failed", 400) from e
+        except Exception:
+            logger.exception("merge_undo_failed | trace_id=%s", trace_id)
+            raise ApiError("merge_undo_failed", "merge undo failed, see server log", 500)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/memory/people/merge-log")
+    async def v1_memory_merge_log(
+        request: Request,
+        _: None = Depends(dep_viewer),
+        limit: int = Query(20, ge=1, le=100),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            rows = hub.sqlite.list_merge_log(limit=limit)
+            slim = [
+                {
+                    "id": r.get("id"),
+                    "survivor_id": r.get("survivor_id"),
+                    "source_id": r.get("source_id"),
+                    "reason": r.get("reason"),
+                    "created_at": r.get("created_at"),
+                    "undone_at": r.get("undone_at"),
+                }
+                for r in rows
+            ]
+            return {"merges": slim, "count": len(slim)}
+
+        data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/memory/people/merge-proposals")
@@ -1602,23 +1633,12 @@ def build_app(
         _audit("memory_merge_proposal_apply", trace_id, "admin", {"proposal_id": proposal_id})
 
         def _run() -> dict[str, Any]:
-            prop = hub.sqlite.get_merge_proposal(int(proposal_id))
-            if not prop:
-                raise ApiError("proposal_not_found", "proposal not found", 404)
-            if str(prop.get("status") or "") != "pending":
-                raise ApiError("proposal_not_pending", "proposal is not pending", 409)
-            a = str(prop.get("person_a") or "").strip()
-            b = str(prop.get("person_b") or "").strip()
-            if hub.sqlite.get_person(a) is None or hub.sqlite.get_person(b) is None:
-                hub.sqlite.resolve_merge_proposal(int(proposal_id), status="stale")
-                raise ApiError("proposal_stale", "one or both people no longer exist", 409)
-            # person_a = survivor; mark applied inside same merge txn.
-            out = hub.merge_people(
-                a, b, reason=f"proposal:{proposal_id}", proposal_id=int(proposal_id)
-            )
+            out = hub.apply_merge_proposal(int(proposal_id))
             pdb = getattr(agent, "people_db", None)
             if pdb is not None:
-                pdb._cache.pop(b, None)
+                src = str(out.get("source_id") or "")
+                if src:
+                    pdb._cache.pop(src, None)
                 try:
                     pdb.hydrate_from_hub()
                 except Exception:
@@ -1627,12 +1647,18 @@ def build_app(
 
         try:
             data = await asyncio.to_thread(_run)
-        except ApiError:
-            raise
-        except KeyError as e:
-            raise ApiError("person_not_found", str(e), 404) from e
-        except Exception as e:
-            raise ApiError("proposal_apply_failed", str(e), 500) from e
+        except ValueError as e:
+            code = str(e)
+            if "proposal_stale" in code:
+                raise ApiError("proposal_stale", "one or both people no longer exist", 409) from e
+            if "proposal_not_pending" in code:
+                raise ApiError("proposal_not_pending", "proposal is not pending", 409) from e
+            raise ApiError("proposal_apply_failed", "proposal apply failed", 400) from e
+        except KeyError:
+            raise ApiError("person_not_found", "person not found", 404)
+        except Exception:
+            logger.exception("proposal_apply_failed | trace_id=%s", trace_id)
+            raise ApiError("proposal_apply_failed", "proposal apply failed, see server log", 500)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.post("/v1/memory/people/merge-proposals/{proposal_id}/reject")
@@ -1651,17 +1677,18 @@ def build_app(
             prop = hub.sqlite.get_merge_proposal(int(proposal_id))
             if not prop:
                 raise ApiError("proposal_not_found", "proposal not found", 404)
-            if str(prop.get("status") or "") != "pending":
+            ok = hub.sqlite.resolve_merge_proposal(int(proposal_id), status="rejected")
+            if not ok:
                 raise ApiError("proposal_not_pending", "proposal is not pending", 409)
-            hub.sqlite.resolve_merge_proposal(int(proposal_id), status="rejected")
             return {"proposal_id": int(proposal_id), "status": "rejected"}
 
         try:
             data = await asyncio.to_thread(_run)
         except ApiError:
             raise
-        except Exception as e:
-            raise ApiError("proposal_reject_failed", str(e), 500) from e
+        except Exception:
+            logger.exception("proposal_reject_failed | trace_id=%s", trace_id)
+            raise ApiError("proposal_reject_failed", "proposal reject failed, see server log", 500)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/memory/people/{person_id}")
@@ -1908,8 +1935,9 @@ def build_app(
                     ["diary"],
                     backup_dir=resolve_data_dir(root, config) / "backups",
                 )
-            except RuntimeError as e:
-                raise ApiError("backup_failed", str(e), 500) from e
+            except RuntimeError:
+                logger.exception("wipe diary backup_failed | trace_id=%s", trace_id)
+                raise ApiError("backup_failed", "backup failed, see server log", 500)
             return {"deleted": (out.get("deleted") or {}).get("diary", 0), "scope": "diary", "backup": out.get("backup")}
 
         data = await asyncio.to_thread(_run)
@@ -1956,8 +1984,9 @@ def build_app(
                     ["journal"],
                     backup_dir=resolve_data_dir(root, config) / "backups",
                 )
-            except RuntimeError as e:
-                raise ApiError("backup_failed", str(e), 500) from e
+            except RuntimeError:
+                logger.exception("wipe journal backup_failed | trace_id=%s", trace_id)
+                raise ApiError("backup_failed", "backup failed, see server log", 500)
             return {"deleted": (out.get("deleted") or {}).get("journal", 0), "scope": "journal", "backup": out.get("backup")}
 
         data = await asyncio.to_thread(_run)
@@ -2004,8 +2033,9 @@ def build_app(
                     ["people"],
                     backup_dir=resolve_data_dir(root, config) / "backups",
                 )
-            except RuntimeError as e:
-                raise ApiError("backup_failed", str(e), 500) from e
+            except RuntimeError:
+                logger.exception("wipe people backup_failed | trace_id=%s", trace_id)
+                raise ApiError("backup_failed", "backup failed, see server log", 500)
             pdb = getattr(agent, "people_db", None)
             if pdb is not None:
                 pdb._cache.clear()
@@ -2048,10 +2078,11 @@ def build_app(
                     if hub_scopes
                     else {"deleted": {}, "backup": None}
                 )
-            except ValueError as e:
-                raise ApiError("wipe_invalid_scope", str(e), 400) from e
-            except RuntimeError as e:
-                raise ApiError("backup_failed", str(e), 500) from e
+            except ValueError:
+                raise ApiError("wipe_invalid_scope", "unknown wipe scope", 400)
+            except RuntimeError:
+                logger.exception("wipe backup_failed | trace_id=%s", trace_id)
+                raise ApiError("backup_failed", "backup failed, see server log", 500)
             counts = dict(out.get("deleted") or {})
             if "stm" in scopes:
                 try:
