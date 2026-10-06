@@ -637,7 +637,9 @@ class SqliteStore:
                         "SELECT * FROM merge_proposals WHERE id = ?",
                         (int(proposal_id),),
                     ).fetchone()
-                    if prop_row is None or str(prop_row["status"] or "") != "pending":
+                    if prop_row is None:
+                        raise ValueError("proposal_not_found")
+                    if str(prop_row["status"] or "") != "pending":
                         raise ValueError("proposal_not_pending")
                     survivor_id = str(prop_row["person_a"] or "").strip()
                     source_id = str(prop_row["person_b"] or "").strip()
@@ -734,26 +736,7 @@ class SqliteStore:
                     (source_id, source_id, exclude_pid),
                 )
                 rewritten_proposals = [self._row_to_dict(r) for r in rewrite_cur.fetchall()]
-
-                snapshot = {
-                    "person": {
-                        "id": source_id,
-                        "display_name": o_dict.get("display_name"),
-                        "aliases": o_aliases or [source_id],
-                        "names": o_aliases or [source_id],
-                        "meta": o_dict.get("meta") if isinstance(o_dict.get("meta"), dict) else {},
-                        "created_at": o_dict.get("created_at"),
-                    },
-                    "facts": facts_sample,
-                    "fact_ids": fact_ids,
-                    "accounts": accounts,
-                    "survivor_before": {
-                        "display_name": survivor_display,
-                        "aliases": s_aliases or [survivor_id],
-                        "meta": survivor_meta,
-                    },
-                    "rewritten_proposals": rewritten_proposals,
-                }
+                staled_proposals: list[dict[str, Any]] = []
 
                 self._conn.execute(
                     "UPDATE person_accounts SET person_id = ?, updated_at = ? WHERE person_id = ?",
@@ -778,6 +761,28 @@ class SqliteStore:
                     ),
                 )
                 self._conn.execute("DELETE FROM people WHERE person_id = ?", (source_id,))
+
+                # Placeholder snapshot; staled_proposals filled after rewrite/dedupe.
+                snapshot: dict[str, Any] = {
+                    "person": {
+                        "id": source_id,
+                        "display_name": o_dict.get("display_name"),
+                        "aliases": o_aliases or [source_id],
+                        "names": o_aliases or [source_id],
+                        "meta": o_dict.get("meta") if isinstance(o_dict.get("meta"), dict) else {},
+                        "created_at": o_dict.get("created_at"),
+                    },
+                    "facts": facts_sample,
+                    "fact_ids": fact_ids,
+                    "accounts": accounts,
+                    "survivor_before": {
+                        "display_name": survivor_display,
+                        "aliases": s_aliases or [survivor_id],
+                        "meta": survivor_meta,
+                    },
+                    "rewritten_proposals": rewritten_proposals,
+                    "staled_proposals": staled_proposals,
+                }
                 cur = self._conn.execute(
                     """
                     INSERT INTO merge_log(survivor_id, source_id, reason, snapshot, created_at)
@@ -787,6 +792,7 @@ class SqliteStore:
                 )
                 log_id = int(cur.lastrowid)
 
+                # Mark applied BEFORE rewrite so this row is not collapsed to A↔A/stale.
                 if proposal_id is not None:
                     applied = self._conn.execute(
                         """
@@ -813,6 +819,14 @@ class SqliteStore:
                     """,
                     (survivor_id, source_id),
                 )
+                for pr in self._conn.execute(
+                    """
+                    SELECT id, person_a, person_b, status, reason
+                    FROM merge_proposals
+                    WHERE status = 'pending' AND person_a = person_b
+                    """
+                ).fetchall():
+                    staled_proposals.append(self._row_to_dict(pr))
                 self._conn.execute(
                     """
                     UPDATE merge_proposals
@@ -821,9 +835,9 @@ class SqliteStore:
                     """,
                     (now,),
                 )
-                # Dedupe pending pairs (keep oldest id).
                 pending_rows = self._conn.execute(
-                    "SELECT id, person_a, person_b FROM merge_proposals WHERE status = 'pending'"
+                    "SELECT id, person_a, person_b, status, reason "
+                    "FROM merge_proposals WHERE status = 'pending'"
                 ).fetchall()
                 seen_pairs: dict[tuple[str, str], int] = {}
                 for pr in pending_rows:
@@ -840,6 +854,11 @@ class SqliteStore:
                         keep = min(seen_pairs[key], pid)
                         drop = max(seen_pairs[key], pid)
                         seen_pairs[key] = keep
+                        drop_row = next(
+                            (r for r in pending_rows if int(r["id"]) == drop), None
+                        )
+                        if drop_row is not None:
+                            staled_proposals.append(self._row_to_dict(drop_row))
                         self._conn.execute(
                             """
                             UPDATE merge_proposals
@@ -848,6 +867,12 @@ class SqliteStore:
                             """,
                             (now, drop),
                         )
+
+                snapshot["staled_proposals"] = staled_proposals
+                self._conn.execute(
+                    "UPDATE merge_log SET snapshot = ? WHERE id = ?",
+                    (self._dumps(snapshot), log_id),
+                )
 
                 self._conn.execute("COMMIT")
                 stats = {
@@ -1037,12 +1062,21 @@ class SqliteStore:
                     """,
                     (now, int(merge_id)),
                 )
-                # Restore proposals rewritten by this merge (still pending/stale).
-                for rp in snap.get("rewritten_proposals") or []:
+                # Restore proposals rewritten or staled (dedupe / A↔A) by this merge.
+                restore_list = list(snap.get("rewritten_proposals") or []) + list(
+                    snap.get("staled_proposals") or []
+                )
+                seen_restore: set[int] = set()
+                for rp in restore_list:
                     if not isinstance(rp, dict):
                         continue
                     rid = rp.get("id")
-                    if rid is None:
+                    if rid is None or int(rid) in seen_restore:
+                        continue
+                    seen_restore.add(int(rid))
+                    pa = str(rp.get("person_a") or "")
+                    pb = str(rp.get("person_b") or "")
+                    if not pa or not pb or pa == pb:
                         continue
                     self._conn.execute(
                         """
@@ -1051,11 +1085,7 @@ class SqliteStore:
                             resolved_at = NULL, merge_log_id = NULL
                         WHERE id = ? AND status IN ('pending', 'stale')
                         """,
-                        (
-                            str(rp.get("person_a") or ""),
-                            str(rp.get("person_b") or ""),
-                            int(rid),
-                        ),
+                        (pa, pb, int(rid)),
                     )
                 self._conn.execute("COMMIT")
                 return {

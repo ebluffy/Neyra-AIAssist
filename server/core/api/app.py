@@ -1649,6 +1649,8 @@ def build_app(
             data = await asyncio.to_thread(_run)
         except ValueError as e:
             code = str(e)
+            if "proposal_not_found" in code:
+                raise ApiError("proposal_not_found", "proposal not found", 404) from e
             if "proposal_stale" in code:
                 raise ApiError("proposal_stale", "one or both people no longer exist", 409) from e
             if "proposal_not_pending" in code:

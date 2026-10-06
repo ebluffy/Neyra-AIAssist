@@ -16,22 +16,60 @@ def test_detect_mentions_no_false_max() -> None:
     from core.agent.people_context import detect_mentioned_names
 
     name_map = {"макс": "p_max", "пупинос": "p_pup"}
+    assert detect_mentioned_names("максимум настроения сегодня", name_map) == []
     assert detect_mentioned_names("Максим пришёл", name_map) == []
+    assert detect_mentioned_names("Максимка тут", name_map) == []
+    assert detect_mentioned_names("Макси зовут", name_map) == []
     assert detect_mentioned_names("привет, макс!", name_map) == ["p_max"]
     assert detect_mentioned_names("видел Макса вчера", name_map) == ["p_max"]
+    assert detect_mentioned_names("пупинос зашёл", name_map) == ["p_pup"]
+
+
+def test_speaker_label_nick_not_invented_name() -> None:
+    from core.agent.speakers import resolve_speaker_label
+    from core.memory.hub import MemoryHub
+
+    td_obj = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    hub = None
+    try:
+        hub = MemoryHub(
+            {"memory": {"sqlite_path": str(Path(td_obj.name) / "hub.db"), "rag_enabled": False}},
+            long_memory=None,
+        )
+        hub.ensure_person_for_account(
+            platform="discord",
+            platform_user_id="555",
+            handle="pupinos",
+            display_name="Пупинос",
+        )
+        label = resolve_speaker_label(hub, "pupinos", "555", "Пупинос")
+        assert "макс" not in label.lower()
+        hub.add_person_fact(
+            hub.find_person("", discord_id="555")["id"],
+            "зовут Кирилл",
+            source="test",
+        )
+        assert "Кирилл" in resolve_speaker_label(hub, "pupinos", "555", "Пупинос")
+    finally:
+        if hub is not None:
+            hub.sqlite.close()
+        td_obj.cleanup()
 
 
 def test_merge_undo_proposals_lifecycle() -> None:
     from core.memory.hub import MemoryHub
     from core.memory.stores import LongTermMemory
+    from core.runtime.identity import UnifiedIdentityMapper
 
     td_obj = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     td = td_obj.name
     hub = None
     hub2 = None
     try:
-        db = Path(td) / "hub.db"
-        hub = MemoryHub({"memory": {"sqlite_path": str(db), "rag_enabled": False}}, long_memory=None)
+        hub = MemoryHub(
+            {"memory": {"sqlite_path": str(Path(td) / "hub.db"), "rag_enabled": False}},
+            long_memory=None,
+        )
 
         a = hub.ensure_person_for_account(
             platform="discord", platform_user_id="111", handle="coolnick", display_name="A"
@@ -39,14 +77,16 @@ def test_merge_undo_proposals_lifecycle() -> None:
         b = hub.ensure_person_for_account(
             platform="telegram", platform_user_id="222", handle="coolnick", display_name="B"
         )
+        assert a["id"] == UnifiedIdentityMapper.resolve("discord", "111")
         c = hub.ensure_person_for_account(
             platform="discord", platform_user_id="333", handle="other", display_name="C"
         )
         created_b = hub.sqlite.get_person(b["id"])["created_at"]
 
         ab = hub.propose_people_merge(a["id"], b["id"], reason="ab")
+        ab2 = hub.propose_people_merge(b["id"], a["id"], reason="ab_sym")
+        assert ab["proposal_id"] == ab2["proposal_id"]
         bc = hub.propose_people_merge(b["id"], c["id"], reason="bc")
-        # Pre-existing A↔C + rewrite B↔C → A↔C must dedupe to one pending.
         ac = hub.propose_people_merge(a["id"], c["id"], reason="ac")
 
         hub.add_person_fact(a["id"], "зовут Иван", source="t")
@@ -74,14 +114,10 @@ def test_merge_undo_proposals_lifecycle() -> None:
         assert hub.sqlite.get_merge_proposal(int(ab["proposal_id"]))["status"] == "applied"
 
         bc_row = hub.sqlite.get_merge_proposal(int(bc["proposal_id"]))
+        ac_row = hub.sqlite.get_merge_proposal(int(ac["proposal_id"]))
         assert bc_row["status"] == "pending"
         assert {bc_row["person_a"], bc_row["person_b"]} == {a["id"], c["id"]}
-
-        # One of ac/bc pending for A↔C, the other stale.
-        ac_row = hub.sqlite.get_merge_proposal(int(ac["proposal_id"]))
-        statuses = {bc_row["status"], ac_row["status"]}
-        assert "pending" in statuses
-        assert statuses <= {"pending", "stale"}
+        assert ac_row["status"] == "stale"
         pending_ac = [
             p
             for p in hub.sqlite.list_merge_proposals(status="pending")
@@ -95,9 +131,17 @@ def test_merge_undo_proposals_lifecycle() -> None:
         except ValueError as e:
             assert "proposal_not_pending" in str(e)
 
+        try:
+            hub.apply_merge_proposal(999999)
+            raise AssertionError("missing proposal must fail")
+        except ValueError as e:
+            assert "proposal_not_found" in str(e)
+
         undo = hub.undo_merge(int(out["merge_log_id"]))
         assert undo["restored_id"] == b["id"]
         assert hub.sqlite.get_person(b["id"])["created_at"] == created_b
+        assert hub.sqlite.get_merge_proposal(int(ab["proposal_id"]))["status"] == "undone"
+
         facts_a2 = {
             str(r["fact"])
             for r in hub.sqlite._conn.execute(
@@ -113,10 +157,12 @@ def test_merge_undo_proposals_lifecycle() -> None:
         assert facts_a2 == facts_before_a
         assert facts_b2 == facts_before_b
 
-        # B↔C restored after undo
         bc_restored = hub.sqlite.get_merge_proposal(int(bc["proposal_id"]))
         assert bc_restored["status"] == "pending"
         assert {bc_restored["person_a"], bc_restored["person_b"]} == {b["id"], c["id"]}
+        ac_restored = hub.sqlite.get_merge_proposal(int(ac["proposal_id"]))
+        assert ac_restored["status"] == "pending"
+        assert {ac_restored["person_a"], ac_restored["person_b"]} == {a["id"], c["id"]}
 
         try:
             hub.undo_merge(int(out["merge_log_id"]))
@@ -128,7 +174,6 @@ def test_merge_undo_proposals_lifecycle() -> None:
         assert ok is True
         assert hub.sqlite.resolve_merge_proposal(int(bc["proposal_id"]), status="rejected") is False
 
-        # Stale via apply after delete
         stale_p = hub.propose_people_merge(a["id"], c["id"], reason="stale")
         hub.delete_person(c["id"])
         try:
@@ -141,26 +186,34 @@ def test_merge_undo_proposals_lifecycle() -> None:
         # Wipe LTM with missing chroma dir must not fail backup.
         chroma_missing = Path(td) / "no_chroma_here"
         lm = LongTermMemory(
-            {
-                "memory": {
-                    "rag_enabled": False,
-                    "chroma_db_path": str(chroma_missing),
-                }
-            }
+            {"memory": {"rag_enabled": False, "chroma_db_path": str(chroma_missing)}}
         )
         hub2 = MemoryHub(
             {"memory": {"sqlite_path": str(Path(td) / "hub2.db"), "rag_enabled": False}},
             long_memory=lm,
         )
         hub2.add_diary_note("x", source="t")
-        w = hub2.wipe(["diary", "ltm"], backup_dir=Path(td) / "backups2")
+        w = hub2.wipe(["diary", "journal", "ltm"], backup_dir=Path(td) / "backups2")
         assert w.get("backup")
         assert w.get("chroma_backup") in (None, "")
-        hub2.sqlite.close()
 
-        bak = Path(
-            hub.wipe(["people", "diary"], backup_dir=Path(td) / "backups")["backup"]
+        # long memory without backup_to must refuse wipe ltm
+        class NoBackupLM:
+            def clear_all(self) -> int:
+                raise AssertionError("clear_all must not run without backup")
+
+        hub3 = MemoryHub(
+            {"memory": {"sqlite_path": str(Path(td) / "hub3.db"), "rag_enabled": False}},
+            long_memory=NoBackupLM(),  # type: ignore[arg-type]
         )
+        try:
+            hub3.wipe(["ltm"], backup_dir=Path(td) / "backups3")
+            raise AssertionError("wipe without backup_to must fail")
+        except RuntimeError as e:
+            assert "ltm backup unavailable" in str(e)
+        hub3.sqlite.close()
+
+        bak = Path(hub.wipe(["people", "diary", "journal"], backup_dir=Path(td) / "backups")["backup"])
         conn = sqlite3.connect(str(bak))
         try:
             assert conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] >= 1
@@ -182,6 +235,7 @@ def test_merge_undo_proposals_lifecycle() -> None:
 
 def main() -> int:
     test_detect_mentions_no_false_max()
+    test_speaker_label_nick_not_invented_name()
     test_merge_undo_proposals_lifecycle()
     print("OK test_memory_v2_people_offline")
     return 0

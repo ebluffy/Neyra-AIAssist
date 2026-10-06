@@ -703,6 +703,7 @@ def check_merge_proposals_api() -> list[str]:
         shared_backup_manager=MagicMock(),
     )
     headers = {"Authorization": "Bearer admin-secret"}
+    mid = None
     try:
         with TestClient(app) as client:
             pid = int(prop["proposal_id"])
@@ -720,13 +721,14 @@ def check_merge_proposals_api() -> list[str]:
             r2 = client.post(f"/v1/memory/people/merge-proposals/{pid}/apply", headers=headers)
             if r2.status_code != 409:
                 errs.append(f"re-apply want 409, got {r2.status_code}")
-            else:
-                code = (r2.json().get("error") or {}).get("code") or r2.json().get("code")
-                # ApiError shape may be under error/code
-                body = r2.json()
-                blob = json.dumps(body)
-                if "proposal_not_pending" not in blob:
-                    errs.append(f"re-apply body missing proposal_not_pending: {body}")
+            elif "proposal_not_pending" not in json.dumps(r2.json()):
+                errs.append(f"re-apply body missing proposal_not_pending: {r2.json()}")
+
+            r404 = client.post("/v1/memory/people/merge-proposals/999999/apply", headers=headers)
+            if r404.status_code != 404:
+                errs.append(f"missing apply want 404, got {r404.status_code}")
+            elif "proposal_not_found" not in json.dumps(r404.json()):
+                errs.append(f"missing apply body: {r404.json()}")
 
             if mid:
                 r_undo = client.post(
@@ -734,6 +736,10 @@ def check_merge_proposals_api() -> list[str]:
                 )
                 if r_undo.status_code != 200:
                     errs.append(f"undo want 200, got {r_undo.status_code}")
+                else:
+                    undone = hub.sqlite.get_merge_proposal(pid)
+                    if not undone or undone.get("status") != "undone":
+                        errs.append(f"proposal not undone after undo: {undone}")
                 r_undo2 = client.post(
                     f"/v1/memory/people/merge/{int(mid)}/undo", headers=headers
                 )
@@ -765,9 +771,8 @@ def check_merge_proposals_api() -> list[str]:
             )
             if rs.status_code != 409:
                 errs.append(f"stale apply want 409, got {rs.status_code}")
-            else:
-                if "proposal_stale" not in json.dumps(rs.json()):
-                    errs.append(f"stale apply missing proposal_stale: {rs.json()}")
+            elif "proposal_stale" not in json.dumps(rs.json()):
+                errs.append(f"stale apply missing proposal_stale: {rs.json()}")
             st_row = hub.sqlite.get_merge_proposal(int(st["proposal_id"]))
             if not st_row or st_row.get("status") != "stale":
                 errs.append(f"stale status: {st_row}")

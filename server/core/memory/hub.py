@@ -511,7 +511,7 @@ class MemoryHub:
                         cdest = backup_dir / f"neyra_chroma_pre_wipe_{ts}"
                         chroma_backup = lm.backup_to(cdest) or None
                     elif lm is not None:
-                        chroma_backup = None
+                        raise RuntimeError("ltm backup unavailable")
             except RuntimeError:
                 raise
             except Exception as e:
