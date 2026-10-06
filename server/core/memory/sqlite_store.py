@@ -1065,26 +1065,38 @@ class SqliteStore:
                     (now, int(merge_id)),
                 )
                 # Restore proposals rewritten or staled (dedupe / A↔A) by this merge.
-                # Skip pairs whose people no longer exist; for dedupe-staled rows require
-                # kept_id still pending (or restored in this same undo) so a post-merge
-                # reject/apply is not silently undone.
-                restore_list = list(snap.get("rewritten_proposals") or []) + list(
+                # Merge rewritten (original pair) with staled.kept_id — a row can appear in
+                # both lists; kept_id must not be dropped when rewritten is seen first.
+                kept_by_id: dict[int, int] = {}
+                for rp in snap.get("staled_proposals") or []:
+                    if not isinstance(rp, dict) or rp.get("id") is None:
+                        continue
+                    if rp.get("kept_id") is None:
+                        continue
+                    kept_by_id[int(rp["id"])] = int(rp["kept_id"])
+
+                by_id: dict[int, dict[str, Any]] = {}
+                for rp in list(snap.get("rewritten_proposals") or []) + list(
                     snap.get("staled_proposals") or []
-                )
-                candidates: list[dict[str, Any]] = []
-                seen_restore: set[int] = set()
-                for rp in restore_list:
-                    if not isinstance(rp, dict):
+                ):
+                    if not isinstance(rp, dict) or rp.get("id") is None:
                         continue
-                    rid = rp.get("id")
-                    if rid is None or int(rid) in seen_restore:
-                        continue
-                    seen_restore.add(int(rid))
+                    rid = int(rp["id"])
                     pa = str(rp.get("person_a") or "").strip()
                     pb = str(rp.get("person_b") or "").strip()
                     if not pa or not pb or pa == pb:
                         continue
-                    candidates.append(rp)
+                    if rid not in by_id:
+                        by_id[rid] = dict(rp)
+                    else:
+                        # Prefer original pair from rewritten (already stored); keep fields.
+                        pass
+                    if rid in kept_by_id:
+                        by_id[rid]["kept_id"] = kept_by_id[rid]
+                    elif rp.get("kept_id") is not None:
+                        by_id[rid]["kept_id"] = int(rp["kept_id"])
+
+                candidates = list(by_id.values())
 
                 def _person_exists(pid: str) -> bool:
                     return (

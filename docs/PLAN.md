@@ -368,6 +368,64 @@ Account-first модель людей без анкетных полей. Реа
 
 
 
+## 7.5. Mood & Relations (после #22, только план)
+
+Две оси, которые влияют друг на друга. **Не реализовывать в PR #22** — отдельный небольшой PR после merge Memory v2.
+
+### Mood (настроение Нейры) — глобальное + краткосрочное
+
+```text
+neyra_mood:
+  valence:   -1.0 … +1.0   # плохо → хорошо
+  arousal:   0.0 … 1.0     # спокойствие → возбуждение
+  label:     "спокойная" | "раздражённая" | "игривая" | …
+  updated_at
+  decay_half_life_hours: 6–12
+```
+
+Как меняется: после хода (или раз в N) правила/LLM дают Δvalence/Δarousal; оскорбления/игнор → вниз, комплименты/тепло → вверх; decay к нейтрали; сильные события → diary («сегодня меня задели…»).
+
+Как влияет: кусок в system prompt («Сейчас ты в настроении: …»); опционально bias в classifier / voice / reactions. Это состояние Нейры, не привязанное к человеку.
+
+### Relationship — per `person_id`
+
+```text
+person_relation:
+  person_id
+  affinity:   -1.0 … +1.0
+  trust:      0.0 … 1.0
+  familiarity: 0.0 … 1.0
+  tone_bias:  "cold" | "neutral" | "warm" | "playful"
+  last_significant_event
+  history[]   # короткие записи
+```
+
+Таблица `person_relations` (или meta + лог) рядом с people card. Δ по событиям (грубость / ложь / помощь / молчание / извинение); rule-based + редкий LLM-summary раз в сутки. В people context speaker’а — 1–2 строки про affinity; низкий affinity → суше, без личных тем; высокий → больше тепла. Позже: `relation(person_a, person_b)`.
+
+### Стык с Memory v2
+
+```text
+Global: neyra_mood  ← все ответы
+Per person: person_relation + facts + accounts
+diary (чувства) + journal + emotional_layer после хода
+```
+
+Pipeline после хода: emotional_layer → diary; sentiment → Δmood; speaker person_id → Δrelation; mood+relation в prompt следующего хода; daily consolidation (сжать history, decay).
+
+Ограничения: persona сильнее mood/relation; даже при affinity=−1 без токсичности вне persona; дашборд: настроение + отношение + reset; LLM не пишет affinity напрямую без лимитов (propose Δ / rules); wipe scopes: `mood` / `relations`.
+
+### MVP (один PR после #22)
+
+- [ ] Таблицы `neyra_state` (mood) + `person_relations`.
+- [ ] После хода: простой sentiment → mood + relation speaker’а.
+- [ ] `turn_prep` / people_context — 2–3 строки mood/affinity.
+- [ ] MemoryScreen: индикатор настроения + «как Нейра относится к …».
+- [ ] Decay по cron / при старте сервера.
+
+Потом: события в history, voice/TTS bias, person↔person, явный ролевой «испортить отношения».
+
+
+
 ## 8. Постзащитное развитие
 
 - Установщик сервера для Windows/Linux.

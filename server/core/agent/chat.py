@@ -89,6 +89,8 @@ async def run_chat(
                 lyrics_mode=prep.lyrics_mode,
             )
         except Exception as e:
+            from core.agent.brain_phase import BRAIN_DOWN_USER_MESSAGE
+
             logger.error("Brain phase failed — abort talk: %s", e)
             agent._publish_chat_turn_failed(
                 internal_user_id=prep.internal_uid,
@@ -96,7 +98,7 @@ async def run_chat(
                 error=f"brain: {e}",
             )
             return {
-                "text": f"[SOUND: bruh] Мозг (brain) недоступен: {e}",
+                "text": BRAIN_DOWN_USER_MESSAGE,
                 "sounds": ["bruh"],
                 "thoughts": "",
                 "raw": "",

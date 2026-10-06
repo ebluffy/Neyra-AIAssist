@@ -100,6 +100,8 @@ async def iter_chat_stream(
                 lyrics_mode=prep.lyrics_mode,
             )
         except Exception as e:
+            from core.agent.brain_phase import BRAIN_DOWN_USER_MESSAGE
+
             err_str = (str(e) or "").strip() or type(e).__name__
             logger.error("Brain phase (stream) failed — abort talk: %s", e)
             agent._publish_chat_turn_failed(
@@ -107,7 +109,7 @@ async def iter_chat_stream(
                 channel_id=channel_id,
                 error=f"brain: {err_str}",
             )
-            yield {"type": "error", "text": f"Мозг (brain) недоступен: {err_str}"}
+            yield {"type": "error", "text": BRAIN_DOWN_USER_MESSAGE}
             return
 
         system_prompt = build_talk_system_prompt(agent, prep, brain_context=brain_context)

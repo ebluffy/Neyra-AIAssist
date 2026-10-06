@@ -6,7 +6,7 @@ import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,19 +14,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-async def _run_chat_brain_fail() -> None:
-    from core.agent.chat import run_chat
-
-    talk_called = {"n": 0}
-
-    async def _brain(**_kwargs: Any) -> str:
-        raise RuntimeError("luna_down")
-
-    async def _talk(*_a: Any, **_k: Any) -> Any:
-        talk_called["n"] += 1
-        raise AssertionError("talk must not run when brain fails")
-
-    prep = SimpleNamespace(
+def _prep() -> SimpleNamespace:
+    return SimpleNamespace(
         speaker_label="User",
         attached_caption="",
         brain_native_vis=False,
@@ -49,7 +38,32 @@ async def _run_chat_brain_fail() -> None:
         saved_facts=[],
     )
 
+
+def _assert_safe_user_text(text: str) -> None:
+    from core.agent.brain_phase import BRAIN_DOWN_USER_MESSAGE
+
+    assert text == BRAIN_DOWN_USER_MESSAGE
+    assert "luna_down" not in text
+    assert "luna_http" not in text
+    assert "Traceback" not in text
+    assert "умерла" in text.lower() or "мозг" in text.lower()
+
+
+async def _run_chat_brain_fail() -> None:
+    from core.agent.chat import run_chat
+
+    talk_called = {"n": 0}
+
+    async def _brain(**_kwargs: Any) -> str:
+        raise RuntimeError("luna_down secret_host:8443")
+
+    async def _talk(*_a: Any, **_k: Any) -> Any:
+        talk_called["n"] += 1
+        raise AssertionError("talk must not run when brain fails")
+
+    prep = _prep()
     agent = SimpleNamespace(
+        config={},
         _run_brain_tool_phase=AsyncMock(side_effect=_brain),
         _ainvoke_text_with_fallback=AsyncMock(side_effect=_talk),
         _publish_chat_turn_failed=MagicMock(),
@@ -86,8 +100,74 @@ async def _run_chat_brain_fail() -> None:
         chat_mod.prepare_turn = orig_prep  # type: ignore[assignment]
 
     assert talk_called["n"] == 0
-    assert "brain" in (out.get("text") or "").lower() or "мозг" in (out.get("text") or "").lower()
-    assert "luna_down" in (out.get("text") or "")
+    _assert_safe_user_text(str(out.get("text") or ""))
+    agent._publish_chat_turn_failed.assert_called_once()
+    fail_kwargs = agent._publish_chat_turn_failed.call_args.kwargs
+    assert "luna_down" in str(fail_kwargs.get("error") or "")
+
+
+async def _run_stream_brain_fail() -> None:
+    from core.agent.chat_stream import iter_chat_stream
+
+    talk_called = {"n": 0}
+
+    async def _brain(**_kwargs: Any) -> str:
+        raise RuntimeError("luna_down secret_host:8443")
+
+    async def _astream(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        talk_called["n"] += 1
+        raise AssertionError("talk stream must not run when brain fails")
+        if False:  # pragma: no cover — make this an async generator
+            yield None
+
+    prep = _prep()
+    agent = SimpleNamespace(
+        config={},
+        _run_brain_tool_phase=AsyncMock(side_effect=_brain),
+        _astream_text_with_fallback=_astream,
+        _publish_chat_turn_failed=MagicMock(),
+        llm_talk=MagicMock(),
+        reply_max_tokens=256,
+        lyrics_reply_max_tokens=512,
+        short_memory=SimpleNamespace(get_history=lambda: [], trim_to_half=lambda: None),
+        llm_talk_model="talk",
+        llm_model="talk",
+        _make_human_turn=MagicMock(return_value=MagicMock()),
+        _maybe_append_micro_plan_prefill=lambda messages, **_k: messages,
+        _build_system_prompt=MagicMock(return_value="sys"),
+        _shrink_people_sections=lambda a, b, _n: (a, b),
+        _init_micro_plan_state=lambda: {},
+        micro_planning_enabled=False,
+    )
+
+    import core.agent.chat_stream as stream_mod
+
+    orig_prep = stream_mod.prepare_turn
+
+    async def fake_prepare(*_a: Any, **_k: Any) -> Any:
+        return prep
+
+    stream_mod.prepare_turn = fake_prepare  # type: ignore[assignment]
+    chunks: list[dict] = []
+    try:
+        async for chunk in iter_chat_stream(
+            agent,
+            user_message="привет",
+            username="u",
+            discord_user_id=None,
+            vision_images=None,
+            channel_id=None,
+            author_display_name=None,
+            lyrics_marker="[SYSTEM HIDDEN INSTRUCTION: User wants lyrics",
+        ):
+            chunks.append(chunk)
+    finally:
+        stream_mod.prepare_turn = orig_prep  # type: ignore[assignment]
+
+    assert talk_called["n"] == 0
+    assert len(chunks) == 1
+    assert chunks[0].get("type") == "error"
+    _assert_safe_user_text(str(chunks[0].get("text") or ""))
     agent._publish_chat_turn_failed.assert_called_once()
 
 
@@ -129,6 +209,7 @@ async def _run_brain_phase_raises() -> None:
 def main() -> int:
     asyncio.run(_run_brain_phase_raises())
     asyncio.run(_run_chat_brain_fail())
+    asyncio.run(_run_stream_brain_fail())
     print("OK test_brain_hard_fail_offline")
     return 0
 

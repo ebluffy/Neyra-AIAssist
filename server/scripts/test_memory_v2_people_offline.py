@@ -233,16 +233,15 @@ def test_merge_undo_proposals_lifecycle() -> None:
         td_obj.cleanup()
 
 
-def test_undo_respects_reject_and_missing_people() -> None:
-    """AR 6.1: undo must not revive rejected pairs or ghost proposals."""
+def _reject_ac_pair_then_undo(*, ac_before_bc: bool, db_name: str) -> None:
+    """Reject live A↔C after A←B merge, undo — neither A↔C proposal may return to pending."""
     from core.memory.hub import MemoryHub
 
     td_obj = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
-    td = td_obj.name
     hub = None
     try:
         hub = MemoryHub(
-            {"memory": {"sqlite_path": str(Path(td) / "hub61.db"), "rag_enabled": False}},
+            {"memory": {"sqlite_path": str(Path(td_obj.name) / db_name), "rag_enabled": False}},
             long_memory=None,
         )
         a = hub.ensure_person_for_account(
@@ -255,21 +254,27 @@ def test_undo_respects_reject_and_missing_people() -> None:
             platform="discord", platform_user_id="c1", handle="c", display_name="C"
         )
         ab = hub.propose_people_merge(a["id"], b["id"], reason="ab")
-        bc = hub.propose_people_merge(b["id"], c["id"], reason="bc")
-        ac = hub.propose_people_merge(a["id"], c["id"], reason="ac")
+        if ac_before_bc:
+            first = hub.propose_people_merge(a["id"], c["id"], reason="ac")
+            second = hub.propose_people_merge(b["id"], c["id"], reason="bc")
+        else:
+            first = hub.propose_people_merge(b["id"], c["id"], reason="bc")
+            second = hub.propose_people_merge(a["id"], c["id"], reason="ac")
 
         out = hub.apply_merge_proposal(int(ab["proposal_id"]))
-        # After merge: rewritten bc is the live A↔C pending; original ac is stale.
-        kept = hub.sqlite.get_merge_proposal(int(bc["proposal_id"]))
-        assert kept["status"] == "pending"
-        assert {kept["person_a"], kept["person_b"]} == {a["id"], c["id"]}
-        assert hub.sqlite.get_merge_proposal(int(ac["proposal_id"]))["status"] == "stale"
+        r1 = hub.sqlite.get_merge_proposal(int(first["proposal_id"]))
+        r2 = hub.sqlite.get_merge_proposal(int(second["proposal_id"]))
+        statuses = {r1["status"], r2["status"]}
+        assert "pending" in statuses and "stale" in statuses
+        live = r1 if r1["status"] == "pending" else r2
+        assert {live["person_a"], live["person_b"]} == {a["id"], c["id"]}
 
-        assert hub.sqlite.resolve_merge_proposal(int(bc["proposal_id"]), status="rejected")
+        assert hub.sqlite.resolve_merge_proposal(int(live["id"]), status="rejected")
         hub.undo_merge(int(out["merge_log_id"]))
 
-        assert hub.sqlite.get_merge_proposal(int(bc["proposal_id"]))["status"] == "rejected"
-        assert hub.sqlite.get_merge_proposal(int(ac["proposal_id"]))["status"] == "stale"
+        for pid in (int(first["proposal_id"]), int(second["proposal_id"])):
+            st = hub.sqlite.get_merge_proposal(pid)["status"]
+            assert st != "pending", (pid, st, "ac_before_bc=", ac_before_bc)
         pending = hub.sqlite.list_merge_proposals(status="pending")
         assert not any({p["person_a"], p["person_b"]} == {a["id"], c["id"]} for p in pending)
     finally:
@@ -279,6 +284,14 @@ def test_undo_respects_reject_and_missing_people() -> None:
             except Exception:
                 pass
         td_obj.cleanup()
+
+
+def test_undo_respects_reject_and_missing_people() -> None:
+    """AR 6.1 / 7.1: undo must not revive rejected pairs (both proposal orders) or ghosts."""
+    _reject_ac_pair_then_undo(ac_before_bc=False, db_name="hub61.db")
+    _reject_ac_pair_then_undo(ac_before_bc=True, db_name="hub61_rev.db")
+
+    from core.memory.hub import MemoryHub
 
     td_obj2 = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     td2 = td_obj2.name
