@@ -7,9 +7,9 @@ from typing import Any, Optional
 
 logger = logging.getLogger("neyra.agent.brain_phase")
 
-# User-facing stub when brain is down. No exception text — Discord/API are public-ish.
+# User-facing stub when brain is down. Plain text only (no [SOUND:] tags).
 BRAIN_DOWN_USER_MESSAGE = (
-    "[SOUND: bruh] Нейра умерла в сетевом плане: мозг не отвечает. "
+    "Нейра умерла в сетевом плане: мозг не отвечает. "
     "Без мозга молчу — попробуй позже."
 )
 

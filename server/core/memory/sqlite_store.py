@@ -1086,11 +1086,9 @@ class SqliteStore:
                     pb = str(rp.get("person_b") or "").strip()
                     if not pa or not pb or pa == pb:
                         continue
+                    # First hit is from rewritten (original pair); later staled only adds kept_id.
                     if rid not in by_id:
                         by_id[rid] = dict(rp)
-                    else:
-                        # Prefer original pair from rewritten (already stored); keep fields.
-                        pass
                     if rid in kept_by_id:
                         by_id[rid]["kept_id"] = kept_by_id[rid]
                     elif rp.get("kept_id") is not None:

@@ -43,6 +43,7 @@ def _assert_safe_user_text(text: str) -> None:
     from core.agent.brain_phase import BRAIN_DOWN_USER_MESSAGE
 
     assert text == BRAIN_DOWN_USER_MESSAGE
+    assert "[SOUND" not in text
     assert "luna_down" not in text
     assert "luna_http" not in text
     assert "Traceback" not in text
@@ -101,6 +102,7 @@ async def _run_chat_brain_fail() -> None:
 
     assert talk_called["n"] == 0
     _assert_safe_user_text(str(out.get("text") or ""))
+    assert out.get("sounds") == ["bruh"]
     agent._publish_chat_turn_failed.assert_called_once()
     fail_kwargs = agent._publish_chat_turn_failed.call_args.kwargs
     assert "luna_down" in str(fail_kwargs.get("error") or "")
@@ -168,6 +170,7 @@ async def _run_stream_brain_fail() -> None:
     assert len(chunks) == 1
     assert chunks[0].get("type") == "error"
     _assert_safe_user_text(str(chunks[0].get("text") or ""))
+    assert chunks[0].get("sounds") == ["bruh"]
     agent._publish_chat_turn_failed.assert_called_once()
 
 
