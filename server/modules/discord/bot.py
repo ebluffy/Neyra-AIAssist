@@ -40,6 +40,13 @@ from core.runtime.event_bus import (
     NOTIFY_DISCORD_MESSAGE_SENT,
     CoreEvent,
 )
+from modules.discord.music_intent import (
+    candidate_music_intent,
+    has_play_verb,
+    lyrics_request_hint as _lyrics_request_hint,
+    soft_music_hint as _soft_music_hint,
+    soft_play_allowed,
+)
 
 if TYPE_CHECKING:
     from core.neyra import NeyraAgent
@@ -116,19 +123,6 @@ COL_ERR = 0xED4245
 COL_WARN = 0xFEE75C
 
 
-def _lyrics_request_hint(text: str) -> bool:
-    """Грубый признак запроса текста песни — включает LLM-классификатор до маршрутизации."""
-    t = (text or "").lower()
-    if re.search(
-        r"(текст\s+песн\w*|слова\s+песн\w*|lyrics|куплет(а|ы)?\b|реплик(а|и)\s+текст|"
-        r"дай\s+текст|найди\s+текст|покажи\s+текст|скинь\s+текст|текст\s+трека|слова\s+трека|"
-        r"^(текст|слова)\s*$)",
-        t,
-    ):
-        return True
-    return False
-
-
 def _extract_lyrics_song_query(text: str) -> str:
     """Убирает «текст песни / lyrics» — остаётся название, если пользователь его дописал."""
     q = (text or "").strip()
@@ -145,19 +139,6 @@ def _extract_lyrics_song_query(text: str) -> str:
     if q.lower() in {"пожалуйста", "пж", "pls", "please", "этой", "текущей", "сейчас", "current"}:
         return ""
     return q
-
-
-def _soft_music_hint(text: str) -> bool:
-    """Слабый признак «про музыку/войс», даже без жёсткого глагола включи/поставь."""
-    t = (text or "").lower()
-    return bool(
-        re.search(
-            r"(музык|песн|трек|плейлист|саунд|soundcloud|spotify|youtu\.?be|"
-            r"войс|голос(ов|ой)|лавалинк|lavalink|послуш|поставь\s+что|"
-            r"давай\s+(что|трек|песн|музык)|заиграй|включи\s+что)",
-            t,
-        )
-    )
 
 
 def _normalize_intent_label(raw: str) -> str:
@@ -486,95 +467,7 @@ class NeyraDiscordBot(discord.Client):
         )
 
     def _candidate_music_intent(self, text: str) -> Optional[dict[str, str]]:
-        raw = (text or "").strip()
-        if not raw:
-            return None
-        lowered = raw.lower()
-        if re.search(r"\b(читы|чит|hack|hax|aimbot)\b", lowered):
-            return None
-        # Lyrics-only requests must not become PLAY via regex.
-        if _lyrics_request_hint(raw) and not re.search(
-            r"\b(включи|вруби|поставь|play|заиграй|в\s+войс|в\s+голос)\b",
-            lowered,
-        ):
-            return None
-        direct = [
-            (MUSIC_PAUSE, r"\b(пауза|pause|приостанови)\b"),
-            (MUSIC_RESUME, r"\b(продолжи|resume|возобнови)\b"),
-            (MUSIC_SKIP, r"\b(скип|skip|следующ|пропусти)\b"),
-            (MUSIC_STOP, r"\b(стоп|stop|выключи музыку|останови музыку)\b"),
-            (MUSIC_CLEAR, r"\b(очисти очередь|clear queue|clear)\b"),
-            (MUSIC_QUEUE, r"\b(очередь|queue|что играет|что в очереди)\b"),
-        ]
-        for action, pattern in direct:
-            if re.search(pattern, lowered):
-                return {"intent": "music_control", "action": action, "query": ""}
-
-        # Pure "join voice" — connect only, do NOT search YouTube for that phrase.
-        if re.fullmatch(
-            r"(пожалуйста[, ]*)?(зайди|зайти|зайди\s+пожалуйста|join)\s+"
-            r"(в\s+)?(войс|голос(овой)?(\s+канал)?|voice(\s+channel)?|vc)\s*[.!]?",
-            lowered,
-        ):
-            return {
-                "intent": "music_control",
-                "action": MUSIC_PLAY,
-                "query": "",
-                "join_only": "1",
-            }
-
-        # Play verbs only — bare nouns like «трек/песня/музыка» in lyrics must NOT fire PLAY.
-        has_play_verb = bool(
-            re.search(
-                r"\b(вкл\w*|вруби|поставь|заиграй|play)\b",
-                lowered,
-            )
-        )
-        wants_voice_play = bool(
-            re.search(
-                r"(в\s+войс|в\s+голос(овой)?|зайди\s+в\s+войс|зайти\s+в\s+войс|"
-                r"join\s+voice|play\s+in\s+vc)",
-                lowered,
-            )
-        )
-        has_url = bool(re.search(r"https?://\S+", raw))
-        if not has_play_verb and not has_url and not wants_voice_play:
-            return None
-        q = re.sub(r"^(эй\s+нейра|нейра|please|пожалуйста)[,:\s-]*", "", raw, flags=re.IGNORECASE).strip()
-        q = re.sub(
-            r"^(вкл\w*|вруби|поставь|заиграй|play|music|музыка)\s+",
-            "",
-            q,
-            flags=re.IGNORECASE,
-        ).strip()
-        # Strip leading music nouns left after verb removal («трек …», «песню …»).
-        q = re.sub(
-            r"^(трек|track|песн[юяуи]|музык[ауеи]|плейлист|playlist)\s+",
-            "",
-            q,
-            flags=re.IGNORECASE,
-        ).strip()
-        q = re.sub(
-            r"(зайди|зайти)\s+в\s+(войс|голос\w*)\s*(и\s+)?|"
-            r"\b(в\s+войс[еу]?|в\s+голос(овой)?\s*канал[еу]?)\b",
-            " ",
-            q,
-            flags=re.IGNORECASE,
-        )
-        q = re.sub(r"\s+", " ", q).strip(" .,!?;:-")
-        # Never search YouTube for leftover command crumbs / raw join text.
-        if not q or q.lower() in {
-            "музыку",
-            "музыка",
-            "песню",
-            "трек",
-            "что-нибудь",
-            "что нибудь",
-            "какую-нибудь",
-            "какой-нибудь",
-        }:
-            q = "upbeat happy music"
-        return {"intent": "music_control", "action": MUSIC_PLAY, "query": q}
+        return candidate_music_intent(text)
 
     async def _classify_intent(self, user_text: str) -> str:
         """
@@ -906,9 +799,7 @@ class NeyraDiscordBot(discord.Client):
         music_candidate = self._candidate_music_intent(content)
         lyrics_hint = _lyrics_request_hint(content)
         soft_music = _soft_music_hint(content)
-        play_verb = bool(
-            re.search(r"\b(включи|вруби|поставь|заиграй|play)\b", content, flags=re.IGNORECASE)
-        )
+        play_verb = has_play_verb(content)
 
         # Lyrics first: «текст песни» must not fall into play/search.
         if lyrics_hint and not play_verb:
@@ -929,10 +820,7 @@ class NeyraDiscordBot(discord.Client):
             route = "CHAT"
 
         # Soft PLAY (classifier-only) needs a short command-like line or an explicit play verb.
-        # Long lyric pastes that merely contain «трек» must stay in CHAT.
-        soft_play_ok = soft_music and (
-            play_verb or len(re.findall(r"\w+", content, flags=re.UNICODE)) <= 8
-        )
+        soft_play_ok = soft_play_allowed(content, soft_music=soft_music)
         use_music = route == "PLAY_MUSIC" and not lyrics_hint and (
             bool(music_candidate) or soft_play_ok
         )

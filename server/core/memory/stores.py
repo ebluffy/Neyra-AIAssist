@@ -677,7 +677,7 @@ class PeopleDB:
                     person_id=person_id,
                     platform="discord",
                     platform_user_id=str(discord_id).strip(),
-                    handle=(person.get("names") or [None])[0],
+                    handle=None,
                 )
                 hub_ok = True
             except Exception as e:

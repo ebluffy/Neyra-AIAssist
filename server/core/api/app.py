@@ -458,27 +458,19 @@ class PersonUpsertRequest(BaseModel):
     names: Optional[list[str]] = None
     discord_ids: Optional[list[str]] = None
     accounts: Optional[list[dict[str, Any]]] = None
-    profile: dict[str, Any] = Field(default_factory=dict)  # ignored / stored as facts
 
 
 class PersonMergeRequest(BaseModel):
+    """Exact person_id only (no alias lookup)."""
+
     survivor_id: str = Field(min_length=1, max_length=80)
     source_id: str = Field(min_length=1, max_length=80)
     reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class MemoryWipeRequest(BaseModel):
-    scopes: list[str] = Field(
-        default_factory=lambda: [
-            "people",
-            "diary",
-            "journal",
-            "stm",
-            "ltm",
-            "chat_log",
-            "working_memory",
-        ]
-    )
+    scopes: list[str] = Field(min_length=1)
+    confirm: str = Field(min_length=1, max_length=32)
 
 
 class PersonFactCreateRequest(BaseModel):
@@ -1483,22 +1475,19 @@ def build_app(
             base = ""
             if body.names:
                 base = str(body.names[0])
-            if not base and isinstance(body.profile, dict):
-                base = str(body.profile.get("first_name") or body.profile.get("last_name") or "")
             import re as _re
 
             slug = _re.sub(r"[^a-zA-Z0-9_\-]+", "_", base.strip().lower()).strip("_") or "person"
             pid = slug[:60]
 
         def _run() -> dict[str, Any]:
-            if hub.find_person(pid):
+            if hub.sqlite.get_person(pid):
                 raise ApiError("person_exists", f"person '{pid}' already exists", 409)
             person = hub.save_person_dossier(
                 person_id=pid,
                 names=list(body.names or []),
                 discord_ids=list(body.discord_ids or []),
                 accounts=list(body.accounts or []) if body.accounts else None,
-                profile=dict(body.profile or {}),
                 create=True,
             )
             pdb = getattr(agent, "people_db", None)
@@ -1525,21 +1514,19 @@ def build_app(
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
 
+        sid = body.survivor_id.strip()
+        oid = body.source_id.strip()
+        _audit("memory_people_merge", trace_id, "admin", {"survivor_id": sid, "source_id": oid})
+
         def _run() -> dict[str, Any]:
-            sa = hub.find_person(body.survivor_id.strip())
-            so = hub.find_person(body.source_id.strip())
-            if not sa:
-                raise ApiError("person_not_found", f"survivor '{body.survivor_id}' not found", 404)
-            if not so:
-                raise ApiError("person_not_found", f"source '{body.source_id}' not found", 404)
-            out = hub.merge_people(
-                str(sa["id"]),
-                str(so["id"]),
-                reason=(body.reason or "dashboard_merge"),
-            )
+            if hub.sqlite.get_person(sid) is None:
+                raise ApiError("person_not_found", f"survivor '{sid}' not found", 404)
+            if hub.sqlite.get_person(oid) is None:
+                raise ApiError("person_not_found", f"source '{oid}' not found", 404)
+            out = hub.merge_people(sid, oid, reason=(body.reason or "dashboard_merge"))
             pdb = getattr(agent, "people_db", None)
             if pdb is not None:
-                pdb._cache.pop(str(so["id"]), None)
+                pdb._cache.pop(oid, None)
                 try:
                     pdb.hydrate_from_hub()
                 except Exception:
@@ -1554,6 +1541,29 @@ def build_app(
             raise ApiError("person_not_found", str(e), 404) from e
         except Exception as e:
             raise ApiError("merge_failed", str(e), 500) from e
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.post("/v1/memory/people/merge/{merge_log_id}/undo")
+    async def v1_memory_people_merge_undo(
+        merge_log_id: int,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        _audit("memory_people_merge_undo", trace_id, "admin", {"merge_log_id": merge_log_id})
+
+        def _run() -> dict[str, Any]:
+            return hub.undo_merge(int(merge_log_id))
+
+        try:
+            data = await asyncio.to_thread(_run)
+        except KeyError:
+            raise ApiError("merge_not_found", "merge log not found", 404)
+        except Exception as e:
+            raise ApiError("merge_undo_failed", str(e), 500) from e
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/memory/people/{person_id}")
@@ -1611,7 +1621,6 @@ def build_app(
                     names=list(body.names) if body.names is not None else None,
                     discord_ids=list(body.discord_ids) if body.discord_ids is not None else None,
                     accounts=list(body.accounts) if body.accounts is not None else None,
-                    profile=dict(body.profile) if body.profile is not None else None,
                     create=False,
                 )
             except KeyError as e:
@@ -1637,6 +1646,7 @@ def build_app(
         pid = (person_id or "").strip()
         if not pid:
             raise ApiError("invalid_person_id", "person_id required", 400)
+        _audit("memory_person_delete", trace_id, "admin", {"person_id": pid})
 
         def _run() -> dict[str, Any]:
             ok = hub.delete_person(pid)
@@ -1784,10 +1794,16 @@ def build_app(
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        _audit("memory_diary_clear", trace_id, "admin", {})
 
         def _run() -> dict[str, Any]:
-            n = hub.wipe(["diary"]).get("diary", 0)
-            return {"deleted": n, "scope": "diary"}
+            from core.runtime.paths import resolve_data_dir
+
+            out = hub.wipe(
+                ["diary"],
+                backup_dir=resolve_data_dir(root, config) / "backups",
+            )
+            return {"deleted": (out.get("deleted") or {}).get("diary", 0), "scope": "diary", "backup": out.get("backup")}
 
         data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}
@@ -1800,6 +1816,7 @@ def build_app(
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        _audit("memory_diary_delete", trace_id, "admin", {"note_id": int(note_id)})
 
         def _run() -> dict[str, Any]:
             ok = hub.delete_diary_note(int(note_id))
@@ -1816,10 +1833,16 @@ def build_app(
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        _audit("memory_journal_clear", trace_id, "admin", {})
 
         def _run() -> dict[str, Any]:
-            n = hub.wipe(["journal"]).get("journal", 0)
-            return {"deleted": n, "scope": "journal"}
+            from core.runtime.paths import resolve_data_dir
+
+            out = hub.wipe(
+                ["journal"],
+                backup_dir=resolve_data_dir(root, config) / "backups",
+            )
+            return {"deleted": (out.get("deleted") or {}).get("journal", 0), "scope": "journal", "backup": out.get("backup")}
 
         data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}
@@ -1832,6 +1855,7 @@ def build_app(
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        _audit("memory_journal_delete", trace_id, "admin", {"entry_id": int(entry_id)})
 
         def _run() -> dict[str, Any]:
             ok = hub.delete_journal_entry(int(entry_id))
@@ -1848,13 +1872,23 @@ def build_app(
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        _audit("memory_people_clear", trace_id, "admin", {})
 
         def _run() -> dict[str, Any]:
-            n = hub.wipe(["people"]).get("people", 0)
+            from core.runtime.paths import resolve_data_dir
+
+            out = hub.wipe(
+                ["people"],
+                backup_dir=resolve_data_dir(root, config) / "backups",
+            )
             pdb = getattr(agent, "people_db", None)
             if pdb is not None:
                 pdb._cache.clear()
-            return {"deleted": n, "scope": "people"}
+            return {
+                "deleted": (out.get("deleted") or {}).get("people", 0),
+                "scope": "people",
+                "backup": out.get("backup"),
+            }
 
         data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}
@@ -1869,12 +1903,29 @@ def build_app(
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        if (body.confirm or "").strip() != "WIPE":
+            raise ApiError("wipe_confirm_required", 'Pass confirm: \"WIPE\"', 400)
         scopes = [str(s).strip().lower() for s in (body.scopes or []) if str(s).strip()]
+        if not scopes:
+            raise ApiError("wipe_scopes_required", "scopes must be a non-empty list", 400)
         _audit("memory_wipe", trace_id, api_role, {"scopes": scopes})
 
         def _run() -> dict[str, Any]:
+            from core.runtime.paths import resolve_data_dir
+
             hub_scopes = [s for s in scopes if s != "stm"]
-            counts = hub.wipe(hub_scopes) if hub_scopes else {}
+            try:
+                out = (
+                    hub.wipe(
+                        hub_scopes,
+                        backup_dir=resolve_data_dir(root, config) / "backups",
+                    )
+                    if hub_scopes
+                    else {"deleted": {}, "backup": None}
+                )
+            except ValueError as e:
+                raise ApiError("wipe_invalid_scope", str(e), 400) from e
+            counts = dict(out.get("deleted") or {})
             if "stm" in scopes:
                 try:
                     agent.short_memory.clear()
@@ -1885,7 +1936,7 @@ def build_app(
                 pdb = getattr(agent, "people_db", None)
                 if pdb is not None:
                     pdb._cache.clear()
-            return {"scopes": scopes, "deleted": counts}
+            return {"scopes": scopes, "deleted": counts, "backup": out.get("backup")}
 
         data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}

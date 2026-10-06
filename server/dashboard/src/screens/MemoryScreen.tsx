@@ -294,15 +294,7 @@ export function MemoryScreen() {
     setWipeBusy(true)
     setError(null)
     try {
-      if (scopes.length === 1 && scopes[0] === 'diary') {
-        await apiDelete('/v1/memory/diary')
-      } else if (scopes.length === 1 && scopes[0] === 'journal') {
-        await apiDelete('/v1/memory/journal')
-      } else if (scopes.length === 1 && scopes[0] === 'people') {
-        await apiDelete('/v1/memory/people')
-      } else {
-        await apiPost('/v1/memory/wipe', { scopes })
-      }
+      await apiPost('/v1/memory/wipe', { scopes, confirm: 'WIPE' })
       setStatus(`Очищено: ${label}`)
       await load()
     } catch (e) {

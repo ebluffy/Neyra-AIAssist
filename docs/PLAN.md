@@ -342,26 +342,28 @@ docs/
 
 ## 7. Memory v2 — people / diary / journal
 
-Account-first модель людей без анкетных полей; cutover = полный wipe (без миграции старых досье). Реализация в PR #22 вместе с фиксом music intent.
+Account-first модель людей без анкетных полей. Реализация в PR #22 вместе с фиксом music intent.
+
+**Cutover (обязательно при деплое):** полный wipe people/diary/journal (и при необходимости LTM) через `POST /v1/memory/wipe` с `confirm: "WIPE"`. Старые досье/анкеты не мигрируются. Migration 002/003 + backfill `meta.discord_ids` → `person_accounts` только чтобы не плодить дубли после частичного апгрейда без wipe; канонический путь — wipe.
 
 ### Модель
 
 - **Person card:** opaque `person_id` (по умолчанию `uuid5(platform:platform_user_id)`), `accounts[]` (`platform`, `platform_user_id`, `handle`, `display_name`, `avatar_url?`), `aliases[]`, free-form `facts[]`.
 - **Нет** полей профиля first_name / last_name / birth_date / city — только факты из текста.
-- **Speaker resolve:** (1) platform+user_id → (2) exact handle → (3) create+bind. Fuzzy/stem запрещены.
-- **Mentions в тексте:** только exact / word-boundary aliases (фикс ложных «МАКС»).
+- **Speaker resolve:** только `platform + platform_user_id` → create+bind. Совпадение handle → merge proposal (админ), не auto-bind. Fuzzy/stem/display_name запрещены.
+- **Mentions в тексте:** exact / word-boundary + явный список падежных окончаний (не «Максим»→«макс»).
 - **Обращение:** nick / display_name; реальное имя — только если есть факт.
 - **Diary:** от первого лица Нейры (чувства). **Journal:** хроника / reflection.
-- **Merge:** tool + API; перенос accounts/facts/aliases; `merge_log` + undo.
-- **Wipe API / dashboard:** people, diary, journal, stm, ltm, chat_log, working_memory.
+- **Merge:** LLM-tool `propose_people_merge` (pending); apply/undo — admin API (`merge_log` atomic).
+- **Wipe API / dashboard:** scopes обязательны + `confirm: "WIPE"`; backup SQLite (+ Chroma при `ltm`).
 
 ### Готово, когда
 
 - [x] PROFILE_KEYS / анкетная форма убраны из Hub, API, dashboard.
 - [x] Account-first resolve + строгие mentions; Discord передаёт id/nick/display/avatar.
 - [x] Diary/journal prompts не выдумывают чужие имена.
-- [x] merge_people + wipe scopes работают; кнопки очистки в MemoryScreen.
-- [x] Offline tests mention/resolve/merge/wipe зелёные; cutover = wipe.
+- [x] propose-only merge + atomic merge/undo + wipe confirm/backup; кнопки очистки в MemoryScreen.
+- [x] Offline tests mention/resolve/merge/wipe + music soft-path зелёные; cutover = wipe.
 
 
 

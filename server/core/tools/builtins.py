@@ -424,42 +424,27 @@ def _slug_person_id(raw: str) -> str:
 
 
 @tool
-def merge_people(survivor_id: str, source_id: str, reason: str = "") -> str:
+def propose_people_merge(person_a: str, person_b: str, reason: str = "") -> str:
     """
-    Скрещивает две карточки людей в одну (survivor сохраняется, source переносится и удаляется).
-    Вызывай только при высокой уверенности, что это один человек (совпали ники/логины/факты ~80%+).
-    survivor_id / source_id — person_id или точный ник.
+    Предлагает склеить две карточки людей (НЕ применяет merge).
+    Админ подтверждает в дашборде. person_a / person_b — точные person_id.
+    Вызывай только при высокой уверенности (~80%+ совпадение фактов/ников).
     """
     if _memory_hub is None:
-        return "Memory Hub не инициализирован — merge недоступен."
-    a = (survivor_id or "").strip()
-    b = (source_id or "").strip()
+        return "Memory Hub не инициализирован."
+    a = (person_a or "").strip()
+    b = (person_b or "").strip()
     if not a or not b:
-        return "Нужны survivor_id и source_id."
-    pa = _find_person(a)
-    pb = _find_person(b)
-    if not pa:
-        return f"Не нашла survivor '{a}'."
-    if not pb:
-        return f"Не нашла source '{b}'."
-    sid = str(pa.get("id") or "").strip()
-    oid = str(pb.get("id") or "").strip()
-    if sid == oid:
-        return "Это уже одна карточка."
+        return "Нужны два person_id."
+    if _memory_hub.sqlite.get_person(a) is None:
+        return f"Не нашла person_id '{a}'."
+    if _memory_hub.sqlite.get_person(b) is None:
+        return f"Не нашла person_id '{b}'."
     try:
-        out = _memory_hub.merge_people(sid, oid, reason=reason or "tool_merge")
-        if _people_db is not None:
-            _people_db._cache.pop(oid, None)
-            try:
-                _people_db.hydrate_from_hub()
-            except Exception:
-                pass
-        return (
-            f"Скрестила {oid} → {sid}: accounts={out.get('accounts_moved')}, "
-            f"facts={out.get('facts_moved')}, log=#{out.get('merge_log_id')}"
-        )
+        out = _memory_hub.propose_people_merge(a, b, reason=reason or "tool_propose")
+        return f"Заявка на merge #{out.get('proposal_id')}: {a} ↔ {b} (ждёт админа)."
     except Exception as e:
-        return f"Merge failed: {e}"
+        return f"propose_people_merge failed: {e}"
 
 
 @tool
@@ -689,7 +674,7 @@ ALL_TOOLS = [
     recall_chat,
     remember_knowledge,
     update_person_fact,
-    merge_people,
+    propose_people_merge,
     get_person_info,
     get_character_profile,
     delegate_to_deep_logic,

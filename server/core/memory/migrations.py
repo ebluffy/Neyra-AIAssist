@@ -122,7 +122,28 @@ CREATE TABLE IF NOT EXISTS merge_log (
 CREATE INDEX IF NOT EXISTS idx_merge_log_ts ON merge_log(created_at);
 """
 
+# handle_norm + merge proposals (pending admin merge) + indexes.
+MIGRATION_003_SQL = """
+ALTER TABLE person_accounts ADD COLUMN handle_norm TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_person_accounts_handle_norm ON person_accounts(handle_norm);
+
+CREATE TABLE IF NOT EXISTS merge_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_a TEXT NOT NULL,
+    person_b TEXT NOT NULL,
+    reason TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    merge_log_id INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_merge_proposals_status ON merge_proposals(status);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001_SQL),
     (2, MIGRATION_002_SQL),
+    (3, MIGRATION_003_SQL),
 ]
