@@ -623,8 +623,9 @@ class SqliteStore:
         survivor_id: str,
         source_id: str,
         reason: str,
+        proposal_id: Optional[int] = None,
     ) -> tuple[int, dict[str, Any]]:
-        """Single transaction: snapshot under lock, move accounts/facts, delete source, log."""
+        """Single transaction: snapshot all fact ids, move rows, rewrite proposals, log."""
         now = _now_iso()
         with self._lock:
             try:
@@ -649,34 +650,20 @@ class SqliteStore:
                     (source_id,),
                 )
                 accounts = [self._row_to_dict(r) for r in acc_cur.fetchall()]
+                # All fact ids (no LIMIT) — texts capped for snapshot size only.
+                id_cur = self._conn.execute(
+                    "SELECT id FROM person_facts WHERE person_id = ? ORDER BY id ASC",
+                    (source_id,),
+                )
+                fact_ids = [int(r["id"]) for r in id_cur.fetchall()]
                 fact_cur = self._conn.execute(
                     """
                     SELECT * FROM person_facts WHERE person_id = ?
-                    ORDER BY id DESC LIMIT 200
+                    ORDER BY id DESC LIMIT 50
                     """,
                     (source_id,),
                 )
-                facts = [self._row_to_dict(r) for r in fact_cur.fetchall()]
-                fact_ids = [int(f["id"]) for f in facts if f.get("id") is not None]
-
-                surv_facts_cur = self._conn.execute(
-                    "SELECT fact FROM person_facts WHERE person_id = ?",
-                    (survivor_id,),
-                )
-                surv_fact_texts = {
-                    str(r["fact"] or "").strip()
-                    for r in surv_facts_cur.fetchall()
-                    if str(r["fact"] or "").strip()
-                }
-                # Drop duplicate fact texts on source before move (keep survivor's).
-                for f in facts:
-                    ft = str(f.get("fact") or "").strip()
-                    fid = f.get("id")
-                    if ft and ft in surv_fact_texts and fid is not None:
-                        self._conn.execute(
-                            "DELETE FROM person_facts WHERE id = ?", (int(fid),)
-                        )
-                        fact_ids = [x for x in fact_ids if x != int(fid)]
+                facts_sample = [self._row_to_dict(r) for r in fact_cur.fetchall()]
 
                 def _aliases(raw: Any) -> list[str]:
                     if isinstance(raw, list):
@@ -709,7 +696,7 @@ class SqliteStore:
                         "names": o_aliases or [source_id],
                         "meta": o_dict.get("meta") if isinstance(o_dict.get("meta"), dict) else {},
                     },
-                    "facts": facts,
+                    "facts": facts_sample,
                     "fact_ids": fact_ids,
                     "accounts": accounts,
                     "survivor_before": {
@@ -719,6 +706,7 @@ class SqliteStore:
                     },
                 }
 
+                # Move everything — do not DELETE duplicate fact texts (undo must restore).
                 self._conn.execute(
                     "UPDATE person_accounts SET person_id = ?, updated_at = ? WHERE person_id = ?",
                     (survivor_id, now, source_id),
@@ -750,6 +738,42 @@ class SqliteStore:
                     (survivor_id, source_id, reason, self._dumps(snapshot), now),
                 )
                 log_id = int(cur.lastrowid)
+
+                # Mark applied proposal first so rewrite/stale cannot collapse it.
+                if proposal_id is not None:
+                    self._conn.execute(
+                        """
+                        UPDATE merge_proposals
+                        SET status = 'applied', resolved_at = ?, merge_log_id = ?
+                        WHERE id = ? AND status = 'pending'
+                        """,
+                        (now, log_id, int(proposal_id)),
+                    )
+
+                # Rewrite remaining pending proposals that pointed at source → survivor.
+                self._conn.execute(
+                    """
+                    UPDATE merge_proposals SET person_a = ?
+                    WHERE status = 'pending' AND person_a = ?
+                    """,
+                    (survivor_id, source_id),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE merge_proposals SET person_b = ?
+                    WHERE status = 'pending' AND person_b = ?
+                    """,
+                    (survivor_id, source_id),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE merge_proposals
+                    SET status = 'stale', resolved_at = ?
+                    WHERE status = 'pending' AND person_a = person_b
+                    """,
+                    (now,),
+                )
+
                 self._conn.execute("COMMIT")
                 stats = {
                     "accounts_moved": len(accounts),
@@ -853,6 +877,7 @@ class SqliteStore:
                                 (source_id, int(fid)),
                             )
 
+                accounts_not_restored: list[str] = []
                 for acc in snap.get("accounts") or []:
                     if not isinstance(acc, dict):
                         continue
@@ -861,7 +886,7 @@ class SqliteStore:
                     if not plat or not puid:
                         continue
                     h = str(acc.get("handle") or "").strip() or None
-                    self._conn.execute(
+                    cur_acc = self._conn.execute(
                         """
                         UPDATE person_accounts
                         SET person_id = ?, handle = ?, handle_norm = ?,
@@ -881,26 +906,46 @@ class SqliteStore:
                             puid,
                         ),
                     )
+                    if cur_acc.rowcount == 0:
+                        accounts_not_restored.append(f"{plat}:{puid}")
 
-                if survivor_before:
+                # Survivor: strip only aliases that came from source (keep post-merge edits).
+                def _al(raw: Any) -> list[str]:
+                    if isinstance(raw, list):
+                        return [str(x).strip() for x in raw if str(x).strip()]
+                    if isinstance(raw, str) and raw.strip().startswith("["):
+                        try:
+                            parsed = json.loads(raw)
+                            if isinstance(parsed, list):
+                                return [str(x).strip() for x in parsed if str(x).strip()]
+                        except Exception:
+                            pass
+                    if isinstance(raw, str) and raw.strip():
+                        return [raw.strip()]
+                    return []
+
+                surv_row = self._conn.execute(
+                    "SELECT aliases FROM people WHERE person_id = ?", (survivor_id,)
+                ).fetchone()
+                if surv_row is not None:
+                    before_set = {a.casefold() for a in _al(survivor_before.get("aliases"))}
+                    source_set = {
+                        a.casefold()
+                        for a in _al(person.get("aliases") or person.get("names"))
+                    }
+                    current = _al(surv_row["aliases"])
+                    kept = [
+                        a
+                        for a in current
+                        if a.casefold() in before_set or a.casefold() not in source_set
+                    ]
+                    if not kept:
+                        kept = list(_al(survivor_before.get("aliases"))) or [survivor_id]
                     self._conn.execute(
-                        """
-                        UPDATE people
-                        SET display_name = ?, aliases = ?, meta = ?, updated_at = ?
-                        WHERE person_id = ?
-                        """,
-                        (
-                            survivor_before.get("display_name") or survivor_id,
-                            self._dumps(
-                                survivor_before.get("aliases") or [survivor_id]
-                            ),
-                            self._dumps(survivor_before.get("meta") or {}),
-                            now,
-                            survivor_id,
-                        ),
+                        "UPDATE people SET aliases = ?, updated_at = ? WHERE person_id = ?",
+                        (self._dumps(kept), now, survivor_id),
                     )
 
-                # Mark undone (column from migration 004; ignore if missing on ancient DBs).
                 try:
                     self._conn.execute(
                         "UPDATE merge_log SET undone_at = ? WHERE id = ?",
@@ -908,11 +953,20 @@ class SqliteStore:
                     )
                 except sqlite3.OperationalError:
                     pass
+                self._conn.execute(
+                    """
+                    UPDATE merge_proposals
+                    SET status = 'undone', resolved_at = ?
+                    WHERE merge_log_id = ? AND status = 'applied'
+                    """,
+                    (now, int(merge_id)),
+                )
                 self._conn.execute("COMMIT")
                 return {
                     "restored_id": source_id,
                     "survivor_id": survivor_id,
                     "merge_log_id": int(merge_id),
+                    "accounts_not_restored": accounts_not_restored,
                 }
             except Exception:
                 try:

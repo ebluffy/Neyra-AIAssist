@@ -448,6 +448,7 @@ class MemoryHub:
         source_id: str,
         *,
         reason: str = "",
+        proposal_id: Optional[int] = None,
     ) -> dict[str, Any]:
         """Atomic merge by exact person_id (admin/API only). Snapshot inside txn."""
         survivor = (survivor_id or "").strip()
@@ -460,6 +461,7 @@ class MemoryHub:
             survivor_id=survivor,
             source_id=source,
             reason=reason or "merge",
+            proposal_id=proposal_id,
         )
         return stats
 
@@ -486,32 +488,24 @@ class MemoryHub:
         backup_path = None
         chroma_backup = None
         if backup_dir is not None:
-            import shutil
-
-            backup_dir = Path(backup_dir)
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-            dest = backup_dir / f"neyra_memory_pre_wipe_{ts}.db"
             try:
+                backup_dir = Path(backup_dir)
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+                dest = backup_dir / f"neyra_memory_pre_wipe_{ts}.db"
                 self.sqlite.backup_to(dest)
                 backup_path = str(dest)
-            except Exception as e:
-                raise RuntimeError(f"sqlite backup failed: {e}") from e
-            if "ltm" in wanted:
-                lm = self._long_memory
-                chroma_src = getattr(lm, "db_path", None) if lm is not None else None
-                if chroma_src:
-                    src = Path(str(chroma_src))
-                    if src.exists():
+                if "ltm" in wanted:
+                    lm = self._long_memory
+                    if lm is not None and hasattr(lm, "backup_to"):
                         cdest = backup_dir / f"neyra_chroma_pre_wipe_{ts}"
-                        try:
-                            if src.is_dir():
-                                shutil.copytree(src, cdest, dirs_exist_ok=True)
-                            else:
-                                shutil.copy2(src, cdest)
-                            chroma_backup = str(cdest)
-                        except Exception as e:
-                            raise RuntimeError(f"chroma backup failed: {e}") from e
+                        chroma_backup = lm.backup_to(cdest)
+                    elif lm is not None:
+                        raise RuntimeError("ltm backup unavailable")
+            except RuntimeError:
+                raise
+            except Exception as e:
+                raise RuntimeError(f"wipe backup failed: {e}") from e
         out: dict[str, int] = {}
         if "people" in wanted:
             out["people"] = self.sqlite.clear_table("people")

@@ -57,12 +57,14 @@ def main() -> int:
 
     # Soft path via shared plan/finalize (same as bot).
     plan = plan_music_route(lyrics)
-    assert plan.needs_classifier is True or plan.tentative_route == "CHAT"
+    assert plan.needs_classifier is True, plan
     route, use, _ = finalize_music_route(plan, classifier_route="PLAY_MUSIC")
     assert route == "CHAT" and use is False, (route, use)
     assert soft_play_allowed(lyrics) is False
 
     short = "классный трек"
+    plan_s = plan_music_route(short)
+    assert plan_s.needs_classifier is True, plan_s
     assert soft_play_allowed(short) is True
     route2, use2 = resolve_music_route(short, classifier_route="PLAY_MUSIC")
     assert route2 == "PLAY_MUSIC" and use2 is True, (route2, use2)

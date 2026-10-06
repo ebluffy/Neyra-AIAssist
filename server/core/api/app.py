@@ -1609,12 +1609,12 @@ def build_app(
                 raise ApiError("proposal_not_pending", "proposal is not pending", 409)
             a = str(prop.get("person_a") or "").strip()
             b = str(prop.get("person_b") or "").strip()
-            # Keep person_a as survivor by convention.
-            out = hub.merge_people(a, b, reason=f"proposal:{proposal_id}")
-            hub.sqlite.resolve_merge_proposal(
-                int(proposal_id),
-                status="applied",
-                merge_log_id=int(out.get("merge_log_id") or 0) or None,
+            if hub.sqlite.get_person(a) is None or hub.sqlite.get_person(b) is None:
+                hub.sqlite.resolve_merge_proposal(int(proposal_id), status="stale")
+                raise ApiError("proposal_stale", "one or both people no longer exist", 409)
+            # person_a = survivor; mark applied inside same merge txn.
+            out = hub.merge_people(
+                a, b, reason=f"proposal:{proposal_id}", proposal_id=int(proposal_id)
             )
             pdb = getattr(agent, "people_db", None)
             if pdb is not None:

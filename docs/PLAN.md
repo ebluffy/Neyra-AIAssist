@@ -363,7 +363,7 @@ Account-first модель людей без анкетных полей. Реа
 - [x] PROFILE_KEYS / анкетная форма убраны из Hub, API, dashboard.
 - [x] Account-first resolve + строгие mentions; Discord передаёт id/nick/display/avatar.
 - [x] Diary/journal prompts не выдумывают чужие имена.
-- [x] propose-only merge + atomic merge/undo + wipe confirm/backup + proposals UI; кнопки очистки в MemoryScreen.
+- [x] propose-only merge + atomic merge/undo (full fact_ids, no silent drop) + wipe confirm/backup + proposals UI.
 - [x] Offline tests mention/resolve/merge/wipe + music soft-path зелёные; cutover = wipe.
 
 

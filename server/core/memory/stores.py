@@ -387,6 +387,51 @@ class LongTermMemory:
         except Exception:
             return 0
 
+    def backup_to(self, dest: Path | str) -> str:
+        """Consistent Chroma dir backup under write lock (sqlite3.backup for chroma.sqlite3)."""
+        import shutil
+        import sqlite3
+
+        src = Path(self.db_path)
+        dest_p = Path(dest)
+        if not src.exists():
+            raise RuntimeError(f"chroma path missing: {src}")
+        with self._write_lock:
+            if dest_p.exists():
+                if dest_p.is_dir():
+                    shutil.rmtree(dest_p)
+                else:
+                    dest_p.unlink()
+            dest_p.mkdir(parents=True, exist_ok=True)
+            if src.is_file():
+                dst_db = sqlite3.connect(str(dest_p / src.name))
+                try:
+                    src_db = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+                    try:
+                        src_db.backup(dst_db)
+                    finally:
+                        src_db.close()
+                finally:
+                    dst_db.close()
+                return str(dest_p)
+            for item in src.iterdir():
+                target = dest_p / item.name
+                if item.name == "chroma.sqlite3" or item.suffix == ".sqlite3":
+                    dst_db = sqlite3.connect(str(target))
+                    try:
+                        src_db = sqlite3.connect(f"file:{item}?mode=ro", uri=True)
+                        try:
+                            src_db.backup(dst_db)
+                        finally:
+                            src_db.close()
+                    finally:
+                        dst_db.close()
+                elif item.is_dir():
+                    shutil.copytree(item, target, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, target)
+            return str(dest_p)
+
     def clear_all(self) -> int:
         """Delete every document in the Chroma collection. Returns removed count."""
         self._init()

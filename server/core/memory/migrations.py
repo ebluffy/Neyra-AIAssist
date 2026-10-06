@@ -129,7 +129,7 @@ MIGRATION_003_SQL = """
 -- see SqliteStore._migrate_v3
 """
 
-# undone_at on merge_log + unique pending proposal pair.
+# undone_at on merge_log (pending-pair uniqueness is SELECT-before-INSERT under lock).
 MIGRATION_004_SQL = """
 -- see SqliteStore._migrate_v4
 """
