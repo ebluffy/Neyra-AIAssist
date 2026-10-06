@@ -26,6 +26,13 @@ type PersonRow = {
 }
 
 type PersonFact = { id?: number; fact?: string; created_at?: string; emotion_note?: string }
+type MergeProposal = {
+  id?: number
+  person_a?: string
+  person_b?: string
+  reason?: string
+  status?: string
+}
 type DiaryNote = Record<string, unknown>
 type JournalEntry = Record<string, unknown>
 
@@ -61,17 +68,19 @@ export function MemoryScreen() {
   const [sumDays, setSumDays] = useState('60')
   const [sumCompress, setSumCompress] = useState(true)
   const [wipeBusy, setWipeBusy] = useState(false)
+  const [proposals, setProposals] = useState<MergeProposal[]>([])
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const [m, pol, pe, di, jo] = await Promise.all([
+      const [m, pol, pe, di, jo, pr] = await Promise.all([
         apiGet<ApiEnvelope<MemoryStats>>('/v1/memory/stats'),
         apiGet<ApiEnvelope<MemoryPolicies>>('/v1/memory/policies'),
         apiGet<ApiEnvelope<{ people: PersonRow[] }>>('/v1/memory/people'),
         apiGet<ApiEnvelope<{ notes: DiaryNote[] }>>('/v1/memory/diary?limit=50'),
         apiGet<ApiEnvelope<{ entries: JournalEntry[] }>>('/v1/memory/journal?limit=50'),
+        apiGet<ApiEnvelope<{ proposals: MergeProposal[] }>>('/v1/memory/people/merge-proposals?status=pending'),
       ])
       setMemory(m.data)
       setMemPolicies(pol.data)
@@ -79,6 +88,7 @@ export function MemoryScreen() {
       setPeople(plist)
       setDiary(di.data.notes ?? [])
       setJournal(jo.data.entries ?? [])
+      setProposals(pr.data.proposals ?? [])
       setSelectedPerson((prev) => {
         if (prev && plist.some((p) => String(p.id) === prev)) return prev
         return plist[0]?.id ? String(plist[0].id) : ''
@@ -205,6 +215,27 @@ export function MemoryScreen() {
       setStatus('Карточки скрещены')
       await load()
       await loadPerson(selectedPerson)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function applyProposal(id: number) {
+    if (!window.confirm(`Применить заявку #${id}? person_a станет survivor.`)) return
+    try {
+      await apiPost(`/v1/memory/people/merge-proposals/${id}/apply`, {})
+      setStatus(`Заявка #${id} применена`)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function rejectProposal(id: number) {
+    try {
+      await apiPost(`/v1/memory/people/merge-proposals/${id}/reject`, {})
+      setStatus(`Заявка #${id} отклонена`)
+      await load()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -436,6 +467,40 @@ export function MemoryScreen() {
 
       {tab === 'people' && (
         <div className="split-modules">
+          {proposals.length > 0 && (
+            <div className="card" style={{ gridColumn: '1 / -1' }}>
+              <div className="card-header">
+                <span className="card-title">Кандидаты на merge ({proposals.length})</span>
+              </div>
+              <div className="stack-sm">
+                {proposals.map((p) => (
+                  <div
+                    key={String(p.id)}
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: 8,
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>
+                      #{p.id}: {p.person_a} ↔ {p.person_b}
+                      {p.reason ? ` — ${p.reason}` : ''}
+                    </span>
+                    <span style={{ display: 'inline-flex', gap: 6 }}>
+                      <Button onClick={() => void applyProposal(Number(p.id))} size="sm" type="button" variant="cyan">
+                        Склеить
+                      </Button>
+                      <Button onClick={() => void rejectProposal(Number(p.id))} size="sm" type="button" variant="ghost">
+                        Отклонить
+                      </Button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="card" style={{ height: 'fit-content' }}>
             <div className="card-header" style={{ justifyContent: 'space-between' }}>
               <span className="card-title" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>

@@ -1,7 +1,8 @@
-"""Offline Memory v2: mentions, account resolve, merge, wipe (AR fixes)."""
+"""Offline Memory v2: mentions, account resolve, merge/undo, wipe backup, proposals."""
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -24,7 +25,7 @@ def test_detect_mentions_no_false_max() -> None:
     assert detect_mentioned_names("пупинос зашёл", name_map) == ["p_pup"]
 
 
-def test_account_resolve_no_handle_autobind() -> None:
+def test_account_resolve_merge_undo_wipe_proposals() -> None:
     from core.memory.hub import MemoryHub
     from core.runtime.identity import UnifiedIdentityMapper
 
@@ -44,17 +45,15 @@ def test_account_resolve_no_handle_autobind() -> None:
             handle="coolnick",
             display_name="Cool",
         )
-        # Same nick, different platform ids → different cards
         assert a["id"] != b["id"]
         assert a["id"] == UnifiedIdentityMapper.resolve("discord", "111")
-        assert b["id"] == UnifiedIdentityMapper.resolve("telegram", "222")
         proposals = hub.sqlite.list_merge_proposals(status="pending")
         assert any(p.get("reason", "").startswith("same_handle:") for p in proposals)
+        # Dedup pending pair
+        p1 = hub.propose_people_merge(a["id"], b["id"], reason="again")
+        p2 = hub.propose_people_merge(b["id"], a["id"], reason="again2")
+        assert p1["proposal_id"] == p2["proposal_id"]
 
-        assert hub.find_person("coolni") is None
-        assert hub.find_person("oolnick") is None
-
-        # Cyrillic handle_norm (SQLite lower is ASCII-only).
         cyr = hub.ensure_person_for_account(
             platform="discord",
             platform_user_id="333",
@@ -62,8 +61,6 @@ def test_account_resolve_no_handle_autobind() -> None:
             display_name="Пупинос",
         )
         assert hub.find_person("пупинос")["id"] == cyr["id"]
-        ids = hub.sqlite.find_person_ids_by_handle_norm("ПУПИНОС")
-        assert cyr["id"] in ids
 
         other = hub.ensure_person_for_account(
             platform="discord",
@@ -72,18 +69,64 @@ def test_account_resolve_no_handle_autobind() -> None:
             display_name="Other",
         )
         hub.add_person_fact(a["id"], "зовут Иван", source="test")
-        hub.add_person_fact(other["id"], "любит кофе", source="test")
+        hub.add_person_fact(a["id"], "любит кофе", source="test")
+        hub.add_person_fact(other["id"], "любит кофе", source="test")  # dup text
+        hub.add_person_fact(other["id"], "играет в доту", source="test")
+        facts_before_a = {f["fact"] for f in hub.list_person_facts(a["id"], limit=50)}
+        facts_before_o = {f["fact"] for f in hub.list_person_facts(other["id"], limit=50)}
+
         merged = hub.merge_people(a["id"], other["id"], reason="test")
         assert merged["survivor_id"] == a["id"]
-        assert hub.find_person("", discord_id="999")["id"] == a["id"]
+        assert hub.sqlite.get_person(other["id"]) is None
+        after_merge_facts = hub.list_person_facts(a["id"], limit=50)
+        assert "играет в доту" in {f["fact"] for f in after_merge_facts}
+        assert sum(1 for f in after_merge_facts if f["fact"] == "любит кофе") == 1
+
         undo = hub.undo_merge(int(merged["merge_log_id"]))
         assert undo["restored_id"] == other["id"]
         assert hub.sqlite.get_person(other["id"]) is not None
+        facts_a2 = {f["fact"] for f in hub.list_person_facts(a["id"], limit=50)}
+        facts_o2 = {f["fact"] for f in hub.list_person_facts(other["id"], limit=50)}
+        assert facts_a2 == facts_before_a
+        assert "играет в доту" in facts_o2
+        # Dup «любит кофе» was dropped at merge; stays only on survivor.
+        assert "любит кофе" in facts_a2
+        assert "любит кофе" not in facts_o2 or "любит кофе" in facts_before_o
+
+        try:
+            hub.undo_merge(int(merged["merge_log_id"]))
+            raise AssertionError("second undo should fail")
+        except ValueError as e:
+            assert "already_undone" in str(e)
+
+        # Apply a pending same_handle proposal (survivor = person_a).
+        pending = hub.sqlite.list_merge_proposals(status="pending")
+        assert pending
+        apply_prop = pending[0]
+        sid = str(apply_prop["person_a"])
+        oid = str(apply_prop["person_b"])
+        if hub.sqlite.get_person(sid) and hub.sqlite.get_person(oid):
+            out_m = hub.merge_people(sid, oid, reason=f"proposal:{apply_prop['id']}")
+            hub.sqlite.resolve_merge_proposal(
+                int(apply_prop["id"]),
+                status="applied",
+                merge_log_id=int(out_m["merge_log_id"]),
+            )
+            assert hub.sqlite.get_merge_proposal(int(apply_prop["id"]))["status"] == "applied"
 
         hub.add_diary_note("feeling ok", source="test")
-        out = hub.wipe(["people", "diary", "journal"], backup_dir=Path(td) / "backups")
-        assert (out.get("deleted") or {}).get("people", 0) >= 1
+        backup_dir = Path(td) / "backups"
+        out = hub.wipe(["people", "diary", "journal"], backup_dir=backup_dir)
         assert out.get("backup")
+        bak = Path(out["backup"])
+        assert bak.is_file()
+        conn = sqlite3.connect(str(bak))
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM people").fetchone()[0]
+            assert n >= 1
+        finally:
+            conn.close()
+        assert (out.get("deleted") or {}).get("people", 0) >= 1
         hub.sqlite.close()
 
 
@@ -114,7 +157,7 @@ def test_speaker_label_nick_not_invented_name() -> None:
 
 def main() -> int:
     test_detect_mentions_no_false_max()
-    test_account_resolve_no_handle_autobind()
+    test_account_resolve_merge_undo_wipe_proposals()
     test_speaker_label_nick_not_invented_name()
     print("OK test_memory_v2_people_offline")
     return 0

@@ -15,7 +15,9 @@ def main() -> int:
     from modules.discord.music_intent import (
         PLAY_VERB_RE,
         candidate_music_intent,
+        finalize_music_route,
         has_play_verb,
+        plan_music_route,
         resolve_music_route,
         soft_play_allowed,
     )
@@ -31,10 +33,19 @@ def main() -> int:
     assert play is not None and play.get("action"), play
     assert "disco" in (play.get("query") or "").lower() or "forever" in (play.get("query") or "").lower(), play
 
-    # Unified verb regex: «включить» and «врубай» both count.
     assert has_play_verb("включить пожалуйста трек")
     assert has_play_verb("врубай disco")
     assert PLAY_VERB_RE.search("включи музыку")
+
+    # Negatives: prefix matches that must NOT be play verbs.
+    for bad in (
+        "вклад в банке какой лучше?",
+        "вкладку открой в браузере",
+        "я не врубился что ты сказал",
+        "включил комп утром",
+    ):
+        assert not has_play_verb(bad), bad
+        assert candidate_music_intent(bad) is None, bad
 
     play2 = candidate_music_intent("поставь музыку")
     assert play2 is not None, play2
@@ -44,18 +55,18 @@ def main() -> int:
 
     assert candidate_music_intent("просто болтаем про трек в чате") is None
 
-    # Soft path: long paste with «трек» + classifier PLAY → stay CHAT (not use_music).
-    route, use = resolve_music_route(lyrics, classifier_route="PLAY_MUSIC")
+    # Soft path via shared plan/finalize (same as bot).
+    plan = plan_music_route(lyrics)
+    assert plan.needs_classifier is True or plan.tentative_route == "CHAT"
+    route, use, _ = finalize_music_route(plan, classifier_route="PLAY_MUSIC")
     assert route == "CHAT" and use is False, (route, use)
     assert soft_play_allowed(lyrics) is False
 
-    # Soft path: short command-like line may allow soft PLAY when classifier says PLAY.
     short = "классный трек"
     assert soft_play_allowed(short) is True
     route2, use2 = resolve_music_route(short, classifier_route="PLAY_MUSIC")
     assert route2 == "PLAY_MUSIC" and use2 is True, (route2, use2)
 
-    # Explicit play verb still hard-routes without classifier.
     route3, use3 = resolve_music_route("включи трек x", classifier_route=None)
     assert route3 == "PLAY_MUSIC" and use3 is True, (route3, use3)
 

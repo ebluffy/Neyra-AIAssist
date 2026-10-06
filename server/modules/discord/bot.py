@@ -42,10 +42,8 @@ from core.runtime.event_bus import (
 )
 from modules.discord.music_intent import (
     candidate_music_intent,
-    has_play_verb,
-    lyrics_request_hint as _lyrics_request_hint,
-    soft_music_hint as _soft_music_hint,
-    soft_play_allowed,
+    finalize_music_route,
+    plan_music_route,
 )
 
 if TYPE_CHECKING:
@@ -796,36 +794,14 @@ class NeyraDiscordBot(discord.Client):
         if vision_imgs and content == "*молчишь*":
             content = "Что на изображении? Коротко по-русски."
 
-        music_candidate = self._candidate_music_intent(content)
-        lyrics_hint = _lyrics_request_hint(content)
-        soft_music = _soft_music_hint(content)
-        play_verb = has_play_verb(content)
-
-        # Lyrics first: «текст песни» must not fall into play/search.
-        if lyrics_hint and not play_verb:
-            route = "GET_LYRICS"
-        # Pause/stop/queue/skip — deterministic, no classifier.
-        elif music_candidate and str(music_candidate.get("action") or "") != MUSIC_PLAY:
-            route = "PLAY_MUSIC"
-        elif music_candidate and not lyrics_hint:
-            # Hard play triggers ("включи музыку", URL, "в войс") — trust regex.
-            route = "PLAY_MUSIC"
-        elif music_candidate or lyrics_hint or soft_music:
-            route = await self._classify_intent(content)
-            if route == "CHAT" and music_candidate and not lyrics_hint:
-                route = "PLAY_MUSIC"
-            if lyrics_hint and route == "PLAY_MUSIC" and not play_verb:
-                route = "GET_LYRICS"
-        else:
-            route = "CHAT"
-
-        # Soft PLAY (classifier-only) needs a short command-like line or an explicit play verb.
-        soft_play_ok = soft_play_allowed(content, soft_music=soft_music)
-        use_music = route == "PLAY_MUSIC" and not lyrics_hint and (
-            bool(music_candidate) or soft_play_ok
+        music_plan = plan_music_route(content)
+        classifier_route = None
+        if music_plan.needs_classifier:
+            classifier_route = await self._classify_intent(content)
+        route, use_music, music_candidate = finalize_music_route(
+            music_plan, classifier_route=classifier_route
         )
-        if route == "PLAY_MUSIC" and not use_music and not lyrics_hint:
-            route = "CHAT"
+        lyrics_hint = music_plan.lyrics_hint
 
         if use_music:
             if music_candidate and str(music_candidate.get("action") or "") != MUSIC_PLAY:

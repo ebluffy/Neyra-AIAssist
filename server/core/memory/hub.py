@@ -449,48 +449,19 @@ class MemoryHub:
         *,
         reason: str = "",
     ) -> dict[str, Any]:
-        """Atomic merge by exact person_id (admin/API only)."""
+        """Atomic merge by exact person_id (admin/API only). Snapshot inside txn."""
         survivor = (survivor_id or "").strip()
         source = (source_id or "").strip()
         if not survivor or not source:
             raise ValueError("survivor_id and source_id required")
         if survivor == source:
             raise ValueError("cannot merge person into itself")
-        s_row = self.sqlite.get_person(survivor)
-        o_row = self.sqlite.get_person(source)
-        if s_row is None:
-            raise KeyError(survivor)
-        if o_row is None:
-            raise KeyError(source)
-        n_acc = len(self.sqlite.list_accounts_for_person(source))
-        n_facts = len(self.sqlite.list_person_facts(source, limit=200))
-        snapshot = {
-            "person": self._person_as_legacy_dict(o_row),
-            "facts": self.sqlite.list_person_facts(source, limit=200),
-            "accounts": self.sqlite.list_accounts_for_person(source),
-        }
-        s_aliases = self._aliases_list(s_row.get("aliases"))
-        o_aliases = self._aliases_list(o_row.get("aliases"))
-        merged_aliases: list[str] = []
-        for a in s_aliases + o_aliases:
-            if a and a not in merged_aliases:
-                merged_aliases.append(a)
-        log_id = self.sqlite.merge_people_atomic(
+        _log_id, stats = self.sqlite.merge_people_atomic(
             survivor_id=survivor,
             source_id=source,
-            survivor_aliases=merged_aliases or [survivor],
-            survivor_display=str(s_row.get("display_name") or survivor),
-            survivor_meta=s_row.get("meta") if isinstance(s_row.get("meta"), dict) else {},
-            snapshot=snapshot,
             reason=reason or "merge",
         )
-        return {
-            "survivor_id": survivor,
-            "source_id": source,
-            "accounts_moved": n_acc,
-            "facts_moved": n_facts,
-            "merge_log_id": log_id,
-        }
+        return stats
 
     def undo_merge(self, merge_log_id: int) -> dict[str, Any]:
         return self.sqlite.undo_merge_atomic(int(merge_log_id))
@@ -515,29 +486,32 @@ class MemoryHub:
         backup_path = None
         chroma_backup = None
         if backup_dir is not None:
-            try:
-                import shutil
+            import shutil
 
-                backup_dir = Path(backup_dir)
-                backup_dir.mkdir(parents=True, exist_ok=True)
-                ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-                dest = backup_dir / f"neyra_memory_pre_wipe_{ts}.db"
-                shutil.copy2(self.sqlite.path, dest)
+            backup_dir = Path(backup_dir)
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            dest = backup_dir / f"neyra_memory_pre_wipe_{ts}.db"
+            try:
+                self.sqlite.backup_to(dest)
                 backup_path = str(dest)
-                if "ltm" in wanted:
-                    lm = self._long_memory
-                    chroma_src = getattr(lm, "db_path", None) if lm is not None else None
-                    if chroma_src:
-                        src = Path(str(chroma_src))
-                        if src.exists():
-                            cdest = backup_dir / f"neyra_chroma_pre_wipe_{ts}"
+            except Exception as e:
+                raise RuntimeError(f"sqlite backup failed: {e}") from e
+            if "ltm" in wanted:
+                lm = self._long_memory
+                chroma_src = getattr(lm, "db_path", None) if lm is not None else None
+                if chroma_src:
+                    src = Path(str(chroma_src))
+                    if src.exists():
+                        cdest = backup_dir / f"neyra_chroma_pre_wipe_{ts}"
+                        try:
                             if src.is_dir():
                                 shutil.copytree(src, cdest, dirs_exist_ok=True)
                             else:
                                 shutil.copy2(src, cdest)
                             chroma_backup = str(cdest)
-            except Exception as e:
-                logger.warning("wipe backup failed: %s", e)
+                        except Exception as e:
+                            raise RuntimeError(f"chroma backup failed: {e}") from e
         out: dict[str, int] = {}
         if "people" in wanted:
             out["people"] = self.sqlite.clear_table("people")

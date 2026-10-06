@@ -58,19 +58,71 @@ class SqliteStore:
                 if version in applied:
                     continue
                 logger.info("SQLite migrate → v%s (%s)", version, self.path)
-                # executescript auto-commits; do not wrap in BEGIN/COMMIT
-                try:
+                if version == 3:
+                    self._migrate_v3()
+                elif version == 4:
+                    self._migrate_v4()
+                else:
                     self._conn.executescript(sql)
-                except sqlite3.OperationalError as e:
-                    # Idempotent ALTER ADD COLUMN when column already exists
-                    if "duplicate column" not in str(e).lower():
-                        raise
                 self._conn.execute(
                     "INSERT OR REPLACE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (version, _now_iso()),
                 )
+            # Heal: v3 marked applied but merge_proposals missing (old executescript bug).
+            self._ensure_merge_proposals_table()
             self._backfill_person_accounts_from_meta()
             self._backfill_handle_norm()
+
+    def _table_columns(self, table: str) -> set[str]:
+        cur = self._conn.execute(f"PRAGMA table_info({table})")
+        return {str(r[1]) for r in cur.fetchall()}
+
+    def _migrate_v3(self) -> None:
+        cols = self._table_columns("person_accounts")
+        if "handle_norm" not in cols:
+            self._conn.execute("ALTER TABLE person_accounts ADD COLUMN handle_norm TEXT")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_person_accounts_handle_norm "
+            "ON person_accounts(handle_norm)"
+        )
+        self._ensure_merge_proposals_table()
+
+    def _migrate_v4(self) -> None:
+        cols = self._table_columns("merge_log")
+        if "undone_at" not in cols:
+            self._conn.execute("ALTER TABLE merge_log ADD COLUMN undone_at TEXT")
+
+    def _ensure_merge_proposals_table(self) -> None:
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS merge_proposals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                person_a TEXT NOT NULL,
+                person_b TEXT NOT NULL,
+                reason TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                resolved_at TEXT,
+                merge_log_id INTEGER
+            )
+            """
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_merge_proposals_status ON merge_proposals(status)"
+        )
+
+    def backup_to(self, dest: Path) -> None:
+        """Consistent SQLite backup (includes WAL) under store lock."""
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            dest.unlink()
+        with self._lock:
+            dst = sqlite3.connect(str(dest))
+            try:
+                self._conn.backup(dst)
+            finally:
+                dst.close()
 
     def _backfill_person_accounts_from_meta(self) -> int:
         """One-shot: meta.discord_ids → person_accounts (no wipe required for Discord ids)."""
@@ -499,13 +551,29 @@ class SqliteStore:
         person_b: str,
         reason: Optional[str] = None,
     ) -> int:
+        a = (person_a or "").strip()
+        b = (person_b or "").strip()
+        if not a or not b or a == b:
+            raise ValueError("two distinct person_ids required")
         with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT id FROM merge_proposals
+                WHERE status = 'pending'
+                  AND ((person_a = ? AND person_b = ?) OR (person_a = ? AND person_b = ?))
+                LIMIT 1
+                """,
+                (a, b, b, a),
+            )
+            existing = cur.fetchone()
+            if existing:
+                return int(existing["id"])
             cur = self._conn.execute(
                 """
                 INSERT INTO merge_proposals(person_a, person_b, reason, status, created_at)
                 VALUES (?, ?, ?, 'pending', ?)
                 """,
-                (person_a, person_b, reason, _now_iso()),
+                (a, b, reason, _now_iso()),
             )
             return int(cur.lastrowid)
 
@@ -522,22 +590,135 @@ class SqliteStore:
             )
             return [self._row_to_dict(r) for r in cur.fetchall()]
 
+    def get_merge_proposal(self, proposal_id: int) -> Optional[dict[str, Any]]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM merge_proposals WHERE id = ?",
+                (int(proposal_id),),
+            )
+            row = cur.fetchone()
+            return self._row_to_dict(row) if row else None
+
+    def resolve_merge_proposal(
+        self,
+        proposal_id: int,
+        *,
+        status: str,
+        merge_log_id: Optional[int] = None,
+    ) -> None:
+        now = _now_iso()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE merge_proposals
+                SET status = ?, resolved_at = ?, merge_log_id = COALESCE(?, merge_log_id)
+                WHERE id = ?
+                """,
+                (status, now, merge_log_id, int(proposal_id)),
+            )
+
     def merge_people_atomic(
         self,
         *,
         survivor_id: str,
         source_id: str,
-        survivor_aliases: list[str],
-        survivor_display: str,
-        survivor_meta: Any,
-        snapshot: Any,
         reason: str,
-    ) -> int:
-        """Single transaction: reassign accounts/facts, delete source, write merge_log."""
+    ) -> tuple[int, dict[str, Any]]:
+        """Single transaction: snapshot under lock, move accounts/facts, delete source, log."""
         now = _now_iso()
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
+                s_cur = self._conn.execute(
+                    "SELECT * FROM people WHERE person_id = ?", (survivor_id,)
+                )
+                s_row = s_cur.fetchone()
+                o_cur = self._conn.execute(
+                    "SELECT * FROM people WHERE person_id = ?", (source_id,)
+                )
+                o_row = o_cur.fetchone()
+                if s_row is None:
+                    raise KeyError(survivor_id)
+                if o_row is None:
+                    raise KeyError(source_id)
+                s_dict = self._person_row_to_dict(s_row)
+                o_dict = self._person_row_to_dict(o_row)
+
+                acc_cur = self._conn.execute(
+                    "SELECT * FROM person_accounts WHERE person_id = ? ORDER BY id ASC",
+                    (source_id,),
+                )
+                accounts = [self._row_to_dict(r) for r in acc_cur.fetchall()]
+                fact_cur = self._conn.execute(
+                    """
+                    SELECT * FROM person_facts WHERE person_id = ?
+                    ORDER BY id DESC LIMIT 200
+                    """,
+                    (source_id,),
+                )
+                facts = [self._row_to_dict(r) for r in fact_cur.fetchall()]
+                fact_ids = [int(f["id"]) for f in facts if f.get("id") is not None]
+
+                surv_facts_cur = self._conn.execute(
+                    "SELECT fact FROM person_facts WHERE person_id = ?",
+                    (survivor_id,),
+                )
+                surv_fact_texts = {
+                    str(r["fact"] or "").strip()
+                    for r in surv_facts_cur.fetchall()
+                    if str(r["fact"] or "").strip()
+                }
+                # Drop duplicate fact texts on source before move (keep survivor's).
+                for f in facts:
+                    ft = str(f.get("fact") or "").strip()
+                    fid = f.get("id")
+                    if ft and ft in surv_fact_texts and fid is not None:
+                        self._conn.execute(
+                            "DELETE FROM person_facts WHERE id = ?", (int(fid),)
+                        )
+                        fact_ids = [x for x in fact_ids if x != int(fid)]
+
+                def _aliases(raw: Any) -> list[str]:
+                    if isinstance(raw, list):
+                        return [str(x).strip() for x in raw if str(x).strip()]
+                    if isinstance(raw, str) and raw.strip().startswith("["):
+                        try:
+                            parsed = json.loads(raw)
+                            if isinstance(parsed, list):
+                                return [str(x).strip() for x in parsed if str(x).strip()]
+                        except Exception:
+                            pass
+                    return []
+
+                s_aliases = _aliases(s_dict.get("aliases"))
+                o_aliases = _aliases(o_dict.get("aliases"))
+                merged_aliases: list[str] = []
+                for a in s_aliases + o_aliases:
+                    if a and a not in merged_aliases:
+                        merged_aliases.append(a)
+                survivor_display = str(s_dict.get("display_name") or survivor_id)
+                survivor_meta = (
+                    s_dict.get("meta") if isinstance(s_dict.get("meta"), dict) else {}
+                )
+
+                snapshot = {
+                    "person": {
+                        "id": source_id,
+                        "display_name": o_dict.get("display_name"),
+                        "aliases": o_aliases or [source_id],
+                        "names": o_aliases or [source_id],
+                        "meta": o_dict.get("meta") if isinstance(o_dict.get("meta"), dict) else {},
+                    },
+                    "facts": facts,
+                    "fact_ids": fact_ids,
+                    "accounts": accounts,
+                    "survivor_before": {
+                        "display_name": survivor_display,
+                        "aliases": s_aliases or [survivor_id],
+                        "meta": survivor_meta,
+                    },
+                }
+
                 self._conn.execute(
                     "UPDATE person_accounts SET person_id = ?, updated_at = ? WHERE person_id = ?",
                     (survivor_id, now, source_id),
@@ -554,14 +735,12 @@ class SqliteStore:
                     """,
                     (
                         survivor_display,
-                        self._dumps(survivor_aliases),
+                        self._dumps(merged_aliases or [survivor_id]),
                         now,
                         self._dumps(survivor_meta),
                         survivor_id,
                     ),
                 )
-                self._conn.execute("DELETE FROM person_facts WHERE person_id = ?", (source_id,))
-                self._conn.execute("DELETE FROM person_accounts WHERE person_id = ?", (source_id,))
                 self._conn.execute("DELETE FROM people WHERE person_id = ?", (source_id,))
                 cur = self._conn.execute(
                     """
@@ -572,7 +751,14 @@ class SqliteStore:
                 )
                 log_id = int(cur.lastrowid)
                 self._conn.execute("COMMIT")
-                return log_id
+                stats = {
+                    "accounts_moved": len(accounts),
+                    "facts_moved": len(fact_ids),
+                    "merge_log_id": log_id,
+                    "survivor_id": survivor_id,
+                    "source_id": source_id,
+                }
+                return log_id, stats
             except Exception:
                 try:
                     self._conn.execute("ROLLBACK")
@@ -581,13 +767,15 @@ class SqliteStore:
                 raise
 
     def undo_merge_atomic(self, merge_id: int) -> dict[str, Any]:
-        """Restore source person from merge_log.snapshot (best-effort)."""
+        """Restore source from snapshot: move facts back, restore survivor fields."""
         with self._lock:
             cur = self._conn.execute("SELECT * FROM merge_log WHERE id = ?", (int(merge_id),))
             row = cur.fetchone()
             if not row:
                 raise KeyError(merge_id)
             log = self._row_to_dict(row)
+            if log.get("undone_at"):
+                raise ValueError("merge_already_undone")
             snap = log.get("snapshot")
             if isinstance(snap, str) and snap.strip():
                 try:
@@ -599,15 +787,44 @@ class SqliteStore:
             person = snap.get("person") if isinstance(snap.get("person"), dict) else {}
             source_id = str(log.get("source_id") or person.get("id") or "").strip()
             survivor_id = str(log.get("survivor_id") or "").strip()
-            if not source_id:
-                raise ValueError("source_id missing in merge log")
+            if not source_id or not survivor_id:
+                raise ValueError("source_id/survivor_id missing in merge log")
+            fact_ids = [
+                int(x)
+                for x in (snap.get("fact_ids") or [])
+                if x is not None
+            ]
+            survivor_before = (
+                snap.get("survivor_before")
+                if isinstance(snap.get("survivor_before"), dict)
+                else {}
+            )
             now = _now_iso()
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
+                # Accounts from snapshot must still belong to survivor (or be free).
+                for acc in snap.get("accounts") or []:
+                    if not isinstance(acc, dict):
+                        continue
+                    plat = str(acc.get("platform") or "").strip().lower()
+                    puid = str(acc.get("platform_user_id") or "").strip()
+                    if not plat or not puid:
+                        continue
+                    own = self._conn.execute(
+                        "SELECT person_id FROM person_accounts "
+                        "WHERE platform = ? AND platform_user_id = ?",
+                        (plat, puid),
+                    ).fetchone()
+                    if own is not None and str(own["person_id"]) not in (survivor_id, source_id):
+                        raise ValueError(
+                            f"account {plat}:{puid} reassigned away from survivor; cannot undo"
+                        )
+
                 self._conn.execute(
                     """
-                    INSERT OR REPLACE INTO people(person_id, display_name, aliases, created_at, updated_at, meta)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT OR REPLACE INTO people(
+                        person_id, display_name, aliases, created_at, updated_at, meta
+                    ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         source_id,
@@ -618,6 +835,24 @@ class SqliteStore:
                         self._dumps(person.get("meta") or {}),
                     ),
                 )
+                if fact_ids:
+                    placeholders = ",".join("?" * len(fact_ids))
+                    self._conn.execute(
+                        f"UPDATE person_facts SET person_id = ? WHERE id IN ({placeholders})",
+                        (source_id, *fact_ids),
+                    )
+                else:
+                    # Legacy snapshots without fact_ids: re-insert (may dup) — prefer move.
+                    for fact in snap.get("facts") or []:
+                        if not isinstance(fact, dict):
+                            continue
+                        fid = fact.get("id")
+                        if fid is not None:
+                            self._conn.execute(
+                                "UPDATE person_facts SET person_id = ? WHERE id = ?",
+                                (source_id, int(fid)),
+                            )
+
                 for acc in snap.get("accounts") or []:
                     if not isinstance(acc, dict):
                         continue
@@ -627,50 +862,58 @@ class SqliteStore:
                         continue
                     h = str(acc.get("handle") or "").strip() or None
                     self._conn.execute(
-                        "DELETE FROM person_accounts WHERE platform = ? AND platform_user_id = ?",
-                        (plat, puid),
-                    )
-                    self._conn.execute(
                         """
-                        INSERT INTO person_accounts(
-                            person_id, platform, platform_user_id, handle, handle_norm,
-                            display_name, avatar_url, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        UPDATE person_accounts
+                        SET person_id = ?, handle = ?, handle_norm = ?,
+                            display_name = COALESCE(?, display_name),
+                            avatar_url = COALESCE(?, avatar_url),
+                            updated_at = ?
+                        WHERE platform = ? AND platform_user_id = ?
                         """,
                         (
                             source_id,
-                            plat,
-                            puid,
                             h,
                             h.casefold() if h else None,
                             acc.get("display_name"),
                             acc.get("avatar_url"),
                             now,
-                            now,
+                            plat,
+                            puid,
                         ),
                     )
-                for fact in snap.get("facts") or []:
-                    if not isinstance(fact, dict):
-                        continue
-                    ft = str(fact.get("fact") or "").strip()
-                    if not ft:
-                        continue
+
+                if survivor_before:
                     self._conn.execute(
                         """
-                        INSERT INTO person_facts(person_id, fact, emotion_note, created_at, source, meta)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        UPDATE people
+                        SET display_name = ?, aliases = ?, meta = ?, updated_at = ?
+                        WHERE person_id = ?
                         """,
                         (
-                            source_id,
-                            ft,
-                            fact.get("emotion_note"),
-                            fact.get("created_at") or now,
-                            fact.get("source") or "undo_merge",
-                            self._dumps(fact.get("meta")),
+                            survivor_before.get("display_name") or survivor_id,
+                            self._dumps(
+                                survivor_before.get("aliases") or [survivor_id]
+                            ),
+                            self._dumps(survivor_before.get("meta") or {}),
+                            now,
+                            survivor_id,
                         ),
                     )
+
+                # Mark undone (column from migration 004; ignore if missing on ancient DBs).
+                try:
+                    self._conn.execute(
+                        "UPDATE merge_log SET undone_at = ? WHERE id = ?",
+                        (now, int(merge_id)),
+                    )
+                except sqlite3.OperationalError:
+                    pass
                 self._conn.execute("COMMIT")
-                return {"restored_id": source_id, "survivor_id": survivor_id, "merge_log_id": int(merge_id)}
+                return {
+                    "restored_id": source_id,
+                    "survivor_id": survivor_id,
+                    "merge_log_id": int(merge_id),
+                }
             except Exception:
                 try:
                     self._conn.execute("ROLLBACK")

@@ -123,27 +123,20 @@ CREATE INDEX IF NOT EXISTS idx_merge_log_ts ON merge_log(created_at);
 """
 
 # handle_norm + merge proposals (pending admin merge) + indexes.
+# Applied stepwise in SqliteStore._migrate_v3 (not raw executescript) so a
+# duplicate-column ALTER cannot skip CREATE TABLE merge_proposals.
 MIGRATION_003_SQL = """
-ALTER TABLE person_accounts ADD COLUMN handle_norm TEXT;
+-- see SqliteStore._migrate_v3
+"""
 
-CREATE INDEX IF NOT EXISTS idx_person_accounts_handle_norm ON person_accounts(handle_norm);
-
-CREATE TABLE IF NOT EXISTS merge_proposals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    person_a TEXT NOT NULL,
-    person_b TEXT NOT NULL,
-    reason TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL,
-    resolved_at TEXT,
-    merge_log_id INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_merge_proposals_status ON merge_proposals(status);
+# undone_at on merge_log + unique pending proposal pair.
+MIGRATION_004_SQL = """
+-- see SqliteStore._migrate_v4
 """
 
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001_SQL),
     (2, MIGRATION_002_SQL),
     (3, MIGRATION_003_SQL),
+    (4, MIGRATION_004_SQL),
 ]

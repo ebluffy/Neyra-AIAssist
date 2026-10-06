@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from core.runtime.event_bus import (
@@ -15,13 +16,25 @@ from core.runtime.event_bus import (
     MUSIC_STOP,
 )
 
-# Shared play-verb pattern (hard path + soft path + strip).
+# Explicit forms only — ``вкл\\w*`` falsely matches «вклад»/«вкладка»/«включил».
+_PLAY_VERBS = (
+    "включи",
+    "включите",
+    "включить",
+    "включай",
+    "вруби",
+    "врубай",
+    "врубите",
+    "поставь",
+    "заиграй",
+    "play",
+)
 PLAY_VERB_RE = re.compile(
-    r"\b(вкл\w*|вруб\w*|поставь|заиграй|play)\b",
+    r"\b(" + "|".join(_PLAY_VERBS) + r")\b",
     re.IGNORECASE,
 )
 PLAY_VERB_STRIP_RE = re.compile(
-    r"^(вкл\w*|вруб\w*|поставь|заиграй|play|music|музыка)\s+",
+    r"^(" + "|".join(_PLAY_VERBS) + r"|music|музыка)\s+",
     re.IGNORECASE,
 )
 
@@ -141,42 +154,111 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
     return {"intent": "music_control", "action": MUSIC_PLAY, "query": q}
 
 
-def resolve_music_route(
-    content: str,
-    *,
-    classifier_route: Optional[str] = None,
-) -> tuple[str, bool]:
-    """
-    Pure routing decision for tests.
+@dataclass
+class MusicRoutePlan:
+    """First pass before optional LLM classifier."""
 
-    Returns (route, use_music).
-    If classifier_route is None and soft path would need LLM, route stays undecided
-    as CHAT unless hard candidate / lyrics decide alone.
-    """
+    content: str
+    music_candidate: Optional[dict[str, str]]
+    lyrics_hint: bool
+    soft_music: bool
+    play_verb: bool
+    needs_classifier: bool
+    tentative_route: str
+
+
+def plan_music_route(content: str) -> MusicRoutePlan:
+    """Pure step 1: decide if classifier is needed (bot inserts LLM call between steps)."""
     music_candidate = candidate_music_intent(content)
     lyrics_hint = lyrics_request_hint(content)
     soft_music = soft_music_hint(content)
     play_verb = has_play_verb(content)
 
     if lyrics_hint and not play_verb:
-        route = "GET_LYRICS"
-    elif music_candidate and str(music_candidate.get("action") or "") != MUSIC_PLAY:
-        route = "PLAY_MUSIC"
-    elif music_candidate and not lyrics_hint:
-        route = "PLAY_MUSIC"
-    elif music_candidate or lyrics_hint or soft_music:
+        return MusicRoutePlan(
+            content=content,
+            music_candidate=music_candidate,
+            lyrics_hint=lyrics_hint,
+            soft_music=soft_music,
+            play_verb=play_verb,
+            needs_classifier=False,
+            tentative_route="GET_LYRICS",
+        )
+    if music_candidate and str(music_candidate.get("action") or "") != MUSIC_PLAY:
+        return MusicRoutePlan(
+            content=content,
+            music_candidate=music_candidate,
+            lyrics_hint=lyrics_hint,
+            soft_music=soft_music,
+            play_verb=play_verb,
+            needs_classifier=False,
+            tentative_route="PLAY_MUSIC",
+        )
+    if music_candidate and not lyrics_hint:
+        return MusicRoutePlan(
+            content=content,
+            music_candidate=music_candidate,
+            lyrics_hint=lyrics_hint,
+            soft_music=soft_music,
+            play_verb=play_verb,
+            needs_classifier=False,
+            tentative_route="PLAY_MUSIC",
+        )
+    if music_candidate or lyrics_hint or soft_music:
+        return MusicRoutePlan(
+            content=content,
+            music_candidate=music_candidate,
+            lyrics_hint=lyrics_hint,
+            soft_music=soft_music,
+            play_verb=play_verb,
+            needs_classifier=True,
+            tentative_route="CHAT",
+        )
+    return MusicRoutePlan(
+        content=content,
+        music_candidate=music_candidate,
+        lyrics_hint=lyrics_hint,
+        soft_music=soft_music,
+        play_verb=play_verb,
+        needs_classifier=False,
+        tentative_route="CHAT",
+    )
+
+
+def finalize_music_route(
+    plan: MusicRoutePlan,
+    *,
+    classifier_route: Optional[str] = None,
+) -> tuple[str, bool, Optional[dict[str, str]]]:
+    """Pure step 2: final route + use_music after optional classifier."""
+    music_candidate = plan.music_candidate
+    lyrics_hint = plan.lyrics_hint
+    play_verb = plan.play_verb
+
+    if not plan.needs_classifier:
+        route = plan.tentative_route
+    else:
         route = (classifier_route or "CHAT").strip().upper() or "CHAT"
         if route == "CHAT" and music_candidate and not lyrics_hint:
             route = "PLAY_MUSIC"
         if lyrics_hint and route == "PLAY_MUSIC" and not play_verb:
             route = "GET_LYRICS"
-    else:
-        route = "CHAT"
 
-    soft_ok = soft_play_allowed(content, soft_music=soft_music)
+    soft_ok = soft_play_allowed(plan.content, soft_music=plan.soft_music)
     use_music = route == "PLAY_MUSIC" and not lyrics_hint and (
         bool(music_candidate) or soft_ok
     )
     if route == "PLAY_MUSIC" and not use_music and not lyrics_hint:
         route = "CHAT"
-    return route, use_music
+    return route, use_music, music_candidate
+
+
+def resolve_music_route(
+    content: str,
+    *,
+    classifier_route: Optional[str] = None,
+) -> tuple[str, bool]:
+    """Convenience for tests: plan + finalize in one call."""
+    plan = plan_music_route(content)
+    route, use, _ = finalize_music_route(plan, classifier_route=classifier_route)
+    return route, use

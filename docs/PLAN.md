@@ -354,15 +354,16 @@ Account-first модель людей без анкетных полей. Реа
 - **Mentions в тексте:** exact / word-boundary + явный список падежных окончаний (не «Максим»→«макс»).
 - **Обращение:** nick / display_name; реальное имя — только если есть факт.
 - **Diary:** от первого лица Нейры (чувства). **Journal:** хроника / reflection.
-- **Merge:** LLM-tool `propose_people_merge` (pending); apply/undo — admin API (`merge_log` atomic).
-- **Wipe API / dashboard:** scopes обязательны + `confirm: "WIPE"`; backup SQLite (+ Chroma при `ltm`).
+- **Merge:** LLM-tool `propose_people_merge` (pending); apply/reject в дашборде; undo из snapshot (`undone_at`).
+- **Wipe API / dashboard:** scopes обязательны + `confirm: "WIPE"`; `sqlite3.backup` (+ Chroma при `ltm`); `server/data/**` в gitignore.
+- **Не в этом PR:** суточный embedding-similarity job для кандидатов (memory consolidation) — отдельно после стабилизации proposals UI.
 
 ### Готово, когда
 
 - [x] PROFILE_KEYS / анкетная форма убраны из Hub, API, dashboard.
 - [x] Account-first resolve + строгие mentions; Discord передаёт id/nick/display/avatar.
 - [x] Diary/journal prompts не выдумывают чужие имена.
-- [x] propose-only merge + atomic merge/undo + wipe confirm/backup; кнопки очистки в MemoryScreen.
+- [x] propose-only merge + atomic merge/undo + wipe confirm/backup + proposals UI; кнопки очистки в MemoryScreen.
 - [x] Offline tests mention/resolve/merge/wipe + music soft-path зелёные; cutover = wipe.
 
 
