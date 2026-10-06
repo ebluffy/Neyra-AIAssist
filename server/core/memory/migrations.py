@@ -91,6 +91,38 @@ CREATE TABLE IF NOT EXISTS semantic_outbox (
 );
 """
 
+# Memory v2: platform accounts + merge audit (people cards stay; profile fields unused).
+MIGRATION_002_SQL = """
+CREATE TABLE IF NOT EXISTS person_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    platform_user_id TEXT NOT NULL,
+    handle TEXT,
+    display_name TEXT,
+    avatar_url TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(platform, platform_user_id),
+    FOREIGN KEY(person_id) REFERENCES people(person_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_person_accounts_person ON person_accounts(person_id);
+CREATE INDEX IF NOT EXISTS idx_person_accounts_handle ON person_accounts(handle);
+
+CREATE TABLE IF NOT EXISTS merge_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    survivor_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    reason TEXT,
+    snapshot TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_merge_log_ts ON merge_log(created_at);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001_SQL),
+    (2, MIGRATION_002_SQL),
 ]

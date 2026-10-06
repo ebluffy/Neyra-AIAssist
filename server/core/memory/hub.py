@@ -299,15 +299,11 @@ class MemoryHub:
         names: list[str] | None = None,
         discord_ids: list[str] | None = None,
         profile: dict[str, Any] | None = None,
+        accounts: list[dict[str, Any]] | None = None,
         create: bool = False,
     ) -> dict[str, Any]:
-        """Create/update person with canonical profile in meta.static_facts."""
-        from core.memory.person_profile import (
-            coerce_profile,
-            display_name_from_profile,
-            merge_profile,
-            split_static_facts,
-        )
+        """Create/update person card (aliases + accounts). ``profile`` ignored (Memory v2)."""
+        from core.memory.person_profile import split_static_facts
 
         pid = (person_id or "").strip()
         if not pid:
@@ -318,10 +314,9 @@ class MemoryHub:
         meta: dict[str, Any] = {}
         if existing and isinstance(existing.get("meta"), dict):
             meta = dict(existing["meta"])
-        old_static = meta.get("static_facts") if isinstance(meta.get("static_facts"), dict) else {}
-        old_profile, _ = split_static_facts(old_static)
-        new_profile = merge_profile(old_profile, profile) if profile is not None else coerce_profile(old_profile)
-        meta["static_facts"] = {k: v for k, v in new_profile.items() if str(v).strip()}
+        leftovers: list[str] = []
+        if "static_facts" in meta:
+            _, leftovers = split_static_facts(meta.pop("static_facts", None))
         if names is not None:
             clean_names = [str(n).strip() for n in names if str(n).strip()]
             meta["names"] = clean_names
@@ -331,12 +326,203 @@ class MemoryHub:
                 aliases = existing.get("aliases") if existing else None
                 if isinstance(aliases, list):
                     clean_names = [str(n).strip() for n in aliases if str(n).strip()]
-        if discord_ids is not None:
-            meta["discord_ids"] = [str(x).strip() for x in discord_ids if str(x).strip()]
-        display = display_name_from_profile(new_profile, fallback=(clean_names[0] if clean_names else pid))
+        display = clean_names[0] if clean_names else pid
         self.upsert_person(pid, display_name=display, aliases=clean_names or [pid], meta=meta)
+        for did in discord_ids or []:
+            d = str(did or "").strip()
+            if d:
+                self.sqlite.upsert_person_account(
+                    person_id=pid,
+                    platform="discord",
+                    platform_user_id=d,
+                    handle=(clean_names[0] if clean_names else None),
+                )
+        for acc in accounts or []:
+            if not isinstance(acc, dict):
+                continue
+            plat = str(acc.get("platform") or "").strip()
+            puid = str(acc.get("platform_user_id") or "").strip()
+            if plat and puid:
+                self.sqlite.upsert_person_account(
+                    person_id=pid,
+                    platform=plat,
+                    platform_user_id=puid,
+                    handle=str(acc.get("handle") or "").strip() or None,
+                    display_name=str(acc.get("display_name") or "").strip() or None,
+                    avatar_url=str(acc.get("avatar_url") or "").strip() or None,
+                )
+        for line in leftovers:
+            self.sqlite.add_person_fact(person_id=pid, fact=line, source="profile_migrate")
+        if isinstance(profile, dict):
+            for k, v in profile.items():
+                vv = str(v or "").strip()
+                if vv:
+                    label = {
+                        "first_name": "зовут",
+                        "last_name": "фамилия",
+                        "birth_date": "дата рождения",
+                        "city": "город",
+                    }.get(str(k), str(k))
+                    self.sqlite.add_person_fact(
+                        person_id=pid, fact=f"{label}: {vv}", source="dashboard_profile"
+                    )
         row = self.sqlite.get_person(pid)
         return self._person_as_legacy_dict(row) if row else {"id": pid}
+
+    def ensure_person_for_account(
+        self,
+        *,
+        platform: str,
+        platform_user_id: str,
+        handle: Optional[str] = None,
+        display_name: Optional[str] = None,
+        avatar_url: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Resolve or create person by platform account (no fuzzy)."""
+        from core.runtime.identity import UnifiedIdentityMapper
+
+        plat = (platform or "unknown").strip().lower()
+        puid = (platform_user_id or "").strip()
+        if not puid:
+            raise ValueError("platform_user_id required")
+        acc = self.sqlite.get_account(plat, puid)
+        if acc:
+            pid = str(acc.get("person_id") or "").strip()
+            self.sqlite.upsert_person_account(
+                person_id=pid,
+                platform=plat,
+                platform_user_id=puid,
+                handle=handle,
+                display_name=display_name,
+                avatar_url=avatar_url,
+            )
+            row = self.sqlite.get_person(pid)
+            return self._person_as_legacy_dict(row) if row else {"id": pid}
+        h = (handle or "").strip()
+        if h:
+            by_h = self.sqlite.find_person_id_by_handle(h)
+            if by_h:
+                self.sqlite.upsert_person_account(
+                    person_id=by_h,
+                    platform=plat,
+                    platform_user_id=puid,
+                    handle=h,
+                    display_name=display_name,
+                    avatar_url=avatar_url,
+                )
+                aliases = self._aliases_list(
+                    (self.sqlite.get_person(by_h) or {}).get("aliases")
+                )
+                if h and h not in aliases:
+                    aliases.append(h)
+                disp = (display_name or "").strip() or h
+                self.upsert_person(by_h, display_name=disp, aliases=aliases)
+                row = self.sqlite.get_person(by_h)
+                return self._person_as_legacy_dict(row) if row else {"id": by_h}
+        pid = UnifiedIdentityMapper.resolve(plat, puid)
+        disp = (display_name or "").strip() or h or pid
+        aliases = [x for x in [h, disp] if x]
+        self.upsert_person(pid, display_name=disp, aliases=aliases or [pid], meta={})
+        self.sqlite.upsert_person_account(
+            person_id=pid,
+            platform=plat,
+            platform_user_id=puid,
+            handle=h or None,
+            display_name=display_name,
+            avatar_url=avatar_url,
+        )
+        row = self.sqlite.get_person(pid)
+        return self._person_as_legacy_dict(row) if row else {"id": pid}
+
+    def merge_people(
+        self,
+        survivor_id: str,
+        source_id: str,
+        *,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Merge source into survivor; tombstone source; write merge_log."""
+        survivor = (survivor_id or "").strip()
+        source = (source_id or "").strip()
+        if not survivor or not source:
+            raise ValueError("survivor_id and source_id required")
+        if survivor == source:
+            raise ValueError("cannot merge person into itself")
+        s_row = self.sqlite.get_person(survivor)
+        o_row = self.sqlite.get_person(source)
+        if s_row is None:
+            raise KeyError(survivor)
+        if o_row is None:
+            raise KeyError(source)
+        snapshot = {
+            "person": self._person_as_legacy_dict(o_row),
+            "facts": self.sqlite.list_person_facts(source, limit=200),
+            "accounts": self.sqlite.list_accounts_for_person(source),
+        }
+        s_aliases = self._aliases_list(s_row.get("aliases"))
+        o_aliases = self._aliases_list(o_row.get("aliases"))
+        merged_aliases: list[str] = []
+        for a in s_aliases + o_aliases:
+            if a and a not in merged_aliases:
+                merged_aliases.append(a)
+        n_acc = self.sqlite.reassign_accounts(source, survivor)
+        n_facts = self.sqlite.reassign_facts(source, survivor)
+        self.upsert_person(
+            survivor,
+            display_name=str(s_row.get("display_name") or survivor),
+            aliases=merged_aliases or [survivor],
+            meta=s_row.get("meta") if isinstance(s_row.get("meta"), dict) else {},
+        )
+        # Tombstone source row (keep id for audit, strip accounts/facts already moved)
+        self.sqlite.upsert_person(
+            person_id=source,
+            display_name=f"[merged→{survivor}]",
+            aliases=[],
+            meta={"merged_into": survivor, "tombstone": True},
+        )
+        # Soft-delete tombstone: remove empty person shell
+        self.sqlite.delete_person(source)
+        log_id = self.sqlite.add_merge_log(
+            survivor_id=survivor,
+            source_id=source,
+            reason=reason or "merge",
+            snapshot=snapshot,
+        )
+        return {
+            "survivor_id": survivor,
+            "source_id": source,
+            "accounts_moved": n_acc,
+            "facts_moved": n_facts,
+            "merge_log_id": log_id,
+        }
+
+    def wipe(self, scopes: list[str]) -> dict[str, int]:
+        """Clear selected memory scopes. Returns deleted counts per scope."""
+        wanted = {str(s).strip().lower() for s in (scopes or []) if str(s).strip()}
+        if not wanted:
+            return {}
+        out: dict[str, int] = {}
+        if "people" in wanted:
+            out["people"] = self.sqlite.clear_table("people")
+            try:
+                out["merge_log"] = self.sqlite.clear_table("merge_log")
+            except Exception:
+                out["merge_log"] = 0
+        if "diary" in wanted:
+            out["diary"] = self.sqlite.clear_table("diary_notes")
+        if "journal" in wanted:
+            out["journal"] = self.sqlite.clear_table("journal_entries")
+        if "chat_log" in wanted:
+            out["chat_log"] = self.sqlite.clear_table("chat_log")
+        if "working_memory" in wanted:
+            out["working_memory"] = self.sqlite.clear_table("working_memory_snapshots")
+        if "ltm" in wanted:
+            lm = self._long_memory
+            if lm is not None and hasattr(lm, "clear_all"):
+                out["ltm"] = int(lm.clear_all() or 0)
+            else:
+                out["ltm"] = 0
+        return out
 
     def add_diary_note(
         self,
@@ -431,9 +617,7 @@ class MemoryHub:
         return [str(raw).strip()] if str(raw).strip() else []
 
     def _person_as_legacy_dict(self, row: dict[str, Any]) -> dict[str, Any]:
-        """Normalize SQLite people row to PeopleDB-shaped dict (id/names/discord_ids)."""
-        from core.memory.person_profile import coerce_profile, split_static_facts
-
+        """Normalize SQLite people row to API dict (accounts + aliases, no profile)."""
         pid = str(row.get("person_id") or "").strip()
         aliases = self._aliases_list(row.get("aliases"))
         meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
@@ -441,21 +625,32 @@ class MemoryHub:
             aliases = [str(x).strip() for x in meta["names"] if str(x).strip()]
         display = str(row.get("display_name") or "").strip()
         names = aliases or ([display] if display else ([pid] if pid else []))
-        discord_ids: list[str] = []
+        accounts = self.sqlite.list_accounts_for_person(pid) if pid else []
+        discord_ids = [
+            str(a.get("platform_user_id") or "").strip()
+            for a in accounts
+            if str(a.get("platform") or "").lower() == "discord"
+            and str(a.get("platform_user_id") or "").strip()
+        ]
         if isinstance(meta.get("discord_ids"), list):
-            discord_ids = [str(x).strip() for x in meta["discord_ids"] if str(x).strip()]
-        profile, leftover = split_static_facts(meta.get("static_facts"))
+            for x in meta["discord_ids"]:
+                s = str(x).strip()
+                if s and s not in discord_ids:
+                    discord_ids.append(s)
         return {
             "id": pid,
             "names": names,
+            "aliases": names,
+            "accounts": accounts,
             "discord_ids": discord_ids,
-            "profile": coerce_profile(profile),
-            "static_facts": {k: v for k, v in profile.items() if str(v).strip()},
-            "legacy_fact_hints": leftover,
+            "profile": {},
+            "static_facts": {},
+            "legacy_fact_hints": [],
             "dynamic_facts": list(meta.get("dynamic_facts") or [])
             if isinstance(meta.get("dynamic_facts"), list)
             else [],
             "last_seen": row.get("updated_at") or meta.get("last_seen"),
+            "display_name": display or (names[0] if names else pid),
             "meta": meta,
         }
 
@@ -463,93 +658,108 @@ class MemoryHub:
         return [self._person_as_legacy_dict(r) for r in self.sqlite.list_people()]
 
     def find_person(self, identifier: str, discord_id: Optional[str] = None) -> Optional[dict[str, Any]]:
-        """Identity lookup: SQLite only (Hub is the sole people store once attached)."""
-        ident = (identifier or "").strip()
-        ident_lower = ident.lower()
+        """Exact identity lookup only (account id / handle / person_id / alias)."""
         discord = (discord_id or "").strip() or None
-
+        if discord:
+            acc = self.sqlite.get_account("discord", discord)
+            if acc:
+                row = self.sqlite.get_person(str(acc.get("person_id") or ""))
+                if row:
+                    return self._person_as_legacy_dict(row)
+            for person in self.list_people():
+                if discord in (person.get("discord_ids") or []):
+                    return person
+        ident = (identifier or "").strip()
+        if not ident:
+            return None
+        ident_lower = ident.casefold()
+        row = self.sqlite.get_person(ident)
+        if row:
+            return self._person_as_legacy_dict(row)
+        by_h = self.sqlite.find_person_id_by_handle(ident)
+        if by_h:
+            row = self.sqlite.get_person(by_h)
+            if row:
+                return self._person_as_legacy_dict(row)
         for person in self.list_people():
-            if discord and discord in (person.get("discord_ids") or []):
+            if str(person.get("id") or "").casefold() == ident_lower:
                 return person
-            if not ident_lower:
-                continue
-            if str(person.get("id") or "").lower() == ident_lower:
-                return person
-            names_lower = [str(n).lower() for n in (person.get("names") or [])]
-            if ident_lower in names_lower:
-                return person
-            if any(ident_lower in n or n in ident_lower for n in names_lower if n):
+            aliases = [str(n).casefold() for n in (person.get("names") or []) if str(n).strip()]
+            if ident_lower in aliases:
                 return person
         return None
 
     def get_all_names_map(self) -> dict[str, str]:
-        """Map lowercased name/alias → person_id (SQLite only)."""
+        """Map lowercased exact alias/handle → person_id (for mention scan)."""
         result: dict[str, str] = {}
         for person in self.list_people():
             pid = str(person.get("id") or "").strip()
             if not pid:
                 continue
-            result[pid.lower()] = pid
+            result[pid.casefold()] = pid
             for name in person.get("names") or []:
-                key = str(name).strip().lower()
+                key = str(name).strip().casefold()
                 if key:
                     result[key] = pid
+            for acc in person.get("accounts") or []:
+                h = str(acc.get("handle") or "").strip().casefold()
+                if h:
+                    result[h] = pid
         return result
 
     def get_person_summary(self, person_id: str) -> str:
-        """Prompt dossier from SQLite person+facts; legacy PeopleDB only if no Hub row."""
-        from core.memory.person_profile import (
-            display_name_from_profile,
-            profile_summary_lines,
-            split_static_facts,
-        )
+        """Prompt dossier: accounts + free-form facts (no анкета)."""
+        from core.memory.person_profile import known_name_from_facts, speaker_ref_from_account
 
         pid = (person_id or "").strip()
         if not pid:
             return ""
         person = self.sqlite.get_person(pid)
-        if person:
-            names = person.get("aliases") or []
-            if isinstance(names, str):
-                names = [names]
-            if not isinstance(names, list):
-                names = []
-            meta = person.get("meta")
-            if isinstance(meta, str) and meta.strip():
-                try:
-                    meta = json.loads(meta)
-                except Exception:
-                    meta = {}
-            if not isinstance(meta, dict):
-                meta = {}
-            profile, legacy_facts = split_static_facts(meta.get("static_facts"))
-            title = (
-                display_name_from_profile(profile)
-                or person.get("display_name")
-                or (names[0] if names else pid)
-            )
-            lines = [f"Досье на {title}:"]
-            discord_ids = meta.get("discord_ids")
-            if isinstance(discord_ids, list) and discord_ids:
-                raw_id = str(discord_ids[0] or "").strip()
-                if raw_id.isdigit() and 5 <= len(raw_id) <= 32:
-                    lines.append(f"  Discord пинг (ИСПОЛЬЗУЙ ЧТОБЫ ТЕГНУТЬ ЕГО): <@{raw_id}>")
-            lines.extend(profile_summary_lines(profile))
-            facts = self.sqlite.list_person_facts(pid, limit=8)
-            extra = legacy_facts + [
-                str(f.get("fact") or "").strip() for f in reversed(facts) if str(f.get("fact") or "").strip()
-            ]
-            if extra:
-                lines.append("  Факты:")
-                for fact_line in extra[:12]:
-                    lines.append(f"    - {fact_line}")
-            return "\n".join(lines)
-        return ""
+        if not person:
+            return ""
+        accounts = self.sqlite.list_accounts_for_person(pid)
+        facts = self.sqlite.list_person_facts(pid, limit=12)
+        known = known_name_from_facts(facts)
+        handle = ""
+        display = str(person.get("display_name") or "").strip()
+        for a in accounts:
+            if str(a.get("platform") or "").lower() == "discord":
+                handle = str(a.get("handle") or "").strip() or handle
+                display = str(a.get("display_name") or "").strip() or display
+                break
+        if not handle:
+            aliases = self._aliases_list(person.get("aliases"))
+            handle = aliases[0] if aliases else ""
+        title = speaker_ref_from_account(
+            handle=handle, display_name=display, known_name=known
+        )
+        lines = [f"Досье на {title}:"]
+        for a in accounts:
+            plat = str(a.get("platform") or "").strip()
+            puid = str(a.get("platform_user_id") or "").strip()
+            h = str(a.get("handle") or "").strip()
+            if plat == "discord" and puid.isdigit() and 5 <= len(puid) <= 32:
+                lines.append(f"  Discord пинг: <@{puid}>" + (f" (@{h})" if h else ""))
+            elif plat and puid:
+                lines.append(f"  {plat}: {puid}" + (f" (@{h})" if h else ""))
+        fact_lines = [
+            str(f.get("fact") or "").strip() for f in reversed(facts) if str(f.get("fact") or "").strip()
+        ]
+        if fact_lines:
+            lines.append("  Факты:")
+            for fact_line in fact_lines[:12]:
+                lines.append(f"    - {fact_line}")
+        return "\n".join(lines)
+
+    def delete_diary_note(self, note_id: int) -> bool:
+        return self.sqlite.delete_diary_note(note_id)
+
+    def delete_journal_entry(self, entry_id: int) -> bool:
+        return self.sqlite.delete_journal_entry(entry_id)
 
     def diary_recent_text(self, limit: int = 10) -> str:
-        """Diary for prompt: formatted directly from SQLite rows (Hub is the sole diary store)."""
-        lim = max(1, int(limit))
-        # Fetch extra so filtering session_archive (cross-user / ops) still fills the prompt budget.
+        """Diary for prompt: Neyra first-person notes only (skip session_archive)."""
+        lim = max(1, min(int(limit), 8))
         rows = self.list_diary_notes(limit=max(lim * 3, lim), newest_first=True)
         if not rows:
             return ""
@@ -558,12 +768,14 @@ class MemoryHub:
         for e in rows:
             ts = e.get("ts") or ""
             src = str(e.get("source") or "manual").strip()
-            # session_archive notes are process-global; keep out of PRE-CONTEXT / brain diary block.
             if src == "session_archive":
                 continue
             txt = str(e.get("text") or "").strip()
             if not txt:
                 continue
+            # Cap each note so brain prompt stays clean
+            if len(txt) > 280:
+                txt = txt[:279] + "…"
             emo = str(e.get("emotion") or "").strip()
             if not emo and isinstance(e.get("meta"), dict):
                 emo = str(e["meta"].get("emotion") or e["meta"].get("assistant_mood") or "").strip()
@@ -601,6 +813,8 @@ class MemoryHub:
             "chat_log": self.sqlite.count_table("chat_log"),
             "people": self.sqlite.count_table("people"),
             "person_facts": self.sqlite.count_table("person_facts"),
+            "person_accounts": self.sqlite.count_table("person_accounts"),
+            "merge_log": self.sqlite.count_table("merge_log"),
             "diary_notes": self.sqlite.count_table("diary_notes"),
             "journal_entries": self.sqlite.count_table("journal_entries"),
             "working_memory_snapshots": self.sqlite.count_table("working_memory_snapshots"),

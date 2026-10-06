@@ -463,26 +463,24 @@ def _test_plan_talk_vision() -> None:
 
 
 def _test_person_profile_split() -> None:
-    from core.memory.person_profile import PROFILE_KEYS, split_static_facts
+    from core.memory.person_profile import PROFILE_KEYS, known_name_from_facts, split_static_facts
 
+    # Memory v2: no structured PROFILE_KEYS; static_facts → leftover fact lines
+    assert PROFILE_KEYS == ()
     profile, leftovers = split_static_facts(
         {
             "birth_year": 2004,
             "city": "Киров",
             "car": "Ауди",
             "occupation": "таксист",
-            "relation": "друг",
             "first_name": "Максим",
         }
     )
-    assert set(PROFILE_KEYS) == {"first_name", "last_name", "birth_date", "city"}
-    assert profile["first_name"] == "Максим"
-    assert profile["birth_date"] == "2004"
-    assert profile["city"] == "Киров"
-    assert "occupation" not in profile or not profile.get("occupation")
+    assert profile == {}
+    assert any("Киров" in x for x in leftovers)
     assert any("Ауди" in x for x in leftovers)
-    assert any("таксист" in x for x in leftovers)
-    assert any("друг" in x or "Связь" in x for x in leftovers)
+    assert any("Максим" in x for x in leftovers)
+    assert known_name_from_facts([{"fact": "зовут Кирилл"}]) == "Кирилл"
 
 
 def main() -> int:

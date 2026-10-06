@@ -410,6 +410,8 @@ class ChatRequest(BaseModel):
     platform_user_id: Optional[str] = Field(default=None, max_length=120)
     channel_id: Optional[str] = Field(default=None, max_length=120)
     author_display_name: Optional[str] = Field(default=None, max_length=120)
+    avatar_url: Optional[str] = Field(default=None, max_length=500)
+    platform: Optional[str] = Field(default=None, max_length=40)
 
 
 class DashboardGateKeyRequest(BaseModel):
@@ -450,12 +452,33 @@ class MemoryAddRequest(BaseModel):
 
 
 class PersonUpsertRequest(BaseModel):
-    """Create/update person dossier. Profile uses canonical keys only."""
+    """Create/update person card (aliases + accounts; no анкетные fields)."""
 
     id: Optional[str] = Field(default=None, min_length=1, max_length=80)
     names: Optional[list[str]] = None
     discord_ids: Optional[list[str]] = None
-    profile: dict[str, Any] = Field(default_factory=dict)
+    accounts: Optional[list[dict[str, Any]]] = None
+    profile: dict[str, Any] = Field(default_factory=dict)  # ignored / stored as facts
+
+
+class PersonMergeRequest(BaseModel):
+    survivor_id: str = Field(min_length=1, max_length=80)
+    source_id: str = Field(min_length=1, max_length=80)
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class MemoryWipeRequest(BaseModel):
+    scopes: list[str] = Field(
+        default_factory=lambda: [
+            "people",
+            "diary",
+            "journal",
+            "stm",
+            "ltm",
+            "chat_log",
+            "working_memory",
+        ]
+    )
 
 
 class PersonFactCreateRequest(BaseModel):
@@ -927,6 +950,7 @@ def build_app(
             discord_user_id=body.platform_user_id,
             channel_id=body.channel_id,
             author_display_name=body.author_display_name,
+            avatar_url=body.avatar_url,
         )
         return {"ok": True, "trace_id": trace_id, "data": out}
 
@@ -1432,8 +1456,11 @@ def build_app(
                     {
                         "id": p.get("id"),
                         "names": p.get("names") or [],
+                        "aliases": p.get("aliases") or p.get("names") or [],
                         "discord_ids": p.get("discord_ids") or [],
-                        "profile": p.get("profile") or p.get("static_facts") or {},
+                        "accounts": p.get("accounts") or [],
+                        "display_name": p.get("display_name") or "",
+                        "profile": {},
                     }
                 )
             return out
@@ -1470,6 +1497,7 @@ def build_app(
                 person_id=pid,
                 names=list(body.names or []),
                 discord_ids=list(body.discord_ids or []),
+                accounts=list(body.accounts or []) if body.accounts else None,
                 profile=dict(body.profile or {}),
                 create=True,
             )
@@ -1486,9 +1514,51 @@ def build_app(
             raise ApiError("person_create_failed", str(e), 500) from e
         return {"ok": True, "trace_id": trace_id, "data": data}
 
+    @app.post("/v1/memory/people/merge")
+    async def v1_memory_people_merge(
+        body: PersonMergeRequest,
+        request: Request,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            sa = hub.find_person(body.survivor_id.strip())
+            so = hub.find_person(body.source_id.strip())
+            if not sa:
+                raise ApiError("person_not_found", f"survivor '{body.survivor_id}' not found", 404)
+            if not so:
+                raise ApiError("person_not_found", f"source '{body.source_id}' not found", 404)
+            out = hub.merge_people(
+                str(sa["id"]),
+                str(so["id"]),
+                reason=(body.reason or "dashboard_merge"),
+            )
+            pdb = getattr(agent, "people_db", None)
+            if pdb is not None:
+                pdb._cache.pop(str(so["id"]), None)
+                try:
+                    pdb.hydrate_from_hub()
+                except Exception:
+                    pass
+            return out
+
+        try:
+            data = await asyncio.to_thread(_run)
+        except ApiError:
+            raise
+        except KeyError as e:
+            raise ApiError("person_not_found", str(e), 404) from e
+        except Exception as e:
+            raise ApiError("merge_failed", str(e), 500) from e
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
     @app.get("/v1/memory/people/{person_id}")
     async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_viewer)):
-        """Person dossier summary via Hub (profile + recent facts)."""
+        """Person card: accounts + facts (no анкета)."""
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
@@ -1507,10 +1577,11 @@ def build_app(
             return {
                 "person_id": resolved,
                 "person": person,
-                "profile": person.get("profile") or person.get("static_facts") or {},
+                "accounts": person.get("accounts") or [],
+                "profile": {},
                 "summary": summary,
                 "facts": facts,
-                "legacy_fact_hints": person.get("legacy_fact_hints") or [],
+                "legacy_fact_hints": [],
             }
 
         data = await asyncio.to_thread(_run)
@@ -1539,6 +1610,7 @@ def build_app(
                     person_id=pid,
                     names=list(body.names) if body.names is not None else None,
                     discord_ids=list(body.discord_ids) if body.discord_ids is not None else None,
+                    accounts=list(body.accounts) if body.accounts is not None else None,
                     profile=dict(body.profile) if body.profile is not None else None,
                     create=False,
                 )
@@ -1702,6 +1774,118 @@ def build_app(
                 kind=body.kind or "manual",
             )
             return {"id": entry_id}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.delete("/v1/memory/diary")
+    async def v1_memory_diary_clear(request: Request, _: None = Depends(dep_admin)):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            n = hub.wipe(["diary"]).get("diary", 0)
+            return {"deleted": n, "scope": "diary"}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.delete("/v1/memory/diary/{note_id}")
+    async def v1_memory_diary_delete(
+        note_id: int, request: Request, _: None = Depends(dep_admin)
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            ok = hub.delete_diary_note(int(note_id))
+            if not ok:
+                raise ApiError("diary_not_found", "diary note not found", 404)
+            return {"deleted": True, "id": int(note_id)}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.delete("/v1/memory/journal")
+    async def v1_memory_journal_clear(request: Request, _: None = Depends(dep_admin)):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            n = hub.wipe(["journal"]).get("journal", 0)
+            return {"deleted": n, "scope": "journal"}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.delete("/v1/memory/journal/{entry_id}")
+    async def v1_memory_journal_delete(
+        entry_id: int, request: Request, _: None = Depends(dep_admin)
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            ok = hub.delete_journal_entry(int(entry_id))
+            if not ok:
+                raise ApiError("journal_not_found", "journal entry not found", 404)
+            return {"deleted": True, "id": int(entry_id)}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.delete("/v1/memory/people")
+    async def v1_memory_people_clear(request: Request, _: None = Depends(dep_admin)):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            n = hub.wipe(["people"]).get("people", 0)
+            pdb = getattr(agent, "people_db", None)
+            if pdb is not None:
+                pdb._cache.clear()
+            return {"deleted": n, "scope": "people"}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.post("/v1/memory/wipe")
+    async def v1_memory_wipe(
+        body: MemoryWipeRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        scopes = [str(s).strip().lower() for s in (body.scopes or []) if str(s).strip()]
+        _audit("memory_wipe", trace_id, api_role, {"scopes": scopes})
+
+        def _run() -> dict[str, Any]:
+            hub_scopes = [s for s in scopes if s != "stm"]
+            counts = hub.wipe(hub_scopes) if hub_scopes else {}
+            if "stm" in scopes:
+                try:
+                    agent.short_memory.clear()
+                    counts["stm"] = 1
+                except Exception:
+                    counts["stm"] = 0
+            if "people" in scopes:
+                pdb = getattr(agent, "people_db", None)
+                if pdb is not None:
+                    pdb._cache.clear()
+            return {"scopes": scopes, "deleted": counts}
 
         data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}

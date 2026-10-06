@@ -27,6 +27,7 @@ async def iter_chat_stream(
     channel_id: Optional[str],
     author_display_name: Optional[str],
     lyrics_marker: str,
+    avatar_url: Optional[str] = None,
 ) -> AsyncIterator[dict]:
     """Yield token/error/done chunks for streaming chat."""
     try:
@@ -69,6 +70,7 @@ async def iter_chat_stream(
         author_display_name=author_display_name,
         lyrics_marker=lyrics_marker,
         log_lane="stream",
+        avatar_url=avatar_url,
     )
     try:
         try:

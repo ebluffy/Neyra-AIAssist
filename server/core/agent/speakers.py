@@ -14,17 +14,34 @@ def resolve_speaker_label(
     discord_user_id: Optional[str],
     author_display_name: Optional[str] = None,
 ) -> str:
-    """Human-readable speaker label for STM / HumanMessage / system prompt."""
+    """Nick/display label; real name only from explicit facts (Memory v2)."""
+    from core.memory.person_profile import known_name_from_facts, speaker_ref_from_account
+
     u = (username or "").strip()
     disp = (author_display_name or "").strip()
-    if u:
+    person = None
+    if hub is not None and (u or discord_user_id):
         person = hub.find_person(u, discord_id=discord_user_id)
-        if person and person.get("names"):
-            return f"{person['names'][0]} (Discord-ник: {u})"
-        return disp or u
-    if disp:
-        return disp
-    return "user"
+    if person:
+        pid = str(person.get("id") or "").strip()
+        facts: list = []
+        try:
+            facts = hub.list_person_facts(pid, limit=20) if hub is not None else []
+        except Exception:
+            facts = []
+        known = known_name_from_facts(facts)
+        handle = u
+        for acc in person.get("accounts") or []:
+            if str(acc.get("platform") or "").lower() == "discord":
+                handle = str(acc.get("handle") or "").strip() or handle
+                disp = str(acc.get("display_name") or "").strip() or disp
+                break
+        return speaker_ref_from_account(
+            handle=handle or None,
+            display_name=disp or None,
+            known_name=known or None,
+        )
+    return disp or u or "user"
 
 
 def format_spoken_user_message(text: str, speaker_label: str) -> str:

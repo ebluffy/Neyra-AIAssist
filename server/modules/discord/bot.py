@@ -1139,6 +1139,15 @@ class NeyraDiscordBot(discord.Client):
             or getattr(message.author, "global_name", None)
             or message.author.name
         )
+        avatar_url = ""
+        try:
+            av = getattr(message.author, "display_avatar", None) or getattr(
+                message.author, "avatar", None
+            )
+            if av is not None:
+                avatar_url = str(getattr(av, "url", "") or "")
+        except Exception:
+            avatar_url = ""
         asyncio.create_task(
             self._run_chat_stream(
                 text_channel=message.channel,
@@ -1150,6 +1159,7 @@ class NeyraDiscordBot(discord.Client):
                 channel_id_str=str(message.channel.id),
                 vision_images=vision_imgs if vision_imgs else None,
                 lyrics_mode=(route == "GET_LYRICS"),
+                avatar_url=avatar_url or None,
             )
         )
 
@@ -1201,6 +1211,7 @@ class NeyraDiscordBot(discord.Client):
         channel_id_str: str,
         vision_images: Optional[list[tuple[str, str]]],
         lyrics_mode: bool = False,
+        avatar_url: Optional[str] = None,
     ) -> None:
         async with text_channel.typing():
             response_msg = (
@@ -1221,6 +1232,7 @@ class NeyraDiscordBot(discord.Client):
                     vision_images=vision_images,
                     channel_id=channel_id_str,
                     author_display_name=author_display_name,
+                    avatar_url=avatar_url,
                 ):
                     if chunk["type"] == "token":
                         full_raw += chunk["text"]

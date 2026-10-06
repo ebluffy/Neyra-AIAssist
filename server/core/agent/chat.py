@@ -27,6 +27,7 @@ async def run_chat(
     channel_id: Optional[str],
     author_display_name: Optional[str],
     lyrics_marker: str,
+    avatar_url: Optional[str] = None,
 ) -> dict:
     """Run one non-streaming chat turn; return text/sounds/thoughts/raw."""
     try:
@@ -58,6 +59,7 @@ async def run_chat(
         author_display_name=author_display_name,
         lyrics_marker=lyrics_marker,
         log_lane="chat",
+        avatar_url=avatar_url,
     )
     try:
         try:

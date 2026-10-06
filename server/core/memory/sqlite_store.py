@@ -142,6 +142,8 @@ class SqliteStore:
             "chat_log",
             "people",
             "person_facts",
+            "person_accounts",
+            "merge_log",
             "diary_notes",
             "journal_entries",
             "working_memory_snapshots",
@@ -152,6 +154,31 @@ class SqliteStore:
         with self._lock:
             cur = self._conn.execute(f"SELECT COUNT(*) FROM {table}")
             return int(cur.fetchone()[0])
+
+    def clear_table(self, table: str) -> int:
+        """DELETE all rows; returns rowcount. Allowed tables only."""
+        allowed = {
+            "chat_log",
+            "people",
+            "person_facts",
+            "person_accounts",
+            "merge_log",
+            "diary_notes",
+            "journal_entries",
+            "working_memory_snapshots",
+            "semantic_outbox",
+        }
+        if table not in allowed:
+            raise ValueError(f"clear_table: unknown table {table}")
+        with self._lock:
+            # FK: clear children before people
+            if table == "people":
+                self._conn.execute("DELETE FROM person_facts")
+                self._conn.execute("DELETE FROM person_accounts")
+                cur = self._conn.execute("DELETE FROM people")
+                return int(cur.rowcount)
+            cur = self._conn.execute(f"DELETE FROM {table}")
+            return int(cur.rowcount)
 
     def schema_version(self) -> int:
         with self._lock:
@@ -284,8 +311,170 @@ class SqliteStore:
     def delete_person(self, person_id: str) -> bool:
         with self._lock:
             self._conn.execute("DELETE FROM person_facts WHERE person_id = ?", (person_id,))
+            self._conn.execute("DELETE FROM person_accounts WHERE person_id = ?", (person_id,))
             cur = self._conn.execute("DELETE FROM people WHERE person_id = ?", (person_id,))
             return cur.rowcount > 0
+
+    def upsert_person_account(
+        self,
+        *,
+        person_id: str,
+        platform: str,
+        platform_user_id: str,
+        handle: Optional[str] = None,
+        display_name: Optional[str] = None,
+        avatar_url: Optional[str] = None,
+    ) -> None:
+        now = _now_iso()
+        plat = (platform or "").strip().lower()
+        puid = (platform_user_id or "").strip()
+        if not plat or not puid:
+            raise ValueError("platform and platform_user_id required")
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT id, person_id FROM person_accounts WHERE platform = ? AND platform_user_id = ?",
+                (plat, puid),
+            )
+            row = cur.fetchone()
+            if row:
+                self._conn.execute(
+                    """
+                    UPDATE person_accounts
+                    SET person_id = ?,
+                        handle = COALESCE(?, handle),
+                        display_name = COALESCE(?, display_name),
+                        avatar_url = COALESCE(?, avatar_url),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        person_id,
+                        handle,
+                        display_name,
+                        avatar_url,
+                        now,
+                        int(row["id"]),
+                    ),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    INSERT INTO person_accounts(
+                        person_id, platform, platform_user_id, handle, display_name, avatar_url,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (person_id, plat, puid, handle, display_name, avatar_url, now, now),
+                )
+
+    def get_account(
+        self, platform: str, platform_user_id: str
+    ) -> Optional[dict[str, Any]]:
+        plat = (platform or "").strip().lower()
+        puid = (platform_user_id or "").strip()
+        if not plat or not puid:
+            return None
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM person_accounts WHERE platform = ? AND platform_user_id = ?",
+                (plat, puid),
+            )
+            row = cur.fetchone()
+            return self._row_to_dict(row) if row else None
+
+    def list_accounts_for_person(self, person_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM person_accounts WHERE person_id = ? ORDER BY id ASC",
+                (person_id,),
+            )
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def find_person_id_by_handle(self, handle: str) -> Optional[str]:
+        h = (handle or "").strip()
+        if not h:
+            return None
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT person_id FROM person_accounts
+                WHERE lower(handle) = lower(?)
+                LIMIT 1
+                """,
+                (h,),
+            )
+            row = cur.fetchone()
+            if row:
+                return str(row["person_id"])
+            cur = self._conn.execute(
+                """
+                SELECT person_id FROM people
+                WHERE lower(person_id) = lower(?)
+                   OR lower(COALESCE(display_name, '')) = lower(?)
+                LIMIT 1
+                """,
+                (h, h),
+            )
+            row = cur.fetchone()
+            return str(row["person_id"]) if row else None
+
+    def reassign_accounts(self, source_person_id: str, survivor_id: str) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE person_accounts SET person_id = ?, updated_at = ? WHERE person_id = ?",
+                (survivor_id, _now_iso(), source_person_id),
+            )
+            return int(cur.rowcount)
+
+    def reassign_facts(self, source_person_id: str, survivor_id: str) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE person_facts SET person_id = ? WHERE person_id = ?",
+                (survivor_id, source_person_id),
+            )
+            return int(cur.rowcount)
+
+    def add_merge_log(
+        self,
+        *,
+        survivor_id: str,
+        source_id: str,
+        reason: Optional[str] = None,
+        snapshot: Any = None,
+    ) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO merge_log(survivor_id, source_id, reason, snapshot, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    survivor_id,
+                    source_id,
+                    reason,
+                    self._dumps(snapshot),
+                    _now_iso(),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def list_merge_log(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM merge_log ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def get_merge_log(self, merge_id: int) -> Optional[dict[str, Any]]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM merge_log WHERE id = ?",
+                (int(merge_id),),
+            )
+            row = cur.fetchone()
+            return self._row_to_dict(row) if row else None
 
     def add_diary_note(
         self,
@@ -315,6 +504,14 @@ class SqliteStore:
                 (limit,),
             )
             return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def delete_diary_note(self, note_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM diary_notes WHERE id = ?",
+                (int(note_id),),
+            )
+            return cur.rowcount > 0
 
     def add_journal_entry(
         self,
@@ -346,6 +543,14 @@ class SqliteStore:
                 (limit,),
             )
             return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def delete_journal_entry(self, entry_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM journal_entries WHERE id = ?",
+                (int(entry_id),),
+            )
+            return cur.rowcount > 0
 
     def save_wm_snapshot(
         self,

@@ -92,6 +92,7 @@ jobs:
           cd server
           python scripts/test_memory_hub_smoke.py
           python scripts/test_memory_cutover_offline.py
+          python scripts/test_memory_v2_people_offline.py
           python scripts/test_stage2_security_offline.py
           python scripts/test_snowflake_offline.py
           python scripts/test_discord_music_intent_offline.py

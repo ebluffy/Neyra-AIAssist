@@ -742,6 +742,7 @@ class NeyraAgent:
         vision_images: Optional[list[tuple[str, str]]] = None,
         channel_id: Optional[str] = None,
         author_display_name: Optional[str] = None,
+        avatar_url: Optional[str] = None,
     ) -> dict:
         """
         Основной метод чата.
@@ -765,6 +766,7 @@ class NeyraAgent:
             channel_id=channel_id,
             author_display_name=author_display_name,
             lyrics_marker=LYRICS_REQUEST_MARKER,
+            avatar_url=avatar_url,
         )
 
     async def chat_stream(
@@ -775,6 +777,7 @@ class NeyraAgent:
         vision_images: Optional[list[tuple[str, str]]] = None,
         channel_id: Optional[str] = None,
         author_display_name: Optional[str] = None,
+        avatar_url: Optional[str] = None,
     ):
         """
         Стриминговый чат — yield'ит токены сразу как модель их генерирует.
@@ -797,6 +800,7 @@ class NeyraAgent:
             channel_id=channel_id,
             author_display_name=author_display_name,
             lyrics_marker=LYRICS_REQUEST_MARKER,
+            avatar_url=avatar_url,
         ):
             yield chunk
 

@@ -19,7 +19,8 @@ llm:
     frequency_penalty: 0.3
     timeout_seconds: 30.0
     max_retries: 1
-    primary_first_token_timeout_seconds: 8.0
+    # aihope deepseek TTFT often 10–20s; 6–8s kills healthy slow streams
+    primary_first_token_timeout_seconds: 20.0
 
   brain_model:
     provider: aihope

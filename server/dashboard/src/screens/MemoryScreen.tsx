@@ -8,37 +8,26 @@ import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
 
-type Profile = {
-  first_name?: string
-  last_name?: string
-  birth_date?: string
-  city?: string
+type PersonAccount = {
+  platform?: string
+  platform_user_id?: string
+  handle?: string
+  display_name?: string
+  avatar_url?: string
 }
 
 type PersonRow = {
   id?: string
   names?: string[]
+  aliases?: string[]
   discord_ids?: string[]
-  profile?: Profile
+  accounts?: PersonAccount[]
+  display_name?: string
 }
 
 type PersonFact = { id?: number; fact?: string; created_at?: string; emotion_note?: string }
 type DiaryNote = Record<string, unknown>
 type JournalEntry = Record<string, unknown>
-
-const PROFILE_FIELDS: Array<{ key: keyof Profile; label: string; placeholder: string }> = [
-  { key: 'first_name', label: 'Имя', placeholder: 'реальное имя, если известно' },
-  { key: 'last_name', label: 'Фамилия', placeholder: 'необязательно' },
-  { key: 'birth_date', label: 'Дата рождения', placeholder: '2004 / 12.03.2004 / пусто' },
-  { key: 'city', label: 'Город', placeholder: 'из разговора или пусто' },
-]
-
-const emptyProfile = (): Profile => ({
-  first_name: '',
-  last_name: '',
-  birth_date: '',
-  city: '',
-})
 
 export function MemoryScreen() {
   const [tab, setTab] = useState<'overview' | 'people' | 'diary' | 'search' | 'ltm'>('overview')
@@ -49,12 +38,14 @@ export function MemoryScreen() {
   const [memPolicies, setMemPolicies] = useState<MemoryPolicies | null>(null)
   const [people, setPeople] = useState<PersonRow[]>([])
   const [selectedPerson, setSelectedPerson] = useState('')
-  const [profile, setProfile] = useState<Profile>(emptyProfile())
+  const [aliasesText, setAliasesText] = useState('')
   const [facts, setFacts] = useState<PersonFact[]>([])
-  const [legacyHints, setLegacyHints] = useState<string[]>([])
+  const [summary, setSummary] = useState('')
+  const [accounts, setAccounts] = useState<PersonAccount[]>([])
   const [newFact, setNewFact] = useState('')
   const [creating, setCreating] = useState(false)
   const [newPersonId, setNewPersonId] = useState('')
+  const [mergeSource, setMergeSource] = useState('')
   const [diary, setDiary] = useState<DiaryNote[]>([])
   const [selectedNote, setSelectedNote] = useState(0)
   const [journal, setJournal] = useState<JournalEntry[]>([])
@@ -69,6 +60,7 @@ export function MemoryScreen() {
   const [pruneDays, setPruneDays] = useState('90')
   const [sumDays, setSumDays] = useState('60')
   const [sumCompress, setSumCompress] = useState(true)
+  const [wipeBusy, setWipeBusy] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -104,25 +96,27 @@ export function MemoryScreen() {
 
   const loadPerson = useCallback(async (pid: string) => {
     if (!pid) {
-      setProfile(emptyProfile())
+      setAliasesText('')
       setFacts([])
-      setLegacyHints([])
+      setSummary('')
+      setAccounts([])
       return
     }
     try {
       const r = await apiGet<
         ApiEnvelope<{
           person?: PersonRow | null
-          profile?: Profile
+          accounts?: PersonAccount[]
           facts?: PersonFact[]
-          legacy_fact_hints?: string[]
+          summary?: string
         }>
       >(`/v1/memory/people/${encodeURIComponent(pid)}`)
       const person = r.data.person
-      const pr = { ...emptyProfile(), ...(r.data.profile || person?.profile || {}) }
-      setProfile(pr)
+      const names = person?.aliases || person?.names || []
+      setAliasesText(names.join(', '))
       setFacts(r.data.facts ?? [])
-      setLegacyHints(r.data.legacy_fact_hints ?? [])
+      setSummary(r.data.summary || '')
+      setAccounts(r.data.accounts || person?.accounts || [])
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -133,11 +127,14 @@ export function MemoryScreen() {
   }, [selectedPerson, loadPerson])
 
   const personLabel = (p: PersonRow) => {
-    const pr = p.profile || {}
-    const full = [pr.first_name, pr.last_name].filter(Boolean).join(' ')
-    if (full) return full
-    const names = (p.names ?? []).filter(Boolean)
-    return names[0] || p.id || '—'
+    const disp = (p.display_name || '').trim()
+    if (disp) return disp
+    const names = (p.names ?? p.aliases ?? []).filter(Boolean)
+    if (names[0]) return String(names[0])
+    const acc = (p.accounts || [])[0]
+    if (acc?.display_name) return String(acc.display_name)
+    if (acc?.handle) return String(acc.handle)
+    return p.id || '—'
   }
 
   async function savePerson() {
@@ -145,11 +142,11 @@ export function MemoryScreen() {
     setStatus('')
     setError(null)
     try {
-      const display = [profile.first_name, profile.last_name].filter(Boolean).join(' ').trim()
-      await apiPatch(`/v1/memory/people/${encodeURIComponent(selectedPerson)}`, {
-        names: display ? [display] : undefined,
-        profile,
-      })
+      const names = aliasesText
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      await apiPatch(`/v1/memory/people/${encodeURIComponent(selectedPerson)}`, { names })
       setStatus('Карточка сохранена')
       await load()
       await loadPerson(selectedPerson)
@@ -162,15 +159,18 @@ export function MemoryScreen() {
     setError(null)
     setStatus('')
     try {
-      const display = [profile.first_name, profile.last_name].filter(Boolean).join(' ').trim()
+      const names = aliasesText
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
       const r = await apiPost<ApiEnvelope<{ person?: PersonRow }>>('/v1/memory/people', {
         id: newPersonId.trim() || undefined,
-        names: display ? [display] : [],
-        profile,
+        names,
       })
       const id = String(r.data.person?.id || newPersonId || '')
       setCreating(false)
       setNewPersonId('')
+      setAliasesText('')
       setStatus('Человек создан')
       await load()
       if (id) setSelectedPerson(id)
@@ -181,12 +181,30 @@ export function MemoryScreen() {
 
   async function deletePerson() {
     if (!selectedPerson) return
-    if (!window.confirm(`Удалить досье «${selectedPerson}» и все факты?`)) return
+    if (!window.confirm(`Удалить карточку «${selectedPerson}» и все факты?`)) return
     try {
       await apiDelete(`/v1/memory/people/${encodeURIComponent(selectedPerson)}`)
       setSelectedPerson('')
       setStatus('Удалено')
       await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function mergeIntoSelected() {
+    if (!selectedPerson || !mergeSource.trim()) return
+    if (!window.confirm(`Скрестить ${mergeSource.trim()} → ${selectedPerson}? Source будет удалён.`)) return
+    try {
+      await apiPost('/v1/memory/people/merge', {
+        survivor_id: selectedPerson,
+        source_id: mergeSource.trim(),
+        reason: 'dashboard_merge',
+      })
+      setMergeSource('')
+      setStatus('Карточки скрещены')
+      await load()
+      await loadPerson(selectedPerson)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -247,6 +265,53 @@ export function MemoryScreen() {
     }
   }
 
+  async function deleteDiaryNote(id: unknown) {
+    const nid = Number(id)
+    if (!Number.isFinite(nid)) return
+    if (!window.confirm('Удалить запись дневника?')) return
+    try {
+      await apiDelete(`/v1/memory/diary/${nid}`)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function deleteJournalEntry(id: unknown) {
+    const nid = Number(id)
+    if (!Number.isFinite(nid)) return
+    if (!window.confirm('Удалить запись журнала?')) return
+    try {
+      await apiDelete(`/v1/memory/journal/${nid}`)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function runWipe(scopes: string[], label: string) {
+    if (!window.confirm(`Очистить ${label}? Это необратимо.`)) return
+    setWipeBusy(true)
+    setError(null)
+    try {
+      if (scopes.length === 1 && scopes[0] === 'diary') {
+        await apiDelete('/v1/memory/diary')
+      } else if (scopes.length === 1 && scopes[0] === 'journal') {
+        await apiDelete('/v1/memory/journal')
+      } else if (scopes.length === 1 && scopes[0] === 'people') {
+        await apiDelete('/v1/memory/people')
+      } else {
+        await apiPost('/v1/memory/wipe', { scopes })
+      }
+      setStatus(`Очищено: ${label}`)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setWipeBusy(false)
+    }
+  }
+
   async function runSearch() {
     setError(null)
     try {
@@ -284,7 +349,7 @@ export function MemoryScreen() {
     <div className="page-content stack">
       <PageHeader
         title="Память"
-        subtitle="Люди, дневник, журнал и поиск по RAG"
+        subtitle="Люди (account-first), дневник, журнал и RAG"
         actions={
           <Button disabled={loading} onClick={() => void load()} type="button" variant="cyan">
             {loading ? 'Обновление…' : 'Обновить'}
@@ -311,34 +376,69 @@ export function MemoryScreen() {
       </div>
 
       {tab === 'overview' && (
-        <div className="card">
-          <div className="card-header">
-            <Brain size={15} className="card-icon card-icon-cyan" />
-            <span className="card-title">Статистика</span>
+        <div className="stack">
+          <div className="card">
+            <div className="card-header">
+              <Brain size={15} className="card-icon card-icon-cyan" />
+              <span className="card-title">Статистика</span>
+            </div>
+            {loading ? (
+              <div className="grid-3">
+                <Skeleton className="h-20" />
+                <Skeleton className="h-20" />
+                <Skeleton className="h-20" />
+              </div>
+            ) : (
+              <div className="grid-3">
+                {[
+                  { label: 'STM (краткая)', value: memory?.short_memory_size },
+                  { label: 'Chroma (RAG)', value: memory?.hub?.chroma_records ?? memory?.long_memory_records },
+                  { label: 'Люди', value: memory?.people_records ?? memory?.hub?.people },
+                  { label: 'Журнал чата', value: memory?.hub?.chat_log },
+                  { label: 'Дневник', value: memory?.hub?.diary_notes },
+                  { label: 'Режим RAG', value: memory?.hub?.rag_write_mode },
+                ].map(({ label, value }) => (
+                  <div key={label} className="stat-tile">
+                    <p className="stat-label">{label}</p>
+                    <p className="stat-value-md">{value ?? '—'}</p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          {loading ? (
-            <div className="grid-3">
-              <Skeleton className="h-20" />
-              <Skeleton className="h-20" />
-              <Skeleton className="h-20" />
+          <div className="card">
+            <div className="card-header">
+              <Trash2 size={15} className="card-icon" />
+              <span className="card-title">Очистка памяти</span>
             </div>
-          ) : (
-            <div className="grid-3">
-              {[
-                { label: 'STM (краткая)', value: memory?.short_memory_size },
-                { label: 'Chroma (RAG)', value: memory?.hub?.chroma_records ?? memory?.long_memory_records },
-                { label: 'Люди', value: memory?.people_records ?? memory?.hub?.people },
-                { label: 'Журнал чата', value: memory?.hub?.chat_log },
-                { label: 'Дневник', value: memory?.hub?.diary_notes },
-                { label: 'Режим RAG', value: memory?.hub?.rag_write_mode },
-              ].map(({ label, value }) => (
-                <div key={label} className="stat-tile">
-                  <p className="stat-label">{label}</p>
-                  <p className="stat-value-md">{value ?? '—'}</p>
-                </div>
-              ))}
+            <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.85rem', lineHeight: 1.45 }}>
+              Cutover Memory v2: можно стереть слои по отдельности или всё сразу. Действия необратимы.
+            </p>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+              <Button disabled={wipeBusy} onClick={() => void runWipe(['diary'], 'дневник')} type="button" variant="warn">
+                Очистить дневник
+              </Button>
+              <Button disabled={wipeBusy} onClick={() => void runWipe(['journal'], 'журнал')} type="button" variant="warn">
+                Очистить журнал
+              </Button>
+              <Button disabled={wipeBusy} onClick={() => void runWipe(['people'], 'людей')} type="button" variant="warn">
+                Очистить людей
+              </Button>
+              <Button
+                disabled={wipeBusy}
+                onClick={() =>
+                  void runWipe(
+                    ['people', 'diary', 'journal', 'stm', 'ltm', 'chat_log', 'working_memory'],
+                    'ВСЮ память',
+                  )
+                }
+                type="button"
+                variant="warn"
+              >
+                Очистить всю память
+              </Button>
             </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -353,9 +453,10 @@ export function MemoryScreen() {
                 onClick={() => {
                   setCreating(true)
                   setSelectedPerson('')
-                  setProfile(emptyProfile())
+                  setAliasesText('')
                   setFacts([])
-                  setLegacyHints([])
+                  setAccounts([])
+                  setSummary('')
                 }}
                 size="sm"
                 type="button"
@@ -379,7 +480,7 @@ export function MemoryScreen() {
                   <span style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--muted)' }}>{p.id}</span>
                 </button>
               ))}
-              {people.length === 0 && <EmptyState icon={Users} title="Нет людей" description="Добавь первого человека." />}
+              {people.length === 0 && <EmptyState icon={Users} title="Нет людей" description="Карточки появятся из Discord или создай вручную." />}
             </div>
           </div>
 
@@ -397,23 +498,35 @@ export function MemoryScreen() {
                     <input className="input input-mono" onChange={(e) => setNewPersonId(e.target.value)} value={newPersonId} />
                   </label>
                 )}
-                <div className="grid-2">
-                  {PROFILE_FIELDS.map((f) => (
-                    <label key={f.key} className="label">
-                      <span className="label-text">{f.label}</span>
-                      <input
-                        className="input"
-                        onChange={(e) => setProfile((p) => ({ ...p, [f.key]: e.target.value }))}
-                        placeholder={f.placeholder}
-                        value={profile[f.key] || ''}
-                      />
-                    </label>
-                  ))}
-                </div>
+                <label className="label">
+                  <span className="label-text">Aliases / ники (через запятую)</span>
+                  <input
+                    className="input"
+                    onChange={(e) => setAliasesText(e.target.value)}
+                    placeholder="nick1, nick2"
+                    value={aliasesText}
+                  />
+                </label>
                 <p style={{ fontSize: '0.78rem', color: 'var(--muted)', lineHeight: 1.45 }}>
-                  Сводка короткая и необязательная. Ники, Discord, работа, связь, привычки — только в фактах.
-                  Нейра сама дописывает профиль и факты из разговора.
+                  Анкеты нет. Имя, ДР, город и всё остальное — только свободные факты. Identity = Discord/Telegram accounts.
                 </p>
+                {!creating && accounts.length > 0 && (
+                  <div className="stack-sm">
+                    <p className="stat-label">Аккаунты</p>
+                    {accounts.map((a, i) => (
+                      <p key={i} style={{ fontSize: '0.8rem', fontFamily: 'var(--mono)' }}>
+                        {a.platform}:{a.platform_user_id}
+                        {a.handle ? ` @${a.handle}` : ''}
+                        {a.display_name ? ` (${a.display_name})` : ''}
+                      </p>
+                    ))}
+                  </div>
+                )}
+                {!creating && summary && (
+                  <pre className="code-block" style={{ maxHeight: 140, overflow: 'auto', fontSize: '0.75rem' }}>
+                    {summary}
+                  </pre>
+                )}
                 <div className="row" style={{ flexWrap: 'wrap' }}>
                   {creating ? (
                     <Button onClick={() => void createPerson()} type="button">
@@ -422,7 +535,7 @@ export function MemoryScreen() {
                   ) : (
                     <>
                       <Button onClick={() => void savePerson()} type="button">
-                        Сохранить карточку
+                        Сохранить aliases
                       </Button>
                       <Button onClick={() => void deletePerson()} type="button" variant="warn">
                         <Trash2 size={14} /> Удалить
@@ -433,22 +546,18 @@ export function MemoryScreen() {
 
                 {!creating && selectedPerson && (
                   <>
+                    <div className="row" style={{ alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                      <label className="label" style={{ flex: 1, minWidth: 180 }}>
+                        <span className="label-text">Скрестить сюда (source id/ник)</span>
+                        <input className="input input-mono" onChange={(e) => setMergeSource(e.target.value)} value={mergeSource} />
+                      </label>
+                      <Button onClick={() => void mergeIntoSelected()} type="button" variant="secondary">
+                        Merge
+                      </Button>
+                    </div>
                     <div className="card-header" style={{ marginTop: '0.5rem', padding: 0 }}>
                       <span className="card-title">Факты</span>
                     </div>
-                    <p style={{ fontSize: '0.78rem', color: 'var(--muted)', lineHeight: 1.45 }}>
-                      Свободные заметки: машина, игры, привычки, табу — всё сюда. В сводке только общие поля выше.
-                    </p>
-                    {legacyHints.length > 0 && (
-                      <div className="legacy-hints">
-                        <p className="stat-label">Старые поля (перенеси в факты при желании)</p>
-                        <ul>
-                          {legacyHints.map((h) => (
-                            <li key={h}>{h}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
                     <div className="facts-list">
                       {facts.map((f) => (
                         <div key={String(f.id)} className="fact-row">
@@ -475,7 +584,12 @@ export function MemoryScreen() {
                     <div className="row" style={{ alignItems: 'flex-end' }}>
                       <label className="label" style={{ flex: 1 }}>
                         <span className="label-text">Новый факт</span>
-                        <input className="input" onChange={(e) => setNewFact(e.target.value)} value={newFact} />
+                        <input
+                          className="input"
+                          onChange={(e) => setNewFact(e.target.value)}
+                          placeholder="зовут Максим / город: Казань / …"
+                          value={newFact}
+                        />
                       </label>
                       <Button onClick={() => void addFact()} type="button" variant="cyan">
                         Добавить
@@ -492,9 +606,13 @@ export function MemoryScreen() {
       {tab === 'diary' && (
         <div className="grid-2">
           <div className="card">
-            <div className="card-header">
-              <NotebookPen size={15} className="card-icon" />
-              <span className="card-title">Дневник ({diary.length})</span>
+            <div className="card-header" style={{ justifyContent: 'space-between' }}>
+              <span className="card-title" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <NotebookPen size={15} className="card-icon" /> Дневник ({diary.length})
+              </span>
+              <Button disabled={wipeBusy} onClick={() => void runWipe(['diary'], 'дневник')} size="sm" type="button" variant="warn">
+                Очистить
+              </Button>
             </div>
             <label className="label" style={{ marginBottom: '0.75rem' }}>
               <span className="label-text">Новая запись</span>
@@ -505,16 +623,23 @@ export function MemoryScreen() {
             </Button>
             <div className="stack-sm" style={{ marginBottom: '0.75rem', maxHeight: 180, overflow: 'auto' }}>
               {diary.map((n, i) => (
-                <button
-                  key={i}
-                  className={`plugin-item${selectedNote === i ? ' active' : ''}`}
-                  onClick={() => setSelectedNote(i)}
-                  type="button"
-                >
-                  <span style={{ fontSize: '0.8rem' }}>
-                    {String(n.title || n.ts || n.created_at || n.date || `Запись ${i + 1}`)}
-                  </span>
-                </button>
+                <div key={i} className="row" style={{ gap: 6, alignItems: 'stretch' }}>
+                  <button
+                    className={`plugin-item${selectedNote === i ? ' active' : ''}`}
+                    onClick={() => setSelectedNote(i)}
+                    style={{ flex: 1 }}
+                    type="button"
+                  >
+                    <span style={{ fontSize: '0.8rem' }}>
+                      {String(n.title || n.ts || n.created_at || n.date || `Запись ${i + 1}`)}
+                    </span>
+                  </button>
+                  {n.id != null && (
+                    <Button onClick={() => void deleteDiaryNote(n.id)} size="sm" type="button" variant="secondary">
+                      <Trash2 size={13} />
+                    </Button>
+                  )}
+                </div>
               ))}
               {diary.length === 0 && <EmptyState icon={NotebookPen} title="Пусто" description="Нет заметок дневника." />}
             </div>
@@ -523,8 +648,11 @@ export function MemoryScreen() {
             </pre>
           </div>
           <div className="card">
-            <div className="card-header">
+            <div className="card-header" style={{ justifyContent: 'space-between' }}>
               <span className="card-title">Журнал ядра ({journal.length})</span>
+              <Button disabled={wipeBusy} onClick={() => void runWipe(['journal'], 'журнал')} size="sm" type="button" variant="warn">
+                Очистить
+              </Button>
             </div>
             <label className="label">
               <span className="label-text">Заголовок</span>
@@ -539,16 +667,23 @@ export function MemoryScreen() {
             </Button>
             <div className="stack-sm" style={{ marginBottom: '0.75rem', maxHeight: 180, overflow: 'auto' }}>
               {journal.map((n, i) => (
-                <button
-                  key={i}
-                  className={`plugin-item${selectedJournal === i ? ' active' : ''}`}
-                  onClick={() => setSelectedJournal(i)}
-                  type="button"
-                >
-                  <span style={{ fontSize: '0.8rem' }}>
-                    {String(n.title || n.kind || n.type || n.ts || `Событие ${i + 1}`)}
-                  </span>
-                </button>
+                <div key={i} className="row" style={{ gap: 6, alignItems: 'stretch' }}>
+                  <button
+                    className={`plugin-item${selectedJournal === i ? ' active' : ''}`}
+                    onClick={() => setSelectedJournal(i)}
+                    style={{ flex: 1 }}
+                    type="button"
+                  >
+                    <span style={{ fontSize: '0.8rem' }}>
+                      {String(n.title || n.kind || n.type || n.ts || `Событие ${i + 1}`)}
+                    </span>
+                  </button>
+                  {n.id != null && (
+                    <Button onClick={() => void deleteJournalEntry(n.id)} size="sm" type="button" variant="secondary">
+                      <Trash2 size={13} />
+                    </Button>
+                  )}
+                </div>
               ))}
               {journal.length === 0 && <EmptyState icon={BookOpen} title="Пусто" description="Нет записей журнала." />}
             </div>
@@ -568,7 +703,7 @@ export function MemoryScreen() {
             <span className="card-title">Поиск по долгосрочной памяти (RAG)</span>
           </div>
           <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.85rem', lineHeight: 1.45 }}>
-            Семантический поиск по Chroma / Hub — не поиск по людям и не полнотекст дневника. Удобно проверить, что ассистент «помнит» по фразе.
+            Семантический поиск по Chroma / Hub — не поиск по людям и не полнотекст дневника.
           </p>
           <div className="row" style={{ alignItems: 'flex-end', marginBottom: '0.75rem' }}>
             <label className="label" style={{ flex: 1 }}>
@@ -651,6 +786,9 @@ export function MemoryScreen() {
               variant="cyan"
             >
               Суммаризация
+            </Button>
+            <Button disabled={wipeBusy} onClick={() => void runWipe(['ltm'], 'Chroma LTM')} type="button" variant="warn">
+              Wipe LTM
             </Button>
           </div>
           {ltmMsg && (
