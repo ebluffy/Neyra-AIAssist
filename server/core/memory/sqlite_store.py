@@ -58,12 +58,136 @@ class SqliteStore:
                 if version in applied:
                     continue
                 logger.info("SQLite migrate → v%s (%s)", version, self.path)
-                # executescript auto-commits; do not wrap in BEGIN/COMMIT
-                self._conn.executescript(sql)
+                if version == 3:
+                    self._migrate_v3()
+                elif version == 4:
+                    self._migrate_v4()
+                else:
+                    self._conn.executescript(sql)
                 self._conn.execute(
                     "INSERT OR REPLACE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (version, _now_iso()),
                 )
+            # Heal: v3 marked applied but merge_proposals missing (old executescript bug).
+            self._ensure_merge_proposals_table()
+            self._backfill_person_accounts_from_meta()
+            self._backfill_handle_norm()
+
+    def _table_columns(self, table: str) -> set[str]:
+        cur = self._conn.execute(f"PRAGMA table_info({table})")
+        return {str(r[1]) for r in cur.fetchall()}
+
+    def _migrate_v3(self) -> None:
+        cols = self._table_columns("person_accounts")
+        if "handle_norm" not in cols:
+            self._conn.execute("ALTER TABLE person_accounts ADD COLUMN handle_norm TEXT")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_person_accounts_handle_norm "
+            "ON person_accounts(handle_norm)"
+        )
+        self._ensure_merge_proposals_table()
+
+    def _migrate_v4(self) -> None:
+        cols = self._table_columns("merge_log")
+        if "undone_at" not in cols:
+            self._conn.execute("ALTER TABLE merge_log ADD COLUMN undone_at TEXT")
+
+    def _ensure_merge_proposals_table(self) -> None:
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS merge_proposals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                person_a TEXT NOT NULL,
+                person_b TEXT NOT NULL,
+                reason TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                resolved_at TEXT,
+                merge_log_id INTEGER
+            )
+            """
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_merge_proposals_status ON merge_proposals(status)"
+        )
+
+    def backup_to(self, dest: Path) -> None:
+        """Consistent SQLite backup (includes WAL) under store lock."""
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            dest.unlink()
+        with self._lock:
+            dst = sqlite3.connect(str(dest))
+            try:
+                self._conn.backup(dst)
+            finally:
+                dst.close()
+
+    def _backfill_person_accounts_from_meta(self) -> int:
+        """One-shot: meta.discord_ids → person_accounts (no wipe required for Discord ids)."""
+        n = 0
+        try:
+            cur = self._conn.execute("SELECT person_id, meta, aliases, display_name FROM people")
+            rows = cur.fetchall()
+        except Exception:
+            return 0
+        now = _now_iso()
+        for row in rows:
+            pid = str(row["person_id"] or "").strip()
+            if not pid:
+                continue
+            meta = row["meta"]
+            if isinstance(meta, str) and meta.strip():
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            ids = meta.get("discord_ids") if isinstance(meta.get("discord_ids"), list) else []
+            for did in ids:
+                puid = str(did or "").strip()
+                if not puid:
+                    continue
+                exists = self._conn.execute(
+                    "SELECT 1 FROM person_accounts WHERE platform = ? AND platform_user_id = ?",
+                    ("discord", puid),
+                ).fetchone()
+                if exists:
+                    continue
+                # Identity only — never invent handle from aliases/display_name.
+                self._conn.execute(
+                    """
+                    INSERT INTO person_accounts(
+                        person_id, platform, platform_user_id, handle, handle_norm,
+                        display_name, avatar_url, created_at, updated_at
+                    ) VALUES (?, 'discord', ?, NULL, NULL, ?, NULL, ?, ?)
+                    """,
+                    (pid, puid, row["display_name"], now, now),
+                )
+                n += 1
+        if n:
+            logger.info("Backfilled %s person_accounts from meta.discord_ids", n)
+        return n
+
+    def _backfill_handle_norm(self) -> None:
+        """Always Python casefold — SQLite lower() is ASCII-only."""
+        try:
+            cur = self._conn.execute(
+                "SELECT id, handle, handle_norm FROM person_accounts "
+                "WHERE handle IS NOT NULL AND handle != ''"
+            )
+            for r in cur.fetchall():
+                h = str(r["handle"] or "")
+                norm = h.casefold()
+                if str(r["handle_norm"] or "") != norm:
+                    self._conn.execute(
+                        "UPDATE person_accounts SET handle_norm = ? WHERE id = ?",
+                        (norm, int(r["id"])),
+                    )
+        except Exception as e:
+            logger.debug("handle_norm backfill: %s", e)
 
     def append_chat_rows(self, rows: list[dict[str, Any]]) -> list[int]:
         """Insert chat_log rows; returns new ids."""
@@ -142,6 +266,8 @@ class SqliteStore:
             "chat_log",
             "people",
             "person_facts",
+            "person_accounts",
+            "merge_log",
             "diary_notes",
             "journal_entries",
             "working_memory_snapshots",
@@ -152,6 +278,36 @@ class SqliteStore:
         with self._lock:
             cur = self._conn.execute(f"SELECT COUNT(*) FROM {table}")
             return int(cur.fetchone()[0])
+
+    def clear_table(self, table: str) -> int:
+        """DELETE all rows; returns rowcount. Allowed tables only."""
+        allowed = {
+            "chat_log",
+            "people",
+            "person_facts",
+            "person_accounts",
+            "merge_log",
+            "merge_proposals",
+            "diary_notes",
+            "journal_entries",
+            "working_memory_snapshots",
+            "semantic_outbox",
+        }
+        if table not in allowed:
+            raise ValueError(f"clear_table: unknown table {table}")
+        with self._lock:
+            # FK: clear children before people
+            if table == "people":
+                self._conn.execute("DELETE FROM person_facts")
+                self._conn.execute("DELETE FROM person_accounts")
+                try:
+                    self._conn.execute("DELETE FROM merge_proposals")
+                except Exception:
+                    pass
+                cur = self._conn.execute("DELETE FROM people")
+                return int(cur.rowcount)
+            cur = self._conn.execute(f"DELETE FROM {table}")
+            return int(cur.rowcount)
 
     def schema_version(self) -> int:
         with self._lock:
@@ -284,8 +440,770 @@ class SqliteStore:
     def delete_person(self, person_id: str) -> bool:
         with self._lock:
             self._conn.execute("DELETE FROM person_facts WHERE person_id = ?", (person_id,))
+            self._conn.execute("DELETE FROM person_accounts WHERE person_id = ?", (person_id,))
             cur = self._conn.execute("DELETE FROM people WHERE person_id = ?", (person_id,))
             return cur.rowcount > 0
+
+    def upsert_person_account(
+        self,
+        *,
+        person_id: str,
+        platform: str,
+        platform_user_id: str,
+        handle: Optional[str] = None,
+        display_name: Optional[str] = None,
+        avatar_url: Optional[str] = None,
+    ) -> None:
+        now = _now_iso()
+        plat = (platform or "").strip().lower()
+        puid = (platform_user_id or "").strip()
+        if not plat or not puid:
+            raise ValueError("platform and platform_user_id required")
+        # Only real platform handle — never alias/display as handle.
+        h = (handle or "").strip() or None
+        hnorm = h.casefold() if h else None
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT id, person_id FROM person_accounts WHERE platform = ? AND platform_user_id = ?",
+                (plat, puid),
+            )
+            row = cur.fetchone()
+            if row:
+                self._conn.execute(
+                    """
+                    UPDATE person_accounts
+                    SET person_id = ?,
+                        handle = COALESCE(?, handle),
+                        handle_norm = COALESCE(?, handle_norm),
+                        display_name = COALESCE(?, display_name),
+                        avatar_url = COALESCE(?, avatar_url),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        person_id,
+                        h,
+                        hnorm,
+                        display_name,
+                        avatar_url,
+                        now,
+                        int(row["id"]),
+                    ),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    INSERT INTO person_accounts(
+                        person_id, platform, platform_user_id, handle, handle_norm,
+                        display_name, avatar_url, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (person_id, plat, puid, h, hnorm, display_name, avatar_url, now, now),
+                )
+
+    def get_account(
+        self, platform: str, platform_user_id: str
+    ) -> Optional[dict[str, Any]]:
+        plat = (platform or "").strip().lower()
+        puid = (platform_user_id or "").strip()
+        if not plat or not puid:
+            return None
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM person_accounts WHERE platform = ? AND platform_user_id = ?",
+                (plat, puid),
+            )
+            row = cur.fetchone()
+            return self._row_to_dict(row) if row else None
+
+    def list_accounts_for_person(self, person_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM person_accounts WHERE person_id = ? ORDER BY id ASC",
+                (person_id,),
+            )
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def find_person_ids_by_handle_norm(self, handle: str) -> list[str]:
+        """Exact handle_norm match only (never display_name). May return multiple people."""
+        h = (handle or "").strip().casefold()
+        if not h:
+            return []
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT DISTINCT person_id FROM person_accounts
+                WHERE handle_norm = ?
+                """,
+                (h,),
+            )
+            return [str(r["person_id"]) for r in cur.fetchall() if r["person_id"]]
+
+    def list_all_accounts(self) -> list[dict[str, Any]]:
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM person_accounts ORDER BY id ASC")
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def add_merge_proposal(
+        self,
+        *,
+        person_a: str,
+        person_b: str,
+        reason: Optional[str] = None,
+    ) -> int:
+        a = (person_a or "").strip()
+        b = (person_b or "").strip()
+        if not a or not b or a == b:
+            raise ValueError("two distinct person_ids required")
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT id FROM merge_proposals
+                WHERE status = 'pending'
+                  AND ((person_a = ? AND person_b = ?) OR (person_a = ? AND person_b = ?))
+                LIMIT 1
+                """,
+                (a, b, b, a),
+            )
+            existing = cur.fetchone()
+            if existing:
+                return int(existing["id"])
+            cur = self._conn.execute(
+                """
+                INSERT INTO merge_proposals(person_a, person_b, reason, status, created_at)
+                VALUES (?, ?, ?, 'pending', ?)
+                """,
+                (a, b, reason, _now_iso()),
+            )
+            return int(cur.lastrowid)
+
+    def list_merge_proposals(self, *, status: str = "pending", limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM merge_proposals
+                WHERE status = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (status, limit),
+            )
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def get_merge_proposal(self, proposal_id: int) -> Optional[dict[str, Any]]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM merge_proposals WHERE id = ?",
+                (int(proposal_id),),
+            )
+            row = cur.fetchone()
+            return self._row_to_dict(row) if row else None
+
+    def resolve_merge_proposal(
+        self,
+        proposal_id: int,
+        *,
+        status: str,
+        merge_log_id: Optional[int] = None,
+    ) -> bool:
+        """Transition only from pending. Returns False if already resolved/missing."""
+        now = _now_iso()
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE merge_proposals
+                SET status = ?, resolved_at = ?, merge_log_id = COALESCE(?, merge_log_id)
+                WHERE id = ? AND status = 'pending'
+                """,
+                (status, now, merge_log_id, int(proposal_id)),
+            )
+            return cur.rowcount > 0
+
+    def merge_people_atomic(
+        self,
+        *,
+        survivor_id: str,
+        source_id: str,
+        reason: str,
+        proposal_id: Optional[int] = None,
+    ) -> tuple[int, dict[str, Any]]:
+        """Single transaction: snapshot all fact ids, move rows, rewrite proposals, log."""
+        now = _now_iso()
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                if proposal_id is not None:
+                    prop_row = self._conn.execute(
+                        "SELECT * FROM merge_proposals WHERE id = ?",
+                        (int(proposal_id),),
+                    ).fetchone()
+                    if prop_row is None:
+                        raise ValueError("proposal_not_found")
+                    if str(prop_row["status"] or "") != "pending":
+                        raise ValueError("proposal_not_pending")
+                    survivor_id = str(prop_row["person_a"] or "").strip()
+                    source_id = str(prop_row["person_b"] or "").strip()
+                    if not survivor_id or not source_id or survivor_id == source_id:
+                        self._conn.execute(
+                            """
+                            UPDATE merge_proposals
+                            SET status = 'stale', resolved_at = ?
+                            WHERE id = ? AND status = 'pending'
+                            """,
+                            (now, int(proposal_id)),
+                        )
+                        self._conn.execute("COMMIT")
+                        raise ValueError("proposal_stale")
+
+                s_cur = self._conn.execute(
+                    "SELECT * FROM people WHERE person_id = ?", (survivor_id,)
+                )
+                s_row = s_cur.fetchone()
+                o_cur = self._conn.execute(
+                    "SELECT * FROM people WHERE person_id = ?", (source_id,)
+                )
+                o_row = o_cur.fetchone()
+                if proposal_id is not None and (s_row is None or o_row is None):
+                    self._conn.execute(
+                        """
+                        UPDATE merge_proposals
+                        SET status = 'stale', resolved_at = ?
+                        WHERE id = ? AND status = 'pending'
+                        """,
+                        (now, int(proposal_id)),
+                    )
+                    self._conn.execute("COMMIT")
+                    raise ValueError("proposal_stale")
+                if s_row is None:
+                    raise KeyError(survivor_id)
+                if o_row is None:
+                    raise KeyError(source_id)
+                s_dict = self._person_row_to_dict(s_row)
+                o_dict = self._person_row_to_dict(o_row)
+
+                acc_cur = self._conn.execute(
+                    "SELECT * FROM person_accounts WHERE person_id = ? ORDER BY id ASC",
+                    (source_id,),
+                )
+                accounts = [self._row_to_dict(r) for r in acc_cur.fetchall()]
+                id_cur = self._conn.execute(
+                    "SELECT id FROM person_facts WHERE person_id = ? ORDER BY id ASC",
+                    (source_id,),
+                )
+                fact_ids = [int(r["id"]) for r in id_cur.fetchall()]
+                fact_cur = self._conn.execute(
+                    """
+                    SELECT * FROM person_facts WHERE person_id = ?
+                    ORDER BY id DESC LIMIT 50
+                    """,
+                    (source_id,),
+                )
+                facts_sample = [self._row_to_dict(r) for r in fact_cur.fetchall()]
+
+                def _aliases(raw: Any) -> list[str]:
+                    if isinstance(raw, list):
+                        return [str(x).strip() for x in raw if str(x).strip()]
+                    if isinstance(raw, str) and raw.strip().startswith("["):
+                        try:
+                            parsed = json.loads(raw)
+                            if isinstance(parsed, list):
+                                return [str(x).strip() for x in parsed if str(x).strip()]
+                        except Exception:
+                            pass
+                    return []
+
+                s_aliases = _aliases(s_dict.get("aliases"))
+                o_aliases = _aliases(o_dict.get("aliases"))
+                merged_aliases: list[str] = []
+                for a in s_aliases + o_aliases:
+                    if a and a not in merged_aliases:
+                        merged_aliases.append(a)
+                survivor_display = str(s_dict.get("display_name") or survivor_id)
+                survivor_meta = (
+                    s_dict.get("meta") if isinstance(s_dict.get("meta"), dict) else {}
+                )
+
+                # Capture pending proposals that will be rewritten (for undo).
+                exclude_pid = int(proposal_id) if proposal_id is not None else -1
+                rewrite_cur = self._conn.execute(
+                    """
+                    SELECT id, person_a, person_b, status, reason
+                    FROM merge_proposals
+                    WHERE status = 'pending'
+                      AND (person_a = ? OR person_b = ?)
+                      AND id != ?
+                    """,
+                    (source_id, source_id, exclude_pid),
+                )
+                rewritten_proposals = [self._row_to_dict(r) for r in rewrite_cur.fetchall()]
+                staled_proposals: list[dict[str, Any]] = []
+
+                self._conn.execute(
+                    "UPDATE person_accounts SET person_id = ?, updated_at = ? WHERE person_id = ?",
+                    (survivor_id, now, source_id),
+                )
+                self._conn.execute(
+                    "UPDATE person_facts SET person_id = ? WHERE person_id = ?",
+                    (survivor_id, source_id),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE people
+                    SET display_name = ?, aliases = ?, updated_at = ?, meta = ?
+                    WHERE person_id = ?
+                    """,
+                    (
+                        survivor_display,
+                        self._dumps(merged_aliases or [survivor_id]),
+                        now,
+                        self._dumps(survivor_meta),
+                        survivor_id,
+                    ),
+                )
+                self._conn.execute("DELETE FROM people WHERE person_id = ?", (source_id,))
+
+                # Placeholder snapshot; staled_proposals filled after rewrite/dedupe.
+                snapshot: dict[str, Any] = {
+                    "person": {
+                        "id": source_id,
+                        "display_name": o_dict.get("display_name"),
+                        "aliases": o_aliases or [source_id],
+                        "names": o_aliases or [source_id],
+                        "meta": o_dict.get("meta") if isinstance(o_dict.get("meta"), dict) else {},
+                        "created_at": o_dict.get("created_at"),
+                    },
+                    "facts": facts_sample,
+                    "fact_ids": fact_ids,
+                    "accounts": accounts,
+                    "survivor_before": {
+                        "display_name": survivor_display,
+                        "aliases": s_aliases or [survivor_id],
+                        "meta": survivor_meta,
+                    },
+                    "rewritten_proposals": rewritten_proposals,
+                    "staled_proposals": staled_proposals,
+                }
+                cur = self._conn.execute(
+                    """
+                    INSERT INTO merge_log(survivor_id, source_id, reason, snapshot, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (survivor_id, source_id, reason, self._dumps(snapshot), now),
+                )
+                log_id = int(cur.lastrowid)
+
+                # Mark applied BEFORE rewrite so this row is not collapsed to A↔A/stale.
+                if proposal_id is not None:
+                    applied = self._conn.execute(
+                        """
+                        UPDATE merge_proposals
+                        SET status = 'applied', resolved_at = ?, merge_log_id = ?
+                        WHERE id = ? AND status = 'pending'
+                        """,
+                        (now, log_id, int(proposal_id)),
+                    )
+                    if applied.rowcount == 0:
+                        raise ValueError("proposal_not_pending")
+
+                self._conn.execute(
+                    """
+                    UPDATE merge_proposals SET person_a = ?
+                    WHERE status = 'pending' AND person_a = ?
+                    """,
+                    (survivor_id, source_id),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE merge_proposals SET person_b = ?
+                    WHERE status = 'pending' AND person_b = ?
+                    """,
+                    (survivor_id, source_id),
+                )
+                for pr in self._conn.execute(
+                    """
+                    SELECT id, person_a, person_b, status, reason
+                    FROM merge_proposals
+                    WHERE status = 'pending' AND person_a = person_b
+                    """
+                ).fetchall():
+                    staled_proposals.append(self._row_to_dict(pr))
+                self._conn.execute(
+                    """
+                    UPDATE merge_proposals
+                    SET status = 'stale', resolved_at = ?
+                    WHERE status = 'pending' AND person_a = person_b
+                    """,
+                    (now,),
+                )
+                pending_rows = self._conn.execute(
+                    "SELECT id, person_a, person_b, status, reason "
+                    "FROM merge_proposals WHERE status = 'pending'"
+                ).fetchall()
+                seen_pairs: dict[tuple[str, str], int] = {}
+                for pr in pending_rows:
+                    lo, hi = sorted(
+                        (str(pr["person_a"] or ""), str(pr["person_b"] or ""))
+                    )
+                    if not lo or not hi:
+                        continue
+                    key = (lo, hi)
+                    pid = int(pr["id"])
+                    if key not in seen_pairs:
+                        seen_pairs[key] = pid
+                    else:
+                        keep = min(seen_pairs[key], pid)
+                        drop = max(seen_pairs[key], pid)
+                        seen_pairs[key] = keep
+                        drop_row = next(
+                            (r for r in pending_rows if int(r["id"]) == drop), None
+                        )
+                        if drop_row is not None:
+                            entry = self._row_to_dict(drop_row)
+                            entry["kept_id"] = keep
+                            staled_proposals.append(entry)
+                        self._conn.execute(
+                            """
+                            UPDATE merge_proposals
+                            SET status = 'stale', resolved_at = ?
+                            WHERE id = ? AND status = 'pending'
+                            """,
+                            (now, drop),
+                        )
+
+                snapshot["staled_proposals"] = staled_proposals
+                self._conn.execute(
+                    "UPDATE merge_log SET snapshot = ? WHERE id = ?",
+                    (self._dumps(snapshot), log_id),
+                )
+
+                self._conn.execute("COMMIT")
+                stats = {
+                    "accounts_moved": len(accounts),
+                    "facts_moved": len(fact_ids),
+                    "merge_log_id": log_id,
+                    "survivor_id": survivor_id,
+                    "source_id": source_id,
+                }
+                return log_id, stats
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+
+    def undo_merge_atomic(self, merge_id: int) -> dict[str, Any]:
+        """Restore source from snapshot: move facts back, restore survivor fields."""
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM merge_log WHERE id = ?", (int(merge_id),))
+            row = cur.fetchone()
+            if not row:
+                raise KeyError(merge_id)
+            log = self._row_to_dict(row)
+            if log.get("undone_at"):
+                raise ValueError("merge_already_undone")
+            snap = log.get("snapshot")
+            if isinstance(snap, str) and snap.strip():
+                try:
+                    snap = json.loads(snap)
+                except Exception:
+                    snap = None
+            if not isinstance(snap, dict):
+                raise ValueError("merge snapshot missing")
+            person = snap.get("person") if isinstance(snap.get("person"), dict) else {}
+            source_id = str(log.get("source_id") or person.get("id") or "").strip()
+            survivor_id = str(log.get("survivor_id") or "").strip()
+            if not source_id or not survivor_id:
+                raise ValueError("source_id/survivor_id missing in merge log")
+            fact_ids = [
+                int(x)
+                for x in (snap.get("fact_ids") or [])
+                if x is not None
+            ]
+            survivor_before = (
+                snap.get("survivor_before")
+                if isinstance(snap.get("survivor_before"), dict)
+                else {}
+            )
+            now = _now_iso()
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                # Accounts from snapshot must still belong to survivor (or be free).
+                for acc in snap.get("accounts") or []:
+                    if not isinstance(acc, dict):
+                        continue
+                    plat = str(acc.get("platform") or "").strip().lower()
+                    puid = str(acc.get("platform_user_id") or "").strip()
+                    if not plat or not puid:
+                        continue
+                    own = self._conn.execute(
+                        "SELECT person_id FROM person_accounts "
+                        "WHERE platform = ? AND platform_user_id = ?",
+                        (plat, puid),
+                    ).fetchone()
+                    if own is not None and str(own["person_id"]) not in (survivor_id, source_id):
+                        raise ValueError(
+                            f"account {plat}:{puid} reassigned away from survivor; cannot undo"
+                        )
+
+                created_at = str(person.get("created_at") or "").strip() or now
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO people(
+                        person_id, display_name, aliases, created_at, updated_at, meta
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source_id,
+                        person.get("display_name") or source_id,
+                        self._dumps(person.get("aliases") or person.get("names") or [source_id]),
+                        created_at,
+                        now,
+                        self._dumps(person.get("meta") or {}),
+                    ),
+                )
+                if fact_ids:
+                    placeholders = ",".join("?" * len(fact_ids))
+                    self._conn.execute(
+                        f"UPDATE person_facts SET person_id = ? WHERE id IN ({placeholders})",
+                        (source_id, *fact_ids),
+                    )
+                else:
+                    # Legacy snapshots without fact_ids: re-insert (may dup) — prefer move.
+                    for fact in snap.get("facts") or []:
+                        if not isinstance(fact, dict):
+                            continue
+                        fid = fact.get("id")
+                        if fid is not None:
+                            self._conn.execute(
+                                "UPDATE person_facts SET person_id = ? WHERE id = ?",
+                                (source_id, int(fid)),
+                            )
+
+                accounts_not_restored: list[str] = []
+                for acc in snap.get("accounts") or []:
+                    if not isinstance(acc, dict):
+                        continue
+                    plat = str(acc.get("platform") or "").strip().lower()
+                    puid = str(acc.get("platform_user_id") or "").strip()
+                    if not plat or not puid:
+                        continue
+                    h = str(acc.get("handle") or "").strip() or None
+                    cur_acc = self._conn.execute(
+                        """
+                        UPDATE person_accounts
+                        SET person_id = ?, handle = ?, handle_norm = ?,
+                            display_name = COALESCE(?, display_name),
+                            avatar_url = COALESCE(?, avatar_url),
+                            updated_at = ?
+                        WHERE platform = ? AND platform_user_id = ?
+                        """,
+                        (
+                            source_id,
+                            h,
+                            h.casefold() if h else None,
+                            acc.get("display_name"),
+                            acc.get("avatar_url"),
+                            now,
+                            plat,
+                            puid,
+                        ),
+                    )
+                    if cur_acc.rowcount == 0:
+                        accounts_not_restored.append(f"{plat}:{puid}")
+
+                # Survivor: strip only aliases that came from source (keep post-merge edits).
+                def _al(raw: Any) -> list[str]:
+                    if isinstance(raw, list):
+                        return [str(x).strip() for x in raw if str(x).strip()]
+                    if isinstance(raw, str) and raw.strip().startswith("["):
+                        try:
+                            parsed = json.loads(raw)
+                            if isinstance(parsed, list):
+                                return [str(x).strip() for x in parsed if str(x).strip()]
+                        except Exception:
+                            pass
+                    if isinstance(raw, str) and raw.strip():
+                        return [raw.strip()]
+                    return []
+
+                surv_row = self._conn.execute(
+                    "SELECT aliases FROM people WHERE person_id = ?", (survivor_id,)
+                ).fetchone()
+                if surv_row is not None:
+                    before_set = {a.casefold() for a in _al(survivor_before.get("aliases"))}
+                    source_set = {
+                        a.casefold()
+                        for a in _al(person.get("aliases") or person.get("names"))
+                    }
+                    current = _al(surv_row["aliases"])
+                    kept = [
+                        a
+                        for a in current
+                        if a.casefold() in before_set or a.casefold() not in source_set
+                    ]
+                    if not kept:
+                        kept = list(_al(survivor_before.get("aliases"))) or [survivor_id]
+                    self._conn.execute(
+                        "UPDATE people SET aliases = ?, updated_at = ? WHERE person_id = ?",
+                        (self._dumps(kept), now, survivor_id),
+                    )
+
+                try:
+                    self._conn.execute(
+                        "UPDATE merge_log SET undone_at = ? WHERE id = ?",
+                        (now, int(merge_id)),
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                self._conn.execute(
+                    """
+                    UPDATE merge_proposals
+                    SET status = 'undone', resolved_at = ?
+                    WHERE merge_log_id = ? AND status = 'applied'
+                    """,
+                    (now, int(merge_id)),
+                )
+                # Restore proposals rewritten or staled (dedupe / A↔A) by this merge.
+                # Merge rewritten (original pair) with staled.kept_id — a row can appear in
+                # both lists; kept_id must not be dropped when rewritten is seen first.
+                kept_by_id: dict[int, int] = {}
+                for rp in snap.get("staled_proposals") or []:
+                    if not isinstance(rp, dict) or rp.get("id") is None:
+                        continue
+                    if rp.get("kept_id") is None:
+                        continue
+                    kept_by_id[int(rp["id"])] = int(rp["kept_id"])
+
+                by_id: dict[int, dict[str, Any]] = {}
+                for rp in list(snap.get("rewritten_proposals") or []) + list(
+                    snap.get("staled_proposals") or []
+                ):
+                    if not isinstance(rp, dict) or rp.get("id") is None:
+                        continue
+                    rid = int(rp["id"])
+                    pa = str(rp.get("person_a") or "").strip()
+                    pb = str(rp.get("person_b") or "").strip()
+                    if not pa or not pb or pa == pb:
+                        continue
+                    # First hit is from rewritten (original pair); later staled only adds kept_id.
+                    if rid not in by_id:
+                        by_id[rid] = dict(rp)
+                    if rid in kept_by_id:
+                        by_id[rid]["kept_id"] = kept_by_id[rid]
+                    elif rp.get("kept_id") is not None:
+                        by_id[rid]["kept_id"] = int(rp["kept_id"])
+
+                candidates = list(by_id.values())
+
+                def _person_exists(pid: str) -> bool:
+                    return (
+                        self._conn.execute(
+                            "SELECT 1 FROM people WHERE person_id = ?", (pid,)
+                        ).fetchone()
+                        is not None
+                    )
+
+                def _proposal_status(pid: int) -> Optional[str]:
+                    row = self._conn.execute(
+                        "SELECT status FROM merge_proposals WHERE id = ?",
+                        (int(pid),),
+                    ).fetchone()
+                    return str(row["status"]) if row is not None else None
+
+                will_restore: set[int] = set()
+                changed = True
+                while changed:
+                    changed = False
+                    for rp in candidates:
+                        rid = int(rp["id"])
+                        if rid in will_restore:
+                            continue
+                        pa = str(rp.get("person_a") or "").strip()
+                        pb = str(rp.get("person_b") or "").strip()
+                        if not _person_exists(pa) or not _person_exists(pb):
+                            continue
+                        st = _proposal_status(rid)
+                        if st not in ("pending", "stale"):
+                            continue
+                        kept_raw = rp.get("kept_id")
+                        if kept_raw is not None:
+                            kid = int(kept_raw)
+                            if kid not in will_restore and _proposal_status(kid) != "pending":
+                                continue
+                        will_restore.add(rid)
+                        changed = True
+
+                for rp in candidates:
+                    rid = int(rp["id"])
+                    if rid not in will_restore:
+                        continue
+                    pa = str(rp.get("person_a") or "").strip()
+                    pb = str(rp.get("person_b") or "").strip()
+                    self._conn.execute(
+                        """
+                        UPDATE merge_proposals
+                        SET person_a = ?, person_b = ?, status = 'pending',
+                            resolved_at = NULL, merge_log_id = NULL
+                        WHERE id = ? AND status IN ('pending', 'stale')
+                        """,
+                        (pa, pb, rid),
+                    )
+                self._conn.execute("COMMIT")
+                return {
+                    "restored_id": source_id,
+                    "survivor_id": survivor_id,
+                    "merge_log_id": int(merge_id),
+                    "accounts_not_restored": accounts_not_restored,
+                }
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+
+    def add_merge_log(
+        self,
+        *,
+        survivor_id: str,
+        source_id: str,
+        reason: Optional[str] = None,
+        snapshot: Any = None,
+    ) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO merge_log(survivor_id, source_id, reason, snapshot, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    survivor_id,
+                    source_id,
+                    reason,
+                    self._dumps(snapshot),
+                    _now_iso(),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def list_merge_log(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM merge_log ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def get_merge_log(self, merge_id: int) -> Optional[dict[str, Any]]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM merge_log WHERE id = ?",
+                (int(merge_id),),
+            )
+            row = cur.fetchone()
+            return self._row_to_dict(row) if row else None
 
     def add_diary_note(
         self,
@@ -315,6 +1233,14 @@ class SqliteStore:
                 (limit,),
             )
             return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def delete_diary_note(self, note_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM diary_notes WHERE id = ?",
+                (int(note_id),),
+            )
+            return cur.rowcount > 0
 
     def add_journal_entry(
         self,
@@ -346,6 +1272,14 @@ class SqliteStore:
                 (limit,),
             )
             return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def delete_journal_entry(self, entry_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM journal_entries WHERE id = ?",
+                (int(entry_id),),
+            )
+            return cur.rowcount > 0
 
     def save_wm_snapshot(
         self,

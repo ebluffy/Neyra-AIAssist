@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -644,6 +645,142 @@ def check_rate_limit_xff_bucket() -> list[str]:
     return errs
 
 
+def check_merge_proposals_api() -> list[str]:
+    """HTTP apply/reject/stale/undo for merge proposals (real MemoryHub, no LLM)."""
+    import tempfile
+    from fastapi.testclient import TestClient
+
+    from core.api import build_app
+    from core.memory.hub import MemoryHub
+
+    errs: list[str] = []
+    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_merge_api_"))
+    db = data_tmp / "hub.db"
+    hub = MemoryHub({"memory": {"sqlite_path": str(db), "rag_enabled": False}}, long_memory=None)
+    a = hub.ensure_person_for_account(
+        platform="discord", platform_user_id="1", handle="n1", display_name="A"
+    )
+    b = hub.ensure_person_for_account(
+        platform="telegram", platform_user_id="2", handle="n1", display_name="B"
+    )
+    prop = hub.propose_people_merge(a["id"], b["id"], reason="api_test")
+
+    agent = MagicMock()
+    agent.chat = AsyncMock(return_value={"reply": "ok"})
+    agent.chat_stream = AsyncMock()
+    agent.start_mcp_clients = AsyncMock()
+    agent.stop_mcp_clients = AsyncMock()
+    agent.memory_hub = hub
+    agent.people_db = None
+    agent.long_memory = MagicMock(count=MagicMock(return_value=0))
+    agent.short_memory = MagicMock(clear=MagicMock())
+
+    cfg = {
+        "paths": {"data_dir": str(data_tmp)},
+        "api": {
+            "host": "127.0.0.1",
+            "port": 8787,
+            "token": "admin-secret",
+            "viewer_token": "viewer-secret",
+            "maint_token": "maint-secret",
+            "public_base_url": "",
+            "audit_log_enabled": False,
+            "rate_limit_requests_per_minute": 0,
+        },
+        "dashboard": {"enabled": False},
+        "llm": {
+            "talk_model": {"provider": "openrouter", "model": "x"},
+            "brain_model": {"provider": "openrouter", "model": "x"},
+            "memory_model": {"provider": "openrouter", "model": "x"},
+            "vision_model": {"provider": "openrouter", "model": "x"},
+            "providers": {"openrouter": {"model": "x"}},
+        },
+    }
+    app = build_app(
+        cfg,
+        shared_agent=agent,
+        shared_monitor=MagicMock(start=MagicMock(), run_once=AsyncMock(return_value={})),
+        shared_backup_manager=MagicMock(),
+    )
+    headers = {"Authorization": "Bearer admin-secret"}
+    mid = None
+    try:
+        with TestClient(app) as client:
+            pid = int(prop["proposal_id"])
+            r = client.post(f"/v1/memory/people/merge-proposals/{pid}/apply", headers=headers)
+            if r.status_code != 200:
+                errs.append(f"apply want 200, got {r.status_code} {r.text[:200]}")
+            else:
+                mid = ((r.json().get("data") or {}).get("merge") or {}).get("merge_log_id")
+                if not mid:
+                    errs.append("apply missing merge_log_id")
+                row = hub.sqlite.get_merge_proposal(pid)
+                if not row or row.get("status") != "applied":
+                    errs.append(f"proposal not applied: {row}")
+
+            r2 = client.post(f"/v1/memory/people/merge-proposals/{pid}/apply", headers=headers)
+            if r2.status_code != 409:
+                errs.append(f"re-apply want 409, got {r2.status_code}")
+            elif "proposal_not_pending" not in json.dumps(r2.json()):
+                errs.append(f"re-apply body missing proposal_not_pending: {r2.json()}")
+
+            r404 = client.post("/v1/memory/people/merge-proposals/999999/apply", headers=headers)
+            if r404.status_code != 404:
+                errs.append(f"missing apply want 404, got {r404.status_code}")
+            elif "proposal_not_found" not in json.dumps(r404.json()):
+                errs.append(f"missing apply body: {r404.json()}")
+
+            if mid:
+                r_undo = client.post(
+                    f"/v1/memory/people/merge/{int(mid)}/undo", headers=headers
+                )
+                if r_undo.status_code != 200:
+                    errs.append(f"undo want 200, got {r_undo.status_code}")
+                else:
+                    undone = hub.sqlite.get_merge_proposal(pid)
+                    if not undone or undone.get("status") != "undone":
+                        errs.append(f"proposal not undone after undo: {undone}")
+                r_undo2 = client.post(
+                    f"/v1/memory/people/merge/{int(mid)}/undo", headers=headers
+                )
+                if r_undo2.status_code != 409:
+                    errs.append(f"second undo want 409, got {r_undo2.status_code}")
+
+            # reject
+            c = hub.ensure_person_for_account(
+                platform="discord", platform_user_id="9", handle="cx", display_name="C"
+            )
+            rej = hub.propose_people_merge(a["id"], c["id"], reason="rej")
+            rid = int(rej["proposal_id"])
+            rr = client.post(f"/v1/memory/people/merge-proposals/{rid}/reject", headers=headers)
+            if rr.status_code != 200:
+                errs.append(f"reject want 200, got {rr.status_code}")
+            row_r = hub.sqlite.get_merge_proposal(rid)
+            if not row_r or row_r.get("status") != "rejected":
+                errs.append(f"reject status: {row_r}")
+
+            # stale: delete person then apply
+            d = hub.ensure_person_for_account(
+                platform="discord", platform_user_id="8", handle="dx", display_name="D"
+            )
+            st = hub.propose_people_merge(a["id"], d["id"], reason="stale")
+            hub.delete_person(d["id"])
+            rs = client.post(
+                f"/v1/memory/people/merge-proposals/{int(st['proposal_id'])}/apply",
+                headers=headers,
+            )
+            if rs.status_code != 409:
+                errs.append(f"stale apply want 409, got {rs.status_code}")
+            elif "proposal_stale" not in json.dumps(rs.json()):
+                errs.append(f"stale apply missing proposal_stale: {rs.json()}")
+            st_row = hub.sqlite.get_merge_proposal(int(st["proposal_id"]))
+            if not st_row or st_row.get("status") != "stale":
+                errs.append(f"stale status: {st_row}")
+    finally:
+        hub.sqlite.close()
+    return errs
+
+
 def main() -> int:
     checks = [
         ("package layout", check_package_layout),
@@ -659,6 +796,7 @@ def main() -> int:
         ("public URL env rejected", check_public_url_env_rejected),
         ("rate limit XFF bucket", check_rate_limit_xff_bucket),
         ("auth matrix", check_auth_matrix),
+        ("merge proposals API", check_merge_proposals_api),
     ]
     failed = 0
     for name, fn in checks:

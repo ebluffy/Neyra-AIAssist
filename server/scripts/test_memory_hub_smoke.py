@@ -460,13 +460,15 @@ def main() -> int:
         snap = hub_d.sqlite.latest_wm_snapshot(user_id="u_wm")
         assert snap and "from hub only" in str(snap.get("content") or ""), snap
 
-        # Person summary: static_facts from meta even with 0 person_facts (seed scenario)
+        # Person summary: free-form facts only (Memory v2 — no анкетные profile fields)
         hub_d.upsert_person(
             "seed1",
             display_name="Сид",
             aliases=["Сид"],
-            meta={"static_facts": {"city": "Киров", "notes": "seed"}, "discord_ids": [], "names": ["Сид"]},
+            meta={"names": ["Сид"]},
         )
+        hub_d.add_person_fact("seed1", "город: Киров", source="seed")
+        hub_d.add_person_fact("seed1", "notes: seed", source="seed")
         summary0 = hub_d.get_person_summary("seed1")
         assert "Киров" in summary0 and "seed" in summary0, summary0
         hub_d.add_person_fact("seed1", "любит чай", emotion_note="ок")

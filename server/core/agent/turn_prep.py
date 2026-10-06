@@ -91,6 +91,7 @@ async def prepare_turn(
     author_display_name: Optional[str],
     lyrics_marker: str,
     log_lane: str = "chat",
+    avatar_url: Optional[str] = None,
 ) -> TurnPrep:
     """Gather RAG/people/tools/vision inputs and build brain system prompt."""
     internal_uid = agent._resolve_internal_user_id(discord_user_id, username)
@@ -103,14 +104,27 @@ async def prepare_turn(
     except Exception:
         pass
 
+    # Account-first person card (create/bind on first contact)
+    if getattr(agent, "memory_hub", None) is not None and discord_user_id:
+        try:
+            agent.memory_hub.ensure_person_for_account(
+                platform="discord",
+                platform_user_id=str(discord_user_id).strip(),
+                handle=(username or "").strip() or None,
+                display_name=(author_display_name or "").strip() or None,
+                avatar_url=(avatar_url or "").strip() or None,
+            )
+        except Exception as e:
+            logger.debug("ensure_person_for_account: %s", e)
+
     # User-scoped RAG (shared knowledge types still included inside search)
     if getattr(agent, "memory_hub", None) is not None:
         memories = agent.memory_hub.search_semantic(user_message, user_id=internal_uid)
     else:
         memories = agent.long_memory.search(user_message, user_id=internal_uid)
     mentioned = agent._detect_mentioned_names(user_message)
-    if username:
-        person = agent.memory_hub.find_person(username, discord_id=discord_user_id)
+    if username or discord_user_id:
+        person = agent.memory_hub.find_person(username or "", discord_id=discord_user_id)
         if person and person["id"] not in mentioned:
             mentioned.append(person["id"])
 

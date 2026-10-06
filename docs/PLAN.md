@@ -340,7 +340,93 @@ docs/
 
 
 
-## 7. Постзащитное развитие
+## 7. Memory v2 — people / diary / journal
+
+Account-first модель людей без анкетных полей. Реализация в PR #22 вместе с фиксом music intent.
+
+**Cutover (обязательно при деплое):** полный wipe people/diary/journal (и при необходимости LTM) через `POST /v1/memory/wipe` с `confirm: "WIPE"`. Старые досье/анкеты не мигрируются. Migration 002/003 + backfill `meta.discord_ids` → `person_accounts` только чтобы не плодить дубли после частичного апгрейда без wipe; канонический путь — wipe.
+
+### Модель
+
+- **Person card:** opaque `person_id` (по умолчанию `uuid5(platform:platform_user_id)`), `accounts[]` (`platform`, `platform_user_id`, `handle`, `display_name`, `avatar_url?`), `aliases[]`, free-form `facts[]`.
+- **Нет** полей профиля first_name / last_name / birth_date / city — только факты из текста.
+- **Speaker resolve:** только `platform + platform_user_id` → create+bind. Совпадение handle → merge proposal (админ), не auto-bind. Fuzzy/stem/display_name запрещены.
+- **Mentions в тексте:** exact / word-boundary + явный список падежных окончаний (не «Максим»→«макс»).
+- **Обращение:** nick / display_name; реальное имя — только если есть факт.
+- **Diary:** от первого лица Нейры (чувства). **Journal:** хроника / reflection.
+- **Merge:** LLM-tool `propose_people_merge` (pending); apply/reject в дашборде; undo из snapshot (`undone_at`).
+- **Wipe API / dashboard:** scopes обязательны + `confirm: "WIPE"`; `sqlite3.backup` (+ Chroma при `ltm`); `server/data/**` в gitignore.
+- **Не в этом PR:** суточный embedding-similarity job для кандидатов (memory consolidation) — отдельно после стабилизации proposals UI.
+
+### Готово, когда
+
+- [x] PROFILE_KEYS / анкетная форма убраны из Hub, API, dashboard.
+- [x] Account-first resolve + строгие mentions; Discord передаёт id/nick/display/avatar.
+- [x] Diary/journal prompts не выдумывают чужие имена.
+- [x] propose-only merge + atomic merge/undo (full fact_ids, staled proposals restored) + wipe confirm/backup + proposals UI.
+- [x] Offline tests mention/resolve/merge/wipe + music soft-path зелёные; cutover = wipe.
+
+
+
+## 7.5. Mood & Relations (после #22, только план)
+
+Две оси, которые влияют друг на друга. **Не реализовывать в PR #22** — отдельный небольшой PR после merge Memory v2.
+
+### Mood (настроение Нейры) — глобальное + краткосрочное
+
+```text
+neyra_mood:
+  valence:   -1.0 … +1.0   # плохо → хорошо
+  arousal:   0.0 … 1.0     # спокойствие → возбуждение
+  label:     "спокойная" | "раздражённая" | "игривая" | …
+  updated_at
+  decay_half_life_hours: 6–12
+```
+
+Как меняется: после хода (или раз в N) правила/LLM дают Δvalence/Δarousal; оскорбления/игнор → вниз, комплименты/тепло → вверх; decay к нейтрали; сильные события → diary («сегодня меня задели…»).
+
+Как влияет: кусок в system prompt («Сейчас ты в настроении: …»); опционально bias в classifier / voice / reactions. Это состояние Нейры, не привязанное к человеку.
+
+### Relationship — per `person_id`
+
+```text
+person_relation:
+  person_id
+  affinity:   -1.0 … +1.0
+  trust:      0.0 … 1.0
+  familiarity: 0.0 … 1.0
+  tone_bias:  "cold" | "neutral" | "warm" | "playful"
+  last_significant_event
+  history[]   # короткие записи
+```
+
+Таблица `person_relations` (или meta + лог) рядом с people card. Δ по событиям (грубость / ложь / помощь / молчание / извинение); rule-based + редкий LLM-summary раз в сутки. В people context speaker’а — 1–2 строки про affinity; низкий affinity → суше, без личных тем; высокий → больше тепла. Позже: `relation(person_a, person_b)`.
+
+### Стык с Memory v2
+
+```text
+Global: neyra_mood  ← все ответы
+Per person: person_relation + facts + accounts
+diary (чувства) + journal + emotional_layer после хода
+```
+
+Pipeline после хода: emotional_layer → diary; sentiment → Δmood; speaker person_id → Δrelation; mood+relation в prompt следующего хода; daily consolidation (сжать history, decay).
+
+Ограничения: persona сильнее mood/relation; даже при affinity=−1 без токсичности вне persona; дашборд: настроение + отношение + reset; LLM не пишет affinity напрямую без лимитов (propose Δ / rules); wipe scopes: `mood` / `relations`.
+
+### MVP (один PR после #22)
+
+- [ ] Таблицы `neyra_state` (mood) + `person_relations`.
+- [ ] После хода: простой sentiment → mood + relation speaker’а.
+- [ ] `turn_prep` / people_context — 2–3 строки mood/affinity.
+- [ ] MemoryScreen: индикатор настроения + «как Нейра относится к …».
+- [ ] Decay по cron / при старте сервера.
+
+Потом: события в history, voice/TTS bias, person↔person, явный ролевой «испортить отношения».
+
+
+
+## 8. Постзащитное развитие
 
 - Установщик сервера для Windows/Linux.
 - Сертификат подписи клиента для SmartScreen.

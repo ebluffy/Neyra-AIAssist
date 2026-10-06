@@ -7,6 +7,12 @@ from typing import Any, Optional
 
 logger = logging.getLogger("neyra.agent.brain_phase")
 
+# User-facing stub when brain is down. Plain text only (no [SOUND:] tags).
+BRAIN_DOWN_USER_MESSAGE = (
+    "Нейра умерла в сетевом плане: мозг не отвечает. "
+    "Без мозга молчу — попробуй позже."
+)
+
 
 async def run_brain_tool_phase(
     agent: Any,
@@ -114,5 +120,6 @@ async def run_brain_tool_phase(
         )
         return text.strip()
     except Exception as e:
-        logger.warning("Brain phase: ошибка, talk продолжит без сводки brain: %s", e)
-        return ""
+        # Brain is required: do not silently continue with talk-only (GLM without Luna).
+        logger.error("Brain phase failed (talk will not run): %s", e)
+        raise

@@ -387,6 +387,76 @@ class LongTermMemory:
         except Exception:
             return 0
 
+    def backup_to(self, dest: Path | str) -> str:
+        """Consistent Chroma dir backup under write lock (sqlite3.backup for chroma.sqlite3)."""
+        import shutil
+        import sqlite3
+
+        src = Path(self.db_path)
+        dest_p = Path(dest)
+        if not src.exists():
+            # Nothing to back up yet (async init may not have created the dir).
+            return ""
+        with self._write_lock:
+            if dest_p.exists():
+                if dest_p.is_dir():
+                    shutil.rmtree(dest_p)
+                else:
+                    dest_p.unlink()
+            dest_p.mkdir(parents=True, exist_ok=True)
+            if src.is_file():
+                dst_db = sqlite3.connect(str(dest_p / src.name))
+                try:
+                    src_db = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+                    try:
+                        src_db.backup(dst_db)
+                    finally:
+                        src_db.close()
+                finally:
+                    dst_db.close()
+                return str(dest_p)
+            for item in src.iterdir():
+                target = dest_p / item.name
+                if item.name == "chroma.sqlite3" or item.suffix == ".sqlite3":
+                    dst_db = sqlite3.connect(str(target))
+                    try:
+                        src_db = sqlite3.connect(f"file:{item}?mode=ro", uri=True)
+                        try:
+                            src_db.backup(dst_db)
+                        finally:
+                            src_db.close()
+                    finally:
+                        dst_db.close()
+                elif item.is_dir():
+                    shutil.copytree(item, target, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, target)
+            return str(dest_p)
+
+    def clear_all(self) -> int:
+        """Delete every document in the Chroma collection. Returns removed count."""
+        self._init()
+        if self._collection is None:
+            return 0
+        try:
+            batch = self._collection.get(include=[])
+            ids = list(batch.get("ids") or [])
+            if not ids:
+                return 0
+            # chromadb delete in chunks
+            n = 0
+            chunk = 200
+            with self._write_lock:
+                for i in range(0, len(ids), chunk):
+                    part = ids[i : i + chunk]
+                    self._collection.delete(ids=part)
+                    n += len(part)
+            logger.info("ChromaDB clear_all: removed %s docs", n)
+            return n
+        except Exception as e:
+            logger.error("ChromaDB clear_all failed: %s", e)
+            return 0
+
     def _iter_all_documents(self) -> list[tuple[str, dict[str, Any], str]]:
         """Все документы коллекции (ids + meta + text). Для обслуживания / prune."""
         self._init()
@@ -558,21 +628,21 @@ class PeopleDB:
         self.memory_hub = None  # set by agent after MemoryHub init
 
     def find(self, identifier: str, discord_id: Optional[str] = None) -> Optional[dict]:
-        """Находит досье по discord_id, нику или имени (нечёткий поиск)."""
-        identifier_lower = identifier.lower()
-
+        """Exact lookup by discord_id, person id, or alias (no fuzzy/substring)."""
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None:
+            return hub.find_person(identifier, discord_id=discord_id)
+        identifier_lower = (identifier or "").strip().lower()
         for person in self._cache.values():
-            # 1. По Discord ID (приоритет)
             if discord_id and discord_id in person.get("discord_ids", []):
                 return person
-            # 2. По никам/именам
-            names_lower = [n.lower() for n in person.get("names", [])]
+            if not identifier_lower:
+                continue
+            if str(person.get("id") or "").lower() == identifier_lower:
+                return person
+            names_lower = [n.lower() for n in person.get("names", []) if n]
             if identifier_lower in names_lower:
                 return person
-            # 3. Частичное совпадение
-            if any(identifier_lower in n or n in identifier_lower for n in names_lower):
-                return person
-
         return None
 
     def get_all_names_map(self) -> dict[str, str]:
@@ -648,6 +718,12 @@ class PeopleDB:
                     display_name=(person.get("names") or [person_id])[0],
                     aliases=list(person.get("names") or []),
                     meta=person,
+                )
+                hub.sqlite.upsert_person_account(
+                    person_id=person_id,
+                    platform="discord",
+                    platform_user_id=str(discord_id).strip(),
+                    handle=None,
                 )
                 hub_ok = True
             except Exception as e:

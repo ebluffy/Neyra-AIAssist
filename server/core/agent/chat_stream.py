@@ -27,6 +27,7 @@ async def iter_chat_stream(
     channel_id: Optional[str],
     author_display_name: Optional[str],
     lyrics_marker: str,
+    avatar_url: Optional[str] = None,
 ) -> AsyncIterator[dict]:
     """Yield token/error/done chunks for streaming chat."""
     try:
@@ -69,6 +70,7 @@ async def iter_chat_stream(
         author_display_name=author_display_name,
         lyrics_marker=lyrics_marker,
         log_lane="stream",
+        avatar_url=avatar_url,
     )
     try:
         try:
@@ -88,7 +90,6 @@ async def iter_chat_stream(
             logger.warning("session_archive stm_threshold failed (soft): %s", thr_e)
 
         caption_ok = (prep.attached_caption or "").strip()
-        brain_context = ""
         try:
             brain_context = await agent._run_brain_tool_phase(
                 user_message=user_message,
@@ -99,7 +100,21 @@ async def iter_chat_stream(
                 lyrics_mode=prep.lyrics_mode,
             )
         except Exception as e:
-            logger.warning("Brain phase (stream): пропуск сводки — %s", e)
+            from core.agent.brain_phase import BRAIN_DOWN_USER_MESSAGE
+
+            err_str = (str(e) or "").strip() or type(e).__name__
+            logger.error("Brain phase (stream) failed — abort talk: %s", e)
+            agent._publish_chat_turn_failed(
+                internal_user_id=prep.internal_uid,
+                channel_id=channel_id,
+                error=f"brain: {err_str}",
+            )
+            yield {
+                "type": "error",
+                "text": BRAIN_DOWN_USER_MESSAGE,
+                "sounds": ["bruh"],
+            }
+            return
 
         system_prompt = build_talk_system_prompt(agent, prep, brain_context=brain_context)
         stream_llm = agent.llm_talk

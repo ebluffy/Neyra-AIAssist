@@ -424,94 +424,36 @@ def _slug_person_id(raw: str) -> str:
 
 
 @tool
-def update_person_profile(
-    person_id: str,
-    first_name: str = "",
-    last_name: str = "",
-    birth_date: str = "",
-    city: str = "",
-    create_if_missing: bool = True,
-) -> str:
+def propose_people_merge(person_a: str, person_b: str, reason: str = "") -> str:
     """
-    Обновляет краткую сводку человека: реальное имя, фамилия, дата рождения, город.
-    Все поля необязательны. Имя — настоящее (не ник/«Пупинос»); ники и Discord пиши через update_person_fact.
-    Если человека нет и create_if_missing=true — создаёт досье.
+    Предлагает склеить две карточки людей (НЕ применяет merge).
+    Админ подтверждает в дашборде. person_a / person_b — точные person_id.
+    Вызывай только при высокой уверенности (~80%+ совпадение фактов/ников).
     """
-    from core.memory.person_profile import coerce_profile, display_name_from_profile
-
-    if _people_db is None and _memory_hub is None:
-        return "PeopleDB не инициализирована."
-
-    pid_raw = (person_id or "").strip()
-    if not pid_raw:
-        return "Нужен person_id или имя."
-
-    person = _find_person(pid_raw)
-    pid = str((person or {}).get("id") or "").strip() or _slug_person_id(pid_raw)
-    patch = coerce_profile(
-        {
-            "first_name": first_name,
-            "last_name": last_name,
-            "birth_date": birth_date,
-            "city": city,
-        }
-    )
-    # drop empty so merge keeps previous values when tool omits a field
-    patch = {k: v for k, v in patch.items() if str(v).strip()}
-    if not patch and not create_if_missing:
-        return "Нечего обновлять — передай хотя бы одно поле сводки."
-
-    if person is None:
-        if not create_if_missing:
-            return f"Не нашла '{pid_raw}'. Создай досье или проверь ID."
-        if _memory_hub is not None:
-            display = display_name_from_profile(patch, fallback=pid)
-            names = [display] if display else [pid]
-            person = _memory_hub.save_person_dossier(
-                person_id=pid,
-                names=names,
-                profile=patch,
-                create=True,
-            )
-            if _people_db is not None:
-                _people_db._cache[pid] = dict(person)
-            return f"Создала досье [{pid}] и записала сводку: {patch}"
-        if _people_db is not None:
-            display = display_name_from_profile(patch, fallback=pid)
-            person = _people_db.add_person(pid, [display] if display else [pid])
-            person["static_facts"] = dict(patch)
-            return f"Создала досье [{pid}] и записала сводку: {patch}"
-
-    if _memory_hub is not None:
-        try:
-            person = _memory_hub.save_person_dossier(
-                person_id=pid,
-                profile=patch,
-                create=False,
-            )
-            if _people_db is not None:
-                _people_db._cache[pid] = dict(person)
-            return f"Обновила сводку [{pid}]: {patch or 'без изменений'}"
-        except KeyError:
-            return f"Не нашла человека '{pid}'."
-        except Exception as e:
-            return f"Не удалось сохранить сводку: {e}"
-
-    if _people_db is not None and pid in _people_db._cache:
-        sf = dict(_people_db._cache[pid].get("static_facts") or {})
-        sf.update(patch)
-        _people_db._cache[pid]["static_facts"] = sf
-        return f"Обновила сводку [{pid}]: {patch}"
-    return f"Не нашла человека '{pid_raw}'."
+    if _memory_hub is None:
+        return "Memory Hub не инициализирован."
+    a = (person_a or "").strip()
+    b = (person_b or "").strip()
+    if not a or not b:
+        return "Нужны два person_id."
+    if _memory_hub.sqlite.get_person(a) is None:
+        return f"Не нашла person_id '{a}'."
+    if _memory_hub.sqlite.get_person(b) is None:
+        return f"Не нашла person_id '{b}'."
+    try:
+        out = _memory_hub.propose_people_merge(a, b, reason=reason or "tool_propose")
+        return f"Заявка на merge #{out.get('proposal_id')}: {a} ↔ {b} (ждёт админа)."
+    except Exception as e:
+        return f"propose_people_merge failed: {e}"
 
 
 @tool
 def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str:
     """
-    Записывает свободный факт о человеке (ники, Discord, работа, связь, привычки, табу…).
-    Краткую сводку (реальное имя / фамилия / ДР / город) обновляй через update_person_profile.
-    Если человека ещё нет — создаёт досье и пишет факт.
-    person_id — ID или имя; fact — кратко своими словами.
+    Записывает свободный факт о человеке (имя, ДР, город, ники, работа, привычки…).
+    Анкетных полей нет — всё через факты (например «зовут Максим», «город: Казань»).
+    Если человека ещё нет — создаёт карточку и пишет факт.
+    person_id — ID или точный ник; fact — кратко своими словами.
     """
     if _people_db is None and _memory_hub is None:
         return "PeopleDB не инициализирована."
@@ -560,7 +502,6 @@ def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str
             created = _memory_hub.save_person_dossier(
                 person_id=pid,
                 names=[target_id],
-                profile={},
                 create=True,
             )
             _memory_hub.add_person_fact(pid, fact.strip(), emotion_note=emo, source="tool")
@@ -732,8 +673,8 @@ ALL_TOOLS = [
     search_memory,
     recall_chat,
     remember_knowledge,
-    update_person_profile,
     update_person_fact,
+    propose_people_merge,
     get_person_info,
     get_character_profile,
     delegate_to_deep_logic,
