@@ -819,10 +819,10 @@ class NeyraDiscordBot(discord.Client):
             resolved = None
 
         logger.info(
-            "Discord route | route=%s use_music=%s soft=%s lyrics=%s candidate=%s query=%r",
+            "Discord route | route=%s use_music=%s needs_classifier=%s lyrics=%s candidate=%s query=%r",
             route,
             use_music,
-            soft_music,
+            music_plan.needs_classifier,
             lyrics_hint,
             (music_candidate or {}).get("action") if music_candidate else None,
             (resolved or {}).get("query") if resolved else "",
