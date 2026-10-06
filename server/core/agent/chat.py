@@ -79,7 +79,6 @@ async def run_chat(
             logger.warning("session_archive stm_threshold failed (soft): %s", thr_e)
 
         caption_ok = (prep.attached_caption or "").strip()
-        brain_context = ""
         try:
             brain_context = await agent._run_brain_tool_phase(
                 user_message=user_message,
@@ -90,7 +89,18 @@ async def run_chat(
                 lyrics_mode=prep.lyrics_mode,
             )
         except Exception as e:
-            logger.warning("Brain phase: пропуск сводки — %s", e)
+            logger.error("Brain phase failed — abort talk: %s", e)
+            agent._publish_chat_turn_failed(
+                internal_user_id=prep.internal_uid,
+                channel_id=channel_id,
+                error=f"brain: {e}",
+            )
+            return {
+                "text": f"[SOUND: bruh] Мозг (brain) недоступен: {e}",
+                "sounds": ["bruh"],
+                "thoughts": "",
+                "raw": "",
+            }
 
         system_prompt = build_talk_system_prompt(agent, prep, brain_context=brain_context)
         messages = build_talk_messages(

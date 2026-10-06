@@ -233,10 +233,102 @@ def test_merge_undo_proposals_lifecycle() -> None:
         td_obj.cleanup()
 
 
+def test_undo_respects_reject_and_missing_people() -> None:
+    """AR 6.1: undo must not revive rejected pairs or ghost proposals."""
+    from core.memory.hub import MemoryHub
+
+    td_obj = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    td = td_obj.name
+    hub = None
+    try:
+        hub = MemoryHub(
+            {"memory": {"sqlite_path": str(Path(td) / "hub61.db"), "rag_enabled": False}},
+            long_memory=None,
+        )
+        a = hub.ensure_person_for_account(
+            platform="discord", platform_user_id="a1", handle="n", display_name="A"
+        )
+        b = hub.ensure_person_for_account(
+            platform="telegram", platform_user_id="b1", handle="n", display_name="B"
+        )
+        c = hub.ensure_person_for_account(
+            platform="discord", platform_user_id="c1", handle="c", display_name="C"
+        )
+        ab = hub.propose_people_merge(a["id"], b["id"], reason="ab")
+        bc = hub.propose_people_merge(b["id"], c["id"], reason="bc")
+        ac = hub.propose_people_merge(a["id"], c["id"], reason="ac")
+
+        out = hub.apply_merge_proposal(int(ab["proposal_id"]))
+        # After merge: rewritten bc is the live A↔C pending; original ac is stale.
+        kept = hub.sqlite.get_merge_proposal(int(bc["proposal_id"]))
+        assert kept["status"] == "pending"
+        assert {kept["person_a"], kept["person_b"]} == {a["id"], c["id"]}
+        assert hub.sqlite.get_merge_proposal(int(ac["proposal_id"]))["status"] == "stale"
+
+        assert hub.sqlite.resolve_merge_proposal(int(bc["proposal_id"]), status="rejected")
+        hub.undo_merge(int(out["merge_log_id"]))
+
+        assert hub.sqlite.get_merge_proposal(int(bc["proposal_id"]))["status"] == "rejected"
+        assert hub.sqlite.get_merge_proposal(int(ac["proposal_id"]))["status"] == "stale"
+        pending = hub.sqlite.list_merge_proposals(status="pending")
+        assert not any({p["person_a"], p["person_b"]} == {a["id"], c["id"]} for p in pending)
+    finally:
+        if hub is not None:
+            try:
+                hub.sqlite.close()
+            except Exception:
+                pass
+        td_obj.cleanup()
+
+    td_obj2 = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    td2 = td_obj2.name
+    hub = None
+    try:
+        hub = MemoryHub(
+            {"memory": {"sqlite_path": str(Path(td2) / "hub61b.db"), "rag_enabled": False}},
+            long_memory=None,
+        )
+        a = hub.ensure_person_for_account(
+            platform="discord", platform_user_id="a2", handle="n2", display_name="A"
+        )
+        b = hub.ensure_person_for_account(
+            platform="telegram", platform_user_id="b2", handle="n2", display_name="B"
+        )
+        c = hub.ensure_person_for_account(
+            platform="discord", platform_user_id="c2", handle="c2", display_name="C"
+        )
+        ab = hub.propose_people_merge(a["id"], b["id"], reason="ab")
+        bc = hub.propose_people_merge(b["id"], c["id"], reason="bc")
+        hub.propose_people_merge(a["id"], c["id"], reason="ac")
+
+        out1 = hub.apply_merge_proposal(int(ab["proposal_id"]))
+        out2 = hub.apply_merge_proposal(int(bc["proposal_id"]))
+        assert hub.sqlite.get_person(c["id"]) is None
+
+        hub.undo_merge(int(out1["merge_log_id"]))
+        assert hub.sqlite.get_person(b["id"]) is not None
+        assert hub.sqlite.get_person(c["id"]) is None
+
+        for p in hub.sqlite.list_merge_proposals(status="pending"):
+            for pid in (p["person_a"], p["person_b"]):
+                assert hub.sqlite.get_person(str(pid)) is not None, p
+        # Second merge still applied; first undo must not invent A↔C pending for missing C.
+        assert hub.sqlite.get_merge_proposal(int(bc["proposal_id"]))["status"] == "applied"
+        _ = out2
+    finally:
+        if hub is not None:
+            try:
+                hub.sqlite.close()
+            except Exception:
+                pass
+        td_obj2.cleanup()
+
+
 def main() -> int:
     test_detect_mentions_no_false_max()
     test_speaker_label_nick_not_invented_name()
     test_merge_undo_proposals_lifecycle()
+    test_undo_respects_reject_and_missing_people()
     print("OK test_memory_v2_people_offline")
     return 0
 

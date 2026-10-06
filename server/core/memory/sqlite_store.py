@@ -858,7 +858,9 @@ class SqliteStore:
                             (r for r in pending_rows if int(r["id"]) == drop), None
                         )
                         if drop_row is not None:
-                            staled_proposals.append(self._row_to_dict(drop_row))
+                            entry = self._row_to_dict(drop_row)
+                            entry["kept_id"] = keep
+                            staled_proposals.append(entry)
                         self._conn.execute(
                             """
                             UPDATE merge_proposals
@@ -1063,9 +1065,13 @@ class SqliteStore:
                     (now, int(merge_id)),
                 )
                 # Restore proposals rewritten or staled (dedupe / A↔A) by this merge.
+                # Skip pairs whose people no longer exist; for dedupe-staled rows require
+                # kept_id still pending (or restored in this same undo) so a post-merge
+                # reject/apply is not silently undone.
                 restore_list = list(snap.get("rewritten_proposals") or []) + list(
                     snap.get("staled_proposals") or []
                 )
+                candidates: list[dict[str, Any]] = []
                 seen_restore: set[int] = set()
                 for rp in restore_list:
                     if not isinstance(rp, dict):
@@ -1074,10 +1080,56 @@ class SqliteStore:
                     if rid is None or int(rid) in seen_restore:
                         continue
                     seen_restore.add(int(rid))
-                    pa = str(rp.get("person_a") or "")
-                    pb = str(rp.get("person_b") or "")
+                    pa = str(rp.get("person_a") or "").strip()
+                    pb = str(rp.get("person_b") or "").strip()
                     if not pa or not pb or pa == pb:
                         continue
+                    candidates.append(rp)
+
+                def _person_exists(pid: str) -> bool:
+                    return (
+                        self._conn.execute(
+                            "SELECT 1 FROM people WHERE person_id = ?", (pid,)
+                        ).fetchone()
+                        is not None
+                    )
+
+                def _proposal_status(pid: int) -> Optional[str]:
+                    row = self._conn.execute(
+                        "SELECT status FROM merge_proposals WHERE id = ?",
+                        (int(pid),),
+                    ).fetchone()
+                    return str(row["status"]) if row is not None else None
+
+                will_restore: set[int] = set()
+                changed = True
+                while changed:
+                    changed = False
+                    for rp in candidates:
+                        rid = int(rp["id"])
+                        if rid in will_restore:
+                            continue
+                        pa = str(rp.get("person_a") or "").strip()
+                        pb = str(rp.get("person_b") or "").strip()
+                        if not _person_exists(pa) or not _person_exists(pb):
+                            continue
+                        st = _proposal_status(rid)
+                        if st not in ("pending", "stale"):
+                            continue
+                        kept_raw = rp.get("kept_id")
+                        if kept_raw is not None:
+                            kid = int(kept_raw)
+                            if kid not in will_restore and _proposal_status(kid) != "pending":
+                                continue
+                        will_restore.add(rid)
+                        changed = True
+
+                for rp in candidates:
+                    rid = int(rp["id"])
+                    if rid not in will_restore:
+                        continue
+                    pa = str(rp.get("person_a") or "").strip()
+                    pb = str(rp.get("person_b") or "").strip()
                     self._conn.execute(
                         """
                         UPDATE merge_proposals
@@ -1085,7 +1137,7 @@ class SqliteStore:
                             resolved_at = NULL, merge_log_id = NULL
                         WHERE id = ? AND status IN ('pending', 'stale')
                         """,
-                        (pa, pb, int(rid)),
+                        (pa, pb, rid),
                     )
                 self._conn.execute("COMMIT")
                 return {

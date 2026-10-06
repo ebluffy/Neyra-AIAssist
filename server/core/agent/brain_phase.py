@@ -114,5 +114,6 @@ async def run_brain_tool_phase(
         )
         return text.strip()
     except Exception as e:
-        logger.warning("Brain phase: ошибка, talk продолжит без сводки brain: %s", e)
-        return ""
+        # Brain is required: do not silently continue with talk-only (GLM without Luna).
+        logger.error("Brain phase failed (talk will not run): %s", e)
+        raise
