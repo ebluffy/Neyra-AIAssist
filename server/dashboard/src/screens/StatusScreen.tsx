@@ -7,6 +7,7 @@ import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { waitForCoreRestart } from '../lib/wait-for-core-restart'
 import { Link } from 'react-router-dom'
 
 function fmtNum(v: unknown): string {
@@ -153,28 +154,17 @@ export function StatusScreen() {
     setError(null)
     try {
       await apiPost<ApiEnvelope<{ note?: string }>>('/v1/system/restart', {})
-      setRestartMsg('Процесс останавливается. Ждём, пока сервер снова ответит…')
-      let online = false
-      for (let i = 0; i < 45; i++) {
-        await new Promise((r) => setTimeout(r, 2000))
-        try {
-          const r = await fetch('/v1/dashboard/auth/status', { headers: { Accept: 'application/json' } })
-          if (!r.ok) continue
-          const text = await r.text()
-          if (text.trimStart().startsWith('<')) continue
-          const j = JSON.parse(text) as { ok?: boolean }
-          if (j && j.ok === true) {
-            online = true
-            break
-          }
-        } catch {
-          /* still down */
-        }
-      }
-      if (online) {
+      setRestartMsg('Процесс останавливается. Ждём offline → online…')
+      const outcome = await waitForCoreRestart()
+      if (outcome === 'online') {
         setRestartTone('success')
         setRestartMsg('Сервер снова онлайн.')
         await load()
+      } else if (outcome === 'no_downtime') {
+        setRestartTone('error')
+        setRestartMsg(
+          'Рестарт не остановил процесс (API не уходил в offline). Проверь systemd/логи или systemctl restart neyra.',
+        )
       } else {
         setRestartTone('info')
         setRestartMsg('Сервер долго не отвечает — обновите страницу вручную через минуту.')

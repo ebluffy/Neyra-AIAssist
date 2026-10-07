@@ -7,6 +7,7 @@ import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { waitForCoreRestart } from '../lib/wait-for-core-restart'
 
 type PluginDetails = { plugin: PluginRow; config: Record<string, unknown> }
 
@@ -72,37 +73,79 @@ export function ModulesScreen() {
   const isResident = lifecycle === 'resident'
   const isOnDemand = lifecycle === 'on_demand'
 
+  async function finishRestartWait(prefix: string) {
+    setRestartBusy(true)
+    try {
+      const outcome = await waitForCoreRestart()
+      if (outcome === 'online') {
+        setStatus(`${prefix} Сервер снова онлайн.`)
+        await loadPlugins()
+        if (selected) await loadDetails(selected)
+        return
+      }
+      if (outcome === 'no_downtime') {
+        setError(
+          'Мягкий рестарт не остановил процесс (API не уходил в offline). Проверь systemd/логи или сделай systemctl restart neyra.',
+        )
+        setStatus(`${prefix} Рестарт не подтверждён.`)
+        return
+      }
+      setStatus(`${prefix} Долго не отвечает — обнови страницу через минуту.`)
+    } finally {
+      setRestartBusy(false)
+    }
+  }
+
   async function togglePlugin(enabled: boolean) {
     if (!selected) return
     setError(null)
     setStatus(enabled ? 'Включаю…' : 'Выключаю…')
     try {
       const r = await apiPatch<
-        ApiEnvelope<{ operation_id: string; result?: { lavalink?: string | null } }>
+        ApiEnvelope<{
+          operation_id: string
+          result?: {
+            lavalink?: string | null
+            restart_scheduled?: boolean
+            restart_required?: boolean
+          }
+        }>
       >(`/v1/plugins/${selected}`, { enabled })
       const lava = r.data.result?.lavalink
-      if (isResident) {
-        const lavaBit = selected === 'discord' && lava ? ` Lavalink: ${lava}.` : ''
+      const lavaBit = selected === 'discord' && lava ? ` Lavalink: ${lava}.` : ''
+      const restartScheduled = Boolean(r.data.result?.restart_scheduled)
+      if (isResident && restartScheduled) {
         setStatus(
           enabled
-            ? `Модуль включён в конфиге.${lavaBit} Нужен мягкий рестарт ядра, иначе поток не стартует.`
-            : `Модуль выключен в конфиге.${lavaBit} Нужен мягкий рестарт ядра, иначе поток продолжит жить.`,
+            ? `Модуль включён.${lavaBit} Ядро перезапускается…`
+            : `Модуль выключен.${lavaBit} Ядро перезапускается, чтобы остановить поток…`,
         )
-      } else {
-        setStatus(`Готово: ${r.data.operation_id}`)
+        await finishRestartWait(enabled ? 'Модуль включён.' : 'Модуль выключен.')
+        return
       }
+      if (isResident) {
+        // Older cores without restart_scheduled — keep confirm + explicit restart.
+        setStatus(
+          enabled
+            ? `Модуль включён в конфиге.${lavaBit} Нужен мягкий рестарт ядра.`
+            : `Модуль выключен в конфиге.${lavaBit} Нужен мягкий рестарт ядра.`,
+        )
+        await loadPlugins()
+        await loadDetails(selected)
+        if (
+          window.confirm(
+            enabled
+              ? 'Resident-модуль записан как включённый. Сделать мягкий рестарт ядра сейчас, чтобы бот реально стартовал?'
+              : 'Resident-модуль записан как выключенный. Сделать мягкий рестарт ядра сейчас, чтобы остановить поток?',
+          )
+        ) {
+          await softRestartCore(true)
+        }
+        return
+      }
+      setStatus(`Готово: ${r.data.operation_id}`)
       await loadPlugins()
       await loadDetails(selected)
-      if (
-        isResident &&
-        window.confirm(
-          enabled
-            ? 'Resident-модуль записан как включённый. Сделать мягкий рестарт ядра сейчас, чтобы бот реально стартовал?'
-            : 'Resident-модуль записан как выключенный. Сделать мягкий рестарт ядра сейчас, чтобы остановить поток?',
-        )
-      ) {
-        await softRestartCore(true)
-      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -143,36 +186,13 @@ export function ModulesScreen() {
     ) {
       return
     }
-    setRestartBusy(true)
     setError(null)
     setStatus('Мягкий рестарт… ждём подъёма API')
     try {
       await apiPost<ApiEnvelope<{ note?: string }>>('/v1/system/restart', {})
-      let online = false
-      for (let i = 0; i < 45; i++) {
-        await new Promise((r) => setTimeout(r, 2000))
-        try {
-          const r = await fetch('/v1/dashboard/auth/status', { headers: { Accept: 'application/json' } })
-          if (!r.ok) continue
-          const text = await r.text()
-          if (text.trimStart().startsWith('<')) continue
-          const j = JSON.parse(text) as { ok?: boolean }
-          if (j?.ok === true) {
-            online = true
-            break
-          }
-        } catch {
-          /* still down */
-        }
-      }
-      setStatus(online ? 'Сервер снова онлайн.' : 'Долго не отвечает — обнови страницу через минуту.')
-      if (online) {
-        await loadPlugins()
-        if (selected) await loadDetails(selected)
-      }
+      await finishRestartWait('Мягкий рестарт.')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
-    } finally {
       setRestartBusy(false)
     }
   }
@@ -223,7 +243,7 @@ export function ModulesScreen() {
             {details && (
               <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.75rem', lineHeight: 1.45 }}>
                 {isResident
-                  ? 'Resident: работает в процессе ядра. Вкл./выкл. пишет конфиг; живой поток гасится/поднимается мягким рестартом ядра.'
+                  ? 'Resident: работает в процессе ядра. Вкл./выкл. пишет конфиг и сразу мягко перезапускает ядро, чтобы поток реально стартовал/остановился.'
                   : isOnDemand
                     ? 'On-demand: «Вызвать» запускает entrypoint модуля. Reload/restart модуля API пока не поддерживает.'
                     : `Lifecycle «${lifecycle || '—'}»: доступны вкл./выкл. и конфиг.`}

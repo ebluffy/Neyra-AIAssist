@@ -2250,6 +2250,8 @@ def build_app(
         ok = loader.set_enabled(plugin_id, body.enabled)
         if not ok:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        manifest = _find_manifest(loader, plugin_id)
+        is_resident = bool(manifest and str(manifest.lifecycle).lower() == "resident")
         lava_note = ""
         # Discord owns managed Lavalink: off → kill JVM; on → ensure JAR (non-blocking for event loop).
         if str(plugin_id).strip().lower() == "discord":
@@ -2282,13 +2284,30 @@ def build_app(
             except Exception:
                 logger.exception("Failed to sync managed Lavalink after discord toggle")
                 lava_note = "lavalink sync failed (see logs)"
+        # Resident threads only re-read plugin.yaml on process start — schedule soft restart
+        # so enable/disable actually starts/stops Discord (and peers) without a second UI click.
+        restart_scheduled = False
+        if is_resident:
+            _schedule_exit_after_response(reason=f"resident_plugin_toggle:{plugin_id}")
+            restart_scheduled = True
+            _audit(
+                "system_restart",
+                trace_id,
+                api_role,
+                {"reason": "resident_plugin_toggle", "plugin_id": plugin_id, "enabled": body.enabled},
+            )
         op_id = f"op_{uuid.uuid4().hex[:12]}"
         plugin_ops[op_id] = {
             "operation_id": op_id,
             "plugin_id": plugin_id,
             "type": "set_enabled",
             "status": "done",
-            "result": {"enabled": body.enabled, "lavalink": lava_note or None},
+            "result": {
+                "enabled": body.enabled,
+                "lavalink": lava_note or None,
+                "restart_required": is_resident,
+                "restart_scheduled": restart_scheduled,
+            },
             "ts": _utc_now(),
         }
         _audit("plugin_set_enabled", trace_id, api_role, {"plugin_id": plugin_id, "enabled": body.enabled})

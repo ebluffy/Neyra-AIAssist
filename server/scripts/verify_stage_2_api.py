@@ -350,6 +350,37 @@ def check_auth_matrix() -> list[str]:
             elif not scheduled:
                 errs.append("maint restart did not schedule exit")
 
+            # Resident toggle must schedule soft restart (Discord stays alive otherwise).
+            from core.plugins import PluginLoader
+
+            loader = PluginLoader(SERVER_ROOT)
+            discord = next((p for p in loader.discover_manifests() if p.id == "discord"), None)
+            manifest_path = SERVER_ROOT / "modules" / "discord" / "plugin.yaml"
+            manifest_backup = (
+                manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else None
+            )
+            if discord is not None and manifest_backup is not None:
+                prev_enabled = bool(discord.enabled)
+                scheduled.clear()
+                try:
+                    r = client.patch(
+                        "/v1/plugins/discord",
+                        json={"enabled": (not prev_enabled)},
+                        headers={"Authorization": "Bearer admin-secret"},
+                    )
+                    if r.status_code != 200:
+                        errs.append(f"resident toggle want 200, got {r.status_code} {r.text[:160]}")
+                    else:
+                        result = ((r.json().get("data") or {}).get("result") or {})
+                        if result.get("restart_scheduled") is not True:
+                            errs.append(f"resident toggle must set restart_scheduled: {result}")
+                        if not any(str(x).startswith("resident_plugin_toggle:") for x in scheduled):
+                            errs.append(f"resident toggle did not schedule exit: {scheduled}")
+                finally:
+                    # Exact byte restore — set_enabled uses yaml.safe_dump and reformats the file.
+                    manifest_path.write_text(manifest_backup, encoding="utf-8")
+                    scheduled.clear()
+
             r = client.post(
                 "/v1/plugins/nope/reload",
                 headers={"Authorization": "Bearer admin-secret"},

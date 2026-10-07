@@ -24,6 +24,7 @@ See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens
 - `GET /v1/llm/balance`
 - `POST /v1/chat` (admin)
 - `POST /v1/system/restart` (maint+) — soft process restart (uvicorn should_exit)
+- `PATCH /v1/plugins/{id}` for `lifecycle: resident` — writes `enabled` and **schedules** a soft restart (`restart_scheduled: true`); otherwise the resident thread keeps the old process state
 - `POST /v1/memory/search`
 - `POST /v1/memory/write`
 - `POST /v1/notify`

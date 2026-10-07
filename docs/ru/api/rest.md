@@ -15,6 +15,7 @@
 - `GET /v1/llm/balance`
 - `POST /v1/chat` (admin)
 - `POST /v1/system/restart` (maint+) — мягкий рестарт процесса (uvicorn should_exit)
+- `PATCH /v1/plugins/{id}` для `lifecycle: resident` — пишет `enabled` и **сразу планирует** мягкий рестарт (`restart_scheduled: true`), иначе Discord/resident-поток продолжает жить со старым манифестом
 - `POST /v1/memory/search`
 - `POST /v1/memory/write`
 - `POST /v1/notify`

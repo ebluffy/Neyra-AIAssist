@@ -78,7 +78,7 @@ def run_neyra_server(config: dict) -> None:
     import uvicorn
 
     from core.api import build_app
-    from core.api import app as api_app
+    import core.api.app as api_app
     from core.api.app import _dashboard_dist_path, assert_api_bind_safe
 
     root = project_root()
