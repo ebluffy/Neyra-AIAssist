@@ -175,6 +175,8 @@ def check_auth_matrix() -> list[str]:
     errs: list[str] = []
     data_tmp = Path(tempfile.mkdtemp(prefix="neyra_api_test_"))
 
+    from core.runtime.event_bus import EventBus
+
     agent = MagicMock()
     agent.chat = AsyncMock(return_value={"reply": "ok"})
     agent.chat_stream = AsyncMock()
@@ -182,6 +184,7 @@ def check_auth_matrix() -> list[str]:
     agent.stop_mcp_clients = AsyncMock()
     agent.memory_hub = None
     agent.long_memory = MagicMock(count=MagicMock(return_value=0))
+    agent.event_bus = EventBus()
 
     monitor = MagicMock()
     monitor.start = MagicMock()
@@ -358,6 +361,9 @@ def check_auth_matrix() -> list[str]:
             fake_id = "_ar_fake_resident"
             fake_dir = SERVER_ROOT / "modules" / fake_id
             fake_yaml = fake_dir / "plugin.yaml"
+            # Clean leftover from a killed prior run (AR-15).
+            if fake_dir.exists():
+                shutil.rmtree(fake_dir, ignore_errors=True)
             try:
                 fake_dir.mkdir(parents=True, exist_ok=True)
                 fake_yaml.write_text(
@@ -851,6 +857,274 @@ def check_merge_proposals_api() -> list[str]:
     return errs
 
 
+def check_plugin_ops_and_webhooks() -> list[str]:
+    """Upload/files jail, roles, webhook bus bridge, secret copy (AR-8…14)."""
+    import io
+    import time
+    import zipfile
+
+    import yaml
+    from fastapi.testclient import TestClient
+
+    import core.plugins.ops as ops
+    from core.api import build_app
+    from core.runtime.event_bus import CoreEvent, EventBus
+
+    errs: list[str] = []
+    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_ops_test_"))
+    modules_tmp = Path(tempfile.mkdtemp(prefix="neyra_mods_test_"))
+
+    def _make_zip(pid: str, *, enabled: bool = True, extra: dict[str, bytes] | None = None) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            manifest = (
+                f"id: {pid}\nname: t\nenabled: {'true' if enabled else 'false'}\n"
+                "lifecycle: on_demand\nmain_script: main.py\n"
+            )
+            zf.writestr(f"{pid}/plugin.yaml", manifest)
+            zf.writestr(f"{pid}/main.py", "# x\n")
+            extras = dict(extra or {})
+            if "config.yaml" not in extras:
+                extras["config.yaml"] = b"k: v\n"
+            for name, raw in extras.items():
+                zf.writestr(f"{pid}/{name}", raw)
+        return buf.getvalue()
+
+    # --- unit: zip-slip ---
+    bad = io.BytesIO()
+    with zipfile.ZipFile(bad, "w") as zf:
+        zf.writestr("plugin.yaml", "id: evil\nenabled: false\n")
+        zf.writestr("../escape.py", "x")
+    try:
+        ops.install_plugin_from_zip(modules_tmp, bad.getvalue())
+        errs.append("zip-slip must raise ValueError")
+    except ValueError:
+        pass
+    except Exception as e:
+        errs.append(f"zip-slip want ValueError, got {type(e).__name__}: {e}")
+
+    # --- unit: enabled forced false + no replace ---
+    z1 = _make_zip("ar_tmp_mod", enabled=True)
+    info = ops.install_plugin_from_zip(modules_tmp, z1)
+    py = yaml.safe_load((modules_tmp / "ar_tmp_mod" / "plugin.yaml").read_text(encoding="utf-8"))
+    if py.get("enabled") is not False:
+        errs.append(f"install must force enabled=false, got {py.get('enabled')}")
+    (modules_tmp / "ar_tmp_mod" / "config.yaml").write_text("kept: true\n", encoding="utf-8")
+    (modules_tmp / "ar_tmp_mod" / "logs").mkdir(exist_ok=True)
+    (modules_tmp / "ar_tmp_mod" / "logs" / "module.log").write_text("old\n", encoding="utf-8")
+    try:
+        ops.install_plugin_from_zip(modules_tmp, z1, replace=False)
+        errs.append("second install without replace must raise FileExistsError")
+    except FileExistsError:
+        pass
+    z2 = _make_zip("ar_tmp_mod", enabled=True, extra={"config.yaml": b"from_zip: 1\n"})
+    ops.install_plugin_from_zip(modules_tmp, z2, replace=True)
+    cfg_txt = (modules_tmp / "ar_tmp_mod" / "config.yaml").read_text(encoding="utf-8")
+    if "kept: true" not in cfg_txt:
+        errs.append(f"replace must preserve local config.yaml, got {cfg_txt!r}")
+    if not (modules_tmp / "ar_tmp_mod" / "logs" / "module.log").is_file():
+        errs.append("replace must preserve logs/")
+
+    # --- unit: read allowlist ---
+    plug = modules_tmp / "ar_tmp_mod"
+    (plug / ".env").write_text("SECRET=1\n", encoding="utf-8")
+    try:
+        ops.read_plugin_file(plug, ".env")
+        errs.append("read .env must be denied")
+    except ValueError:
+        pass
+    try:
+        ops.read_plugin_file(plug, "main.py")
+        errs.append("read main.py must be denied")
+    except ValueError:
+        pass
+    try:
+        ops.read_plugin_file(plug, "../ops.py")
+        errs.append("path escape must be denied")
+    except ValueError:
+        pass
+
+    try:
+        ops.install_plugin_from_zip(modules_tmp, _make_zip("discord"))
+        errs.append("upload discord must be denied")
+    except ValueError:
+        pass
+
+    # --- API roles + webhook bus (isolated project_root) ---
+    api_root = Path(tempfile.mkdtemp(prefix="neyra_api_root_"))
+    (api_root / "modules").mkdir()
+    (api_root / "logs").mkdir()
+    # Stub protected plugin so delete/upload protection is reachable.
+    disc = api_root / "modules" / "discord"
+    disc.mkdir()
+    (disc / "plugin.yaml").write_text(
+        "id: discord\nname: d\nenabled: false\nlifecycle: resident\nmain_script: main.py\n",
+        encoding="utf-8",
+    )
+    (disc / "main.py").write_text("# stub\n", encoding="utf-8")
+
+    agent = MagicMock()
+    agent.chat = AsyncMock(return_value={"reply": "ok"})
+    agent.chat_stream = AsyncMock()
+    agent.start_mcp_clients = AsyncMock()
+    agent.stop_mcp_clients = AsyncMock()
+    agent.memory_hub = None
+    agent.long_memory = MagicMock(count=MagicMock(return_value=0))
+    agent.event_bus = EventBus()
+    monitor = MagicMock()
+    monitor.start = MagicMock()
+    monitor.run_once = AsyncMock(return_value={"status": "ok"})
+    cfg = {
+        "paths": {"data_dir": str(data_tmp)},
+        "api": {
+            "host": "127.0.0.1",
+            "port": 8787,
+            "token": "admin-secret",
+            "viewer_token": "viewer-secret",
+            "maint_token": "maint-secret",
+            "public_base_url": "",
+            "audit_log_enabled": False,
+            "rate_limit_requests_per_minute": 0,
+        },
+        "dashboard": {"enabled": False},
+        "llm": {
+            "talk_model": {"provider": "openrouter", "model": "x"},
+            "brain_model": {"provider": "openrouter", "model": "x"},
+            "memory_model": {"provider": "openrouter", "model": "x"},
+            "vision_model": {"provider": "openrouter", "model": "x"},
+            "providers": {"openrouter": {"model": "x"}},
+        },
+    }
+    api_pid = "ar_tmp_api_mod"
+    app = build_app(
+        cfg,
+        shared_agent=agent,
+        shared_monitor=monitor,
+        shared_backup_manager=MagicMock(),
+        project_root=api_root,
+    )
+    admin = {"Authorization": "Bearer admin-secret"}
+    viewer = {"Authorization": "Bearer viewer-secret"}
+    try:
+        with TestClient(app, client=("127.0.0.1", 50000)) as client:
+            r = client.post(
+                "/v1/plugins/upload",
+                files={"file": ("m.zip", _make_zip(api_pid), "application/zip")},
+                headers=viewer,
+            )
+            if r.status_code != 403:
+                errs.append(f"viewer upload want 403, got {r.status_code}")
+
+            r = client.post(
+                "/v1/plugins/upload",
+                files={"file": ("m.zip", _make_zip(api_pid), "application/zip")},
+                headers=admin,
+            )
+            if r.status_code != 200:
+                errs.append(f"admin upload want 200, got {r.status_code} {r.text[:160]}")
+            else:
+                r2 = client.post(
+                    "/v1/plugins/upload",
+                    files={"file": ("m.zip", _make_zip(api_pid), "application/zip")},
+                    headers=admin,
+                )
+                if r2.status_code != 409:
+                    errs.append(f"duplicate upload want 409, got {r2.status_code}")
+
+            r = client.post(
+                "/v1/plugins/upload",
+                files={"file": ("d.zip", _make_zip("discord"), "application/zip")},
+                headers=admin,
+            )
+            if r.status_code != 400:
+                errs.append(f"upload discord want 400, got {r.status_code}")
+
+            r = client.delete("/v1/plugins/discord", headers=admin)
+            if r.status_code != 403:
+                errs.append(f"delete discord want 403, got {r.status_code}")
+
+            r = client.get(f"/v1/plugins/{api_pid}/files/main.py", headers=viewer)
+            if r.status_code != 400:
+                errs.append(f"viewer read main.py want 400, got {r.status_code}")
+
+            r = client.get(f"/v1/plugins/{api_pid}/files/../discord/plugin.yaml", headers=viewer)
+            if r.status_code not in (400, 404):
+                errs.append(f"files traversal want 400/404, got {r.status_code}")
+
+            r = client.put(
+                f"/v1/plugins/{api_pid}/files/config.yaml",
+                json={"content": "a: 1\n"},
+                headers=viewer,
+            )
+            if r.status_code != 403:
+                errs.append(f"viewer PUT file want 403, got {r.status_code}")
+
+            r = client.post(
+                "/v1/webhooks/out/routes",
+                json={
+                    "event_type": "chat.turn_completed",
+                    "target_url": "http://127.0.0.1:9/hook",
+                    "secret": "shared-secret-xyz",
+                    "enabled": True,
+                    "max_retries": 0,
+                },
+                headers=admin,
+            )
+            if r.status_code != 200:
+                errs.append(f"webhook create want 200, got {r.status_code}")
+            r = client.post(
+                "/v1/webhooks/out/routes",
+                json={
+                    "event_type": "memory.added",
+                    "target_url": "http://127.0.0.1:9/hook",
+                    "secret": "",
+                    "enabled": True,
+                    "max_retries": 0,
+                },
+                headers=admin,
+            )
+            if r.status_code != 200:
+                errs.append(f"webhook create (copy secret) want 200, got {r.status_code}")
+
+            routes = client.get("/v1/webhooks/out/routes", headers=admin)
+            if routes.status_code == 200:
+                rows = (routes.json().get("data") or {}).get("routes") or []
+                same = [x for x in rows if x.get("target_url") == "http://127.0.0.1:9/hook"]
+                mem = next((x for x in same if x.get("event_type") == "memory.added"), None)
+                if not mem or not mem.get("secret_masked"):
+                    errs.append(f"new route must inherit secret_masked from sibling: {mem}")
+
+            agent.event_bus.publish(CoreEvent("chat.turn_completed", "verify", {"ping": True}))
+            found = False
+            for _ in range(40):
+                time.sleep(0.05)
+                d = client.get("/v1/webhooks/deliveries", headers=admin)
+                if d.status_code != 200:
+                    continue
+                rows = (d.json().get("data") or {}).get("deliveries") or []
+                for x in rows:
+                    pl = x.get("payload") if isinstance(x.get("payload"), dict) else {}
+                    if pl.get("event_type") == "chat.turn_completed" and x.get("source") == "event_bus":
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                errs.append("event_bus publish did not create webhook delivery")
+
+            r = client.delete(f"/v1/plugins/{api_pid}", headers=viewer)
+            if r.status_code != 403:
+                errs.append(f"viewer delete want 403, got {r.status_code}")
+            r = client.delete(f"/v1/plugins/{api_pid}", headers=admin)
+            if r.status_code != 200:
+                errs.append(f"admin delete want 200, got {r.status_code}")
+    finally:
+        shutil.rmtree(api_root, ignore_errors=True)
+        shutil.rmtree(data_tmp, ignore_errors=True)
+        shutil.rmtree(modules_tmp, ignore_errors=True)
+    return errs
+
+
 def main() -> int:
     checks = [
         ("package layout", check_package_layout),
@@ -866,6 +1140,7 @@ def main() -> int:
         ("public URL env rejected", check_public_url_env_rejected),
         ("rate limit XFF bucket", check_rate_limit_xff_bucket),
         ("auth matrix", check_auth_matrix),
+        ("plugin ops & webhooks", check_plugin_ops_and_webhooks),
         ("merge proposals API", check_merge_proposals_api),
     ]
     failed = 0

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import re
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,15 @@ import yaml
 _PROTECTED_PLUGIN_IDS = frozenset({"discord"})
 _ALLOWED_CONFIG_SUFFIXES = frozenset({".yaml", ".yml", ".json", ".toml", ".ini", ".conf", ".properties"})
 _SAFE_ID_RE = re.compile(r"^[a-z][a-z0-9_\-]{0,59}$")
+_SECRET_NAME_RE = re.compile(
+    r"(^|[/\\])(\.env($|\.)|.*credentials.*|.*secrets?.*|.*token.*|.*\.pem$|.*\.key$)",
+    re.IGNORECASE,
+)
+
+MAX_ZIP_BYTES = 20 * 1024 * 1024
+MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+MAX_ZIP_FILES = 2000
+_PRESERVE_ON_REPLACE = frozenset({"config.yaml", "config.yml", "logs", "data"})
 
 
 def protected_plugin_ids() -> frozenset[str]:
@@ -37,6 +47,15 @@ def resolve_under(base: Path, rel: str) -> Path:
     return candidate
 
 
+def _is_allowed_config_path(rel: str) -> bool:
+    name = Path(rel).name
+    if name in ("plugin.yaml", "plugin.yml"):
+        return True
+    if _SECRET_NAME_RE.search(rel.replace("\\", "/")):
+        return False
+    return Path(rel).suffix.lower() in _ALLOWED_CONFIG_SUFFIXES
+
+
 def list_plugin_config_files(plugin_dir: Path) -> list[dict[str, Any]]:
     plugin_dir = plugin_dir.resolve()
     out: list[dict[str, Any]] = []
@@ -45,36 +64,38 @@ def list_plugin_config_files(plugin_dir: Path) -> list[dict[str, Any]]:
     for path in sorted(plugin_dir.rglob("*")):
         if not path.is_file():
             continue
-        if path.suffix.lower() not in _ALLOWED_CONFIG_SUFFIXES:
+        rel = path.relative_to(plugin_dir).as_posix()
+        if not _is_allowed_config_path(rel):
             continue
-        # Skip heavy/vendor trees
         parts = {p.lower() for p in path.relative_to(plugin_dir).parts}
         if parts & {"node_modules", ".git", "__pycache__", "venv", ".venv", "dist", "build"}:
             continue
-        rel = path.relative_to(plugin_dir).as_posix()
         out.append({"path": rel, "bytes": path.stat().st_size})
     return out
 
 
 def read_plugin_file(plugin_dir: Path, rel: str, *, max_bytes: int = 512_000) -> str:
+    if not _is_allowed_config_path(rel):
+        raise ValueError("only config-like text files can be read")
     path = resolve_under(plugin_dir, rel)
     if not path.is_file():
         raise FileNotFoundError(rel)
     data = path.read_bytes()
     if len(data) > max_bytes:
         raise ValueError(f"file too large (>{max_bytes} bytes)")
-    return data.decode("utf-8")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError("file is not valid UTF-8 text") from e
 
 
 def write_plugin_file(plugin_dir: Path, rel: str, content: str, *, max_bytes: int = 512_000) -> None:
+    if not _is_allowed_config_path(rel):
+        raise ValueError("only config-like text files can be written")
     path = resolve_under(plugin_dir, rel)
     raw = content.encode("utf-8")
     if len(raw) > max_bytes:
         raise ValueError(f"content too large (>{max_bytes} bytes)")
-    if path.suffix.lower() not in _ALLOWED_CONFIG_SUFFIXES and path.name != "plugin.yaml":
-        # allow plugin.yaml even if suffix check already covers it
-        if path.name not in ("plugin.yaml", "plugin.yml"):
-            raise ValueError("only config-like text files can be written")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
 
@@ -85,7 +106,6 @@ def _find_plugin_yaml_in_zip(zf: zipfile.ZipFile) -> tuple[str, dict[str, Any]]:
     candidates = [n for n in names if n.replace("\\", "/").endswith("plugin.yaml")]
     if not candidates:
         raise ValueError("zip must contain plugin.yaml")
-    # Prefer shallowest plugin.yaml
     candidates.sort(key=lambda n: (n.count("/"), len(n)))
     chosen = candidates[0].replace("\\", "/")
     raw = yaml.safe_load(zf.read(chosen)) or {}
@@ -95,7 +115,60 @@ def _find_plugin_yaml_in_zip(zf: zipfile.ZipFile) -> tuple[str, dict[str, Any]]:
     return prefix, raw
 
 
-def install_plugin_from_zip(modules_dir: Path, zip_bytes: bytes) -> dict[str, Any]:
+def _assert_zip_safe(zf: zipfile.ZipFile) -> None:
+    total_uncompressed = 0
+    file_count = 0
+    for info in zf.infolist():
+        name = info.filename.replace("\\", "/")
+        if name.startswith("/") or ".." in name.split("/"):
+            raise ValueError(f"unsafe zip path: {info.filename}")
+        if info.is_dir():
+            continue
+        file_count += 1
+        if file_count > MAX_ZIP_FILES:
+            raise ValueError(f"zip has too many files (max {MAX_ZIP_FILES})")
+        total_uncompressed += max(0, int(info.file_size))
+        if total_uncompressed > MAX_UNCOMPRESSED_BYTES:
+            raise ValueError(f"zip uncompressed size too large (max {MAX_UNCOMPRESSED_BYTES} bytes)")
+
+
+def _stash_preserved(target: Path) -> Path | None:
+    """Move config.yaml / logs / data aside before replace. Returns stash dir or None."""
+    to_move = [name for name in _PRESERVE_ON_REPLACE if (target / name).exists()]
+    if not to_move:
+        return None
+    stash = Path(tempfile.mkdtemp(prefix="neyra_plugin_preserve_"))
+    for name in to_move:
+        src = target / name
+        dest = stash / name
+        shutil.move(str(src), str(dest))
+    return stash
+
+
+def _restore_preserved(stash: Path | None, target: Path) -> None:
+    if stash is None:
+        return
+    try:
+        for child in stash.iterdir():
+            dest = target / child.name
+            if dest.exists():
+                if dest.is_dir():
+                    shutil.rmtree(dest)
+                else:
+                    dest.unlink()
+            shutil.move(str(child), str(dest))
+    finally:
+        shutil.rmtree(stash, ignore_errors=True)
+
+
+def install_plugin_from_zip(
+    modules_dir: Path,
+    zip_bytes: bytes,
+    *,
+    replace: bool = False,
+) -> dict[str, Any]:
+    if len(zip_bytes) > MAX_ZIP_BYTES:
+        raise ValueError(f"zip too large (max {MAX_ZIP_BYTES} bytes)")
     modules_dir = modules_dir.resolve()
     modules_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -103,15 +176,10 @@ def install_plugin_from_zip(modules_dir: Path, zip_bytes: bytes) -> dict[str, An
     except zipfile.BadZipFile as e:
         raise ValueError("invalid zip archive") from e
     with zf:
-        # Zip-slip guard
-        for info in zf.infolist():
-            name = info.filename.replace("\\", "/")
-            if name.startswith("/") or ".." in name.split("/"):
-                raise ValueError(f"unsafe zip path: {info.filename}")
+        _assert_zip_safe(zf)
         prefix, manifest = _find_plugin_yaml_in_zip(zf)
         pid = normalize_plugin_id(str(manifest.get("id") or "").strip())
         if not pid:
-            # fall back to folder name in zip
             if prefix:
                 pid = normalize_plugin_id(prefix.strip("/").split("/")[-1])
         if not is_safe_plugin_id(pid):
@@ -121,29 +189,45 @@ def install_plugin_from_zip(modules_dir: Path, zip_bytes: bytes) -> dict[str, An
         target = (modules_dir / pid).resolve()
         if modules_dir not in target.parents and target != modules_dir / pid:
             raise ValueError("invalid target path")
+        stash: Path | None = None
+        replaced = False
         if target.exists():
+            if not replace:
+                raise FileExistsError(pid)
+            replaced = True
+            stash = _stash_preserved(target)
             shutil.rmtree(target)
         target.mkdir(parents=True, exist_ok=True)
-        for info in zf.infolist():
-            name = info.filename.replace("\\", "/")
-            if info.is_dir():
-                continue
-            if prefix and not name.startswith(prefix):
-                continue
-            rel = name[len(prefix) :] if prefix else name
-            if not rel or ".." in rel.split("/"):
-                continue
-            dest = resolve_under(target, rel)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(zf.read(info.filename))
-        # Ensure id in plugin.yaml matches folder
+        try:
+            for info in zf.infolist():
+                name = info.filename.replace("\\", "/")
+                if info.is_dir():
+                    continue
+                if prefix and not name.startswith(prefix):
+                    continue
+                rel = name[len(prefix) :] if prefix else name
+                if not rel or ".." in rel.split("/"):
+                    continue
+                dest = resolve_under(target, rel)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                data = zf.read(info.filename)
+                if len(data) > MAX_UNCOMPRESSED_BYTES:
+                    raise ValueError("zip member too large after inflate")
+                dest.write_bytes(data)
+            _restore_preserved(stash, target)
+            stash = None
+        except Exception:
+            if stash is not None:
+                _restore_preserved(stash, target)
+            raise
         py = target / "plugin.yaml"
         if py.is_file():
             data = yaml.safe_load(py.read_text(encoding="utf-8")) or {}
             if isinstance(data, dict):
                 data["id"] = pid
+                data["enabled"] = False
                 py.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
-        return {"plugin_id": pid, "path": str(target)}
+        return {"plugin_id": pid, "path": str(target), "replaced": replaced}
 
 
 def delete_plugin_dir(modules_dir: Path, plugin_id: str) -> None:
@@ -167,7 +251,7 @@ def tail_text_file(path: Path, *, max_lines: int = 200, max_bytes: int = 512_000
     with path.open("rb") as f:
         if size > max_bytes:
             f.seek(-max_bytes, io.SEEK_END)
-            f.readline()  # drop partial first line
+            f.readline()
         data = f.read()
     text = data.decode("utf-8", errors="replace")
     lines = text.splitlines()
@@ -194,7 +278,6 @@ def resolve_log_source(root: Path, source: str) -> Path | None:
         pid = normalize_plugin_id(src.split(":", 1)[1])
         if not is_safe_plugin_id(pid):
             return None
-        # Prefer module-local logs/, else fall back to system.log filtered by caller
         cand = root / "modules" / pid / "logs" / "module.log"
         if cand.is_file():
             return cand

@@ -120,7 +120,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install API verify deps
-        run: pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette
+        run: pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart
       - name: compileall
         run: python -m compileall -q server
       - name: Check layered config regression

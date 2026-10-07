@@ -328,9 +328,30 @@ export function ModulesScreen() {
     setUploading(true)
     setStatus(`Загружаю ${file.name}…`)
     try {
-      const r = await apiUpload<ApiEnvelope<{ plugin_id: string }>>('/v1/plugins/upload', file)
+      let r: ApiEnvelope<{ plugin_id: string; restart_scheduled?: boolean }>
+      try {
+        r = await apiUpload('/v1/plugins/upload', file)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (!/already exists|already_exists/i.test(msg)) throw e
+        if (
+          !window.confirm(
+            `${msg}\n\nЗаменить существующий модуль? Локальные config.yaml, logs/ и data/ сохранятся. Resident — с soft-restart.`,
+          )
+        ) {
+          setStatus('')
+          return
+        }
+        r = await apiUpload('/v1/plugins/upload?replace=true', file)
+      }
       const pid = r.data.plugin_id
-      setStatus(`Модуль «${pid}» установлен. Включи его вручную во вкладке «Управление».`)
+      if (r.data.restart_scheduled) {
+        setStatus(`Модуль «${pid}» заменён. Ядро перезапускается…`)
+        setRestartBusy(true)
+        await finishRestartWait(`Модуль «${pid}» заменён.`)
+      } else {
+        setStatus(`Модуль «${pid}» установлен. Включи его вручную во вкладке «Управление».`)
+      }
       await loadPlugins()
       setSelected(pid)
       setTab('manage')

@@ -742,6 +742,53 @@ class WebhookStore:
             row = self._state["deliveries"].get(delivery_id)
             return dict(row) if isinstance(row, dict) else None
 
+    async def matching_routes_raw(self, event_type: str) -> list[dict[str, Any]]:
+        """Enabled routes for event_type or '*', including secret (dispatch only)."""
+        async with self._lock:
+            out: list[dict[str, Any]] = []
+            for row in self._state["routes"].values():
+                if not isinstance(row, dict):
+                    continue
+                if not bool(row.get("enabled", True)):
+                    continue
+                route_event = str(row.get("event_type") or "")
+                if route_event not in ("*", event_type):
+                    continue
+                out.append(dict(row))
+            return out
+
+    async def secret_for_target_url(self, target_url: str) -> str:
+        url = (target_url or "").strip()
+        if not url:
+            return ""
+        async with self._lock:
+            for row in self._state["routes"].values():
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("target_url") or "").strip() != url:
+                    continue
+                sec = str(row.get("secret") or "").strip()
+                if sec:
+                    return sec
+            return ""
+
+
+async def _fanout_webhooks(
+    store: WebhookStore,
+    event_type: str,
+    source: str,
+    payload: dict[str, Any],
+) -> None:
+    routes = await store.matching_routes_raw(event_type)
+    body = {
+        "event_type": event_type,
+        "source": source,
+        "payload": payload,
+        "ts": _utc_now(),
+    }
+    for route in routes:
+        asyncio.create_task(_dispatch_webhook(store, route, body, source="event_bus"))
+
 
 async def _dispatch_webhook(
     store: WebhookStore,
@@ -820,6 +867,7 @@ def build_app(
     shared_monitor: Optional[HealthMonitor] = None,
     shared_backup_manager: Optional[BackupManager] = None,
     reflection: Optional[ReflectionEngine] = None,
+    project_root: Optional[Path] = None,
 ) -> FastAPI:
     public_root = api_public_root(config)
     openapi_servers = [{"url": public_root, "description": "public"}] if public_root else None
@@ -828,6 +876,7 @@ def build_app(
         version=API_VERSION,
         servers=openapi_servers,
     )
+    root = Path(project_root).resolve() if project_root is not None else _project_root()
     if shared_agent is not None:
         agent = shared_agent
         if shared_monitor is None or shared_backup_manager is None:
@@ -836,7 +885,7 @@ def build_app(
         backup_manager = shared_backup_manager
     else:
         agent = NeyraAgent(config)
-        monitor = HealthMonitor(config, project_root=_project_root())
+        monitor = HealthMonitor(config, project_root=root)
         backup_manager = BackupManager(config)
     app.state.agent = agent
     app.state.monitor = monitor
@@ -846,14 +895,32 @@ def build_app(
     ws_idle_timeout = max(5, int(ws_cfg.get("idle_timeout_seconds", 60)))
     ws_ping_interval = max(2, int(ws_cfg.get("ping_interval_seconds", 20)))
     ws_close_grace = max(1, int(ws_cfg.get("close_grace_seconds", 5)))
-    root = _project_root()
     webhook_store = WebhookStore(root)
     plugin_ops: dict[str, dict[str, Any]] = {}
     dash_auth = DashboardAuthStore(resolve_data_dir(root, config) / "dashboard_auth.sqlite")
     app.state.dashboard_auth = dash_auth
+    main_loop: list[asyncio.AbstractEventLoop | None] = [None]
+
+    def _schedule_webhook_fanout(event_type: str, source: str, payload: dict[str, Any]) -> None:
+        coro = _fanout_webhooks(webhook_store, event_type, source, payload if isinstance(payload, dict) else {})
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(coro)
+            return
+        except RuntimeError:
+            pass
+        loop = main_loop[0]
+        if loop is not None and loop.is_running():
+            asyncio.run_coroutine_threadsafe(coro, loop)
+
+    def _on_bus_event_for_webhooks(ev: CoreEvent) -> None:
+        _schedule_webhook_fanout(ev.event_type, ev.source, ev.payload if isinstance(ev.payload, dict) else {})
+
+    agent.event_bus.subscribe("*", _on_bus_event_for_webhooks)
 
     @app.on_event("startup")
     async def _startup() -> None:
+        main_loop[0] = asyncio.get_running_loop()
         if reflection is not None:
             reflection.start_scheduler()
         monitor.start()
@@ -1047,6 +1114,7 @@ def build_app(
     @app.post("/v1/notify")
     async def v1_notify(body: NotifyRequest, request: Request, api_role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
+        # Fan-out to webhook routes via the event-bus bridge (see subscribe above).
         agent.event_bus.publish(
             CoreEvent(
                 body.event_type,
@@ -1054,26 +1122,6 @@ def build_app(
                 body.payload,
             )
         )
-        routes = await webhook_store.list_routes()
-        for route in routes:
-            if not bool(route.get("enabled", True)):
-                continue
-            route_event = str(route.get("event_type") or "")
-            if route_event not in ("*", body.event_type):
-                continue
-            asyncio.create_task(
-                _dispatch_webhook(
-                    webhook_store,
-                    route,
-                    {
-                        "event_type": body.event_type,
-                        "source": body.source,
-                        "payload": body.payload,
-                        "ts": _utc_now(),
-                    },
-                    source="event_bus",
-                )
-            )
         _audit("notify", trace_id, api_role, {"event_type": body.event_type})
         return {"ok": True, "trace_id": trace_id, "data": {"published": True}}
 
@@ -2203,7 +2251,7 @@ def build_app(
     @app.get("/v1/plugins")
     async def v1_plugins(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
-        loader = PluginLoader(_project_root())
+        loader = PluginLoader(root)
         return {"ok": True, "trace_id": trace_id, "data": {"plugins": loader.list_plugins()}}
 
     def _find_manifest(loader: PluginLoader, plugin_id: str):
@@ -2319,24 +2367,47 @@ def build_app(
     async def v1_plugins_upload(
         request: Request,
         file: UploadFile = File(...),
+        replace: bool = Query(default=False),
         api_role: str = Depends(dep_admin),
     ):
         trace_id = _trace_id(request)
-        raw = await file.read()
+        limit = plugin_ops_helpers.MAX_ZIP_BYTES
+        raw = await file.read(limit + 1)
         if not raw:
             raise ApiError("bad_request", "empty upload", 400)
-        if len(raw) > 20 * 1024 * 1024:
-            raise ApiError("bad_request", "zip too large (max 20MB)", 400)
+        if len(raw) > limit:
+            raise ApiError("bad_request", f"zip too large (max {limit} bytes)", 400)
         try:
             info = await asyncio.to_thread(
                 plugin_ops_helpers.install_plugin_from_zip,
                 root / "modules",
                 raw,
+                replace=replace,
             )
+        except FileExistsError as e:
+            raise ApiError(
+                "already_exists",
+                f"plugin already exists: {e}. Pass replace=true to overwrite (preserves config/logs/data).",
+                409,
+            ) from e
         except ValueError as e:
             raise ApiError("bad_request", str(e), 400) from e
         pid = str(info.get("plugin_id") or "")
-        _audit("plugin_upload", trace_id, api_role, {"plugin_id": pid})
+        restart_scheduled = False
+        if info.get("replaced"):
+            loader = PluginLoader(root)
+            m = _find_manifest(loader, pid)
+            if m is not None and str(m.lifecycle).lower() == "resident":
+                _schedule_exit_after_response(reason=f"resident_plugin_replace:{pid}")
+                restart_scheduled = True
+                _audit(
+                    "system_restart",
+                    trace_id,
+                    api_role,
+                    {"reason": "resident_plugin_replace", "plugin_id": pid},
+                )
+        info = {**info, "restart_scheduled": restart_scheduled}
+        _audit("plugin_upload", trace_id, api_role, {"plugin_id": pid, "replace": replace})
         return {"ok": True, "trace_id": trace_id, "data": info}
 
     @app.delete("/v1/plugins/{plugin_id}")
@@ -2795,12 +2866,15 @@ def build_app(
         api_role: str = Depends(dep_admin),
     ):
         trace_id = _trace_id(request)
+        secret = (body.secret or "").strip()
+        if not secret:
+            secret = await webhook_store.secret_for_target_url(body.target_url)
         row = await webhook_store.upsert_route(
             {
                 "route_id": body.route_id or "",
                 "event_type": body.event_type,
                 "target_url": body.target_url,
-                "secret": body.secret,
+                "secret": secret,
                 "enabled": body.enabled,
                 "max_retries": body.max_retries,
             }

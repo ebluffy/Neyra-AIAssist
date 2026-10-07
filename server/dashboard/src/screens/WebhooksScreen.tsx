@@ -216,6 +216,7 @@ export function WebhooksScreen() {
           })
           updated += 1
         } else {
+          // Empty secret: API copies from another route with the same target_url.
           await apiPost<ApiEnvelope<WebhookRoute>>('/v1/webhooks/out/routes', {
             event_type: ev,
             target_url: target,

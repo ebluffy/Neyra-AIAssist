@@ -3,6 +3,16 @@
 # Keep shell launchers LF so bash/WSL does not choke on CRLF.
 *.sh text eol=lf
 
+# Source / docs: LF in the repo (Windows checkout may still show CRLF in the working tree).
+*.py text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+
 # Windows launcher: UTF-8 (BOM preferred). Boot script is ASCII-only fallback.
 server/scripts/neyra_win_launcher.ps1 text working-tree-encoding=UTF-8
 server/scripts/neyra_win_boot.ps1 text eol=crlf
