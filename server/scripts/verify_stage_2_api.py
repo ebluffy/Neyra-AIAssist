@@ -863,6 +863,7 @@ def check_plugin_ops_and_webhooks() -> list[str]:
     import io
     import time
     import zipfile
+    from unittest.mock import patch
 
     import yaml
     from fastapi.testclient import TestClient
@@ -926,6 +927,49 @@ def check_plugin_ops_and_webhooks() -> list[str]:
     if not (modules_tmp / "ar_tmp_mod" / "logs" / "module.log").is_file():
         errs.append("replace must preserve logs/")
 
+    # --- unit: copy-preserve failure before swap leaves live data (AR-20) ---
+    plug = modules_tmp / "ar_tmp_mod"
+    (plug / "data").mkdir(exist_ok=True)
+    (plug / "data" / "keep.bin").write_bytes(b"keep-me")
+    real_copytree = shutil.copytree
+
+    def flaky_copytree(src, dst, *a, **k):  # type: ignore[no-untyped-def]
+        if Path(src).name == "data":
+            raise OSError("simulated disk full on data/")
+        return real_copytree(src, dst, *a, **k)
+
+    try:
+        with patch("shutil.copytree", flaky_copytree):
+            ops.install_plugin_from_zip(modules_tmp, _make_zip("ar_tmp_mod"), replace=True)
+        errs.append("flaky preserve copy must raise")
+    except OSError:
+        pass
+    if not (plug / "data" / "keep.bin").is_file():
+        errs.append("failed preserve copy must leave live data/ intact")
+    if not (plug / "logs" / "module.log").is_file():
+        errs.append("failed preserve copy must leave live logs/ intact")
+    if list(modules_tmp.glob(".ar_tmp_mod.staging-*")):
+        errs.append("staging must be cleaned after failed preserve copy")
+
+    # --- unit: hidden staging dirs are not discovered (AR-21) ---
+    from core.plugins.loader import PluginLoader
+
+    loader_root = Path(tempfile.mkdtemp(prefix="neyra_loader_root_"))
+    try:
+        (loader_root / "modules").mkdir()
+        hid = loader_root / "modules" / ".foo.staging-x"
+        hid.mkdir()
+        (hid / "plugin.yaml").write_text(
+            "id: foo\nname: hidden\nenabled: true\nlifecycle: resident\nmain_script: main.py\n",
+            encoding="utf-8",
+        )
+        (hid / "main.py").write_text("# x\n", encoding="utf-8")
+        found = [m.id for m in PluginLoader(loader_root).discover_manifests()]
+        if "foo" in found:
+            errs.append("discover_manifests must skip .{id}.staging-* dirs")
+    finally:
+        shutil.rmtree(loader_root, ignore_errors=True)
+
     # --- unit: read allowlist + real path escape (allowlisted suffix) ---
     plug = modules_tmp / "ar_tmp_mod"
     other = modules_tmp / "other_mod"
@@ -973,8 +1017,6 @@ def check_plugin_ops_and_webhooks() -> list[str]:
         "id: ar_tmp_mod\nenabled: false\nlifecycle: on_demand\nmain_script: main.py\n",
         encoding="utf-8",
     )
-    from unittest.mock import patch
-
     read_calls = {"n": 0}
     real_read = zipfile.ZipFile.read
 
@@ -1199,18 +1241,20 @@ def check_plugin_ops_and_webhooks() -> list[str]:
                     continue
                 rows = (d.json().get("data") or {}).get("deliveries") or []
                 for x in rows:
-                    if x.get("event_type") == "music.play" and x.get("source") == "event_bus":
-                        if x.get("route_event") == "*":
-                            star_ok = True
-                            break
-                        # Accept either route_event=* or any delivery for music.play via *
-                        if str(x.get("event_type")) == "music.play":
-                            star_ok = True
-                            break
+                    if (
+                        x.get("event_type") == "music.play"
+                        and x.get("source") == "event_bus"
+                        and x.get("route_event") == "*"
+                    ):
+                        star_ok = True
+                        break
                 if star_ok:
                     break
             if not star_ok:
-                errs.append("wildcard * route + foreign-loop publish did not deliver music.play")
+                errs.append(
+                    "wildcard * route + foreign-loop publish must deliver "
+                    "event_type=music.play with route_event=*"
+                )
 
             r = client.delete(f"/v1/plugins/{api_pid}", headers=viewer)
             if r.status_code != 403:

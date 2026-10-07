@@ -95,6 +95,8 @@ logs/voice_tmp/
 
 # Ephemeral AR/verify fixture (must never ship as a live resident module)
 server/modules/_ar_fake_resident/
+# Plugin upload staging / rollback dirs (.{id}.staging-* / .{id}.old-*)
+server/modules/.*
 
 server/modules/discord/lavalink/application.yml
 server/modules/discord/lavalink/Lavalink.jar

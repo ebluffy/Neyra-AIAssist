@@ -52,6 +52,9 @@ class PluginLoader:
         if not self.modules_dir.exists():
             return out
         for manifest_path in self.modules_dir.glob("*/plugin.yaml"):
+            # Skip install staging/backup dirs (.{id}.staging-* / .{id}.old-*).
+            if manifest_path.parent.name.startswith("."):
+                continue
             try:
                 raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
                 if not isinstance(raw, dict):
@@ -239,6 +242,8 @@ class PluginLoader:
         if not plugin_id:
             return False
         for manifest_path in self.modules_dir.glob("*/plugin.yaml"):
+            if manifest_path.parent.name.startswith("."):
+                continue
             raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
             if not isinstance(raw, dict):
                 continue

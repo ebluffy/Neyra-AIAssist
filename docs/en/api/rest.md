@@ -44,7 +44,7 @@ See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens
 - `GET /v1/plugins/operations/{operation_id}`
 - `POST /v1/plugins/upload` (multipart field `file` — .zip with `plugin.yaml`, admin; `discord` is protected)
   - If the module already exists → **409** `already_exists` unless `?replace=true` (UI confirms).
-  - On replace, local `config.yaml` / `logs/` / `data/` are preserved; unpack uses a staging dir so a failed extract leaves the old module intact.
+  - On replace: `config.yaml` / `logs/` / `data/` are copied into staging **before** the folder swap; the old tree is renamed to `.{id}.old-*` only after a successful unpack. If anything fails after the swap, `.old` is kept as a backup (never deleted in the error path).
   - Installed `plugin.yaml` is forced to `enabled: false` (enable manually).
   - Replacing a resident module schedules soft restart (`restart_scheduled: true`).
 - `DELETE /v1/plugins/{plugin_id}` (admin; `discord` is protected; resident → soft restart)

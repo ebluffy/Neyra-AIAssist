@@ -35,7 +35,7 @@
 - `GET /v1/plugins/operations/{operation_id}`
 - `POST /v1/plugins/upload` (multipart, поле `file` — .zip с `plugin.yaml`, admin; `discord` защищён)
   - По умолчанию, если модуль уже есть → **409** `already_exists`. Замена только с `?replace=true` (UI спрашивает confirm).
-  - При replace сохраняются локальные `config.yaml` / `logs/` / `data/`; распаковка идёт в staging, старая папка не трогается до успеха.
+  - При replace: `config.yaml` / `logs/` / `data/` копируются в staging **до** подмены папки; старый код уходит в `.{id}.old-*` только после успешной распаковки. При сбое после подмены `.old` не удаляется (бэкап).
   - После установки в `plugin.yaml` принудительно `enabled: false` (включи вручную).
   - Замена resident → soft restart (`restart_scheduled: true`).
 - `DELETE /v1/plugins/{plugin_id}` (admin; `discord` защищён; resident → soft restart)

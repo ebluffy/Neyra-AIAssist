@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import re
 import shutil
 import uuid
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger("neyra.plugins.ops")
 
 _PROTECTED_PLUGIN_IDS = frozenset({"discord"})
 _ALLOWED_CONFIG_SUFFIXES = frozenset({".yaml", ".yml", ".json", ".toml", ".ini", ".conf", ".properties"})
@@ -133,8 +136,8 @@ def _assert_zip_safe(zf: zipfile.ZipFile) -> None:
             raise ValueError(f"zip uncompressed size too large (max {MAX_UNCOMPRESSED_BYTES} bytes)")
 
 
-def _move_preserved(src_root: Path, dest_root: Path) -> None:
-    """Move config.yaml / logs / data from src_root into dest_root (overwrite)."""
+def _copy_preserved(src_root: Path, dest_root: Path) -> None:
+    """Copy config.yaml / logs / data from live module into staging (overwrite)."""
     for name in _PRESERVE_ON_REPLACE:
         src = src_root / name
         if not src.exists():
@@ -145,18 +148,25 @@ def _move_preserved(src_root: Path, dest_root: Path) -> None:
                 shutil.rmtree(dest)
             else:
                 dest.unlink()
-        shutil.move(str(src), str(dest))
+        if src.is_dir():
+            shutil.copytree(src, dest)
+        else:
+            shutil.copy2(src, dest)
 
 
-def _force_plugin_disabled(plugin_dir: Path, pid: str) -> None:
-    py = plugin_dir / "plugin.yaml"
-    if not py.is_file():
-        return
-    data = yaml.safe_load(py.read_text(encoding="utf-8")) or {}
-    if isinstance(data, dict):
-        data["id"] = pid
-        data["enabled"] = False
-        py.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+def _write_disabled_plugin_yaml(dest: Path, pid: str, raw_bytes: bytes) -> None:
+    data = yaml.safe_load(raw_bytes.decode("utf-8")) or {}
+    if not isinstance(data, dict):
+        data = {}
+    data["id"] = pid
+    data["enabled"] = False
+    dest.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def _cleanup_stale_staging(modules_dir: Path, pid: str) -> None:
+    for leftover in modules_dir.glob(f".{pid}.staging-*"):
+        if leftover.is_dir():
+            shutil.rmtree(leftover, ignore_errors=True)
 
 
 def install_plugin_from_zip(
@@ -197,6 +207,7 @@ def install_plugin_from_zip(
             if target.exists() and not replace:
                 raise FileExistsError(pid)
 
+            _cleanup_stale_staging(modules_dir, pid)
             token = uuid.uuid4().hex[:10]
             staging = modules_dir / f".{pid}.staging-{token}"
             if staging.exists():
@@ -219,8 +230,21 @@ def install_plugin_from_zip(
                     raise ValueError("corrupt zip member") from e
                 if len(data) > MAX_UNCOMPRESSED_BYTES:
                     raise ValueError("zip member too large after inflate")
-                dest.write_bytes(data)
-            _force_plugin_disabled(staging, pid)
+                # Write plugin.yaml disabled immediately (never leave enabled:true on disk).
+                if Path(rel).name in ("plugin.yaml", "plugin.yml"):
+                    try:
+                        _write_disabled_plugin_yaml(dest, pid, data)
+                    except Exception:
+                        dest.write_bytes(data)
+                else:
+                    dest.write_bytes(data)
+            py = staging / "plugin.yaml"
+            if py.is_file():
+                _write_disabled_plugin_yaml(py, pid, py.read_bytes())
+
+            # Copy live config/logs/data into staging before any rename (AR-20).
+            if target.exists():
+                _copy_preserved(target, staging)
 
         replaced = False
         if target.exists():
@@ -232,8 +256,11 @@ def install_plugin_from_zip(
         staging.rename(target)
         staging = None
         if old_dir is not None:
-            _move_preserved(old_dir, target)
-            shutil.rmtree(old_dir, ignore_errors=True)
+            # Preserve already copied into target; drop .old best-effort only.
+            try:
+                shutil.rmtree(old_dir)
+            except OSError as e:
+                logger.warning("could not remove plugin backup %s: %s", old_dir, e)
             old_dir = None
         return {"plugin_id": pid, "path": str(target), "replaced": replaced}
     except Exception:
@@ -243,7 +270,11 @@ def install_plugin_from_zip(
             if target is not None and not target.exists():
                 old_dir.rename(target)
             else:
-                shutil.rmtree(old_dir, ignore_errors=True)
+                # Never delete .old after swap — it is the user's last backup (AR-20).
+                logger.warning(
+                    "plugin install failed after swap; backup left at %s",
+                    old_dir,
+                )
         raise
 
 
