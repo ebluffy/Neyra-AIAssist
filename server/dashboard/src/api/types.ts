@@ -113,3 +113,18 @@ export type WebhookDelivery = {
   created_at: string
   updated_at: string
 }
+
+export type PluginFileRow = { path: string; bytes: number }
+
+export type LogTailData = {
+  source: string
+  path: string
+  exists: boolean
+  text: string
+}
+
+export type WebhookEventTypes = {
+  events: string[]
+  groups: Record<string, string[]>
+  special?: { id: string; label: string }[]
+}

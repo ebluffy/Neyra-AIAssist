@@ -196,7 +196,7 @@ docs/
 
 **Люди (память):** в `meta.static_facts` только опциональные `first_name` / `last_name` / `birth_date` / `city`; остальное — `person_facts`. CRUD в дашборде; агент обновляет через tools.
 
-Модули в вебе: действия по `lifecycle` (resident → PATCH enabled **с авто soft-restart ядра**; on_demand → invoke; общий enable/config). Scaffold/import-export модулей — полигон для 3b (shared UI → desktop Monaco): сначала шаблон + yaml, код-редактор — во второй очереди клиента.
+Модули в вебе: действия по `lifecycle` (resident → PATCH enabled **с авто soft-restart ядра**; on_demand → invoke; общий enable/config). В дашборде модуля: вкладки «Управление / Конфиги / Логи», загрузка `.zip` (`POST /v1/plugins/upload`), удаление (`discord` защищён), правка конфиг-файлов (`/v1/plugins/{id}/files`), хвост логов (`/v1/logs`). Scaffold/export модулей — полигон для 3b (shared UI → desktop Monaco): код-редактор — во второй очереди клиента.
 
 **Discord / ответ модели (закрывать в 3a):**
 - [x] Сохранять переносы строк в user-facing reply (не схлопывать `\s+` в одну строку).

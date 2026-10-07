@@ -21,7 +21,7 @@ from typing import Any, Literal, Optional
 
 import httpx
 import yaml
-from fastapi import Depends, FastAPI, Header, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Header, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -39,7 +39,9 @@ from core.runtime.backup import BackupManager
 from core.runtime.event_bus import CoreEvent
 from core.runtime.paths import resolve_data_dir
 from core.memory.ltm_maintenance import execute_ltm_summarize
+import core.plugins.ops as plugin_ops_helpers
 from core.plugins import PluginContext, PluginLoader, run_plugin_entrypoint
+import core.runtime.event_bus as event_bus_mod
 from core.reflection import ReflectionEngine
 from core.runtime import HealthMonitor
 
@@ -554,6 +556,10 @@ class PluginInvokeRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class PluginFilePutRequest(BaseModel):
+    content: str = Field(default="", max_length=512_000)
+
+
 class WebhookRouteCreateRequest(BaseModel):
     route_id: Optional[str] = Field(default=None, max_length=120)
     event_type: str = Field(min_length=1, max_length=120)
@@ -1052,7 +1058,8 @@ def build_app(
         for route in routes:
             if not bool(route.get("enabled", True)):
                 continue
-            if str(route.get("event_type") or "") != body.event_type:
+            route_event = str(route.get("event_type") or "")
+            if route_event not in ("*", body.event_type):
                 continue
             asyncio.create_task(
                 _dispatch_webhook(
@@ -2247,47 +2254,36 @@ def build_app(
     async def v1_plugin_patch(plugin_id: str, body: PluginStateUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
         loader = PluginLoader(root)
+        prev_manifest = _find_manifest(loader, plugin_id)
+        if prev_manifest is None:
+            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        prev_enabled = bool(prev_manifest.enabled)
+        enabled_changed = prev_enabled != bool(body.enabled)
         ok = loader.set_enabled(plugin_id, body.enabled)
         if not ok:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
         manifest = _find_manifest(loader, plugin_id)
         is_resident = bool(manifest and str(manifest.lifecycle).lower() == "resident")
         lava_note = ""
-        # Discord owns managed Lavalink: off → kill JVM; on → ensure JAR (non-blocking for event loop).
-        if str(plugin_id).strip().lower() == "discord":
+        # Discord owns managed Lavalink: off → kill JVM now; on → start after process restart
+        # (in-process ensure races with soft-restart os._exit ~2s later).
+        if str(plugin_id).strip().lower() == "discord" and enabled_changed:
             try:
-                from modules.discord.lavalink_process import ensure_managed_lavalink, stop_managed_lavalink
+                from modules.discord.lavalink_process import stop_managed_lavalink
 
                 discord_dir = root / "modules" / "discord"
                 if not body.enabled:
                     lava_note = await asyncio.to_thread(stop_managed_lavalink, discord_dir)
                     logger.info("plugin discord disabled → managed Lavalink: %s", lava_note)
                 else:
-                    # Ensure can wait up to ~90s for the port — do not block the PATCH response.
-                    async def _start_lava() -> None:
-                        try:
-                            ok_lava, detail = await asyncio.to_thread(
-                                ensure_managed_lavalink, config, discord_dir
-                            )
-                            logger.info(
-                                "plugin discord enabled → managed Lavalink ok=%s detail=%s",
-                                ok_lava,
-                                detail,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "Failed to start managed Lavalink after discord enable"
-                            )
-
-                    asyncio.create_task(_start_lava())
-                    lava_note = "managed Lavalink start requested"
+                    lava_note = "will start after restart"
             except Exception:
                 logger.exception("Failed to sync managed Lavalink after discord toggle")
                 lava_note = "lavalink sync failed (see logs)"
         # Resident threads only re-read plugin.yaml on process start — schedule soft restart
-        # so enable/disable actually starts/stops Discord (and peers) without a second UI click.
+        # only when enabled actually flipped (idempotent PATCH must not bounce the core).
         restart_scheduled = False
-        if is_resident:
+        if is_resident and enabled_changed:
             _schedule_exit_after_response(reason=f"resident_plugin_toggle:{plugin_id}")
             restart_scheduled = True
             _audit(
@@ -2304,14 +2300,177 @@ def build_app(
             "status": "done",
             "result": {
                 "enabled": body.enabled,
+                "enabled_changed": enabled_changed,
                 "lavalink": lava_note or None,
-                "restart_required": is_resident,
+                "restart_required": bool(is_resident and enabled_changed),
                 "restart_scheduled": restart_scheduled,
             },
             "ts": _utc_now(),
         }
-        _audit("plugin_set_enabled", trace_id, api_role, {"plugin_id": plugin_id, "enabled": body.enabled})
+        _audit(
+            "plugin_set_enabled",
+            trace_id,
+            api_role,
+            {"plugin_id": plugin_id, "enabled": body.enabled, "changed": enabled_changed},
+        )
         return {"ok": True, "trace_id": trace_id, "data": plugin_ops[op_id]}
+
+    @app.post("/v1/plugins/upload")
+    async def v1_plugins_upload(
+        request: Request,
+        file: UploadFile = File(...),
+        api_role: str = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        raw = await file.read()
+        if not raw:
+            raise ApiError("bad_request", "empty upload", 400)
+        if len(raw) > 20 * 1024 * 1024:
+            raise ApiError("bad_request", "zip too large (max 20MB)", 400)
+        try:
+            info = await asyncio.to_thread(
+                plugin_ops_helpers.install_plugin_from_zip,
+                root / "modules",
+                raw,
+            )
+        except ValueError as e:
+            raise ApiError("bad_request", str(e), 400) from e
+        pid = str(info.get("plugin_id") or "")
+        _audit("plugin_upload", trace_id, api_role, {"plugin_id": pid})
+        return {"ok": True, "trace_id": trace_id, "data": info}
+
+    @app.delete("/v1/plugins/{plugin_id}")
+    async def v1_plugin_delete(plugin_id: str, request: Request, api_role: str = Depends(dep_admin)):
+        trace_id = _trace_id(request)
+        loader = PluginLoader(root)
+        m = _find_manifest(loader, plugin_id)
+        if m is None:
+            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        is_resident = str(m.lifecycle).lower() == "resident"
+        try:
+            await asyncio.to_thread(plugin_ops_helpers.delete_plugin_dir, root / "modules", plugin_id)
+        except ValueError as e:
+            raise ApiError("forbidden", str(e), 403) from e
+        except FileNotFoundError as e:
+            raise ApiError("not_found", str(e), 404) from e
+        restart_scheduled = False
+        if is_resident:
+            _schedule_exit_after_response(reason=f"resident_plugin_delete:{plugin_id}")
+            restart_scheduled = True
+            _audit(
+                "system_restart",
+                trace_id,
+                api_role,
+                {"reason": "resident_plugin_delete", "plugin_id": plugin_id},
+            )
+        _audit("plugin_delete", trace_id, api_role, {"plugin_id": plugin_id})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"deleted": True, "plugin_id": plugin_id, "restart_scheduled": restart_scheduled},
+        }
+
+    @app.get("/v1/plugins/{plugin_id}/files")
+    async def v1_plugin_files_list(plugin_id: str, request: Request, _: None = Depends(dep_viewer)):
+        trace_id = _trace_id(request)
+        loader = PluginLoader(root)
+        m = _find_manifest(loader, plugin_id)
+        if m is None:
+            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        files = plugin_ops_helpers.list_plugin_config_files(m.plugin_dir)
+        return {"ok": True, "trace_id": trace_id, "data": {"plugin_id": m.id, "files": files}}
+
+    @app.get("/v1/plugins/{plugin_id}/files/{file_path:path}")
+    async def v1_plugin_file_get(plugin_id: str, file_path: str, request: Request, _: None = Depends(dep_viewer)):
+        trace_id = _trace_id(request)
+        loader = PluginLoader(root)
+        m = _find_manifest(loader, plugin_id)
+        if m is None:
+            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        try:
+            content = plugin_ops_helpers.read_plugin_file(m.plugin_dir, file_path)
+        except FileNotFoundError as e:
+            raise ApiError("not_found", f"File not found: {file_path}", 404) from e
+        except ValueError as e:
+            raise ApiError("bad_request", str(e), 400) from e
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"plugin_id": m.id, "path": file_path, "content": content},
+        }
+
+    @app.put("/v1/plugins/{plugin_id}/files/{file_path:path}")
+    async def v1_plugin_file_put(
+        plugin_id: str,
+        file_path: str,
+        body: PluginFilePutRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        loader = PluginLoader(root)
+        m = _find_manifest(loader, plugin_id)
+        if m is None:
+            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        try:
+            plugin_ops_helpers.write_plugin_file(m.plugin_dir, file_path, body.content)
+        except ValueError as e:
+            raise ApiError("bad_request", str(e), 400) from e
+        _audit("plugin_file_put", trace_id, api_role, {"plugin_id": plugin_id, "path": file_path})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"plugin_id": m.id, "path": file_path, "saved": True},
+        }
+
+    @app.get("/v1/logs")
+    async def v1_logs(
+        request: Request,
+        source: str = Query(default="system"),
+        tail: int = Query(default=200, ge=1, le=2000),
+        _: None = Depends(dep_viewer),
+    ):
+        trace_id = _trace_id(request)
+        path = plugin_ops_helpers.resolve_log_source(root, source)
+        if path is None:
+            raise ApiError("bad_request", f"unknown log source: {source}", 400)
+        text = await asyncio.to_thread(plugin_ops_helpers.tail_text_file, path, max_lines=tail)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "source": source,
+                "path": str(path.relative_to(root)) if path.is_relative_to(root) else str(path),
+                "exists": path.is_file(),
+                "text": text,
+            },
+        }
+
+    @app.get("/v1/webhooks/event-types")
+    async def v1_webhooks_event_types(request: Request, _: None = Depends(dep_viewer)):
+        trace_id = _trace_id(request)
+        names = sorted(
+            {
+                getattr(event_bus_mod, n)
+                for n in dir(event_bus_mod)
+                if n.isupper()
+                and isinstance(getattr(event_bus_mod, n), str)
+                and "." in getattr(event_bus_mod, n)
+            }
+        )
+        groups: dict[str, list[str]] = {}
+        for ev in names:
+            prefix = ev.split(".", 1)[0]
+            groups.setdefault(prefix, []).append(ev)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "events": names,
+                "groups": groups,
+                "special": [{"id": "*", "label": "Все события"}],
+            },
+        }
 
     @app.get("/v1/plugins/{plugin_id}/config")
     async def v1_plugin_config_get(plugin_id: str, request: Request, _: None = Depends(dep_viewer)):

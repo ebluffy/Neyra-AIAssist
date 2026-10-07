@@ -33,9 +33,17 @@
 - `POST /v1/plugins/{plugin_id}/restart` → **501** `not_supported`
 - `POST /v1/plugins/{plugin_id}/invoke`
 - `GET /v1/plugins/operations/{operation_id}`
+- `POST /v1/plugins/upload` (multipart, поле `file` — .zip с `plugin.yaml`, admin; `discord` защищён)
+- `DELETE /v1/plugins/{plugin_id}` (admin; `discord` защищён; resident → soft restart)
+- `GET /v1/plugins/{plugin_id}/files` — список конфиг-файлов модуля
+- `GET|PUT /v1/plugins/{plugin_id}/files/{path}` — чтение / запись конфиг-файла (PUT — admin)
+
+## Логи
+- `GET /v1/logs?source=&tail=` — хвост лога (viewer+). `source`: `system`, `audit`, `chat`, `health`, `lavalink`, `plugin:{id}`; `tail` 1–2000
 
 ## Webhooks / debug
 - Исходящие маршруты и deliveries под `/v1/webhooks/...`
+- `GET /v1/webhooks/event-types` — список событий для UI (`events`, `groups`; `*` в маршруте = все события)
 - Входящие: `POST /v1/webhooks/in/{provider}/{endpoint_id}` (HMAC, если задан secret)
 - Health входящего: `GET .../health` (viewer+, если токены настроены)
 - `POST /v1/debug/...` (admin; lifecycle за флагом)

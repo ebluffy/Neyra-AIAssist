@@ -42,9 +42,17 @@ See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens
 - `POST /v1/plugins/{plugin_id}/restart` → **501** `not_supported`
 - `POST /v1/plugins/{plugin_id}/invoke`
 - `GET /v1/plugins/operations/{operation_id}`
+- `POST /v1/plugins/upload` (multipart field `file` — .zip with `plugin.yaml`, admin; `discord` is protected)
+- `DELETE /v1/plugins/{plugin_id}` (admin; `discord` is protected; resident → soft restart)
+- `GET /v1/plugins/{plugin_id}/files` — list module config files
+- `GET|PUT /v1/plugins/{plugin_id}/files/{path}` — read / write a config file (PUT is admin)
+
+## Logs
+- `GET /v1/logs?source=&tail=` — log tail (viewer+). `source`: `system`, `audit`, `chat`, `health`, `lavalink`, `plugin:{id}`; `tail` 1–2000
 
 ## Webhooks / debug
 - Outbound routes and deliveries under `/v1/webhooks/...`
+- `GET /v1/webhooks/event-types` — event list for the UI (`events`, `groups`; route `*` = all events)
 - Inbound: `POST /v1/webhooks/in/{provider}/{endpoint_id}` (HMAC if secret set)
 - Inbound health: `GET .../health` (viewer+ when tokens configured)
 - `POST /v1/debug/...` (admin; lifecycle gated by flag)

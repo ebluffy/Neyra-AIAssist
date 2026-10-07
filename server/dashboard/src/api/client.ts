@@ -126,3 +126,14 @@ export async function apiDelete<T>(path: string): Promise<T> {
   const r = await fetch(path, { method: 'DELETE', headers: headers() })
   return parseApiResponse<T>(r)
 }
+
+/** Multipart upload (do not set Content-Type — browser sets boundary). */
+export async function apiUpload<T>(path: string, file: File, fieldName = 'file'): Promise<T> {
+  const fd = new FormData()
+  fd.append(fieldName, file)
+  const h: Record<string, string> = { Accept: 'application/json' }
+  const tok = getToken().trim()
+  if (tok) h.Authorization = `Bearer ${tok}`
+  const r = await fetch(path, { method: 'POST', headers: h, body: fd })
+  return parseApiResponse<T>(r)
+}

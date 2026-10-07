@@ -119,6 +119,9 @@ def check_build_app_routes() -> list[str]:
         '@app.get("/v1/health")',
         '@app.post("/v1/system/restart")',
         '@app.websocket("/v1/ws/chat")',
+        '@app.post("/v1/plugins/upload")',
+        '@app.get("/v1/logs")',
+        '@app.get("/v1/webhooks/event-types")',
     ):
         if need not in text:
             errs.append(f"missing route decorator {need}")
@@ -350,36 +353,72 @@ def check_auth_matrix() -> list[str]:
             elif not scheduled:
                 errs.append("maint restart did not schedule exit")
 
-            # Resident toggle must schedule soft restart (Discord stays alive otherwise).
-            from core.plugins import PluginLoader
-
-            loader = PluginLoader(SERVER_ROOT)
-            discord = next((p for p in loader.discover_manifests() if p.id == "discord"), None)
-            manifest_path = SERVER_ROOT / "modules" / "discord" / "plugin.yaml"
-            manifest_backup = (
-                manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else None
-            )
-            if discord is not None and manifest_backup is not None:
-                prev_enabled = bool(discord.enabled)
+            # Resident toggle must schedule soft restart — use a throwaway fake plugin
+            # (never touch live discord/Lavalink or tracked plugin.yaml).
+            fake_id = "_ar_fake_resident"
+            fake_dir = SERVER_ROOT / "modules" / fake_id
+            fake_yaml = fake_dir / "plugin.yaml"
+            try:
+                fake_dir.mkdir(parents=True, exist_ok=True)
+                fake_yaml.write_text(
+                    "\n".join(
+                        [
+                            f"id: {fake_id}",
+                            "name: AR fake resident",
+                            "description: ephemeral verify fixture",
+                            'version: "0.0.0"',
+                            "enabled: true",
+                            "lifecycle: resident",
+                            "cli_modes: []",
+                            "main_script: main.py",
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                (fake_dir / "main.py").write_text("# ar fixture\n", encoding="utf-8")
+                scheduled.clear()
+                r = client.patch(
+                    f"/v1/plugins/{fake_id}",
+                    json={"enabled": False},
+                    headers={"Authorization": "Bearer admin-secret"},
+                )
+                if r.status_code != 200:
+                    errs.append(f"resident toggle want 200, got {r.status_code} {r.text[:160]}")
+                else:
+                    result = ((r.json().get("data") or {}).get("result") or {})
+                    if result.get("restart_scheduled") is not True:
+                        errs.append(f"resident toggle must set restart_scheduled: {result}")
+                    if result.get("enabled_changed") is not True:
+                        errs.append(f"resident toggle must set enabled_changed: {result}")
+                    if not any(str(x).startswith("resident_plugin_toggle:") for x in scheduled):
+                        errs.append(f"resident toggle did not schedule exit: {scheduled}")
+                # Idempotent PATCH must not bounce the core again.
+                scheduled.clear()
+                r = client.patch(
+                    f"/v1/plugins/{fake_id}",
+                    json={"enabled": False},
+                    headers={"Authorization": "Bearer admin-secret"},
+                )
+                if r.status_code != 200:
+                    errs.append(f"idempotent resident toggle want 200, got {r.status_code}")
+                else:
+                    result = ((r.json().get("data") or {}).get("result") or {})
+                    if result.get("restart_scheduled") is not False:
+                        errs.append(f"noop resident toggle must not schedule restart: {result}")
+                    if result.get("enabled_changed") is not False:
+                        errs.append(f"noop resident toggle must set enabled_changed false: {result}")
+                    if scheduled:
+                        errs.append(f"noop resident toggle scheduled exit: {scheduled}")
+            except Exception as e:
+                errs.append(f"resident toggle fixture failed: {e}")
+            finally:
                 scheduled.clear()
                 try:
-                    r = client.patch(
-                        "/v1/plugins/discord",
-                        json={"enabled": (not prev_enabled)},
-                        headers={"Authorization": "Bearer admin-secret"},
-                    )
-                    if r.status_code != 200:
-                        errs.append(f"resident toggle want 200, got {r.status_code} {r.text[:160]}")
-                    else:
-                        result = ((r.json().get("data") or {}).get("result") or {})
-                        if result.get("restart_scheduled") is not True:
-                            errs.append(f"resident toggle must set restart_scheduled: {result}")
-                        if not any(str(x).startswith("resident_plugin_toggle:") for x in scheduled):
-                            errs.append(f"resident toggle did not schedule exit: {scheduled}")
-                finally:
-                    # Exact byte restore — set_enabled uses yaml.safe_dump and reformats the file.
-                    manifest_path.write_text(manifest_backup, encoding="utf-8")
-                    scheduled.clear()
+                    if fake_dir.exists():
+                        shutil.rmtree(fake_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
             r = client.post(
                 "/v1/plugins/nope/reload",
