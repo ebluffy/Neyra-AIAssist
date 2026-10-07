@@ -859,6 +859,7 @@ def check_merge_proposals_api() -> list[str]:
 
 def check_plugin_ops_and_webhooks() -> list[str]:
     """Upload/files jail, roles, webhook bus bridge, secret copy (AR-8…14)."""
+    import asyncio
     import io
     import time
     import zipfile
@@ -925,8 +926,11 @@ def check_plugin_ops_and_webhooks() -> list[str]:
     if not (modules_tmp / "ar_tmp_mod" / "logs" / "module.log").is_file():
         errs.append("replace must preserve logs/")
 
-    # --- unit: read allowlist ---
+    # --- unit: read allowlist + real path escape (allowlisted suffix) ---
     plug = modules_tmp / "ar_tmp_mod"
+    other = modules_tmp / "other_mod"
+    other.mkdir(exist_ok=True)
+    (other / "config.yaml").write_text("secret: 1\n", encoding="utf-8")
     (plug / ".env").write_text("SECRET=1\n", encoding="utf-8")
     try:
         ops.read_plugin_file(plug, ".env")
@@ -939,16 +943,62 @@ def check_plugin_ops_and_webhooks() -> list[str]:
     except ValueError:
         pass
     try:
-        ops.read_plugin_file(plug, "../ops.py")
-        errs.append("path escape must be denied")
-    except ValueError:
-        pass
+        ops.read_plugin_file(plug, "../other_mod/config.yaml")
+        errs.append("read path escape must raise")
+    except ValueError as e:
+        if "escape" not in str(e).lower():
+            errs.append(f"read escape message should mention escape: {e}")
+    try:
+        ops.write_plugin_file(plug, "../other_mod/config.yaml", "x: 2\n")
+        errs.append("write path escape must raise")
+    except ValueError as e:
+        if "escape" not in str(e).lower():
+            errs.append(f"write escape message should mention escape: {e}")
+    try:
+        ops.resolve_under(plug, "../other_mod/config.yaml")
+        errs.append("resolve_under escape must raise")
+    except ValueError as e:
+        if "escape" not in str(e).lower():
+            errs.append(f"resolve_under message should mention escape: {e}")
 
     try:
         ops.install_plugin_from_zip(modules_tmp, _make_zip("discord"))
         errs.append("upload discord must be denied")
     except ValueError:
         pass
+
+    # --- unit: corrupt replace leaves old module (AR-16) ---
+    (plug / "main.py").write_text("# ORIGINAL\n", encoding="utf-8")
+    (plug / "plugin.yaml").write_text(
+        "id: ar_tmp_mod\nenabled: false\nlifecycle: on_demand\nmain_script: main.py\n",
+        encoding="utf-8",
+    )
+    from unittest.mock import patch
+
+    read_calls = {"n": 0}
+    real_read = zipfile.ZipFile.read
+
+    def flaky_read(self, name, *a, **k):  # type: ignore[no-untyped-def]
+        read_calls["n"] += 1
+        if read_calls["n"] >= 3:
+            raise zipfile.BadZipFile("Bad CRC-32 for file")
+        return real_read(self, name, *a, **k)
+
+    try:
+        with patch.object(zipfile.ZipFile, "read", flaky_read):
+            ops.install_plugin_from_zip(modules_tmp, _make_zip("ar_tmp_mod"), replace=True)
+        errs.append("flaky CRC replace must raise")
+    except ValueError:
+        pass
+    except zipfile.BadZipFile:
+        errs.append("BadZipFile should be wrapped as ValueError")
+    if (plug / "main.py").read_text(encoding="utf-8") != "# ORIGINAL\n":
+        errs.append("corrupt replace must leave old main.py intact")
+    if not (plug / "plugin.yaml").is_file():
+        errs.append("corrupt replace must leave old plugin.yaml intact")
+    leftover_staging = list(modules_tmp.glob(".ar_tmp_mod.staging-*"))
+    if leftover_staging:
+        errs.append(f"staging dirs left after failed replace: {leftover_staging}")
 
     # --- API roles + webhook bus (isolated project_root) ---
     api_root = Path(tempfile.mkdtemp(prefix="neyra_api_root_"))
@@ -1047,9 +1097,13 @@ def check_plugin_ops_and_webhooks() -> list[str]:
             if r.status_code != 400:
                 errs.append(f"viewer read main.py want 400, got {r.status_code}")
 
-            r = client.get(f"/v1/plugins/{api_pid}/files/../discord/plugin.yaml", headers=viewer)
-            if r.status_code not in (400, 404):
-                errs.append(f"files traversal want 400/404, got {r.status_code}")
+            # Encoded .. so the server sees traversal (httpx would normalize bare ../).
+            r = client.get(
+                f"/v1/plugins/{api_pid}/files/%2e%2e/discord/plugin.yaml",
+                headers=viewer,
+            )
+            if r.status_code != 400:
+                errs.append(f"files %2e%2e traversal want 400, got {r.status_code} {r.text[:120]}")
 
             r = client.put(
                 f"/v1/plugins/{api_pid}/files/config.yaml",
@@ -1085,6 +1139,19 @@ def check_plugin_ops_and_webhooks() -> list[str]:
             )
             if r.status_code != 200:
                 errs.append(f"webhook create (copy secret) want 200, got {r.status_code}")
+            r = client.post(
+                "/v1/webhooks/out/routes",
+                json={
+                    "event_type": "*",
+                    "target_url": "http://127.0.0.1:9/hook-all",
+                    "secret": "star-secret",
+                    "enabled": True,
+                    "max_retries": 0,
+                },
+                headers=admin,
+            )
+            if r.status_code != 200:
+                errs.append(f"webhook * route want 200, got {r.status_code}")
 
             routes = client.get("/v1/webhooks/out/routes", headers=admin)
             if routes.status_code == 200:
@@ -1111,6 +1178,39 @@ def check_plugin_ops_and_webhooks() -> list[str]:
                     break
             if not found:
                 errs.append("event_bus publish did not create webhook delivery")
+
+            # Wildcard route + publish from a foreign event loop (AR-17/18).
+            import threading
+
+            def _publish_from_other_loop() -> None:
+                async def _go() -> None:
+                    agent.event_bus.publish(CoreEvent("music.play", "discord", {"track": "x"}))
+
+                asyncio.run(_go())
+
+            t = threading.Thread(target=_publish_from_other_loop, daemon=True)
+            t.start()
+            t.join(timeout=5)
+            star_ok = False
+            for _ in range(40):
+                time.sleep(0.05)
+                d = client.get("/v1/webhooks/deliveries", headers=admin)
+                if d.status_code != 200:
+                    continue
+                rows = (d.json().get("data") or {}).get("deliveries") or []
+                for x in rows:
+                    if x.get("event_type") == "music.play" and x.get("source") == "event_bus":
+                        if x.get("route_event") == "*":
+                            star_ok = True
+                            break
+                        # Accept either route_event=* or any delivery for music.play via *
+                        if str(x.get("event_type")) == "music.play":
+                            star_ok = True
+                            break
+                if star_ok:
+                    break
+            if not star_ok:
+                errs.append("wildcard * route + foreign-loop publish did not deliver music.play")
 
             r = client.delete(f"/v1/plugins/{api_pid}", headers=viewer)
             if r.status_code != 403:

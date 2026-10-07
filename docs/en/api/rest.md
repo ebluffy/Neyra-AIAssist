@@ -24,7 +24,7 @@ See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens
 - `GET /v1/llm/balance`
 - `POST /v1/chat` (admin)
 - `POST /v1/system/restart` (maint+) — soft process restart (uvicorn should_exit)
-- `PATCH /v1/plugins/{id}` for `lifecycle: resident` — writes `enabled` and **schedules** a soft restart (`restart_scheduled: true`); otherwise the resident thread keeps the old process state
+- `PATCH /v1/plugins/{id}` for `lifecycle: resident` — writes `enabled`; soft restart is scheduled **only when** `enabled` actually changes (`enabled_changed: true`, `restart_scheduled: true`). A no-op PATCH does not bounce the core.
 - `POST /v1/memory/search`
 - `POST /v1/memory/write`
 - `POST /v1/notify`
@@ -43,9 +43,13 @@ See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens
 - `POST /v1/plugins/{plugin_id}/invoke`
 - `GET /v1/plugins/operations/{operation_id}`
 - `POST /v1/plugins/upload` (multipart field `file` — .zip with `plugin.yaml`, admin; `discord` is protected)
+  - If the module already exists → **409** `already_exists` unless `?replace=true` (UI confirms).
+  - On replace, local `config.yaml` / `logs/` / `data/` are preserved; unpack uses a staging dir so a failed extract leaves the old module intact.
+  - Installed `plugin.yaml` is forced to `enabled: false` (enable manually).
+  - Replacing a resident module schedules soft restart (`restart_scheduled: true`).
 - `DELETE /v1/plugins/{plugin_id}` (admin; `discord` is protected; resident → soft restart)
-- `GET /v1/plugins/{plugin_id}/files` — list module config files
-- `GET|PUT /v1/plugins/{plugin_id}/files/{path}` — read / write a config file (PUT is admin)
+- `GET /v1/plugins/{plugin_id}/files` — list module config files (suffix allowlist)
+- `GET|PUT /v1/plugins/{plugin_id}/files/{path}` — read / write config-like files only (PUT is admin; GET is viewer+)
 
 ## Logs
 - `GET /v1/logs?source=&tail=` — log tail (viewer+). `source`: `system`, `audit`, `chat`, `health`, `lavalink`, `plugin:{id}`; `tail` 1–2000

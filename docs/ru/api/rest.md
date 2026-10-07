@@ -15,7 +15,7 @@
 - `GET /v1/llm/balance`
 - `POST /v1/chat` (admin)
 - `POST /v1/system/restart` (maint+) — мягкий рестарт процесса (uvicorn should_exit)
-- `PATCH /v1/plugins/{id}` для `lifecycle: resident` — пишет `enabled` и **сразу планирует** мягкий рестарт (`restart_scheduled: true`), иначе Discord/resident-поток продолжает жить со старым манифестом
+- `PATCH /v1/plugins/{id}` для `lifecycle: resident` — пишет `enabled`; мягкий рестарт планируется **только если** `enabled` реально изменился (`enabled_changed: true`, `restart_scheduled: true`). No-op PATCH ядро не трогает
 - `POST /v1/memory/search`
 - `POST /v1/memory/write`
 - `POST /v1/notify`
@@ -34,9 +34,13 @@
 - `POST /v1/plugins/{plugin_id}/invoke`
 - `GET /v1/plugins/operations/{operation_id}`
 - `POST /v1/plugins/upload` (multipart, поле `file` — .zip с `plugin.yaml`, admin; `discord` защищён)
+  - По умолчанию, если модуль уже есть → **409** `already_exists`. Замена только с `?replace=true` (UI спрашивает confirm).
+  - При replace сохраняются локальные `config.yaml` / `logs/` / `data/`; распаковка идёт в staging, старая папка не трогается до успеха.
+  - После установки в `plugin.yaml` принудительно `enabled: false` (включи вручную).
+  - Замена resident → soft restart (`restart_scheduled: true`).
 - `DELETE /v1/plugins/{plugin_id}` (admin; `discord` защищён; resident → soft restart)
-- `GET /v1/plugins/{plugin_id}/files` — список конфиг-файлов модуля
-- `GET|PUT /v1/plugins/{plugin_id}/files/{path}` — чтение / запись конфиг-файла (PUT — admin)
+- `GET /v1/plugins/{plugin_id}/files` — список конфиг-файлов модуля (allowlist суффиксов)
+- `GET|PUT /v1/plugins/{plugin_id}/files/{path}` — чтение / запись только конфиг-подобных файлов (PUT — admin; GET — viewer+)
 
 ## Логи
 - `GET /v1/logs?source=&tail=` — хвост лога (viewer+). `source`: `system`, `audit`, `chat`, `health`, `lavalink`, `plugin:{id}`; `tail` 1–2000

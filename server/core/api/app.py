@@ -15,6 +15,7 @@ import os
 import threading
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -790,6 +791,14 @@ async def _fanout_webhooks(
         asyncio.create_task(_dispatch_webhook(store, route, body, source="event_bus"))
 
 
+def _delivery_event_type(route: dict[str, Any], payload: dict[str, Any]) -> str:
+    if isinstance(payload, dict):
+        ev = str(payload.get("event_type") or "").strip()
+        if ev:
+            return ev
+    return str(route.get("event_type") or "")
+
+
 async def _dispatch_webhook(
     store: WebhookStore,
     route: dict[str, Any],
@@ -798,11 +807,14 @@ async def _dispatch_webhook(
 ) -> dict[str, Any]:
     max_retries = max(0, int(route.get("max_retries", 3)))
     target_url = str(route.get("target_url") or "").strip()
+    event_type = _delivery_event_type(route, payload if isinstance(payload, dict) else {})
+    route_event = str(route.get("event_type") or "")
     if not target_url:
         return await store.add_delivery(
             {
                 "route_id": route.get("route_id"),
-                "event_type": route.get("event_type"),
+                "event_type": event_type,
+                "route_event": route_event,
                 "source": source,
                 "status": "failed",
                 "attempts": 0,
@@ -813,7 +825,8 @@ async def _dispatch_webhook(
     delivery = await store.add_delivery(
         {
             "route_id": route.get("route_id"),
-            "event_type": route.get("event_type"),
+            "event_type": event_type,
+            "route_event": route_event,
             "source": source,
             "status": "pending",
             "attempts": 0,
@@ -902,15 +915,28 @@ def build_app(
     main_loop: list[asyncio.AbstractEventLoop | None] = [None]
 
     def _schedule_webhook_fanout(event_type: str, source: str, payload: dict[str, Any]) -> None:
-        coro = _fanout_webhooks(webhook_store, event_type, source, payload if isinstance(payload, dict) else {})
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(coro)
-            return
-        except RuntimeError:
-            pass
+        # Always hop to the uvicorn loop — Discord/resident threads have their own loops.
         loop = main_loop[0]
-        if loop is not None and loop.is_running():
+        if loop is None or not loop.is_running():
+            logger.warning(
+                "webhook fanout dropped (main loop not ready) | type=%s source=%s",
+                event_type,
+                source,
+            )
+            return
+        coro = _fanout_webhooks(
+            webhook_store,
+            event_type,
+            source,
+            payload if isinstance(payload, dict) else {},
+        )
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            loop.create_task(coro)
+        else:
             asyncio.run_coroutine_threadsafe(coro, loop)
 
     def _on_bus_event_for_webhooks(ev: CoreEvent) -> None:
@@ -2390,7 +2416,7 @@ def build_app(
                 f"plugin already exists: {e}. Pass replace=true to overwrite (preserves config/logs/data).",
                 409,
             ) from e
-        except ValueError as e:
+        except (ValueError, zipfile.BadZipFile) as e:
             raise ApiError("bad_request", str(e), 400) from e
         pid = str(info.get("plugin_id") or "")
         restart_scheduled = False

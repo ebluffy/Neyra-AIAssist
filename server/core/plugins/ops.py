@@ -5,8 +5,9 @@ from __future__ import annotations
 import io
 import re
 import shutil
-import tempfile
+import uuid
 import zipfile
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -132,33 +133,30 @@ def _assert_zip_safe(zf: zipfile.ZipFile) -> None:
             raise ValueError(f"zip uncompressed size too large (max {MAX_UNCOMPRESSED_BYTES} bytes)")
 
 
-def _stash_preserved(target: Path) -> Path | None:
-    """Move config.yaml / logs / data aside before replace. Returns stash dir or None."""
-    to_move = [name for name in _PRESERVE_ON_REPLACE if (target / name).exists()]
-    if not to_move:
-        return None
-    stash = Path(tempfile.mkdtemp(prefix="neyra_plugin_preserve_"))
-    for name in to_move:
-        src = target / name
-        dest = stash / name
+def _move_preserved(src_root: Path, dest_root: Path) -> None:
+    """Move config.yaml / logs / data from src_root into dest_root (overwrite)."""
+    for name in _PRESERVE_ON_REPLACE:
+        src = src_root / name
+        if not src.exists():
+            continue
+        dest = dest_root / name
+        if dest.exists():
+            if dest.is_dir():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
         shutil.move(str(src), str(dest))
-    return stash
 
 
-def _restore_preserved(stash: Path | None, target: Path) -> None:
-    if stash is None:
+def _force_plugin_disabled(plugin_dir: Path, pid: str) -> None:
+    py = plugin_dir / "plugin.yaml"
+    if not py.is_file():
         return
-    try:
-        for child in stash.iterdir():
-            dest = target / child.name
-            if dest.exists():
-                if dest.is_dir():
-                    shutil.rmtree(dest)
-                else:
-                    dest.unlink()
-            shutil.move(str(child), str(dest))
-    finally:
-        shutil.rmtree(stash, ignore_errors=True)
+    data = yaml.safe_load(py.read_text(encoding="utf-8")) or {}
+    if isinstance(data, dict):
+        data["id"] = pid
+        data["enabled"] = False
+        py.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
 def install_plugin_from_zip(
@@ -167,6 +165,7 @@ def install_plugin_from_zip(
     *,
     replace: bool = False,
 ) -> dict[str, Any]:
+    """Install from zip via staging dir so a failed unpack never wipes a live module."""
     if len(zip_bytes) > MAX_ZIP_BYTES:
         raise ValueError(f"zip too large (max {MAX_ZIP_BYTES} bytes)")
     modules_dir = modules_dir.resolve()
@@ -175,30 +174,34 @@ def install_plugin_from_zip(
         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
     except zipfile.BadZipFile as e:
         raise ValueError("invalid zip archive") from e
-    with zf:
-        _assert_zip_safe(zf)
-        prefix, manifest = _find_plugin_yaml_in_zip(zf)
-        pid = normalize_plugin_id(str(manifest.get("id") or "").strip())
-        if not pid:
-            if prefix:
-                pid = normalize_plugin_id(prefix.strip("/").split("/")[-1])
-        if not is_safe_plugin_id(pid):
-            raise ValueError("invalid or missing plugin id in plugin.yaml")
-        if pid in _PROTECTED_PLUGIN_IDS:
-            raise ValueError(f"plugin '{pid}' is protected and cannot be uploaded")
-        target = (modules_dir / pid).resolve()
-        if modules_dir not in target.parents and target != modules_dir / pid:
-            raise ValueError("invalid target path")
-        stash: Path | None = None
-        replaced = False
-        if target.exists():
-            if not replace:
+
+    staging: Path | None = None
+    old_dir: Path | None = None
+    target: Path | None = None
+    pid = ""
+    try:
+        with zf:
+            _assert_zip_safe(zf)
+            prefix, manifest = _find_plugin_yaml_in_zip(zf)
+            pid = normalize_plugin_id(str(manifest.get("id") or "").strip())
+            if not pid:
+                if prefix:
+                    pid = normalize_plugin_id(prefix.strip("/").split("/")[-1])
+            if not is_safe_plugin_id(pid):
+                raise ValueError("invalid or missing plugin id in plugin.yaml")
+            if pid in _PROTECTED_PLUGIN_IDS:
+                raise ValueError(f"plugin '{pid}' is protected and cannot be uploaded")
+            target = (modules_dir / pid).resolve()
+            if modules_dir not in target.parents and target != modules_dir / pid:
+                raise ValueError("invalid target path")
+            if target.exists() and not replace:
                 raise FileExistsError(pid)
-            replaced = True
-            stash = _stash_preserved(target)
-            shutil.rmtree(target)
-        target.mkdir(parents=True, exist_ok=True)
-        try:
+
+            token = uuid.uuid4().hex[:10]
+            staging = modules_dir / f".{pid}.staging-{token}"
+            if staging.exists():
+                shutil.rmtree(staging)
+            staging.mkdir(parents=True, exist_ok=True)
             for info in zf.infolist():
                 name = info.filename.replace("\\", "/")
                 if info.is_dir():
@@ -208,26 +211,40 @@ def install_plugin_from_zip(
                 rel = name[len(prefix) :] if prefix else name
                 if not rel or ".." in rel.split("/"):
                     continue
-                dest = resolve_under(target, rel)
+                dest = resolve_under(staging, rel)
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                data = zf.read(info.filename)
+                try:
+                    data = zf.read(info.filename)
+                except (zipfile.BadZipFile, zlib.error) as e:
+                    raise ValueError("corrupt zip member") from e
                 if len(data) > MAX_UNCOMPRESSED_BYTES:
                     raise ValueError("zip member too large after inflate")
                 dest.write_bytes(data)
-            _restore_preserved(stash, target)
-            stash = None
-        except Exception:
-            if stash is not None:
-                _restore_preserved(stash, target)
-            raise
-        py = target / "plugin.yaml"
-        if py.is_file():
-            data = yaml.safe_load(py.read_text(encoding="utf-8")) or {}
-            if isinstance(data, dict):
-                data["id"] = pid
-                data["enabled"] = False
-                py.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+            _force_plugin_disabled(staging, pid)
+
+        replaced = False
+        if target.exists():
+            replaced = True
+            old_dir = modules_dir / f".{pid}.old-{uuid.uuid4().hex[:10]}"
+            if old_dir.exists():
+                shutil.rmtree(old_dir)
+            target.rename(old_dir)
+        staging.rename(target)
+        staging = None
+        if old_dir is not None:
+            _move_preserved(old_dir, target)
+            shutil.rmtree(old_dir, ignore_errors=True)
+            old_dir = None
         return {"plugin_id": pid, "path": str(target), "replaced": replaced}
+    except Exception:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        if old_dir is not None and old_dir.exists():
+            if target is not None and not target.exists():
+                old_dir.rename(target)
+            else:
+                shutil.rmtree(old_dir, ignore_errors=True)
+        raise
 
 
 def delete_plugin_dir(modules_dir: Path, plugin_id: str) -> None:
