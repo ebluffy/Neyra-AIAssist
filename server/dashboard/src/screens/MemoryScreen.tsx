@@ -420,7 +420,7 @@ export function MemoryScreen() {
       {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
       {status && <InlineFeedback tone="success">{status}</InlineFeedback>}
 
-      <div className="tabs-row" role="tablist">
+      <div className="panel-tabs panel-tabs-dense panel-tabs-standalone" role="tablist" aria-label="Разделы памяти">
         {(
           [
             ['overview', 'Обзор', Brain],
@@ -430,9 +430,16 @@ export function MemoryScreen() {
             ['ltm', 'Долгая память', BookOpen],
           ] as const
         ).map(([id, label, Icon]) => (
-          <Button key={id} onClick={() => setTab(id)} size="sm" type="button" variant={tab === id ? 'default' : 'secondary'}>
-            <Icon size={14} /> {label}
-          </Button>
+          <button
+            key={id}
+            aria-selected={tab === id}
+            className={`panel-tab${tab === id ? ' active' : ''}`}
+            onClick={() => setTab(id)}
+            role="tab"
+            type="button"
+          >
+            <Icon aria-hidden size={14} /> {label}
+          </button>
         ))}
       </div>
 
@@ -475,7 +482,7 @@ export function MemoryScreen() {
             <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.85rem', lineHeight: 1.45 }}>
               Cutover Memory v2: можно стереть слои по отдельности или всё сразу. Действия необратимы.
             </p>
-            <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <div className="row">
               <Button disabled={wipeBusy} onClick={() => void runWipe(['diary'], 'дневник')} type="button" variant="warn">
                 Очистить дневник
               </Button>
@@ -512,16 +519,7 @@ export function MemoryScreen() {
               </div>
               <div className="stack-sm">
                 {proposals.map((p) => (
-                  <div
-                    key={String(p.id)}
-                    style={{
-                      display: 'flex',
-                      flexWrap: 'wrap',
-                      gap: 8,
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                    }}
-                  >
+                  <div key={String(p.id)} className="row-between">
                     <span style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>
                       заявка #{p.id}: {p.person_a} ↔ {p.person_b}
                       {p.reason ? ` — ${p.reason}` : ''}
@@ -540,16 +538,7 @@ export function MemoryScreen() {
                   .filter((m) => m.id != null && !m.undone_at)
                   .slice(0, 5)
                   .map((m) => (
-                    <div
-                      key={`ml-${m.id}`}
-                      style={{
-                        display: 'flex',
-                        flexWrap: 'wrap',
-                        gap: 8,
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                      }}
-                    >
+                    <div key={`ml-${m.id}`} className="row-between">
                       <span style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>
                         merge_log #{m.id}: {m.source_id} → {m.survivor_id}
                       </span>
@@ -591,6 +580,7 @@ export function MemoryScreen() {
               {sortedPeople.map((p) => (
                 <button
                   key={String(p.id)}
+                  aria-current={selectedPerson === String(p.id) && !creating ? 'true' : undefined}
                   className={`plugin-item${selectedPerson === String(p.id) && !creating ? ' active' : ''}`}
                   onClick={() => {
                     setCreating(false)
@@ -757,8 +747,14 @@ export function MemoryScreen() {
                     </span>
                   </button>
                   {n.id != null && (
-                    <Button onClick={() => void deleteDiaryNote(n.id)} size="sm" type="button" variant="secondary">
-                      <Trash2 size={13} />
+                    <Button
+                      aria-label={`Удалить запись дневника ${String(n.id)}`}
+                      onClick={() => void deleteDiaryNote(n.id)}
+                      size="sm"
+                      type="button"
+                      variant="secondary"
+                    >
+                      <Trash2 aria-hidden size={13} />
                     </Button>
                   )}
                 </div>
@@ -801,8 +797,14 @@ export function MemoryScreen() {
                     </span>
                   </button>
                   {n.id != null && (
-                    <Button onClick={() => void deleteJournalEntry(n.id)} size="sm" type="button" variant="secondary">
-                      <Trash2 size={13} />
+                    <Button
+                      aria-label={`Удалить запись журнала ${String(n.id)}`}
+                      onClick={() => void deleteJournalEntry(n.id)}
+                      size="sm"
+                      type="button"
+                      variant="secondary"
+                    >
+                      <Trash2 aria-hidden size={13} />
                     </Button>
                   )}
                 </div>

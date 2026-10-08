@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Activity, DatabaseBackup, Info, Link2, Power, ScrollText } from 'lucide-react'
+import { Activity, DatabaseBackup, Info, Link2, Power, RefreshCw, ScrollText } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { apiGet, apiPost } from '../api'
 import type { ApiEnvelope, BackupArchive, HealthData } from '../api'
@@ -87,8 +87,8 @@ function collectHealthIssues(health: HealthData | null): string[] {
 function Kv({ label, value }: { label: string; value: string }) {
   return (
     <div className="kv-row">
-      <span style={{ color: 'var(--muted)' }}>{label}</span>
-      <span style={{ ...mono, wordBreak: 'break-all', textAlign: 'right' }}>{value}</span>
+      <span className="hint shrink-0">{label}</span>
+      <span className="mono text-break" style={{ textAlign: 'right' }}>{value}</span>
     </div>
   )
 }
@@ -292,6 +292,7 @@ export function SystemScreen() {
             type="button"
             variant="secondary"
           >
+            <RefreshCw aria-hidden size={14} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
             {loading ? 'Обновление…' : 'Обновить'}
           </Button>
         }
@@ -379,12 +380,12 @@ export function SystemScreen() {
             )}
 
             <hr className="divider" style={{ margin: 0 }} />
-            <div className="row" style={{ justifyContent: 'space-between' }}>
+            <div className="row-between">
               <div className="row">
-                <Link2 size={15} className="card-icon card-icon-pink" />
-                <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                <Link2 aria-hidden size={15} className="card-icon card-icon-pink" />
+                <span className="hint">
                   Очередь ошибок вебхуков:{' '}
-                  <strong style={{ color: 'var(--text)', fontFamily: 'var(--mono)' }}>
+                  <strong className="mono" style={{ color: 'var(--text)' }}>
                     {loading && dlqCount == null ? '…' : (dlqCount ?? '—')}
                   </strong>
                 </span>
@@ -395,10 +396,10 @@ export function SystemScreen() {
             </div>
 
             <hr className="divider" style={{ margin: 0 }} />
-            <div className="row" style={{ justifyContent: 'space-between' }}>
+            <div className="row-between">
               <span className="hint">Мягкий рестарт перезапускает процесс ядра; дашборд на несколько секунд отвалится.</span>
               <Button disabled={restartBusy} onClick={() => void softRestart()} type="button" variant="warn">
-                <Power size={14} /> {restartBusy ? 'Рестарт…' : 'Мягкий рестарт'}
+                <Power aria-hidden size={14} /> {restartBusy ? 'Рестарт…' : 'Мягкий рестарт'}
               </Button>
             </div>
           </div>
@@ -455,7 +456,7 @@ export function SystemScreen() {
 
         {tab === 'backup' && (
           <div className="stack">
-            <div className="row" style={{ justifyContent: 'space-between' }}>
+            <div className="row-between">
               <p className="hint">Локальные архивы бэкапа (роль maint и выше).</p>
               <div className="row">
                 <Button disabled={backupLoading} onClick={() => void loadBackups()} size="sm" type="button" variant="secondary">

@@ -406,12 +406,18 @@ def resolve_log_source(root: Path, source: str) -> Path | None:
             return None
         plugin_dir = root / "modules" / pid
         if len(parts) >= 3:
-            # plugin:<id>:lavalink or plugin:<id>:relative/path.log
-            rest = ":".join(parts[2:])
+            # Only sidecar logs: lavalink OR a *.log under modules/<id>/logs/
+            rest = ":".join(parts[2:]).strip().replace("\\", "/")
             if rest == "lavalink":
                 return plugin_dir / "lavalink" / "lavalink.log"
+            # Strip optional "logs/" prefix from list_plugin_log_sources ids
+            rel = rest[5:] if rest.startswith("logs/") else rest
+            if not rel or ".." in rel.split("/") or rel.startswith("/"):
+                return None
+            if Path(rel).suffix.lower() != ".log":
+                return None
             try:
-                return resolve_under(plugin_dir, rest)
+                return resolve_under(plugin_dir / "logs", rel)
             except ValueError:
                 return None
         cand = plugin_dir / "logs" / "module.log"

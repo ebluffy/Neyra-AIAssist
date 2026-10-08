@@ -4,6 +4,7 @@ import { apiGet } from '../api'
 import type { ApiEnvelope, LogTailData } from '../api'
 import { Button } from './ui/button'
 import { InlineFeedback } from './ui/inline-feedback'
+import { Skeleton } from './ui/skeleton'
 
 export type LogSource = { id: string; label: string }
 
@@ -60,13 +61,15 @@ export function LogViewer({ sources }: Props) {
 
   return (
     <div className="stack-sm">
-      <div className="row" style={{ justifyContent: 'space-between' }}>
-        <div className="row">
+      <div className="row-between">
+        <div className="row" role={sources.length > 1 ? 'tablist' : undefined} aria-label={sources.length > 1 ? 'Источник лога' : undefined}>
           {sources.length > 1 &&
             sources.map((s) => (
               <Button
                 key={s.id}
+                aria-selected={source === s.id}
                 onClick={() => setSource(s.id)}
+                role="tab"
                 size="sm"
                 type="button"
                 variant={source === s.id ? 'default' : 'secondary'}
@@ -75,14 +78,14 @@ export function LogViewer({ sources }: Props) {
               </Button>
             ))}
           {data && (
-            <span className="hint" style={{ fontFamily: 'var(--mono)' }}>
+            <span className="hint mono">
               {data.path}
               {!data.exists && ' (файла пока нет)'}
             </span>
           )}
         </div>
         <div className="row">
-          <label className="row" style={{ gap: 6, fontSize: '0.78rem', color: 'var(--muted)' }}>
+          <label className="row hint" style={{ gap: 6, cursor: 'pointer' }}>
             <input checked={auto} onChange={(e) => setAuto(e.target.checked)} type="checkbox" />
             авто 5 с
           </label>
@@ -100,16 +103,20 @@ export function LogViewer({ sources }: Props) {
             ))}
           </select>
           <Button disabled={loading} onClick={() => void load()} size="sm" type="button" variant="secondary">
-            <RefreshCw size={13} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
+            <RefreshCw aria-hidden size={13} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
             Обновить
           </Button>
         </div>
       </div>
       {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
       {fallbackNote && <InlineFeedback tone="info">{fallbackNote}</InlineFeedback>}
-      <pre className="log-view" ref={boxRef}>
-        {data ? data.text || (data.exists ? '(пусто)' : '(лог ещё не создан)') : loading ? 'Загрузка…' : '—'}
-      </pre>
+      {loading && !data ? (
+        <Skeleton className="log-view" style={{ height: '52vh', minHeight: 240 }} />
+      ) : (
+        <pre aria-busy={loading} aria-live="polite" className="log-view" ref={boxRef}>
+          {data ? data.text || (data.exists ? '(пусто)' : '(лог ещё не создан)') : '—'}
+        </pre>
+      )}
     </div>
   )
 }

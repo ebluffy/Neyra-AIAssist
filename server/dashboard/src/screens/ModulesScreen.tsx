@@ -628,20 +628,19 @@ export function ModulesScreen() {
             <Puzzle size={15} className="card-icon" />
             <span className="card-title">Установлено ({plugins.length})</span>
           </div>
-          <div className="stack-sm">
+          <div className="plugin-list">
             {loadingPlugins && plugins.length === 0 && [1, 2, 3].map((i) => <Skeleton key={i} className="h-10" />)}
             {plugins.map((p) => (
               <button
                 key={p.id}
+                aria-current={selected === p.id ? 'true' : undefined}
                 className={`plugin-item${selected === p.id ? ' active' : ''}`}
                 onClick={() => pickPlugin(p.id)}
                 type="button"
               >
-                <span style={{ fontFamily: 'var(--mono)', fontSize: '0.8rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {p.id}
-                </span>
+                <span className="plugin-item-id">{p.id}</span>
                 <span className="plugin-item-meta">
-                  <span className={`status-dot ${p.enabled ? 'status-dot-ok' : 'status-dot-idle'}`} />
+                  <span aria-hidden className={`status-dot ${p.enabled ? 'status-dot-ok' : 'status-dot-idle'}`} />
                   {p.enabled ? 'вкл.' : 'выкл.'}
                   <span
                     className={`life-badge${String(p.lifecycle).toLowerCase() === 'resident' ? ' life-badge-resident' : ''}`}
@@ -704,7 +703,8 @@ export function ModulesScreen() {
                   )}
                   <div className="row">
                     <button
-                      aria-label="включить или выключить модуль"
+                      aria-label="Включить или выключить модуль"
+                      aria-pressed={Boolean(details?.plugin.enabled)}
                       className={`toggle-pill ${details?.plugin.enabled ? 'toggle-on' : 'toggle-off'}`}
                       disabled={restartBusy || loadingDetails}
                       onClick={() => void togglePlugin(!Boolean(details?.plugin.enabled))}

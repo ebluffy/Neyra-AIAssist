@@ -3,6 +3,7 @@ import type { FormEvent, ReactNode } from 'react'
 import { Cpu, KeyRound, Lock, RefreshCw } from 'lucide-react'
 import { clearSessionToken, hasDashboardSession, setSessionToken } from '../api'
 import { Button } from '../components/ui/button'
+import { Skeleton } from '../components/ui/skeleton'
 
 const MIN_LEN = 32
 
@@ -169,8 +170,18 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
   if (mode === 'loading') {
     return (
       <div className="dash-auth">
-        <div className="dash-auth-card">
-          <p className="dash-auth-muted">Загрузка…</p>
+        <div aria-busy="true" aria-live="polite" className="dash-auth-card">
+          <div className="dash-auth-brand">
+            <div aria-hidden className="dash-auth-icon">
+              <Cpu size={20} strokeWidth={1.75} />
+            </div>
+            <div className="dash-auth-loading" style={{ flex: 1 }}>
+              <Skeleton className="h-5" style={{ width: '40%' }} />
+              <Skeleton className="h-3" style={{ width: '55%' }} />
+            </div>
+          </div>
+          <Skeleton className="h-10" />
+          <p className="dash-auth-muted">Проверка доступа…</p>
         </div>
       </div>
     )
@@ -181,8 +192,8 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
       <div className="dash-auth">
         <div className="dash-auth-card">
           <div className="dash-auth-brand">
-            <div className="dash-auth-icon">
-              <Cpu size={20} color="#fff" />
+            <div aria-hidden className="dash-auth-icon">
+              <Cpu size={20} strokeWidth={1.75} />
             </div>
             <div>
               <h1 className="dash-auth-title">Neyra</h1>
@@ -195,9 +206,9 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
           </p>
           <p className="dash-auth-hint">
             Создай ключ на сервере: локальная консоль к API (без CF/X-Real) или{' '}
-            <span style={{ fontFamily: 'var(--mono)' }}>curl</span> с primary{' '}
-            <span style={{ fontFamily: 'var(--mono)' }}>API_TOKEN</span> на{' '}
-            <span style={{ fontFamily: 'var(--mono)' }}>POST /v1/dashboard/auth/setup</span>. После этого обнови
+            <code className="inline-code">curl</code> с primary{' '}
+            <code className="inline-code">API_TOKEN</code> на{' '}
+            <code className="inline-code">POST /v1/dashboard/auth/setup</code>. После этого обнови
             страницу и войди этим ключом.
           </p>
           <Button
@@ -229,7 +240,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
       <div className="dash-auth-card">
         <div className="dash-auth-brand">
           <div className="dash-auth-icon">
-            <Cpu size={20} color="#fff" />
+            <Cpu size={20} strokeWidth={1.75} />
           </div>
           <div>
             <h1 className="dash-auth-title">Neyra</h1>

@@ -11,11 +11,11 @@ type Props = {
 export function EmptyState({ icon: Icon, title, description, action }: Props) {
   return (
     <div className="empty-state">
-      <div className="empty-state-icon">
-        <Icon size={24} />
+      <div aria-hidden className="empty-state-icon">
+        <Icon size={22} strokeWidth={1.75} />
       </div>
-      <p style={{ fontWeight: 600, color: 'var(--text)', fontSize: '0.9rem' }}>{title}</p>
-      {description && <p style={{ fontSize: '0.8rem', maxWidth: 320 }}>{description}</p>}
+      <p className="empty-state-title">{title}</p>
+      {description ? <p className="empty-state-desc">{description}</p> : null}
       {action}
     </div>
   )

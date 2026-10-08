@@ -2973,7 +2973,7 @@ def build_app(
             raise ApiError("bad_request", str(e), 400) from e
         except Exception as e:
             logger.exception("backup_restore_failed | trace_id=%s", trace_id)
-            raise ApiError("restore_failed", f"restore failed: {e}", 500) from e
+            raise ApiError("restore_failed", "restore failed, see server log", 500) from e
         restart_scheduled = False
         if soft_restart:
             _schedule_exit_after_response(reason=f"backup_restore:{archive_name}")

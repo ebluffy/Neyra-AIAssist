@@ -103,10 +103,9 @@ function DeliveryTable({
                     <td>
                       <button
                         aria-expanded={isOpen}
-                        aria-label="Подробности"
-                        className="btn btn-secondary btn-sm"
+                        aria-label={isOpen ? `Свернуть доставку ${d.delivery_id}` : `Развернуть доставку ${d.delivery_id}`}
+                        className="btn btn-secondary btn-sm btn-icon"
                         onClick={() => setOpen(isOpen ? '' : d.delivery_id)}
-                        style={{ padding: '0.2rem 0.35rem' }}
                         type="button"
                       >
                         {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -123,14 +122,13 @@ function DeliveryTable({
                     <td style={{ ...mono, wordBreak: 'break-all', maxWidth: 280 }}>{d.error || '—'}</td>
                     <td>
                       <button
-                        aria-label="Повторить"
-                        className="btn btn-secondary btn-sm"
+                        aria-label={`Повторить доставку ${d.delivery_id}`}
+                        className="btn btn-secondary btn-sm btn-icon"
                         onClick={() => onRetry(d.delivery_id)}
-                        style={{ padding: '0.3rem 0.5rem' }}
                         title="Повторить"
                         type="button"
                       >
-                        <RotateCcw size={13} />
+                        <RotateCcw aria-hidden size={13} />
                       </button>
                     </td>
                   </tr>
@@ -585,7 +583,7 @@ export function WebhooksScreen() {
                   <div className="hint">Выключенные маршруты остаются в списке, но события не отправляют.</div>
                 </div>
                 <button
-                  aria-label="включить или выключить вебхук"
+                  aria-label="Включить или выключить исходящий вебхук"
                   aria-pressed={enabled}
                   className={`toggle-pill ${enabled ? 'toggle-on' : 'toggle-off'}`}
                   onClick={() => setEnabled((v) => !v)}
@@ -614,7 +612,7 @@ export function WebhooksScreen() {
 
               <div className="field-row">
                 <span className="label-text" style={{ paddingTop: '0.6rem', fontSize: '0.8rem' }}>URL назначения</span>
-                <div className="row" style={{ flexWrap: 'nowrap' }}>
+                <div className="row-tools">
                   <input
                     className="input input-mono"
                     onChange={(e) => setUrl(e.target.value)}
@@ -623,9 +621,8 @@ export function WebhooksScreen() {
                   />
                   <select
                     aria-label="Тип теста"
-                    className="select"
+                    className="select min-w-test w-auto"
                     onChange={(e) => setTestEvent(e.target.value)}
-                    style={{ width: 'auto', minWidth: 160 }}
                     value={testEvent}
                   >
                     <option value="">Обычный тест</option>
@@ -651,7 +648,7 @@ export function WebhooksScreen() {
               <div className="field-row">
                 <span className="label-text" style={{ paddingTop: '0.6rem', fontSize: '0.8rem' }}>Секрет</span>
                 <div className="stack-sm">
-                  <div className="row" style={{ flexWrap: 'nowrap' }}>
+                  <div className="row-tools">
                     <input
                       autoComplete="off"
                       className="input input-mono"
@@ -660,8 +657,8 @@ export function WebhooksScreen() {
                       type="password"
                       value={secret}
                     />
-                    <Button onClick={() => setSecret(randomSecret())} size="sm" type="button" variant="secondary">
-                      <KeyRound size={13} /> Сгенерировать
+                    <Button className="shrink-0" onClick={() => setSecret(randomSecret())} size="sm" type="button" variant="secondary">
+                      <KeyRound aria-hidden size={13} /> Сгенерировать
                     </Button>
                   </div>
                   <p className="hint">
@@ -782,14 +779,13 @@ export function WebhooksScreen() {
                         </td>
                         <td onClick={(e) => e.stopPropagation()}>
                           <button
-                            aria-label="Удалить"
-                            className="btn btn-danger btn-sm"
+                            aria-label={`Удалить маршрут ${r.route_id}`}
+                            className="btn btn-danger btn-sm btn-icon"
                             onClick={() => void deleteRoute(r)}
-                            style={{ padding: '0.3rem 0.5rem' }}
                             title="Удалить"
                             type="button"
                           >
-                            <Trash2 size={13} />
+                            <Trash2 aria-hidden size={13} />
                           </button>
                         </td>
                       </tr>
@@ -805,9 +801,8 @@ export function WebhooksScreen() {
               <span className="card-title">Доставки</span>
               <select
                 aria-label="Фильтр по статусу"
-                className="select"
+                className="select w-auto ml-auto"
                 onChange={(e) => onStatusFilter(e.target.value)}
-                style={{ width: 'auto', marginLeft: 'auto' }}
                 value={statusFilter}
               >
                 {STATUS_FILTERS.map(([v, label]) => (
@@ -832,7 +827,7 @@ export function WebhooksScreen() {
                 disabled={retryAllBusy || dlq.length === 0}
                 onClick={() => void retryAllDlq()}
                 size="sm"
-                style={{ marginLeft: 'auto' }}
+                className="ml-auto shrink-0"
                 type="button"
                 variant="warn"
               >

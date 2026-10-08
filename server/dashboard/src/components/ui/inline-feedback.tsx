@@ -14,8 +14,12 @@ const Icon = { error: AlertCircle, success: CheckCircle2, info: Info } satisfies
 export function InlineFeedback({ tone, children, className }: { tone: Tone; children: ReactNode; className?: string }) {
   const I = Icon[tone]
   return (
-    <div className={cn(cls[tone], className)}>
-      <I size={16} style={{ marginTop: 2, flexShrink: 0 }} />
+    <div
+      className={cn(cls[tone], className)}
+      role={tone === 'error' ? 'alert' : 'status'}
+      aria-live={tone === 'error' ? 'assertive' : 'polite'}
+    >
+      <I aria-hidden className="feedback-icon" size={16} strokeWidth={1.75} />
       <div>{children}</div>
     </div>
   )
