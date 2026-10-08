@@ -9,7 +9,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 try:
     import discord
@@ -54,9 +54,19 @@ def _truncate(s: str, n: int = 60) -> str:
 
 _MEDIA_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
+_YOUTUBE_HOSTS = frozenset(
+    {
+        "youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtu.be",
+        "youtube-nocookie.com",
+    }
+)
+
 
 def _extract_media_url(text: str) -> str:
-    """Prefer a direct http(s) URL when the user pasted a link (Discord may wrap <>)."""
+    """First http(s) URL in text (Discord may wrap <>)."""
     raw = (text or "").strip()
     if not raw:
         return ""
@@ -66,38 +76,60 @@ def _extract_media_url(text: str) -> str:
     return m.group(0).rstrip(").,]>\"'")
 
 
+def _youtube_hostname(hostname: str) -> str:
+    h = (hostname or "").lower().split(":")[0].strip(".")
+    if h.startswith("www."):
+        return h[4:]
+    return h
+
+
+def _is_youtube_host(hostname: str) -> bool:
+    return _youtube_hostname(hostname) in _YOUTUBE_HOSTS
+
+
 def _youtube_video_id(url: str) -> str:
     try:
         parsed = urlparse(url)
     except Exception:
         return ""
-    host = (parsed.netloc or "").lower()
+    if not _is_youtube_host(parsed.hostname or ""):
+        return ""
     path = parsed.path or ""
-    if "youtu.be" in host:
+    host = _youtube_hostname(parsed.hostname or "")
+    if host == "youtu.be":
         return path.lstrip("/").split("/")[0].split("?")[0]
-    if "youtube.com" in host or "youtube-nocookie.com" in host:
-        from urllib.parse import parse_qs
-
-        qs = parse_qs(parsed.query or "")
-        if qs.get("v"):
-            return str(qs["v"][0] or "")
-        parts = [p for p in path.split("/") if p]
-        if len(parts) >= 2 and parts[0] in ("shorts", "embed", "live", "v"):
-            return parts[1]
+    qs = parse_qs(parsed.query or "")
+    if qs.get("v"):
+        return str(qs["v"][0] or "")
+    parts = [p for p in path.split("/") if p]
+    if len(parts) >= 2 and parts[0] in ("shorts", "embed", "live", "v"):
+        return parts[1]
     return ""
+
+
+def _canonical_youtube_url_from_text(text: str) -> str:
+    """Only real YouTube hosts; returns watch URL or '' (never LAN/loopback/http abuse)."""
+    url = _extract_media_url(text)
+    if not url:
+        return ""
+    vid = _youtube_video_id(url)
+    if not vid:
+        return ""
+    return f"https://www.youtube.com/watch?v={vid}"
 
 
 def _normalize_play_query(raw: str) -> str:
     q = (raw or "").strip()
     if not q:
         return ""
-    # Direct media URL wins over command words around it.
-    url = _extract_media_url(q)
-    if url:
-        return url
+    yt = _canonical_youtube_url_from_text(q)
+    if yt:
+        return yt
+    # Drop non-YouTube URLs so Lavalink HTTP source never fetches arbitrary hosts.
+    q = _MEDIA_URL_RE.sub("", q).strip()
     # Remove command noise so Lavalink search gets a clean artist/title query.
     noise_patterns = (
-        r"^(вкл\w*|вруби|поставь|заиграй|play)\s+",
+        r"^(вкл\w*|вруби|поставь|заиграй|play)\s*",
         r"^(любой|какую?[- ]?нибудь|какой[- ]?нибудь)\s+",
         r"^(трек|треков|песню|музыку)\s+",
         r"^(зайди|зайти)\s+в\s+(войс|голос\w*)\s*(и\s+)?",
@@ -169,12 +201,12 @@ async def _connect_voice_player(
 
 
 async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> list[Any]:
-    """Resolve playables. Direct URLs must not use TrackSource.YouTube (ytsearch:URL → empty)."""
+    """Resolve playables. YouTube watch URLs load directly; text uses ytsearch fallbacks."""
     q = (query or "").strip()
     if not q:
         return []
-    is_url = bool(re.match(r"^https?://", q, flags=re.IGNORECASE))
-    timeout = 20.0 if is_url else 7.0
+    is_yt_url = bool(_youtube_video_id(q))
+    timeout = 20.0 if is_yt_url else 12.0
 
     async def _search(raw: str, *, source: Any = None) -> list[Any]:
         if source is not None:
@@ -190,17 +222,10 @@ async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> li
         return list(tracks or [])
 
     try:
-        if is_url:
+        if is_yt_url:
             tracks = await _search(q)
             if tracks:
                 return tracks
-            vid = _youtube_video_id(q)
-            if vid:
-                canon = f"https://www.youtube.com/watch?v={vid}"
-                if canon != q:
-                    tracks = await _search(canon)
-                    if tracks:
-                        return tracks
             logger.warning("discord.music url resolve empty | query=%s", q)
             return []
 
@@ -209,7 +234,14 @@ async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> li
             tracks = await _search(q, source=source)
             if tracks:
                 return tracks
-        return await _search(q)
+        tracks = await _search(q)
+        if tracks:
+            return tracks
+        if not q.lower().startswith("ytsearch:"):
+            tracks = await _search(f"ytsearch:{q}")
+            if tracks:
+                return tracks
+        return []
     except Exception as ex:  # pragma: no cover
         logger.warning("discord.music youtube search failed | query=%s error=%s", q, ex)
         return []

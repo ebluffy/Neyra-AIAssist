@@ -72,6 +72,25 @@ def main() -> int:
     route3, use3 = resolve_music_route("включи трек x", classifier_route=None)
     assert route3 == "PLAY_MUSIC" and use3 is True, (route3, use3)
 
+    from modules.discord.music import (
+        _canonical_youtube_url_from_text,
+        _normalize_play_query,
+        _youtube_video_id,
+    )
+
+    assert _normalize_play_query("включи <https://youtu.be/abc123XYZ>") == (
+        "https://www.youtube.com/watch?v=abc123XYZ"
+    )
+    assert _youtube_video_id("https://www.youtube.com/watch?v=LLhpBVfH2Zg&list=foo") == "LLhpBVfH2Zg"
+    assert _youtube_video_id("https://www.youtube.com/shorts/AbCdEf12GhI") == "AbCdEf12GhI"
+    assert _canonical_youtube_url_from_text("https://youtube.com.evil.example/watch?v=x") == ""
+    assert _canonical_youtube_url_from_text("http://127.0.0.1/admin") == ""
+    assert _normalize_play_query("включи http://192.168.1.1/") == ""
+    assert _normalize_play_query("включи трамбалон колю в очко") == "трамбалон колю в очко"
+    assert _normalize_play_query("включи https://www.youtube.com/watch?v=LLhpBVfH2Zg") == (
+        "https://www.youtube.com/watch?v=LLhpBVfH2Zg"
+    )
+
     print("OK test_discord_music_intent_offline")
     return 0
 

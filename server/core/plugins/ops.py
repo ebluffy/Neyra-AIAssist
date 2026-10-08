@@ -278,9 +278,6 @@ def _install_plugin_from_zip_locked(
                     _write_disabled_plugin_yaml(dest, pid, data)
                 else:
                     dest.write_bytes(data)
-            py = staging / "plugin.yaml"
-            if py.is_file():
-                _write_disabled_plugin_yaml(py, pid, py.read_bytes())
 
             # Copy live config/logs/data into staging before any rename (AR-20).
             if target.exists():
