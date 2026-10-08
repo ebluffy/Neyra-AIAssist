@@ -87,22 +87,49 @@ class BackupManager:
             "chroma_db_path": str(chroma),
         }
 
+    def list_backups(self) -> list[dict]:
+        """Local zip archives in backup.local_dir (newest first)."""
+        rows: list[dict] = []
+        if not self.local_dir.is_dir():
+            return rows
+        for p in sorted(self.local_dir.glob("neyra-backup-*.zip"), key=lambda x: x.name, reverse=True):
+            if not p.is_file():
+                continue
+            st = p.stat()
+            rows.append(
+                {
+                    "name": p.name,
+                    "path": str(p),
+                    "bytes": int(st.st_size),
+                    "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+                }
+            )
+        return rows
+
     def restore_backup(self, archive_name: str) -> dict:
-        src = self.local_dir / archive_name
+        name = Path(str(archive_name or "").strip()).name
+        if not name or name != archive_name.strip() or ".." in name or "/" in name or "\\" in name:
+            raise ValueError("invalid archive name")
+        if not name.endswith(".zip"):
+            raise ValueError("archive must be a .zip file")
+        src = self.local_dir / name
         if not src.exists():
             if self.external_adapter is None:
                 raise FileNotFoundError(f"Backup not found: {src}")
-            src = self.external_adapter.download_file(archive_name, self.local_dir / archive_name)
+            src = self.external_adapter.download_file(name, self.local_dir / name)
         restore_root = Path("./.tmp_restore")
         if restore_root.exists():
             shutil.rmtree(restore_root, ignore_errors=True)
         restore_root.mkdir(parents=True, exist_ok=True)
         shutil.unpack_archive(str(src), str(restore_root), "zip")
-        for name in ("memory", "logs"):
-            src_dir = restore_root / name
+        # Prefer nested data/memory from newer manifests; fall back to flat memory/
+        for src_dir, dst_dir in (
+            (restore_root / "data" / "memory", Path("./data/memory")),
+            (restore_root / "memory", Path("./data/memory")),
+            (restore_root / "logs", Path("./logs")),
+        ):
             if src_dir.exists():
-                dst_dir = Path(f"./{name}")
                 dst_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
         shutil.rmtree(restore_root, ignore_errors=True)
-        return {"restored_from": str(src)}
+        return {"restored_from": str(src), "archive_name": name}

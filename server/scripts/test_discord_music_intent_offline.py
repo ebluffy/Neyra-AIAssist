@@ -108,6 +108,64 @@ def main() -> int:
     assert _looks_like_url("//192.168.1.1/x")
     assert not _looks_like_url("трамбалон колю в очко")
 
+    # AR-31: bare text must use TrackSource.YouTube (not default YouTubeMusic + ytsearch: prefix).
+    import asyncio
+    from types import SimpleNamespace
+
+    from modules.discord import music as music_mod
+
+    class _FakeTrackSource:
+        YouTube = object()
+        YouTubeMusic = object()
+
+    calls: list[dict] = []
+
+    class _FakePlayable:
+        @staticmethod
+        async def search(raw, *, source=None, node=None):
+            calls.append({"raw": raw, "source": source, "node": node})
+            return [SimpleNamespace(title=raw)]
+
+    class _FakePool:
+        @staticmethod
+        async def fetch_tracks(raw, *, node=None):
+            calls.append({"fetch": raw, "node": node})
+            return [SimpleNamespace(title=raw)]
+
+    fake_wl = SimpleNamespace(
+        Playable=_FakePlayable,
+        Pool=_FakePool,
+        TrackSource=_FakeTrackSource,
+    )
+    node = object()
+
+    async def _run_search_cases() -> None:
+        calls.clear()
+        out = await music_mod._search_tracks_youtube(fake_wl, "Playboi Carti", node)
+        assert out and calls, calls
+        assert calls[0]["raw"] == "Playboi Carti", calls
+        assert calls[0]["source"] is _FakeTrackSource.YouTube, calls
+        assert "ytsearch:" not in str(calls[0]["raw"])
+
+        calls.clear()
+        out = await music_mod._search_tracks_youtube(
+            fake_wl, "https://www.youtube.com/watch?v=LLhpBVfH2Zg", node
+        )
+        assert out and calls, calls
+        assert calls[0]["raw"].startswith("https://"), calls
+        assert calls[0].get("source") is None, calls
+
+        calls.clear()
+        out = await music_mod._search_tracks_youtube(fake_wl, "icy://127.0.0.1/", node)
+        assert out == [] and calls == [], calls
+
+        calls.clear()
+        out = await music_mod._search_tracks_youtube(fake_wl, "ytsearch:foo bar", node)
+        assert out and calls, calls
+        assert calls[0].get("fetch") == "ytsearch:foo bar" or calls[0].get("raw") == "ytsearch:foo bar", calls
+
+    asyncio.run(_run_search_cases())
+
     print("OK test_discord_music_intent_offline")
     return 0
 

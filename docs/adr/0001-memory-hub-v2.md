@@ -57,8 +57,8 @@ legacy-import subsystem has been **removed**, not just gated off:
 - `core/memory/legacy_import.py`, `run_hub_legacy_import()`, and `POST /v1/memory/import-legacy`
   no longer exist.
 - The marker-gated automatic import at startup (Hub empty + legacy files on disk) is gone —
-  `_init_people_db` seeds baseline dossiers into Hub (or memory-only cache without a Hub) purely
-  based on whether Hub/cache already has data, never by globbing `people_db/*.json`.
+  there is also **no** hardcoded people seed / reseed. An empty Hub stays empty until Discord
+  `ensure_person`, dashboard create, or tools add people at runtime.
 - `PeopleDB` no longer touches the filesystem at all: no `db_dir`, no `_load_all()`, no JSON
   `_save()`. It is an in-memory `_cache` that Hub writes through to when a `MemoryHub` is
   attached (`hydrate_from_hub()` fills the cache back in); without a Hub it is memory-only for

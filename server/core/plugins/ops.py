@@ -342,6 +342,49 @@ def tail_text_file(path: Path, *, max_lines: int = 200, max_bytes: int = 512_000
     return "\n".join(lines)
 
 
+def list_plugin_log_sources(root: Path, plugin_id: str) -> list[dict[str, Any]]:
+    """Discover tail-able log sources for a plugin (module.log, sidecars like lavalink)."""
+    pid = normalize_plugin_id(plugin_id)
+    if not is_safe_plugin_id(pid):
+        return []
+    plugin_dir = (root / "modules" / pid).resolve()
+    out: list[dict[str, Any]] = []
+    module_log = plugin_dir / "logs" / "module.log"
+    out.append(
+        {
+            "id": f"plugin:{pid}",
+            "label": "Модуль",
+            "path": str(module_log.relative_to(root)) if module_log.is_relative_to(root) else str(module_log),
+            "exists": module_log.is_file(),
+        }
+    )
+    lava = plugin_dir / "lavalink" / "lavalink.log"
+    if lava.is_file() or pid == "discord":
+        out.append(
+            {
+                "id": "lavalink" if pid == "discord" else f"plugin:{pid}:lavalink",
+                "label": "Lavalink",
+                "path": str(lava.relative_to(root)) if lava.is_relative_to(root) else str(lava),
+                "exists": lava.is_file(),
+            }
+        )
+    logs_dir = plugin_dir / "logs"
+    if logs_dir.is_dir():
+        for path in sorted(logs_dir.glob("*.log")):
+            if path.name.lower() == "module.log":
+                continue
+            rel = path.relative_to(plugin_dir).as_posix()
+            out.append(
+                {
+                    "id": f"plugin:{pid}:{rel}",
+                    "label": path.stem,
+                    "path": str(path.relative_to(root)) if path.is_relative_to(root) else str(path),
+                    "exists": True,
+                }
+            )
+    return out
+
+
 def resolve_log_source(root: Path, source: str) -> Path | None:
     """Map log source name to a file path under the server root."""
     src = (source or "system").strip().lower()
@@ -357,13 +400,24 @@ def resolve_log_source(root: Path, source: str) -> Path | None:
     if src in ("lavalink", "discord.lavalink", "plugin:discord:lavalink"):
         return root / "modules" / "discord" / "lavalink" / "lavalink.log"
     if src.startswith("plugin:"):
-        pid = normalize_plugin_id(src.split(":", 1)[1])
+        parts = src.split(":")
+        pid = normalize_plugin_id(parts[1] if len(parts) > 1 else "")
         if not is_safe_plugin_id(pid):
             return None
-        cand = root / "modules" / pid / "logs" / "module.log"
+        plugin_dir = root / "modules" / pid
+        if len(parts) >= 3:
+            # plugin:<id>:lavalink or plugin:<id>:relative/path.log
+            rest = ":".join(parts[2:])
+            if rest == "lavalink":
+                return plugin_dir / "lavalink" / "lavalink.log"
+            try:
+                return resolve_under(plugin_dir, rest)
+            except ValueError:
+                return None
+        cand = plugin_dir / "logs" / "module.log"
         if cand.is_file():
             return cand
-        lava = root / "modules" / pid / "lavalink" / "lavalink.log"
+        lava = plugin_dir / "lavalink" / "lavalink.log"
         if lava.is_file():
             return lava
         return logs / "system.log"

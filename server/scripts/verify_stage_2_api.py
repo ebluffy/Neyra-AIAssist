@@ -125,8 +125,10 @@ def check_build_app_routes() -> list[str]:
     ):
         if need not in text:
             errs.append(f"missing route decorator {need}")
-    if "not_supported" not in text:
-        errs.append("plugin reload/restart should raise not_supported")
+    if "reload_plugin" not in text and "restart_scheduled" not in text:
+        errs.append("plugin reload/restart should call reload_plugin or schedule soft-restart")
+    if "X-Neyra-Signature" not in text and "x-neyra-signature" not in text.lower():
+        errs.append("outbound webhooks should sign with X-Neyra-Signature")
     if "hmac.compare_digest" not in text and "_token_eq" not in text:
         errs.append("token compare should use constant-time helper")
     return errs

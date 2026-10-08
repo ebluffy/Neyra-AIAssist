@@ -110,8 +110,24 @@ export type WebhookDelivery = {
   attempts: number
   status_code?: number
   error?: string
+  payload?: unknown
+  response_text?: string
   created_at: string
   updated_at: string
+}
+
+export type BackupArchive = {
+  name: string
+  path?: string
+  bytes: number
+  mtime: string
+}
+
+export type PluginLogSource = {
+  id: string
+  label: string
+  path?: string
+  exists?: boolean
 }
 
 export type PluginFileRow = { path: string; bytes: number }

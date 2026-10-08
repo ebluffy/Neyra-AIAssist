@@ -1065,3 +1065,30 @@ input[type="checkbox"] {
   align-items: start;
 }
 @media (max-width: 700px) { .field-row { grid-template-columns: 1fr; } }
+
+/* ── MVP dashboard additions ── */
+.panel-tabs.panel-tabs-dense { margin-bottom: 0.75rem; }
+.panel-tabs-dense .panel-tab { padding: 0.35rem 0.7rem; font-size: 0.8rem; }
+.dropzone {
+  border: 1px dashed var(--border-hi);
+  border-radius: 12px;
+  padding: 0.8rem 1rem;
+  background: rgba(9,9,15,0.45);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  transition: border-color 0.15s, background 0.15s;
+}
+.dropzone.dragging { border-color: rgba(34,211,238,0.6); background: rgba(34,211,238,0.08); }
+.life-badge {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.life-badge-resident { color: var(--cyan); border-color: rgba(34,211,238,0.4); }
+.row-highlight { background: rgba(34,211,238,0.1); }

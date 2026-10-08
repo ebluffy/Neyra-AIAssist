@@ -226,16 +226,19 @@ async def _connect_voice_player(
 
 
 async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> list[Any]:
-    """Resolve playables. YouTube watch URLs load directly; text always uses ytsearch:."""
+    """Resolve playables. YouTube watch URLs load directly; text uses TrackSource.YouTube (bare q)."""
     q = (query or "").strip()
     if not q:
         return []
     is_yt_url = bool(_youtube_video_id(q))
     timeout = 20.0 if is_yt_url else 12.0
 
-    async def _search(raw: str) -> list[Any]:
+    async def _search(raw: str, *, source: Any = None) -> list[Any]:
+        kwargs: dict[str, Any] = {"node": node}
+        if source is not None:
+            kwargs["source"] = source
         tracks = await asyncio.wait_for(
-            wavelink_mod.Playable.search(raw, node=node),
+            wavelink_mod.Playable.search(raw, **kwargs),
             timeout=timeout,
         )
         return list(tracks or [])
@@ -252,9 +255,25 @@ async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> li
         if _looks_like_url(q):
             logger.warning("discord.music refuse non-youtube url-shaped query | query=%s", q)
             return []
-        # Prefix forces YouTube search; wavelink skips URL-host branch when prefix is set.
-        prefixed = q if q.lower().startswith(("ytsearch:", "ytmsearch:")) else f"ytsearch:{q}"
-        return await _search(prefixed)
+
+        # User already typed a Lavalink search prefix — send as-is (no second prefix).
+        low = q.lower()
+        if low.startswith(("ytsearch:", "ytmsearch:")):
+            fetch = getattr(getattr(wavelink_mod, "Pool", None), "fetch_tracks", None)
+            if callable(fetch):
+                tracks = await asyncio.wait_for(fetch(q, node=node), timeout=timeout)
+                return list(tracks or [])
+            return await _search(q)
+
+        # Bare text: let wavelink add ytsearch: via TrackSource.YouTube (NOT default YouTubeMusic).
+        source = getattr(getattr(wavelink_mod, "TrackSource", None), "YouTube", None)
+        if source is not None:
+            return await _search(q, source=source)
+        fetch = getattr(getattr(wavelink_mod, "Pool", None), "fetch_tracks", None)
+        if callable(fetch):
+            tracks = await asyncio.wait_for(fetch(f"ytsearch:{q}", node=node), timeout=timeout)
+            return list(tracks or [])
+        return await _search(f"ytsearch:{q}")
     except Exception as ex:  # pragma: no cover
         logger.warning("discord.music youtube search failed | query=%s error=%s", q, ex)
         return []

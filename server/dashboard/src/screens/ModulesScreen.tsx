@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { FileCode2, Play, Power, Puzzle, ScrollText, Settings2, ToggleLeft, ToggleRight, Trash2, Upload } from 'lucide-react'
-import { apiDelete, apiGet, apiPatch, apiPost, apiPut, apiUpload } from '../api'
-import type { ApiEnvelope, PluginFileRow, PluginRow } from '../api'
+import {
+  FilePlus,
+  FileCode2,
+  Play,
+  Power,
+  Puzzle,
+  RefreshCw,
+  ScrollText,
+  Settings2,
+  ToggleLeft,
+  ToggleRight,
+  Trash2,
+  Upload,
+} from 'lucide-react'
+import { ApiRequestError, apiDelete, apiGet, apiPatch, apiPost, apiPut, apiUpload } from '../api'
+import type { ApiEnvelope, PluginFileRow, PluginLogSource, PluginRow } from '../api'
 import { LogViewer } from '../components/LogViewer'
 import type { LogSource } from '../components/LogViewer'
 import { Button } from '../components/ui/button'
@@ -18,6 +31,32 @@ type Tab = 'manage' | 'configs' | 'logs'
 const JSON_CONFIG = '@json'
 /** Modules that the API refuses to delete. */
 const PROTECTED_PLUGINS = ['discord']
+const MAX_UPLOAD_MB = 20
+const CONFIG_SUFFIXES = ['.yaml', '.yml', '.json', '.toml', '.ini', '.conf', '.properties']
+
+function isAlreadyExists(e: unknown): boolean {
+  if (e instanceof ApiRequestError && (e.status === 409 || e.code === 'already_exists')) return true
+  const msg = e instanceof Error ? e.message : String(e)
+  return /already exists|already_exists/i.test(msg)
+}
+
+function fileSuffix(path: string): string {
+  const name = path.split('/').pop() ?? path
+  const i = name.lastIndexOf('.')
+  return i > 0 ? name.slice(i).toLowerCase() : ''
+}
+
+/** Path without its extension, used to spot JSON↔YAML name clashes. */
+function fileStem(path: string): string {
+  const s = fileSuffix(path)
+  return s ? path.slice(0, -s.length).toLowerCase() : path.toLowerCase()
+}
+
+function lifeLabel(v: unknown): string {
+  const s = String(v || '').toLowerCase()
+  if (s === 'on_demand') return 'on-demand'
+  return s || '—'
+}
 
 /** Quote 16+ digit integer literals so JSON.parse does not corrupt Discord snowflakes. */
 function parsePluginConfigJson(text: string): Record<string, unknown> {
@@ -49,6 +88,8 @@ export function ModulesScreen() {
   const [loadingDetails, setLoadingDetails] = useState(false)
   const [restartBusy, setRestartBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const [apiLogSources, setApiLogSources] = useState<LogSource[] | null>(null)
   const uploadRef = useRef<HTMLInputElement>(null)
 
   // Configs tab
@@ -147,6 +188,25 @@ export function ModulesScreen() {
     if (selected) void loadDetails(selected)
     else setDetails(null)
   }, [selected, loadDetails])
+
+  // Log sources from the API; null = not loaded yet or failed (hardcoded fallback is used).
+  useEffect(() => {
+    setApiLogSources(null)
+    if (!selected) return
+    let cancelled = false
+    apiGet<ApiEnvelope<{ sources?: PluginLogSource[] }>>(`/v1/plugins/${selected}/log-sources`)
+      .then((r) => {
+        if (cancelled) return
+        const list = (r.data.sources ?? []).filter((s) => s && s.id).map((s) => ({ id: s.id, label: s.label || s.id }))
+        setApiLogSources(list.length > 0 ? list : null)
+      })
+      .catch(() => {
+        if (!cancelled) setApiLogSources(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selected])
 
   // Load the file list once per module when the Configs tab is opened.
   useEffect(() => {
@@ -266,9 +326,116 @@ export function ModulesScreen() {
       setFileStatus(
         isResident ? 'Сохранено. Resident-модуль подхватит изменения после рестарта ядра.' : 'Сохранено.',
       )
+      if (
+        isResident &&
+        window.confirm(
+          `Конфиг resident-модуля «${selected}» сохранён. Сделать мягкий рестарт ядра сейчас, чтобы изменения вступили в силу?`,
+        )
+      ) {
+        await softRestartCore(true)
+      }
     } catch (e) {
       setFileStatus('')
       setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function createConfigFile() {
+    if (!selected) return
+    const raw = window.prompt(
+      `Путь нового файла относительно папки модуля.\nДопустимые расширения: ${CONFIG_SUFFIXES.join(', ')}`,
+      'config.yaml',
+    )
+    if (raw == null) return
+    const path = raw.trim().replace(/^\.\//, '')
+    if (!path) return
+    if (path.startsWith('/') || path.includes('\\') || path.split('/').some((p) => p === '..' || p === '')) {
+      setError('Нужен относительный путь внутри модуля без «..» и обратных слэшей.')
+      return
+    }
+    const suffix = fileSuffix(path)
+    if (!CONFIG_SUFFIXES.includes(suffix)) {
+      setError(`Расширение «${suffix || '—'}» не разрешено. Допустимо: ${CONFIG_SUFFIXES.join(', ')}`)
+      return
+    }
+    if (fileDirty && !window.confirm('Есть несохранённые правки. Открыть новый файл без сохранения?')) return
+    if (files.some((f) => f.path === path)) {
+      setError(null)
+      void openFile(selected, path, details?.config)
+      setFileStatus('Такой файл уже есть — открыт для правки.')
+      return
+    }
+    const isStructured = (s: string) => ['.json', '.yaml', '.yml'].includes(s)
+    const clash = files.find(
+      (f) =>
+        fileStem(f.path) === fileStem(path) &&
+        f.path !== path &&
+        isStructured(fileSuffix(f.path)) &&
+        isStructured(suffix) &&
+        (fileSuffix(f.path) === '.json') !== (suffix === '.json'),
+    )
+    if (
+      clash &&
+      !window.confirm(
+        `Рядом уже лежит «${clash.path}». Смена формата JSON↔YAML под тем же именем может перекрыть или запутать загрузку конфига модуля. Всё равно создать «${path}»?`,
+      )
+    ) {
+      return
+    }
+    setError(null)
+    setFileBusy(true)
+    setFileStatus('Создаю файл…')
+    try {
+      const content = suffix === '.json' ? '{}\n' : ''
+      await apiPut<ApiEnvelope<{ saved: boolean }>>(`/v1/plugins/${selected}/files/${filePathUrl(path)}`, { content })
+      const r = await apiGet<ApiEnvelope<{ files: PluginFileRow[] }>>(`/v1/plugins/${selected}/files`)
+      setFiles(r.data.files ?? [])
+      setActiveFile(path)
+      setFileText(content)
+      setFileOriginal(content)
+      setFileStatus(`Файл «${path}» создан.`)
+    } catch (e) {
+      setFileStatus('')
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setFileBusy(false)
+    }
+  }
+
+  async function reloadOrRestartPlugin(kind: 'reload' | 'restart') {
+    if (!selected || restartBusy) return
+    const label = kind === 'reload' ? 'Перезагрузить' : 'Перезапустить'
+    if (isResident) {
+      const lava = selected === 'discord' ? ' Discord-бот и Lavalink отключатся и поднимутся заново.' : ''
+      if (
+        !window.confirm(
+          `${label} resident-модуль «${selected}»? Для него это мягкий рестарт всего ядра.${lava} Дашборд на несколько секунд отвалится.`,
+        )
+      ) {
+        return
+      }
+    }
+    setError(null)
+    setRestartBusy(true)
+    setStatus(kind === 'reload' ? 'Перезагружаю модуль…' : 'Перезапускаю модуль…')
+    try {
+      const r = await apiPost<ApiEnvelope<{ restart_scheduled?: boolean; message?: string }>>(
+        `/v1/plugins/${selected}/${kind}`,
+        {},
+      )
+      if (r.data.restart_scheduled) {
+        setStatus('Ядро перезапускается…')
+        await finishRestartWait(kind === 'reload' ? 'Модуль перезагружен.' : 'Модуль перезапущен.')
+        return
+      }
+      setStatus(r.data.message || (kind === 'reload' ? 'Модуль перезагружен.' : 'Модуль перезапущен.'))
+      await loadPlugins()
+      await loadDetails(selected)
+      setRestartBusy(false)
+    } catch (e) {
+      setStatus('')
+      setError(e instanceof Error ? e.message : String(e))
+      setRestartBusy(false)
     }
   }
 
@@ -324,6 +491,10 @@ export function ModulesScreen() {
       setError('Нужен .zip-архив с plugin.yaml внутри')
       return
     }
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      setError(`Файл больше ${MAX_UPLOAD_MB} МБ — сервер его не примет.`)
+      return
+    }
     setError(null)
     setUploading(true)
     setStatus(`Загружаю ${file.name}…`)
@@ -333,7 +504,7 @@ export function ModulesScreen() {
         r = await apiUpload('/v1/plugins/upload', file)
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        if (!/already exists|already_exists/i.test(msg)) throw e
+        if (!isAlreadyExists(e)) throw e
         if (
           !window.confirm(
             `${msg}\n\nЗаменить существующий модуль? Локальные config.yaml, logs/ и data/ сохранятся. Resident — с soft-restart.`,
@@ -391,12 +562,13 @@ export function ModulesScreen() {
     }
   }
 
-  const logSources: LogSource[] = selected
+  const fallbackLogSources: LogSource[] = selected
     ? [
         { id: `plugin:${selected}`, label: 'Модуль' },
         ...(selected === 'discord' ? [{ id: 'lavalink', label: 'Lavalink' }] : []),
       ]
     : []
+  const logSources: LogSource[] = apiLogSources ?? fallbackLogSources
 
   const tabs: [Tab, string, typeof Settings2][] = [
     ['manage', 'Управление', Settings2],
@@ -427,6 +599,29 @@ export function ModulesScreen() {
       {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
       {status && <InlineFeedback tone="success">{status}</InlineFeedback>}
 
+      <div
+        className={`dropzone${dragging ? ' dragging' : ''}`}
+        onDragLeave={() => setDragging(false)}
+        onDragOver={(e) => {
+          e.preventDefault()
+          if (!uploading && !restartBusy) setDragging(true)
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragging(false)
+          if (uploading || restartBusy) return
+          void onUploadPicked(e.dataTransfer.files?.[0])
+        }}
+      >
+        <span className="hint">
+          <Upload size={13} style={{ verticalAlign: '-2px' }} /> Перетащи сюда .zip с <code className="inline-code">plugin.yaml</code>{' '}
+          или выбери файл. Максимум {MAX_UPLOAD_MB} МБ.
+        </span>
+        <Button disabled={uploading || restartBusy} onClick={() => uploadRef.current?.click()} size="sm" type="button" variant="secondary">
+          Выбрать файл
+        </Button>
+      </div>
+
       <div className="split-modules">
         <div className="card" style={{ height: 'fit-content' }}>
           <div className="card-header">
@@ -448,7 +643,11 @@ export function ModulesScreen() {
                 <span className="plugin-item-meta">
                   <span className={`status-dot ${p.enabled ? 'status-dot-ok' : 'status-dot-idle'}`} />
                   {p.enabled ? 'вкл.' : 'выкл.'}
-                  <span className="plugin-item-life">{String(p.lifecycle || '—')}</span>
+                  <span
+                    className={`life-badge${String(p.lifecycle).toLowerCase() === 'resident' ? ' life-badge-resident' : ''}`}
+                  >
+                    {lifeLabel(p.lifecycle)}
+                  </span>
                 </span>
               </button>
             ))}
@@ -476,7 +675,7 @@ export function ModulesScreen() {
                 </div>
               </div>
 
-              <div className="panel-tabs" role="tablist">
+              <div className="panel-tabs panel-tabs-dense" role="tablist">
                 {tabs.map(([id, label, Icon]) => (
                   <button
                     key={id}
@@ -498,7 +697,7 @@ export function ModulesScreen() {
                       {isResident
                         ? 'Resident: работает в процессе ядра. Вкл./выкл. пишет конфиг и сразу мягко перезапускает ядро, чтобы поток реально стартовал или остановился.'
                         : isOnDemand
-                          ? 'On-demand: «Вызвать» запускает entrypoint модуля. Reload/restart модуля API пока не поддерживает.'
+                          ? 'On-demand: «Вызвать» запускает entrypoint модуля, «Перезагрузить модуль» перечитывает манифест и код без рестарта ядра.'
                           : `Lifecycle «${lifecycle || '—'}»: доступны вкл./выкл. и конфиг.`}
                       {selected === 'discord' ? ' Discord дополнительно стартует и останавливает managed Lavalink.' : ''}
                     </p>
@@ -519,6 +718,24 @@ export function ModulesScreen() {
                         <Play size={14} /> Вызвать
                       </Button>
                     )}
+                    <Button
+                      disabled={restartBusy || loadingDetails}
+                      onClick={() => void reloadOrRestartPlugin('reload')}
+                      title={isResident ? 'Resident: мягкий рестарт ядра' : 'Перечитать модуль без рестарта ядра'}
+                      type="button"
+                      variant="secondary"
+                    >
+                      <RefreshCw size={14} /> Перезагрузить модуль
+                    </Button>
+                    <Button
+                      disabled={restartBusy || loadingDetails}
+                      onClick={() => void reloadOrRestartPlugin('restart')}
+                      title={isResident ? 'Resident: мягкий рестарт ядра' : 'Перезапустить модуль'}
+                      type="button"
+                      variant="warn"
+                    >
+                      <Power size={14} /> Рестарт
+                    </Button>
                     {isResident && (
                       <Button disabled={restartBusy} onClick={() => void softRestartCore()} type="button" variant="warn">
                         <Power size={14} /> {restartBusy ? 'Рестарт…' : 'Рестарт ядра'}
@@ -562,7 +779,19 @@ export function ModulesScreen() {
               {tab === 'configs' && (
                 <div className="split-files">
                   <div>
-                    <div className="section-title">Файлы</div>
+                    <div className="row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                      <div className="section-title" style={{ marginBottom: 0 }}>Файлы</div>
+                      <Button
+                        disabled={fileBusy || loadingFiles}
+                        onClick={() => void createConfigFile()}
+                        size="sm"
+                        title="Новый конфиг-файл в папке модуля"
+                        type="button"
+                        variant="secondary"
+                      >
+                        <FilePlus size={13} /> Новый
+                      </Button>
+                    </div>
                     <div className="file-list">
                       {loadingFiles && files.length === 0 && <Skeleton className="h-10" />}
                       {files.map((f) => (
@@ -625,7 +854,7 @@ export function ModulesScreen() {
                 </div>
               )}
 
-              {tab === 'logs' && <LogViewer key={selected} sources={logSources} />}
+              {tab === 'logs' && <LogViewer key={`${selected}:${logSources.map((s) => s.id).join('|')}`} sources={logSources} />}
             </>
           )}
         </div>
