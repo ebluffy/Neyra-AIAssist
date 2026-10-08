@@ -57,7 +57,8 @@ def main() -> int:
 
             # Stale yml (CHANGE_ME / 0.0.0.0) must be repaired in place
             yml.write_text(
-                'server:\n  address: 0.0.0.0\nlavalink:\n  server:\n    password: "CHANGE_ME"\n',
+                'server:\n  address: 0.0.0.0\nlavalink:\n  server:\n    password: "CHANGE_ME"\n'
+                "    sources:\n      youtube: true\n      http: true\n      local: true\n",
                 encoding="utf-8",
             )
             _ensure_application_yml(lava, password="youshallnotpass")
@@ -66,6 +67,15 @@ def main() -> int:
                 errs.append("stale yml password not repaired")
             if "address: 127.0.0.1" not in fixed:
                 errs.append("stale yml address not repaired")
+            # AR-37: existing http/local true must become false
+            if "http: true" in fixed:
+                errs.append("stale yml http: true was not forced off")
+            if "local: true" in fixed:
+                errs.append("stale yml local: true was not forced off")
+            if "http: false" not in fixed:
+                errs.append("stale yml missing http: false")
+            if "local: false" not in fixed:
+                errs.append("stale yml missing local: false")
 
         msg = stop_managed_lavalink(plugin)
         if "nothing" not in msg and "stopped" not in msg:

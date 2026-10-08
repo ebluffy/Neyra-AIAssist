@@ -240,6 +240,7 @@ export function SystemScreen() {
     try {
       const r = await apiPost<ApiEnvelope<{ restart_scheduled?: boolean }>>('/v1/backup/restore', {
         archive_name: name,
+        confirm: 'RESTORE',
       })
       if (r.data.restart_scheduled) {
         setStatus('Архив восстановлен. Ядро перезапускается…')

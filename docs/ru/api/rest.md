@@ -23,7 +23,7 @@
 - `POST /v1/config/update`
 - `POST /v1/backup/run`
 - `GET /v1/backup/list` — локальные zip-архивы BackupManager
-- `POST /v1/backup/restore` — `{ archive_name, soft_restart?: true }` (maint+); после restore по умолчанию soft-restart
+- `POST /v1/backup/restore` — `{ archive_name, confirm: "RESTORE", soft_restart?: true }` (admin); до замены делается `pre_restore` бэкап; логи не трогаются; после restore по умолчанию soft-restart
 
 ## Plugins
 - `GET /v1/plugins`
@@ -52,7 +52,7 @@
 - Исходящие маршруты и deliveries под `/v1/webhooks/...`
 - Исходящая доставка: при наличии `secret` — заголовки `x-neyra-webhook-secret`, `X-Neyra-Timestamp`, `X-Neyra-Signature: sha256=<hmac>` где HMAC-SHA256(`secret`, `"{timestamp}.{body}"`)
 - `GET /v1/webhooks/event-types` — список событий для UI (`events`, `groups`; `*` в маршруте = все события)
-- `POST /v1/webhooks/dlq/retry-all` — повтор всех доставок из DLQ
+- `POST /v1/webhooks/dlq/retry-all` — принять повтор всех доставок из DLQ (**202**; исходные записи снимаются с DLQ, при неудаче появляется одна новая)
 - Входящие: `POST /v1/webhooks/in/{provider}/{endpoint_id}` (HMAC, если задан secret)
 - Health входящего: `GET .../health` (viewer+, если токены настроены)
 - `POST /v1/debug/...` (admin; lifecycle за флагом)

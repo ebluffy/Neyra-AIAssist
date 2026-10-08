@@ -505,6 +505,12 @@ def _test_plugin_log_source_jail() -> None:
         assert ok_log is not None and ok_log.name == "module.log"
         ok_lava = plugin_ops.resolve_log_source(root, "plugin:discord:lavalink")
         assert ok_lava is not None and ok_lava.name == "lavalink.log"
+
+        # AR-39: path case must be preserved (Error.log on Linux)
+        (plug / "logs" / "Error.log").write_text("ERR\n", encoding="utf-8")
+        err_log = plugin_ops.resolve_log_source(root, "plugin:discord:logs/Error.log")
+        assert err_log is not None and err_log.name == "Error.log"
+        assert err_log.is_file()
     finally:
         td.cleanup()
 

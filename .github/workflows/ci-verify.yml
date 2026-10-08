@@ -99,6 +99,7 @@ jobs:
           python scripts/test_discord_music_intent_offline.py
           python scripts/test_people_no_seed_offline.py
           python scripts/test_backup_restore_offline.py
+          python scripts/test_lavalink_managed_offline.py
       - name: Healthcheck smoke (examples, skip HTTP)
         env:
           OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http

@@ -1,12 +1,11 @@
-"""Offline: BackupManager restore targets memory root (not hardcoded ./data/memory only)."""
+"""Offline: BackupManager restore matches real run_backup archive layout (AR-34/38)."""
 
 from __future__ import annotations
 
-import json
+import os
 import shutil
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +13,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-def test_restore_uses_chroma_parent() -> None:
+def test_restore_from_real_run_backup() -> None:
+    """Archive from run_backup() must restore both Hub DB and chroma_db."""
     from core.runtime.backup import BackupManager
 
     td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -25,25 +25,16 @@ def test_restore_uses_chroma_parent() -> None:
         mem.mkdir(parents=True)
         chroma = mem / "chroma_db"
         chroma.mkdir()
-        (chroma / "marker.txt").write_text("live", encoding="utf-8")
+        (chroma / "marker.txt").write_text("original-chroma", encoding="utf-8")
         db = mem / "neyra_memory.db"
-        db.write_text("live-db", encoding="utf-8")
-        (mem / "neyra_memory.db-wal").write_text("stale-wal", encoding="utf-8")
+        db.write_text("original-db", encoding="utf-8")
+        (mem / "neyra_memory.db-wal").write_text("wal-v1", encoding="utf-8")
 
         backups = base / "backups"
         backups.mkdir()
-        staging = base / "staging"
-        arch_mem = staging / "data" / "memory"
-        arch_mem.mkdir(parents=True)
-        (arch_mem / "neyra_memory.db").write_text("restored-db", encoding="utf-8")
-        (arch_mem / "chroma_db").mkdir()
-        (arch_mem / "chroma_db" / "marker.txt").write_text("from-backup", encoding="utf-8")
-        (staging / "backup_manifest.json").write_text("{}", encoding="utf-8")
-        zip_path = backups / "neyra-backup-test.zip"
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            for p in staging.rglob("*"):
-                if p.is_file():
-                    zf.write(p, p.relative_to(staging).as_posix())
+        logs = base / "logs"
+        logs.mkdir()
+        (logs / "api_audit.jsonl").write_text('{"event":"keep-me"}\n', encoding="utf-8")
 
         cfg = {
             "backup": {"local_dir": str(backups)},
@@ -53,24 +44,70 @@ def test_restore_uses_chroma_parent() -> None:
             },
         }
         mgr = BackupManager(cfg)
-        # Work from base so relative ./logs resolve under a writable tree
         cwd = Path.cwd()
         try:
-            import os
-
             os.chdir(base)
-            out = mgr.restore_backup("neyra-backup-test.zip")
+            out_bak = mgr.run_backup("test_seed")
+            archive_path = Path(str(out_bak["archive"]))
+            assert archive_path.is_file()
+            archive_name = archive_path.name
+
+            # Mutate live state after backup
+            db.write_text("live-db-changed", encoding="utf-8")
+            (chroma / "marker.txt").write_text("live-chroma-changed", encoding="utf-8")
+            (mem / "neyra_memory.db-wal").write_text("wal-live", encoding="utf-8")
+            (logs / "api_audit.jsonl").write_text(
+                '{"event":"keep-me"}\n{"event":"after-backup"}\n',
+                encoding="utf-8",
+            )
+
+            out = mgr.restore_backup(archive_name)
         finally:
             os.chdir(cwd)
 
         assert out["memory_root"] == str(mem)
-        assert db.read_text(encoding="utf-8") == "restored-db"
-        assert (chroma / "marker.txt").read_text(encoding="utf-8") == "from-backup"
-        assert not (mem / "neyra_memory.db-wal").exists()
+        assert out.get("logs_restored") is False
+        assert db.read_text(encoding="utf-8") == "original-db"
+        assert (chroma / "marker.txt").read_text(encoding="utf-8") == "original-chroma"
+        # WAL from archive may be restored under memory/; live-only WAL must not linger alone.
+        # Critical: chroma must exist (AR-38) and audit log must not be wiped (AR-34).
+        audit = (logs / "api_audit.jsonl").read_text(encoding="utf-8")
+        assert "after-backup" in audit
+        assert "keep-me" in audit
+    finally:
+        td.cleanup()
+
+
+def test_restore_refuses_parent_of_backup_dir() -> None:
+    from core.runtime.backup import BackupManager
+
+    td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    try:
+        base = Path(td.name)
+        # chroma parent == base, backups under base → restore would wipe archives
+        chroma = base / "chroma_db"
+        chroma.mkdir()
+        backups = base / "backups"
+        backups.mkdir()
+        (backups / "neyra-backup-x.zip").write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+        cfg = {
+            "backup": {"local_dir": str(backups)},
+            "memory": {
+                "chroma_db_path": str(chroma),
+                "sqlite_path": str(base / "neyra_memory.db"),
+            },
+        }
+        mgr = BackupManager(cfg)
+        try:
+            mgr._assert_safe_memory_dst(mgr._memory_root())
+            raise AssertionError("expected ValueError for unsafe memory root")
+        except ValueError:
+            pass
     finally:
         td.cleanup()
 
 
 if __name__ == "__main__":
-    test_restore_uses_chroma_parent()
+    test_restore_from_real_run_backup()
+    test_restore_refuses_parent_of_backup_dir()
     print("OK test_backup_restore_offline")

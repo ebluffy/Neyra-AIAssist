@@ -1321,6 +1321,214 @@ def check_plugin_ops_and_webhooks() -> list[str]:
     return errs
 
 
+def check_webhook_hmac_and_dlq_retry() -> list[str]:
+    """AR-35/37: real HMAC bytes + retry-all does not double DLQ."""
+    import asyncio
+    import hashlib
+    import hmac as hmac_mod
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from fastapi.testclient import TestClient
+
+    from core.api import build_app
+    from core.api.app import WebhookStore, _dispatch_webhook, webhook_signature_headers
+    from core.runtime.event_bus import EventBus
+
+    errs: list[str] = []
+
+    body = b'{"event_type":"x","ping":true}'
+    secret = "unit-test-secret"
+    ts = "1700000000"
+    headers = webhook_signature_headers(secret, body, ts=ts)
+    expect = hmac_mod.new(
+        secret.encode("utf-8"),
+        f"{ts}.".encode("utf-8") + body,
+        hashlib.sha256,
+    ).hexdigest()
+    if headers.get("X-Neyra-Signature") != f"sha256={expect}":
+        errs.append(f"HMAC signature mismatch: {headers.get('X-Neyra-Signature')!r}")
+    if headers.get("X-Neyra-Timestamp") != ts:
+        errs.append(f"HMAC timestamp mismatch: {headers.get('X-Neyra-Timestamp')!r}")
+
+    hits: dict[str, int] = {"ok": 0, "fail": 0, "bad_sig": 0}
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b""
+            sig = self.headers.get("X-Neyra-Signature") or ""
+            ts_h = self.headers.get("X-Neyra-Timestamp") or ""
+            sec = self.headers.get("x-neyra-webhook-secret") or ""
+            dig = hmac_mod.new(
+                sec.encode("utf-8"),
+                f"{ts_h}.".encode("utf-8") + raw,
+                hashlib.sha256,
+            ).hexdigest()
+            if sig != f"sha256={dig}":
+                hits["bad_sig"] += 1
+                self.send_response(401)
+                self.end_headers()
+                return
+            if self.path.endswith("/ok"):
+                hits["ok"] += 1
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+            else:
+                hits["fail"] += 1
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(b"fail")
+
+        def log_message(self, *_args: Any) -> None:
+            return
+
+    httpd = HTTPServer(("127.0.0.1", 0), _Handler)
+    port = int(httpd.server_address[1])
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_dlq_test_"))
+    try:
+        store = WebhookStore(data_tmp)
+        store._state = {
+            "routes": {
+                "route_ok": {
+                    "route_id": "route_ok",
+                    "event_type": "debug.ok",
+                    "target_url": f"http://127.0.0.1:{port}/ok",
+                    "secret": "hook-secret",
+                    "enabled": True,
+                    "max_retries": 0,
+                },
+                "route_fail": {
+                    "route_id": "route_fail",
+                    "event_type": "debug.fail",
+                    "target_url": f"http://127.0.0.1:{port}/fail",
+                    "secret": "hook-secret",
+                    "enabled": True,
+                    "max_retries": 0,
+                },
+            },
+            "deliveries": {},
+            "dlq": {
+                "d_ok": {
+                    "delivery_id": "d_ok",
+                    "route_id": "route_ok",
+                    "status": "failed",
+                    "payload": {"event_type": "debug.ok", "n": 1},
+                },
+                "d_fail": {
+                    "delivery_id": "d_fail",
+                    "route_id": "route_fail",
+                    "status": "failed",
+                    "payload": {"event_type": "debug.fail", "n": 2},
+                },
+            },
+        }
+        store.path.parent.mkdir(parents=True, exist_ok=True)
+        store.path.write_text(json.dumps(store._state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        async def _run_retry() -> None:
+            rows = await store.list_dlq()
+            for row in rows:
+                did = str(row.get("delivery_id") or "")
+                route_id = str(row.get("route_id") or "")
+                route = store._state["routes"].get(route_id)
+                if not isinstance(route, dict):
+                    continue
+                await store.remove_dlq(did)
+                await _dispatch_webhook(
+                    store,
+                    route,
+                    row.get("payload") or {},
+                    source="dlq_retry_all",
+                )
+
+        try:
+            asyncio.run(_run_retry())
+        except Exception as e:
+            errs.append(f"dlq retry loop failed: {type(e).__name__}: {e}")
+
+        dlq_after = list((store._state.get("dlq") or {}).values())
+        if len(dlq_after) != 1:
+            errs.append(f"after retry-all DLQ want 1 row, got {len(dlq_after)}: {dlq_after}")
+        elif str(dlq_after[0].get("route_id") or "") != "route_fail":
+            errs.append(f"remaining DLQ row should be route_fail, got {dlq_after[0]}")
+        if hits["bad_sig"]:
+            errs.append(f"receiver saw bad HMAC {hits['bad_sig']} times")
+        if hits["ok"] < 1:
+            errs.append("expected at least one successful webhook POST with valid HMAC")
+
+        agent = MagicMock()
+        agent.chat = AsyncMock(return_value={"reply": "ok"})
+        agent.chat_stream = AsyncMock()
+        agent.start_mcp_clients = AsyncMock()
+        agent.stop_mcp_clients = AsyncMock()
+        agent.memory_hub = None
+        agent.long_memory = MagicMock(count=MagicMock(return_value=0))
+        agent.event_bus = EventBus()
+        monitor = MagicMock()
+        monitor.start = MagicMock()
+        monitor.run_once = AsyncMock(return_value={"status": "ok"})
+        app = build_app(
+            {
+                "paths": {"data_dir": str(data_tmp / "api_data")},
+                "api": {
+                    "host": "127.0.0.1",
+                    "port": 8787,
+                    "token": "admin-secret",
+                    "viewer_token": "viewer-secret",
+                    "maint_token": "maint-secret",
+                    "public_base_url": "",
+                    "public_path_prefix": "/api",
+                    "audit_log_enabled": False,
+                    "rate_limit_requests_per_minute": 0,
+                    "websocket": {
+                        "idle_timeout_seconds": 5,
+                        "ping_interval_seconds": 20,
+                        "close_grace_seconds": 1,
+                    },
+                },
+                "dashboard": {"enabled": False},
+                "llm": {
+                    "talk_model": {"provider": "openrouter", "model": "x"},
+                    "brain_model": {"provider": "openrouter", "model": "x"},
+                    "memory_model": {"provider": "openrouter", "model": "x"},
+                    "vision_model": {"provider": "openrouter", "model": "x"},
+                    "providers": {"openrouter": {"model": "x"}},
+                },
+            },
+            shared_agent=agent,
+            shared_monitor=monitor,
+            shared_backup_manager=MagicMock(),
+        )
+        with TestClient(app, client=("127.0.0.1", 50000)) as client:
+            r = client.post(
+                "/v1/webhooks/dlq/retry-all",
+                headers={"Authorization": "Bearer admin-secret"},
+            )
+            if r.status_code != 202:
+                errs.append(f"retry-all want 202, got {r.status_code} {r.text[:160]}")
+            else:
+                data = (r.json().get("data") or {})
+                if data.get("accepted") is not True:
+                    errs.append(f"retry-all body missing accepted: {data}")
+    finally:
+        try:
+            httpd.shutdown()
+        except Exception:
+            pass
+        shutil.rmtree(data_tmp, ignore_errors=True)
+        wh_path = SERVER_ROOT / "logs" / "webhooks_state.json"
+        if wh_path.is_file():
+            try:
+                wh_path.unlink()
+            except OSError:
+                pass
+
+    return errs
+
+
 def main() -> int:
     checks = [
         ("package layout", check_package_layout),
@@ -1337,6 +1545,7 @@ def main() -> int:
         ("rate limit XFF bucket", check_rate_limit_xff_bucket),
         ("auth matrix", check_auth_matrix),
         ("plugin ops & webhooks", check_plugin_ops_and_webhooks),
+        ("webhook HMAC & DLQ retry", check_webhook_hmac_and_dlq_retry),
         ("merge proposals API", check_merge_proposals_api),
     ]
     failed = 0

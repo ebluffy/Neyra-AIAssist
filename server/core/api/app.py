@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 import httpx
 import yaml
-from fastapi import Depends, FastAPI, File, Header, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -738,6 +738,18 @@ class WebhookStore:
             rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
             return [dict(r) for r in rows]
 
+    async def remove_dlq(self, delivery_id: str) -> bool:
+        """Drop a delivery from DLQ only (delivery history row stays)."""
+        did = str(delivery_id or "").strip()
+        if not did:
+            return False
+        async with self._lock:
+            if did not in self._state["dlq"]:
+                return False
+            self._state["dlq"].pop(did, None)
+            await self._save()
+            return True
+
     async def get_delivery(self, delivery_id: str) -> dict[str, Any] | None:
         async with self._lock:
             row = self._state["deliveries"].get(delivery_id)
@@ -799,6 +811,24 @@ def _delivery_event_type(route: dict[str, Any], payload: dict[str, Any]) -> str:
     return str(route.get("event_type") or "")
 
 
+def webhook_signature_headers(secret: str, body_bytes: bytes, ts: str | None = None) -> dict[str, str]:
+    """Build outbound webhook HMAC headers (X-Neyra-Signature / Timestamp).
+
+    Signature is HMAC-SHA256 over ``{ts}.`` + raw body bytes, hex-encoded as ``sha256=<hex>``.
+    """
+    secret = (secret or "").strip()
+    if not secret:
+        return {}
+    ts_s = ts if ts is not None else str(int(time.time()))
+    signed = f"{ts_s}.".encode("utf-8") + body_bytes
+    dig = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
+    return {
+        "x-neyra-webhook-secret": secret,
+        "X-Neyra-Signature": f"sha256={dig}",
+        "X-Neyra-Timestamp": ts_s,
+    }
+
+
 async def _dispatch_webhook(
     store: WebhookStore,
     route: dict[str, Any],
@@ -840,13 +870,7 @@ async def _dispatch_webhook(
     for attempt in range(max_retries + 1):
         headers = {"Content-Type": "application/json"}
         if secret:
-            # Legacy shared-secret header (receivers may still check it).
-            headers["x-neyra-webhook-secret"] = secret
-            ts = str(int(time.time()))
-            signed = f"{ts}.".encode("utf-8") + body_bytes
-            dig = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
-            headers["X-Neyra-Signature"] = f"sha256={dig}"
-            headers["X-Neyra-Timestamp"] = ts
+            headers.update(webhook_signature_headers(secret, body_bytes))
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(target_url, content=body_bytes, headers=headers)
@@ -2658,7 +2682,13 @@ def build_app(
             }
         ok, msg = loader.reload_plugin(plugin_id)
         if not ok:
-            raise ApiError("reload_failed", msg, 400)
+            logger.error(
+                "plugin_reload_failed | plugin_id=%s trace_id=%s detail=%s",
+                plugin_id,
+                trace_id,
+                msg,
+            )
+            raise ApiError("reload_failed", "reload failed, see server log", 400)
         _audit("plugin_reload", trace_id, api_role, {"plugin_id": plugin_id})
         return {
             "ok": True,
@@ -2668,7 +2698,7 @@ def build_app(
                 "lifecycle": lifecycle or "on_demand",
                 "reloaded": True,
                 "restart_scheduled": False,
-                "message": msg,
+                "message": "Reloaded",
             },
         }
 
@@ -2695,7 +2725,13 @@ def build_app(
             }
         ok, msg = loader.reload_plugin(plugin_id)
         if not ok:
-            raise ApiError("restart_failed", msg, 400)
+            logger.error(
+                "plugin_restart_failed | plugin_id=%s trace_id=%s detail=%s",
+                plugin_id,
+                trace_id,
+                msg,
+            )
+            raise ApiError("restart_failed", "restart failed, see server log", 400)
         _audit("plugin_restart", trace_id, api_role, {"plugin_id": plugin_id})
         return {
             "ok": True,
@@ -2705,7 +2741,7 @@ def build_app(
                 "lifecycle": lifecycle or "on_demand",
                 "reloaded": True,
                 "restart_scheduled": False,
-                "message": msg,
+                "message": "Reloaded",
             },
         }
 
@@ -2952,7 +2988,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": {"archives": rows}}
 
     @app.post("/v1/backup/restore")
-    async def v1_backup_restore(request: Request, api_role: str = Depends(dep_maint)):
+    async def v1_backup_restore(request: Request, api_role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
         try:
             body = await request.json()
@@ -2963,12 +2999,22 @@ def build_app(
         archive_name = str(body.get("archive_name") or body.get("name") or "").strip()
         if not archive_name:
             raise ApiError("bad_request", "archive_name is required", 400)
+        if (str(body.get("confirm") or "")).strip() != "RESTORE":
+            raise ApiError("restore_confirm_required", 'Pass confirm: "RESTORE"', 400)
         soft_restart = bool(body.get("soft_restart", True))
         _audit("backup_restore", trace_id, api_role, {"archive_name": archive_name})
+        # Safety copy of current state before any destructive replace.
+        try:
+            pre = await asyncio.to_thread(backup_manager.run_backup, "pre_restore")
+        except Exception as e:
+            logger.exception("backup_restore_pre_backup_failed | trace_id=%s", trace_id)
+            raise ApiError("backup_failed", "pre-restore backup failed, see server log", 500) from e
+        if not isinstance(pre, dict) or not pre.get("archive"):
+            raise ApiError("backup_failed", "pre-restore backup failed, see server log", 500)
         try:
             res = await asyncio.to_thread(backup_manager.restore_backup, archive_name)
         except FileNotFoundError as e:
-            raise ApiError("not_found", str(e), 404) from e
+            raise ApiError("not_found", "backup archive not found", 404) from e
         except ValueError as e:
             raise ApiError("bad_request", str(e), 400) from e
         except Exception as e:
@@ -2981,7 +3027,11 @@ def build_app(
         return {
             "ok": True,
             "trace_id": trace_id,
-            "data": {**res, "restart_scheduled": restart_scheduled},
+            "data": {
+                **res,
+                "pre_restore_backup": pre.get("archive"),
+                "restart_scheduled": restart_scheduled,
+            },
         }
 
     @app.post("/v1/webhooks/out/routes")
@@ -3104,39 +3154,57 @@ def build_app(
         rows = await webhook_store.list_dlq()
         return {"ok": True, "trace_id": trace_id, "data": {"items": rows}}
 
-    @app.post("/v1/webhooks/dlq/retry-all")
-    async def v1_webhooks_dlq_retry_all(request: Request, _: None = Depends(dep_admin)):
-        trace_id = _trace_id(request)
-        rows = await webhook_store.list_dlq()
-        results: list[dict[str, Any]] = []
+    async def _retry_dlq_rows(rows: list[dict[str, Any]], *, trace_id: str) -> None:
+        """Retry each DLQ row once: drop original from DLQ, dispatch creates a replacement on fail."""
         for row in rows:
             did = str(row.get("delivery_id") or "")
             route_id = str(row.get("route_id") or "")
             route = webhook_store._state["routes"].get(route_id)
             if not isinstance(route, dict):
-                results.append({"delivery_id": did, "ok": False, "error": "route_missing"})
+                # Leave orphan DLQ entry; operator must fix the route.
+                logger.warning(
+                    "dlq_retry_all route_missing | delivery_id=%s route_id=%s trace_id=%s",
+                    did,
+                    route_id,
+                    trace_id,
+                )
                 continue
+            # Remove original before dispatch so success does not leave a stale DLQ row,
+            # and failure replaces it (new delivery) instead of doubling the queue.
+            await webhook_store.remove_dlq(did)
             try:
-                redelivered = await _dispatch_webhook(
+                await _dispatch_webhook(
                     webhook_store,
                     route,
                     row.get("payload") or {},
                     source="dlq_retry_all",
                 )
-                results.append(
-                    {
-                        "delivery_id": did,
-                        "ok": str(redelivered.get("status") or "") == "ok",
-                        "status": redelivered.get("status"),
-                    }
+            except Exception:
+                logger.exception(
+                    "dlq_retry_all_failed | delivery_id=%s trace_id=%s",
+                    did,
+                    trace_id,
                 )
-            except Exception as e:
-                results.append({"delivery_id": did, "ok": False, "error": str(e)[:200]})
-        return {
-            "ok": True,
-            "trace_id": trace_id,
-            "data": {"retried": len(results), "results": results},
-        }
+
+    @app.post("/v1/webhooks/dlq/retry-all")
+    async def v1_webhooks_dlq_retry_all(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        rows = await webhook_store.list_dlq()
+        # Snapshot then run after response; client gets 202 Accepted.
+        snapshot = [dict(r) for r in rows]
+        background_tasks.add_task(_retry_dlq_rows, snapshot, trace_id=trace_id)
+        return JSONResponse(
+            status_code=202,
+            content={
+                "ok": True,
+                "trace_id": trace_id,
+                "data": {"accepted": True, "queued": len(snapshot)},
+            },
+        )
 
     async def _handle_inbound_payload(
         provider: str,

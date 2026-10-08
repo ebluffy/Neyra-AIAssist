@@ -32,7 +32,7 @@ See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens
 - `POST /v1/config/update`
 - `POST /v1/backup/run`
 - `GET /v1/backup/list` — local BackupManager zip archives
-- `POST /v1/backup/restore` — `{ archive_name, soft_restart?: true }` (maint+); soft-restart after restore by default
+- `POST /v1/backup/restore` — `{ archive_name, confirm: "RESTORE", soft_restart?: true }` (admin); runs a `pre_restore` backup first; does not touch logs/; soft-restart after restore by default
 
 ## Plugins
 - `GET /v1/plugins`
@@ -61,7 +61,7 @@ See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens
 - Outbound routes and deliveries under `/v1/webhooks/...`
 - Outbound delivery: when `secret` is set — headers `x-neyra-webhook-secret`, `X-Neyra-Timestamp`, `X-Neyra-Signature: sha256=<hmac>` where HMAC-SHA256(`secret`, `"{timestamp}.{body}"`)
 - `GET /v1/webhooks/event-types` — event list for the UI (`events`, `groups`; route `*` = all events)
-- `POST /v1/webhooks/dlq/retry-all` — retry all DLQ deliveries
+- `POST /v1/webhooks/dlq/retry-all` — accept retry of all DLQ deliveries (**202**; originals leave DLQ; a failed retry adds one replacement row)
 - Inbound: `POST /v1/webhooks/in/{provider}/{endpoint_id}` (HMAC if secret set)
 - Inbound health: `GET .../health` (viewer+ when tokens configured)
 - `POST /v1/debug/...` (admin; lifecycle gated by flag)

@@ -512,12 +512,14 @@ export function WebhooksScreen() {
     setError(null)
     setRetryAllBusy(true)
     try {
-      const r = await apiPost<ApiEnvelope<{ retried?: number; results?: { ok?: boolean }[] }>>(
+      const r = await apiPost<ApiEnvelope<{ accepted?: boolean; queued?: number }>>(
         '/v1/webhooks/dlq/retry-all',
         {},
       )
-      const okCount = (r.data.results ?? []).filter((x) => x.ok).length
-      setStatus(`Повтор очереди: обработано ${r.data.retried ?? 0}, успешно ${okCount}.`)
+      const queued = r.data.queued ?? dlq.length
+      setStatus(`Повтор очереди принят: ${queued} записей в фоне. Обновляю список…`)
+      // Background retries finish shortly; give them a moment then refresh DLQ.
+      await new Promise((resolve) => window.setTimeout(resolve, 800))
       await load()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))

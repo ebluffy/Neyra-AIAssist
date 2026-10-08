@@ -387,7 +387,8 @@ def list_plugin_log_sources(root: Path, plugin_id: str) -> list[dict[str, Any]]:
 
 def resolve_log_source(root: Path, source: str) -> Path | None:
     """Map log source name to a file path under the server root."""
-    src = (source or "system").strip().lower()
+    raw = (source or "system").strip()
+    src = raw.lower()
     logs = root / "logs"
     if src in ("system", "system.log"):
         return logs / "system.log"
@@ -400,7 +401,8 @@ def resolve_log_source(root: Path, source: str) -> Path | None:
     if src in ("lavalink", "discord.lavalink", "plugin:discord:lavalink"):
         return root / "modules" / "discord" / "lavalink" / "lavalink.log"
     if src.startswith("plugin:"):
-        parts = src.split(":")
+        # Keep path case from the original id (Linux: Error.log ≠ error.log).
+        parts = raw.split(":")
         pid = normalize_plugin_id(parts[1] if len(parts) > 1 else "")
         if not is_safe_plugin_id(pid):
             return None
@@ -408,10 +410,14 @@ def resolve_log_source(root: Path, source: str) -> Path | None:
         if len(parts) >= 3:
             # Only sidecar logs: lavalink OR a *.log under modules/<id>/logs/
             rest = ":".join(parts[2:]).strip().replace("\\", "/")
-            if rest == "lavalink":
+            rest_l = rest.lower()
+            if rest_l == "lavalink":
                 return plugin_dir / "lavalink" / "lavalink.log"
             # Strip optional "logs/" prefix from list_plugin_log_sources ids
-            rel = rest[5:] if rest.startswith("logs/") else rest
+            if rest_l.startswith("logs/"):
+                rel = rest[5:]
+            else:
+                rel = rest
             if not rel or ".." in rel.split("/") or rel.startswith("/"):
                 return None
             if Path(rel).suffix.lower() != ".log":

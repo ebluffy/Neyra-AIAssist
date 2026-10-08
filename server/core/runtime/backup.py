@@ -114,27 +114,97 @@ class BackupManager:
             return chroma.parent
         return Path("./data/memory")
 
-    def _logs_root(self) -> Path:
-        return Path("./logs")
+    def _assert_safe_memory_dst(self, mem_dst: Path) -> None:
+        """Refuse restore targets that would wipe backup dir or the process cwd."""
+        try:
+            dst = mem_dst.resolve()
+        except OSError as e:
+            raise ValueError(f"invalid memory root: {mem_dst}") from e
+        cwd = Path.cwd().resolve()
+        if dst == cwd:
+            raise ValueError("refusing to replace memory root equal to cwd")
+        try:
+            backup_dir = self.local_dir.resolve()
+        except OSError:
+            backup_dir = self.local_dir
+        if dst == backup_dir or backup_dir in dst.parents:
+            raise ValueError("refusing to replace a path that contains backup.local_dir")
+        if dst in backup_dir.parents or dst == backup_dir.parent:
+            # mem_dst is an ancestor of backups — wiping it would delete archives
+            raise ValueError("refusing to replace a parent of backup.local_dir")
+
+    @staticmethod
+    def _build_memory_staging(restore_root: Path, staging_mem: Path) -> Path | None:
+        """Merge archive layout: full tree from memory/ plus SQLite overlay from data/memory/.
+
+        run_backup stores chroma under ``memory/`` (source folder name) and only
+        Hub DB files under ``data/memory/``. Prefer the full tree, then overlay DB.
+        """
+        full_tree = restore_root / "memory"
+        db_only = restore_root / "data" / "memory"
+        # Legacy / hand-built archives may put chroma inside data/memory/
+        has_full = full_tree.is_dir()
+        has_db = db_only.is_dir()
+        if not has_full and not has_db:
+            return None
+        if staging_mem.exists():
+            shutil.rmtree(staging_mem, ignore_errors=True)
+        staging_mem.parent.mkdir(parents=True, exist_ok=True)
+        if has_full:
+            shutil.copytree(full_tree, staging_mem)
+        else:
+            staging_mem.mkdir(parents=True, exist_ok=True)
+        if has_db:
+            for p in db_only.iterdir():
+                if p.is_file():
+                    shutil.copy2(p, staging_mem / p.name)
+                elif p.is_dir() and not has_full:
+                    # Hand-built archive: chroma under data/memory/
+                    dest = staging_mem / p.name
+                    if dest.exists():
+                        shutil.rmtree(dest, ignore_errors=True)
+                    shutil.copytree(p, dest)
+        # Staging must contain something useful
+        if not any(staging_mem.iterdir()):
+            return None
+        return staging_mem
 
     @staticmethod
     def _replace_tree(src_dir: Path, dst_dir: Path) -> None:
         """Replace destination directory contents (no merge of stale files)."""
         if dst_dir.exists():
-            shutil.rmtree(dst_dir, ignore_errors=True)
+            shutil.rmtree(dst_dir)
         dst_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src_dir, dst_dir)
 
-    def _clear_sqlite_sidecars(self) -> None:
-        """Drop live Hub wal/shm so a restored .db is not paired with stale WAL."""
-        for p in self._sqlite_paths():
-            name = p.name
-            if name.endswith("-wal") or name.endswith("-shm"):
-                try:
-                    if p.is_file():
-                        p.unlink()
-                except OSError as e:
-                    logger.warning("Could not remove sqlite sidecar %s: %s", p, e)
+    def _place_sqlite_outside_memory(self, staged_mem: Path, mem_dst: Path) -> None:
+        """If sqlite_path is outside memory root, copy DB files there after tree swap."""
+        mem_cfg = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
+        db = Path(str(mem_cfg.get("sqlite_path") or (mem_dst / "neyra_memory.db")))
+        try:
+            db_res = db.resolve()
+            mem_res = mem_dst.resolve()
+            db_outside = mem_res not in db_res.parents and db_res != (mem_res / db.name)
+        except OSError:
+            db_outside = True
+        if not db_outside:
+            return
+        for suffix in ("", "-wal", "-shm"):
+            leaf = db.name + suffix
+            cand = staged_mem / leaf
+            if not cand.is_file() and suffix == "":
+                matches = list(staged_mem.glob("*.db"))
+                cand = matches[0] if matches else cand
+            if cand.is_file():
+                target = Path(str(db) + suffix) if suffix else db
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # Drop live sidecars only when we have a replacement file ready.
+                if target.is_file():
+                    try:
+                        target.unlink()
+                    except OSError as e:
+                        logger.warning("Could not remove old sqlite file %s: %s", target, e)
+                shutil.copy2(cand, target)
 
     def restore_backup(self, archive_name: str) -> dict:
         name = Path(str(archive_name or "").strip()).name
@@ -151,44 +221,26 @@ class BackupManager:
         if restore_root.exists():
             shutil.rmtree(restore_root, ignore_errors=True)
         restore_root.mkdir(parents=True, exist_ok=True)
-        shutil.unpack_archive(str(src), str(restore_root), "zip")
-        mem_dst = self._memory_root()
-        logs_dst = self._logs_root()
-        mem_src = restore_root / "data" / "memory"
-        if not mem_src.exists():
-            mem_src = restore_root / "memory"
-        logs_src = restore_root / "logs"
-        # Clear WAL/SHM before replacing memory tree so Hub does not reopen stale sidecars.
-        self._clear_sqlite_sidecars()
-        restored: list[str] = []
-        if mem_src.exists():
-            self._replace_tree(mem_src, mem_dst)
+        try:
+            shutil.unpack_archive(str(src), str(restore_root), "zip")
+            mem_dst = self._memory_root()
+            self._assert_safe_memory_dst(mem_dst)
+            staging_mem = restore_root / ".neyra_memory_staging"
+            built = self._build_memory_staging(restore_root, staging_mem)
+            restored: list[str] = []
+            if built is None:
+                raise ValueError("archive has no memory payload")
+            # Swap only after staging is ready. Do not touch logs/ (audit trail stays).
+            # WAL/SHM under memory root go away with rmtree; do not delete them earlier.
+            self._replace_tree(built, mem_dst)
             restored.append(str(mem_dst))
-            # If sqlite_path lives outside memory root, place DB files from the archive there.
-            mem_cfg = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
-            db = Path(str(mem_cfg.get("sqlite_path") or (mem_dst / "neyra_memory.db")))
-            try:
-                db_outside = mem_dst.resolve() not in db.resolve().parents and db.resolve() != (mem_dst / db.name).resolve()
-            except OSError:
-                db_outside = True
-            if db_outside:
-                for suffix in ("", "-wal", "-shm"):
-                    leaf = db.name + suffix
-                    cand = mem_src / leaf
-                    if not cand.is_file() and suffix == "":
-                        matches = list(mem_src.glob("*.db"))
-                        cand = matches[0] if matches else cand
-                    if cand.is_file():
-                        target = Path(str(db) + suffix) if suffix else db
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(cand, target)
-        if logs_src.exists():
-            self._replace_tree(logs_src, logs_dst)
-            restored.append(str(logs_dst))
-        shutil.rmtree(restore_root, ignore_errors=True)
-        return {
-            "restored_from": str(src),
-            "archive_name": name,
-            "restored_paths": restored,
-            "memory_root": str(mem_dst),
-        }
+            self._place_sqlite_outside_memory(built, mem_dst)
+            return {
+                "restored_from": str(src),
+                "archive_name": name,
+                "restored_paths": restored,
+                "memory_root": str(mem_dst),
+                "logs_restored": False,
+            }
+        finally:
+            shutil.rmtree(restore_root, ignore_errors=True)
