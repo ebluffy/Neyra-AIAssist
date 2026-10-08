@@ -94,10 +94,21 @@ def run_neyra_server(config: dict) -> None:
             )
             sys.exit(1)
 
+    # Apply pending backup restore before opening Hub/Chroma (AR-34).
+    backup_manager = BackupManager(config)
+    try:
+        applied = backup_manager.apply_pending_restore()
+        if applied:
+            logger.info(
+                "Pending restore applied before agent start | archive=%s",
+                applied.get("archive_name"),
+            )
+    except Exception:
+        logger.exception("Pending restore failed; continuing with live memory")
+
     agent = NeyraAgent(config)
     reflection = ReflectionEngine(config, agent)
     monitor = HealthMonitor(config, project_root=root)
-    backup_manager = BackupManager(config)
 
     app = build_app(
         config,

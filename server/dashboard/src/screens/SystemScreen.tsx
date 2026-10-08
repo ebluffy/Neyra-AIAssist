@@ -225,7 +225,7 @@ export function SystemScreen() {
   async function restoreBackup(name: string) {
     if (
       !window.confirm(
-        `ВОССТАНОВИТЬ из «${name}»?\n\nТекущие данные памяти будут заменены содержимым архива, откатить это нельзя. После восстановления ядро перезапустится.`,
+        `ВОССТАНОВИТЬ из «${name}»?\n\nПеред заменой будет создан страховочный бэкап текущего состояния (pre_restore). Подмена памяти применится при перезапуске ядра.`,
       )
     ) {
       return
@@ -235,20 +235,32 @@ export function SystemScreen() {
       return
     }
     setBusy(true)
-    setStatus('Восстанавливаю…')
+    setStatus('Готовлю восстановление…')
     setError(null)
     try {
-      const r = await apiPost<ApiEnvelope<{ restart_scheduled?: boolean }>>('/v1/backup/restore', {
+      const r = await apiPost<
+        ApiEnvelope<{
+          restart_scheduled?: boolean
+          pre_restore_backup?: string
+          pre_restore_backup_name?: string
+          pending?: boolean
+        }>
+      >('/v1/backup/restore', {
         archive_name: name,
         confirm: 'RESTORE',
       })
+      const safety =
+        r.data.pre_restore_backup_name ||
+        (r.data.pre_restore_backup ? r.data.pre_restore_backup.split(/[/\\]/).pop() : '') ||
+        ''
+      const safetyNote = safety ? ` Страховочный архив: ${safety}.` : ''
       if (r.data.restart_scheduled) {
-        setStatus('Архив восстановлен. Ядро перезапускается…')
+        setStatus(`Восстановление подготовлено.${safetyNote} Ядро перезапускается…`)
         setBusy(false)
-        await waitAfterRestart('Восстановление завершено.')
+        await waitAfterRestart(`Восстановление применено при старте.${safetyNote}`)
         return
       }
-      setStatus('Архив восстановлен. Сделай мягкий рестарт, чтобы данные подхватились.')
+      setStatus(`Восстановление подготовлено.${safetyNote} Нужен мягкий рестарт.`)
     } catch (e) {
       setStatus('')
       setError(e instanceof Error ? e.message : String(e))

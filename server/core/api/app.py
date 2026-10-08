@@ -636,6 +636,21 @@ class WebhookStore:
             raw.setdefault("routes", {})
             raw.setdefault("deliveries", {})
             raw.setdefault("dlq", {})
+            # Stuck "retrying" from a crash mid-retry → back to failed (AR-41).
+            changed = False
+            for did, row in list((raw.get("dlq") or {}).items()):
+                if isinstance(row, dict) and str(row.get("status") or "") == "retrying":
+                    row["status"] = "failed"
+                    row["error"] = str(row.get("error") or "retry_interrupted")
+                    raw["dlq"][did] = row
+                    if did in (raw.get("deliveries") or {}):
+                        raw["deliveries"][did] = {**raw["deliveries"][did], **row}
+                    changed = True
+            if changed:
+                try:
+                    self.path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
             return raw
         except Exception:
             return {"routes": {}, "deliveries": {}, "dlq": {}}
@@ -749,6 +764,47 @@ class WebhookStore:
             self._state["dlq"].pop(did, None)
             await self._save()
             return True
+
+    async def claim_dlq_for_retry(self, delivery_id: str) -> dict[str, Any] | None:
+        """Atomically mark a DLQ row as retrying. Returns None if missing or already claimed."""
+        did = str(delivery_id or "").strip()
+        if not did:
+            return None
+        async with self._lock:
+            row = self._state["dlq"].get(did)
+            if not isinstance(row, dict):
+                return None
+            if str(row.get("status") or "") == "retrying":
+                return None
+            row = dict(row)
+            row["status"] = "retrying"
+            row["updated_at"] = _utc_now()
+            self._state["dlq"][did] = row
+            base = self._state["deliveries"].get(did) if isinstance(self._state["deliveries"].get(did), dict) else {}
+            self._state["deliveries"][did] = {**base, **row}
+            await self._save()
+            return dict(row)
+
+    async def release_dlq_retry(self, delivery_id: str, *, error: str = "") -> None:
+        """Put a claimed retrying row back to failed (route missing / interrupted)."""
+        did = str(delivery_id or "").strip()
+        if not did:
+            return
+        async with self._lock:
+            row = self._state["dlq"].get(did)
+            if not isinstance(row, dict):
+                return
+            if str(row.get("status") or "") != "retrying":
+                return
+            row = dict(row)
+            row["status"] = "failed"
+            if error:
+                row["error"] = error
+            row["updated_at"] = _utc_now()
+            self._state["dlq"][did] = row
+            base = self._state["deliveries"].get(did) if isinstance(self._state["deliveries"].get(did), dict) else {}
+            self._state["deliveries"][did] = {**base, **row}
+            await self._save()
 
     async def get_delivery(self, delivery_id: str) -> dict[str, Any] | None:
         async with self._lock:
@@ -3001,9 +3057,21 @@ def build_app(
             raise ApiError("bad_request", "archive_name is required", 400)
         if (str(body.get("confirm") or "")).strip() != "RESTORE":
             raise ApiError("restore_confirm_required", 'Pass confirm: "RESTORE"', 400)
-        soft_restart = bool(body.get("soft_restart", True))
+        # soft_restart=false is ignored: swap happens only at next core start (AR-34).
+        if body.get("soft_restart") is False:
+            logger.info(
+                "backup_restore ignoring soft_restart=false | archive=%s trace_id=%s",
+                archive_name,
+                trace_id,
+            )
         _audit("backup_restore", trace_id, api_role, {"archive_name": archive_name})
-        # Safety copy of current state before any destructive replace.
+        # Validate archive exists before spending a full pre_restore backup (AR-34).
+        try:
+            await asyncio.to_thread(backup_manager.resolve_archive_path, archive_name)
+        except FileNotFoundError as e:
+            raise ApiError("not_found", "backup archive not found", 404) from e
+        except ValueError as e:
+            raise ApiError("bad_request", str(e), 400) from e
         try:
             pre = await asyncio.to_thread(backup_manager.run_backup, "pre_restore")
         except Exception as e:
@@ -3012,7 +3080,8 @@ def build_app(
         if not isinstance(pre, dict) or not pre.get("archive"):
             raise ApiError("backup_failed", "pre-restore backup failed, see server log", 500)
         try:
-            res = await asyncio.to_thread(backup_manager.restore_backup, archive_name)
+            # Stage only — live Hub/Chroma replaced on next start via apply_pending_restore.
+            res = await asyncio.to_thread(backup_manager.prepare_restore, archive_name)
         except FileNotFoundError as e:
             raise ApiError("not_found", "backup archive not found", 404) from e
         except ValueError as e:
@@ -3020,17 +3089,16 @@ def build_app(
         except Exception as e:
             logger.exception("backup_restore_failed | trace_id=%s", trace_id)
             raise ApiError("restore_failed", "restore failed, see server log", 500) from e
-        restart_scheduled = False
-        if soft_restart:
-            _schedule_exit_after_response(reason=f"backup_restore:{archive_name}")
-            restart_scheduled = True
+        _schedule_exit_after_response(reason=f"backup_restore:{archive_name}")
+        pre_path = str(pre.get("archive") or "")
         return {
             "ok": True,
             "trace_id": trace_id,
             "data": {
                 **res,
-                "pre_restore_backup": pre.get("archive"),
-                "restart_scheduled": restart_scheduled,
+                "pre_restore_backup": pre_path,
+                "pre_restore_backup_name": Path(pre_path).name if pre_path else "",
+                "restart_scheduled": True,
             },
         }
 
@@ -3155,23 +3223,20 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": {"items": rows}}
 
     async def _retry_dlq_rows(rows: list[dict[str, Any]], *, trace_id: str) -> None:
-        """Retry each DLQ row once: drop original from DLQ, dispatch creates a replacement on fail."""
+        """Retry claimed DLQ rows: dispatch first, then drop original (AR-41)."""
         for row in rows:
             did = str(row.get("delivery_id") or "")
             route_id = str(row.get("route_id") or "")
             route = webhook_store._state["routes"].get(route_id)
             if not isinstance(route, dict):
-                # Leave orphan DLQ entry; operator must fix the route.
                 logger.warning(
                     "dlq_retry_all route_missing | delivery_id=%s route_id=%s trace_id=%s",
                     did,
                     route_id,
                     trace_id,
                 )
+                await webhook_store.release_dlq_retry(did, error="route_missing")
                 continue
-            # Remove original before dispatch so success does not leave a stale DLQ row,
-            # and failure replaces it (new delivery) instead of doubling the queue.
-            await webhook_store.remove_dlq(did)
             try:
                 await _dispatch_webhook(
                     webhook_store,
@@ -3185,6 +3250,8 @@ def build_app(
                     did,
                     trace_id,
                 )
+            # Drop original only after the attempt so a mid-retry restart keeps the event.
+            await webhook_store.remove_dlq(did)
 
     @app.post("/v1/webhooks/dlq/retry-all")
     async def v1_webhooks_dlq_retry_all(
@@ -3194,15 +3261,20 @@ def build_app(
     ):
         trace_id = _trace_id(request)
         rows = await webhook_store.list_dlq()
-        # Snapshot then run after response; client gets 202 Accepted.
-        snapshot = [dict(r) for r in rows]
-        background_tasks.add_task(_retry_dlq_rows, snapshot, trace_id=trace_id)
+        # Claim under lock before scheduling so a second retry-all cannot double-send.
+        claimed: list[dict[str, Any]] = []
+        for row in rows:
+            did = str(row.get("delivery_id") or "")
+            got = await webhook_store.claim_dlq_for_retry(did)
+            if got is not None:
+                claimed.append(got)
+        background_tasks.add_task(_retry_dlq_rows, claimed, trace_id=trace_id)
         return JSONResponse(
             status_code=202,
             content={
                 "ok": True,
                 "trace_id": trace_id,
-                "data": {"accepted": True, "queued": len(snapshot)},
+                "data": {"accepted": True, "queued": len(claimed)},
             },
         )
 

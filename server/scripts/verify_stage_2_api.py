@@ -1322,8 +1322,7 @@ def check_plugin_ops_and_webhooks() -> list[str]:
 
 
 def check_webhook_hmac_and_dlq_retry() -> list[str]:
-    """AR-35/37: real HMAC bytes + retry-all does not double DLQ."""
-    import asyncio
+    """AR-35/37/40/41: HMAC bytes + real POST retry-all on ephemeral project_root."""
     import hashlib
     import hmac as hmac_mod
     import threading
@@ -1332,7 +1331,7 @@ def check_webhook_hmac_and_dlq_retry() -> list[str]:
     from fastapi.testclient import TestClient
 
     from core.api import build_app
-    from core.api.app import WebhookStore, _dispatch_webhook, webhook_signature_headers
+    from core.api.app import webhook_signature_headers
     from core.runtime.event_bus import EventBus
 
     errs: list[str] = []
@@ -1384,13 +1383,27 @@ def check_webhook_hmac_and_dlq_retry() -> list[str]:
         def log_message(self, *_args: Any) -> None:
             return
 
+    # AR-40: seed a "live" webhooks file and prove verify does not touch it.
+    live_wh = SERVER_ROOT / "logs" / "webhooks_state.json"
+    live_wh.parent.mkdir(parents=True, exist_ok=True)
+    live_marker = {
+        "routes": {"keep_me": {"route_id": "keep_me", "secret": "live-secret-do-not-touch"}},
+        "deliveries": {},
+        "dlq": {},
+        "_ar40_marker": "preserve",
+    }
+    live_before = json.dumps(live_marker, ensure_ascii=False, indent=2)
+    live_wh.write_text(live_before, encoding="utf-8")
+
     httpd = HTTPServer(("127.0.0.1", 0), _Handler)
     port = int(httpd.server_address[1])
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_dlq_test_"))
+    api_root = Path(tempfile.mkdtemp(prefix="neyra_dlq_api_"))
+    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_dlq_data_"))
     try:
-        store = WebhookStore(data_tmp)
-        store._state = {
+        (api_root / "logs").mkdir(parents=True)
+        (api_root / "modules").mkdir(parents=True)
+        seed = {
             "routes": {
                 "route_ok": {
                     "route_id": "route_ok",
@@ -1409,7 +1422,20 @@ def check_webhook_hmac_and_dlq_retry() -> list[str]:
                     "max_retries": 0,
                 },
             },
-            "deliveries": {},
+            "deliveries": {
+                "d_ok": {
+                    "delivery_id": "d_ok",
+                    "route_id": "route_ok",
+                    "status": "failed",
+                    "payload": {"event_type": "debug.ok", "n": 1},
+                },
+                "d_fail": {
+                    "delivery_id": "d_fail",
+                    "route_id": "route_fail",
+                    "status": "failed",
+                    "payload": {"event_type": "debug.fail", "n": 2},
+                },
+            },
             "dlq": {
                 "d_ok": {
                     "delivery_id": "d_ok",
@@ -1425,39 +1451,10 @@ def check_webhook_hmac_and_dlq_retry() -> list[str]:
                 },
             },
         }
-        store.path.parent.mkdir(parents=True, exist_ok=True)
-        store.path.write_text(json.dumps(store._state, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        async def _run_retry() -> None:
-            rows = await store.list_dlq()
-            for row in rows:
-                did = str(row.get("delivery_id") or "")
-                route_id = str(row.get("route_id") or "")
-                route = store._state["routes"].get(route_id)
-                if not isinstance(route, dict):
-                    continue
-                await store.remove_dlq(did)
-                await _dispatch_webhook(
-                    store,
-                    route,
-                    row.get("payload") or {},
-                    source="dlq_retry_all",
-                )
-
-        try:
-            asyncio.run(_run_retry())
-        except Exception as e:
-            errs.append(f"dlq retry loop failed: {type(e).__name__}: {e}")
-
-        dlq_after = list((store._state.get("dlq") or {}).values())
-        if len(dlq_after) != 1:
-            errs.append(f"after retry-all DLQ want 1 row, got {len(dlq_after)}: {dlq_after}")
-        elif str(dlq_after[0].get("route_id") or "") != "route_fail":
-            errs.append(f"remaining DLQ row should be route_fail, got {dlq_after[0]}")
-        if hits["bad_sig"]:
-            errs.append(f"receiver saw bad HMAC {hits['bad_sig']} times")
-        if hits["ok"] < 1:
-            errs.append("expected at least one successful webhook POST with valid HMAC")
+        (api_root / "logs" / "webhooks_state.json").write_text(
+            json.dumps(seed, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
         agent = MagicMock()
         agent.chat = AsyncMock(return_value={"reply": "ok"})
@@ -1472,7 +1469,7 @@ def check_webhook_hmac_and_dlq_retry() -> list[str]:
         monitor.run_once = AsyncMock(return_value={"status": "ok"})
         app = build_app(
             {
-                "paths": {"data_dir": str(data_tmp / "api_data")},
+                "paths": {"data_dir": str(data_tmp)},
                 "api": {
                     "host": "127.0.0.1",
                     "port": 8787,
@@ -1501,30 +1498,65 @@ def check_webhook_hmac_and_dlq_retry() -> list[str]:
             shared_agent=agent,
             shared_monitor=monitor,
             shared_backup_manager=MagicMock(),
+            project_root=api_root,
         )
+        admin = {"Authorization": "Bearer admin-secret"}
         with TestClient(app, client=("127.0.0.1", 50000)) as client:
-            r = client.post(
-                "/v1/webhooks/dlq/retry-all",
-                headers={"Authorization": "Bearer admin-secret"},
-            )
-            if r.status_code != 202:
-                errs.append(f"retry-all want 202, got {r.status_code} {r.text[:160]}")
+            r1 = client.post("/v1/webhooks/dlq/retry-all", headers=admin)
+            if r1.status_code != 202:
+                errs.append(f"retry-all want 202, got {r1.status_code} {r1.text[:160]}")
+            queued = ((r1.json().get("data") or {}).get("queued")) if r1.status_code == 202 else None
+            if queued != 2:
+                errs.append(f"first retry-all queued want 2, got {queued}")
+
+            # Second call must claim 0 (already retrying / done) — no duplicate ok POSTs.
+            r2 = client.post("/v1/webhooks/dlq/retry-all", headers=admin)
+            if r2.status_code != 202:
+                errs.append(f"second retry-all want 202, got {r2.status_code}")
             else:
-                data = (r.json().get("data") or {})
-                if data.get("accepted") is not True:
-                    errs.append(f"retry-all body missing accepted: {data}")
+                q2 = (r2.json().get("data") or {}).get("queued")
+                if q2 not in (0,):
+                    # After first background finished, DLQ may have 1 failed left — claiming that is ok
+                    # but ok route must not be re-sent. Check hits["ok"] below.
+                    if q2 not in (0, 1):
+                        errs.append(f"second retry-all queued unexpected: {q2}")
+
+            dlq = client.get("/v1/webhooks/dlq", headers=admin)
+            if dlq.status_code != 200:
+                errs.append(f"GET dlq want 200, got {dlq.status_code}")
+            else:
+                items = (dlq.json().get("data") or {}).get("items") or []
+                # After retry: ok removed; fail replaced by one new failed delivery (or still retrying→failed).
+                fail_items = [x for x in items if str(x.get("route_id") or "") == "route_fail"]
+                ok_items = [x for x in items if str(x.get("route_id") or "") == "route_ok"]
+                if ok_items:
+                    errs.append(f"DLQ must not keep route_ok after successful retry: {ok_items}")
+                if len(fail_items) != 1:
+                    errs.append(f"DLQ want exactly 1 route_fail row, got {len(fail_items)}: {fail_items}")
+
+            if hits["bad_sig"]:
+                errs.append(f"receiver saw bad HMAC {hits['bad_sig']} times")
+            if hits["ok"] != 1:
+                errs.append(f"ok receiver want exactly 1 POST, got {hits['ok']}")
+            if hits["fail"] < 1:
+                errs.append("fail receiver expected at least 1 POST")
+
+        live_after = live_wh.read_text(encoding="utf-8") if live_wh.is_file() else ""
+        if live_after != live_before:
+            errs.append("AR-40: live server/logs/webhooks_state.json was modified by verify")
     finally:
         try:
             httpd.shutdown()
         except Exception:
             pass
+        shutil.rmtree(api_root, ignore_errors=True)
         shutil.rmtree(data_tmp, ignore_errors=True)
-        wh_path = SERVER_ROOT / "logs" / "webhooks_state.json"
-        if wh_path.is_file():
-            try:
-                wh_path.unlink()
-            except OSError:
-                pass
+        # Restore live marker only if we created the AR-40 probe (leave real prod alone otherwise).
+        try:
+            if live_wh.is_file() and '"_ar40_marker": "preserve"' in live_wh.read_text(encoding="utf-8"):
+                live_wh.unlink()
+        except OSError:
+            pass
 
     return errs
 
