@@ -52,7 +52,8 @@ def _truncate(s: str, n: int = 60) -> str:
     return text[: n - 1] + "…"
 
 
-_MEDIA_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+# Any absolute or scheme URL (http, icy, ftp, protocol-relative //host, …).
+_ANY_URL_RE = re.compile(r"(?:[a-z][a-z0-9+.-]*:)?//[^\s<>\"']+", re.IGNORECASE)
 
 _YOUTUBE_HOSTS = frozenset(
     {
@@ -64,13 +65,16 @@ _YOUTUBE_HOSTS = frozenset(
     }
 )
 
+# Returned as normalize error when a URL was present but not an allowed YouTube video.
+ONLY_YOUTUBE_VIDEO_URLS = "only_youtube_video_urls"
 
-def _extract_media_url(text: str) -> str:
-    """First http(s) URL in text (Discord may wrap <>)."""
+
+def _extract_any_url(text: str) -> str:
+    """First URL-like token in text (Discord may wrap <>)."""
     raw = (text or "").strip()
     if not raw:
         return ""
-    m = _MEDIA_URL_RE.search(raw)
+    m = _ANY_URL_RE.search(raw)
     if not m:
         return ""
     return m.group(0).rstrip(").,]>\"'")
@@ -87,10 +91,19 @@ def _is_youtube_host(hostname: str) -> bool:
     return _youtube_hostname(hostname) in _YOUTUBE_HOSTS
 
 
+def _url_for_parse(url: str) -> str:
+    u = (url or "").strip()
+    if u.startswith("//"):
+        return "https:" + u
+    return u
+
+
 def _youtube_video_id(url: str) -> str:
     try:
-        parsed = urlparse(url)
+        parsed = urlparse(_url_for_parse(url))
     except Exception:
+        return ""
+    if (parsed.scheme or "").lower() not in ("", "http", "https"):
         return ""
     if not _is_youtube_host(parsed.hostname or ""):
         return ""
@@ -109,7 +122,7 @@ def _youtube_video_id(url: str) -> str:
 
 def _canonical_youtube_url_from_text(text: str) -> str:
     """Only real YouTube hosts; returns watch URL or '' (never LAN/loopback/http abuse)."""
-    url = _extract_media_url(text)
+    url = _extract_any_url(text)
     if not url:
         return ""
     vid = _youtube_video_id(url)
@@ -118,18 +131,30 @@ def _canonical_youtube_url_from_text(text: str) -> str:
     return f"https://www.youtube.com/watch?v={vid}"
 
 
-def _normalize_play_query(raw: str) -> str:
+def _looks_like_url(text: str) -> bool:
+    q = (text or "").strip()
+    return bool(q.startswith("//") or "://" in q)
+
+
+def _normalize_play_query(raw: str) -> tuple[str, str | None]:
+    """Return (query, error). error is set when a URL was rejected (not a YouTube video)."""
     q = (raw or "").strip()
     if not q:
-        return ""
+        return "", None
     yt = _canonical_youtube_url_from_text(q)
     if yt:
-        return yt
-    # Drop non-YouTube URLs so Lavalink HTTP source never fetches arbitrary hosts.
-    q = _MEDIA_URL_RE.sub("", q).strip()
+        return yt, None
+    had_url = bool(_extract_any_url(q))
+    # Drop every URL-like token so Lavalink never sees icy://, //lan, ftp://, etc.
+    q = _ANY_URL_RE.sub("", q)
+    q = re.sub(r"[<>]", "", q).strip()
+    if had_url:
+        # Link present but not an allowed YouTube video — caller must not invent a default track.
+        return "", ONLY_YOUTUBE_VIDEO_URLS
     # Remove command noise so Lavalink search gets a clean artist/title query.
+    # Word-boundary only: `\s*` would eat "Playboi" → "boi".
     noise_patterns = (
-        r"^(вкл\w*|вруби|поставь|заиграй|play)\s*",
+        r"^(вкл\w*|вруби|поставь|заиграй|play)(?:\s+|$)",
         r"^(любой|какую?[- ]?нибудь|какой[- ]?нибудь)\s+",
         r"^(трек|треков|песню|музыку)\s+",
         r"^(зайди|зайти)\s+в\s+(войс|голос\w*)\s*(и\s+)?",
@@ -142,11 +167,11 @@ def _normalize_play_query(raw: str) -> str:
         q,
         flags=re.IGNORECASE,
     ):
-        return ""
+        return "", None
     q = q.strip(" .,!?:;\"'")
     if q.lower() in {"музыку", "музыка", "песню", "песню", "трек", "track", "music"}:
-        return ""
-    return q
+        return "", None
+    return q, None
 
 
 async def _connect_voice_player(
@@ -201,24 +226,18 @@ async def _connect_voice_player(
 
 
 async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> list[Any]:
-    """Resolve playables. YouTube watch URLs load directly; text uses ytsearch fallbacks."""
+    """Resolve playables. YouTube watch URLs load directly; text always uses ytsearch:."""
     q = (query or "").strip()
     if not q:
         return []
     is_yt_url = bool(_youtube_video_id(q))
     timeout = 20.0 if is_yt_url else 12.0
 
-    async def _search(raw: str, *, source: Any = None) -> list[Any]:
-        if source is not None:
-            tracks = await asyncio.wait_for(
-                wavelink_mod.Playable.search(raw, source=source, node=node),
-                timeout=timeout,
-            )
-        else:
-            tracks = await asyncio.wait_for(
-                wavelink_mod.Playable.search(raw, node=node),
-                timeout=timeout,
-            )
+    async def _search(raw: str) -> list[Any]:
+        tracks = await asyncio.wait_for(
+            wavelink_mod.Playable.search(raw, node=node),
+            timeout=timeout,
+        )
         return list(tracks or [])
 
     try:
@@ -229,19 +248,13 @@ async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> li
             logger.warning("discord.music url resolve empty | query=%s", q)
             return []
 
-        source = getattr(getattr(wavelink_mod, "TrackSource", None), "YouTube", None)
-        if source is not None:
-            tracks = await _search(q, source=source)
-            if tracks:
-                return tracks
-        tracks = await _search(q)
-        if tracks:
-            return tracks
-        if not q.lower().startswith("ytsearch:"):
-            tracks = await _search(f"ytsearch:{q}")
-            if tracks:
-                return tracks
-        return []
+        # Never pass bare text that yarl would treat as a URL (icy://, //lan, ftp://…).
+        if _looks_like_url(q):
+            logger.warning("discord.music refuse non-youtube url-shaped query | query=%s", q)
+            return []
+        # Prefix forces YouTube search; wavelink skips URL-host branch when prefix is set.
+        prefixed = q if q.lower().startswith(("ytsearch:", "ytmsearch:")) else f"ytsearch:{q}"
+        return await _search(prefixed)
     except Exception as ex:  # pragma: no cover
         logger.warning("discord.music youtube search failed | query=%s error=%s", q, ex)
         return []
@@ -861,7 +874,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
 
             # PLAY / join-only
             join_only = bool(payload.get("join_only"))
-            query = _normalize_play_query(str(payload.get("query") or "").strip())
+            query, query_err = _normalize_play_query(str(payload.get("query") or "").strip())
             if join_only:
                 ch_name = str(getattr(voice_channel, "name", "") or "voice")
                 return {
@@ -870,6 +883,13 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                     "track": "",
                     "author": "",
                     "channel": ch_name,
+                    "request_id": str(payload.get("request_id") or ""),
+                }
+            if query_err == ONLY_YOUTUBE_VIDEO_URLS:
+                return {
+                    "ok": False,
+                    "status": "failed",
+                    "error": "поддерживаются только ссылки на видео YouTube",
                     "request_id": str(payload.get("request_id") or ""),
                 }
             if not query:

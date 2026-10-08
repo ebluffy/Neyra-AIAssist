@@ -24,8 +24,9 @@ lavalink:
       twitch: false
       vimeo: false
       nico: false
-      http: true
-      local: true
+      # Off: Discord play only allows YouTube watch URLs / ytsearch text (no icy:// / LAN SSRF).
+      http: false
+      local: false
     filters:
       volume: true
       equalizer: true

@@ -73,23 +73,40 @@ def main() -> int:
     assert route3 == "PLAY_MUSIC" and use3 is True, (route3, use3)
 
     from modules.discord.music import (
+        ONLY_YOUTUBE_VIDEO_URLS,
         _canonical_youtube_url_from_text,
+        _looks_like_url,
         _normalize_play_query,
         _youtube_video_id,
     )
 
     assert _normalize_play_query("включи <https://youtu.be/abc123XYZ>") == (
-        "https://www.youtube.com/watch?v=abc123XYZ"
+        "https://www.youtube.com/watch?v=abc123XYZ",
+        None,
     )
     assert _youtube_video_id("https://www.youtube.com/watch?v=LLhpBVfH2Zg&list=foo") == "LLhpBVfH2Zg"
     assert _youtube_video_id("https://www.youtube.com/shorts/AbCdEf12GhI") == "AbCdEf12GhI"
     assert _canonical_youtube_url_from_text("https://youtube.com.evil.example/watch?v=x") == ""
     assert _canonical_youtube_url_from_text("http://127.0.0.1/admin") == ""
-    assert _normalize_play_query("включи http://192.168.1.1/") == ""
-    assert _normalize_play_query("включи трамбалон колю в очко") == "трамбалон колю в очко"
-    assert _normalize_play_query("включи https://www.youtube.com/watch?v=LLhpBVfH2Zg") == (
-        "https://www.youtube.com/watch?v=LLhpBVfH2Zg"
+    assert _normalize_play_query("включи http://192.168.1.1/") == ("", ONLY_YOUTUBE_VIDEO_URLS)
+    assert _normalize_play_query("включи icy://127.0.0.1:8000/stream") == ("", ONLY_YOUTUBE_VIDEO_URLS)
+    assert _normalize_play_query("включи //192.168.1.1/x") == ("", ONLY_YOUTUBE_VIDEO_URLS)
+    assert _normalize_play_query("включи ftp://10.0.0.1/") == ("", ONLY_YOUTUBE_VIDEO_URLS)
+    assert _normalize_play_query("включи <http://127.0.0.1>") == ("", ONLY_YOUTUBE_VIDEO_URLS)
+    assert _normalize_play_query("включи https://soundcloud.com/artist/track") == (
+        "",
+        ONLY_YOUTUBE_VIDEO_URLS,
     )
+    assert _normalize_play_query("Playboi Carti") == ("Playboi Carti", None)
+    assert _normalize_play_query("включи") == ("", None)
+    assert _normalize_play_query("включи трамбалон колю в очко") == ("трамбалон колю в очко", None)
+    assert _normalize_play_query("включи https://www.youtube.com/watch?v=LLhpBVfH2Zg") == (
+        "https://www.youtube.com/watch?v=LLhpBVfH2Zg",
+        None,
+    )
+    assert _looks_like_url("icy://127.0.0.1/")
+    assert _looks_like_url("//192.168.1.1/x")
+    assert not _looks_like_url("трамбалон колю в очко")
 
     print("OK test_discord_music_intent_offline")
     return 0
