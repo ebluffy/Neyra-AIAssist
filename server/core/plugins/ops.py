@@ -6,6 +6,7 @@ import io
 import logging
 import re
 import shutil
+import threading
 import uuid
 import zipfile
 import zlib
@@ -15,6 +16,18 @@ from typing import Any
 import yaml
 
 logger = logging.getLogger("neyra.plugins.ops")
+
+_PLUGIN_FS_LOCKS: dict[str, threading.Lock] = {}
+_PLUGIN_FS_LOCKS_GUARD = threading.Lock()
+
+
+def _plugin_fs_lock(pid: str) -> threading.Lock:
+    with _PLUGIN_FS_LOCKS_GUARD:
+        lock = _PLUGIN_FS_LOCKS.get(pid)
+        if lock is None:
+            lock = threading.Lock()
+            _PLUGIN_FS_LOCKS[pid] = lock
+        return lock
 
 _PROTECTED_PLUGIN_IDS = frozenset({"discord"})
 _ALLOWED_CONFIG_SUFFIXES = frozenset({".yaml", ".yml", ".json", ".toml", ".ini", ".conf", ".properties"})
@@ -169,6 +182,13 @@ def _cleanup_stale_staging(modules_dir: Path, pid: str) -> None:
             shutil.rmtree(leftover, ignore_errors=True)
 
 
+def _cleanup_stale_old(modules_dir: Path, pid: str) -> None:
+    """Drop previous replace backups so at most one .{pid}.old-* remains after success."""
+    for leftover in modules_dir.glob(f".{pid}.old-*"):
+        if leftover.is_dir():
+            shutil.rmtree(leftover, ignore_errors=True)
+
+
 def install_plugin_from_zip(
     modules_dir: Path,
     zip_bytes: bytes,
@@ -181,6 +201,37 @@ def install_plugin_from_zip(
     modules_dir = modules_dir.resolve()
     modules_dir.mkdir(parents=True, exist_ok=True)
     try:
+        zf_probe = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except zipfile.BadZipFile as e:
+        raise ValueError("invalid zip archive") from e
+    with zf_probe:
+        _assert_zip_safe(zf_probe)
+        prefix, manifest = _find_plugin_yaml_in_zip(zf_probe)
+        pid = normalize_plugin_id(str(manifest.get("id") or "").strip())
+        if not pid and prefix:
+            pid = normalize_plugin_id(prefix.strip("/").split("/")[-1])
+    if not is_safe_plugin_id(pid):
+        raise ValueError("invalid or missing plugin id in plugin.yaml")
+    if pid in _PROTECTED_PLUGIN_IDS:
+        raise ValueError(f"plugin '{pid}' is protected and cannot be uploaded")
+
+    with _plugin_fs_lock(pid):
+        return _install_plugin_from_zip_locked(
+            modules_dir,
+            zip_bytes,
+            pid=pid,
+            replace=replace,
+        )
+
+
+def _install_plugin_from_zip_locked(
+    modules_dir: Path,
+    zip_bytes: bytes,
+    *,
+    pid: str,
+    replace: bool,
+) -> dict[str, Any]:
+    try:
         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
     except zipfile.BadZipFile as e:
         raise ValueError("invalid zip archive") from e
@@ -188,19 +239,10 @@ def install_plugin_from_zip(
     staging: Path | None = None
     old_dir: Path | None = None
     target: Path | None = None
-    pid = ""
     try:
         with zf:
             _assert_zip_safe(zf)
-            prefix, manifest = _find_plugin_yaml_in_zip(zf)
-            pid = normalize_plugin_id(str(manifest.get("id") or "").strip())
-            if not pid:
-                if prefix:
-                    pid = normalize_plugin_id(prefix.strip("/").split("/")[-1])
-            if not is_safe_plugin_id(pid):
-                raise ValueError("invalid or missing plugin id in plugin.yaml")
-            if pid in _PROTECTED_PLUGIN_IDS:
-                raise ValueError(f"plugin '{pid}' is protected and cannot be uploaded")
+            prefix, _manifest = _find_plugin_yaml_in_zip(zf)
             target = (modules_dir / pid).resolve()
             if modules_dir not in target.parents and target != modules_dir / pid:
                 raise ValueError("invalid target path")
@@ -208,6 +250,7 @@ def install_plugin_from_zip(
                 raise FileExistsError(pid)
 
             _cleanup_stale_staging(modules_dir, pid)
+            _cleanup_stale_old(modules_dir, pid)
             token = uuid.uuid4().hex[:10]
             staging = modules_dir / f".{pid}.staging-{token}"
             if staging.exists():
@@ -230,12 +273,9 @@ def install_plugin_from_zip(
                     raise ValueError("corrupt zip member") from e
                 if len(data) > MAX_UNCOMPRESSED_BYTES:
                     raise ValueError("zip member too large after inflate")
-                # Write plugin.yaml disabled immediately (never leave enabled:true on disk).
-                if Path(rel).name in ("plugin.yaml", "plugin.yml"):
-                    try:
-                        _write_disabled_plugin_yaml(dest, pid, data)
-                    except Exception:
-                        dest.write_bytes(data)
+                # Only the module-root manifest — nested plugin.yaml stays as in the zip.
+                if rel in ("plugin.yaml", "plugin.yml"):
+                    _write_disabled_plugin_yaml(dest, pid, data)
                 else:
                     dest.write_bytes(data)
             py = staging / "plugin.yaml"
@@ -255,13 +295,8 @@ def install_plugin_from_zip(
             target.rename(old_dir)
         staging.rename(target)
         staging = None
-        if old_dir is not None:
-            # Preserve already copied into target; drop .old best-effort only.
-            try:
-                shutil.rmtree(old_dir)
-            except OSError as e:
-                logger.warning("could not remove plugin backup %s: %s", old_dir, e)
-            old_dir = None
+        # Keep .{pid}.old-* as last backup (AR-24); cleaned on next upload under lock.
+        old_dir = None
         return {"plugin_id": pid, "path": str(target), "replaced": replaced}
     except Exception:
         if staging is not None and staging.exists():
@@ -270,7 +305,6 @@ def install_plugin_from_zip(
             if target is not None and not target.exists():
                 old_dir.rename(target)
             else:
-                # Never delete .old after swap — it is the user's last backup (AR-20).
                 logger.warning(
                     "plugin install failed after swap; backup left at %s",
                     old_dir,
@@ -284,12 +318,15 @@ def delete_plugin_dir(modules_dir: Path, plugin_id: str) -> None:
         raise ValueError("invalid plugin id")
     if pid in _PROTECTED_PLUGIN_IDS:
         raise ValueError(f"plugin '{pid}' is protected and cannot be deleted")
-    target = (modules_dir.resolve() / pid).resolve()
-    if modules_dir.resolve() not in target.parents:
-        raise ValueError("invalid plugin path")
-    if not target.is_dir():
-        raise FileNotFoundError(pid)
-    shutil.rmtree(target)
+    with _plugin_fs_lock(pid):
+        target = (modules_dir.resolve() / pid).resolve()
+        if modules_dir.resolve() not in target.parents:
+            raise ValueError("invalid plugin path")
+        if not target.is_dir():
+            raise FileNotFoundError(pid)
+        shutil.rmtree(target)
+        _cleanup_stale_staging(modules_dir.resolve(), pid)
+        _cleanup_stale_old(modules_dir.resolve(), pid)
 
 
 def tail_text_file(path: Path, *, max_lines: int = 200, max_bytes: int = 512_000) -> str:

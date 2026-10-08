@@ -926,6 +926,56 @@ def check_plugin_ops_and_webhooks() -> list[str]:
         errs.append(f"replace must preserve local config.yaml, got {cfg_txt!r}")
     if not (modules_tmp / "ar_tmp_mod" / "logs" / "module.log").is_file():
         errs.append("replace must preserve logs/")
+    olds = list(modules_tmp.glob(".ar_tmp_mod.old-*"))
+    if len(olds) != 1:
+        errs.append(f"successful replace must leave exactly one .old backup, got {olds}")
+    ops.install_plugin_from_zip(modules_tmp, z2, replace=True)
+    olds2 = list(modules_tmp.glob(".ar_tmp_mod.old-*"))
+    if len(olds2) != 1:
+        errs.append(f"second replace must still leave exactly one .old, got {olds2}")
+
+    # Nested plugin.yaml must stay byte-identical (AR-25).
+    nested_raw = b"foo: bar\nkeep: true\n"
+    z_nested = _make_zip("ar_tmp_mod", enabled=True, extra={"sub/plugin.yaml": nested_raw})
+    ops.install_plugin_from_zip(modules_tmp, z_nested, replace=True)
+    nested_path = modules_tmp / "ar_tmp_mod" / "sub" / "plugin.yaml"
+    if not nested_path.is_file() or nested_path.read_bytes() != nested_raw:
+        errs.append(f"nested plugin.yaml must be unchanged, got {nested_path.read_bytes()!r}")
+    root_py = yaml.safe_load((modules_tmp / "ar_tmp_mod" / "plugin.yaml").read_text(encoding="utf-8"))
+    if not isinstance(root_py, dict) or root_py.get("enabled") is not False:
+        errs.append(f"root plugin.yaml must be disabled after install: {root_py}")
+
+    # Concurrent replace under lock (AR-23).
+    import threading
+
+    (modules_tmp / "ar_tmp_mod" / "data").mkdir(exist_ok=True)
+    (modules_tmp / "ar_tmp_mod" / "data" / "keep.bin").write_bytes(b"keep-me")
+    z_conc = _make_zip(
+        "ar_tmp_mod",
+        enabled=True,
+        extra={"extra.txt": b"hello-concurrent\n", "config.yaml": b"from_zip: 1\n"},
+    )
+    conc_errs: list[str] = []
+
+    def _conc_worker() -> None:
+        try:
+            ops.install_plugin_from_zip(modules_tmp, z_conc, replace=True)
+        except Exception as e:
+            conc_errs.append(f"{type(e).__name__}: {e}")
+
+    threads = [threading.Thread(target=_conc_worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    if conc_errs:
+        errs.append(f"concurrent replace failed: {conc_errs}")
+    if not (modules_tmp / "ar_tmp_mod" / "extra.txt").is_file():
+        errs.append("concurrent replace missing extra.txt from zip")
+    if not (modules_tmp / "ar_tmp_mod" / "data" / "keep.bin").is_file():
+        errs.append("concurrent replace lost preserved data/")
+    if len(list(modules_tmp.glob(".ar_tmp_mod.old-*"))) != 1:
+        errs.append("concurrent replace must leave exactly one .old")
 
     # --- unit: copy-preserve failure before swap leaves live data (AR-20) ---
     plug = modules_tmp / "ar_tmp_mod"

@@ -52,10 +52,49 @@ def _truncate(s: str, n: int = 60) -> str:
     return text[: n - 1] + "…"
 
 
+_MEDIA_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+
+
+def _extract_media_url(text: str) -> str:
+    """Prefer a direct http(s) URL when the user pasted a link (Discord may wrap <>)."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    m = _MEDIA_URL_RE.search(raw)
+    if not m:
+        return ""
+    return m.group(0).rstrip(").,]>\"'")
+
+
+def _youtube_video_id(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return ""
+    host = (parsed.netloc or "").lower()
+    path = parsed.path or ""
+    if "youtu.be" in host:
+        return path.lstrip("/").split("/")[0].split("?")[0]
+    if "youtube.com" in host or "youtube-nocookie.com" in host:
+        from urllib.parse import parse_qs
+
+        qs = parse_qs(parsed.query or "")
+        if qs.get("v"):
+            return str(qs["v"][0] or "")
+        parts = [p for p in path.split("/") if p]
+        if len(parts) >= 2 and parts[0] in ("shorts", "embed", "live", "v"):
+            return parts[1]
+    return ""
+
+
 def _normalize_play_query(raw: str) -> str:
     q = (raw or "").strip()
     if not q:
         return ""
+    # Direct media URL wins over command words around it.
+    url = _extract_media_url(q)
+    if url:
+        return url
     # Remove command noise so Lavalink search gets a clean artist/title query.
     noise_patterns = (
         r"^(вкл\w*|вруби|поставь|заиграй|play)\s+",
@@ -130,19 +169,49 @@ async def _connect_voice_player(
 
 
 async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> list[Any]:
-    """Use strict YouTube source to avoid LavaSrc provider rewrite."""
-    try:
-        source = getattr(getattr(wavelink_mod, "TrackSource", None), "YouTube", None)
+    """Resolve playables. Direct URLs must not use TrackSource.YouTube (ytsearch:URL → empty)."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    is_url = bool(re.match(r"^https?://", q, flags=re.IGNORECASE))
+    timeout = 20.0 if is_url else 7.0
+
+    async def _search(raw: str, *, source: Any = None) -> list[Any]:
         if source is not None:
             tracks = await asyncio.wait_for(
-                wavelink_mod.Playable.search(query, source=source, node=node),
-                timeout=7.0,
+                wavelink_mod.Playable.search(raw, source=source, node=node),
+                timeout=timeout,
             )
-            return list(tracks or [])
-        tracks = await asyncio.wait_for(wavelink_mod.Playable.search(query, node=node), timeout=7.0)
+        else:
+            tracks = await asyncio.wait_for(
+                wavelink_mod.Playable.search(raw, node=node),
+                timeout=timeout,
+            )
         return list(tracks or [])
+
+    try:
+        if is_url:
+            tracks = await _search(q)
+            if tracks:
+                return tracks
+            vid = _youtube_video_id(q)
+            if vid:
+                canon = f"https://www.youtube.com/watch?v={vid}"
+                if canon != q:
+                    tracks = await _search(canon)
+                    if tracks:
+                        return tracks
+            logger.warning("discord.music url resolve empty | query=%s", q)
+            return []
+
+        source = getattr(getattr(wavelink_mod, "TrackSource", None), "YouTube", None)
+        if source is not None:
+            tracks = await _search(q, source=source)
+            if tracks:
+                return tracks
+        return await _search(q)
     except Exception as ex:  # pragma: no cover
-        logger.warning("discord.music youtube search failed | query=%s error=%s", query, ex)
+        logger.warning("discord.music youtube search failed | query=%s error=%s", q, ex)
         return []
 
 
