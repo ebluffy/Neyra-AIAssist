@@ -779,7 +779,8 @@ export function WebhooksScreen() {
                   <Save size={14} /> {saving ? 'Сохранение…' : 'Сохранить'}
                 </Button>
               </div>
-            </form>          </div>
+            </form>
+          </div>
 
           <div className="card">
             <div className="card-header">

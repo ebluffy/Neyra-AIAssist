@@ -22,8 +22,6 @@ vi.mock('../api', async () => {
       return { ok: true, data: {} }
     }),
     apiPost: vi.fn(async () => ({ ok: true, data: {} })),
-    getStoredApiToken: () => '',
-    setToken: vi.fn(),
   }
 })
 

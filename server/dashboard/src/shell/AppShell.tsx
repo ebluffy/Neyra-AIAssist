@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { apiGet, clearSessionToken, getSessionToken } from '../api'
 import type { ApiEnvelope } from '../api'
-import { applyTheme, getStoredTheme, type Theme } from '../lib/theme'
+import { getStoredTheme, toggleTheme, type Theme } from '../lib/theme'
 import { getSidebarCollapsed, setSidebarCollapsed } from '../lib/ui-prefs'
 import { CommandPalette } from '../components/CommandPalette'
 import { ConnectionBanner } from '../components/ConnectionBanner'
@@ -89,9 +89,7 @@ export function AppShell() {
   }, [])
 
   function onThemeToggle() {
-    const flipped: Theme = theme === 'light' ? 'dark' : 'light'
-    applyTheme(flipped)
-    setTheme(flipped)
+    setTheme(toggleTheme())
   }
 
   function toggleCollapsed() {

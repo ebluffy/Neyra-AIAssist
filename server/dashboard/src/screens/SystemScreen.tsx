@@ -12,6 +12,7 @@ import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { collectHealthIssues, healthBlockReasons, healthTileState } from '../lib/health'
 import { waitForCoreRestart } from '../lib/wait-for-core-restart'
 
 type SystemDanger = { kind: 'restart' } | { kind: 'restore'; name: string }
@@ -53,68 +54,6 @@ function formatUptime(sec: unknown): string {
 function str(v: unknown): string {
   if (v == null || v === '') return '—'
   return String(v)
-}
-
-type HealthBlockKey = 'backend' | 'storage' | 'integrations' | 'self_healing'
-
-function healthBlockReasons(health: HealthData | null, key: HealthBlockKey): string[] {
-  if (!health) return []
-  const block = health[key] as Record<string, unknown> | undefined
-  if (!block || typeof block !== 'object') return []
-  if (block.ok !== false) return []
-  if (key === 'backend') {
-    const out: string[] = []
-    const providers = block.providers
-    if (Array.isArray(providers)) {
-      for (const p of providers) {
-        if (!p || typeof p !== 'object') continue
-        const row = p as Record<string, unknown>
-        if (row.ok === false) {
-          const prov = String(row.provider ?? '?')
-          out.push(row.error ? `LLM ${prov}: ${String(row.error)}` : `LLM ${prov}: HTTP ${String(row.status_code ?? '—')}`)
-        }
-      }
-    }
-    if (!out.length && block.error) out.push(String(block.error))
-    if (!out.length) out.push('проверка не прошла')
-    return out
-  }
-  if (key === 'storage') {
-    const missing = Array.isArray(block.missing) ? block.missing.map(String) : []
-    if (missing.length) return [`нет ${missing.join(', ')}`]
-    if (block.error) return [String(block.error)]
-    return ['ошибка']
-  }
-  if (key === 'integrations') {
-    const list = Array.isArray(block.issues) ? block.issues.map(String) : []
-    if (list.length) return list
-    if (block.error) return [String(block.error)]
-    return ['ошибка']
-  }
-  if (block.error) return [String(block.error)]
-  return ['ошибка']
-}
-
-function collectHealthIssues(health: HealthData | null): string[] {
-  if (!health) return []
-  const issues: string[] = []
-  for (const msg of healthBlockReasons(health, 'backend')) issues.push(msg.startsWith('LLM ') ? msg : `LLM-бэкенд: ${msg}`)
-  for (const msg of healthBlockReasons(health, 'storage')) issues.push(`Хранилище: ${msg}`)
-  for (const msg of healthBlockReasons(health, 'integrations')) {
-    issues.push(msg.includes(':') ? `Интеграции: ${msg}` : `Интеграции: ${msg}`)
-  }
-  for (const msg of healthBlockReasons(health, 'self_healing')) {
-    issues.push(msg === 'ошибка' ? 'Самолечение модулей: ошибка' : `Самолечение: ${msg}`)
-  }
-  return issues
-}
-
-function healthTileState(block: unknown): 'ok' | 'warn' | 'unknown' {
-  if (!block || typeof block !== 'object') return 'unknown'
-  const ok = (block as Record<string, unknown>).ok
-  if (ok === true) return 'ok'
-  if (ok === false) return 'warn'
-  return 'unknown'
 }
 
 function Kv({ label, value }: { label: string; value: string }) {
@@ -279,6 +218,7 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
   }
 
   async function runBackup() {
+    dismissRestartCard()
     setBusy(true)
     setStatus('')
     setError(null)
@@ -299,6 +239,7 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
 
   async function doRestoreBackup(name: string) {
     setDanger(null)
+    dismissRestartCard()
     setBusy(true)
     setStatus('Готовлю восстановление…')
     setError(null)
@@ -406,6 +347,7 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
           <Button
             disabled={loading}
             onClick={() => {
+              dismissRestartCard()
               void load()
               if (tab === 'health') void loadHealth()
               if (tab === 'backup') void loadBackups()
@@ -418,8 +360,8 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
           </Button>
         }
       />
-      {!showRestartCard && error ? <InlineFeedback tone="error">{error}</InlineFeedback> : null}
-      {!showRestartCard && status ? <InlineFeedback tone="success">{status}</InlineFeedback> : null}
+      {!restartBusy && error ? <InlineFeedback tone="error">{error}</InlineFeedback> : null}
+      {!restartBusy && status ? <InlineFeedback tone="success">{status}</InlineFeedback> : null}
       {showRestartCard ? (
         <RestartProgress
           message={restartMsg ?? undefined}
@@ -604,7 +546,16 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
               <EmptyState icon={Activity} title="Нет данных" description="Не удалось получить /v1/health." />
             )}
             <div>
-              <Button disabled={healthLoading} onClick={() => void loadHealth()} size="sm" type="button" variant="secondary">
+              <Button
+                disabled={healthLoading}
+                onClick={() => {
+                  dismissRestartCard()
+                  void loadHealth()
+                }}
+                size="sm"
+                type="button"
+                variant="secondary"
+              >
                 {healthLoading ? 'Проверяю…' : 'Проверить снова'}
               </Button>
             </div>
@@ -618,7 +569,16 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
             <div className="row-between">
               <p className="hint">Локальные архивы бэкапа (роль maint и выше).</p>
               <div className="row">
-                <Button disabled={backupLoading} onClick={() => void loadBackups()} size="sm" type="button" variant="secondary">
+                <Button
+                  disabled={backupLoading}
+                  onClick={() => {
+                    dismissRestartCard()
+                    void loadBackups()
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
                   {backupLoading ? 'Загрузка…' : 'Обновить список'}
                 </Button>
                 <Button disabled={busy || restartBusy} onClick={() => void runBackup()} type="button">

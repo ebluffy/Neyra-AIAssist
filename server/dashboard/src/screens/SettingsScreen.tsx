@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { KeyRound, Loader2, SlidersHorizontal, Sparkles } from 'lucide-react'
+import { KeyRound, Loader2, Palette, SlidersHorizontal, Sparkles } from 'lucide-react'
 import { useBlocker } from 'react-router-dom'
-import { apiGet, apiPost, getStoredApiToken, setToken } from '../api'
+import { apiGet, apiPost, clearSessionToken, setSessionToken } from '../api'
 import type { ApiEnvelope } from '../api'
 import { Button } from '../components/ui/button'
 import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { getThemePreference, setThemePreference, type ThemePreference } from '../lib/theme'
+import { getDensity, setDensity, type Density } from '../lib/ui-prefs'
 
 type FieldDef = { key: string; label: string; kind?: 'text' | 'bool' | 'provider' }
 
@@ -73,7 +75,6 @@ const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
       { key: 'llm.providers.openrouter.base_url', label: 'Базовый URL OpenRouter' },
       { key: 'llm.providers.aihope.base_url', label: 'Базовый URL AIHope' },
       { key: 'llm.provider', label: 'Провайдер по умолчанию', kind: 'provider' },
-      { key: 'llm.base_url', label: 'Устаревший базовый URL' },
     ],
   },
   {
@@ -117,6 +118,33 @@ const NUMBER_KEYS = new Set([
   'health_monitor.interval_seconds',
 ])
 
+/** Fields that apply only after soft restart (hot-reload does not cover them). */
+const RESTART_KEYS = new Set([
+  'logging.level',
+  'health_monitor.enabled',
+  'health_monitor.interval_seconds',
+  'agent.fast_path.enabled',
+])
+
+async function rotateAccessKey(currentKey: string, newKey: string): Promise<string> {
+  const r = await fetch('/v1/dashboard/auth/rotate', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ current_key: currentKey, new_key: newKey }),
+  })
+  const j = (await r.json()) as {
+    ok?: boolean
+    data?: { session_token?: string }
+    error?: { message?: string }
+  }
+  if (!r.ok || j.ok === false) {
+    throw new Error(j.error?.message || `HTTP ${r.status}`)
+  }
+  const session = j.data?.session_token?.trim()
+  if (!session) throw new Error('Сервер не выдал session_token')
+  return session
+}
+
 function serialize(v: unknown): string {
   if (v == null) return ''
   if (typeof v === 'boolean') return v ? 'true' : 'false'
@@ -135,7 +163,6 @@ function parseValue(key: string, raw: string): unknown {
 }
 
 export function SettingsScreen() {
-  const [token, setTokenInput] = useState(getStoredApiToken())
   const [tab, setTab] = useState(TABS[0].id)
   const [values, setValues] = useState<Record<string, string>>({})
   const [initial, setInitial] = useState<Record<string, string>>({})
@@ -148,6 +175,13 @@ export function SettingsScreen() {
   const [softTitle, setSoftTitle] = useState('')
   const [softDescription, setSoftDescription] = useState('')
   const softResolveRef = useRef<((ok: boolean) => void) | null>(null)
+  const [currentKey, setCurrentKey] = useState('')
+  const [newKey, setNewKey] = useState('')
+  const [newKey2, setNewKey2] = useState('')
+  const [accessBusy, setAccessBusy] = useState(false)
+  const [logoutAllOpen, setLogoutAllOpen] = useState(false)
+  const [themePref, setThemePref] = useState<ThemePreference>(() => getThemePreference())
+  const [density, setDensityState] = useState<Density>(() => getDensity())
 
   function softConfirm(title: string, description: string): Promise<boolean> {
     setSoftTitle(title)
@@ -195,10 +229,11 @@ export function SettingsScreen() {
     () => active.fields.map((f) => f.key).filter((k) => values[k] !== initial[k]),
     [active, values, initial],
   )
-  const anyDirty = useMemo(
-    () => allKeys.some((k) => values[k] !== initial[k]),
+  const allDirtyKeys = useMemo(
+    () => allKeys.filter((k) => values[k] !== initial[k]),
     [allKeys, values, initial],
   )
+  const anyDirty = allDirtyKeys.length > 0
 
   useEffect(() => {
     if (!anyDirty) return
@@ -256,19 +291,24 @@ export function SettingsScreen() {
     return cur
   }, [providers, values])
 
-  async function applyRuntime() {
+  async function applyRuntime(keys: string[]) {
     setError(null)
     setStatus('')
     setSaving(true)
     try {
       const updates: Record<string, unknown> = {}
-      for (const k of dirtyKeys) updates[k] = parseValue(k, values[k] ?? '')
+      for (const k of keys) updates[k] = parseValue(k, values[k] ?? '')
       if (!Object.keys(updates).length) {
-        setStatus('Нет изменений в этой вкладке')
+        setStatus('Нет изменений')
         return
       }
       await apiPost<ApiEnvelope<unknown>>('/v1/config/update', { updates })
-      setStatus(`Сохранено на диск и применено: ${Object.keys(updates).length} ключ(ей). LLM пересобран при смене моделей/провайдера.`)
+      const needRestart = keys.some((k) => RESTART_KEYS.has(k))
+      setStatus(
+        needRestart
+          ? `Сохранено ${Object.keys(updates).length} ключ(ей). Часть полей требует мягкого рестарта.`
+          : `Сохранено на диск и применено: ${Object.keys(updates).length} ключ(ей). LLM пересобран при смене моделей/провайдера.`,
+      )
       await load()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -281,6 +321,12 @@ export function SettingsScreen() {
     }
   }
 
+  function discardDirty() {
+    setValues({ ...initial })
+    setStatus('Изменения отменены')
+    setError(null)
+  }
+
   function renderField(f: FieldDef) {
     const commonLabel = (
       <span className="label-text">
@@ -288,6 +334,11 @@ export function SettingsScreen() {
         <span style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--muted)', fontWeight: 400 }}>
           ({f.key})
         </span>
+        {RESTART_KEYS.has(f.key) ? (
+          <span className="badge badge-warn" style={{ marginLeft: 6, fontSize: '0.7rem' }}>
+            нужен перезапуск
+          </span>
+        ) : null}
       </span>
     )
     if (BOOL_KEYS.has(f.key) || f.kind === 'bool') {
@@ -338,41 +389,148 @@ export function SettingsScreen() {
   }
 
   return (
-    <div className="page-content stack">
-      <PageHeader title="Настройки" subtitle="Токен доступа и runtime-конфиг по разделам" />
+    <div className="page-content stack settings-page">
+      <PageHeader title="Настройки" subtitle="Доступ, внешний вид и runtime-конфиг" />
 
-      <div className="card">
+      <nav aria-label="Разделы настроек" className="settings-anchors">
+        <a className="settings-anchor" href="#settings-access">
+          Доступ
+        </a>
+        <a className="settings-anchor" href="#settings-appearance">
+          Внешний вид
+        </a>
+        <a className="settings-anchor" href="#settings-runtime">
+          Конфиг
+        </a>
+      </nav>
+
+      <div className="card" id="settings-access">
         <div className="card-header">
-          <KeyRound size={15} className="card-icon" />
-          <span className="card-title">Токен API</span>
+          <KeyRound size={15} className="card-icon card-icon-pink" />
+          <span className="card-title">Доступ к дашборду</span>
         </div>
-        <label className="label">
-          <span className="label-text">Токен API (только в памяти вкладки)</span>
-          <input
-            autoComplete="off"
-            className="input input-mono"
-            onChange={(e) => setTokenInput(e.target.value)}
-            type="password"
-            value={token}
-          />
-        </label>
-        <p className="hint" style={{ marginTop: '0.45rem' }}>
-          Не пишется в localStorage. Сессия входа — в sessionStorage.
+        <p className="hint" style={{ marginBottom: '0.75rem' }}>
+          Смена ключа входа отзывает все сессии. Новый ключ ≥ 32 символов. После rotate сессия этой вкладки
+          обновится автоматически.
         </p>
-        <div style={{ marginTop: '0.75rem' }}>
-          <Button
-            onClick={() => {
-              setToken(token)
-              setStatus('Токен в памяти')
-            }}
-            type="button"
-          >
-            Применить токен
-          </Button>
+        <div className="stack-sm">
+          <label className="label">
+            <span className="label-text">Текущий ключ</span>
+            <input
+              autoComplete="current-password"
+              className="input input-mono"
+              onChange={(e) => setCurrentKey(e.target.value)}
+              type="password"
+              value={currentKey}
+            />
+          </label>
+          <label className="label">
+            <span className="label-text">Новый ключ</span>
+            <input
+              autoComplete="new-password"
+              className="input input-mono"
+              onChange={(e) => setNewKey(e.target.value)}
+              type="password"
+              value={newKey}
+            />
+          </label>
+          <label className="label">
+            <span className="label-text">Повтор нового ключа</span>
+            <input
+              autoComplete="new-password"
+              className="input input-mono"
+              onChange={(e) => setNewKey2(e.target.value)}
+              type="password"
+              value={newKey2}
+            />
+          </label>
+          <div className="row" style={{ flexWrap: 'wrap' }}>
+            <Button
+              disabled={accessBusy}
+              onClick={() => {
+                void (async () => {
+                  setError(null)
+                  setStatus('')
+                  if (newKey !== newKey2) {
+                    setError('Новый ключ и повтор не совпадают')
+                    return
+                  }
+                  if (newKey.trim().length < 32) {
+                    setError('Новый ключ должен быть не короче 32 символов')
+                    return
+                  }
+                  setAccessBusy(true)
+                  try {
+                    const session = await rotateAccessKey(currentKey, newKey)
+                    setSessionToken(session)
+                    setCurrentKey('')
+                    setNewKey('')
+                    setNewKey2('')
+                    setStatus('Ключ доступа сменён. Все старые сессии отозваны.')
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e))
+                  } finally {
+                    setAccessBusy(false)
+                  }
+                })()
+              }}
+              type="button"
+            >
+              {accessBusy ? '…' : 'Сменить ключ доступа'}
+            </Button>
+            <Button
+              disabled={accessBusy}
+              onClick={() => setLogoutAllOpen(true)}
+              type="button"
+              variant="warn"
+            >
+              Выйти на всех устройствах
+            </Button>
+          </div>
         </div>
       </div>
 
-      <div className="card">
+      <div className="card" id="settings-appearance">
+        <div className="card-header">
+          <Palette size={15} className="card-icon card-icon-cyan" />
+          <span className="card-title">Внешний вид</span>
+        </div>
+        <div className="grid-2">
+          <label className="label">
+            <span className="label-text">Тема</span>
+            <select
+              className="select"
+              onChange={(e) => {
+                const pref = e.target.value as ThemePreference
+                setThemePref(pref)
+                setThemePreference(pref)
+              }}
+              value={themePref}
+            >
+              <option value="system">Системная</option>
+              <option value="dark">Тёмная</option>
+              <option value="light">Светлая</option>
+            </select>
+          </label>
+          <label className="label">
+            <span className="label-text">Плотность</span>
+            <select
+              className="select"
+              onChange={(e) => {
+                const d = e.target.value as Density
+                setDensityState(d)
+                setDensity(d)
+              }}
+              value={density}
+            >
+              <option value="compact">Компактная</option>
+              <option value="comfortable">Свободная</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div className="card" id="settings-runtime">
         <div className="card-header">
           <SlidersHorizontal size={15} className="card-icon card-icon-pink" />
           <span className="card-title">Runtime-конфиг</span>
@@ -406,7 +564,11 @@ export function SettingsScreen() {
           <div className="stack" style={{ marginTop: '0.85rem' }}>
             <div className="grid-2">{active.fields.map((f) => renderField(f))}</div>
             <div className="row">
-              <Button disabled={saving || dirtyKeys.length === 0} onClick={() => void applyRuntime()} type="button">
+              <Button
+                disabled={saving || dirtyKeys.length === 0}
+                onClick={() => void applyRuntime(dirtyKeys)}
+                type="button"
+              >
                 {saving ? <Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={15} />}
                 Применить вкладку
               </Button>
@@ -420,6 +582,23 @@ export function SettingsScreen() {
         {status && <InlineFeedback tone="success">{status}</InlineFeedback>}
       </div>
 
+      {anyDirty ? (
+        <div aria-live="polite" className="settings-dirty-bar" role="status">
+          <span>
+            Изменено {allDirtyKeys.length}{' '}
+            {allDirtyKeys.length === 1 ? 'поле' : allDirtyKeys.length < 5 ? 'поля' : 'полей'}
+          </span>
+          <div className="row">
+            <Button disabled={saving} onClick={discardDirty} size="sm" type="button" variant="secondary">
+              Отменить
+            </Button>
+            <Button disabled={saving} onClick={() => void applyRuntime(allDirtyKeys)} size="sm" type="button">
+              {saving ? '…' : 'Сохранить'}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <DangerConfirmDialog
         busy={false}
         confirmLabel="Уйти"
@@ -429,6 +608,34 @@ export function SettingsScreen() {
         onConfirm={() => finishSoft(true)}
         open={softOpen}
         title={softTitle}
+      />
+
+      <DangerConfirmDialog
+        busy={accessBusy}
+        confirmLabel="Выйти везде"
+        confirmPhrase="ВЫЙТИ"
+        description="Все session-токены дашборда будут отозваны, включая эту вкладку. Потребуется войти снова."
+        onCancel={() => !accessBusy && setLogoutAllOpen(false)}
+        onConfirm={() => {
+          void (async () => {
+            setAccessBusy(true)
+            setError(null)
+            try {
+              await apiPost<ApiEnvelope<{ revoked?: number }>>('/v1/dashboard/auth/logout-all', {})
+              clearSessionToken()
+              setLogoutAllOpen(false)
+              setStatus('Все сессии отозваны. Обнови страницу и войди снова.')
+              window.location.assign('/')
+            } catch (e) {
+              setError(e instanceof Error ? e.message : String(e))
+              setLogoutAllOpen(false)
+            } finally {
+              setAccessBusy(false)
+            }
+          })()
+        }}
+        open={logoutAllOpen}
+        title="Выйти на всех устройствах?"
       />
     </div>
   )
