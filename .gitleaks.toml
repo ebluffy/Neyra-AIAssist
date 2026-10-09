@@ -1,13 +1,6 @@
 title = "Neyra gitleaks"
 
 # Extend default rules — bare config without this disables all rules (AR-57).
+# Historical fake token from 640c57e is ignored via .gitleaksignore fingerprint (AR-71).
 [extend]
 useDefault = true
-
-# gitleaks 8.24.3 (CI) understands singular [allowlist], not [[allowlists]] (AR-68).
-# Also covered by .gitleaksignore fingerprint for the historical 640c57e finding.
-[allowlist]
-description = "Intentional redaction fixture file (not real credentials)"
-paths = [
-  '''server/tests/test_errors_and_trace\.py''',
-]

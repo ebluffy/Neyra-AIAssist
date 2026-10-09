@@ -97,6 +97,46 @@ def test_inbound_cancel_clears_inflight_for_retry(client, stub_agent, tmp_path):
     assert "hdr:stuck" not in (ws._state.get("inbound_dedup") or {})
 
 
+def test_inbound_owned_blocks_parallel_after_disk_ttl(app, stub_agent, monkeypatch):
+    """AR-70: process-owned inflight ignores short disk TTL; parallel same key → chat once."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from httpx import ASGITransport
+
+    from core.api import app as api_mod
+
+    monkeypatch.setattr(api_mod.WebhookStore, "_INBOUND_DEDUP_TTL_INFLIGHT_SEC", 0.05)
+
+    entered = asyncio.Event()
+
+    async def slow_chat(*_a, **_k):
+        entered.set()
+        await asyncio.sleep(0.25)  # longer than disk inflight TTL
+        return {"reply": "once"}
+
+    stub_agent.chat = AsyncMock(side_effect=slow_chat)
+    ep = f"ep-{uuid.uuid4().hex[:8]}"
+    path = f"/v1/webhooks/in/testprov/{ep}"
+    body = {"message": f"slow-{uuid.uuid4().hex}", "username": "u"}
+    headers = {"Idempotency-Key": f"ik-{uuid.uuid4().hex}"}
+
+    async def _run() -> None:
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            t1 = asyncio.create_task(ac.post(path, json=body, headers=headers))
+            await asyncio.wait_for(entered.wait(), timeout=2.0)
+            await asyncio.sleep(0.12)  # past disk TTL; ownership must still block
+            t2 = asyncio.create_task(ac.post(path, json=body, headers=headers))
+            r1, r2 = await asyncio.gather(t1, t2)
+            assert r1.status_code == 200, r1.text
+            assert r2.status_code == 409, r2.text
+            assert stub_agent.chat.await_count == 1
+
+    asyncio.run(_run())
+
+
 def test_restore_rejects_legacy_restore_literal(client, auth_headers, stub_backup):
     """AR-66: confirm must equal archive_name."""
     stub_backup.resolve_archive_path.return_value = Path("/tmp/x.zip")

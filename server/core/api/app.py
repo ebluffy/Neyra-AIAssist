@@ -679,6 +679,8 @@ class WebhookStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
         self._state = self._load()
+        # AR-70: keys this process currently owns — inflight without TTL.
+        self._owned_inbound: set[str] = set()
 
     _INBOUND_DEDUP_MAX = 500
 
@@ -895,7 +897,7 @@ class WebhookStore:
 
     _INBOUND_DEDUP_TTL_BODY_SEC = 600.0
     _INBOUND_DEDUP_TTL_HEADER_SEC = 86400.0
-    # AR-62: stuck inflight must expire quickly (retries after cancel/crash).
+    # Disk-only orphan inflight (should be rare after _load clears them).
     _INBOUND_DEDUP_TTL_INFLIGHT_SEC = 120.0
 
     def _inbound_ttl_seconds(self, key: str) -> float:
@@ -920,10 +922,10 @@ class WebhookStore:
             return False
 
     async def claim_inbound_dedup(self, key: str) -> tuple[str, dict[str, Any] | None]:
-        """AR-62: under lock — return (hit|inflight|proceed, payload?).
+        """AR-62/70: under lock — return (hit|inflight|proceed, payload?).
 
         hit: fresh completed cache (no reply field).
-        inflight: another request is processing this key.
+        inflight: another request is processing this key (owned in-memory = no TTL).
         proceed: caller reserved the key and must finish/release.
         """
         kid = str(key or "").strip()
@@ -935,22 +937,30 @@ class WebhookStore:
             if not isinstance(store, dict):
                 store = {}
                 self._state["inbound_dedup"] = store
+            # Process-owned claim never expires while this worker is alive (AR-70).
+            if kid in self._owned_inbound:
+                return ("inflight", None)
             row = store.get(kid)
             if isinstance(row, dict):
                 status = str(row.get("status") or "done")
-                if status == "inflight" and self._inbound_row_fresh(
-                    row, ttl_seconds=self._INBOUND_DEDUP_TTL_INFLIGHT_SEC
-                ):
-                    return ("inflight", None)
-                if status == "done" and self._inbound_row_fresh(row, ttl_seconds=ttl):
+                if status == "inflight":
+                    # Disk orphan only — short TTL; owned keys handled above.
+                    if self._inbound_row_fresh(
+                        row, ttl_seconds=self._INBOUND_DEDUP_TTL_INFLIGHT_SEC
+                    ):
+                        return ("inflight", None)
+                    store.pop(kid, None)
+                elif status == "done" and self._inbound_row_fresh(row, ttl_seconds=ttl):
                     data = row.get("data")
                     return ("hit", dict(data) if isinstance(data, dict) else {})
-                store.pop(kid, None)
+                else:
+                    store.pop(kid, None)
             store[kid] = {
                 "key": kid,
                 "status": "inflight",
                 "stored_at": _utc_now(),
             }
+            self._owned_inbound.add(kid)
             while len(store) > self._INBOUND_DEDUP_MAX:
                 oldest = next(iter(store))
                 if oldest == kid:
@@ -960,6 +970,7 @@ class WebhookStore:
                         break
                     oldest = keys[1] if keys[0] == kid else keys[0]
                 store.pop(oldest, None)
+                self._owned_inbound.discard(oldest)
             await self._save()
             return ("proceed", None)
 
@@ -969,6 +980,7 @@ class WebhookStore:
         if not kid:
             return
         async with self._lock:
+            self._owned_inbound.discard(kid)
             store = self._state.setdefault("inbound_dedup", {})
             if not isinstance(store, dict):
                 return
