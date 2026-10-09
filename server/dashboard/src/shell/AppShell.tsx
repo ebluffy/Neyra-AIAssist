@@ -1,24 +1,18 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import {
-  BookOpenText,
-  Brain,
+  ChevronsLeft,
+  ChevronsRight,
   Cpu,
-  Gauge,
   LogOut,
   Menu,
-  Moon,
-  PlugZap,
-  Server,
-  Settings,
-  Sun,
-  Webhook,
   X,
 } from 'lucide-react'
 import { apiGet, clearSessionToken, getSessionToken } from '../api'
 import type { ApiEnvelope } from '../api'
 import { tryAllowNavigation } from '../lib/navigation-guard'
 import { applyTheme, getStoredTheme, type Theme } from '../lib/theme'
+import { getSidebarCollapsed, setSidebarCollapsed } from '../lib/ui-prefs'
 import { DocsScreen } from '../screens/DocsScreen'
 import { MemoryScreen } from '../screens/MemoryScreen'
 import { ModulesScreen } from '../screens/ModulesScreen'
@@ -31,40 +25,34 @@ import { WebhooksScreen } from '../screens/WebhooksScreen'
 import { CommandPalette } from '../components/CommandPalette'
 import { ConnectionBanner } from '../components/ConnectionBanner'
 import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from '../components/ui/sheet'
+import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip'
 import { ErrorBoundary } from '../components/ErrorBoundary'
-
-const NAV = [
-  { to: '/status', label: 'Статус', icon: Gauge },
-  { to: '/modules', label: 'Модули', icon: PlugZap },
-  { to: '/memory', label: 'Память', icon: Brain },
-  { to: '/system', label: 'Система', icon: Server },
-  { to: '/webhooks', label: 'Вебхуки', icon: Webhook },
-  { to: '/settings', label: 'Настройки', icon: Settings },
-  { to: '/api-docs', label: 'Документация', icon: BookOpenText },
-]
-
-const TITLE_MAP: Array<{ match: (p: string) => boolean; title: string }> = [
-  { match: (p) => p === '/status' || p.startsWith('/status/'), title: 'Статус' },
-  { match: (p) => p === '/modules' || p.startsWith('/modules/'), title: 'Модули' },
-  { match: (p) => p === '/memory' || p.startsWith('/memory/'), title: 'Память' },
-  { match: (p) => p === '/system' || p.startsWith('/system/'), title: 'Система' },
-  { match: (p) => p === '/backups' || p.startsWith('/backups/'), title: 'Бэкапы' },
-  { match: (p) => p === '/webhooks' || p.startsWith('/webhooks/'), title: 'Вебхуки' },
-  { match: (p) => p === '/settings' || p.startsWith('/settings/'), title: 'Настройки' },
-  { match: (p) => p === '/api-docs' || p.startsWith('/api-docs/'), title: 'Документация' },
-  { match: (p) => p === '/__ui', title: 'UI kit' },
-]
+import { NAV_GROUPS, titleForPath } from './nav'
+import { Topbar } from './Topbar'
 
 /** Web-only shell (gate + browser session). Screens below are portable to desktop. */
 export function AppShell() {
-  const [open, setOpen] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
   const [mobile, setMobile] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => getSidebarCollapsed())
   const [apiVersion, setApiVersion] = useState<string>('')
   const [theme, setTheme] = useState<Theme>(() => getStoredTheme())
   const [logoutOpen, setLogoutOpen] = useState(false)
   const [logoutBusy, setLogoutBusy] = useState(false)
+  const [cmdOpen, setCmdOpen] = useState(false)
+  const [refreshPaused, setRefreshPaused] = useState(false)
+  const [lastOkAt, setLastOkAt] = useState<number | null>(null)
+  const [nowTick, setNowTick] = useState(() => Date.now())
   const location = useLocation()
   const navigate = useNavigate()
+
+  const { title, crumbs } = useMemo(() => titleForPath(location.pathname), [location.pathname])
 
   useEffect(() => {
     const check = () => setMobile(window.innerWidth < 768)
@@ -74,37 +62,28 @@ export function AppShell() {
   }, [])
 
   useEffect(() => {
-    if (!mobile) setOpen(false)
+    if (!mobile) setMobileOpen(false)
   }, [mobile])
 
   useEffect(() => {
-    setOpen(false)
+    setMobileOpen(false)
   }, [location.pathname])
 
   useEffect(() => {
-    if (!open || !mobile) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    window.addEventListener('keydown', onKey)
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      document.body.style.overflow = prev
-    }
-  }, [open, mobile])
+    document.title = `${title} · Neyra`
+  }, [title])
 
   useEffect(() => {
-    const item = TITLE_MAP.find((n) => n.match(location.pathname))
-    document.title = item ? `${item.title} · Neyra` : 'Не найдено · Neyra'
-  }, [location.pathname])
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [])
 
   useEffect(() => {
     void (async () => {
       try {
         const r = await apiGet<ApiEnvelope<{ api_version?: string; version?: string }>>('/v1/meta')
         setApiVersion(String(r.data.api_version ?? r.data.version ?? ''))
+        setLastOkAt(Date.now())
       } catch {
         setApiVersion('')
       }
@@ -129,80 +108,85 @@ export function AppShell() {
   }, [])
 
   function onThemeToggle() {
-    const next: Theme = theme === 'light' ? 'dark' : 'light'
-    applyTheme(next)
-    setTheme(next)
+    const flipped: Theme = theme === 'light' ? 'dark' : 'light'
+    applyTheme(flipped)
+    setTheme(flipped)
   }
 
-  return (
-    <div className="app-shell">
-      <a className="skip-link" href="#main-content">
-        К содержимому
-      </a>
-      {mobile && (
-        <button
-          aria-expanded={open}
-          aria-label="Открыть меню"
-          className="mobile-toggle"
-          onClick={() => setOpen(true)}
-          type="button"
-        >
-          <Menu aria-hidden size={20} strokeWidth={1.75} />
-        </button>
-      )}
-      {mobile && open && <div aria-hidden className="mobile-overlay" onClick={() => setOpen(false)} />}
+  function toggleCollapsed() {
+    const next = !collapsed
+    setCollapsed(next)
+    setSidebarCollapsed(next)
+  }
 
-      <aside className={`sidebar${open ? ' open' : ''}`} aria-label="Навигация">
-        <div className="sidebar-logo">
-          <div className="sidebar-logo-icon" aria-hidden>
-            <Cpu size={18} strokeWidth={1.75} />
+  async function go(to: string) {
+    if (!(await tryAllowNavigation())) return
+    setMobileOpen(false)
+    navigate(to)
+  }
+
+  const agoSec = lastOkAt == null ? null : Math.max(0, Math.floor((nowTick - lastOkAt) / 1000))
+
+  function renderNav(compact: boolean) {
+    return (
+      <nav className="sidebar-nav" aria-label="Разделы панели">
+        {NAV_GROUPS.map((group) => (
+          <div className="nav-group" key={group.id}>
+            {!compact ? <div className="nav-group-label">{group.label}</div> : null}
+            {group.items.map(({ to, label, icon: Icon }) => {
+              const link = (
+                <NavLink
+                  key={to}
+                  className={({ isActive }) => `nav-item${isActive ? ' active' : ''}${compact ? ' nav-item-icon-only' : ''}`}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    void go(to)
+                  }}
+                  to={to}
+                  title={compact ? label : undefined}
+                >
+                  <Icon aria-hidden className="nav-item-icon" size={18} strokeWidth={1.75} />
+                  {!compact ? <span>{label}</span> : <span className="sr-only">{label}</span>}
+                </NavLink>
+              )
+              if (!compact) return link
+              return (
+                <Tooltip key={to}>
+                  <TooltipTrigger asChild>{link}</TooltipTrigger>
+                  <TooltipContent side="right">{label}</TooltipContent>
+                </Tooltip>
+              )
+            })}
           </div>
+        ))}
+      </nav>
+    )
+  }
+
+  const sidebarInner = (opts: { compact: boolean; showClose?: boolean }) => (
+    <>
+      <div className="sidebar-logo">
+        <div className="sidebar-logo-icon" aria-hidden>
+          <Cpu size={18} strokeWidth={1.75} />
+        </div>
+        {!opts.compact ? (
           <div className="sidebar-logo-text">
             <span className="sidebar-logo-name">Neyra</span>
             <span className="sidebar-logo-sub">Панель управления</span>
           </div>
-          {mobile && (
-            <button aria-label="Закрыть меню" className="sidebar-close" onClick={() => setOpen(false)} type="button">
-              <X aria-hidden size={18} strokeWidth={1.75} />
-            </button>
-          )}
-        </div>
+        ) : null}
+        {opts.showClose ? (
+          <button aria-label="Закрыть меню" className="sidebar-close" onClick={() => setMobileOpen(false)} type="button">
+            <X aria-hidden size={18} strokeWidth={1.75} />
+          </button>
+        ) : null}
+      </div>
 
-        <nav className="sidebar-nav">
-          {NAV.map(({ to, label, icon: Icon }) => (
-            <NavLink
-              key={to}
-              className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
-              onClick={(e) => {
-                e.preventDefault()
-                void (async () => {
-                  if (!(await tryAllowNavigation())) return
-                  setOpen(false)
-                  navigate(to)
-                })()
-              }}
-              to={to}
-            >
-              <Icon aria-hidden className="nav-item-icon" size={18} strokeWidth={1.75} />
-              {label}
-            </NavLink>
-          ))}
-        </nav>
+      {renderNav(opts.compact)}
 
-        <div className="sidebar-footer">
-          <div className="row" style={{ gap: '0.4rem' }}>
-            <button
-              aria-label={theme === 'light' ? 'Тёмная тема' : 'Светлая тема'}
-              className="theme-toggle"
-              onClick={onThemeToggle}
-              type="button"
-            >
-              {theme === 'light' ? (
-                <Moon aria-hidden size={16} strokeWidth={1.75} />
-              ) : (
-                <Sun aria-hidden size={16} strokeWidth={1.75} />
-              )}
-            </button>
+      <div className="sidebar-footer">
+        {!opts.compact ? (
+          <div className="row" style={{ gap: '0.4rem', justifyContent: 'center' }}>
             <button
               aria-label="Выйти из панели"
               className="sidebar-logout"
@@ -213,36 +197,117 @@ export function AppShell() {
               Выйти
             </button>
           </div>
-          <span>{apiVersion ? `API ${apiVersion}` : '…'}</span>
-          <span className="hint" style={{ fontSize: '0.65rem' }}>
-            ⌘K
-          </span>
-        </div>
-      </aside>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                aria-label="Выйти из панели"
+                className="sidebar-logout sidebar-logout-icon"
+                onClick={() => setLogoutOpen(true)}
+                type="button"
+              >
+                <LogOut size={16} aria-hidden strokeWidth={1.75} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">Выйти</TooltipContent>
+          </Tooltip>
+        )}
+        {!opts.compact ? (
+          <>
+            <span className="tabular-nums">{apiVersion ? `API ${apiVersion}` : '…'}</span>
+            <span className="hint" style={{ fontSize: '0.65rem' }}>
+              ⌘K
+            </span>
+          </>
+        ) : null}
+        {!mobile ? (
+          <button
+            aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
+            className="sidebar-collapse"
+            onClick={toggleCollapsed}
+            type="button"
+          >
+            {collapsed ? (
+              <ChevronsRight aria-hidden size={16} strokeWidth={1.75} />
+            ) : (
+              <ChevronsLeft aria-hidden size={16} strokeWidth={1.75} />
+            )}
+            {!opts.compact ? <span>Свернуть</span> : null}
+          </button>
+        ) : null}
+      </div>
+    </>
+  )
 
-      <main className="main-area" id="main-content" tabIndex={-1}>
-        <ConnectionBanner />
-        <ErrorBoundary key={location.pathname}>
-          <Routes>
-            <Route element={<Navigate replace to="/status" />} path="/" />
-            <Route element={<Navigate replace to="/status" />} path="/home" />
-            <Route element={<Navigate replace to="/status" />} path="/dashboard" />
-            <Route element={<Navigate replace to="/modules" />} path="/plugins" />
-            <Route element={<StatusScreen />} path="/status" />
-            <Route element={<ModulesScreen />} path="/modules" />
-            <Route element={<MemoryScreen />} path="/memory" />
-            <Route element={<SystemScreen />} path="/system" />
-            <Route element={<SystemScreen initialTab="backup" />} path="/backups" />
-            <Route element={<WebhooksScreen />} path="/webhooks" />
-            <Route element={<SettingsScreen />} path="/settings" />
-            <Route element={<DocsScreen />} path="/api-docs" />
-            {import.meta.env.DEV ? <Route element={<UiKitScreen />} path="/__ui" /> : null}
-            <Route element={<NotFoundScreen />} path="*" />
-          </Routes>
-        </ErrorBoundary>
-      </main>
+  return (
+    <div className={`app-shell${collapsed && !mobile ? ' app-shell-collapsed' : ''}`}>
+      <a className="skip-link" href="#main-content">
+        К содержимому
+      </a>
 
-      <CommandPalette />
+      {mobile ? (
+        <>
+          <button
+            aria-expanded={mobileOpen}
+            aria-label="Открыть меню"
+            className="mobile-toggle"
+            onClick={() => setMobileOpen(true)}
+            type="button"
+          >
+            <Menu aria-hidden size={20} strokeWidth={1.75} />
+          </button>
+          <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+            <SheetContent className="sidebar-sheet" side="left">
+              <SheetHeader className="sr-only">
+                <SheetTitle>Навигация</SheetTitle>
+              </SheetHeader>
+              <div className="sidebar sidebar-in-sheet">{sidebarInner({ compact: false, showClose: true })}</div>
+            </SheetContent>
+          </Sheet>
+        </>
+      ) : (
+        <aside
+          aria-label="Навигация"
+          className={`sidebar${collapsed ? ' sidebar-collapsed' : ''}`}
+        >
+          {sidebarInner({ compact: collapsed })}
+        </aside>
+      )}
+
+      <div className="shell-main">
+        <Topbar
+          crumbs={crumbs}
+          lastFetchedAgoSec={agoSec}
+          onOpenCommand={() => setCmdOpen(true)}
+          onThemeToggle={onThemeToggle}
+          onToggleRefreshPause={() => setRefreshPaused((v) => !v)}
+          refreshPaused={refreshPaused}
+          theme={theme}
+        />
+        <main className="main-area" id="main-content" tabIndex={-1}>
+          <ConnectionBanner />
+          <ErrorBoundary key={location.pathname}>
+            <Routes>
+              <Route element={<Navigate replace to="/status" />} path="/" />
+              <Route element={<Navigate replace to="/status" />} path="/home" />
+              <Route element={<Navigate replace to="/status" />} path="/dashboard" />
+              <Route element={<Navigate replace to="/modules" />} path="/plugins" />
+              <Route element={<StatusScreen />} path="/status" />
+              <Route element={<ModulesScreen />} path="/modules" />
+              <Route element={<MemoryScreen />} path="/memory" />
+              <Route element={<SystemScreen />} path="/system" />
+              <Route element={<SystemScreen initialTab="backup" />} path="/backups" />
+              <Route element={<WebhooksScreen />} path="/webhooks" />
+              <Route element={<SettingsScreen />} path="/settings" />
+              <Route element={<DocsScreen />} path="/api-docs" />
+              {import.meta.env.DEV ? <Route element={<UiKitScreen />} path="/__ui" /> : null}
+              <Route element={<NotFoundScreen />} path="*" />
+            </Routes>
+          </ErrorBoundary>
+        </main>
+      </div>
+
+      <CommandPalette controlledOpen={cmdOpen} onOpenChange={setCmdOpen} />
 
       <DangerConfirmDialog
         busy={logoutBusy}

@@ -14,8 +14,10 @@ import './styles/tokens.css'
 import App from './App.tsx'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { initTheme } from './lib/theme'
+import { initUiPrefs } from './lib/ui-prefs'
 
 initTheme()
+initUiPrefs()
 
 const queryClient = new QueryClient({
   defaultOptions: {
