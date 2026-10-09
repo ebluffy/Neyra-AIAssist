@@ -15,3 +15,15 @@ if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
     })),
   })
 }
+
+if (typeof window !== 'undefined' && typeof window.ResizeObserver !== 'function') {
+  class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  Object.defineProperty(window, 'ResizeObserver', {
+    writable: true,
+    value: ResizeObserverStub,
+  })
+}

@@ -96,5 +96,37 @@ describe('SettingsScreen access rotate', () => {
     await user.click(screen.getByRole('button', { name: 'Сменить ключ доступа' }))
     await waitFor(() => expect(setSessionToken).toHaveBeenCalledWith('new-sess'))
     expect(screen.getByText(/Ключ доступа сменён/i)).toBeTruthy()
+    expect((screen.getByLabelText('Текущий ключ') as HTMLInputElement).value).toBe('')
+    expect((screen.getByLabelText('Новый ключ') as HTMLInputElement).value).toBe('')
+    expect((screen.getByLabelText('Повтор нового ключа') as HTMLInputElement).value).toBe('')
+  })
+})
+
+describe('SettingsScreen dirty bar', () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })),
+    )
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  it('shows sticky bar on edit and discard restores value', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+    await screen.findByRole('heading', { name: 'Настройки' })
+    const input = await screen.findByDisplayValue('test-model')
+    await user.clear(input)
+    await user.type(input, 'dirty-model')
+    expect(screen.getByText(/Изменено 1 поле/i)).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Отменить' }))
+    await waitFor(() => {
+      expect(screen.queryByText(/Изменено/i)).toBeNull()
+    })
+    expect(screen.getByDisplayValue('test-model')).toBeTruthy()
   })
 })

@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Controller, useForm } from 'react-hook-form'
+import { Controller, useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { ChevronDown, ChevronRight, FlaskConical, KeyRound, RefreshCw, RotateCcw, Save, Trash2, Webhook } from 'lucide-react'
 import { apiDelete, apiGet, apiPatch, apiPost } from '../api'
@@ -274,8 +274,8 @@ export function WebhooksScreen() {
       events: [],
     },
   })
-  const eventsList = form.watch('events') ?? []
-  const events = useMemo(() => new Set(eventsList), [eventsList])
+  const eventsList = useWatch({ control: form.control, name: 'events' })
+  const events = useMemo(() => new Set(eventsList ?? []), [eventsList])
 
   const [status, setStatus] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -603,18 +603,22 @@ export function WebhooksScreen() {
 
             <form
               className="stack"
-              onSubmit={form.handleSubmit(
-                (values) => void save(values),
-                (errs) => {
-                  const first =
-                    errs.url?.message ||
-                    errs.events?.message ||
-                    errs.maxRetries?.message ||
-                    errs.secret?.message ||
-                    'Проверь форму'
-                  setError(String(first))
-                },
-              )}
+              onSubmit={(e) => {
+                void form.handleSubmit(
+                  (values) => {
+                    void save(values)
+                  },
+                  (errs) => {
+                    const first =
+                      errs.url?.message ||
+                      errs.events?.message ||
+                      errs.maxRetries?.message ||
+                      errs.secret?.message ||
+                      'Проверь форму'
+                    setError(String(first))
+                  },
+                )(e)
+              }}
             >
               <div className="switch-row">
                 <div>
