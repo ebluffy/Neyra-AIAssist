@@ -336,6 +336,7 @@ export function ModulesScreen() {
       setRestartBusy(false)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
+      setStatus('')
       setError(msg)
       setRestartBusy(false)
     }

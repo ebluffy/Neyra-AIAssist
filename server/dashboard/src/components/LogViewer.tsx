@@ -108,9 +108,9 @@ export function LogViewer({ sources }: Props) {
     overscan: 24,
   })
 
-  useEffect(() => {
-    virtualizer.measure()
-  }, [wrap, lines, virtualizer])
+  // ResizeObserver via measureElement remeasures when wrap changes DOM height.
+  // Do not call virtualizer.measure() on every lines update — it clears the size
+  // cache and sticky estimateSize=22 causes overlapping wrapped rows (AR-94).
 
   useEffect(() => {
     if (!follow || !lines.length) return
