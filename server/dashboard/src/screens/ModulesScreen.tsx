@@ -290,34 +290,38 @@ export function ModulesScreen() {
       const lavaBit = selected === 'discord' && lava ? ` Lavalink: ${lava}.` : ''
       const restartScheduled = Boolean(r.data.result?.restart_scheduled)
       if (isResident && restartScheduled) {
-        const msg = enabled
-          ? `Модуль включён.${lavaBit} Ядро перезапускается…`
-          : `Модуль выключен.${lavaBit} Ядро перезапускается, чтобы остановить поток…`
-        setStatus(msg)
-        toast.message(enabled ? 'Модуль включён' : 'Модуль выключен', { description: 'Ждём рестарт ядра…' })
+        // Long state → InlineFeedback only (no toast).
+        setStatus(
+          enabled
+            ? `Модуль включён.${lavaBit} Ядро перезапускается…`
+            : `Модуль выключен.${lavaBit} Ядро перезапускается, чтобы остановить поток…`,
+        )
         await finishRestartWait(enabled ? 'Модуль включён.' : 'Модуль выключен.')
         return
       }
       if (isResident) {
         // No-op PATCH or older cores without restart_scheduled.
-        setStatus(
-          r.data.result?.enabled_changed === false
-            ? `Состояние уже ${enabled ? 'вкл.' : 'выкл.'} — рестарт не нужен.`
-            : enabled
-              ? `Модуль включён в конфиге.${lavaBit} Нужен мягкий рестарт ядра.`
-              : `Модуль выключен в конфиге.${lavaBit} Нужен мягкий рестарт ядра.`,
-        )
-        toast.success(enabled ? 'Записано: включён' : 'Записано: выключен')
+        const already = r.data.result?.enabled_changed === false
         await loadPlugins()
         await loadDetails(selected)
+        if (already) {
+          setStatus('')
+          toast.message(`Уже ${enabled ? 'вкл.' : 'выкл.'}`)
+          setRestartBusy(false)
+          return
+        }
+        setStatus(
+          enabled
+            ? `Модуль включён в конфиге.${lavaBit} Нужен мягкий рестарт ядра.`
+            : `Модуль выключен в конфиге.${lavaBit} Нужен мягкий рестарт ядра.`,
+        )
         if (
-          r.data.result?.enabled_changed !== false &&
-          (await softConfirm(
+          await softConfirm(
             'Мягкий рестарт ядра?',
             enabled
               ? 'Resident-модуль записан как включённый. Сделать мягкий рестарт ядра сейчас, чтобы бот реально стартовал?'
               : 'Resident-модуль записан как выключенный. Сделать мягкий рестарт ядра сейчас, чтобы остановить поток?',
-          ))
+          )
         ) {
           await softRestartCore(true)
           return
@@ -325,7 +329,7 @@ export function ModulesScreen() {
         setRestartBusy(false)
         return
       }
-      setStatus(`Готово: ${r.data.operation_id}`)
+      setStatus('')
       toast.success(enabled ? 'Модуль включён' : 'Модуль выключен')
       await loadPlugins()
       await loadDetails(selected)
@@ -333,7 +337,6 @@ export function ModulesScreen() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setError(msg)
-      toast.error(msg)
       setRestartBusy(false)
     }
   }

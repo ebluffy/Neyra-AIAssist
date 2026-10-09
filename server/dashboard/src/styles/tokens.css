@@ -1392,8 +1392,9 @@ input[type="checkbox"] {
   display: flex;
   gap: 0.65rem;
   min-height: 22px;
-  line-height: 22px;
-  padding: 0 0.15rem;
+  line-height: 1.45;
+  padding: 0.1rem 0.15rem;
+  box-sizing: border-box;
 }
 .log-line-num {
   flex: 0 0 2.6rem;

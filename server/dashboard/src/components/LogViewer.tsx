@@ -15,6 +15,8 @@ type Props = {
 
 type LogLevel = 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'OTHER'
 
+type LogRow = { n: number; text: string; level: LogLevel }
+
 const TAIL_OPTIONS = [100, 200, 500, 1000, 2000]
 const LEVELS: LogLevel[] = ['ERROR', 'WARN', 'INFO', 'DEBUG', 'OTHER']
 
@@ -64,7 +66,6 @@ export function LogViewer({ sources }: Props) {
   const parentRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
-    if (paused) return
     setLoading(true)
     try {
       const r = await apiGet<ApiEnvelope<LogTailData>>(
@@ -77,7 +78,7 @@ export function LogViewer({ sources }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [source, tail, paused])
+  }, [source, tail])
 
   useEffect(() => {
     void load()
@@ -91,11 +92,11 @@ export function LogViewer({ sources }: Props) {
 
   const lines = useMemo(() => {
     const text = data?.text ?? ''
-    if (!text) return [] as Array<{ text: string; level: LogLevel }>
+    if (!text) return [] as LogRow[]
     const q = query.trim().toLowerCase()
     return text
       .split('\n')
-      .map((line) => ({ text: line, level: detectLevel(line) }))
+      .map((line, i) => ({ n: i + 1, text: line, level: detectLevel(line) }))
       .filter((row) => levelFilter.has(row.level))
       .filter((row) => !q || row.text.toLowerCase().includes(q))
   }, [data?.text, query, levelFilter])
@@ -108,10 +109,14 @@ export function LogViewer({ sources }: Props) {
   })
 
   useEffect(() => {
-    if (!follow || paused || !lines.length) return
+    virtualizer.measure()
+  }, [wrap, lines, virtualizer])
+
+  useEffect(() => {
+    if (!follow || !lines.length) return
     const last = lines.length - 1
     virtualizer.scrollToIndex(last, { align: 'end' })
-  }, [lines, follow, paused, virtualizer])
+  }, [lines, follow, virtualizer])
 
   function toggleLevel(level: LogLevel) {
     setLevelFilter((prev) => {
@@ -193,7 +198,7 @@ export function LogViewer({ sources }: Props) {
               </option>
             ))}
           </select>
-          <Button disabled={loading || paused} onClick={() => void load()} size="sm" type="button" variant="secondary">
+          <Button disabled={loading} onClick={() => void load()} size="sm" type="button" variant="secondary">
             <RefreshCw aria-hidden size={13} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
             Обновить
           </Button>
@@ -229,7 +234,7 @@ export function LogViewer({ sources }: Props) {
             aria-pressed={paused}
             onClick={() => setPaused((v) => !v)}
             size="sm"
-            title={paused ? 'Продолжить опрос' : 'Пауза опроса'}
+            title={paused ? 'Продолжить авто-опрос' : 'Пауза авто-опроса'}
             type="button"
             variant={paused ? 'warn' : 'secondary'}
           >
@@ -299,7 +304,9 @@ export function LogViewer({ sources }: Props) {
                 return (
                   <div
                     className={`log-line ${levelClass(row.level)}`}
+                    data-index={item.index}
                     key={item.key}
+                    ref={virtualizer.measureElement}
                     style={{
                       position: 'absolute',
                       top: 0,
@@ -308,7 +315,7 @@ export function LogViewer({ sources }: Props) {
                       transform: `translateY(${item.start}px)`,
                     }}
                   >
-                    <span className="log-line-num tabular-nums">{item.index + 1}</span>
+                    <span className="log-line-num tabular-nums">{row.n}</span>
                     <span className="log-line-text">{row.text || ' '}</span>
                   </div>
                 )

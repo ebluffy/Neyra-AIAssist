@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useState } from 'react'
 import { Activity, Database, RefreshCw, RotateCcw, Wallet } from 'lucide-react'
-import { apiGet, apiPost } from '../api'
+import { ApiRequestError, apiGet, apiPost } from '../api'
 import type { ApiEnvelope, BalanceData, HealthData, PluginRow, ProviderBalance } from '../api'
 import { HealthHistoryStrip } from '../components/HealthHistoryStrip'
 import { RestartProgress } from '../components/RestartProgress'
@@ -159,13 +159,24 @@ export function StatusScreen() {
   })
   const auditQ = useQuery({
     queryKey: ['status', 'audit-recent'],
-    queryFn: async () =>
-      (
-        await apiGet<ApiEnvelope<{ items: Array<{ ts?: string; op?: string; role?: string; trace_id?: string }> }>>(
-          '/v1/audit/recent?limit=10',
-        )
-      ).data,
-    refetchInterval: pollOk ? 60_000 : false,
+    queryFn: async (): Promise<{
+      items: Array<{ ts?: string; op?: string; role?: string; trace_id?: string }>
+      forbidden?: boolean
+    }> => {
+      try {
+        return (
+          await apiGet<ApiEnvelope<{ items: Array<{ ts?: string; op?: string; role?: string; trace_id?: string }> }>>(
+            '/v1/audit/recent?limit=10',
+          )
+        ).data
+      } catch (e) {
+        if (e instanceof ApiRequestError && e.status === 403) {
+          return { items: [], forbidden: true }
+        }
+        throw e
+      }
+    },
+    refetchInterval: (q) => (pollOk && !q.state.data?.forbidden ? 60_000 : false),
     retry: false,
   })
 
@@ -426,6 +437,8 @@ export function StatusScreen() {
             onRetry={() => void auditQ.refetch()}
             title="Аудит"
           />
+        ) : auditQ.data?.forbidden ? (
+          <p className="page-sub">Недоступно для роли.</p>
         ) : (auditQ.data?.items?.length ?? 0) === 0 ? (
           <p className="page-sub">Лента аудита пуста.</p>
         ) : (

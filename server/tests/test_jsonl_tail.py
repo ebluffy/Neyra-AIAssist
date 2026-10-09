@@ -46,3 +46,16 @@ def test_read_jsonl_tail_empty_or_missing(tmp_path: Path):
     empty.write_text("", encoding="utf-8")
     assert _read_jsonl_tail(empty, 5) == []
     assert _read_jsonl_tail(empty, 0) == []
+
+
+def test_read_jsonl_tail_skips_trailing_garbage_to_reach_limit(tmp_path: Path):
+    from core.api.app import _read_jsonl_tail
+
+    path = tmp_path / "dirty_tail.jsonl"
+    good = [json.dumps({"i": i}) for i in range(10)]
+    bad = ["not-json"] * 100
+    path.write_text("\n".join(good + bad) + "\n", encoding="utf-8")
+
+    got = _read_jsonl_tail(path, 5, chunk_size=256)
+    assert len(got) == 5
+    assert [r["i"] for r in got] == [9, 8, 7, 6, 5]

@@ -668,7 +668,8 @@ def _read_jsonl_tail(path: Path, limit: int, *, chunk_size: int = 65_536) -> lis
     """Return up to ``limit`` newest JSON objects from a JSONL file (newest first).
 
     Reads from the end of the file in chunks so large audit/health logs are not
-    loaded entirely into memory. Invalid / blank lines are skipped.
+    loaded entirely into memory. Invalid / blank lines are skipped. Parsing happens
+    while scanning so a long run of trailing garbage does not starve the limit.
     """
     if limit <= 0 or not path.is_file():
         return []
@@ -678,13 +679,23 @@ def _read_jsonl_tail(path: Path, limit: int, *, chunk_size: int = 65_536) -> lis
         return []
     if size <= 0:
         return []
-    # Collect a few extra raw lines to absorb blanks / bad JSON.
-    need_raw = max(limit * 3, limit)
-    raw_newest_first: list[str] = []
+
+    def _parse_line(raw: bytes) -> dict[str, Any] | None:
+        text = raw.decode("utf-8", errors="replace").strip()
+        if not text:
+            return None
+        try:
+            row = json.loads(text)
+        except Exception:
+            return None
+        return row if isinstance(row, dict) else None
+
+    rows: list[dict[str, Any]] = []
     with path.open("rb") as f:
         pos = size
         buf = b""
-        while pos > 0 and len(raw_newest_first) < need_raw:
+        early_exit = False
+        while pos > 0 and len(rows) < limit:
             step = min(chunk_size, pos)
             pos -= step
             f.seek(pos)
@@ -693,23 +704,19 @@ def _read_jsonl_tail(path: Path, limit: int, *, chunk_size: int = 65_536) -> lis
             parts = buf.split(b"\n")
             buf = parts[0]
             for part in reversed(parts[1:]):
-                text = part.decode("utf-8", errors="replace").strip()
-                if text:
-                    raw_newest_first.append(text)
-                if len(raw_newest_first) >= need_raw:
-                    break
-        if pos == 0 and buf.strip():
-            raw_newest_first.append(buf.decode("utf-8", errors="replace").strip())
-    rows: list[dict[str, Any]] = []
-    for line in raw_newest_first:
-        try:
-            row = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-        if len(rows) >= limit:
-            break
+                row = _parse_line(part)
+                if row is not None:
+                    rows.append(row)
+                    if len(rows) >= limit:
+                        early_exit = True
+                        break
+            if early_exit:
+                break
+        # Only flush the leading partial when we scanned all the way to offset 0.
+        if not early_exit and pos == 0 and buf:
+            row = _parse_line(buf)
+            if row is not None and len(rows) < limit:
+                rows.append(row)
     return rows
 
 
