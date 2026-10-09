@@ -3,10 +3,21 @@ import { BookOpen, Brain, NotebookPen, Plus, Search, Trash2, Users } from 'lucid
 import { apiDelete, apiGet, apiPatch, apiPost } from '../api'
 import type { ApiEnvelope, MemoryPolicies, MemoryStats } from '../api'
 import { Button } from '../components/ui/button'
+import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+
+type MemoryDanger =
+  | { kind: 'delete-person'; id: string }
+  | { kind: 'merge'; source: string; target: string }
+  | { kind: 'apply-proposal'; id: number }
+  | { kind: 'undo-merge'; id: number }
+  | { kind: 'delete-diary'; id: number }
+  | { kind: 'delete-journal'; id: number }
+  | { kind: 'wipe'; scopes: string[]; label: string }
+  | { kind: 'ltm'; path: '/v1/memory/prune' | '/v1/memory/summarize'; body: Record<string, unknown> }
 
 type PersonAccount = {
   platform?: string
@@ -44,6 +55,9 @@ export function MemoryScreen() {
   const [memory, setMemory] = useState<MemoryStats | null>(null)
   const [memPolicies, setMemPolicies] = useState<MemoryPolicies | null>(null)
   const [people, setPeople] = useState<PersonRow[]>([])
+  const [slugDuplicates, setSlugDuplicates] = useState<
+    { slug_person_id?: string; related_person_ids?: string[]; hint?: string }[]
+  >([])
   const [selectedPerson, setSelectedPerson] = useState('')
   const [aliasesText, setAliasesText] = useState('')
   const [facts, setFacts] = useState<PersonFact[]>([])
@@ -73,6 +87,8 @@ export function MemoryScreen() {
   const [recentMerges, setRecentMerges] = useState<
     { id?: number; survivor_id?: string; source_id?: string; undone_at?: string | null }[]
   >([])
+  const [danger, setDanger] = useState<MemoryDanger | null>(null)
+  const [dangerBusy, setDangerBusy] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -81,7 +97,12 @@ export function MemoryScreen() {
       const [m, pol, pe, di, jo, pr, ml] = await Promise.all([
         apiGet<ApiEnvelope<MemoryStats>>('/v1/memory/stats'),
         apiGet<ApiEnvelope<MemoryPolicies>>('/v1/memory/policies'),
-        apiGet<ApiEnvelope<{ people: PersonRow[] }>>('/v1/memory/people'),
+        apiGet<
+          ApiEnvelope<{
+            people: PersonRow[]
+            slug_duplicates?: { slug_person_id?: string; related_person_ids?: string[]; hint?: string }[]
+          }>
+        >('/v1/memory/people'),
         apiGet<ApiEnvelope<{ notes: DiaryNote[] }>>('/v1/memory/diary?limit=50'),
         apiGet<ApiEnvelope<{ entries: JournalEntry[] }>>('/v1/memory/journal?limit=50'),
         apiGet<ApiEnvelope<{ proposals: MergeProposal[] }>>('/v1/memory/people/merge-proposals?status=pending'),
@@ -93,6 +114,7 @@ export function MemoryScreen() {
       setMemPolicies(pol.data)
       const plist = pe.data.people ?? []
       setPeople(plist)
+      setSlugDuplicates(pe.data.slug_duplicates ?? [])
       setDiary(di.data.notes ?? [])
       setJournal(jo.data.entries ?? [])
       setProposals(pr.data.proposals ?? [])
@@ -199,60 +221,16 @@ export function MemoryScreen() {
 
   async function deletePerson() {
     if (!selectedPerson) return
-    if (!window.confirm(`Удалить карточку «${selectedPerson}» и все факты?`)) return
-    try {
-      await apiDelete(`/v1/memory/people/${encodeURIComponent(selectedPerson)}`)
-      setSelectedPerson('')
-      setStatus('Удалено')
-      await load()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
+    setDanger({ kind: 'delete-person', id: selectedPerson })
   }
 
   async function mergeIntoSelected() {
     if (!selectedPerson || !mergeSource.trim()) return
-    if (
-      !window.confirm(
-        `Скрестить ${mergeSource.trim()} → ${selectedPerson}? Source будет удалён (можно отменить).`,
-      )
-    )
-      return
-    try {
-      const r = await apiPost<ApiEnvelope<{ merge_log_id?: number; survivor_id?: string }>>(
-        '/v1/memory/people/merge',
-        {
-          survivor_id: selectedPerson,
-          source_id: mergeSource.trim(),
-          reason: 'dashboard_merge',
-        },
-      )
-      const mid = Number(r.data?.merge_log_id)
-      if (Number.isFinite(mid)) setLastMergeLogId(mid)
-      setMergeSource('')
-      setStatus(Number.isFinite(mid) ? `Скрещены (merge_log #${mid})` : 'Карточки скрещены')
-      await load()
-      await loadPerson(selectedPerson)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
+    setDanger({ kind: 'merge', source: mergeSource.trim(), target: selectedPerson })
   }
 
   async function applyProposal(id: number) {
-    if (!window.confirm(`Применить заявку #${id}? person_a станет survivor (можно отменить).`)) return
-    try {
-      const r = await apiPost<ApiEnvelope<{ merge?: { merge_log_id?: number } }>>(
-        `/v1/memory/people/merge-proposals/${id}/apply`,
-        {},
-      )
-      const mid = Number(r.data?.merge?.merge_log_id)
-      if (Number.isFinite(mid)) setLastMergeLogId(mid)
-      setStatus(Number.isFinite(mid) ? `Заявка #${id} → merge_log #${mid}` : `Заявка #${id} применена`)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      await load()
-    }
+    setDanger({ kind: 'apply-proposal', id })
   }
 
   async function rejectProposal(id: number) {
@@ -267,16 +245,7 @@ export function MemoryScreen() {
   }
 
   async function undoMerge(mergeLogId: number) {
-    if (!window.confirm(`Отменить merge #${mergeLogId}?`)) return
-    try {
-      await apiPost(`/v1/memory/people/merge/${mergeLogId}/undo`, {})
-      setStatus(`Merge #${mergeLogId} отменён`)
-      if (lastMergeLogId === mergeLogId) setLastMergeLogId(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      await load()
-    }
+    setDanger({ kind: 'undo-merge', id: mergeLogId })
   }
 
   async function addFact() {
@@ -337,40 +306,17 @@ export function MemoryScreen() {
   async function deleteDiaryNote(id: unknown) {
     const nid = Number(id)
     if (!Number.isFinite(nid)) return
-    if (!window.confirm('Удалить запись дневника?')) return
-    try {
-      await apiDelete(`/v1/memory/diary/${nid}`)
-      await load()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
+    setDanger({ kind: 'delete-diary', id: nid })
   }
 
   async function deleteJournalEntry(id: unknown) {
     const nid = Number(id)
     if (!Number.isFinite(nid)) return
-    if (!window.confirm('Удалить запись журнала?')) return
-    try {
-      await apiDelete(`/v1/memory/journal/${nid}`)
-      await load()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
+    setDanger({ kind: 'delete-journal', id: nid })
   }
 
   async function runWipe(scopes: string[], label: string) {
-    if (!window.confirm(`Очистить ${label}? Это необратимо.`)) return
-    setWipeBusy(true)
-    setError(null)
-    try {
-      await apiPost('/v1/memory/wipe', { scopes, confirm: 'WIPE' })
-      setStatus(`Очищено: ${label}`)
-      await load()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setWipeBusy(false)
-    }
+    setDanger({ kind: 'wipe', scopes, label })
   }
 
   async function runSearch() {
@@ -387,7 +333,10 @@ export function MemoryScreen() {
   }
 
   async function runLtm(path: '/v1/memory/prune' | '/v1/memory/summarize', body: Record<string, unknown>, destructive: boolean) {
-    if (destructive && !window.confirm('Это изменит долгосрочную память. Продолжить?')) return
+    if (destructive) {
+      setDanger({ kind: 'ltm', path, body })
+      return
+    }
     setLtmBusy(true)
     setLtmMsg(null)
     try {
@@ -400,6 +349,135 @@ export function MemoryScreen() {
       setLtmBusy(false)
     }
   }
+
+  async function confirmDanger() {
+    if (!danger) return
+    setDangerBusy(true)
+    setError(null)
+    try {
+      switch (danger.kind) {
+        case 'delete-person': {
+          await apiDelete(`/v1/memory/people/${encodeURIComponent(danger.id)}`)
+          setSelectedPerson('')
+          setStatus('Удалено')
+          await load()
+          break
+        }
+        case 'merge': {
+          const r = await apiPost<ApiEnvelope<{ merge_log_id?: number; survivor_id?: string }>>(
+            '/v1/memory/people/merge',
+            { survivor_id: danger.target, source_id: danger.source, reason: 'dashboard_merge' },
+          )
+          const mid = Number(r.data?.merge_log_id)
+          if (Number.isFinite(mid)) setLastMergeLogId(mid)
+          setMergeSource('')
+          setStatus(Number.isFinite(mid) ? `Скрещены (merge_log #${mid})` : 'Карточки скрещены')
+          await load()
+          await loadPerson(danger.target)
+          break
+        }
+        case 'apply-proposal': {
+          const r = await apiPost<ApiEnvelope<{ merge?: { merge_log_id?: number } }>>(
+            `/v1/memory/people/merge-proposals/${danger.id}/apply`,
+            {},
+          )
+          const mid = Number(r.data?.merge?.merge_log_id)
+          if (Number.isFinite(mid)) setLastMergeLogId(mid)
+          setStatus(
+            Number.isFinite(mid) ? `Заявка #${danger.id} → merge_log #${mid}` : `Заявка #${danger.id} применена`,
+          )
+          await load()
+          break
+        }
+        case 'undo-merge': {
+          await apiPost(`/v1/memory/people/merge/${danger.id}/undo`, {})
+          setStatus(`Merge #${danger.id} отменён`)
+          if (lastMergeLogId === danger.id) setLastMergeLogId(null)
+          await load()
+          break
+        }
+        case 'delete-diary': {
+          await apiDelete(`/v1/memory/diary/${danger.id}`)
+          await load()
+          break
+        }
+        case 'delete-journal': {
+          await apiDelete(`/v1/memory/journal/${danger.id}`)
+          await load()
+          break
+        }
+        case 'wipe': {
+          setWipeBusy(true)
+          await apiPost('/v1/memory/wipe', { scopes: danger.scopes, confirm: 'WIPE' })
+          setStatus(`Очищено: ${danger.label}`)
+          await load()
+          break
+        }
+        case 'ltm': {
+          setLtmBusy(true)
+          setLtmMsg(null)
+          const r = await apiPost<ApiEnvelope<unknown>>(danger.path, danger.body)
+          setLtmMsg(JSON.stringify(r.data, null, 2))
+          await load()
+          break
+        }
+      }
+      setDanger(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setDanger(null)
+    } finally {
+      setDangerBusy(false)
+      setWipeBusy(false)
+      setLtmBusy(false)
+    }
+  }
+
+  const dangerCopy = (() => {
+    if (!danger) return { title: '', description: '', phrase: 'УДАЛИТЬ' }
+    switch (danger.kind) {
+      case 'delete-person':
+        return {
+          title: 'Удалить карточку?',
+          description: `Удалить «${danger.id}» и все факты. Действие необратимо.`,
+          phrase: 'УДАЛИТЬ',
+        }
+      case 'merge':
+        return {
+          title: 'Скрестить карточки?',
+          description: `${danger.source} → ${danger.target}. Source будет удалён (можно отменить).`,
+          phrase: 'СКРЕСТИТЬ',
+        }
+      case 'apply-proposal':
+        return {
+          title: `Применить заявку #${danger.id}?`,
+          description: 'person_a станет survivor (можно отменить).',
+          phrase: 'ПРИМЕНИТЬ',
+        }
+      case 'undo-merge':
+        return {
+          title: `Отменить merge #${danger.id}?`,
+          description: 'Карточки и факты вернутся к состоянию до слияния.',
+          phrase: 'ОТМЕНИТЬ',
+        }
+      case 'delete-diary':
+        return { title: 'Удалить запись дневника?', description: 'Запись будет удалена без восстановления.', phrase: 'УДАЛИТЬ' }
+      case 'delete-journal':
+        return { title: 'Удалить запись журнала?', description: 'Запись будет удалена без восстановления.', phrase: 'УДАЛИТЬ' }
+      case 'wipe':
+        return {
+          title: `Очистить ${danger.label}?`,
+          description: 'Необратимая очистка выбранных областей памяти.',
+          phrase: 'WIPE',
+        }
+      case 'ltm':
+        return {
+          title: 'Изменить долгосрочную память?',
+          description: 'Очистка или суммаризация изменит LTM.',
+          phrase: 'ПРОДОЛЖИТЬ',
+        }
+    }
+  })()
 
   const sortedPeople = useMemo(
     () => [...people].sort((a, b) => personLabel(a).localeCompare(personLabel(b), 'ru')),
@@ -512,6 +590,26 @@ export function MemoryScreen() {
 
       {tab === 'people' && (
         <div className="split-modules">
+          {slugDuplicates.length > 0 && (
+            <div className="card" style={{ gridColumn: '1 / -1', borderColor: 'var(--amber)' }}>
+              <div className="card-header">
+                <span className="card-title">Дубли: nick как id</span>
+              </div>
+              <p className="text-muted" style={{ margin: '0 0 0.5rem', fontSize: '0.85rem' }}>
+                Карточки с id-ником (не UUID) рядом с Discord-персонами. Склейте через merge — аккаунты
+                больше не переезжают молча.
+              </p>
+              <div className="stack-sm">
+                {slugDuplicates.map((d) => (
+                  <div key={String(d.slug_person_id)} className="row-between">
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>
+                      {d.slug_person_id} ↔ {(d.related_person_ids || []).join(', ')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {(proposals.length > 0 || recentMerges.some((m) => !m.undone_at)) && (
             <div className="card" style={{ gridColumn: '1 / -1' }}>
               <div className="card-header">
@@ -936,6 +1034,17 @@ export function MemoryScreen() {
           )}
         </div>
       )}
+
+      <DangerConfirmDialog
+        busy={dangerBusy}
+        confirmLabel="Подтвердить"
+        confirmPhrase={dangerCopy.phrase}
+        description={dangerCopy.description}
+        onCancel={() => !dangerBusy && setDanger(null)}
+        onConfirm={() => void confirmDanger()}
+        open={danger != null}
+        title={dangerCopy.title}
+      />
     </div>
   )
 }

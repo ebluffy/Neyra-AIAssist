@@ -1,0 +1,6 @@
+title = "Neyra gitleaks"
+
+# Extend default rules — bare config without this disables all rules (AR-57).
+# Historical fake token from 640c57e is ignored via .gitleaksignore fingerprint (AR-71).
+[extend]
+useDefault = true

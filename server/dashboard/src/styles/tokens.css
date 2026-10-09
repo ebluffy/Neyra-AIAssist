@@ -1,9 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@400;500;600;700&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
+:root,
+[data-theme='dark'] {
   --bg:        #0b1220;
   --surface:   #121a2b;
   --surface-2: #182235;
@@ -23,7 +23,7 @@
   --radius-sm: 6px;
   --radius:    8px;
   --radius-lg: 12px;
-  --mono: 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+  --mono: 'Fira Code', Consolas, monospace;
   --sans: 'Fira Sans', system-ui, sans-serif;
   /* emil-design-eng: strong ease-out for UI interactions */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
@@ -36,6 +36,38 @@
   --dur-fast: 120ms;
   --dur-ui: 160ms;
   --dur-enter: 200ms;
+  --vignette-a: rgba(34, 211, 238, 0.04);
+  --vignette-b: rgba(15, 23, 42, 0.9);
+  --toast-bg: var(--surface);
+  --toast-border: var(--border-hi);
+}
+
+[data-theme='light'],
+.light {
+  --bg:        #f1f5f9;
+  --surface:   #ffffff;
+  --surface-2: #e8eef6;
+  --border:    #c9d4e3;
+  --border-hi: #a8b8cc;
+  --text:      #0f172a;
+  --muted:     #5b6b7f;
+  --purple:    #7c3aed;
+  --violet:    #6d28d9;
+  --cyan:      #0891b2;
+  --cyan-dim:  #0e7490;
+  --pink:      #db2777;
+  --blue:      #2563eb;
+  --emerald:   #059669;
+  --amber:     #d97706;
+  --danger:    #dc2626;
+  --shadow-border: 0 0 0 1px oklch(0 0 0 / 0.06), 0 1px 0 oklch(1 0 0 / 0.8), 0 2px 8px oklch(0 0 0 / 0.06);
+  --shadow-border-hover: 0 0 0 1px oklch(0 0 0 / 0.1), 0 1px 0 oklch(1 0 0 / 0.9), 0 4px 14px oklch(0 0 0 / 0.1);
+  --shadow-inset: inset 0 1px 0 oklch(1 0 0 / 0.9);
+  --shadow-inset-deep: inset 0 1px 0 oklch(1 0 0 / 0.85), inset 0 -1px 0 oklch(0 0 0 / 0.04);
+  --vignette-a: rgba(8, 145, 178, 0.06);
+  --vignette-b: rgba(241, 245, 249, 0.95);
+  --toast-bg: var(--surface);
+  --toast-border: var(--border-hi);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -58,8 +90,8 @@ body::before {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(ellipse 80% 50% at 0% 0%, rgba(34, 211, 238, 0.04), transparent 55%),
-    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(15, 23, 42, 0.9), transparent 50%);
+    radial-gradient(ellipse 80% 50% at 0% 0%, var(--vignette-a), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 100% 100%, var(--vignette-b), transparent 50%);
   pointer-events: none;
   z-index: 0;
 }
@@ -1341,4 +1373,129 @@ input[type="checkbox"] {
   flex-direction: column;
   gap: 0.65rem;
   align-items: stretch;
+}
+
+/* ── Danger confirm dialog ─────────────────────────────── */
+.danger-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgba(0, 0, 0, 0.55);
+}
+.danger-dialog-card {
+  width: min(420px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius-lg);
+  padding: 1.35rem 1.25rem 1.15rem;
+  box-shadow: var(--shadow-border-hover), 0 18px 48px oklch(0 0 0 / 0.35);
+}
+
+/* ── Command palette (cmdk) ────────────────────────────── */
+.cmdk-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(0, 0, 0, 0.5);
+  display: grid;
+  place-items: start center;
+  padding: 12vh 1rem 1rem;
+}
+.cmdk-dialog {
+  width: min(520px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-border-hover), 0 18px 48px oklch(0 0 0 / 0.35);
+  overflow: hidden;
+}
+.cmdk-input {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 0.95rem;
+  padding: 0.85rem 1rem;
+  outline: none;
+}
+.cmdk-input::placeholder { color: var(--muted); }
+.cmdk-list {
+  max-height: 320px;
+  overflow: auto;
+  padding: 0.4rem;
+}
+.cmdk-empty {
+  padding: 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.cmdk-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0.7rem;
+  min-height: 40px;
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.cmdk-item[data-selected='true'],
+.cmdk-item:hover {
+  background: rgba(34, 211, 238, 0.1);
+}
+.cmdk-item-icon { color: var(--cyan); flex-shrink: 0; }
+.cmdk-hint {
+  padding: 0.45rem 1rem 0.65rem;
+  font-size: 0.7rem;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+}
+
+/* ── Connection banner stub ────────────────────────────── */
+.connection-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.85rem;
+  margin-bottom: 0.85rem;
+  border-radius: var(--radius);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--amber);
+  font-size: 0.8rem;
+}
+
+/* ── Theme toggle ──────────────────────────────────────── */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0.4rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.theme-toggle:hover {
+  color: var(--text);
+  border-color: var(--border-hi);
+}
+
+/* Sonner toast surface */
+[data-sonner-toaster] [data-sonner-toast] {
+  --normal-bg: var(--toast-bg);
+  --normal-border: var(--toast-border);
+  --normal-text: var(--text);
+  font-family: var(--sans);
 }

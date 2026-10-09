@@ -3,6 +3,7 @@ import { Activity, Database, RefreshCw, RotateCcw, Wallet } from 'lucide-react'
 import { apiGet, apiPost } from '../api'
 import type { ApiEnvelope, BalanceData, HealthData, PluginRow, ProviderBalance } from '../api'
 import { Button } from '../components/ui/button'
+import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
@@ -118,6 +119,7 @@ export function StatusScreen() {
   const [restartMsg, setRestartMsg] = useState<string | null>(null)
   const [restartBusy, setRestartBusy] = useState(false)
   const [restartTone, setRestartTone] = useState<'success' | 'info' | 'error'>('success')
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -145,9 +147,7 @@ export function StatusScreen() {
   }, [load])
 
   async function softRestart() {
-    if (!window.confirm('Перезапустить процесс Neyra (мягкий перезапуск)? Сессии дашборда сохранятся в SQLite, но соединение оборвётся на несколько секунд.')) {
-      return
-    }
+    setRestartConfirmOpen(false)
     setRestartBusy(true)
     setRestartMsg(null)
     setRestartTone('info')
@@ -200,7 +200,7 @@ export function StatusScreen() {
               <RefreshCw aria-hidden size={15} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
               {loading ? 'Обновление…' : 'Обновить'}
             </Button>
-            <Button disabled={restartBusy} onClick={() => void softRestart()} type="button" variant="warn">
+            <Button disabled={restartBusy} onClick={() => setRestartConfirmOpen(true)} type="button" variant="warn">
               <RotateCcw size={15} />
               Мягкий перезапуск
             </Button>
@@ -375,6 +375,17 @@ export function StatusScreen() {
           </table>
         </div>
       </div>
+
+      <DangerConfirmDialog
+        busy={restartBusy}
+        confirmLabel="Перезапустить"
+        confirmPhrase="РЕСТАРТ"
+        description="Мягкий перезапуск. Сессии дашборда сохранятся в SQLite, соединение оборвётся на несколько секунд."
+        onCancel={() => setRestartConfirmOpen(false)}
+        onConfirm={() => void softRestart()}
+        open={restartConfirmOpen}
+        title="Перезапустить Neyra?"
+      />
     </div>
   )
 }

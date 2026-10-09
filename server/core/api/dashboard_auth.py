@@ -14,7 +14,9 @@ from pathlib import Path
 logger = logging.getLogger("neyra.dashboard_auth")
 
 MIN_KEY_LEN = 32
-_PBKDF2_ITERATIONS = 210_000
+# OWASP recommendation for PBKDF2-HMAC-SHA256 (2023+).
+_PBKDF2_ITERATIONS = 600_000
+_LEGACY_DEFAULT_ITERS = 210_000
 _SALT_BYTES = 16
 _SESSION_TTL_SECONDS = 12 * 3600
 _SESSION_BYTES = 32
@@ -37,11 +39,19 @@ class DashboardAuthStore:
             with self._connect() as conn:
                 conn.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS schema_migrations (
+                        version INTEGER PRIMARY KEY,
+                        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                    """
+                )
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS dashboard_gate (
                         id INTEGER PRIMARY KEY CHECK (id = 1),
                         salt TEXT NOT NULL,
                         key_hash TEXT NOT NULL,
-                        iterations INTEGER NOT NULL DEFAULT 210000,
+                        iterations INTEGER NOT NULL DEFAULT 600000,
                         created_at TEXT NOT NULL DEFAULT (datetime('now'))
                     )
                     """
@@ -59,6 +69,10 @@ class DashboardAuthStore:
                     )
                     """
                 )
+                # Version 1 = baseline schema above.
+                row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+                if not row or row[0] is None:
+                    conn.execute("INSERT INTO schema_migrations (version) VALUES (1)")
                 conn.commit()
 
     @staticmethod
@@ -110,12 +124,72 @@ class DashboardAuthStore:
         if not row:
             return False
         salt, expected, iterations = row
-        iters = int(iterations or _PBKDF2_ITERATIONS)
+        iters = int(iterations or _LEGACY_DEFAULT_ITERS)
         try:
             got = self._hash(str(salt), clean, iters)
-            return hmac.compare_digest(got, str(expected))
+            if not hmac.compare_digest(got, str(expected)):
+                return False
         except Exception:
             return False
+        # Transparent rehash to current PBKDF2 iterations on successful login.
+        if iters != _PBKDF2_ITERATIONS:
+            self._rehash(clean)
+        return True
+
+    def _rehash(self, key: str) -> None:
+        salt = secrets.token_hex(_SALT_BYTES)
+        digest = self._hash(salt, key, _PBKDF2_ITERATIONS)
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE dashboard_gate SET salt = ?, key_hash = ?, iterations = ? WHERE id = 1",
+                    (salt, digest, _PBKDF2_ITERATIONS),
+                )
+                conn.commit()
+        logger.info("Dashboard access key rehashed to %s iterations", _PBKDF2_ITERATIONS)
+
+    def rotate(self, current_key: str, new_key: str) -> None:
+        """Replace access key and revoke all sessions."""
+        clean_new = (new_key or "").strip()
+        if len(clean_new) < MIN_KEY_LEN:
+            raise ValueError(f"New key must be at least {MIN_KEY_LEN} characters")
+        if not self.verify(current_key):
+            raise PermissionError("Current access key is invalid")
+        salt = secrets.token_hex(_SALT_BYTES)
+        digest = self._hash(salt, clean_new, _PBKDF2_ITERATIONS)
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE dashboard_gate SET salt = ?, key_hash = ?, iterations = ? WHERE id = 1",
+                    (salt, digest, _PBKDF2_ITERATIONS),
+                )
+                conn.execute("DELETE FROM dashboard_sessions")
+                conn.commit()
+        logger.info("Dashboard access key rotated; all sessions revoked")
+
+    def reset_key(self, new_key: str) -> None:
+        """Console-only reset: set new key and wipe sessions (no current-key check)."""
+        clean_new = (new_key or "").strip()
+        if len(clean_new) < MIN_KEY_LEN:
+            raise ValueError(f"New key must be at least {MIN_KEY_LEN} characters")
+        salt = secrets.token_hex(_SALT_BYTES)
+        digest = self._hash(salt, clean_new, _PBKDF2_ITERATIONS)
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute("SELECT 1 FROM dashboard_gate WHERE id = 1").fetchone()
+                if row:
+                    conn.execute(
+                        "UPDATE dashboard_gate SET salt = ?, key_hash = ?, iterations = ? WHERE id = 1",
+                        (salt, digest, _PBKDF2_ITERATIONS),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO dashboard_gate (id, salt, key_hash, iterations) VALUES (1, ?, ?, ?)",
+                        (salt, digest, _PBKDF2_ITERATIONS),
+                    )
+                conn.execute("DELETE FROM dashboard_sessions")
+                conn.commit()
+        logger.info("Dashboard access key reset via console script")
 
     def issue_session(self) -> str:
         """Random session token accepted as admin Bearer until TTL (no PBKDF2 per request).
@@ -141,6 +215,13 @@ class DashboardAuthStore:
             with self._connect() as conn:
                 conn.execute("DELETE FROM dashboard_sessions WHERE token_hash = ?", (th,))
                 conn.commit()
+
+    def revoke_all_sessions(self) -> int:
+        with self._lock:
+            with self._connect() as conn:
+                cur = conn.execute("DELETE FROM dashboard_sessions")
+                conn.commit()
+                return int(cur.rowcount or 0)
 
     def verify_session(self, token: str) -> bool:
         clean = (token or "").strip()

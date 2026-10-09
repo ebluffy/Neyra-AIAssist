@@ -25,16 +25,19 @@ import yaml
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.runtime.win_runtime import apply_runtime_patches
 
 apply_runtime_patches()
 
-from core.api.dashboard_auth import DashboardAuthStore
+from core.api.dashboard_auth import DashboardAuthStore, MIN_KEY_LEN
 from core.api.client_ip import is_console_local_client as _is_console_local_client
 from core.api.client_ip import is_loopback_ip as _is_loopback_ip_pure
 from core.api.client_ip import resolve_client_ip as _resolve_client_ip_pure
+from core.api.log_redaction import install_log_filters
+from core.api.request_context import get_trace_id, resolve_trace_id, set_trace_id
+from core.api.security_headers import SecurityHeadersMiddleware
 from core.neyra import NeyraAgent
 from core.runtime.backup import BackupManager
 from core.runtime.event_bus import CoreEvent
@@ -47,6 +50,8 @@ from core.reflection import ReflectionEngine
 from core.runtime import HealthMonitor
 
 logger = logging.getLogger("neyra.api")
+# Filters re-installed in build_app with API tokens as extra_secrets (AR-63).
+install_log_filters()
 
 API_VERSION = "1.1.0"
 _PROCESS_STARTED_AT = time.time()
@@ -199,7 +204,12 @@ class ApiError(Exception):
 
 
 def _trace_id(request: Request) -> str:
-    return str(request.headers.get("x-trace-id") or uuid.uuid4())
+    tid = resolve_trace_id(
+        request.headers.get("x-trace-id"),
+        request.headers.get("x-request-id"),
+    )
+    set_trace_id(tid)
+    return tid
 
 
 def _debug_lifecycle_allowed(cfg: dict) -> bool:
@@ -259,12 +269,18 @@ def api_tokens_configured(cfg: dict) -> bool:
 
 
 def assert_api_bind_safe(cfg: dict) -> None:
-    """Refuse non-loopback bind when no API tokens are set (fail-closed for LAN/public)."""
+    """Refuse non-loopback bind or public_base_url when no API tokens are set (fail-closed)."""
     api = _api_cfg(cfg)
     host = str(api.get("host") or "127.0.0.1")
-    if _is_loopback_host(host):
-        return
+    public = str(api.get("public_base_url") or "").strip()
     if api_tokens_configured(cfg):
+        return
+    if public:
+        raise RuntimeError(
+            f"api.public_base_url={public!r} is set but API tokens are empty. "
+            "Set API_TOKEN (and preferably viewer/maint) before publishing."
+        )
+    if _is_loopback_host(host):
         return
     raise RuntimeError(
         f"api.host={host!r} is not loopback but API_TOKEN / API_KEY / "
@@ -316,8 +332,7 @@ def _resolve_role(
 
 
 def _role_at_least(role: str, minimum: str) -> bool:
-    # Wave 1: anon (no tokens configured) is full access only on loopback —
-    # enforced at process start via assert_api_bind_safe, not per-request.
+    # anon is treated as full access only for console-local requests (see RequireRole).
     if role == "anon":
         return True
     return _ROLE_RANK.get(role, 0) >= _ROLE_RANK.get(minimum, 0)
@@ -397,6 +412,21 @@ async def _rate_limit_allow(bucket_key: str, max_per_minute: int) -> bool:
         return True
 
 
+def _inbound_idempotency_key(
+    provider: str,
+    endpoint_id: str,
+    request: Request,
+    raw_body: bytes,
+) -> str:
+    """Stable key for inbound webhook dedup (header preferred, else body hash)."""
+    for header in ("idempotency-key", "x-idempotency-key", "x-neyra-delivery-id"):
+        raw = request.headers.get(header)
+        if raw and str(raw).strip():
+            return f"hdr:{provider}:{endpoint_id}:{str(raw).strip()}"
+    digest = hashlib.sha256(raw_body or b"").hexdigest()
+    return f"body:{provider}:{endpoint_id}:{digest}"
+
+
 def _parse_inbound_json_body(raw: bytes) -> dict[str, Any]:
     if not raw:
         return {}
@@ -407,7 +437,11 @@ def _parse_inbound_json_body(raw: bytes) -> dict[str, Any]:
         return {"raw_text": raw.decode("utf-8", errors="replace")}
 
 
-class ChatRequest(BaseModel):
+class _ApiBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ChatRequest(_ApiBody):
     text: str = Field(min_length=1, max_length=6000)
     username: Optional[str] = Field(default=None, max_length=120)
     platform_user_id: Optional[str] = Field(default=None, max_length=120)
@@ -417,12 +451,12 @@ class ChatRequest(BaseModel):
     platform: Optional[str] = Field(default=None, max_length=40)
 
 
-class DashboardGateKeyRequest(BaseModel):
+class DashboardGateKeyRequest(_ApiBody):
     # Login may still use an older key (<32); setup enforces MIN_KEY_LEN in the store.
     key: str = Field(min_length=8, max_length=256)
 
 
-class MemorySearchRequest(BaseModel):
+class MemorySearchRequest(_ApiBody):
     """Semantic RAG search. Requires user_id (dialogs scoped; shared knowledge still included)."""
 
     query: str = Field(min_length=1, max_length=1200)
@@ -430,7 +464,7 @@ class MemorySearchRequest(BaseModel):
     user_id: Optional[str] = Field(default=None, max_length=120)
 
 
-class MemoryRecallRequest(BaseModel):
+class MemoryRecallRequest(_ApiBody):
     """Chronological chat_log recall (SQLite), not semantic RAG. Requires user_id and/or channel_id."""
 
     limit: int = Field(default=20, ge=1, le=200)
@@ -440,21 +474,21 @@ class MemoryRecallRequest(BaseModel):
     newest_first: bool = True
 
 
-class MemoryWriteRequest(BaseModel):
+class MemoryWriteRequest(_ApiBody):
     user_text: str = Field(min_length=1, max_length=6000)
     assistant_text: str = Field(min_length=1, max_length=6000)
     username: Optional[str] = Field(default=None, max_length=120)
     platform_user_id: Optional[str] = Field(default=None, max_length=120)
 
 
-class MemoryAddRequest(BaseModel):
+class MemoryAddRequest(_ApiBody):
     """Один документ знаний в RAG (не пара диалога). Живая инъекция без перезапуска ядра."""
 
     text: str = Field(min_length=1, max_length=24000)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class PersonUpsertRequest(BaseModel):
+class PersonUpsertRequest(_ApiBody):
     """Create/update person card (aliases + accounts; no анкетные fields)."""
 
     id: Optional[str] = Field(default=None, min_length=1, max_length=80)
@@ -463,7 +497,7 @@ class PersonUpsertRequest(BaseModel):
     accounts: Optional[list[dict[str, Any]]] = None
 
 
-class PersonMergeRequest(BaseModel):
+class PersonMergeRequest(_ApiBody):
     """Exact person_id only (no alias lookup)."""
 
     survivor_id: str = Field(min_length=1, max_length=80)
@@ -471,41 +505,41 @@ class PersonMergeRequest(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=500)
 
 
-class MemoryWipeRequest(BaseModel):
+class MemoryWipeRequest(_ApiBody):
     scopes: list[str] = Field(min_length=1)
     confirm: str = Field(min_length=1, max_length=32)
 
 
-class PersonFactCreateRequest(BaseModel):
+class PersonFactCreateRequest(_ApiBody):
     fact: str = Field(min_length=1, max_length=4000)
     emotion_note: Optional[str] = Field(default=None, max_length=500)
 
 
-class DiaryCreateRequest(BaseModel):
+class DiaryCreateRequest(_ApiBody):
     text: str = Field(min_length=1, max_length=12000)
     emotion: Optional[str] = Field(default=None, max_length=120)
 
 
-class JournalCreateRequest(BaseModel):
+class JournalCreateRequest(_ApiBody):
     text: str = Field(min_length=1, max_length=12000)
     title: Optional[str] = Field(default=None, max_length=240)
     kind: Optional[str] = Field(default=None, max_length=80)
 
 
-class MemoryPruneRequest(BaseModel):
+class MemoryPruneRequest(_ApiBody):
     older_than_days: float = Field(default=90.0, ge=0.5, le=36500.0)
     types: Optional[list[str]] = Field(default=None)
     dry_run: bool = False
 
 
-class MemoryArchiveRequest(BaseModel):
+class MemoryArchiveRequest(_ApiBody):
     older_than_days: float = Field(default=90.0, ge=0.5, le=36500.0)
     types: Optional[list[str]] = Field(default=None)
     dry_run: bool = False
     max_entries: int = Field(default=2000, ge=1, le=50000)
 
 
-class MemorySummarizeRequest(BaseModel):
+class MemorySummarizeRequest(_ApiBody):
     """Архивация старых записей + опционально один digest-документ через LLM."""
 
     older_than_days: float = Field(default=60.0, ge=0.5, le=36500.0)
@@ -515,53 +549,53 @@ class MemorySummarizeRequest(BaseModel):
     compress_with_llm: bool = True
 
 
-class NotifyRequest(BaseModel):
+class NotifyRequest(_ApiBody):
     event_type: str = Field(min_length=3, max_length=120)
     payload: dict[str, Any] = Field(default_factory=dict)
     source: str = Field(default="api.notify", max_length=120)
 
 
-class FireDebugEventRequest(BaseModel):
+class FireDebugEventRequest(_ApiBody):
     """Тело POST /v1/debug/fire_event — только шина EventBus (без исходящих webhooks)."""
 
     event_type: str = Field(min_length=1, max_length=200)
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class LifecycleDebugRequest(BaseModel):
+class LifecycleDebugRequest(_ApiBody):
     """POST /v1/debug/lifecycle — завершение процесса (Docker/Orchestrator поднимает снова при restart policy)."""
 
     action: Literal["stop", "restart"]
 
 
-class ResetContextDebugRequest(BaseModel):
+class ResetContextDebugRequest(_ApiBody):
     """POST /v1/debug/reset_context — archive STM (session_archive) then clear short memory."""
 
     user_id: str = Field(..., min_length=1, max_length=120)
     channel_id: Optional[str] = Field(default=None, max_length=120)
 
 
-class ConfigUpdateRequest(BaseModel):
+class ConfigUpdateRequest(_ApiBody):
     updates: dict[str, Any] = Field(default_factory=dict)
 
 
-class PluginStateUpdateRequest(BaseModel):
+class PluginStateUpdateRequest(_ApiBody):
     enabled: bool
 
 
-class PluginConfigUpdateRequest(BaseModel):
+class PluginConfigUpdateRequest(_ApiBody):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
-class PluginInvokeRequest(BaseModel):
+class PluginInvokeRequest(_ApiBody):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class PluginFilePutRequest(BaseModel):
+class PluginFilePutRequest(_ApiBody):
     content: str = Field(default="", max_length=512_000)
 
 
-class WebhookRouteCreateRequest(BaseModel):
+class WebhookRouteCreateRequest(_ApiBody):
     route_id: Optional[str] = Field(default=None, max_length=120)
     event_type: str = Field(min_length=1, max_length=120)
     target_url: str = Field(min_length=8, max_length=2048)
@@ -570,7 +604,7 @@ class WebhookRouteCreateRequest(BaseModel):
     max_retries: int = Field(default=3, ge=0, le=10)
 
 
-class WebhookRouteUpdateRequest(BaseModel):
+class WebhookRouteUpdateRequest(_ApiBody):
     event_type: Optional[str] = Field(default=None, min_length=1, max_length=120)
     target_url: Optional[str] = Field(default=None, min_length=8, max_length=2048)
     secret: Optional[str] = Field(default=None, max_length=512)
@@ -578,12 +612,32 @@ class WebhookRouteUpdateRequest(BaseModel):
     max_retries: Optional[int] = Field(default=None, ge=0, le=10)
 
 
-class WebhookTestRequest(BaseModel):
+class WebhookTestRequest(_ApiBody):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class WebhookRetryRequest(BaseModel):
+class WebhookRetryRequest(_ApiBody):
     delay_seconds: float = Field(default=0.0, ge=0.0, le=300.0)
+
+
+class BackupRestoreRequest(_ApiBody):
+    archive_name: str = Field(min_length=1, max_length=260)
+    confirm: str = Field(min_length=1, max_length=260)
+
+
+class DashboardRotateRequest(_ApiBody):
+    current_key: str = Field(min_length=8, max_length=256)
+    new_key: str = Field(min_length=MIN_KEY_LEN, max_length=256)
+
+
+class WsChatMessage(_ApiBody):
+    type: Literal["ping", "chat"]
+    text: str = Field(default="", max_length=6000)
+    username: Optional[str] = Field(default=None, max_length=120)
+    platform_user_id: Optional[str] = Field(default=None, max_length=120)
+    channel_id: Optional[str] = Field(default=None, max_length=120)
+    author_display_name: Optional[str] = Field(default=None, max_length=120)
+    display_name: Optional[str] = Field(default=None, max_length=120)
 
 
 def _utc_now() -> str:
@@ -625,17 +679,22 @@ class WebhookStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
         self._state = self._load()
+        # AR-70: keys this process currently owns — inflight without TTL.
+        self._owned_inbound: set[str] = set()
+
+    _INBOUND_DEDUP_MAX = 500
 
     def _load(self) -> dict[str, Any]:
         if not self.path.is_file():
-            return {"routes": {}, "deliveries": {}, "dlq": {}}
+            return {"routes": {}, "deliveries": {}, "dlq": {}, "inbound_dedup": {}}
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
-                return {"routes": {}, "deliveries": {}, "dlq": {}}
+                return {"routes": {}, "deliveries": {}, "dlq": {}, "inbound_dedup": {}}
             raw.setdefault("routes", {})
             raw.setdefault("deliveries", {})
             raw.setdefault("dlq", {})
+            raw.setdefault("inbound_dedup", {})
             # Stuck "retrying" from a crash mid-retry → back to failed (AR-41).
             changed = False
             for did, row in list((raw.get("dlq") or {}).items()):
@@ -646,6 +705,13 @@ class WebhookStore:
                     if did in (raw.get("deliveries") or {}):
                         raw["deliveries"][did] = {**raw["deliveries"][did], **row}
                     changed = True
+            # AR-62: after restart nobody owns inflight claims — drop them.
+            dedup = raw.get("inbound_dedup") or {}
+            if isinstance(dedup, dict):
+                for kid, row in list(dedup.items()):
+                    if isinstance(row, dict) and str(row.get("status") or "") == "inflight":
+                        dedup.pop(kid, None)
+                        changed = True
             if changed:
                 try:
                     self.path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -653,7 +719,7 @@ class WebhookStore:
                     pass
             return raw
         except Exception:
-            return {"routes": {}, "deliveries": {}, "dlq": {}}
+            return {"routes": {}, "deliveries": {}, "dlq": {}, "inbound_dedup": {}}
 
     async def _save(self) -> None:
         text = json.dumps(self._state, ensure_ascii=False, indent=2)
@@ -829,6 +895,134 @@ class WebhookStore:
             self._state["deliveries"][did] = {**base, **row}
             await self._save()
 
+    _INBOUND_DEDUP_TTL_BODY_SEC = 600.0
+    _INBOUND_DEDUP_TTL_HEADER_SEC = 86400.0
+    # Disk-only orphan inflight (should be rare after _load clears them).
+    _INBOUND_DEDUP_TTL_INFLIGHT_SEC = 120.0
+
+    def _inbound_ttl_seconds(self, key: str) -> float:
+        return (
+            self._INBOUND_DEDUP_TTL_HEADER_SEC
+            if str(key).startswith("hdr:")
+            else self._INBOUND_DEDUP_TTL_BODY_SEC
+        )
+
+    def _inbound_row_fresh(self, row: dict[str, Any], *, ttl_seconds: float) -> bool:
+        stored = str(row.get("stored_at") or "").strip()
+        if not stored:
+            return False
+        try:
+            ts = datetime.fromisoformat(stored.replace("Z", "+00:00"))
+            if ts.tzinfo is not None:
+                age = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
+            else:
+                age = (datetime.now() - ts).total_seconds()
+            return age <= ttl_seconds
+        except Exception:
+            return False
+
+    async def claim_inbound_dedup(self, key: str) -> tuple[str, dict[str, Any] | None]:
+        """AR-62/70: under lock — return (hit|inflight|proceed, payload?).
+
+        hit: fresh completed cache (no reply field).
+        inflight: another request is processing this key (owned in-memory = no TTL).
+        proceed: caller reserved the key and must finish/release.
+        """
+        kid = str(key or "").strip()
+        if not kid:
+            return ("proceed", None)
+        ttl = self._inbound_ttl_seconds(kid)
+        async with self._lock:
+            store = self._state.setdefault("inbound_dedup", {})
+            if not isinstance(store, dict):
+                store = {}
+                self._state["inbound_dedup"] = store
+            # Process-owned claim never expires while this worker is alive (AR-70).
+            if kid in self._owned_inbound:
+                return ("inflight", None)
+            row = store.get(kid)
+            if isinstance(row, dict):
+                status = str(row.get("status") or "done")
+                if status == "inflight":
+                    # Disk orphan only — short TTL; owned keys handled above.
+                    if self._inbound_row_fresh(
+                        row, ttl_seconds=self._INBOUND_DEDUP_TTL_INFLIGHT_SEC
+                    ):
+                        return ("inflight", None)
+                    store.pop(kid, None)
+                elif status == "done" and self._inbound_row_fresh(row, ttl_seconds=ttl):
+                    data = row.get("data")
+                    return ("hit", dict(data) if isinstance(data, dict) else {})
+                else:
+                    store.pop(kid, None)
+            store[kid] = {
+                "key": kid,
+                "status": "inflight",
+                "stored_at": _utc_now(),
+            }
+            self._owned_inbound.add(kid)
+            # AR-72: never evict process-owned keys (would reopen AR-70 double-process).
+            while len(store) > self._INBOUND_DEDUP_MAX:
+                victim = next(
+                    (k for k in store if k != kid and k not in self._owned_inbound),
+                    None,
+                )
+                if victim is None:
+                    break  # all slots live requests — prefer >MAX over a duplicate
+                store.pop(victim, None)
+            try:
+                await self._save()
+            except BaseException:
+                # AR-73: do not leave a permanent owned/inflight claim after save failure.
+                self._owned_inbound.discard(kid)
+                store.pop(kid, None)
+                raise
+            return ("proceed", None)
+
+    async def finish_inbound_dedup(self, key: str, data: dict[str, Any] | None) -> None:
+        """Complete claim: store meta without reply, or drop on failure."""
+        kid = str(key or "").strip()
+        if not kid:
+            return
+        async with self._lock:
+            self._owned_inbound.discard(kid)
+            store = self._state.setdefault("inbound_dedup", {})
+            if not isinstance(store, dict):
+                return
+            if data is None:
+                store.pop(kid, None)
+            else:
+                # Never persist LLM reply / PII — only acceptance metadata.
+                safe = {
+                    "accepted": bool(data.get("accepted", True)),
+                    "provider": data.get("provider"),
+                    "endpoint_id": data.get("endpoint_id"),
+                    "deduplicated": False,
+                }
+                store[kid] = {
+                    "key": kid,
+                    "status": "done",
+                    "stored_at": _utc_now(),
+                    "data": safe,
+                }
+            await self._save()
+
+    async def get_inbound_dedup(self, key: str) -> dict[str, Any] | None:
+        """Legacy helper — prefer claim_inbound_dedup."""
+        kid = str(key or "").strip()
+        if not kid:
+            return None
+        async with self._lock:
+            row = (self._state.get("inbound_dedup") or {}).get(kid)
+            if not isinstance(row, dict):
+                return None
+            if not self._inbound_row_fresh(row, ttl_seconds=self._inbound_ttl_seconds(kid)):
+                return None
+            return dict(row)
+
+    async def put_inbound_dedup(self, key: str, data: dict[str, Any]) -> None:
+        await self.finish_inbound_dedup(key, data)
+
     async def get_delivery(self, delivery_id: str) -> dict[str, Any] | None:
         async with self._lock:
             row = self._state["deliveries"].get(delivery_id)
@@ -1000,6 +1194,16 @@ def build_app(
         servers=openapi_servers,
     )
     root = Path(project_root).resolve() if project_root is not None else _project_root()
+    # AR-63: re-install redaction on handlers with live API secrets.
+    _api_for_redact = config.get("api") if isinstance(config.get("api"), dict) else {}
+    install_log_filters(
+        extra_secrets=[
+            str(_api_for_redact.get("token") or "").strip(),
+            str(_api_for_redact.get("viewer_token") or "").strip(),
+            str(_api_for_redact.get("maint_token") or "").strip(),
+            str(_api_for_redact.get("webhook_inbound_secret") or "").strip(),
+        ]
+    )
     if shared_agent is not None:
         agent = shared_agent
         if shared_monitor is None or shared_backup_manager is None:
@@ -1084,11 +1288,43 @@ def build_app(
 
     @app.exception_handler(Exception)
     async def _unhandled_handler(request: Request, exc: Exception):
+        from fastapi.exceptions import RequestValidationError
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+
+        if isinstance(exc, (RequestValidationError, StarletteHTTPException)):
+            raise exc
         trace_id = _trace_id(request)
         logger.exception("Unhandled API error | trace_id=%s", trace_id)
         return JSONResponse(
             status_code=500,
-            content=_err_payload(trace_id, "internal_error", str(exc)[:500]),
+            content=_err_payload(
+                trace_id,
+                "internal_error",
+                f"Внутренняя ошибка сервера. Код для поддержки: {trace_id}",
+            ),
+            headers={"x-trace-id": trace_id},
+        )
+
+    from fastapi.exceptions import RequestValidationError
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_handler(request: Request, exc: RequestValidationError):
+        trace_id = _trace_id(request)
+        details = []
+        for err in exc.errors():
+            loc = ".".join(str(x) for x in err.get("loc", ()) if x != "body")
+            details.append({"field": loc or "body", "msg": err.get("msg", "invalid")})
+        return JSONResponse(
+            status_code=422,
+            content={
+                "ok": False,
+                "error": {
+                    "code": "validation_error",
+                    "message": "Validation failed",
+                    "details": details,
+                },
+                "trace_id": trace_id,
+            },
             headers={"x-trace-id": trace_id},
         )
 
@@ -1108,6 +1344,11 @@ def build_app(
                 config,
                 getattr(request.app.state, "dashboard_auth", None),
             )
+            # B-1: anon only for console-local clients; behind proxy → 401.
+            if role == "anon":
+                peer = request.client.host if request.client else "unknown"
+                if not _is_console_local_client(peer=peer, headers=request.headers):
+                    raise ApiError("unauthorized", "Missing bearer token", 401)
             if not _role_at_least(role, self.min_role):
                 raise ApiError("forbidden", "Insufficient API token scope", 403)
             return role
@@ -1117,23 +1358,81 @@ def build_app(
     dep_admin = RequireRole("admin")
 
     ia_sec = config.get("api") if isinstance(config.get("api"), dict) else {}
+    public_base = str(ia_sec.get("public_base_url") or "").strip()
     rate_rpm = int(ia_sec.get("rate_limit_requests_per_minute", 0))
+    if rate_rpm <= 0 and public_base:
+        rate_rpm = 120
+    docs_public = ia_sec.get("docs_public")
+    if docs_public is None:
+        docs_public = not bool(public_base)
+    else:
+        docs_public = bool(docs_public)
 
-    @app.middleware("http")
-    async def _rate_limit_middleware(request: Request, call_next):
-        path = request.url.path or ""
-        if rate_rpm <= 0 or not path.startswith("/v1") or path.startswith("/v1/ws"):
-            return await call_next(request)
-        # Same resolver as setup/login: CF/X-Real when peer loopback; never X-Forwarded-For.
-        ip = resolve_client_ip(request)
-        if not await _rate_limit_allow(f"http:{ip}", rate_rpm):
+    # Pure ASGI middlewares (avoid BaseHTTPMiddleware + ExceptionGroup with TestClient).
+    class _TraceDocsASGI:
+        def __init__(self, app_):
+            self.app = app_
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+            from starlette.requests import Request as StarletteRequest
+
+            request = StarletteRequest(scope, receive)
             tid = _trace_id(request)
-            return JSONResponse(
-                status_code=429,
-                content=_err_payload(tid, "rate_limited", "Too many requests"),
-                headers={"x-trace-id": tid, "Retry-After": "60"},
-            )
-        return await call_next(request)
+            path = request.url.path or ""
+            if path in ("/docs", "/redoc", "/openapi.json") and not docs_public:
+                peer = request.client.host if request.client else "unknown"
+                if not _is_console_local_client(peer=peer, headers=request.headers):
+                    resp = JSONResponse(
+                        status_code=404,
+                        content=_err_payload(tid, "not_found", "Not found"),
+                        headers={"x-trace-id": tid},
+                    )
+                    await resp(scope, receive, send)
+                    return
+
+            async def send_wrapper(message):
+                if message["type"] == "http.response.start":
+                    from starlette.datastructures import MutableHeaders
+
+                    headers = MutableHeaders(scope=message)
+                    headers.setdefault("x-trace-id", tid)
+                await send(message)
+
+            await self.app(scope, receive, send_wrapper)
+
+    class _RateLimitASGI:
+        def __init__(self, app_):
+            self.app = app_
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+            path = scope.get("path") or ""
+            if rate_rpm <= 0 or not path.startswith("/v1") or path.startswith("/v1/ws"):
+                await self.app(scope, receive, send)
+                return
+            from starlette.requests import Request as StarletteRequest
+
+            request = StarletteRequest(scope, receive)
+            ip = resolve_client_ip(request)
+            if not await _rate_limit_allow(f"http:{ip}", rate_rpm):
+                tid = _trace_id(request)
+                resp = JSONResponse(
+                    status_code=429,
+                    content=_err_payload(tid, "rate_limited", "Too many requests"),
+                    headers={"x-trace-id": tid, "Retry-After": "60"},
+                )
+                await resp(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
+
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(_TraceDocsASGI)
+    app.add_middleware(_RateLimitASGI)
 
     def _audit(op: str, trace_id: str, role: str, extra: Optional[dict[str, Any]] = None) -> None:
         logger.info("api_audit | op=%s | trace_id=%s | role=%s", op, trace_id, role)
@@ -1156,7 +1455,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": out}
 
     @app.post("/v1/memory/search")
-    async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_viewer)):
+    async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_maint)):
         trace_id = _trace_id(request)
         uid = (body.user_id or "").strip() or None
         if not uid:
@@ -1173,7 +1472,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": {"results": rows, "user_id": uid}}
 
     @app.post("/v1/memory/chat/recall")
-    async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_viewer)):
+    async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_maint)):
         """Chronological list from SQLite chat_log (Memory Hub). Requires user_id and/or channel_id."""
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
@@ -1340,7 +1639,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/debug/memory")
-    async def v1_debug_memory(request: Request, _: None = Depends(dep_viewer)):
+    async def v1_debug_memory(request: Request, _: None = Depends(dep_maint)):
         """Краткосрочная память (история), сводная статистика агента и счётчики RAG."""
         trace_id = _trace_id(request)
         hist = agent.short_memory.get_history()
@@ -1453,10 +1752,10 @@ def build_app(
             )
         try:
             dash_auth.setup(body.key)
-        except RuntimeError as e:
-            raise ApiError("already_configured", str(e), 409) from e
-        except ValueError as e:
-            raise ApiError("bad_request", str(e), 400) from e
+        except RuntimeError:
+            raise ApiError("already_configured", "Dashboard access key already configured", 409)
+        except ValueError:
+            raise ApiError("bad_request", f"Key must be at least {MIN_KEY_LEN} characters", 400)
         session = dash_auth.issue_session()
         return {
             "ok": True,
@@ -1497,6 +1796,41 @@ def build_app(
             if tok:
                 dash_auth.revoke_session(tok)
         return {"ok": True, "trace_id": trace_id, "data": {"revoked": True}}
+
+    @app.post("/v1/dashboard/auth/rotate")
+    async def v1_dashboard_auth_rotate(body: DashboardRotateRequest, request: Request):
+        """Rotate dashboard access key; revokes all sessions. Rate-limited like login."""
+        trace_id = _trace_id(request)
+        ip = _client_ip(request)
+        if not _dash_login_rate_ok(ip):
+            raise ApiError("rate_limited", "Too many auth attempts", 429)
+        if not dash_auth.is_configured():
+            raise ApiError("setup_required", "Create a dashboard access key first", 400)
+        try:
+            dash_auth.rotate(body.current_key, body.new_key)
+        except PermissionError:
+            _dash_login_fail(ip)
+            raise ApiError("unauthorized", "Invalid access key", 401)
+        except ValueError:
+            raise ApiError("bad_request", f"New key must be at least {MIN_KEY_LEN} characters", 400)
+        session = dash_auth.issue_session()
+        _audit("dashboard_auth_rotate", trace_id, "admin")
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"rotated": True, "session_token": session},
+        }
+
+    @app.post("/v1/dashboard/auth/logout-all")
+    async def v1_dashboard_auth_logout_all(
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Revoke every dashboard session (admin / current session Bearer)."""
+        trace_id = _trace_id(request)
+        n = dash_auth.revoke_all_sessions()
+        _audit("dashboard_auth_logout_all", trace_id, api_role, {"revoked": n})
+        return {"ok": True, "trace_id": trace_id, "data": {"revoked": n}}
 
     @app.get("/v1/meta")
     async def v1_meta(request: Request, _: None = Depends(dep_viewer)):
@@ -1544,6 +1878,92 @@ def build_app(
             short = role_key.replace("_model", "")
             roles_out[short] = {"role": role_key, "provider": prov, "model": mid}
         return {"ok": True, "trace_id": trace_id, "data": {"roles": roles_out}}
+
+    @app.get("/v1/health/live")
+    async def v1_health_live():
+        """Liveness probe — no auth, no details (systemd / frp / monitors)."""
+        return {"ok": True}
+
+    @app.get("/v1/health/ready")
+    async def v1_health_ready(request: Request, _: None = Depends(dep_viewer)):
+        trace_id = _trace_id(request)
+        checks: list[dict[str, Any]] = []
+        ready = True
+        # Memory Hub / SQLite
+        try:
+            t0 = time.perf_counter()
+            hub = getattr(agent, "memory_hub", None)
+            if hub is not None and hasattr(hub, "stats"):
+                hub.stats()
+            checks.append({"name": "memory_hub", "ok": True, "ms": int((time.perf_counter() - t0) * 1000)})
+        except Exception:
+            ready = False
+            logger.exception("health ready memory_hub failed | trace_id=%s", trace_id)
+            checks.append({"name": "memory_hub", "ok": False})
+        # Dashboard auth DB
+        try:
+            t0 = time.perf_counter()
+            _ = dash_auth.is_configured()
+            checks.append({"name": "dashboard_auth", "ok": True, "ms": int((time.perf_counter() - t0) * 1000)})
+        except Exception:
+            ready = False
+            checks.append({"name": "dashboard_auth", "ok": False})
+        # Writable data_dir
+        try:
+            data = resolve_data_dir(root, config)
+            probe = data / ".neyra_ready_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            checks.append({"name": "data_dir_writable", "ok": True})
+        except Exception:
+            ready = False
+            checks.append({"name": "data_dir_writable", "ok": False})
+        status = 200 if ready else 503
+        return JSONResponse(
+            status_code=status,
+            content={"ok": ready, "trace_id": trace_id, "data": {"checks": checks}},
+            headers={"x-trace-id": trace_id},
+        )
+
+    @app.get("/v1/health/history")
+    async def v1_health_history(
+        request: Request,
+        hours: int = Query(default=24, ge=1, le=168),
+        _: None = Depends(dep_viewer),
+    ):
+        trace_id = _trace_id(request)
+        log_path = Path(getattr(monitor, "log_path", root / "logs" / "health_status.jsonl"))
+        cutoff = time.time() - hours * 3600
+        points: list[dict[str, Any]] = []
+        if log_path.is_file():
+            try:
+                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                for line in lines[-2000:]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    ts = row.get("timestamp")
+                    try:
+                        epoch = datetime.fromisoformat(str(ts)).timestamp() if ts else 0.0
+                    except Exception:
+                        epoch = 0.0
+                    if epoch and epoch < cutoff:
+                        continue
+                    points.append(
+                        {
+                            "timestamp": ts,
+                            "ok": bool(row.get("ok")),
+                            "backend_ok": bool((row.get("backend") or {}).get("ok", True)),
+                            "storage_ok": bool((row.get("storage") or {}).get("ok", True)),
+                        }
+                    )
+            except Exception:
+                logger.exception("health history read failed | trace_id=%s", trace_id)
+        return {"ok": True, "trace_id": trace_id, "data": {"hours": hours, "points": points}}
 
     @app.get("/v1/health")
     async def v1_health(request: Request, _: None = Depends(dep_viewer)):
@@ -1622,7 +2042,7 @@ def build_app(
     @app.get("/v1/memory/people")
     async def v1_memory_people(
         request: Request,
-        _: None = Depends(dep_viewer),
+        _: None = Depends(dep_maint),
         limit: int = Query(100, ge=1, le=500),
     ):
         """List people from MemoryHub SQLite (cutover-safe)."""
@@ -1648,8 +2068,23 @@ def build_app(
                 )
             return out
 
-        people = await asyncio.to_thread(_run)
-        return {"ok": True, "trace_id": trace_id, "data": {"people": people, "count": len(people)}}
+        def _with_dupes() -> dict[str, Any]:
+            rows = _run()
+            dupes = hub.find_slug_duplicates()
+            return {"people": rows, "count": len(rows), "slug_duplicates": dupes}
+
+        payload = await asyncio.to_thread(_with_dupes)
+        return {"ok": True, "trace_id": trace_id, "data": payload}
+
+    @app.get("/v1/memory/people/duplicates")
+    async def v1_memory_people_duplicates(request: Request, _: None = Depends(dep_maint)):
+        """Legacy nick-as-id cards that collide with account handles (dashboard hint)."""
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        rows = await asyncio.to_thread(hub.find_slug_duplicates)
+        return {"ok": True, "trace_id": trace_id, "data": {"duplicates": rows, "count": len(rows)}}
 
     @app.post("/v1/memory/people")
     async def v1_memory_people_create(
@@ -1661,22 +2096,25 @@ def build_app(
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
-        pid = (body.id or "").strip()
-        if not pid:
-            base = ""
-            if body.names:
-                base = str(body.names[0])
-            import re as _re
-
-            slug = _re.sub(r"[^a-zA-Z0-9_\-]+", "_", base.strip().lower()).strip("_") or "person"
-            pid = slug[:60]
 
         def _run() -> dict[str, Any]:
+            # Opaque id only — never nick/slug (fixes hopelesness-style duplicates).
+            pid = hub.allocate_person_id(
+                accounts=list(body.accounts or []) if body.accounts else None,
+                discord_ids=list(body.discord_ids or []),
+                explicit_id=(body.id or "").strip() or None,
+            )
             if hub.sqlite.get_person(pid):
-                raise ApiError("person_exists", f"person '{pid}' already exists", 409)
+                raise ApiError("person_exists", "Person already exists", 409)
+            # Keep requested nick as alias, not as id.
+            names = list(body.names or [])
+            if (body.id or "").strip() and (body.id or "").strip() != pid:
+                nick = (body.id or "").strip()
+                if nick not in names:
+                    names = [nick] + names
             person = hub.save_person_dossier(
                 person_id=pid,
-                names=list(body.names or []),
+                names=names,
                 discord_ids=list(body.discord_ids or []),
                 accounts=list(body.accounts or []) if body.accounts else None,
                 create=True,
@@ -1691,7 +2129,7 @@ def build_app(
         except ApiError:
             raise
         except Exception as e:
-            raise ApiError("person_create_failed", str(e), 500) from e
+            raise ApiError("person_create_failed", "Failed to create person", 500) from e
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.post("/v1/memory/people/merge")
@@ -1766,7 +2204,7 @@ def build_app(
     @app.get("/v1/memory/people/merge-log")
     async def v1_memory_merge_log(
         request: Request,
-        _: None = Depends(dep_viewer),
+        _: None = Depends(dep_maint),
         limit: int = Query(20, ge=1, le=100),
     ):
         trace_id = _trace_id(request)
@@ -1795,7 +2233,7 @@ def build_app(
     @app.get("/v1/memory/people/merge-proposals")
     async def v1_memory_merge_proposals(
         request: Request,
-        _: None = Depends(dep_viewer),
+        _: None = Depends(dep_maint),
         status: str = Query("pending", max_length=32),
         limit: int = Query(50, ge=1, le=200),
     ):
@@ -1885,7 +2323,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/memory/people/{person_id}")
-    async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_viewer)):
+    async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_maint)):
         """Person card: accounts + facts (no анкета)."""
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
@@ -2032,7 +2470,7 @@ def build_app(
     @app.get("/v1/memory/diary")
     async def v1_memory_diary(
         request: Request,
-        _: None = Depends(dep_viewer),
+        _: None = Depends(dep_maint),
         limit: int = Query(20, ge=1, le=200),
     ):
         trace_id = _trace_id(request)
@@ -2069,7 +2507,7 @@ def build_app(
     @app.get("/v1/memory/journal")
     async def v1_memory_journal(
         request: Request,
-        _: None = Depends(dep_viewer),
+        _: None = Depends(dep_maint),
         limit: int = Query(20, ge=1, le=200),
     ):
         trace_id = _trace_id(request)
@@ -2406,7 +2844,7 @@ def build_app(
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         cfg_path = _plugin_config_path(m)
         cfg: dict[str, Any] = {}
         if cfg_path.is_file():
@@ -2440,12 +2878,12 @@ def build_app(
         loader = PluginLoader(root)
         prev_manifest = _find_manifest(loader, plugin_id)
         if prev_manifest is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         prev_enabled = bool(prev_manifest.enabled)
         enabled_changed = prev_enabled != bool(body.enabled)
         ok = loader.set_enabled(plugin_id, body.enabled)
         if not ok:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         manifest = _find_manifest(loader, plugin_id)
         is_resident = bool(manifest and str(manifest.lifecycle).lower() == "resident")
         lava_note = ""
@@ -2523,11 +2961,11 @@ def build_app(
         except FileExistsError as e:
             raise ApiError(
                 "already_exists",
-                f"plugin already exists: {e}. Pass replace=true to overwrite (preserves config/logs/data).",
+                "Plugin already exists. Pass replace=true to overwrite (preserves config/logs/data).",
                 409,
             ) from e
         except (ValueError, zipfile.BadZipFile) as e:
-            raise ApiError("bad_request", str(e), 400) from e
+            raise ApiError("bad_request", "Invalid plugin archive", 400) from e
         pid = str(info.get("plugin_id") or "")
         restart_scheduled = False
         if info.get("replaced"):
@@ -2552,14 +2990,14 @@ def build_app(
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         is_resident = str(m.lifecycle).lower() == "resident"
         try:
             await asyncio.to_thread(plugin_ops_helpers.delete_plugin_dir, root / "modules", plugin_id)
         except ValueError as e:
-            raise ApiError("forbidden", str(e), 403) from e
+            raise ApiError("forbidden", "Forbidden", 403) from e
         except FileNotFoundError as e:
-            raise ApiError("not_found", str(e), 404) from e
+            raise ApiError("not_found", "Not found", 404) from e
         restart_scheduled = False
         if is_resident:
             _schedule_exit_after_response(reason=f"resident_plugin_delete:{plugin_id}")
@@ -2583,7 +3021,7 @@ def build_app(
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         files = plugin_ops_helpers.list_plugin_config_files(m.plugin_dir)
         return {"ok": True, "trace_id": trace_id, "data": {"plugin_id": m.id, "files": files}}
 
@@ -2593,13 +3031,13 @@ def build_app(
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         try:
             content = plugin_ops_helpers.read_plugin_file(m.plugin_dir, file_path)
         except FileNotFoundError as e:
-            raise ApiError("not_found", f"File not found: {file_path}", 404) from e
+            raise ApiError("not_found", "File not found", 404) from e
         except ValueError as e:
-            raise ApiError("bad_request", str(e), 400) from e
+            raise ApiError("bad_request", "Invalid request", 400) from e
         return {
             "ok": True,
             "trace_id": trace_id,
@@ -2618,11 +3056,11 @@ def build_app(
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         try:
             plugin_ops_helpers.write_plugin_file(m.plugin_dir, file_path, body.content)
         except ValueError as e:
-            raise ApiError("bad_request", str(e), 400) from e
+            raise ApiError("bad_request", "Invalid request", 400) from e
         _audit("plugin_file_put", trace_id, api_role, {"plugin_id": plugin_id, "path": file_path})
         return {
             "ok": True,
@@ -2635,12 +3073,15 @@ def build_app(
         request: Request,
         source: str = Query(default="system"),
         tail: int = Query(default=200, ge=1, le=2000),
-        _: None = Depends(dep_viewer),
+        api_role: str = Depends(dep_viewer),
     ):
         trace_id = _trace_id(request)
         path = plugin_ops_helpers.resolve_log_source(root, source)
         if path is None:
-            raise ApiError("bad_request", f"unknown log source: {source}", 400)
+            raise ApiError("bad_request", "unknown log source", 400)
+        # AR-60 / B5: block by resolved path so aliases (chat.log, api_audit.jsonl) cannot bypass.
+        if path.name in {"chat.log", "api_audit.jsonl"} and not _role_at_least(api_role, "maint"):
+            raise ApiError("forbidden", "chat/audit logs require maint+", 403)
         text = await asyncio.to_thread(plugin_ops_helpers.tail_text_file, path, max_lines=tail)
         return {
             "ok": True,
@@ -2685,7 +3126,7 @@ def build_app(
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         cfg_path = _plugin_config_path(m)
         cfg: dict[str, Any] = {}
         if cfg_path.is_file():
@@ -2706,7 +3147,7 @@ def build_app(
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         cfg_path = _plugin_config_path(m)
         from core.runtime.snowflake import json_safe_config
 
@@ -2732,7 +3173,7 @@ def build_app(
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         sources = plugin_ops_helpers.list_plugin_log_sources(root, m.id)
         return {"ok": True, "trace_id": trace_id, "data": {"plugin_id": m.id, "sources": sources}}
 
@@ -2742,7 +3183,7 @@ def build_app(
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         lifecycle = str(m.lifecycle or "").strip().lower()
         if lifecycle == "resident":
             # Resident threads have no stop API — soft-restart the core process.
@@ -2787,7 +3228,7 @@ def build_app(
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         lifecycle = str(m.lifecycle or "").strip().lower()
         if lifecycle == "resident":
             _audit("plugin_restart_soft_restart", trace_id, api_role, {"plugin_id": plugin_id})
@@ -2830,7 +3271,7 @@ def build_app(
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
-            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+            raise ApiError("not_found", "Plugin not found", 404)
         if m.lifecycle != "on_demand":
             raise ApiError("bad_request", "invoke supported only for lifecycle=on_demand plugins", 400)
         mod = loader.import_plugin_module(m)
@@ -3058,7 +3499,12 @@ def build_app(
         trace_id = _trace_id(request)
         _audit("backup_run", trace_id, api_role)
         res = await asyncio.to_thread(backup_manager.run_backup, "api_manual")
-        return {"ok": True, "trace_id": trace_id, "data": res}
+        data = dict(res) if isinstance(res, dict) else {"result": res}
+        arch = data.get("archive")
+        if isinstance(arch, str) and arch:
+            data["archive"] = Path(arch).name
+            data.pop("path", None)
+        return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/backup/list")
     async def v1_backup_list(request: Request, _: None = Depends(dep_maint)):
@@ -3072,34 +3518,27 @@ def build_app(
         }
 
     @app.post("/v1/backup/restore")
-    async def v1_backup_restore(request: Request, api_role: str = Depends(dep_admin)):
+    async def v1_backup_restore(
+        body: BackupRestoreRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
         trace_id = _trace_id(request)
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        archive_name = str(body.get("archive_name") or body.get("name") or "").strip()
-        if not archive_name:
-            raise ApiError("bad_request", "archive_name is required", 400)
-        if (str(body.get("confirm") or "")).strip() != "RESTORE":
-            raise ApiError("restore_confirm_required", 'Pass confirm: "RESTORE"', 400)
-        # soft_restart=false is ignored: swap happens only at next core start (AR-34).
-        if body.get("soft_restart") is False:
-            logger.info(
-                "backup_restore ignoring soft_restart=false | archive=%s trace_id=%s",
-                archive_name,
-                trace_id,
+        archive_name = body.archive_name.strip()
+        # AR-66: confirm must equal archive_name (no legacy "RESTORE").
+        if body.confirm.strip() != archive_name:
+            raise ApiError(
+                "restore_confirm_required",
+                "Pass confirm equal to archive_name",
+                400,
             )
         _audit("backup_restore", trace_id, api_role, {"archive_name": archive_name})
-        # Validate archive exists before spending a full pre_restore backup (AR-34).
         try:
             await asyncio.to_thread(backup_manager.resolve_archive_path, archive_name)
         except FileNotFoundError as e:
-            raise ApiError("not_found", "backup archive not found", 404) from e
+            raise ApiError("not_found", "архив не найден", 404) from e
         except ValueError as e:
-            raise ApiError("bad_request", str(e), 400) from e
+            raise ApiError("bad_request", "Invalid archive name", 400) from e
         try:
             pre = await asyncio.to_thread(backup_manager.run_backup, "pre_restore")
         except Exception as e:
@@ -3108,25 +3547,28 @@ def build_app(
         if not isinstance(pre, dict) or not pre.get("archive"):
             raise ApiError("backup_failed", "pre-restore backup failed, see server log", 500)
         try:
-            # Stage only — live Hub/Chroma replaced on next start via apply_pending_restore.
             res = await asyncio.to_thread(backup_manager.prepare_restore, archive_name)
         except FileNotFoundError as e:
-            raise ApiError("not_found", "backup archive not found", 404) from e
+            raise ApiError("not_found", "архив не найден", 404) from e
         except ValueError as e:
-            raise ApiError("bad_request", str(e), 400) from e
+            raise ApiError("bad_request", "Invalid restore request", 400) from e
         except Exception as e:
             logger.exception("backup_restore_failed | trace_id=%s", trace_id)
             raise ApiError("restore_failed", "restore failed, see server log", 500) from e
         _schedule_exit_after_response(reason=f"backup_restore:{archive_name}")
         pre_path = str(pre.get("archive") or "")
+        pre_name = Path(pre_path).name if pre_path else ""
+        # Do not leak absolute paths to the client.
+        safe_res = {k: v for k, v in (res or {}).items() if k not in ("path", "archive_path")}
+        if "archive" in safe_res and isinstance(safe_res["archive"], str):
+            safe_res["archive"] = Path(str(safe_res["archive"])).name
         return {
             "ok": True,
             "trace_id": trace_id,
             "data": {
-                **res,
-                "pre_restore_backup": pre_path,
-                "pre_restore_backup_name": Path(pre_path).name if pre_path else "",
-                "created_at": res.get("created_at") or "",
+                **safe_res,
+                "pre_restore_backup_name": pre_name,
+                "created_at": (res or {}).get("created_at") or "",
                 "restart_scheduled": True,
             },
         }
@@ -3368,10 +3810,41 @@ def build_app(
                     content=_err_payload(trace_id, "invalid_signature", "Invalid or missing X-Neyra-Signature"),
                     headers={"x-trace-id": trace_id},
                 )
+        dedup_key = _inbound_idempotency_key(provider, endpoint_id, request, raw_body)
+        claim, cached = await webhook_store.claim_inbound_dedup(dedup_key)
+        if claim == "hit":
+            replay = dict(cached or {})
+            replay["deduplicated"] = True
+            return {"ok": True, "trace_id": trace_id, "data": replay}
+        if claim == "inflight":
+            return JSONResponse(
+                status_code=409,
+                content=_err_payload(trace_id, "dedup_in_flight", "Duplicate inbound delivery in progress"),
+                headers={"x-trace-id": trace_id},
+            )
         payload = _parse_inbound_json_body(raw_body)
         inbound_headers = {k: v for k, v in request.headers.items()}
-        out = await _handle_inbound_payload(provider, endpoint_id, payload, inbound_headers)
-        return {"ok": True, "trace_id": trace_id, "data": out}
+        # AR-62/74: release only if handling failed — never wipe a done claim after success.
+        handled = False
+        try:
+            out = await _handle_inbound_payload(provider, endpoint_id, payload, inbound_headers)
+            handled = True
+            try:
+                await webhook_store.finish_inbound_dedup(dedup_key, out)
+            except Exception:
+                # Memory already has done (finish mutates before _save); keep it for retries.
+                logger.exception("inbound dedup persist failed | key=%s", dedup_key)
+            return {
+                "ok": True,
+                "trace_id": trace_id,
+                "data": {**out, "deduplicated": False},
+            }
+        finally:
+            if not handled:
+                try:
+                    await webhook_store.finish_inbound_dedup(dedup_key, None)
+                except Exception:
+                    logger.exception("inbound dedup release failed | key=%s", dedup_key)
 
     @app.get("/v1/webhooks/in/{provider}/{endpoint_id}/health")
     async def v1_webhooks_inbound_health(
@@ -3397,6 +3870,11 @@ def build_app(
         authorization = websocket.headers.get("authorization")
         try:
             ws_role = _require_ws_auth(token, authorization, config, dash_auth)
+            # AR-61: anon only for console-local (same as REST B-1); behind proxy → 1008.
+            if ws_role == "anon":
+                peer = websocket.client.host if websocket.client else "unknown"
+                if not _is_console_local_client(peer=peer, headers=websocket.headers):
+                    raise ApiError("unauthorized", "Missing bearer token", 401)
             # Same bar as POST /v1/chat (admin): viewer must not mutate memory / spend LLM.
             if not _role_at_least(ws_role, "admin"):
                 raise ApiError("forbidden", "WebSocket chat requires admin (same as POST /v1/chat)", 403)
@@ -3430,22 +3908,28 @@ def build_app(
                 await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
                 continue
 
-            kind = str(msg.get("type") or "").strip().lower()
+            if not isinstance(msg, dict):
+                await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                continue
+            try:
+                parsed = WsChatMessage.model_validate(msg)
+            except Exception:
+                await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                continue
+
+            kind = parsed.type
             if kind == "ping":
                 await websocket.send_json({"type": "pong", "ts": datetime.now().isoformat(), "trace_id": trace_id})
                 continue
-            if kind != "chat":
-                await websocket.send_json({"type": "error", "code": "unknown_type", "trace_id": trace_id})
-                continue
 
-            text = str(msg.get("text") or "").strip()
+            text = (parsed.text or "").strip()
             if not text:
                 await websocket.send_json({"type": "error", "code": "empty_text", "trace_id": trace_id})
                 continue
-            username = str(msg.get("username") or "ws_user")
-            platform_user_id = str(msg.get("platform_user_id") or "")
-            channel_id = str(msg.get("channel_id") or "ws")
-            ws_disp = msg.get("author_display_name") or msg.get("display_name")
+            username = (parsed.username or "ws_user").strip() or "ws_user"
+            platform_user_id = (parsed.platform_user_id or "").strip()
+            channel_id = (parsed.channel_id or "ws").strip() or "ws"
+            ws_disp = parsed.author_display_name or parsed.display_name
             ws_author_disp = str(ws_disp).strip() if ws_disp else None
 
             try:
@@ -3475,8 +3959,16 @@ def build_app(
                         )
             except WebSocketDisconnect:
                 break
-            except Exception as e:
-                await websocket.send_json({"type": "error", "code": "internal_chat_error", "message": str(e), "trace_id": trace_id})
+            except Exception:
+                logger.exception("WS chat error | trace_id=%s", trace_id)
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "internal_chat_error",
+                        "message": f"Внутренняя ошибка сервера. Код для поддержки: {trace_id}",
+                        "trace_id": trace_id,
+                    }
+                )
 
     @app.websocket("/v1/ws/audio")
     async def ws_audio(
@@ -3492,6 +3984,11 @@ def build_app(
         authorization = websocket.headers.get("authorization")
         try:
             ws_role = _require_ws_auth(token, authorization, config, dash_auth)
+            # AR-61: anon only for console-local (same as REST B-1).
+            if ws_role == "anon":
+                peer = websocket.client.host if websocket.client else "unknown"
+                if not _is_console_local_client(peer=peer, headers=websocket.headers):
+                    raise ApiError("unauthorized", "Missing bearer token", 401)
             if not _role_at_least(ws_role, "viewer"):
                 raise ApiError("forbidden", "WebSocket audio requires viewer+", 403)
         except ApiError:

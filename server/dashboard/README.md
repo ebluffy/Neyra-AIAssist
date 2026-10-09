@@ -6,8 +6,8 @@ This is the **server** web UI (ops fallback). The product Windows app lives in `
 
 ## Access-key gate
 
-- First visit: create an access key (≥ 8 characters, or hex-32). Hash stored with PBKDF2 in SQLite under the data dir (`dashboard_auth` DB).
-- Later: login with that key; SPA keeps plaintext in `sessionStorage` until logout.
+- First visit: create an access key (**≥ 32 characters**, or hex-32). Hash stored with PBKDF2 (600k iterations) in SQLite under the data dir (`dashboard_auth` DB).
+- Later: login with that key; SPA keeps a short-lived **session Bearer** in `sessionStorage` until logout (not the raw key; do not store `API_TOKEN` in `localStorage`).
 - If the API binds to a non-loopback address, initial **setup** is allowed only from a **loopback** client.
 - Independent of API Bearer tokens (`API_TOKEN` / viewer / maint).
 

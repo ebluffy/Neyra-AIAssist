@@ -18,6 +18,7 @@ import type { ApiEnvelope, PluginFileRow, PluginLogSource, PluginRow } from '../
 import { LogViewer } from '../components/LogViewer'
 import type { LogSource } from '../components/LogViewer'
 import { Button } from '../components/ui/button'
+import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
@@ -90,7 +91,27 @@ export function ModulesScreen() {
   const [uploading, setUploading] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [apiLogSources, setApiLogSources] = useState<LogSource[] | null>(null)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [softOpen, setSoftOpen] = useState(false)
+  const [softTitle, setSoftTitle] = useState('')
+  const [softDescription, setSoftDescription] = useState('')
+  const softResolveRef = useRef<((ok: boolean) => void) | null>(null)
   const uploadRef = useRef<HTMLInputElement>(null)
+
+  function softConfirm(title: string, description: string): Promise<boolean> {
+    setSoftTitle(title)
+    setSoftDescription(description)
+    setSoftOpen(true)
+    return new Promise((resolve) => {
+      softResolveRef.current = resolve
+    })
+  }
+
+  function finishSoft(ok: boolean) {
+    setSoftOpen(false)
+    softResolveRef.current?.(ok)
+    softResolveRef.current = null
+  }
 
   // Configs tab
   const [files, setFiles] = useState<PluginFileRow[]>([])
@@ -286,11 +307,12 @@ export function ModulesScreen() {
         await loadDetails(selected)
         if (
           r.data.result?.enabled_changed !== false &&
-          window.confirm(
+          (await softConfirm(
+            'Мягкий рестарт ядра?',
             enabled
               ? 'Resident-модуль записан как включённый. Сделать мягкий рестарт ядра сейчас, чтобы бот реально стартовал?'
               : 'Resident-модуль записан как выключенный. Сделать мягкий рестарт ядра сейчас, чтобы остановить поток?',
-          )
+          ))
         ) {
           await softRestartCore(true)
           return
@@ -328,9 +350,10 @@ export function ModulesScreen() {
       )
       if (
         isResident &&
-        window.confirm(
+        (await softConfirm(
+          'Мягкий рестарт ядра?',
           `Конфиг resident-модуля «${selected}» сохранён. Сделать мягкий рестарт ядра сейчас, чтобы изменения вступили в силу?`,
-        )
+        ))
       ) {
         await softRestartCore(true)
       }
@@ -358,7 +381,12 @@ export function ModulesScreen() {
       setError(`Расширение «${suffix || '—'}» не разрешено. Допустимо: ${CONFIG_SUFFIXES.join(', ')}`)
       return
     }
-    if (fileDirty && !window.confirm('Есть несохранённые правки. Открыть новый файл без сохранения?')) return
+    if (
+      fileDirty &&
+      !(await softConfirm('Несохранённые правки', 'Открыть новый файл без сохранения?'))
+    ) {
+      return
+    }
     if (files.some((f) => f.path === path)) {
       setError(null)
       void openFile(selected, path, details?.config)
@@ -376,9 +404,10 @@ export function ModulesScreen() {
     )
     if (
       clash &&
-      !window.confirm(
+      !(await softConfirm(
+        'Конфликт формата конфига',
         `Рядом уже лежит «${clash.path}». Смена формата JSON↔YAML под тем же именем может перекрыть или запутать загрузку конфига модуля. Всё равно создать «${path}»?`,
-      )
+      ))
     ) {
       return
     }
@@ -408,9 +437,10 @@ export function ModulesScreen() {
     if (isResident) {
       const lava = selected === 'discord' ? ' Discord-бот и Lavalink отключатся и поднимутся заново.' : ''
       if (
-        !window.confirm(
+        !(await softConfirm(
+          `${label} модуль?`,
           `${label} resident-модуль «${selected}»? Для него это мягкий рестарт всего ядра.${lava} Дашборд на несколько секунд отвалится.`,
-        )
+        ))
       ) {
         return
       }
@@ -439,15 +469,25 @@ export function ModulesScreen() {
     }
   }
 
-  function pickFile(path: string) {
+  async function pickFile(path: string) {
     if (path === activeFile) return
-    if (fileDirty && !window.confirm('Есть несохранённые правки. Переключить файл без сохранения?')) return
+    if (
+      fileDirty &&
+      !(await softConfirm('Несохранённые правки', 'Переключить файл без сохранения?'))
+    ) {
+      return
+    }
     void openFile(selected, path, details?.config)
   }
 
-  function pickPlugin(id: string) {
+  async function pickPlugin(id: string) {
     if (id === selected) return
-    if (fileDirty && !window.confirm('Есть несохранённые правки. Переключить модуль без сохранения?')) return
+    if (
+      fileDirty &&
+      !(await softConfirm('Несохранённые правки', 'Переключить модуль без сохранения?'))
+    ) {
+      return
+    }
     setSelected(id)
   }
 
@@ -466,9 +506,10 @@ export function ModulesScreen() {
   async function softRestartCore(skipConfirm = false) {
     if (
       !skipConfirm &&
-      !window.confirm(
-        'Мягкий рестарт всего процесса Neyra? Resident-модули (Discord) и Lavalink поднимутся заново. Дашборд на несколько секунд отвалится.',
-      )
+      !(await softConfirm(
+        'Мягкий рестарт Neyra?',
+        'Resident-модули (Discord) и Lavalink поднимутся заново. Дашборд на несколько секунд отвалится.',
+      ))
     ) {
       return
     }
@@ -506,9 +547,10 @@ export function ModulesScreen() {
         const msg = e instanceof Error ? e.message : String(e)
         if (!isAlreadyExists(e)) throw e
         if (
-          !window.confirm(
-            `${msg}\n\nЗаменить существующий модуль? Локальные config.yaml, logs/ и data/ сохранятся. Resident — с soft-restart.`,
-          )
+          !(await softConfirm(
+            'Заменить модуль?',
+            `${msg}\n\nЛокальные config.yaml, logs/ и data/ сохранятся. Resident — с soft-restart.`,
+          ))
         ) {
           setStatus('')
           return
@@ -536,10 +578,12 @@ export function ModulesScreen() {
 
   async function deletePlugin() {
     if (!selected || isProtected || restartBusy) return
-    const warn = isResident
-      ? ' Это resident-модуль — ядро будет перезапущено.'
-      : ''
-    if (!window.confirm(`Удалить модуль «${selected}» вместе с его папкой? Действие необратимо.${warn}`)) return
+    setDeleteConfirmOpen(true)
+  }
+
+  async function doDeletePlugin() {
+    if (!selected || isProtected || restartBusy) return
+    setDeleteConfirmOpen(false)
     setError(null)
     setRestartBusy(true)
     setStatus('Удаляю…')
@@ -707,7 +751,7 @@ export function ModulesScreen() {
                       aria-pressed={Boolean(details?.plugin.enabled)}
                       className={`toggle-pill ${details?.plugin.enabled ? 'toggle-on' : 'toggle-off'}`}
                       disabled={restartBusy || loadingDetails}
-                      onClick={() => void togglePlugin(!Boolean(details?.plugin.enabled))}
+                      onClick={() => void togglePlugin(!details?.plugin.enabled)}
                       type="button"
                     >
                       {details?.plugin.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
@@ -859,6 +903,34 @@ export function ModulesScreen() {
           )}
         </div>
       </div>
+
+      <DangerConfirmDialog
+        busy={restartBusy}
+        confirmLabel="Удалить"
+        confirmPhrase="УДАЛИТЬ"
+        description={
+          selected
+            ? `Удалить модуль «${selected}» вместе с папкой. Необратимо.${
+                isResident ? ' Resident-модуль — ядро будет перезапущено.' : ''
+              }`
+            : ''
+        }
+        onCancel={() => !restartBusy && setDeleteConfirmOpen(false)}
+        onConfirm={() => void doDeletePlugin()}
+        open={deleteConfirmOpen}
+        title="Удалить модуль?"
+      />
+
+      <DangerConfirmDialog
+        busy={false}
+        confirmLabel="Продолжить"
+        confirmPhrase=""
+        description={softDescription}
+        onCancel={() => finishSoft(false)}
+        onConfirm={() => finishSoft(true)}
+        open={softOpen}
+        title={softTitle}
+      />
     </div>
   )
 }

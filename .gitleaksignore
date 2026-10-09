@@ -1,0 +1,2 @@
+# Fingerprint of intentional fake secret in PR history (640c57e); tip no longer has it.
+640c57e171a3febad0a454dca86dcb689ccfe31b:server/tests/test_errors_and_trace.py:generic-api-key:49

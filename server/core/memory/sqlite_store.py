@@ -21,6 +21,40 @@ def _now_iso() -> str:
     return now_storage_iso()
 
 
+def _split_sql_statements(sql: str) -> list[str]:
+    """Split a SQL script into statements without using executescript (keeps one txn)."""
+    parts: list[str] = []
+    buf: list[str] = []
+    for line in (sql or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith("--"):
+            continue
+        buf.append(line)
+        if s.endswith(";"):
+            stmt = "\n".join(buf).strip().rstrip(";").strip()
+            if stmt:
+                parts.append(stmt)
+            buf = []
+    tail = "\n".join(buf).strip().rstrip(";").strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+class AccountBoundConflict(ValueError):
+    """Account already bound to another person_id — do not steal silently."""
+
+    def __init__(self, existing_person_id: str, requested_person_id: str, platform: str, platform_user_id: str):
+        self.existing_person_id = existing_person_id
+        self.requested_person_id = requested_person_id
+        self.platform = platform
+        self.platform_user_id = platform_user_id
+        super().__init__(
+            f"account_bound:{platform}:{platform_user_id}"
+            f":existing={existing_person_id}:requested={requested_person_id}"
+        )
+
+
 class SqliteStore:
     """Process-local SQLite access. All methods assume the Hub holds the write lock."""
 
@@ -58,16 +92,28 @@ class SqliteStore:
                 if version in applied:
                     continue
                 logger.info("SQLite migrate → v%s (%s)", version, self.path)
-                if version == 3:
-                    self._migrate_v3()
-                elif version == 4:
-                    self._migrate_v4()
-                else:
-                    self._conn.executescript(sql)
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                    (version, _now_iso()),
-                )
+                # Atomic migration: BEGIN IMMEDIATE → statements → record version → COMMIT.
+                # Avoid executescript (it auto-COMMITs and breaks atomicity).
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    if version == 3:
+                        self._migrate_v3()
+                    elif version == 4:
+                        self._migrate_v4()
+                    else:
+                        for stmt in _split_sql_statements(sql):
+                            self._conn.execute(stmt)
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                        (version, _now_iso()),
+                    )
+                    self._conn.execute("COMMIT")
+                except Exception:
+                    try:
+                        self._conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    raise
             # Heal: v3 marked applied but merge_proposals missing (old executescript bug).
             self._ensure_merge_proposals_table()
             self._backfill_person_accounts_from_meta()
@@ -453,12 +499,21 @@ class SqliteStore:
         handle: Optional[str] = None,
         display_name: Optional[str] = None,
         avatar_url: Optional[str] = None,
-    ) -> None:
+        allow_rebind: bool = False,
+    ) -> str:
+        """Bind or refresh an account. Returns the effective person_id.
+
+        If the account already belongs to another person, refuse silent steal
+        (raises ``AccountBoundConflict``) unless ``allow_rebind=True`` (admin merge).
+        """
         now = _now_iso()
         plat = (platform or "").strip().lower()
         puid = (platform_user_id or "").strip()
+        pid = (person_id or "").strip()
         if not plat or not puid:
             raise ValueError("platform and platform_user_id required")
+        if not pid:
+            raise ValueError("person_id required")
         # Only real platform handle — never alias/display as handle.
         h = (handle or "").strip() or None
         hnorm = h.casefold() if h else None
@@ -469,6 +524,10 @@ class SqliteStore:
             )
             row = cur.fetchone()
             if row:
+                existing_pid = str(row["person_id"] or "").strip()
+                if existing_pid and existing_pid != pid and not allow_rebind:
+                    raise AccountBoundConflict(existing_pid, pid, plat, puid)
+                target = pid if allow_rebind else (existing_pid or pid)
                 self._conn.execute(
                     """
                     UPDATE person_accounts
@@ -481,7 +540,7 @@ class SqliteStore:
                     WHERE id = ?
                     """,
                     (
-                        person_id,
+                        target,
                         h,
                         hnorm,
                         display_name,
@@ -490,16 +549,17 @@ class SqliteStore:
                         int(row["id"]),
                     ),
                 )
-            else:
-                self._conn.execute(
-                    """
-                    INSERT INTO person_accounts(
-                        person_id, platform, platform_user_id, handle, handle_norm,
-                        display_name, avatar_url, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (person_id, plat, puid, h, hnorm, display_name, avatar_url, now, now),
-                )
+                return target
+            self._conn.execute(
+                """
+                INSERT INTO person_accounts(
+                    person_id, platform, platform_user_id, handle, handle_norm,
+                    display_name, avatar_url, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (pid, plat, puid, h, hnorm, display_name, avatar_url, now, now),
+            )
+            return pid
 
     def get_account(
         self, platform: str, platform_user_id: str

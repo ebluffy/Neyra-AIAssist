@@ -12,6 +12,10 @@ _LYRICS_MARKER_RE = re.compile(
     r"\[SYSTEM HIDDEN INSTRUCTION:.*?\]",
     flags=re.IGNORECASE | re.DOTALL,
 )
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 def sanitize_websearch_query(text: str, *, max_len: int = 160) -> str:
@@ -219,12 +223,11 @@ def handle_memory_trigger(
     if not any(w in text_lower for w in ["запиши", "запомни", "добавь"]):
         return saved
 
-    # Guard: users cannot overwrite critical roles; only ebluffy may write odd things.
-    if username != "ebluffy":
-        forbidden = ["хозяин", "создатель", "владелец", "лучше чем", "забудь", "удали", "перепиши"]
-        if any(bad in text_lower for bad in forbidden):
-            logger.warning("Блокирована попытка взлома памяти от %s: %s", username, text)
-            return saved
+    # Block role-hijack / wipe phrasing from anyone (no privileged nicknames).
+    forbidden = ["хозяин", "создатель", "владелец", "лучше чем", "забудь", "удали", "перепиши"]
+    if any(bad in text_lower for bad in forbidden):
+        logger.warning("Blocked memory hijack phrasing from %s: %s", username, text)
+        return saved
 
     match = re.search(
         r"(?:запиши|запомни|добавь)[^:,]*(?:[:,]\s*|что\s+)(.+)",
@@ -236,7 +239,16 @@ def handle_memory_trigger(
         return saved
 
     fact = f"(Со слов {username or 'друга'}): {raw_fact}"
+    # Prefer account-backed lookup: nick-as-person_id is legacy and ambiguous.
     author_p = memory_hub.find_person(username) if username else None
+    if author_p and not _UUID_RE.match(str(author_p.get("id") or "")):
+        # If nick matched a slug card but a UUID person shares the handle — prefer UUID.
+        handle_pids = memory_hub.sqlite.find_person_ids_by_handle_norm(username or "")
+        uuid_hits = [p for p in handle_pids if _UUID_RE.match(p)]
+        if len(uuid_hits) == 1:
+            row = memory_hub.sqlite.get_person(uuid_hits[0])
+            if row:
+                author_p = memory_hub._person_as_legacy_dict(row)
     mentioned_others = [m for m in mentioned if not (author_p and m == author_p["id"])]
 
     if mentioned_others:

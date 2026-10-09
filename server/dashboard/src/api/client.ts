@@ -1,31 +1,45 @@
-const TOKEN_KEY = 'neyra_api_token'
 const SESSION_TOKEN_KEY = 'neyra_dashboard_session'
+/** Legacy key — never read/write; purged on load. */
+const LEGACY_TOKEN_KEY = 'neyra_api_token'
+const DEFAULT_TIMEOUT_MS = 30_000
 
-export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY)
+/** Memory-only API token override (Settings). Never persisted to localStorage. */
+let memoryApiToken = ''
+
+try {
+  localStorage.removeItem(LEGACY_TOKEN_KEY)
+} catch {
+  /* ignore */
 }
 
-/** Clear dashboard session only — keep Settings API_TOKEN in localStorage. */
+export function clearToken(): void {
+  memoryApiToken = ''
+  try {
+    localStorage.removeItem(LEGACY_TOKEN_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Clear dashboard session only. */
 export function clearSessionToken(): void {
   sessionStorage.removeItem(SESSION_TOKEN_KEY)
 }
 
-/** Explicit API_TOKEN from Settings (localStorage). */
+/** Memory-only API token from Settings (not localStorage). */
 export function getStoredApiToken(): string {
-  return localStorage.getItem(TOKEN_KEY) ?? ''
+  return memoryApiToken
 }
 
 export function getToken(): string {
-  // Prefer short-lived dashboard session (sessionStorage); else Settings API token.
   const session = sessionStorage.getItem(SESSION_TOKEN_KEY)?.trim()
   if (session) return session
-  return localStorage.getItem(TOKEN_KEY) ?? ''
+  return memoryApiToken.trim()
 }
 
+/** Set memory-only API token override (Settings). Empty clears. */
 export function setToken(t: string): void {
-  const s = t.trim()
-  if (s) localStorage.setItem(TOKEN_KEY, s)
-  else localStorage.removeItem(TOKEN_KEY)
+  memoryApiToken = t.trim()
 }
 
 /** Session Bearer from gate login — sessionStorage only. */
@@ -65,16 +79,93 @@ function redirectToLoginOnSession401(status: number): void {
   window.location.assign('/')
 }
 
-/** Error from the API; `.status` and `.code` let callers react to e.g. 409 already_exists. */
+function parseRetryAfter(r: Response): number | undefined {
+  const raw = r.headers.get('Retry-After')
+  if (!raw) return undefined
+  const sec = Number(raw)
+  if (Number.isFinite(sec) && sec >= 0) return sec
+  const when = Date.parse(raw)
+  if (!Number.isNaN(when)) {
+    const s = Math.ceil((when - Date.now()) / 1000)
+    return s >= 0 ? s : undefined
+  }
+  return undefined
+}
+
+function extractTraceId(body: unknown, r: Response): string {
+  const header =
+    r.headers.get('x-trace-id') ||
+    r.headers.get('x-request-id') ||
+    r.headers.get('traceparent') ||
+    ''
+  if (header) return header
+  if (body && typeof body === 'object') {
+    const o = body as Record<string, unknown>
+    const err = o.error
+    if (err && typeof err === 'object') {
+      const e = err as Record<string, unknown>
+      if (typeof e.trace_id === 'string') return e.trace_id
+    }
+    if (typeof o.trace_id === 'string') return o.trace_id
+  }
+  return ''
+}
+
+/** Error from the API; `.status` / `.code` / `.trace_id` / `.retryAfter` for callers. */
 export class ApiRequestError extends Error {
   status: number
   code: string
+  trace_id: string
+  retryAfter?: number
 
-  constructor(message: string, status: number, code = '') {
+  constructor(
+    message: string,
+    status: number,
+    code = '',
+    trace_id = '',
+    retryAfter?: number,
+  ) {
     super(message)
     this.name = 'ApiRequestError'
     this.status = status
     this.code = code
+    this.trace_id = trace_id
+    this.retryAfter = retryAfter
+  }
+}
+
+type FetchOpts = {
+  method?: string
+  body?: BodyInit | null
+  headers?: HeadersInit
+  timeoutMs?: number
+  signal?: AbortSignal
+}
+
+async function apiFetch(path: string, opts: FetchOpts = {}): Promise<Response> {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const ctrl = new AbortController()
+  const timer = window.setTimeout(() => ctrl.abort(), timeoutMs)
+  const onOuterAbort = () => ctrl.abort()
+  if (opts.signal) {
+    if (opts.signal.aborted) ctrl.abort()
+    else opts.signal.addEventListener('abort', onOuterAbort, { once: true })
+  }
+  try {
+    return await fetch(path, {
+      method: opts.method,
+      headers: opts.headers,
+      body: opts.body,
+      signal: ctrl.signal,
+    })
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new ApiRequestError('Таймаут запроса', 0, 'timeout', '')
+    }
+    throw e
+  } finally {
+    window.clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', onOuterAbort)
   }
 }
 
@@ -82,72 +173,108 @@ async function parseApiResponse<T>(r: Response): Promise<T> {
   const text = await r.text()
   const trimmed = text.trimStart()
   if (trimmed.startsWith('<') || trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<!doctype')) {
-    throw new Error(
+    throw new ApiRequestError(
       r.status >= 500 || r.status === 0
         ? `Сервер недоступен (HTTP ${r.status || '—'}). Подождите конца перезапуска или обновите страницу.`
         : `Ответ не JSON (HTTP ${r.status}) — сервер перезапускается или прокси вернул HTML.`,
+      r.status,
+      'non_json',
+      r.headers.get('x-trace-id') || '',
+      parseRetryAfter(r),
     )
   }
-  type Body = T & { ok?: boolean; error?: { message?: string; code?: string } }
+  type Body = T & {
+    ok?: boolean
+    error?: { message?: string; code?: string; trace_id?: string }
+    trace_id?: string
+  }
   let j: Body
   try {
     j = JSON.parse(text) as Body
   } catch {
-    throw new Error(`Не удалось разобрать ответ API (HTTP ${r.status})`)
+    throw new ApiRequestError(
+      `Не удалось разобрать ответ API (HTTP ${r.status})`,
+      r.status,
+      'parse_error',
+      r.headers.get('x-trace-id') || '',
+    )
   }
+  const traceId = extractTraceId(j, r)
+  const retryAfter = parseRetryAfter(r)
   if (!r.ok) {
     redirectToLoginOnSession401(r.status)
     const msg = j?.error?.message ?? r.statusText
-    throw new ApiRequestError(msg || `HTTP ${r.status}`, r.status, j?.error?.code ?? '')
+    throw new ApiRequestError(
+      msg || `HTTP ${r.status}`,
+      r.status,
+      j?.error?.code ?? '',
+      traceId,
+      retryAfter,
+    )
   }
   if (j && typeof j === 'object' && 'ok' in j && j.ok === false) {
     const msg = j.error?.message ?? 'API error'
-    throw new ApiRequestError(msg, r.status, j.error?.code ?? '')
+    throw new ApiRequestError(msg, r.status, j.error?.code ?? '', traceId, retryAfter)
   }
   return j as T
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const r = await fetch(path, { headers: headers() })
+export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const r = await apiFetch(path, { headers: headers(), signal })
   return parseApiResponse<T>(r)
 }
 
-export async function apiGetText(path: string): Promise<string> {
-  const r = await fetch(path, { headers: headers() })
+export async function apiGetText(path: string, signal?: AbortSignal): Promise<string> {
+  const r = await apiFetch(path, { headers: headers(), signal })
   if (!r.ok) {
     redirectToLoginOnSession401(r.status)
-    throw new Error(r.statusText || `HTTP ${r.status}`)
+    throw new ApiRequestError(r.statusText || `HTTP ${r.status}`, r.status, '', extractTraceId(null, r), parseRetryAfter(r))
   }
   return r.text()
 }
 
-export async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(path, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body) })
+export async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const r = await apiFetch(path, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(body),
+    signal,
+  })
   return parseApiResponse<T>(r)
 }
 
-export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(path, { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify(body) })
+export async function apiPatch<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const r = await apiFetch(path, {
+    method: 'PATCH',
+    headers: jsonHeaders(),
+    body: JSON.stringify(body),
+    signal,
+  })
   return parseApiResponse<T>(r)
 }
 
-export async function apiPut<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(path, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(body) })
+export async function apiPut<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const r = await apiFetch(path, {
+    method: 'PUT',
+    headers: jsonHeaders(),
+    body: JSON.stringify(body),
+    signal,
+  })
   return parseApiResponse<T>(r)
 }
 
-export async function apiDelete<T>(path: string): Promise<T> {
-  const r = await fetch(path, { method: 'DELETE', headers: headers() })
+export async function apiDelete<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const r = await apiFetch(path, { method: 'DELETE', headers: headers(), signal })
   return parseApiResponse<T>(r)
 }
 
 /** Multipart upload (do not set Content-Type — browser sets boundary). */
-export async function apiUpload<T>(path: string, file: File, fieldName = 'file'): Promise<T> {
+export async function apiUpload<T>(path: string, file: File, fieldName = 'file', signal?: AbortSignal): Promise<T> {
   const fd = new FormData()
   fd.append(fieldName, file)
   const h: Record<string, string> = { Accept: 'application/json' }
   const tok = getToken().trim()
   if (tok) h.Authorization = `Bearer ${tok}`
-  const r = await fetch(path, { method: 'POST', headers: h, body: fd })
+  const r = await apiFetch(path, { method: 'POST', headers: h, body: fd, signal })
   return parseApiResponse<T>(r)
 }

@@ -76,18 +76,58 @@ class BackupManager:
             else:
                 dst = tmp_root / "memory"
             if p.is_dir():
-                shutil.copytree(p, dst, dirs_exist_ok=True)
+                # AR-59: never copy live Hub .db / -wal / -shm into memory/ —
+                # sqlite backup API overlay is the authoritative consistent snapshot.
+                basenames: set[str] = set()
+                for sp in self._sqlite_paths():
+                    basenames.add(sp.name)
+                    if not sp.name.endswith(("-wal", "-shm")):
+                        basenames.add(sp.name + "-wal")
+                        basenames.add(sp.name + "-shm")
+
+                def _ignore(_dir: str, names: list[str]) -> set[str]:
+                    return {n for n in names if n in basenames}
+
+                shutil.copytree(p, dst, dirs_exist_ok=True, ignore=_ignore)
             else:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(p, dst)
-        # Ensure Hub SQLite (+ wal/shm) and note chroma path in manifest
+        # Ensure Hub SQLite via sqlite3 backup API (consistent snapshot; not copy2 of live WAL).
+        # Never open -wal/-shm as databases — connect/close can delete sidecar files.
+        # Use mode=ro so a failed probe cannot mutate live WAL.
         mem_dir = tmp_root / "data" / "memory"
         mem_dir.mkdir(parents=True, exist_ok=True)
         copied_db: list[str] = []
+        import sqlite3
+
         for p in self._sqlite_paths():
-            if p.exists() and p.is_file():
-                shutil.copy2(p, mem_dir / p.name)
+            if not (p.exists() and p.is_file()):
+                continue
+            if p.name.endswith("-wal") or p.name.endswith("-shm"):
+                continue
+            dst = mem_dir / p.name
+            try:
+                uri = f"file:{p.resolve().as_posix()}?mode=ro"
+                src_conn = sqlite3.connect(uri, uri=True, timeout=30)
+                try:
+                    dst_conn = sqlite3.connect(str(dst))
+                    try:
+                        src_conn.backup(dst_conn)
+                    finally:
+                        dst_conn.close()
+                finally:
+                    src_conn.close()
                 copied_db.append(p.name)
+                # API snapshot is consistent — do not copy live -wal/-shm.
+            except Exception as e:
+                logger.warning("sqlite backup API failed for %s (%s); falling back to copy2", p.name, e)
+                shutil.copy2(p, dst)
+                copied_db.append(p.name)
+                for suffix in ("-wal", "-shm"):
+                    side = Path(str(p) + suffix)
+                    if side.exists() and side.is_file():
+                        shutil.copy2(side, mem_dir / side.name)
+                        copied_db.append(side.name)
         mem = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
         chroma = Path(str(mem.get("chroma_db_path") or "./data/memory/chroma_db"))
         manifest = {
@@ -216,6 +256,19 @@ class BackupManager:
             for p in db_only.iterdir():
                 if p.is_file():
                     shutil.copy2(p, staging_mem / p.name)
+                    # AR-59: when overlay brings a consistent .db without sidecars,
+                    # drop any stale -wal/-shm left from the full memory/ tree.
+                    if p.suffix == ".db":
+                        for side in (
+                            staging_mem / (p.name + "-wal"),
+                            staging_mem / (p.name + "-shm"),
+                        ):
+                            overlay_side = db_only / side.name
+                            if side.exists() and not overlay_side.is_file():
+                                try:
+                                    side.unlink()
+                                except OSError:
+                                    pass
                 elif p.is_dir() and not has_full:
                     dest = staging_mem / p.name
                     if dest.exists():
