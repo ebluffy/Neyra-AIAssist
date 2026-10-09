@@ -55,37 +55,66 @@ function str(v: unknown): string {
   return String(v)
 }
 
-function collectHealthIssues(health: HealthData | null): string[] {
+type HealthBlockKey = 'backend' | 'storage' | 'integrations' | 'self_healing'
+
+function healthBlockReasons(health: HealthData | null, key: HealthBlockKey): string[] {
   if (!health) return []
-  const issues: string[] = []
-  const backend = health.backend as Record<string, unknown> | undefined
-  if (backend && backend.ok === false) {
-    const providers = backend.providers
+  const block = health[key] as Record<string, unknown> | undefined
+  if (!block || typeof block !== 'object') return []
+  if (block.ok !== false) return []
+  if (key === 'backend') {
+    const out: string[] = []
+    const providers = block.providers
     if (Array.isArray(providers)) {
       for (const p of providers) {
         if (!p || typeof p !== 'object') continue
         const row = p as Record<string, unknown>
         if (row.ok === false) {
           const prov = String(row.provider ?? '?')
-          issues.push(row.error ? `LLM ${prov}: ${String(row.error)}` : `LLM ${prov}: HTTP ${String(row.status_code ?? '—')}`)
+          out.push(row.error ? `LLM ${prov}: ${String(row.error)}` : `LLM ${prov}: HTTP ${String(row.status_code ?? '—')}`)
         }
       }
     }
-    if (!issues.length) issues.push(backend.error ? `LLM-бэкенд: ${String(backend.error)}` : 'LLM-бэкенд: проверка не прошла')
+    if (!out.length && block.error) out.push(String(block.error))
+    if (!out.length) out.push('проверка не прошла')
+    return out
   }
-  const storage = health.storage as Record<string, unknown> | undefined
-  if (storage && storage.ok === false) {
-    const missing = Array.isArray(storage.missing) ? storage.missing.map(String) : []
-    issues.push(missing.length ? `Хранилище: нет ${missing.join(', ')}` : 'Хранилище: ошибка')
+  if (key === 'storage') {
+    const missing = Array.isArray(block.missing) ? block.missing.map(String) : []
+    if (missing.length) return [`нет ${missing.join(', ')}`]
+    if (block.error) return [String(block.error)]
+    return ['ошибка']
   }
-  const integrations = health.integrations as Record<string, unknown> | undefined
-  if (integrations && integrations.ok === false) {
-    const list = Array.isArray(integrations.issues) ? integrations.issues.map(String) : []
-    issues.push(list.length ? `Интеграции: ${list.join('; ')}` : 'Интеграции: ошибка')
+  if (key === 'integrations') {
+    const list = Array.isArray(block.issues) ? block.issues.map(String) : []
+    if (list.length) return list
+    if (block.error) return [String(block.error)]
+    return ['ошибка']
   }
-  const heal = health.self_healing as Record<string, unknown> | undefined
-  if (heal && heal.ok === false) issues.push('Самолечение модулей: ошибка')
+  if (block.error) return [String(block.error)]
+  return ['ошибка']
+}
+
+function collectHealthIssues(health: HealthData | null): string[] {
+  if (!health) return []
+  const issues: string[] = []
+  for (const msg of healthBlockReasons(health, 'backend')) issues.push(msg.startsWith('LLM ') ? msg : `LLM-бэкенд: ${msg}`)
+  for (const msg of healthBlockReasons(health, 'storage')) issues.push(`Хранилище: ${msg}`)
+  for (const msg of healthBlockReasons(health, 'integrations')) {
+    issues.push(msg.includes(':') ? `Интеграции: ${msg}` : `Интеграции: ${msg}`)
+  }
+  for (const msg of healthBlockReasons(health, 'self_healing')) {
+    issues.push(msg === 'ошибка' ? 'Самолечение модулей: ошибка' : `Самолечение: ${msg}`)
+  }
   return issues
+}
+
+function healthTileState(block: unknown): 'ok' | 'warn' | 'unknown' {
+  if (!block || typeof block !== 'object') return 'unknown'
+  const ok = (block as Record<string, unknown>).ok
+  if (ok === true) return 'ok'
+  if (ok === false) return 'warn'
+  return 'unknown'
 }
 
 function Kv({ label, value }: { label: string; value: string }) {
@@ -122,6 +151,8 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
   const [danger, setDanger] = useState<SystemDanger | null>(null)
   const [restartStep, setRestartStep] = useState<'stop' | 'offline' | 'online' | 'error'>('stop')
   const [restartMsg, setRestartMsg] = useState<string | null>(null)
+  const [restartTitle, setRestartTitle] = useState('Мягкий перезапуск')
+  const [showRestartCard, setShowRestartCard] = useState(false)
 
   const loadHealth = useCallback(async () => {
     setHealthLoading(true)
@@ -191,27 +222,35 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
 
-  async function waitAfterRestart(prefix: string) {
+  function beginRestartCard(title: string, step: 'stop' | 'offline' | 'online' | 'error', message: string) {
+    setShowRestartCard(true)
+    setRestartTitle(title)
+    setRestartStep(step)
+    setRestartMsg(message)
+  }
+
+  function dismissRestartCard() {
+    setShowRestartCard(false)
+    setRestartMsg(null)
+  }
+
+  async function waitAfterRestart(prefix: string, title: string) {
     setRestartBusy(true)
-    setRestartStep('offline')
-    setRestartMsg(`${prefix} Offline → online…`)
+    beginRestartCard(title, 'offline', `${prefix} Offline → online…`)
     try {
       const outcome = await waitForCoreRestart()
       if (outcome === 'online') {
-        setRestartStep('online')
-        setRestartMsg(`${prefix} Сервер снова онлайн.`)
+        beginRestartCard(title, 'online', `${prefix} Сервер снова онлайн.`)
         setStatus('')
         await load()
         if (tab === 'health') await loadHealth()
         if (tab === 'backup') await loadBackups()
       } else if (outcome === 'no_downtime') {
-        setRestartStep('error')
-        setRestartMsg('Рестарт не остановил процесс (API не уходил в offline).')
+        beginRestartCard(title, 'error', 'Рестарт не остановил процесс (API не уходил в offline).')
         setStatus('')
-        setError('Рестарт не остановил процесс (API не уходил в offline). Проверь systemd/логи или systemctl restart neyra.')
+        setError('Проверь systemd/логи или systemctl restart neyra.')
       } else {
-        setRestartStep('error')
-        setRestartMsg(`${prefix} Сервер долго не отвечает — обнови страницу через минуту.`)
+        beginRestartCard(title, 'error', `${prefix} Сервер долго не отвечает — обнови страницу через минуту.`)
         setStatus('')
       }
     } finally {
@@ -228,14 +267,12 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
     setError(null)
     setStatus('')
     setRestartBusy(true)
-    setRestartStep('stop')
-    setRestartMsg('Мягкий рестарт… останавливаем процесс')
+    beginRestartCard('Мягкий перезапуск', 'stop', 'Останавливаем процесс…')
     try {
       await apiPost<ApiEnvelope<{ note?: string }>>('/v1/system/restart', {})
-      await waitAfterRestart('Мягкий рестарт.')
+      await waitAfterRestart('Мягкий рестарт.', 'Мягкий перезапуск')
     } catch (e) {
-      setRestartStep('error')
-      setRestartMsg(e instanceof Error ? e.message : String(e))
+      beginRestartCard('Мягкий перезапуск', 'error', 'Запрос рестарта не принят')
       setError(e instanceof Error ? e.message : String(e))
       setRestartBusy(false)
     }
@@ -288,10 +325,10 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
       const expectArchive = (r.data.archive_name || name).trim()
       if (r.data.restart_scheduled) {
         setStatus('')
-        setRestartStep('stop')
-        setRestartMsg(`Восстановление подготовлено.${safetyNote} Ядро перезапускается…`)
+        const restoreTitle = 'Восстановление из бэкапа'
+        beginRestartCard(restoreTitle, 'stop', `Восстановление подготовлено.${safetyNote} Ядро перезапускается…`)
         setBusy(false)
-        await waitAfterRestart(`Restore.${safetyNote}`)
+        await waitAfterRestart(`Restore.${safetyNote}`, restoreTitle)
         try {
           const lr = await apiGet<
             ApiEnvelope<{
@@ -312,22 +349,21 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
             (!expectCreated || (result.created_at || '') === expectCreated) &&
             (!expectCreated || !result.at || result.at >= expectCreated)
           if (matches && result?.status === 'applied') {
-            setRestartMsg(`Восстановление применено (${expectArchive}).${safetyNote}`)
+            beginRestartCard(restoreTitle, 'online', `Восстановление применено (${expectArchive}).${safetyNote}`)
           } else if (matches && (result?.status === 'failed' || result?.status === 'rollback_failed')) {
-            setRestartStep('error')
-            setRestartMsg(
-              `Восстановление при старте не применилось${result.error ? `: ${result.error}` : ''}.${safetyNote}`,
-            )
+            beginRestartCard(restoreTitle, 'error', `Restore не применился.${safetyNote}`)
             setError(
               `Восстановление при старте не применилось${result.error ? `: ${result.error}` : ''}.${safetyNote}`,
             )
           } else {
-            setRestartMsg(
+            beginRestartCard(
+              restoreTitle,
+              'online',
               `Рестарт выполнен.${safetyNote} Результат этого restore неизвестен (нет свежего last_restore_apply).`,
             )
           }
         } catch {
-          setRestartMsg(`Рестарт выполнен.${safetyNote} Результат apply не прочитан.`)
+          beginRestartCard(restoreTitle, 'online', `Рестарт выполнен.${safetyNote} Результат apply не прочитан.`)
         }
         await loadBackups()
         return
@@ -382,9 +418,16 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
           </Button>
         }
       />
-      {!restartBusy && error ? <InlineFeedback tone="error">{error}</InlineFeedback> : null}
-      {!restartBusy && status ? <InlineFeedback tone="success">{status}</InlineFeedback> : null}
-      {restartBusy || restartMsg ? <RestartProgress message={restartMsg ?? undefined} step={restartStep} /> : null}
+      {!showRestartCard && error ? <InlineFeedback tone="error">{error}</InlineFeedback> : null}
+      {!showRestartCard && status ? <InlineFeedback tone="success">{status}</InlineFeedback> : null}
+      {showRestartCard ? (
+        <RestartProgress
+          message={restartMsg ?? undefined}
+          onDismiss={restartBusy ? undefined : dismissRestartCard}
+          step={restartStep}
+          title={restartTitle}
+        />
+      ) : null}
 
       <div className="card">
         <div className="panel-tabs panel-tabs-dense" role="tablist">
@@ -524,23 +567,27 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
                 <div className="grid-2">
                   {(
                     [
-                      ['LLM-бэкенд', health.backend],
-                      ['Хранилище', health.storage],
-                      ['Интеграции', health.integrations],
-                      ['Самолечение', health.self_healing],
+                      ['LLM-бэкенд', 'backend' as const, health.backend],
+                      ['Хранилище', 'storage' as const, health.storage],
+                      ['Интеграции', 'integrations' as const, health.integrations],
+                      ['Самолечение', 'self_healing' as const, health.self_healing],
                     ] as const
-                  ).map(([label, block]) => {
-                    const row = (block && typeof block === 'object' ? block : {}) as Record<string, unknown>
-                    const ok = row.ok !== false
+                  ).map(([label, key, block]) => {
+                    const state = healthTileState(block)
+                    const reasons = healthBlockReasons(health, key)
                     return (
                       <div className="stat-tile" key={label}>
                         <p className="stat-label">{label}</p>
-                        <p className={`stat-value-md ${ok ? '' : ''}`} style={{ color: ok ? 'var(--emerald)' : 'var(--amber)' }}>
-                          {ok ? 'ок' : 'проблема'}
+                        <p
+                          className={`stat-value-md ${
+                            state === 'ok' ? 'text-ok' : state === 'warn' ? 'text-warn' : 'text-muted'
+                          }`}
+                        >
+                          {state === 'ok' ? 'ок' : state === 'warn' ? 'проблема' : 'нет данных'}
                         </p>
-                        {row.error != null ? (
+                        {reasons.length > 0 ? (
                           <p className="hint" style={{ marginTop: 4 }}>
-                            {String(row.error)}
+                            {reasons.join('; ')}
                           </p>
                         ) : null}
                       </div>

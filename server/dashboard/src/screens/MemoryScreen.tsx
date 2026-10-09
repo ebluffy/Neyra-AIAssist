@@ -8,6 +8,7 @@ import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { avatarSrc } from '../lib/avatar'
 
 type MemoryDanger =
   | { kind: 'delete-person'; id: string }
@@ -500,17 +501,6 @@ export function MemoryScreen() {
       .sort((a, b) => personLabel(a).localeCompare(personLabel(b), 'ru'))
   }, [people, peopleQuery])
 
-  function avatarSrc(url?: string): string | undefined {
-    if (!url) return undefined
-    try {
-      const u = new URL(url)
-      if (!u.searchParams.has('size')) u.searchParams.set('size', '64')
-      return u.toString()
-    } catch {
-      return url.includes('?') ? `${url}&size=64` : `${url}?size=64`
-    }
-  }
-
   return (
     <div className="page-content stack">
       <PageHeader
@@ -805,25 +795,28 @@ export function MemoryScreen() {
                 {!creating && accounts.length > 0 && (
                   <div className="stack-sm">
                     <p className="stat-label">Аккаунты</p>
-                    {accounts.map((a, i) => (
-                      <div key={i} className="row" style={{ gap: 8, alignItems: 'center' }}>
-                        {avatarSrc(a.avatar_url) ? (
-                          <img
-                            alt={a.display_name || a.handle || a.platform_user_id || 'avatar'}
-                            className="person-avatar"
-                            height={28}
-                            loading="lazy"
-                            src={avatarSrc(a.avatar_url)}
-                            width={28}
-                          />
-                        ) : null}
-                        <p style={{ fontSize: '0.8rem', fontFamily: 'var(--mono)', margin: 0 }}>
-                          {a.platform}:{a.platform_user_id}
-                          {a.handle ? ` @${a.handle}` : ''}
-                          {a.display_name ? ` (${a.display_name})` : ''}
-                        </p>
-                      </div>
-                    ))}
+                    {accounts.map((a, i) => {
+                      const src = avatarSrc(a.avatar_url)
+                      return (
+                        <div key={i} className="row" style={{ gap: 8, alignItems: 'center' }}>
+                          {src ? (
+                            <img
+                              alt={a.display_name || a.handle || a.platform_user_id || 'avatar'}
+                              className="person-avatar"
+                              height={28}
+                              loading="lazy"
+                              src={src}
+                              width={28}
+                            />
+                          ) : null}
+                          <p style={{ fontSize: '0.8rem', fontFamily: 'var(--mono)', margin: 0 }}>
+                            {a.platform}:{a.platform_user_id}
+                            {a.handle ? ` @${a.handle}` : ''}
+                            {a.display_name ? ` (${a.display_name})` : ''}
+                          </p>
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
                 {!creating && summary && (

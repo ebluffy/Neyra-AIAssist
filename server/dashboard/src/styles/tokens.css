@@ -1433,6 +1433,9 @@ input[type="checkbox"] {
   background: var(--surface-2);
   flex-shrink: 0;
 }
+.text-ok { color: var(--emerald); }
+.text-warn { color: var(--amber); }
+.text-muted { color: var(--muted); }
 .merge-proposal-card {
   border: 1px solid var(--border);
   border-radius: var(--radius);
