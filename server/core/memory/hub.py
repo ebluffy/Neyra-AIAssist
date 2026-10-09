@@ -302,8 +302,13 @@ class MemoryHub:
         accounts: list[dict[str, Any]] | None = None,
         create: bool = False,
     ) -> dict[str, Any]:
-        """Create/update person card (aliases + accounts). ``profile`` ignored (Memory v2)."""
+        """Create/update person card (aliases + accounts). ``profile`` ignored (Memory v2).
+
+        Binding an account already owned by another person raises ``AccountBoundConflict``
+        (caller / API should propose merge, not steal).
+        """
         from core.memory.person_profile import split_static_facts
+        from core.memory.sqlite_store import AccountBoundConflict
 
         pid = (person_id or "").strip()
         if not pid:
@@ -328,42 +333,79 @@ class MemoryHub:
                     clean_names = [str(n).strip() for n in aliases if str(n).strip()]
         display = clean_names[0] if clean_names else pid
         self.upsert_person(pid, display_name=display, aliases=clean_names or [pid], meta=meta)
+        conflicts: list[dict[str, str]] = []
         for did in discord_ids or []:
             d = str(did or "").strip()
             if d:
-                # Never store alias/display as handle — only real platform handle via accounts[].
-                self.sqlite.upsert_person_account(
-                    person_id=pid,
-                    platform="discord",
-                    platform_user_id=d,
-                    handle=None,
-                )
+                try:
+                    self.sqlite.upsert_person_account(
+                        person_id=pid,
+                        platform="discord",
+                        platform_user_id=d,
+                        handle=None,
+                    )
+                except AccountBoundConflict as e:
+                    conflicts.append(
+                        {
+                            "platform": e.platform,
+                            "platform_user_id": e.platform_user_id,
+                            "existing_person_id": e.existing_person_id,
+                        }
+                    )
+                    try:
+                        self.sqlite.add_merge_proposal(
+                            person_a=e.existing_person_id,
+                            person_b=pid,
+                            reason=f"account_conflict:discord:{d}",
+                        )
+                    except Exception as pe:
+                        logger.debug("merge proposal on account conflict: %s", pe)
         for acc in accounts or []:
             if not isinstance(acc, dict):
                 continue
             plat = str(acc.get("platform") or "").strip()
             puid = str(acc.get("platform_user_id") or "").strip()
             if plat and puid:
-                self.sqlite.upsert_person_account(
-                    person_id=pid,
-                    platform=plat,
-                    platform_user_id=puid,
-                    handle=str(acc.get("handle") or "").strip() or None,
-                    display_name=str(acc.get("display_name") or "").strip() or None,
-                    avatar_url=str(acc.get("avatar_url") or "").strip() or None,
-                )
+                try:
+                    self.sqlite.upsert_person_account(
+                        person_id=pid,
+                        platform=plat,
+                        platform_user_id=puid,
+                        handle=str(acc.get("handle") or "").strip() or None,
+                        display_name=str(acc.get("display_name") or "").strip() or None,
+                        avatar_url=str(acc.get("avatar_url") or "").strip() or None,
+                    )
+                except AccountBoundConflict as e:
+                    conflicts.append(
+                        {
+                            "platform": e.platform,
+                            "platform_user_id": e.platform_user_id,
+                            "existing_person_id": e.existing_person_id,
+                        }
+                    )
+                    try:
+                        self.sqlite.add_merge_proposal(
+                            person_a=e.existing_person_id,
+                            person_b=pid,
+                            reason=f"account_conflict:{plat}:{puid}",
+                        )
+                    except Exception as pe:
+                        logger.debug("merge proposal on account conflict: %s", pe)
         for line in leftovers:
             # Dedup against recent facts
-            existing = {
+            existing_facts = {
                 str(f.get("fact") or "").strip()
                 for f in self.sqlite.list_person_facts(pid, limit=50)
             }
-            if line not in existing:
+            if line not in existing_facts:
                 self.sqlite.add_person_fact(person_id=pid, fact=line, source="profile_migrate")
         # ``profile`` ignored in Memory v2 (no анкетные fields).
         _ = profile
         row = self.sqlite.get_person(pid)
-        return self._person_as_legacy_dict(row) if row else {"id": pid}
+        out = self._person_as_legacy_dict(row) if row else {"id": pid}
+        if conflicts:
+            out["account_conflicts"] = conflicts
+        return out
 
     def ensure_person_for_account(
         self,
@@ -396,24 +438,31 @@ class MemoryHub:
             row = self.sqlite.get_person(pid)
             return self._person_as_legacy_dict(row) if row else {"id": pid}
 
+        pid = UnifiedIdentityMapper.resolve(plat, puid)
+
         # Same handle elsewhere → merge candidate only (do NOT bind accounts).
+        # Also catch legacy slug cards (person_id == handle) that are not in accounts yet.
         if h:
-            others = [
+            others = {
                 oid
                 for oid in self.sqlite.find_person_ids_by_handle_norm(h)
-                if oid
-            ]
+                if oid and oid != pid
+            }
+            slug_row = self.sqlite.get_person(h) or self.sqlite.get_person(h.casefold())
+            if slug_row:
+                slug_pid = str(slug_row.get("person_id") or "").strip()
+                if slug_pid and slug_pid != pid:
+                    others.add(slug_pid)
             for oid in others:
                 try:
                     self.sqlite.add_merge_proposal(
                         person_a=oid,
-                        person_b=UnifiedIdentityMapper.resolve(plat, puid),
+                        person_b=pid,
                         reason=f"same_handle:{plat}:{h}",
                     )
                 except Exception as e:
                     logger.debug("merge proposal: %s", e)
 
-        pid = UnifiedIdentityMapper.resolve(plat, puid)
         disp = (display_name or "").strip() or h or pid
         aliases = [x for x in [h] if x]  # nick as alias for mentions; not identity
         self.upsert_person(pid, display_name=disp, aliases=aliases or [pid], meta={})
@@ -427,6 +476,82 @@ class MemoryHub:
         )
         row = self.sqlite.get_person(pid)
         return self._person_as_legacy_dict(row) if row else {"id": pid}
+
+    def allocate_person_id(
+        self,
+        *,
+        accounts: list[dict[str, Any]] | None = None,
+        discord_ids: list[str] | None = None,
+        explicit_id: str | None = None,
+    ) -> str:
+        """Opaque person_id: uuid5 from first account, else uuid4. Never a nick slug."""
+        import re
+        import uuid as _uuid
+
+        from core.runtime.identity import UnifiedIdentityMapper
+
+        for acc in accounts or []:
+            if not isinstance(acc, dict):
+                continue
+            plat = str(acc.get("platform") or "").strip()
+            puid = str(acc.get("platform_user_id") or "").strip()
+            if plat and puid:
+                return UnifiedIdentityMapper.resolve(plat, puid)
+        for did in discord_ids or []:
+            d = str(did or "").strip()
+            if d:
+                return UnifiedIdentityMapper.resolve("discord", d)
+        raw = (explicit_id or "").strip()
+        # Accept only UUID-shaped ids from clients; reject nick/slug ids.
+        if raw and re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            raw,
+        ):
+            return raw.casefold()
+        return str(_uuid.uuid4())
+
+    def find_slug_duplicates(self) -> list[dict[str, Any]]:
+        """Detect legacy cards whose person_id equals someone's handle (nick-as-id)."""
+        import re
+
+        uuid_re = re.compile(
+            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        )
+        out: list[dict[str, Any]] = []
+        people = self.list_people()
+        handle_to_pids: dict[str, set[str]] = {}
+        for p in people:
+            pid = str(p.get("id") or "").strip()
+            for acc in p.get("accounts") or []:
+                h = str(acc.get("handle") or "").strip().casefold()
+                if h:
+                    handle_to_pids.setdefault(h, set()).add(pid)
+            for alias in p.get("names") or []:
+                a = str(alias or "").strip().casefold()
+                if a:
+                    handle_to_pids.setdefault(a, set()).add(pid)
+        for p in people:
+            pid = str(p.get("id") or "").strip()
+            if not pid or uuid_re.fullmatch(pid):
+                continue
+            others = {x for x in handle_to_pids.get(pid.casefold(), set()) if x != pid}
+            # Also: uuid people that share this nick as handle
+            for p2 in people:
+                pid2 = str(p2.get("id") or "").strip()
+                if not pid2 or pid2 == pid:
+                    continue
+                for acc in p2.get("accounts") or []:
+                    if str(acc.get("handle") or "").strip().casefold() == pid.casefold():
+                        others.add(pid2)
+            if others:
+                out.append(
+                    {
+                        "slug_person_id": pid,
+                        "related_person_ids": sorted(others),
+                        "hint": "legacy_nick_as_id",
+                    }
+                )
+        return out
 
     def propose_people_merge(
         self, person_a: str, person_b: str, *, reason: str = ""

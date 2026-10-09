@@ -44,6 +44,9 @@ export function MemoryScreen() {
   const [memory, setMemory] = useState<MemoryStats | null>(null)
   const [memPolicies, setMemPolicies] = useState<MemoryPolicies | null>(null)
   const [people, setPeople] = useState<PersonRow[]>([])
+  const [slugDuplicates, setSlugDuplicates] = useState<
+    { slug_person_id?: string; related_person_ids?: string[]; hint?: string }[]
+  >([])
   const [selectedPerson, setSelectedPerson] = useState('')
   const [aliasesText, setAliasesText] = useState('')
   const [facts, setFacts] = useState<PersonFact[]>([])
@@ -81,7 +84,12 @@ export function MemoryScreen() {
       const [m, pol, pe, di, jo, pr, ml] = await Promise.all([
         apiGet<ApiEnvelope<MemoryStats>>('/v1/memory/stats'),
         apiGet<ApiEnvelope<MemoryPolicies>>('/v1/memory/policies'),
-        apiGet<ApiEnvelope<{ people: PersonRow[] }>>('/v1/memory/people'),
+        apiGet<
+          ApiEnvelope<{
+            people: PersonRow[]
+            slug_duplicates?: { slug_person_id?: string; related_person_ids?: string[]; hint?: string }[]
+          }>
+        >('/v1/memory/people'),
         apiGet<ApiEnvelope<{ notes: DiaryNote[] }>>('/v1/memory/diary?limit=50'),
         apiGet<ApiEnvelope<{ entries: JournalEntry[] }>>('/v1/memory/journal?limit=50'),
         apiGet<ApiEnvelope<{ proposals: MergeProposal[] }>>('/v1/memory/people/merge-proposals?status=pending'),
@@ -93,6 +101,7 @@ export function MemoryScreen() {
       setMemPolicies(pol.data)
       const plist = pe.data.people ?? []
       setPeople(plist)
+      setSlugDuplicates(pe.data.slug_duplicates ?? [])
       setDiary(di.data.notes ?? [])
       setJournal(jo.data.entries ?? [])
       setProposals(pr.data.proposals ?? [])
@@ -512,6 +521,26 @@ export function MemoryScreen() {
 
       {tab === 'people' && (
         <div className="split-modules">
+          {slugDuplicates.length > 0 && (
+            <div className="card" style={{ gridColumn: '1 / -1', borderColor: 'var(--amber)' }}>
+              <div className="card-header">
+                <span className="card-title">Дубли: nick как id</span>
+              </div>
+              <p className="text-muted" style={{ margin: '0 0 0.5rem', fontSize: '0.85rem' }}>
+                Карточки с id-ником (не UUID) рядом с Discord-персонами. Склейте через merge — аккаунты
+                больше не переезжают молча.
+              </p>
+              <div className="stack-sm">
+                {slugDuplicates.map((d) => (
+                  <div key={String(d.slug_person_id)} className="row-between">
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>
+                      {d.slug_person_id} ↔ {(d.related_person_ids || []).join(', ')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {(proposals.length > 0 || recentMerges.some((m) => !m.undone_at)) && (
             <div className="card" style={{ gridColumn: '1 / -1' }}>
               <div className="card-header">

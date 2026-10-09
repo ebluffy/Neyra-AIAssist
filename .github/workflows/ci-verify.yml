@@ -147,3 +147,53 @@ jobs:
           done
           printf '%s\n' 'OPENROUTER_API_KEY=ci-placeholder' 'AIHOPE_API_KEY=ci-placeholder' 'DISCORD_TOKEN=ci-placeholder' > server/.env
           cd server && python scripts/healthcheck.py --mode core --skip-http
+
+  pytest:
+    name: Pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -q -r server/requirements-dev.txt
+          pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart
+      - name: Run pytest
+        run: cd server && pytest -q
+
+  dashboard:
+    name: Dashboard lint/typecheck/test/build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server/dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: server/dashboard/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm run test -- --run
+      - name: Build
+        run: npm run build
+
+  secrets:
+    name: Secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

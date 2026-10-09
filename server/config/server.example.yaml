@@ -18,9 +18,15 @@ api:
   # RU: Префикс перед /v1. Итого при примере выше: https://neyra.owyx.site/api/v1
   public_path_prefix: "/api"
 
-  # EN: Optional global RPM limit per client IP (0 = disabled). Applies to /v1 HTTP except /v1/ws.
-  # RU: Опциональный лимит запросов/мин на IP (0 = выкл.), для /v1 кроме WebSocket.
+  # EN: Optional global RPM limit per client IP (0 = disabled). When public_base_url is set
+  #     and this is 0, the server defaults to 120 RPM.
+  # RU: Лимит запросов/мин на IP (0 = выкл.). При public_base_url и 0 — по умолчанию 120.
   rate_limit_requests_per_minute: 0
+
+  # EN: Expose /docs /redoc /openapi.json. Default: true when public_base_url empty, else false
+  #     (console-local only). Set true only if you intentionally publish OpenAPI.
+  # RU: Публиковать OpenAPI. По умолчанию true без public_base_url, иначе false (только консоль).
+  # docs_public: false
 
   # EN: If set, POST /v1/webhooks/in/... requires header X-Neyra-Signature: sha256=<hex> (HMAC-SHA256 of raw body).
   # RU: Если задан — входящий webhook только с подписью (см. также WEBHOOK_INBOUND_SECRET в .env).

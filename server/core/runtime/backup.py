@@ -80,14 +80,30 @@ class BackupManager:
             else:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(p, dst)
-        # Ensure Hub SQLite (+ wal/shm) and note chroma path in manifest
+        # Ensure Hub SQLite via sqlite3 backup API (consistent snapshot; not copy2 of live WAL).
         mem_dir = tmp_root / "data" / "memory"
         mem_dir.mkdir(parents=True, exist_ok=True)
         copied_db: list[str] = []
+        import sqlite3
+
         for p in self._sqlite_paths():
             if p.exists() and p.is_file():
-                shutil.copy2(p, mem_dir / p.name)
-                copied_db.append(p.name)
+                dst = mem_dir / p.name
+                try:
+                    src_conn = sqlite3.connect(str(p), timeout=30)
+                    try:
+                        dst_conn = sqlite3.connect(str(dst))
+                        try:
+                            src_conn.backup(dst_conn)
+                        finally:
+                            dst_conn.close()
+                    finally:
+                        src_conn.close()
+                    copied_db.append(p.name)
+                except Exception as e:
+                    logger.warning("sqlite backup API failed for %s (%s); falling back to copy2", p.name, e)
+                    shutil.copy2(p, dst)
+                    copied_db.append(p.name)
         mem = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
         chroma = Path(str(mem.get("chroma_db_path") or "./data/memory/chroma_db"))
         manifest = {

@@ -154,14 +154,45 @@ class HealthMonitor:
 
     def _check_storage(self) -> dict:
         try:
+            import time as _time
+
+            from core.runtime.paths import resolve_data_dir
+
             mem = self.config.get("memory", {}) if isinstance(self.config, dict) else {}
+            root = self._project_root or Path(".")
+            data_dir = resolve_data_dir(root, self.config if isinstance(self.config, dict) else {})
+            chroma_raw = Path(str(mem.get("chroma_db_path") or (data_dir / "memory" / "chroma_db")))
+            chroma = chroma_raw if chroma_raw.is_absolute() else (root / chroma_raw)
             required_dirs = [
-                Path("./logs"),
-                Path("./data/memory"),
-                Path(mem.get("chroma_db_path", "./data/memory/chroma_db")),
+                root / "logs",
+                data_dir / "memory",
+                chroma,
             ]
             missing = [str(p) for p in required_dirs if not p.exists()]
-            return {"ok": not missing, "missing": missing}
+            db_ok = True
+            db_latency_ms = 0
+            sqlite_path = Path(str(mem.get("sqlite_path") or (data_dir / "memory" / "neyra_memory.db")))
+            if not sqlite_path.is_absolute():
+                sqlite_path = root / sqlite_path
+            if sqlite_path.is_file():
+                import sqlite3
+
+                t0 = _time.perf_counter()
+                try:
+                    conn = sqlite3.connect(str(sqlite_path), timeout=2)
+                    try:
+                        conn.execute("SELECT 1").fetchone()
+                    finally:
+                        conn.close()
+                    db_latency_ms = int((_time.perf_counter() - t0) * 1000)
+                except Exception:
+                    db_ok = False
+            return {
+                "ok": not missing and db_ok,
+                "missing": missing,
+                "db_ok": db_ok,
+                "db_latency_ms": db_latency_ms,
+            }
         except Exception as e:
             return {"ok": False, "error": str(e)[:500]}
 
