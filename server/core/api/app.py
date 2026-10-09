@@ -970,7 +970,13 @@ class WebhookStore:
                 if victim is None:
                     break  # all slots live requests — prefer >MAX over a duplicate
                 store.pop(victim, None)
-            await self._save()
+            try:
+                await self._save()
+            except BaseException:
+                # AR-73: do not leave a permanent owned/inflight claim after save failure.
+                self._owned_inbound.discard(kid)
+                store.pop(kid, None)
+                raise
             return ("proceed", None)
 
     async def finish_inbound_dedup(self, key: str, data: dict[str, Any] | None) -> None:

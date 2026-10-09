@@ -160,6 +160,39 @@ def test_inbound_eviction_skips_owned_keys(tmp_path: Path, monkeypatch):
     asyncio.run(_run())
 
 
+def test_inbound_claim_rolls_back_owned_on_save_failure(tmp_path: Path, monkeypatch):
+    """AR-73: _save OSError must not leave key permanently owned/inflight."""
+    import asyncio
+
+    from core.api.app import WebhookStore
+
+    root = tmp_path / "prj"
+    (root / "logs").mkdir(parents=True)
+    ws = WebhookStore(root)
+    calls = {"n": 0}
+    real_save = ws._save
+
+    async def flaky_save() -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("disk full")
+        await real_save()
+
+    monkeypatch.setattr(ws, "_save", flaky_save)
+
+    async def _run() -> None:
+        with pytest.raises(OSError, match="disk full"):
+            await ws.claim_inbound_dedup("hdr:X")
+        assert "hdr:X" not in ws._owned_inbound
+        assert "hdr:X" not in (ws._state.get("inbound_dedup") or {})
+        # Retry with working save must claim, not 409-style inflight.
+        assert (await ws.claim_inbound_dedup("hdr:X"))[0] == "proceed"
+        assert "hdr:X" in ws._owned_inbound
+        await ws.finish_inbound_dedup("hdr:X", {"accepted": True})
+
+    asyncio.run(_run())
+
+
 def test_restore_rejects_legacy_restore_literal(client, auth_headers, stub_backup):
     """AR-66: confirm must equal archive_name."""
     stub_backup.resolve_archive_path.return_value = Path("/tmp/x.zip")
