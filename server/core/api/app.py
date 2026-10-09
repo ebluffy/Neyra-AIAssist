@@ -15,13 +15,14 @@ import os
 import threading
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 
 import httpx
 import yaml
-from fastapi import Depends, FastAPI, Header, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -39,7 +40,9 @@ from core.runtime.backup import BackupManager
 from core.runtime.event_bus import CoreEvent
 from core.runtime.paths import resolve_data_dir
 from core.memory.ltm_maintenance import execute_ltm_summarize
+import core.plugins.ops as plugin_ops_helpers
 from core.plugins import PluginContext, PluginLoader, run_plugin_entrypoint
+import core.runtime.event_bus as event_bus_mod
 from core.reflection import ReflectionEngine
 from core.runtime import HealthMonitor
 
@@ -554,6 +557,10 @@ class PluginInvokeRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class PluginFilePutRequest(BaseModel):
+    content: str = Field(default="", max_length=512_000)
+
+
 class WebhookRouteCreateRequest(BaseModel):
     route_id: Optional[str] = Field(default=None, max_length=120)
     event_type: str = Field(min_length=1, max_length=120)
@@ -629,6 +636,21 @@ class WebhookStore:
             raw.setdefault("routes", {})
             raw.setdefault("deliveries", {})
             raw.setdefault("dlq", {})
+            # Stuck "retrying" from a crash mid-retry → back to failed (AR-41).
+            changed = False
+            for did, row in list((raw.get("dlq") or {}).items()):
+                if isinstance(row, dict) and str(row.get("status") or "") == "retrying":
+                    row["status"] = "failed"
+                    row["error"] = str(row.get("error") or "retry_interrupted")
+                    raw["dlq"][did] = row
+                    if did in (raw.get("deliveries") or {}):
+                        raw["deliveries"][did] = {**raw["deliveries"][did], **row}
+                    changed = True
+            if changed:
+                try:
+                    self.path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
             return raw
         except Exception:
             return {"routes": {}, "deliveries": {}, "dlq": {}}
@@ -731,10 +753,159 @@ class WebhookStore:
             rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
             return [dict(r) for r in rows]
 
+    async def remove_dlq(self, delivery_id: str) -> bool:
+        """Drop a delivery from DLQ only (delivery history row stays)."""
+        did = str(delivery_id or "").strip()
+        if not did:
+            return False
+        async with self._lock:
+            if did not in self._state["dlq"]:
+                return False
+            self._state["dlq"].pop(did, None)
+            await self._save()
+            return True
+
+    async def finish_dlq_retry(
+        self,
+        delivery_id: str,
+        *,
+        retried_as: str = "",
+        status: str = "retried",
+    ) -> None:
+        """Mark original delivery history as retried and drop it from DLQ (AR-45)."""
+        did = str(delivery_id or "").strip()
+        if not did:
+            return
+        async with self._lock:
+            self._state["dlq"].pop(did, None)
+            row = self._state["deliveries"].get(did)
+            if isinstance(row, dict):
+                row = dict(row)
+                row["status"] = status
+                if retried_as:
+                    row["retried_as"] = retried_as
+                row["updated_at"] = _utc_now()
+                self._state["deliveries"][did] = row
+            await self._save()
+
+    async def claim_dlq_for_retry(self, delivery_id: str) -> dict[str, Any] | None:
+        """Atomically mark a DLQ row as retrying. Returns None if missing or already claimed."""
+        did = str(delivery_id or "").strip()
+        if not did:
+            return None
+        async with self._lock:
+            row = self._state["dlq"].get(did)
+            if not isinstance(row, dict):
+                return None
+            if str(row.get("status") or "") == "retrying":
+                return None
+            row = dict(row)
+            row["status"] = "retrying"
+            row["updated_at"] = _utc_now()
+            self._state["dlq"][did] = row
+            base = self._state["deliveries"].get(did) if isinstance(self._state["deliveries"].get(did), dict) else {}
+            self._state["deliveries"][did] = {**base, **row}
+            await self._save()
+            return dict(row)
+
+    async def release_dlq_retry(self, delivery_id: str, *, error: str = "") -> None:
+        """Put a claimed retrying row back to failed (route missing / interrupted)."""
+        did = str(delivery_id or "").strip()
+        if not did:
+            return
+        async with self._lock:
+            row = self._state["dlq"].get(did)
+            if not isinstance(row, dict):
+                return
+            if str(row.get("status") or "") != "retrying":
+                return
+            row = dict(row)
+            row["status"] = "failed"
+            if error:
+                row["error"] = error
+            row["updated_at"] = _utc_now()
+            self._state["dlq"][did] = row
+            base = self._state["deliveries"].get(did) if isinstance(self._state["deliveries"].get(did), dict) else {}
+            self._state["deliveries"][did] = {**base, **row}
+            await self._save()
+
     async def get_delivery(self, delivery_id: str) -> dict[str, Any] | None:
         async with self._lock:
             row = self._state["deliveries"].get(delivery_id)
             return dict(row) if isinstance(row, dict) else None
+
+    async def matching_routes_raw(self, event_type: str) -> list[dict[str, Any]]:
+        """Enabled routes for event_type or '*', including secret (dispatch only)."""
+        async with self._lock:
+            out: list[dict[str, Any]] = []
+            for row in self._state["routes"].values():
+                if not isinstance(row, dict):
+                    continue
+                if not bool(row.get("enabled", True)):
+                    continue
+                route_event = str(row.get("event_type") or "")
+                if route_event not in ("*", event_type):
+                    continue
+                out.append(dict(row))
+            return out
+
+    async def secret_for_target_url(self, target_url: str) -> str:
+        url = (target_url or "").strip()
+        if not url:
+            return ""
+        async with self._lock:
+            for row in self._state["routes"].values():
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("target_url") or "").strip() != url:
+                    continue
+                sec = str(row.get("secret") or "").strip()
+                if sec:
+                    return sec
+            return ""
+
+
+async def _fanout_webhooks(
+    store: WebhookStore,
+    event_type: str,
+    source: str,
+    payload: dict[str, Any],
+) -> None:
+    routes = await store.matching_routes_raw(event_type)
+    body = {
+        "event_type": event_type,
+        "source": source,
+        "payload": payload,
+        "ts": _utc_now(),
+    }
+    for route in routes:
+        asyncio.create_task(_dispatch_webhook(store, route, body, source="event_bus"))
+
+
+def _delivery_event_type(route: dict[str, Any], payload: dict[str, Any]) -> str:
+    if isinstance(payload, dict):
+        ev = str(payload.get("event_type") or "").strip()
+        if ev:
+            return ev
+    return str(route.get("event_type") or "")
+
+
+def webhook_signature_headers(secret: str, body_bytes: bytes, ts: str | None = None) -> dict[str, str]:
+    """Build outbound webhook HMAC headers (X-Neyra-Signature / Timestamp).
+
+    Signature is HMAC-SHA256 over ``{ts}.`` + raw body bytes, hex-encoded as ``sha256=<hex>``.
+    """
+    secret = (secret or "").strip()
+    if not secret:
+        return {}
+    ts_s = ts if ts is not None else str(int(time.time()))
+    signed = f"{ts_s}.".encode("utf-8") + body_bytes
+    dig = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
+    return {
+        "x-neyra-webhook-secret": secret,
+        "X-Neyra-Signature": f"sha256={dig}",
+        "X-Neyra-Timestamp": ts_s,
+    }
 
 
 async def _dispatch_webhook(
@@ -745,11 +916,14 @@ async def _dispatch_webhook(
 ) -> dict[str, Any]:
     max_retries = max(0, int(route.get("max_retries", 3)))
     target_url = str(route.get("target_url") or "").strip()
+    event_type = _delivery_event_type(route, payload if isinstance(payload, dict) else {})
+    route_event = str(route.get("event_type") or "")
     if not target_url:
         return await store.add_delivery(
             {
                 "route_id": route.get("route_id"),
-                "event_type": route.get("event_type"),
+                "event_type": event_type,
+                "route_event": route_event,
                 "source": source,
                 "status": "failed",
                 "attempts": 0,
@@ -760,7 +934,8 @@ async def _dispatch_webhook(
     delivery = await store.add_delivery(
         {
             "route_id": route.get("route_id"),
-            "event_type": route.get("event_type"),
+            "event_type": event_type,
+            "route_event": route_event,
             "source": source,
             "status": "pending",
             "attempts": 0,
@@ -770,13 +945,14 @@ async def _dispatch_webhook(
     )
     delivery_id = str(delivery.get("delivery_id") or "")
     secret = str(route.get("secret") or "")
+    body_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     for attempt in range(max_retries + 1):
         headers = {"Content-Type": "application/json"}
         if secret:
-            headers["x-neyra-webhook-secret"] = secret
+            headers.update(webhook_signature_headers(secret, body_bytes))
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(target_url, json=payload, headers=headers)
+                resp = await client.post(target_url, content=body_bytes, headers=headers)
             ok = 200 <= resp.status_code < 300
             status = "ok" if ok else "failed"
             await store.update_delivery(
@@ -814,6 +990,7 @@ def build_app(
     shared_monitor: Optional[HealthMonitor] = None,
     shared_backup_manager: Optional[BackupManager] = None,
     reflection: Optional[ReflectionEngine] = None,
+    project_root: Optional[Path] = None,
 ) -> FastAPI:
     public_root = api_public_root(config)
     openapi_servers = [{"url": public_root, "description": "public"}] if public_root else None
@@ -822,6 +999,7 @@ def build_app(
         version=API_VERSION,
         servers=openapi_servers,
     )
+    root = Path(project_root).resolve() if project_root is not None else _project_root()
     if shared_agent is not None:
         agent = shared_agent
         if shared_monitor is None or shared_backup_manager is None:
@@ -830,7 +1008,7 @@ def build_app(
         backup_manager = shared_backup_manager
     else:
         agent = NeyraAgent(config)
-        monitor = HealthMonitor(config, project_root=_project_root())
+        monitor = HealthMonitor(config, project_root=root)
         backup_manager = BackupManager(config)
     app.state.agent = agent
     app.state.monitor = monitor
@@ -840,14 +1018,45 @@ def build_app(
     ws_idle_timeout = max(5, int(ws_cfg.get("idle_timeout_seconds", 60)))
     ws_ping_interval = max(2, int(ws_cfg.get("ping_interval_seconds", 20)))
     ws_close_grace = max(1, int(ws_cfg.get("close_grace_seconds", 5)))
-    root = _project_root()
     webhook_store = WebhookStore(root)
     plugin_ops: dict[str, dict[str, Any]] = {}
     dash_auth = DashboardAuthStore(resolve_data_dir(root, config) / "dashboard_auth.sqlite")
     app.state.dashboard_auth = dash_auth
+    main_loop: list[asyncio.AbstractEventLoop | None] = [None]
+
+    def _schedule_webhook_fanout(event_type: str, source: str, payload: dict[str, Any]) -> None:
+        # Always hop to the uvicorn loop — Discord/resident threads have their own loops.
+        loop = main_loop[0]
+        if loop is None or not loop.is_running():
+            logger.warning(
+                "webhook fanout dropped (main loop not ready) | type=%s source=%s",
+                event_type,
+                source,
+            )
+            return
+        coro = _fanout_webhooks(
+            webhook_store,
+            event_type,
+            source,
+            payload if isinstance(payload, dict) else {},
+        )
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            loop.create_task(coro)
+        else:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+
+    def _on_bus_event_for_webhooks(ev: CoreEvent) -> None:
+        _schedule_webhook_fanout(ev.event_type, ev.source, ev.payload if isinstance(ev.payload, dict) else {})
+
+    agent.event_bus.subscribe("*", _on_bus_event_for_webhooks)
 
     @app.on_event("startup")
     async def _startup() -> None:
+        main_loop[0] = asyncio.get_running_loop()
         if reflection is not None:
             reflection.start_scheduler()
         monitor.start()
@@ -1041,6 +1250,7 @@ def build_app(
     @app.post("/v1/notify")
     async def v1_notify(body: NotifyRequest, request: Request, api_role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
+        # Fan-out to webhook routes via the event-bus bridge (see subscribe above).
         agent.event_bus.publish(
             CoreEvent(
                 body.event_type,
@@ -1048,25 +1258,6 @@ def build_app(
                 body.payload,
             )
         )
-        routes = await webhook_store.list_routes()
-        for route in routes:
-            if not bool(route.get("enabled", True)):
-                continue
-            if str(route.get("event_type") or "") != body.event_type:
-                continue
-            asyncio.create_task(
-                _dispatch_webhook(
-                    webhook_store,
-                    route,
-                    {
-                        "event_type": body.event_type,
-                        "source": body.source,
-                        "payload": body.payload,
-                        "ts": _utc_now(),
-                    },
-                    source="event_bus",
-                )
-            )
         _audit("notify", trace_id, api_role, {"event_type": body.event_type})
         return {"ok": True, "trace_id": trace_id, "data": {"published": True}}
 
@@ -1528,7 +1719,7 @@ def build_app(
             if pdb is not None:
                 pdb._cache.pop(oid, None)
                 try:
-                    pdb.hydrate_from_hub()
+                    pdb.hydrate_from_hub(hub)
                 except Exception:
                     pass
             return out
@@ -1640,7 +1831,7 @@ def build_app(
                 if src:
                     pdb._cache.pop(src, None)
                 try:
-                    pdb.hydrate_from_hub()
+                    pdb.hydrate_from_hub(hub)
                 except Exception:
                     pass
             return {"proposal_id": int(proposal_id), "merge": out}
@@ -2196,7 +2387,7 @@ def build_app(
     @app.get("/v1/plugins")
     async def v1_plugins(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
-        loader = PluginLoader(_project_root())
+        loader = PluginLoader(root)
         return {"ok": True, "trace_id": trace_id, "data": {"plugins": loader.list_plugins()}}
 
     def _find_manifest(loader: PluginLoader, plugin_id: str):
@@ -2247,52 +2438,246 @@ def build_app(
     async def v1_plugin_patch(plugin_id: str, body: PluginStateUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
         loader = PluginLoader(root)
+        prev_manifest = _find_manifest(loader, plugin_id)
+        if prev_manifest is None:
+            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        prev_enabled = bool(prev_manifest.enabled)
+        enabled_changed = prev_enabled != bool(body.enabled)
         ok = loader.set_enabled(plugin_id, body.enabled)
         if not ok:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        manifest = _find_manifest(loader, plugin_id)
+        is_resident = bool(manifest and str(manifest.lifecycle).lower() == "resident")
         lava_note = ""
-        # Discord owns managed Lavalink: off → kill JVM; on → ensure JAR (non-blocking for event loop).
-        if str(plugin_id).strip().lower() == "discord":
+        # Discord owns managed Lavalink: off → kill JVM now; on → start after process restart
+        # (in-process ensure races with soft-restart os._exit ~2s later).
+        if str(plugin_id).strip().lower() == "discord" and enabled_changed:
             try:
-                from modules.discord.lavalink_process import ensure_managed_lavalink, stop_managed_lavalink
+                from modules.discord.lavalink_process import stop_managed_lavalink
 
                 discord_dir = root / "modules" / "discord"
                 if not body.enabled:
                     lava_note = await asyncio.to_thread(stop_managed_lavalink, discord_dir)
                     logger.info("plugin discord disabled → managed Lavalink: %s", lava_note)
                 else:
-                    # Ensure can wait up to ~90s for the port — do not block the PATCH response.
-                    async def _start_lava() -> None:
-                        try:
-                            ok_lava, detail = await asyncio.to_thread(
-                                ensure_managed_lavalink, config, discord_dir
-                            )
-                            logger.info(
-                                "plugin discord enabled → managed Lavalink ok=%s detail=%s",
-                                ok_lava,
-                                detail,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "Failed to start managed Lavalink after discord enable"
-                            )
-
-                    asyncio.create_task(_start_lava())
-                    lava_note = "managed Lavalink start requested"
+                    lava_note = "will start after restart"
             except Exception:
                 logger.exception("Failed to sync managed Lavalink after discord toggle")
                 lava_note = "lavalink sync failed (see logs)"
+        # Resident threads only re-read plugin.yaml on process start — schedule soft restart
+        # only when enabled actually flipped (idempotent PATCH must not bounce the core).
+        restart_scheduled = False
+        if is_resident and enabled_changed:
+            _schedule_exit_after_response(reason=f"resident_plugin_toggle:{plugin_id}")
+            restart_scheduled = True
+            _audit(
+                "system_restart",
+                trace_id,
+                api_role,
+                {"reason": "resident_plugin_toggle", "plugin_id": plugin_id, "enabled": body.enabled},
+            )
         op_id = f"op_{uuid.uuid4().hex[:12]}"
         plugin_ops[op_id] = {
             "operation_id": op_id,
             "plugin_id": plugin_id,
             "type": "set_enabled",
             "status": "done",
-            "result": {"enabled": body.enabled, "lavalink": lava_note or None},
+            "result": {
+                "enabled": body.enabled,
+                "enabled_changed": enabled_changed,
+                "lavalink": lava_note or None,
+                "restart_required": bool(is_resident and enabled_changed),
+                "restart_scheduled": restart_scheduled,
+            },
             "ts": _utc_now(),
         }
-        _audit("plugin_set_enabled", trace_id, api_role, {"plugin_id": plugin_id, "enabled": body.enabled})
+        _audit(
+            "plugin_set_enabled",
+            trace_id,
+            api_role,
+            {"plugin_id": plugin_id, "enabled": body.enabled, "changed": enabled_changed},
+        )
         return {"ok": True, "trace_id": trace_id, "data": plugin_ops[op_id]}
+
+    @app.post("/v1/plugins/upload")
+    async def v1_plugins_upload(
+        request: Request,
+        file: UploadFile = File(...),
+        replace: bool = Query(default=False),
+        api_role: str = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        limit = plugin_ops_helpers.MAX_ZIP_BYTES
+        raw = await file.read(limit + 1)
+        if not raw:
+            raise ApiError("bad_request", "empty upload", 400)
+        if len(raw) > limit:
+            raise ApiError("bad_request", f"zip too large (max {limit} bytes)", 400)
+        try:
+            info = await asyncio.to_thread(
+                plugin_ops_helpers.install_plugin_from_zip,
+                root / "modules",
+                raw,
+                replace=replace,
+            )
+        except FileExistsError as e:
+            raise ApiError(
+                "already_exists",
+                f"plugin already exists: {e}. Pass replace=true to overwrite (preserves config/logs/data).",
+                409,
+            ) from e
+        except (ValueError, zipfile.BadZipFile) as e:
+            raise ApiError("bad_request", str(e), 400) from e
+        pid = str(info.get("plugin_id") or "")
+        restart_scheduled = False
+        if info.get("replaced"):
+            loader = PluginLoader(root)
+            m = _find_manifest(loader, pid)
+            if m is not None and str(m.lifecycle).lower() == "resident":
+                _schedule_exit_after_response(reason=f"resident_plugin_replace:{pid}")
+                restart_scheduled = True
+                _audit(
+                    "system_restart",
+                    trace_id,
+                    api_role,
+                    {"reason": "resident_plugin_replace", "plugin_id": pid},
+                )
+        info = {**info, "restart_scheduled": restart_scheduled}
+        _audit("plugin_upload", trace_id, api_role, {"plugin_id": pid, "replace": replace})
+        return {"ok": True, "trace_id": trace_id, "data": info}
+
+    @app.delete("/v1/plugins/{plugin_id}")
+    async def v1_plugin_delete(plugin_id: str, request: Request, api_role: str = Depends(dep_admin)):
+        trace_id = _trace_id(request)
+        loader = PluginLoader(root)
+        m = _find_manifest(loader, plugin_id)
+        if m is None:
+            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        is_resident = str(m.lifecycle).lower() == "resident"
+        try:
+            await asyncio.to_thread(plugin_ops_helpers.delete_plugin_dir, root / "modules", plugin_id)
+        except ValueError as e:
+            raise ApiError("forbidden", str(e), 403) from e
+        except FileNotFoundError as e:
+            raise ApiError("not_found", str(e), 404) from e
+        restart_scheduled = False
+        if is_resident:
+            _schedule_exit_after_response(reason=f"resident_plugin_delete:{plugin_id}")
+            restart_scheduled = True
+            _audit(
+                "system_restart",
+                trace_id,
+                api_role,
+                {"reason": "resident_plugin_delete", "plugin_id": plugin_id},
+            )
+        _audit("plugin_delete", trace_id, api_role, {"plugin_id": plugin_id})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"deleted": True, "plugin_id": plugin_id, "restart_scheduled": restart_scheduled},
+        }
+
+    @app.get("/v1/plugins/{plugin_id}/files")
+    async def v1_plugin_files_list(plugin_id: str, request: Request, _: None = Depends(dep_viewer)):
+        trace_id = _trace_id(request)
+        loader = PluginLoader(root)
+        m = _find_manifest(loader, plugin_id)
+        if m is None:
+            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        files = plugin_ops_helpers.list_plugin_config_files(m.plugin_dir)
+        return {"ok": True, "trace_id": trace_id, "data": {"plugin_id": m.id, "files": files}}
+
+    @app.get("/v1/plugins/{plugin_id}/files/{file_path:path}")
+    async def v1_plugin_file_get(plugin_id: str, file_path: str, request: Request, _: None = Depends(dep_viewer)):
+        trace_id = _trace_id(request)
+        loader = PluginLoader(root)
+        m = _find_manifest(loader, plugin_id)
+        if m is None:
+            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        try:
+            content = plugin_ops_helpers.read_plugin_file(m.plugin_dir, file_path)
+        except FileNotFoundError as e:
+            raise ApiError("not_found", f"File not found: {file_path}", 404) from e
+        except ValueError as e:
+            raise ApiError("bad_request", str(e), 400) from e
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"plugin_id": m.id, "path": file_path, "content": content},
+        }
+
+    @app.put("/v1/plugins/{plugin_id}/files/{file_path:path}")
+    async def v1_plugin_file_put(
+        plugin_id: str,
+        file_path: str,
+        body: PluginFilePutRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        loader = PluginLoader(root)
+        m = _find_manifest(loader, plugin_id)
+        if m is None:
+            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        try:
+            plugin_ops_helpers.write_plugin_file(m.plugin_dir, file_path, body.content)
+        except ValueError as e:
+            raise ApiError("bad_request", str(e), 400) from e
+        _audit("plugin_file_put", trace_id, api_role, {"plugin_id": plugin_id, "path": file_path})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"plugin_id": m.id, "path": file_path, "saved": True},
+        }
+
+    @app.get("/v1/logs")
+    async def v1_logs(
+        request: Request,
+        source: str = Query(default="system"),
+        tail: int = Query(default=200, ge=1, le=2000),
+        _: None = Depends(dep_viewer),
+    ):
+        trace_id = _trace_id(request)
+        path = plugin_ops_helpers.resolve_log_source(root, source)
+        if path is None:
+            raise ApiError("bad_request", f"unknown log source: {source}", 400)
+        text = await asyncio.to_thread(plugin_ops_helpers.tail_text_file, path, max_lines=tail)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "source": source,
+                "path": str(path.relative_to(root)) if path.is_relative_to(root) else str(path),
+                "exists": path.is_file(),
+                "text": text,
+            },
+        }
+
+    @app.get("/v1/webhooks/event-types")
+    async def v1_webhooks_event_types(request: Request, _: None = Depends(dep_viewer)):
+        trace_id = _trace_id(request)
+        names = sorted(
+            {
+                getattr(event_bus_mod, n)
+                for n in dir(event_bus_mod)
+                if n.isupper()
+                and isinstance(getattr(event_bus_mod, n), str)
+                and "." in getattr(event_bus_mod, n)
+            }
+        )
+        groups: dict[str, list[str]] = {}
+        for ev in names:
+            prefix = ev.split(".", 1)[0]
+            groups.setdefault(prefix, []).append(ev)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "events": names,
+                "groups": groups,
+                "special": [{"id": "*", "label": "Все события"}],
+            },
+        }
 
     @app.get("/v1/plugins/{plugin_id}/config")
     async def v1_plugin_config_get(plugin_id: str, request: Request, _: None = Depends(dep_viewer)):
@@ -2341,38 +2726,103 @@ def build_app(
         }
         return {"ok": True, "trace_id": trace_id, "data": plugin_ops[op_id]}
 
-    @app.post("/v1/plugins/{plugin_id}/reload")
-    async def v1_plugin_reload(plugin_id: str, request: Request, _: None = Depends(dep_admin)):
+    @app.get("/v1/plugins/{plugin_id}/log-sources")
+    async def v1_plugin_log_sources(plugin_id: str, request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
-        raise ApiError(
-            "not_supported",
-            (
-                f"In-process reload of '{plugin_id}' is not supported. "
-                "Use POST /v1/system/restart for a process soft-restart, "
-                "or PATCH enabled + restart."
-            ),
-            501,
-        )
+        sources = plugin_ops_helpers.list_plugin_log_sources(root, m.id)
+        return {"ok": True, "trace_id": trace_id, "data": {"plugin_id": m.id, "sources": sources}}
+
+    @app.post("/v1/plugins/{plugin_id}/reload")
+    async def v1_plugin_reload(plugin_id: str, request: Request, api_role: str = Depends(dep_admin)):
+        trace_id = _trace_id(request)
+        loader = PluginLoader(root)
+        m = _find_manifest(loader, plugin_id)
+        if m is None:
+            raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
+        lifecycle = str(m.lifecycle or "").strip().lower()
+        if lifecycle == "resident":
+            # Resident threads have no stop API — soft-restart the core process.
+            _audit("plugin_reload_soft_restart", trace_id, api_role, {"plugin_id": plugin_id})
+            _schedule_exit_after_response(reason=f"plugin_reload_resident:{plugin_id}")
+            return {
+                "ok": True,
+                "trace_id": trace_id,
+                "data": {
+                    "plugin_id": m.id,
+                    "lifecycle": lifecycle,
+                    "reloaded": False,
+                    "restart_scheduled": True,
+                    "message": "Resident plugin: core soft-restart scheduled",
+                },
+            }
+        ok, msg = loader.reload_plugin(plugin_id)
+        if not ok:
+            logger.error(
+                "plugin_reload_failed | plugin_id=%s trace_id=%s detail=%s",
+                plugin_id,
+                trace_id,
+                msg,
+            )
+            raise ApiError("reload_failed", "reload failed, see server log", 400)
+        _audit("plugin_reload", trace_id, api_role, {"plugin_id": plugin_id})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "plugin_id": m.id,
+                "lifecycle": lifecycle or "on_demand",
+                "reloaded": True,
+                "restart_scheduled": False,
+                "message": "Reloaded",
+            },
+        }
 
     @app.post("/v1/plugins/{plugin_id}/restart")
-    async def v1_plugin_restart(plugin_id: str, request: Request, _: None = Depends(dep_admin)):
+    async def v1_plugin_restart(plugin_id: str, request: Request, api_role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
         if m is None:
             raise ApiError("not_found", f"Plugin not found: {plugin_id}", 404)
-        raise ApiError(
-            "not_supported",
-            (
-                f"Per-plugin restart of '{plugin_id}' is not supported. "
-                "Use POST /v1/system/restart (maint+) to restart the Neyra process."
-            ),
-            501,
-        )
+        lifecycle = str(m.lifecycle or "").strip().lower()
+        if lifecycle == "resident":
+            _audit("plugin_restart_soft_restart", trace_id, api_role, {"plugin_id": plugin_id})
+            _schedule_exit_after_response(reason=f"plugin_restart_resident:{plugin_id}")
+            return {
+                "ok": True,
+                "trace_id": trace_id,
+                "data": {
+                    "plugin_id": m.id,
+                    "lifecycle": lifecycle,
+                    "restart_scheduled": True,
+                    "message": "Resident plugin: core soft-restart scheduled",
+                },
+            }
+        ok, msg = loader.reload_plugin(plugin_id)
+        if not ok:
+            logger.error(
+                "plugin_restart_failed | plugin_id=%s trace_id=%s detail=%s",
+                plugin_id,
+                trace_id,
+                msg,
+            )
+            raise ApiError("restart_failed", "restart failed, see server log", 400)
+        _audit("plugin_restart", trace_id, api_role, {"plugin_id": plugin_id})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "plugin_id": m.id,
+                "lifecycle": lifecycle or "on_demand",
+                "reloaded": True,
+                "restart_scheduled": False,
+                "message": "Reloaded",
+            },
+        }
 
     @app.post("/v1/plugins/{plugin_id}/invoke")
     async def v1_plugin_invoke(plugin_id: str, body: PluginInvokeRequest, request: Request, _: None = Depends(dep_admin)):
@@ -2610,6 +3060,77 @@ def build_app(
         res = await asyncio.to_thread(backup_manager.run_backup, "api_manual")
         return {"ok": True, "trace_id": trace_id, "data": res}
 
+    @app.get("/v1/backup/list")
+    async def v1_backup_list(request: Request, _: None = Depends(dep_maint)):
+        trace_id = _trace_id(request)
+        rows = await asyncio.to_thread(backup_manager.list_backups)
+        last_apply = await asyncio.to_thread(backup_manager.read_last_apply_result)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"archives": rows, "last_restore_apply": last_apply},
+        }
+
+    @app.post("/v1/backup/restore")
+    async def v1_backup_restore(request: Request, api_role: str = Depends(dep_admin)):
+        trace_id = _trace_id(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        archive_name = str(body.get("archive_name") or body.get("name") or "").strip()
+        if not archive_name:
+            raise ApiError("bad_request", "archive_name is required", 400)
+        if (str(body.get("confirm") or "")).strip() != "RESTORE":
+            raise ApiError("restore_confirm_required", 'Pass confirm: "RESTORE"', 400)
+        # soft_restart=false is ignored: swap happens only at next core start (AR-34).
+        if body.get("soft_restart") is False:
+            logger.info(
+                "backup_restore ignoring soft_restart=false | archive=%s trace_id=%s",
+                archive_name,
+                trace_id,
+            )
+        _audit("backup_restore", trace_id, api_role, {"archive_name": archive_name})
+        # Validate archive exists before spending a full pre_restore backup (AR-34).
+        try:
+            await asyncio.to_thread(backup_manager.resolve_archive_path, archive_name)
+        except FileNotFoundError as e:
+            raise ApiError("not_found", "backup archive not found", 404) from e
+        except ValueError as e:
+            raise ApiError("bad_request", str(e), 400) from e
+        try:
+            pre = await asyncio.to_thread(backup_manager.run_backup, "pre_restore")
+        except Exception as e:
+            logger.exception("backup_restore_pre_backup_failed | trace_id=%s", trace_id)
+            raise ApiError("backup_failed", "pre-restore backup failed, see server log", 500) from e
+        if not isinstance(pre, dict) or not pre.get("archive"):
+            raise ApiError("backup_failed", "pre-restore backup failed, see server log", 500)
+        try:
+            # Stage only — live Hub/Chroma replaced on next start via apply_pending_restore.
+            res = await asyncio.to_thread(backup_manager.prepare_restore, archive_name)
+        except FileNotFoundError as e:
+            raise ApiError("not_found", "backup archive not found", 404) from e
+        except ValueError as e:
+            raise ApiError("bad_request", str(e), 400) from e
+        except Exception as e:
+            logger.exception("backup_restore_failed | trace_id=%s", trace_id)
+            raise ApiError("restore_failed", "restore failed, see server log", 500) from e
+        _schedule_exit_after_response(reason=f"backup_restore:{archive_name}")
+        pre_path = str(pre.get("archive") or "")
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                **res,
+                "pre_restore_backup": pre_path,
+                "pre_restore_backup_name": Path(pre_path).name if pre_path else "",
+                "created_at": res.get("created_at") or "",
+                "restart_scheduled": True,
+            },
+        }
+
     @app.post("/v1/webhooks/out/routes")
     async def v1_webhooks_route_create(
         body: WebhookRouteCreateRequest,
@@ -2617,12 +3138,15 @@ def build_app(
         api_role: str = Depends(dep_admin),
     ):
         trace_id = _trace_id(request)
+        secret = (body.secret or "").strip()
+        if not secret:
+            secret = await webhook_store.secret_for_target_url(body.target_url)
         row = await webhook_store.upsert_route(
             {
                 "route_id": body.route_id or "",
                 "event_type": body.event_type,
                 "target_url": body.target_url,
-                "secret": body.secret,
+                "secret": secret,
                 "enabled": body.enabled,
                 "max_retries": body.max_retries,
             }
@@ -2726,6 +3250,72 @@ def build_app(
         trace_id = _trace_id(request)
         rows = await webhook_store.list_dlq()
         return {"ok": True, "trace_id": trace_id, "data": {"items": rows}}
+
+    async def _retry_dlq_rows(rows: list[dict[str, Any]], *, trace_id: str) -> None:
+        """Retry claimed DLQ rows: dispatch first, then mark original retried (AR-41/45)."""
+        for row in rows:
+            did = str(row.get("delivery_id") or "")
+            route_id = str(row.get("route_id") or "")
+            route = webhook_store._state["routes"].get(route_id)
+            if not isinstance(route, dict):
+                logger.warning(
+                    "dlq_retry_all route_missing | delivery_id=%s route_id=%s trace_id=%s",
+                    did,
+                    route_id,
+                    trace_id,
+                )
+                await webhook_store.release_dlq_retry(did, error="route_missing")
+                continue
+            try:
+                redelivered = await _dispatch_webhook(
+                    webhook_store,
+                    route,
+                    row.get("payload") or {},
+                    source="dlq_retry_all",
+                )
+            except Exception as e:
+                logger.exception(
+                    "dlq_retry_all_failed | delivery_id=%s trace_id=%s",
+                    did,
+                    trace_id,
+                )
+                # Keep event in DLQ as failed — do not mark retried (AR-48).
+                await webhook_store.release_dlq_retry(did, error=type(e).__name__)
+                continue
+            new_id = str(redelivered.get("delivery_id") or "")
+            if not new_id:
+                await webhook_store.release_dlq_retry(did, error="empty_redelivery")
+                continue
+            await webhook_store.finish_dlq_retry(
+                did,
+                retried_as=new_id,
+                status="retried",
+            )
+
+    @app.post("/v1/webhooks/dlq/retry-all")
+    async def v1_webhooks_dlq_retry_all(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        _: None = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        rows = await webhook_store.list_dlq()
+        # Claim under lock before scheduling so a second retry-all cannot double-send.
+        claimed: list[dict[str, Any]] = []
+        for row in rows:
+            did = str(row.get("delivery_id") or "")
+            got = await webhook_store.claim_dlq_for_retry(did)
+            if got is not None:
+                claimed.append(got)
+        background_tasks.add_task(_retry_dlq_rows, claimed, trace_id=trace_id)
+        return JSONResponse(
+            status_code=202,
+            content={
+                "ok": True,
+                "trace_id": trace_id,
+                "data": {"accepted": True, "queued": len(claimed)},
+            },
+        )
 
     async def _handle_inbound_payload(
         provider: str,

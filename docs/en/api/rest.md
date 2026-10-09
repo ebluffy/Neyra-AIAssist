@@ -3,7 +3,7 @@
 ## Breaking changes (API 1.1.0)
 
 - Env: `INTERNAL_API_*` → `API_*` (startup fails if old names are set; no dual-read).
-- `POST /v1/plugins/{id}/reload|restart` → **501** `not_supported` (use `POST /v1/system/restart`).
+- `POST /v1/plugins/{id}/reload|restart` — on_demand: hot re-import; resident: core soft-restart (`restart_scheduled`).
 - Inbound webhook health `GET .../health` requires viewer+ when tokens are configured.
 - WebSocket chat requires **admin** (aligned with `POST /v1/chat`).
 - Non-loopback bind without tokens → process refuses to start.
@@ -24,12 +24,15 @@ See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens
 - `GET /v1/llm/balance`
 - `POST /v1/chat` (admin)
 - `POST /v1/system/restart` (maint+) — soft process restart (uvicorn should_exit)
+- `PATCH /v1/plugins/{id}` for `lifecycle: resident` — writes `enabled`; soft restart is scheduled **only when** `enabled` actually changes (`enabled_changed: true`, `restart_scheduled: true`). A no-op PATCH does not bounce the core.
 - `POST /v1/memory/search`
 - `POST /v1/memory/write`
 - `POST /v1/notify`
 - `GET /v1/memory/stats`
 - `POST /v1/config/update`
 - `POST /v1/backup/run`
+- `GET /v1/backup/list` — local BackupManager zip archives + `last_restore_apply` (`applied`/`failed`)
+- `POST /v1/backup/restore` — `{ archive_name, confirm: "RESTORE" }` (admin); validates archive, then `pre_restore` backup, then stages a pending swap; live memory is replaced only on core start (soft-restart required); does not touch logs/
 
 ## Plugins
 - `GET /v1/plugins`
@@ -37,13 +40,28 @@ See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens
 - `PATCH /v1/plugins/{plugin_id}` (`enabled`)
 - `GET /v1/plugins/{plugin_id}/config`
 - `PUT /v1/plugins/{plugin_id}/config`
-- `POST /v1/plugins/{plugin_id}/reload` → **501** `not_supported` (use `/v1/system/restart`)
-- `POST /v1/plugins/{plugin_id}/restart` → **501** `not_supported`
+- `GET /v1/plugins/{plugin_id}/log-sources` — module log sources (module.log, sidecars)
+- `POST /v1/plugins/{plugin_id}/reload` — on_demand: `reload_plugin`; resident → soft-restart
+- `POST /v1/plugins/{plugin_id}/restart` — same (resident → soft-restart)
 - `POST /v1/plugins/{plugin_id}/invoke`
 - `GET /v1/plugins/operations/{operation_id}`
+- `POST /v1/plugins/upload` (multipart field `file` — .zip with `plugin.yaml`, admin; `discord` is protected)
+  - If the module already exists → **409** `already_exists` unless `?replace=true` (UI confirms).
+  - On replace: `config.yaml` / `logs/` / `data/` are copied into staging **before** the swap; the old tree becomes `.{id}.old-*` (kept as the last backup; older `.old` dirs are cleaned at the start of the next upload). If anything fails after the swap, `.old` is not deleted.
+  - Installed `plugin.yaml` is forced to `enabled: false` (enable manually).
+  - Replacing a resident module schedules soft restart (`restart_scheduled: true`).
+- `DELETE /v1/plugins/{plugin_id}` (admin; `discord` is protected; resident → soft restart)
+- `GET /v1/plugins/{plugin_id}/files` — list module config files (suffix allowlist)
+- `GET|PUT /v1/plugins/{plugin_id}/files/{path}` — read / write config-like files only (PUT is admin; GET is viewer+)
+
+## Logs
+- `GET /v1/logs?source=&tail=` — log tail (viewer+). `source`: `system`, `audit`, `chat`, `health`, `lavalink`, `plugin:{id}`; `tail` 1–2000
 
 ## Webhooks / debug
 - Outbound routes and deliveries under `/v1/webhooks/...`
+- Outbound delivery: when `secret` is set — headers `x-neyra-webhook-secret`, `X-Neyra-Timestamp`, `X-Neyra-Signature: sha256=<hmac>` where HMAC-SHA256(`secret`, `"{timestamp}.{body}"`)
+- `GET /v1/webhooks/event-types` — event list for the UI (`events`, `groups`; route `*` = all events)
+- `POST /v1/webhooks/dlq/retry-all` — accept retry of all DLQ deliveries (**202**; originals leave DLQ; a failed retry adds one replacement row)
 - Inbound: `POST /v1/webhooks/in/{provider}/{endpoint_id}` (HMAC if secret set)
 - Inbound health: `GET .../health` (viewer+ when tokens configured)
 - `POST /v1/debug/...` (admin; lifecycle gated by flag)

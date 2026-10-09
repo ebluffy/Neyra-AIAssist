@@ -155,20 +155,39 @@ def _ensure_application_yml(lava_dir: Path, *, password: str) -> Path:
         text2,
         count=1,
     )
+    # SSRF hardening: Discord play never needs Lavalink HTTP/local sources.
+    text2, n_http = re.subn(
+        r"(?m)^(\s*http:\s*)(?:true|false)\s*$",
+        r"\1false",
+        text2,
+        count=1,
+    )
+    text2, n_local = re.subn(
+        r"(?m)^(\s*local:\s*)(?:true|false)\s*$",
+        r"\1false",
+        text2,
+        count=1,
+    )
     repaired = text2 != text
     if created or repaired:
         yml.write_text(text2, encoding="utf-8")
         if created:
             logger.info(
-                "discord.lavalink: created application.yml from example (password_set=%s loopback_bind=%s)",
+                "discord.lavalink: created application.yml from example "
+                "(password_set=%s loopback_bind=%s http_off=%s local_off=%s)",
                 n_pwd > 0,
                 n_addr > 0,
+                n_http > 0,
+                n_local > 0,
             )
         else:
             logger.warning(
-                "discord.lavalink: repaired application.yml (password_aligned=%s loopback_bind=%s)",
+                "discord.lavalink: repaired application.yml "
+                "(password_aligned=%s loopback_bind=%s http_off=%s local_off=%s)",
                 n_pwd > 0 and repaired,
                 n_addr > 0,
+                n_http > 0,
+                n_local > 0,
             )
     return yml
 

@@ -7,6 +7,7 @@ import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { waitForCoreRestart } from '../lib/wait-for-core-restart'
 import { Link } from 'react-router-dom'
 
 function fmtNum(v: unknown): string {
@@ -153,28 +154,17 @@ export function StatusScreen() {
     setError(null)
     try {
       await apiPost<ApiEnvelope<{ note?: string }>>('/v1/system/restart', {})
-      setRestartMsg('Процесс останавливается. Ждём, пока сервер снова ответит…')
-      let online = false
-      for (let i = 0; i < 45; i++) {
-        await new Promise((r) => setTimeout(r, 2000))
-        try {
-          const r = await fetch('/v1/dashboard/auth/status', { headers: { Accept: 'application/json' } })
-          if (!r.ok) continue
-          const text = await r.text()
-          if (text.trimStart().startsWith('<')) continue
-          const j = JSON.parse(text) as { ok?: boolean }
-          if (j && j.ok === true) {
-            online = true
-            break
-          }
-        } catch {
-          /* still down */
-        }
-      }
-      if (online) {
+      setRestartMsg('Процесс останавливается. Ждём offline → online…')
+      const outcome = await waitForCoreRestart()
+      if (outcome === 'online') {
         setRestartTone('success')
         setRestartMsg('Сервер снова онлайн.')
         await load()
+      } else if (outcome === 'no_downtime') {
+        setRestartTone('error')
+        setRestartMsg(
+          'Рестарт не остановил процесс (API не уходил в offline). Проверь systemd/логи или systemctl restart neyra.',
+        )
       } else {
         setRestartTone('info')
         setRestartMsg('Сервер долго не отвечает — обновите страницу вручную через минуту.')
@@ -205,9 +195,9 @@ export function StatusScreen() {
         title="Статус"
         subtitle="Состояние ядра, модели и баланс LLM"
         actions={
-          <div className="row" style={{ gap: 8 }}>
+          <div className="row">
             <Button disabled={loading} onClick={() => void load()} type="button" variant="cyan">
-              <RefreshCw size={15} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
+              <RefreshCw aria-hidden size={15} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
               {loading ? 'Обновление…' : 'Обновить'}
             </Button>
             <Button disabled={restartBusy} onClick={() => void softRestart()} type="button" variant="warn">
@@ -246,17 +236,17 @@ export function StatusScreen() {
                 </ul>
               )}
               <div className="kv-row">
-                <span style={{ color: 'var(--muted)' }}>Аптайм</span>
-                <span style={{ fontFamily: 'var(--mono)' }}>{formatUptime(health?.uptime_seconds)}</span>
+                <span className="hint shrink-0">Аптайм</span>
+                <span className="mono">{formatUptime(health?.uptime_seconds)}</span>
               </div>
               <div className="kv-row">
-                <span style={{ color: 'var(--muted)' }}>Версия API</span>
-                <span style={{ fontFamily: 'var(--mono)' }}>{fmtNum(version)}</span>
+                <span className="hint shrink-0">Версия API</span>
+                <span className="mono">{fmtNum(version)}</span>
               </div>
               {health?.public_url != null && (
                 <div className="kv-row">
-                  <span style={{ color: 'var(--muted)' }}>Публичный URL</span>
-                  <span style={{ fontFamily: 'var(--mono)', fontSize: '0.75rem', wordBreak: 'break-all' }}>
+                  <span className="hint shrink-0">Публичный URL</span>
+                  <span className="mono text-break" style={{ fontSize: '0.75rem' }}>
                     {String(health.public_url)}
                   </span>
                 </div>
@@ -280,18 +270,27 @@ export function StatusScreen() {
               </span>
             </p>
           )}
-          {(
-            [
-              ['OpenRouter', balance?.openrouter],
-              ['AIHope', balance?.aihope],
-            ] as const
-          )
-            .filter(([, block]) => block != null)
-            .map(([name, block]) => (
-              <ProviderBalanceBlock key={name} block={block as ProviderBalance} name={name} />
-            ))}
-          {!balance?.openrouter && !balance?.aihope && (
-            <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Нет данных баланса</p>
+          {loading && balance == null ? (
+            <div className="stack-sm">
+              <Skeleton className="h-16" />
+              <Skeleton className="h-10" />
+            </div>
+          ) : (
+            <>
+              {(
+                [
+                  ['OpenRouter', balance?.openrouter],
+                  ['AIHope', balance?.aihope],
+                ] as const
+              )
+                .filter(([, block]) => block != null)
+                .map(([name, block]) => (
+                  <ProviderBalanceBlock key={name} block={block as ProviderBalance} name={name} />
+                ))}
+              {!balance?.openrouter && !balance?.aihope && (
+                <EmptyState icon={Wallet} title="Нет данных баланса" description="Проверь провайдеров в настройках LLM." />
+              )}
+            </>
           )}
         </div>
       </div>
@@ -301,8 +300,14 @@ export function StatusScreen() {
           <span className="card-title">Модели (роли)</span>
         </div>
         <div className="grid-2">
-          {Object.entries(models?.roles ?? {}).length === 0 && !loading && (
-            <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Нет данных ролей</p>
+          {loading && models == null && (
+            <>
+              <Skeleton className="h-20" />
+              <Skeleton className="h-20" />
+            </>
+          )}
+          {!loading && Object.entries(models?.roles ?? {}).length === 0 && (
+            <EmptyState icon={Activity} title="Нет данных ролей" description="Ответ /v1/llm/models пуст или недоступен." />
           )}
           {Object.entries(models?.roles ?? {}).map(([short, row]) => (
             <div key={short} className="stat-tile model-role-card">

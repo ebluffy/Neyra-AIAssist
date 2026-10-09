@@ -196,7 +196,7 @@ docs/
 
 **Люди (память):** в `meta.static_facts` только опциональные `first_name` / `last_name` / `birth_date` / `city`; остальное — `person_facts`. CRUD в дашборде; агент обновляет через tools.
 
-Модули в вебе: действия по `lifecycle` (resident → soft-restart ядра; on_demand → invoke; общий enable/config). Scaffold/import-export модулей — полигон для 3b (shared UI → desktop Monaco): сначала шаблон + yaml, код-редактор — во второй очереди клиента.
+Модули в вебе: действия по `lifecycle` (resident → PATCH enabled **с авто soft-restart ядра**; on_demand → invoke; общий enable/config). В дашборде модуля: вкладки «Управление / Конфиги / Логи», загрузка `.zip` (`POST /v1/plugins/upload`), удаление (`discord` защищён), правка конфиг-файлов (`/v1/plugins/{id}/files`), хвост логов (`/v1/logs`). Scaffold/export модулей — полигон для 3b (shared UI → desktop Monaco): код-редактор — во второй очереди клиента.
 
 **Discord / ответ модели (закрывать в 3a):**
 - [x] Сохранять переносы строк в user-facing reply (не схлопывать `\s+` в одну строку).
@@ -434,6 +434,7 @@ Pipeline после хода: emotional_layer → diary; sentiment → Δmood; s
 - Полный local voice loop и дополнительные player integrations.
 - Расширенный MCP marketplace/allowlist и production deployment hardening.
 - **Обезличивание (AI Assist):** персона только из `assistant.*` + `prompts/persona.md`; ребренд репо/`neyra`-slug — отдельно после Stage 2, не блокер.
+- **Desktop / workspace модуль** — см. §9 (после ВКР; не в MVP защиты).
 
 
 
@@ -441,3 +442,36 @@ Pipeline после хода: emotional_layer → diary; sentiment → Δmood; s
 
 - [ ] Каждая post-defense функция имеет отдельный issue/design и не блокирует MVP.
 - [ ] Backward compatibility и миграция данных определены до релиза.
+
+
+
+## 9. Desktop / workspace модуль (после ВКР)
+
+Идеи «стола» для Нейры: файлы, терминал, окна, позже — лёгкие игры на GPU MiniPC. **Не входит в MVP защиты** (§0 / §3–§6). Код не начинать до отдельного design/issue после защиты. Не заменять `core/` готовым агентом (Hermes / Herald-OS и т.п.) — только свой модуль.
+
+### Архитектура
+
+- Модуль `server/modules/desktop` (или `workspace`): руки и стол; ядро остаётся мозгом (память, LLM, Event Bus, Control API).
+- Действия — через Event Bus и plugin invoke / Control API, без оркестрации в клиенте.
+- **Гибрид (выбранный путь):**
+  1. **Phase A — sandbox:** своя FS под `server/data/desktop/`, shell в jail/Docker, таймауты и лимиты ресурсов.
+  2. **Phase B — host surface:** окна / computer-use / запуск приложений и игр на GPU MiniPC только по allowlist; опасные действия — с confirm.
+
+### Слои (идеи)
+
+- `files` — дерево workspace.
+- `shell` — команды в песочнице.
+- `session` — что «открыто», состояние сессии.
+- Позже: `display` (обзор стола), `apps` / games на хосте.
+
+### Не сейчас
+
+- Полный GUI десктопа в дашборде / клиенте на этапах 2–3b.
+- Игры и computer-use до стабилизации sandbox.
+- Перенос оркестрации на внешний agent runtime.
+
+### Готово, когда (только план)
+
+- [x] §9 записан в PLAN; реализация отложена до post-defense design.
+- [ ] Отдельный design/issue перед первым кодом модуля.
+- [ ] Phase A (sandbox files + shell) описан с границами безопасности до merge в `modules/`.

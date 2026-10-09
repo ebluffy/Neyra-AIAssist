@@ -119,11 +119,16 @@ def check_build_app_routes() -> list[str]:
         '@app.get("/v1/health")',
         '@app.post("/v1/system/restart")',
         '@app.websocket("/v1/ws/chat")',
+        '@app.post("/v1/plugins/upload")',
+        '@app.get("/v1/logs")',
+        '@app.get("/v1/webhooks/event-types")',
     ):
         if need not in text:
             errs.append(f"missing route decorator {need}")
-    if "not_supported" not in text:
-        errs.append("plugin reload/restart should raise not_supported")
+    if "reload_plugin" not in text and "restart_scheduled" not in text:
+        errs.append("plugin reload/restart should call reload_plugin or schedule soft-restart")
+    if "X-Neyra-Signature" not in text and "x-neyra-signature" not in text.lower():
+        errs.append("outbound webhooks should sign with X-Neyra-Signature")
     if "hmac.compare_digest" not in text and "_token_eq" not in text:
         errs.append("token compare should use constant-time helper")
     return errs
@@ -172,6 +177,8 @@ def check_auth_matrix() -> list[str]:
     errs: list[str] = []
     data_tmp = Path(tempfile.mkdtemp(prefix="neyra_api_test_"))
 
+    from core.runtime.event_bus import EventBus
+
     agent = MagicMock()
     agent.chat = AsyncMock(return_value={"reply": "ok"})
     agent.chat_stream = AsyncMock()
@@ -179,6 +186,7 @@ def check_auth_matrix() -> list[str]:
     agent.stop_mcp_clients = AsyncMock()
     agent.memory_hub = None
     agent.long_memory = MagicMock(count=MagicMock(return_value=0))
+    agent.event_bus = EventBus()
 
     monitor = MagicMock()
     monitor.start = MagicMock()
@@ -349,6 +357,76 @@ def check_auth_matrix() -> list[str]:
                 errs.append(f"maint restart want 200, got {r.status_code}")
             elif not scheduled:
                 errs.append("maint restart did not schedule exit")
+
+            # Resident toggle must schedule soft restart — use a throwaway fake plugin
+            # (never touch live discord/Lavalink or tracked plugin.yaml).
+            fake_id = "_ar_fake_resident"
+            fake_dir = SERVER_ROOT / "modules" / fake_id
+            fake_yaml = fake_dir / "plugin.yaml"
+            # Clean leftover from a killed prior run (AR-15).
+            if fake_dir.exists():
+                shutil.rmtree(fake_dir, ignore_errors=True)
+            try:
+                fake_dir.mkdir(parents=True, exist_ok=True)
+                fake_yaml.write_text(
+                    "\n".join(
+                        [
+                            f"id: {fake_id}",
+                            "name: AR fake resident",
+                            "description: ephemeral verify fixture",
+                            'version: "0.0.0"',
+                            "enabled: true",
+                            "lifecycle: resident",
+                            "cli_modes: []",
+                            "main_script: main.py",
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                (fake_dir / "main.py").write_text("# ar fixture\n", encoding="utf-8")
+                scheduled.clear()
+                r = client.patch(
+                    f"/v1/plugins/{fake_id}",
+                    json={"enabled": False},
+                    headers={"Authorization": "Bearer admin-secret"},
+                )
+                if r.status_code != 200:
+                    errs.append(f"resident toggle want 200, got {r.status_code} {r.text[:160]}")
+                else:
+                    result = ((r.json().get("data") or {}).get("result") or {})
+                    if result.get("restart_scheduled") is not True:
+                        errs.append(f"resident toggle must set restart_scheduled: {result}")
+                    if result.get("enabled_changed") is not True:
+                        errs.append(f"resident toggle must set enabled_changed: {result}")
+                    if not any(str(x).startswith("resident_plugin_toggle:") for x in scheduled):
+                        errs.append(f"resident toggle did not schedule exit: {scheduled}")
+                # Idempotent PATCH must not bounce the core again.
+                scheduled.clear()
+                r = client.patch(
+                    f"/v1/plugins/{fake_id}",
+                    json={"enabled": False},
+                    headers={"Authorization": "Bearer admin-secret"},
+                )
+                if r.status_code != 200:
+                    errs.append(f"idempotent resident toggle want 200, got {r.status_code}")
+                else:
+                    result = ((r.json().get("data") or {}).get("result") or {})
+                    if result.get("restart_scheduled") is not False:
+                        errs.append(f"noop resident toggle must not schedule restart: {result}")
+                    if result.get("enabled_changed") is not False:
+                        errs.append(f"noop resident toggle must set enabled_changed false: {result}")
+                    if scheduled:
+                        errs.append(f"noop resident toggle scheduled exit: {scheduled}")
+            except Exception as e:
+                errs.append(f"resident toggle fixture failed: {e}")
+            finally:
+                scheduled.clear()
+                try:
+                    if fake_dir.exists():
+                        shutil.rmtree(fake_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
             r = client.post(
                 "/v1/plugins/nope/reload",
@@ -781,6 +859,879 @@ def check_merge_proposals_api() -> list[str]:
     return errs
 
 
+def check_plugin_ops_and_webhooks() -> list[str]:
+    """Upload/files jail, roles, webhook bus bridge, secret copy (AR-8…14)."""
+    import asyncio
+    import io
+    import time
+    import zipfile
+    from unittest.mock import patch
+
+    import yaml
+    from fastapi.testclient import TestClient
+
+    import core.plugins.ops as ops
+    from core.api import build_app
+    from core.runtime.event_bus import CoreEvent, EventBus
+
+    errs: list[str] = []
+    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_ops_test_"))
+    modules_tmp = Path(tempfile.mkdtemp(prefix="neyra_mods_test_"))
+
+    def _make_zip(pid: str, *, enabled: bool = True, extra: dict[str, bytes] | None = None) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            manifest = (
+                f"id: {pid}\nname: t\nenabled: {'true' if enabled else 'false'}\n"
+                "lifecycle: on_demand\nmain_script: main.py\n"
+            )
+            zf.writestr(f"{pid}/plugin.yaml", manifest)
+            zf.writestr(f"{pid}/main.py", "# x\n")
+            extras = dict(extra or {})
+            if "config.yaml" not in extras:
+                extras["config.yaml"] = b"k: v\n"
+            for name, raw in extras.items():
+                zf.writestr(f"{pid}/{name}", raw)
+        return buf.getvalue()
+
+    # --- unit: zip-slip ---
+    bad = io.BytesIO()
+    with zipfile.ZipFile(bad, "w") as zf:
+        zf.writestr("plugin.yaml", "id: evil\nenabled: false\n")
+        zf.writestr("../escape.py", "x")
+    try:
+        ops.install_plugin_from_zip(modules_tmp, bad.getvalue())
+        errs.append("zip-slip must raise ValueError")
+    except ValueError:
+        pass
+    except Exception as e:
+        errs.append(f"zip-slip want ValueError, got {type(e).__name__}: {e}")
+
+    # --- unit: enabled forced false + no replace ---
+    z1 = _make_zip("ar_tmp_mod", enabled=True)
+    info = ops.install_plugin_from_zip(modules_tmp, z1)
+    py = yaml.safe_load((modules_tmp / "ar_tmp_mod" / "plugin.yaml").read_text(encoding="utf-8"))
+    if py.get("enabled") is not False:
+        errs.append(f"install must force enabled=false, got {py.get('enabled')}")
+    (modules_tmp / "ar_tmp_mod" / "config.yaml").write_text("kept: true\n", encoding="utf-8")
+    (modules_tmp / "ar_tmp_mod" / "logs").mkdir(exist_ok=True)
+    (modules_tmp / "ar_tmp_mod" / "logs" / "module.log").write_text("old\n", encoding="utf-8")
+    try:
+        ops.install_plugin_from_zip(modules_tmp, z1, replace=False)
+        errs.append("second install without replace must raise FileExistsError")
+    except FileExistsError:
+        pass
+    z2 = _make_zip("ar_tmp_mod", enabled=True, extra={"config.yaml": b"from_zip: 1\n"})
+    ops.install_plugin_from_zip(modules_tmp, z2, replace=True)
+    cfg_txt = (modules_tmp / "ar_tmp_mod" / "config.yaml").read_text(encoding="utf-8")
+    if "kept: true" not in cfg_txt:
+        errs.append(f"replace must preserve local config.yaml, got {cfg_txt!r}")
+    if not (modules_tmp / "ar_tmp_mod" / "logs" / "module.log").is_file():
+        errs.append("replace must preserve logs/")
+    olds = list(modules_tmp.glob(".ar_tmp_mod.old-*"))
+    if len(olds) != 1:
+        errs.append(f"successful replace must leave exactly one .old backup, got {olds}")
+    ops.install_plugin_from_zip(modules_tmp, z2, replace=True)
+    olds2 = list(modules_tmp.glob(".ar_tmp_mod.old-*"))
+    if len(olds2) != 1:
+        errs.append(f"second replace must still leave exactly one .old, got {olds2}")
+
+    # Nested plugin.yaml must stay byte-identical (AR-25).
+    nested_raw = b"foo: bar\nkeep: true\n"
+    z_nested = _make_zip("ar_tmp_mod", enabled=True, extra={"sub/plugin.yaml": nested_raw})
+    ops.install_plugin_from_zip(modules_tmp, z_nested, replace=True)
+    nested_path = modules_tmp / "ar_tmp_mod" / "sub" / "plugin.yaml"
+    if not nested_path.is_file() or nested_path.read_bytes() != nested_raw:
+        errs.append(f"nested plugin.yaml must be unchanged, got {nested_path.read_bytes()!r}")
+    root_py = yaml.safe_load((modules_tmp / "ar_tmp_mod" / "plugin.yaml").read_text(encoding="utf-8"))
+    if not isinstance(root_py, dict) or root_py.get("enabled") is not False:
+        errs.append(f"root plugin.yaml must be disabled after install: {root_py}")
+
+    # Concurrent replace under lock (AR-23).
+    import threading
+
+    (modules_tmp / "ar_tmp_mod" / "data").mkdir(exist_ok=True)
+    (modules_tmp / "ar_tmp_mod" / "data" / "keep.bin").write_bytes(b"keep-me")
+    z_conc = _make_zip(
+        "ar_tmp_mod",
+        enabled=True,
+        extra={"extra.txt": b"hello-concurrent\n", "config.yaml": b"from_zip: 1\n"},
+    )
+    conc_errs: list[str] = []
+
+    def _conc_worker() -> None:
+        try:
+            ops.install_plugin_from_zip(modules_tmp, z_conc, replace=True)
+        except Exception as e:
+            conc_errs.append(f"{type(e).__name__}: {e}")
+
+    threads = [threading.Thread(target=_conc_worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    if conc_errs:
+        errs.append(f"concurrent replace failed: {conc_errs}")
+    if not (modules_tmp / "ar_tmp_mod" / "extra.txt").is_file():
+        errs.append("concurrent replace missing extra.txt from zip")
+    if not (modules_tmp / "ar_tmp_mod" / "data" / "keep.bin").is_file():
+        errs.append("concurrent replace lost preserved data/")
+    if len(list(modules_tmp.glob(".ar_tmp_mod.old-*"))) != 1:
+        errs.append("concurrent replace must leave exactly one .old")
+
+    # --- unit: copy-preserve failure before swap leaves live data (AR-20) ---
+    plug = modules_tmp / "ar_tmp_mod"
+    (plug / "data").mkdir(exist_ok=True)
+    (plug / "data" / "keep.bin").write_bytes(b"keep-me")
+    real_copytree = shutil.copytree
+
+    def flaky_copytree(src, dst, *a, **k):  # type: ignore[no-untyped-def]
+        if Path(src).name == "data":
+            raise OSError("simulated disk full on data/")
+        return real_copytree(src, dst, *a, **k)
+
+    try:
+        with patch("shutil.copytree", flaky_copytree):
+            ops.install_plugin_from_zip(modules_tmp, _make_zip("ar_tmp_mod"), replace=True)
+        errs.append("flaky preserve copy must raise")
+    except OSError:
+        pass
+    if not (plug / "data" / "keep.bin").is_file():
+        errs.append("failed preserve copy must leave live data/ intact")
+    if not (plug / "logs" / "module.log").is_file():
+        errs.append("failed preserve copy must leave live logs/ intact")
+    if list(modules_tmp.glob(".ar_tmp_mod.staging-*")):
+        errs.append("staging must be cleaned after failed preserve copy")
+
+    # --- unit: hidden staging dirs are not discovered (AR-21) ---
+    from core.plugins.loader import PluginLoader
+
+    loader_root = Path(tempfile.mkdtemp(prefix="neyra_loader_root_"))
+    try:
+        (loader_root / "modules").mkdir()
+        hid = loader_root / "modules" / ".foo.staging-x"
+        hid.mkdir()
+        (hid / "plugin.yaml").write_text(
+            "id: foo\nname: hidden\nenabled: true\nlifecycle: resident\nmain_script: main.py\n",
+            encoding="utf-8",
+        )
+        (hid / "main.py").write_text("# x\n", encoding="utf-8")
+        found = [m.id for m in PluginLoader(loader_root).discover_manifests()]
+        if "foo" in found:
+            errs.append("discover_manifests must skip .{id}.staging-* dirs")
+    finally:
+        shutil.rmtree(loader_root, ignore_errors=True)
+
+    # --- unit: read allowlist + real path escape (allowlisted suffix) ---
+    plug = modules_tmp / "ar_tmp_mod"
+    other = modules_tmp / "other_mod"
+    other.mkdir(exist_ok=True)
+    (other / "config.yaml").write_text("secret: 1\n", encoding="utf-8")
+    (plug / ".env").write_text("SECRET=1\n", encoding="utf-8")
+    try:
+        ops.read_plugin_file(plug, ".env")
+        errs.append("read .env must be denied")
+    except ValueError:
+        pass
+    try:
+        ops.read_plugin_file(plug, "main.py")
+        errs.append("read main.py must be denied")
+    except ValueError:
+        pass
+    try:
+        ops.read_plugin_file(plug, "../other_mod/config.yaml")
+        errs.append("read path escape must raise")
+    except ValueError as e:
+        if "escape" not in str(e).lower():
+            errs.append(f"read escape message should mention escape: {e}")
+    try:
+        ops.write_plugin_file(plug, "../other_mod/config.yaml", "x: 2\n")
+        errs.append("write path escape must raise")
+    except ValueError as e:
+        if "escape" not in str(e).lower():
+            errs.append(f"write escape message should mention escape: {e}")
+    try:
+        ops.resolve_under(plug, "../other_mod/config.yaml")
+        errs.append("resolve_under escape must raise")
+    except ValueError as e:
+        if "escape" not in str(e).lower():
+            errs.append(f"resolve_under message should mention escape: {e}")
+
+    try:
+        ops.install_plugin_from_zip(modules_tmp, _make_zip("discord"))
+        errs.append("upload discord must be denied")
+    except ValueError:
+        pass
+
+    # --- unit: corrupt replace leaves old module (AR-16) ---
+    (plug / "main.py").write_text("# ORIGINAL\n", encoding="utf-8")
+    (plug / "plugin.yaml").write_text(
+        "id: ar_tmp_mod\nenabled: false\nlifecycle: on_demand\nmain_script: main.py\n",
+        encoding="utf-8",
+    )
+    read_calls = {"n": 0}
+    real_read = zipfile.ZipFile.read
+
+    def flaky_read(self, name, *a, **k):  # type: ignore[no-untyped-def]
+        read_calls["n"] += 1
+        if read_calls["n"] >= 3:
+            raise zipfile.BadZipFile("Bad CRC-32 for file")
+        return real_read(self, name, *a, **k)
+
+    try:
+        with patch.object(zipfile.ZipFile, "read", flaky_read):
+            ops.install_plugin_from_zip(modules_tmp, _make_zip("ar_tmp_mod"), replace=True)
+        errs.append("flaky CRC replace must raise")
+    except ValueError:
+        pass
+    except zipfile.BadZipFile:
+        errs.append("BadZipFile should be wrapped as ValueError")
+    if (plug / "main.py").read_text(encoding="utf-8") != "# ORIGINAL\n":
+        errs.append("corrupt replace must leave old main.py intact")
+    if not (plug / "plugin.yaml").is_file():
+        errs.append("corrupt replace must leave old plugin.yaml intact")
+    leftover_staging = list(modules_tmp.glob(".ar_tmp_mod.staging-*"))
+    if leftover_staging:
+        errs.append(f"staging dirs left after failed replace: {leftover_staging}")
+
+    # --- API roles + webhook bus (isolated project_root) ---
+    api_root = Path(tempfile.mkdtemp(prefix="neyra_api_root_"))
+    (api_root / "modules").mkdir()
+    (api_root / "logs").mkdir()
+    # Stub protected plugin so delete/upload protection is reachable.
+    disc = api_root / "modules" / "discord"
+    disc.mkdir()
+    (disc / "plugin.yaml").write_text(
+        "id: discord\nname: d\nenabled: false\nlifecycle: resident\nmain_script: main.py\n",
+        encoding="utf-8",
+    )
+    (disc / "main.py").write_text("# stub\n", encoding="utf-8")
+
+    agent = MagicMock()
+    agent.chat = AsyncMock(return_value={"reply": "ok"})
+    agent.chat_stream = AsyncMock()
+    agent.start_mcp_clients = AsyncMock()
+    agent.stop_mcp_clients = AsyncMock()
+    agent.memory_hub = None
+    agent.long_memory = MagicMock(count=MagicMock(return_value=0))
+    agent.event_bus = EventBus()
+    monitor = MagicMock()
+    monitor.start = MagicMock()
+    monitor.run_once = AsyncMock(return_value={"status": "ok"})
+    cfg = {
+        "paths": {"data_dir": str(data_tmp)},
+        "api": {
+            "host": "127.0.0.1",
+            "port": 8787,
+            "token": "admin-secret",
+            "viewer_token": "viewer-secret",
+            "maint_token": "maint-secret",
+            "public_base_url": "",
+            "audit_log_enabled": False,
+            "rate_limit_requests_per_minute": 0,
+        },
+        "dashboard": {"enabled": False},
+        "llm": {
+            "talk_model": {"provider": "openrouter", "model": "x"},
+            "brain_model": {"provider": "openrouter", "model": "x"},
+            "memory_model": {"provider": "openrouter", "model": "x"},
+            "vision_model": {"provider": "openrouter", "model": "x"},
+            "providers": {"openrouter": {"model": "x"}},
+        },
+    }
+    api_pid = "ar_tmp_api_mod"
+    app = build_app(
+        cfg,
+        shared_agent=agent,
+        shared_monitor=monitor,
+        shared_backup_manager=MagicMock(),
+        project_root=api_root,
+    )
+    admin = {"Authorization": "Bearer admin-secret"}
+    viewer = {"Authorization": "Bearer viewer-secret"}
+    try:
+        with TestClient(app, client=("127.0.0.1", 50000)) as client:
+            r = client.post(
+                "/v1/plugins/upload",
+                files={"file": ("m.zip", _make_zip(api_pid), "application/zip")},
+                headers=viewer,
+            )
+            if r.status_code != 403:
+                errs.append(f"viewer upload want 403, got {r.status_code}")
+
+            r = client.post(
+                "/v1/plugins/upload",
+                files={"file": ("m.zip", _make_zip(api_pid), "application/zip")},
+                headers=admin,
+            )
+            if r.status_code != 200:
+                errs.append(f"admin upload want 200, got {r.status_code} {r.text[:160]}")
+            else:
+                r2 = client.post(
+                    "/v1/plugins/upload",
+                    files={"file": ("m.zip", _make_zip(api_pid), "application/zip")},
+                    headers=admin,
+                )
+                if r2.status_code != 409:
+                    errs.append(f"duplicate upload want 409, got {r2.status_code}")
+
+            r = client.post(
+                "/v1/plugins/upload",
+                files={"file": ("d.zip", _make_zip("discord"), "application/zip")},
+                headers=admin,
+            )
+            if r.status_code != 400:
+                errs.append(f"upload discord want 400, got {r.status_code}")
+
+            r = client.delete("/v1/plugins/discord", headers=admin)
+            if r.status_code != 403:
+                errs.append(f"delete discord want 403, got {r.status_code}")
+
+            r = client.get(f"/v1/plugins/{api_pid}/files/main.py", headers=viewer)
+            if r.status_code != 400:
+                errs.append(f"viewer read main.py want 400, got {r.status_code}")
+
+            # Encoded .. so the server sees traversal (httpx would normalize bare ../).
+            r = client.get(
+                f"/v1/plugins/{api_pid}/files/%2e%2e/discord/plugin.yaml",
+                headers=viewer,
+            )
+            if r.status_code != 400:
+                errs.append(f"files %2e%2e traversal want 400, got {r.status_code} {r.text[:120]}")
+
+            r = client.put(
+                f"/v1/plugins/{api_pid}/files/config.yaml",
+                json={"content": "a: 1\n"},
+                headers=viewer,
+            )
+            if r.status_code != 403:
+                errs.append(f"viewer PUT file want 403, got {r.status_code}")
+
+            r = client.post(
+                "/v1/webhooks/out/routes",
+                json={
+                    "event_type": "chat.turn_completed",
+                    "target_url": "http://127.0.0.1:9/hook",
+                    "secret": "shared-secret-xyz",
+                    "enabled": True,
+                    "max_retries": 0,
+                },
+                headers=admin,
+            )
+            if r.status_code != 200:
+                errs.append(f"webhook create want 200, got {r.status_code}")
+            r = client.post(
+                "/v1/webhooks/out/routes",
+                json={
+                    "event_type": "memory.added",
+                    "target_url": "http://127.0.0.1:9/hook",
+                    "secret": "",
+                    "enabled": True,
+                    "max_retries": 0,
+                },
+                headers=admin,
+            )
+            if r.status_code != 200:
+                errs.append(f"webhook create (copy secret) want 200, got {r.status_code}")
+            r = client.post(
+                "/v1/webhooks/out/routes",
+                json={
+                    "event_type": "*",
+                    "target_url": "http://127.0.0.1:9/hook-all",
+                    "secret": "star-secret",
+                    "enabled": True,
+                    "max_retries": 0,
+                },
+                headers=admin,
+            )
+            if r.status_code != 200:
+                errs.append(f"webhook * route want 200, got {r.status_code}")
+
+            routes = client.get("/v1/webhooks/out/routes", headers=admin)
+            if routes.status_code == 200:
+                rows = (routes.json().get("data") or {}).get("routes") or []
+                same = [x for x in rows if x.get("target_url") == "http://127.0.0.1:9/hook"]
+                mem = next((x for x in same if x.get("event_type") == "memory.added"), None)
+                if not mem or not mem.get("secret_masked"):
+                    errs.append(f"new route must inherit secret_masked from sibling: {mem}")
+
+            agent.event_bus.publish(CoreEvent("chat.turn_completed", "verify", {"ping": True}))
+            found = False
+            for _ in range(40):
+                time.sleep(0.05)
+                d = client.get("/v1/webhooks/deliveries", headers=admin)
+                if d.status_code != 200:
+                    continue
+                rows = (d.json().get("data") or {}).get("deliveries") or []
+                for x in rows:
+                    pl = x.get("payload") if isinstance(x.get("payload"), dict) else {}
+                    if pl.get("event_type") == "chat.turn_completed" and x.get("source") == "event_bus":
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                errs.append("event_bus publish did not create webhook delivery")
+
+            # Wildcard route + publish from a foreign event loop (AR-17/18).
+            import threading
+
+            def _publish_from_other_loop() -> None:
+                async def _go() -> None:
+                    agent.event_bus.publish(CoreEvent("music.play", "discord", {"track": "x"}))
+
+                asyncio.run(_go())
+
+            t = threading.Thread(target=_publish_from_other_loop, daemon=True)
+            t.start()
+            t.join(timeout=5)
+            star_ok = False
+            for _ in range(40):
+                time.sleep(0.05)
+                d = client.get("/v1/webhooks/deliveries", headers=admin)
+                if d.status_code != 200:
+                    continue
+                rows = (d.json().get("data") or {}).get("deliveries") or []
+                for x in rows:
+                    if (
+                        x.get("event_type") == "music.play"
+                        and x.get("source") == "event_bus"
+                        and x.get("route_event") == "*"
+                    ):
+                        star_ok = True
+                        break
+                if star_ok:
+                    break
+            if not star_ok:
+                errs.append(
+                    "wildcard * route + foreign-loop publish must deliver "
+                    "event_type=music.play with route_event=*"
+                )
+
+            r = client.delete(f"/v1/plugins/{api_pid}", headers=viewer)
+            if r.status_code != 403:
+                errs.append(f"viewer delete want 403, got {r.status_code}")
+            r = client.delete(f"/v1/plugins/{api_pid}", headers=admin)
+            if r.status_code != 200:
+                errs.append(f"admin delete want 200, got {r.status_code}")
+    finally:
+        shutil.rmtree(api_root, ignore_errors=True)
+        shutil.rmtree(data_tmp, ignore_errors=True)
+        shutil.rmtree(modules_tmp, ignore_errors=True)
+    return errs
+
+
+def check_webhook_hmac_and_dlq_retry() -> list[str]:
+    """AR-35/37/40/41: HMAC bytes + real POST retry-all on ephemeral project_root."""
+    import hashlib
+    import hmac as hmac_mod
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from fastapi.testclient import TestClient
+
+    from core.api import build_app
+    from core.api.app import webhook_signature_headers
+    from core.runtime.event_bus import EventBus
+
+    errs: list[str] = []
+
+    body = b'{"event_type":"x","ping":true}'
+    secret = "unit-test-secret"
+    ts = "1700000000"
+    headers = webhook_signature_headers(secret, body, ts=ts)
+    expect = hmac_mod.new(
+        secret.encode("utf-8"),
+        f"{ts}.".encode("utf-8") + body,
+        hashlib.sha256,
+    ).hexdigest()
+    if headers.get("X-Neyra-Signature") != f"sha256={expect}":
+        errs.append(f"HMAC signature mismatch: {headers.get('X-Neyra-Signature')!r}")
+    if headers.get("X-Neyra-Timestamp") != ts:
+        errs.append(f"HMAC timestamp mismatch: {headers.get('X-Neyra-Timestamp')!r}")
+
+    hits: dict[str, int] = {"ok": 0, "fail": 0, "bad_sig": 0}
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b""
+            sig = self.headers.get("X-Neyra-Signature") or ""
+            ts_h = self.headers.get("X-Neyra-Timestamp") or ""
+            sec = self.headers.get("x-neyra-webhook-secret") or ""
+            dig = hmac_mod.new(
+                sec.encode("utf-8"),
+                f"{ts_h}.".encode("utf-8") + raw,
+                hashlib.sha256,
+            ).hexdigest()
+            if sig != f"sha256={dig}":
+                hits["bad_sig"] += 1
+                self.send_response(401)
+                self.end_headers()
+                return
+            if self.path.endswith("/ok"):
+                hits["ok"] += 1
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+            else:
+                hits["fail"] += 1
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(b"fail")
+
+        def log_message(self, *_args: Any) -> None:
+            return
+
+    # AR-40: never write/unlink live webhooks — only read_bytes before/after.
+    live_wh = SERVER_ROOT / "logs" / "webhooks_state.json"
+    live_existed = live_wh.is_file()
+    live_before_bytes = live_wh.read_bytes() if live_existed else None
+
+    httpd = HTTPServer(("127.0.0.1", 0), _Handler)
+    port = int(httpd.server_address[1])
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    api_root = Path(tempfile.mkdtemp(prefix="neyra_dlq_api_"))
+    data_tmp = Path(tempfile.mkdtemp(prefix="neyra_dlq_data_"))
+    try:
+        (api_root / "logs").mkdir(parents=True)
+        (api_root / "modules").mkdir(parents=True)
+        seed = {
+            "routes": {
+                "route_ok": {
+                    "route_id": "route_ok",
+                    "event_type": "debug.ok",
+                    "target_url": f"http://127.0.0.1:{port}/ok",
+                    "secret": "hook-secret",
+                    "enabled": True,
+                    "max_retries": 0,
+                },
+                "route_fail": {
+                    "route_id": "route_fail",
+                    "event_type": "debug.fail",
+                    "target_url": f"http://127.0.0.1:{port}/fail",
+                    "secret": "hook-secret",
+                    "enabled": True,
+                    "max_retries": 0,
+                },
+            },
+            "deliveries": {
+                "d_ok": {
+                    "delivery_id": "d_ok",
+                    "route_id": "route_ok",
+                    "status": "failed",
+                    "payload": {"event_type": "debug.ok", "n": 1},
+                },
+                "d_fail": {
+                    "delivery_id": "d_fail",
+                    "route_id": "route_fail",
+                    "status": "failed",
+                    "payload": {"event_type": "debug.fail", "n": 2},
+                },
+            },
+            "dlq": {
+                "d_ok": {
+                    "delivery_id": "d_ok",
+                    "route_id": "route_ok",
+                    "status": "failed",
+                    "payload": {"event_type": "debug.ok", "n": 1},
+                },
+                "d_fail": {
+                    "delivery_id": "d_fail",
+                    "route_id": "route_fail",
+                    "status": "failed",
+                    "payload": {"event_type": "debug.fail", "n": 2},
+                },
+            },
+        }
+        (api_root / "logs" / "webhooks_state.json").write_text(
+            json.dumps(seed, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        agent = MagicMock()
+        agent.chat = AsyncMock(return_value={"reply": "ok"})
+        agent.chat_stream = AsyncMock()
+        agent.start_mcp_clients = AsyncMock()
+        agent.stop_mcp_clients = AsyncMock()
+        agent.memory_hub = None
+        agent.long_memory = MagicMock(count=MagicMock(return_value=0))
+        agent.event_bus = EventBus()
+        monitor = MagicMock()
+        monitor.start = MagicMock()
+        monitor.run_once = AsyncMock(return_value={"status": "ok"})
+        app = build_app(
+            {
+                "paths": {"data_dir": str(data_tmp)},
+                "api": {
+                    "host": "127.0.0.1",
+                    "port": 8787,
+                    "token": "admin-secret",
+                    "viewer_token": "viewer-secret",
+                    "maint_token": "maint-secret",
+                    "public_base_url": "",
+                    "public_path_prefix": "/api",
+                    "audit_log_enabled": False,
+                    "rate_limit_requests_per_minute": 0,
+                    "websocket": {
+                        "idle_timeout_seconds": 5,
+                        "ping_interval_seconds": 20,
+                        "close_grace_seconds": 1,
+                    },
+                },
+                "dashboard": {"enabled": False},
+                "llm": {
+                    "talk_model": {"provider": "openrouter", "model": "x"},
+                    "brain_model": {"provider": "openrouter", "model": "x"},
+                    "memory_model": {"provider": "openrouter", "model": "x"},
+                    "vision_model": {"provider": "openrouter", "model": "x"},
+                    "providers": {"openrouter": {"model": "x"}},
+                },
+            },
+            shared_agent=agent,
+            shared_monitor=monitor,
+            shared_backup_manager=MagicMock(),
+            project_root=api_root,
+        )
+        admin = {"Authorization": "Bearer admin-secret"}
+        with TestClient(app, client=("127.0.0.1", 50000)) as client:
+            r1 = client.post("/v1/webhooks/dlq/retry-all", headers=admin)
+            if r1.status_code != 202:
+                errs.append(f"retry-all want 202, got {r1.status_code} {r1.text[:160]}")
+            queued = ((r1.json().get("data") or {}).get("queued")) if r1.status_code == 202 else None
+            if queued != 2:
+                errs.append(f"first retry-all queued want 2, got {queued}")
+
+            # Second call must claim 0 (already retrying / done) — no duplicate ok POSTs.
+            r2 = client.post("/v1/webhooks/dlq/retry-all", headers=admin)
+            if r2.status_code != 202:
+                errs.append(f"second retry-all want 202, got {r2.status_code}")
+            else:
+                q2 = (r2.json().get("data") or {}).get("queued")
+                if q2 not in (0,):
+                    # After first background finished, DLQ may have 1 failed left — claiming that is ok
+                    # but ok route must not be re-sent. Check hits["ok"] below.
+                    if q2 not in (0, 1):
+                        errs.append(f"second retry-all queued unexpected: {q2}")
+
+            dlq = client.get("/v1/webhooks/dlq", headers=admin)
+            if dlq.status_code != 200:
+                errs.append(f"GET dlq want 200, got {dlq.status_code}")
+            else:
+                items = (dlq.json().get("data") or {}).get("items") or []
+                # After retry: ok removed; fail replaced by one new failed delivery (or still retrying→failed).
+                fail_items = [x for x in items if str(x.get("route_id") or "") == "route_fail"]
+                ok_items = [x for x in items if str(x.get("route_id") or "") == "route_ok"]
+                if ok_items:
+                    errs.append(f"DLQ must not keep route_ok after successful retry: {ok_items}")
+                if len(fail_items) != 1:
+                    errs.append(f"DLQ want exactly 1 route_fail row, got {len(fail_items)}: {fail_items}")
+
+            if hits["bad_sig"]:
+                errs.append(f"receiver saw bad HMAC {hits['bad_sig']} times")
+            if hits["ok"] != 1:
+                errs.append(f"ok receiver want exactly 1 POST, got {hits['ok']}")
+            if hits["fail"] < 1:
+                errs.append("fail receiver expected at least 1 POST")
+
+            # AR-45: original delivery history must leave "retrying"
+            dels = client.get("/v1/webhooks/deliveries", headers=admin)
+            if dels.status_code == 200:
+                drows = (dels.json().get("data") or {}).get("deliveries") or []
+                d_ok = next((x for x in drows if x.get("delivery_id") == "d_ok"), None)
+                if d_ok is None or str(d_ok.get("status") or "") != "retried":
+                    errs.append(f"d_ok history want status=retried, got {d_ok}")
+                elif not d_ok.get("retried_as"):
+                    errs.append("d_ok history missing retried_as")
+
+        # AR-37: claim twice → second None; status=retrying skipped; load resets retrying→failed
+        import asyncio
+
+        from core.api.app import WebhookStore
+
+        claim_root = Path(tempfile.mkdtemp(prefix="neyra_claim_"))
+        reset_dir = Path(tempfile.mkdtemp(prefix="neyra_reset_"))
+        try:
+            (claim_root / "logs").mkdir(parents=True)
+            store = WebhookStore(claim_root)
+            store._state = {
+                "routes": {},
+                "deliveries": {
+                    "c1": {"delivery_id": "c1", "route_id": "r", "status": "failed", "payload": {}}
+                },
+                "dlq": {
+                    "c1": {"delivery_id": "c1", "route_id": "r", "status": "failed", "payload": {}}
+                },
+            }
+            store.path.write_text(json.dumps(store._state), encoding="utf-8")
+
+            async def _claim_twice() -> tuple[Any, Any]:
+                a = await store.claim_dlq_for_retry("c1")
+                b = await store.claim_dlq_for_retry("c1")
+                return a, b
+
+            first, second = asyncio.run(_claim_twice())
+            if first is None:
+                errs.append("first claim_dlq_for_retry must succeed")
+            if second is not None:
+                errs.append("second claim_dlq_for_retry must return None")
+
+            async def _skip_retrying() -> Any:
+                s = WebhookStore(claim_root)
+                s._state = {
+                    "routes": {},
+                    "deliveries": {},
+                    "dlq": {
+                        "rskip": {
+                            "delivery_id": "rskip",
+                            "route_id": "route_ok",
+                            "status": "retrying",
+                            "payload": {},
+                        }
+                    },
+                }
+                return await s.claim_dlq_for_retry("rskip")
+
+            if asyncio.run(_skip_retrying()) is not None:
+                errs.append("claim on status=retrying must return None")
+
+            (reset_dir / "logs").mkdir(parents=True)
+            (reset_dir / "logs" / "webhooks_state.json").write_text(
+                json.dumps(
+                    {
+                        "routes": {},
+                        "deliveries": {
+                            "stuck": {"delivery_id": "stuck", "status": "retrying", "route_id": "r"}
+                        },
+                        "dlq": {
+                            "stuck": {"delivery_id": "stuck", "status": "retrying", "route_id": "r"}
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stuck = (WebhookStore(reset_dir)._state.get("dlq") or {}).get("stuck") or {}
+            if str(stuck.get("status") or "") != "failed":
+                errs.append(f"WebhookStore load must reset retrying→failed, got {stuck}")
+
+            # AR-48: dispatch exception must keep DLQ entry as failed (not retried).
+            from unittest import mock
+            from core.api import app as api_mod
+
+            async def _boom_dispatch(*_a: Any, **_k: Any) -> dict[str, Any]:
+                raise RuntimeError("dispatch_boom")
+
+            boom_root = Path(tempfile.mkdtemp(prefix="neyra_boom_"))
+            try:
+                (boom_root / "logs").mkdir(parents=True)
+                (boom_root / "modules").mkdir(parents=True)
+                (boom_root / "logs" / "webhooks_state.json").write_text(
+                    json.dumps(
+                        {
+                            "routes": {
+                                "route_ok": {
+                                    "route_id": "route_ok",
+                                    "event_type": "debug.ok",
+                                    "target_url": f"http://127.0.0.1:{port}/ok",
+                                    "secret": "hook-secret",
+                                    "enabled": True,
+                                    "max_retries": 0,
+                                }
+                            },
+                            "deliveries": {
+                                "b1": {
+                                    "delivery_id": "b1",
+                                    "route_id": "route_ok",
+                                    "status": "failed",
+                                    "payload": {"event_type": "debug.ok"},
+                                }
+                            },
+                            "dlq": {
+                                "b1": {
+                                    "delivery_id": "b1",
+                                    "route_id": "route_ok",
+                                    "status": "failed",
+                                    "payload": {"event_type": "debug.ok"},
+                                }
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                boom_app = build_app(
+                    {
+                        "paths": {"data_dir": str(data_tmp / "boom")},
+                        "api": {
+                            "host": "127.0.0.1",
+                            "port": 8787,
+                            "token": "admin-secret",
+                            "viewer_token": "viewer-secret",
+                            "maint_token": "maint-secret",
+                            "public_base_url": "",
+                            "public_path_prefix": "/api",
+                            "audit_log_enabled": False,
+                            "rate_limit_requests_per_minute": 0,
+                            "websocket": {
+                                "idle_timeout_seconds": 5,
+                                "ping_interval_seconds": 20,
+                                "close_grace_seconds": 1,
+                            },
+                        },
+                        "dashboard": {"enabled": False},
+                        "llm": {
+                            "talk_model": {"provider": "openrouter", "model": "x"},
+                            "brain_model": {"provider": "openrouter", "model": "x"},
+                            "memory_model": {"provider": "openrouter", "model": "x"},
+                            "vision_model": {"provider": "openrouter", "model": "x"},
+                            "providers": {"openrouter": {"model": "x"}},
+                        },
+                    },
+                    shared_agent=agent,
+                    shared_monitor=monitor,
+                    shared_backup_manager=MagicMock(),
+                    project_root=boom_root,
+                )
+                with mock.patch.object(api_mod, "_dispatch_webhook", side_effect=_boom_dispatch):
+                    with TestClient(boom_app, client=("127.0.0.1", 50000)) as client:
+                        br = client.post("/v1/webhooks/dlq/retry-all", headers=admin)
+                        if br.status_code != 202:
+                            errs.append(f"AR-48 retry-all want 202, got {br.status_code}")
+                        dlq = client.get("/v1/webhooks/dlq", headers=admin)
+                        items = ((dlq.json().get("data") or {}).get("items") or []) if dlq.status_code == 200 else []
+                        if len(items) != 1 or str(items[0].get("status") or "") != "failed":
+                            errs.append(f"AR-48 DLQ want 1 failed row, got {items}")
+                        dels = client.get("/v1/webhooks/deliveries", headers=admin)
+                        drows = ((dels.json().get("data") or {}).get("deliveries") or []) if dels.status_code == 200 else []
+                        b1 = next((x for x in drows if x.get("delivery_id") == "b1"), None)
+                        if b1 is None or str(b1.get("status") or "") != "failed":
+                            errs.append(
+                                f"AR-48/53 history want b1 status=failed, got {b1}"
+                            )
+            finally:
+                shutil.rmtree(boom_root, ignore_errors=True)
+        finally:
+            shutil.rmtree(claim_root, ignore_errors=True)
+            shutil.rmtree(reset_dir, ignore_errors=True)
+
+        live_after_exists = live_wh.is_file()
+        if live_existed:
+            if not live_after_exists:
+                errs.append("AR-40: live webhooks_state.json disappeared during verify")
+            elif live_wh.read_bytes() != live_before_bytes:
+                errs.append("AR-40: live webhooks_state.json bytes changed during verify")
+        elif live_after_exists:
+            errs.append("AR-40: verify created live webhooks_state.json")
+    finally:
+        try:
+            httpd.shutdown()
+        except Exception:
+            pass
+        shutil.rmtree(api_root, ignore_errors=True)
+        shutil.rmtree(data_tmp, ignore_errors=True)
+
+    return errs
+
+
 def main() -> int:
     checks = [
         ("package layout", check_package_layout),
@@ -796,6 +1747,8 @@ def main() -> int:
         ("public URL env rejected", check_public_url_env_rejected),
         ("rate limit XFF bucket", check_rate_limit_xff_bucket),
         ("auth matrix", check_auth_matrix),
+        ("plugin ops & webhooks", check_plugin_ops_and_webhooks),
+        ("webhook HMAC & DLQ retry", check_webhook_hmac_and_dlq_retry),
         ("merge proposals API", check_merge_proposals_api),
     ]
     failed = 0

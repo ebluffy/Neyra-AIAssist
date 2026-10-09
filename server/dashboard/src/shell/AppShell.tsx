@@ -118,7 +118,7 @@ export function AppShell() {
           onClick={() => setOpen(true)}
           type="button"
         >
-          <Menu size={20} />
+          <Menu aria-hidden size={20} strokeWidth={1.75} />
         </button>
       )}
       {mobile && open && <div aria-hidden className="mobile-overlay" onClick={() => setOpen(false)} />}
@@ -126,29 +126,15 @@ export function AppShell() {
       <aside className={`sidebar${open ? ' open' : ''}`} aria-label="Навигация">
         <div className="sidebar-logo">
           <div className="sidebar-logo-icon" aria-hidden>
-            <Cpu size={18} color="#fff" />
+            <Cpu size={18} strokeWidth={1.75} />
           </div>
           <div className="sidebar-logo-text">
             <span className="sidebar-logo-name">Neyra</span>
             <span className="sidebar-logo-sub">Панель управления</span>
           </div>
           {mobile && (
-            <button
-              aria-label="Закрыть меню"
-              onClick={() => setOpen(false)}
-              style={{
-                marginLeft: 'auto',
-                background: 'none',
-                border: 'none',
-                color: 'var(--muted)',
-                cursor: 'pointer',
-                padding: '0.5rem',
-                minWidth: 44,
-                minHeight: 44,
-              }}
-              type="button"
-            >
-              <X size={18} />
+            <button aria-label="Закрыть меню" className="sidebar-close" onClick={() => setOpen(false)} type="button">
+              <X aria-hidden size={18} strokeWidth={1.75} />
             </button>
           )}
         </div>
@@ -174,8 +160,8 @@ export function AppShell() {
         </nav>
 
         <div className="sidebar-footer">
-          <button className="sidebar-logout" onClick={() => void logout()} type="button">
-            <LogOut size={14} aria-hidden />
+          <button aria-label="Выйти из панели" className="sidebar-logout" onClick={() => void logout()} type="button">
+            <LogOut size={14} aria-hidden strokeWidth={1.75} />
             Выйти
           </button>
           <span>{apiVersion ? `API ${apiVersion}` : '…'}</span>

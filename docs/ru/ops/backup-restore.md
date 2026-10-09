@@ -4,6 +4,10 @@
 - Артефакты и расписания: `server/config/memory.yaml` (`backup`, `external_storage`).
 - В операционные бэкапы включайте `server/data/memory/`, `server/config.yaml`, `server/config/` и `server/.env` (`.env` не коммитить).
 
+## Pending restore / rollback_failed
+
+Restore кладёт staging в `.neyra_pending_restore/` и применяет при следующем старте ядра. Если откат живой памяти (или внешней sqlite) не удался — статус `rollback_failed`, процесс выходит, `blocked.json` блокирует pending, чтобы автоперезапуск не повторил apply. Вручную: вернуть память из `aside_path` и/или внешнюю sqlite из `sqlite_aside_paths` (оба в `blocked.json` / `last_restore_apply.json`) на живые пути, если эти файлы ещё есть, затем удалить `.neyra_pending_restore/` (или хотя бы `blocked.json` + staging) и только потом стартовать снова.
+
 ## Рекомендации
 
 - Делать регулярные snapshot перед обновлениями.

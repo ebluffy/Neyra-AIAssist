@@ -78,7 +78,7 @@ def run_neyra_server(config: dict) -> None:
     import uvicorn
 
     from core.api import build_app
-    from core.api import app as api_app
+    import core.api.app as api_app
     from core.api.app import _dashboard_dist_path, assert_api_bind_safe
 
     root = project_root()
@@ -94,10 +94,34 @@ def run_neyra_server(config: dict) -> None:
             )
             sys.exit(1)
 
+    # Apply pending backup restore before opening Hub/Chroma (AR-34).
+    backup_manager = BackupManager(config)
+    try:
+        applied = backup_manager.apply_pending_restore()
+        if applied and applied.get("applied"):
+            logger.info(
+                "Pending restore applied before agent start | archive=%s",
+                applied.get("archive_name"),
+            )
+        elif applied and str(applied.get("status") or "") == "rollback_failed":
+            logger.error(
+                "Pending restore rollback_failed | archive=%s aside=%s — refusing silent start",
+                applied.get("archive_name"),
+                applied.get("aside_path"),
+            )
+            sys.exit(1)
+        elif applied and not applied.get("applied"):
+            logger.error(
+                "Pending restore failed before agent start | archive=%s error=%s",
+                applied.get("archive_name"),
+                applied.get("error"),
+            )
+    except Exception:
+        logger.exception("Pending restore raised; continuing with live memory")
+
     agent = NeyraAgent(config)
     reflection = ReflectionEngine(config, agent)
     monitor = HealthMonitor(config, project_root=root)
-    backup_manager = BackupManager(config)
 
     app = build_app(
         config,

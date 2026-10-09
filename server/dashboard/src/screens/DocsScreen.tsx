@@ -84,7 +84,7 @@ export function DocsScreen() {
           <BookOpenText size={15} className="card-icon card-icon-cyan" />
           <span className="card-title">OpenAPI (интерактивно)</span>
         </div>
-        <div className="row" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+        <div className="row">
           {[
             ['/docs', 'Swagger UI'],
             ['/redoc', 'ReDoc'],
@@ -98,7 +98,7 @@ export function DocsScreen() {
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}
               target="_blank"
             >
-              {label} <ExternalLink size={12} />
+              {label} <ExternalLink aria-hidden size={12} />
             </a>
           ))}
         </div>
@@ -158,15 +158,7 @@ export function DocsScreen() {
                     <Skeleton style={{ height: 16, width: '100%' }} />
                   </div>
                 ) : markdown ? (
-                  <article
-                    className="prose prose-zinc prose-invert max-w-none"
-                    style={{
-                      background: 'rgba(5,5,10,0.5)',
-                      border: '1px solid var(--border)',
-                      borderRadius: 10,
-                      padding: '1rem 1.25rem',
-                    }}
-                  >
+                  <article className="prose prose-zinc prose-invert max-w-none docs-prose">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
                   </article>
                 ) : (

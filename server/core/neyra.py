@@ -154,12 +154,6 @@ class NeyraAgent:
         setup_logs(self)
 
 
-    def _init_people_db(self):
-        """Засеивает базовые досье, только если Hub/PeopleDB ещё пусты (никакого JSON-импорта)."""
-        from core.agent.people_seed import seed_default_people
-
-        seed_default_people(self.people_db, getattr(self, "memory_hub", None))
-
     # ─── Системный промпт ──────────────────────────────────────────────────
 
     def _build_system_prompt(

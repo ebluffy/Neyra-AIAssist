@@ -93,6 +93,17 @@ logs/*.jsonl.gz
 logs/*.jsonl.bz2
 logs/voice_tmp/
 
+# Pending backup restore staging (applied at next core start)
+.neyra_pending_restore/
+server/.neyra_pending_restore/
+.tmp_restore/
+.tmp_backup_staging/
+
+# Ephemeral AR/verify fixture (must never ship as a live resident module)
+server/modules/_ar_fake_resident/
+# Plugin upload staging / rollback dirs (.{id}.staging-* / .{id}.old-*)
+server/modules/.*
+
 server/modules/discord/lavalink/application.yml
 server/modules/discord/lavalink/Lavalink.jar
 server/modules/discord/lavalink/plugins/*.jar

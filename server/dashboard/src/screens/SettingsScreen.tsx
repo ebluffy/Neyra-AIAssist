@@ -276,7 +276,7 @@ export function SettingsScreen() {
         <label key={f.key} className="label">
           {commonLabel}
           <select
-            className="input input-mono"
+            className="select input-mono"
             onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
             value={values[f.key] || 'false'}
           >
@@ -292,7 +292,7 @@ export function SettingsScreen() {
         <label key={f.key} className="label">
           {commonLabel}
           <select
-            className="input input-mono"
+            className="select input-mono"
             onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
             value={current}
           >

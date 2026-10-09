@@ -9,7 +9,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 try:
     import discord
@@ -52,13 +52,109 @@ def _truncate(s: str, n: int = 60) -> str:
     return text[: n - 1] + "…"
 
 
-def _normalize_play_query(raw: str) -> str:
+# Any absolute or scheme URL (http, icy, ftp, protocol-relative //host, …).
+_ANY_URL_RE = re.compile(r"(?:[a-z][a-z0-9+.-]*:)?//[^\s<>\"']+", re.IGNORECASE)
+
+_YOUTUBE_HOSTS = frozenset(
+    {
+        "youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtu.be",
+        "youtube-nocookie.com",
+    }
+)
+
+# Returned as normalize error when a URL was present but not an allowed YouTube video.
+ONLY_YOUTUBE_VIDEO_URLS = "only_youtube_video_urls"
+
+
+def _extract_any_url(text: str) -> str:
+    """First URL-like token in text (Discord may wrap <>)."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    m = _ANY_URL_RE.search(raw)
+    if not m:
+        return ""
+    return m.group(0).rstrip(").,]>\"'")
+
+
+def _youtube_hostname(hostname: str) -> str:
+    h = (hostname or "").lower().split(":")[0].strip(".")
+    if h.startswith("www."):
+        return h[4:]
+    return h
+
+
+def _is_youtube_host(hostname: str) -> bool:
+    return _youtube_hostname(hostname) in _YOUTUBE_HOSTS
+
+
+def _url_for_parse(url: str) -> str:
+    u = (url or "").strip()
+    if u.startswith("//"):
+        return "https:" + u
+    return u
+
+
+def _youtube_video_id(url: str) -> str:
+    try:
+        parsed = urlparse(_url_for_parse(url))
+    except Exception:
+        return ""
+    if (parsed.scheme or "").lower() not in ("", "http", "https"):
+        return ""
+    if not _is_youtube_host(parsed.hostname or ""):
+        return ""
+    path = parsed.path or ""
+    host = _youtube_hostname(parsed.hostname or "")
+    if host == "youtu.be":
+        return path.lstrip("/").split("/")[0].split("?")[0]
+    qs = parse_qs(parsed.query or "")
+    if qs.get("v"):
+        return str(qs["v"][0] or "")
+    parts = [p for p in path.split("/") if p]
+    if len(parts) >= 2 and parts[0] in ("shorts", "embed", "live", "v"):
+        return parts[1]
+    return ""
+
+
+def _canonical_youtube_url_from_text(text: str) -> str:
+    """Only real YouTube hosts; returns watch URL or '' (never LAN/loopback/http abuse)."""
+    url = _extract_any_url(text)
+    if not url:
+        return ""
+    vid = _youtube_video_id(url)
+    if not vid:
+        return ""
+    return f"https://www.youtube.com/watch?v={vid}"
+
+
+def _looks_like_url(text: str) -> bool:
+    q = (text or "").strip()
+    return bool(q.startswith("//") or "://" in q)
+
+
+def _normalize_play_query(raw: str) -> tuple[str, str | None]:
+    """Return (query, error). error is set when a URL was rejected (not a YouTube video)."""
     q = (raw or "").strip()
     if not q:
-        return ""
+        return "", None
+    yt = _canonical_youtube_url_from_text(q)
+    if yt:
+        return yt, None
+    had_url = bool(_extract_any_url(q))
+    # Drop every URL-like token so Lavalink never sees icy://, //lan, ftp://, etc.
+    q = _ANY_URL_RE.sub("", q)
+    q = re.sub(r"[<>]", "", q).strip()
+    if had_url:
+        # Link present but not an allowed YouTube video — caller must not invent a default track.
+        return "", ONLY_YOUTUBE_VIDEO_URLS
     # Remove command noise so Lavalink search gets a clean artist/title query.
+    # Word-boundary only: `\s*` would eat "Playboi" → "boi".
     noise_patterns = (
-        r"^(вкл\w*|вруби|поставь|заиграй|play)\s+",
+        r"^(вкл\w*|вруби|поставь|заиграй|play)(?:\s+|$)",
         r"^(любой|какую?[- ]?нибудь|какой[- ]?нибудь)\s+",
         r"^(трек|треков|песню|музыку)\s+",
         r"^(зайди|зайти)\s+в\s+(войс|голос\w*)\s*(и\s+)?",
@@ -71,11 +167,11 @@ def _normalize_play_query(raw: str) -> str:
         q,
         flags=re.IGNORECASE,
     ):
-        return ""
+        return "", None
     q = q.strip(" .,!?:;\"'")
     if q.lower() in {"музыку", "музыка", "песню", "песню", "трек", "track", "music"}:
-        return ""
-    return q
+        return "", None
+    return q, None
 
 
 async def _connect_voice_player(
@@ -130,19 +226,56 @@ async def _connect_voice_player(
 
 
 async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> list[Any]:
-    """Use strict YouTube source to avoid LavaSrc provider rewrite."""
+    """Resolve playables. YouTube watch URLs load directly; text uses TrackSource.YouTube (bare q)."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    is_yt_url = bool(_youtube_video_id(q))
+    timeout = 20.0 if is_yt_url else 12.0
+
+    async def _search(raw: str, *, source: Any = None) -> list[Any]:
+        kwargs: dict[str, Any] = {"node": node}
+        if source is not None:
+            kwargs["source"] = source
+        tracks = await asyncio.wait_for(
+            wavelink_mod.Playable.search(raw, **kwargs),
+            timeout=timeout,
+        )
+        return list(tracks or [])
+
     try:
+        if is_yt_url:
+            tracks = await _search(q)
+            if tracks:
+                return tracks
+            logger.warning("discord.music url resolve empty | query=%s", q)
+            return []
+
+        # Never pass bare text that yarl would treat as a URL (icy://, //lan, ftp://…).
+        if _looks_like_url(q):
+            logger.warning("discord.music refuse non-youtube url-shaped query | query=%s", q)
+            return []
+
+        # User already typed a Lavalink search prefix — send as-is (no second prefix).
+        low = q.lower()
+        if low.startswith(("ytsearch:", "ytmsearch:")):
+            fetch = getattr(getattr(wavelink_mod, "Pool", None), "fetch_tracks", None)
+            if callable(fetch):
+                tracks = await asyncio.wait_for(fetch(q, node=node), timeout=timeout)
+                return list(tracks or [])
+            return await _search(q)
+
+        # Bare text: let wavelink add ytsearch: via TrackSource.YouTube (NOT default YouTubeMusic).
         source = getattr(getattr(wavelink_mod, "TrackSource", None), "YouTube", None)
         if source is not None:
-            tracks = await asyncio.wait_for(
-                wavelink_mod.Playable.search(query, source=source, node=node),
-                timeout=7.0,
-            )
+            return await _search(q, source=source)
+        fetch = getattr(getattr(wavelink_mod, "Pool", None), "fetch_tracks", None)
+        if callable(fetch):
+            tracks = await asyncio.wait_for(fetch(f"ytsearch:{q}", node=node), timeout=timeout)
             return list(tracks or [])
-        tracks = await asyncio.wait_for(wavelink_mod.Playable.search(query, node=node), timeout=7.0)
-        return list(tracks or [])
+        return await _search(f"ytsearch:{q}")
     except Exception as ex:  # pragma: no cover
-        logger.warning("discord.music youtube search failed | query=%s error=%s", query, ex)
+        logger.warning("discord.music youtube search failed | query=%s error=%s", q, ex)
         return []
 
 
@@ -760,7 +893,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
 
             # PLAY / join-only
             join_only = bool(payload.get("join_only"))
-            query = _normalize_play_query(str(payload.get("query") or "").strip())
+            query, query_err = _normalize_play_query(str(payload.get("query") or "").strip())
             if join_only:
                 ch_name = str(getattr(voice_channel, "name", "") or "voice")
                 return {
@@ -769,6 +902,13 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                     "track": "",
                     "author": "",
                     "channel": ch_name,
+                    "request_id": str(payload.get("request_id") or ""),
+                }
+            if query_err == ONLY_YOUTUBE_VIDEO_URLS:
+                return {
+                    "ok": False,
+                    "status": "failed",
+                    "error": "поддерживаются только ссылки на видео YouTube",
                     "request_id": str(payload.get("request_id") or ""),
                 }
             if not query:

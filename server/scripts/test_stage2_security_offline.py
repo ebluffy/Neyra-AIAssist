@@ -483,6 +483,38 @@ def _test_person_profile_split() -> None:
     assert known_name_from_facts([{"fact": "зовут Кирилл"}]) == "Кирилл"
 
 
+def _test_plugin_log_source_jail() -> None:
+    """AR-33: plugin:<id>:<rest> must not read config/.env — only logs/*.log or lavalink."""
+    from core.plugins import ops as plugin_ops
+
+    td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    try:
+        root = Path(td.name)
+        plug = root / "modules" / "discord"
+        (plug / "logs").mkdir(parents=True)
+        (plug / "lavalink").mkdir(parents=True)
+        (plug / "config.yaml").write_text("token: secret\n", encoding="utf-8")
+        (plug / ".env").write_text("DISCORD_TOKEN=leak\n", encoding="utf-8")
+        (plug / "logs" / "module.log").write_text("ok\n", encoding="utf-8")
+        (plug / "lavalink" / "lavalink.log").write_text("lava\n", encoding="utf-8")
+
+        assert plugin_ops.resolve_log_source(root, "plugin:discord:config.yaml") is None
+        assert plugin_ops.resolve_log_source(root, "plugin:discord:.env") is None
+        assert plugin_ops.resolve_log_source(root, "plugin:discord:../config.yaml") is None
+        ok_log = plugin_ops.resolve_log_source(root, "plugin:discord:logs/module.log")
+        assert ok_log is not None and ok_log.name == "module.log"
+        ok_lava = plugin_ops.resolve_log_source(root, "plugin:discord:lavalink")
+        assert ok_lava is not None and ok_lava.name == "lavalink.log"
+
+        # AR-39: path case must be preserved (Error.log on Linux)
+        (plug / "logs" / "Error.log").write_text("ERR\n", encoding="utf-8")
+        err_log = plugin_ops.resolve_log_source(root, "plugin:discord:logs/Error.log")
+        assert err_log is not None and err_log.name == "Error.log"
+        assert err_log.is_file()
+    finally:
+        td.cleanup()
+
+
 def main() -> int:
     _test_diary_digest_no_user_lines()
     _test_contextvar_isolation()
@@ -498,6 +530,7 @@ def main() -> int:
     _test_message_content_to_text()
     _test_plan_talk_vision()
     _test_person_profile_split()
+    _test_plugin_log_source_jail()
     print("stage2 security offline: OK")
     return 0
 

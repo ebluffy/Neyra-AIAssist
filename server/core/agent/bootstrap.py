@@ -10,7 +10,7 @@ logger = logging.getLogger("neyra.agent.bootstrap")
 
 
 def setup_memory(agent: Any) -> None:
-    """Wire STM / LTM / PeopleDB / diary / MemoryHub and seed people if empty."""
+    """Wire STM / LTM / PeopleDB / diary / MemoryHub (no hardcoded people seed)."""
     from core.memory import LongTermMemory, MemoryHub, NeyraDiary, PeopleDB, ShortTermMemory
 
     mem_cfg = agent.config.get("memory", {}) or {}
@@ -37,8 +37,6 @@ def setup_memory(agent: Any) -> None:
     else:
         logger.info("Инициализирую долгосрочную память...")
         agent.long_memory.initialize()
-
-    agent._init_people_db()
 
 
 def setup_tools(agent: Any) -> None:

@@ -97,6 +97,9 @@ jobs:
           python scripts/test_stage2_security_offline.py
           python scripts/test_snowflake_offline.py
           python scripts/test_discord_music_intent_offline.py
+          python scripts/test_people_no_seed_offline.py
+          python scripts/test_backup_restore_offline.py
+          python scripts/test_lavalink_managed_offline.py
       - name: Healthcheck smoke (examples, skip HTTP)
         env:
           OPENROUTER_API_KEY: ci-placeholder-not-used-with-skip-http
@@ -120,7 +123,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install API verify deps
-        run: pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette
+        run: pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart
       - name: compileall
         run: python -m compileall -q server
       - name: Check layered config regression

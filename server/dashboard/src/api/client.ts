@@ -65,6 +65,19 @@ function redirectToLoginOnSession401(status: number): void {
   window.location.assign('/')
 }
 
+/** Error from the API; `.status` and `.code` let callers react to e.g. 409 already_exists. */
+export class ApiRequestError extends Error {
+  status: number
+  code: string
+
+  constructor(message: string, status: number, code = '') {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = status
+    this.code = code
+  }
+}
+
 async function parseApiResponse<T>(r: Response): Promise<T> {
   const text = await r.text()
   const trimmed = text.trimStart()
@@ -75,20 +88,21 @@ async function parseApiResponse<T>(r: Response): Promise<T> {
         : `Ответ не JSON (HTTP ${r.status}) — сервер перезапускается или прокси вернул HTML.`,
     )
   }
-  let j: T & { ok?: boolean; error?: { message?: string } }
+  type Body = T & { ok?: boolean; error?: { message?: string; code?: string } }
+  let j: Body
   try {
-    j = JSON.parse(text) as T & { ok?: boolean; error?: { message?: string } }
+    j = JSON.parse(text) as Body
   } catch {
     throw new Error(`Не удалось разобрать ответ API (HTTP ${r.status})`)
   }
   if (!r.ok) {
     redirectToLoginOnSession401(r.status)
     const msg = j?.error?.message ?? r.statusText
-    throw new Error(msg || `HTTP ${r.status}`)
+    throw new ApiRequestError(msg || `HTTP ${r.status}`, r.status, j?.error?.code ?? '')
   }
   if (j && typeof j === 'object' && 'ok' in j && j.ok === false) {
     const msg = j.error?.message ?? 'API error'
-    throw new Error(msg)
+    throw new ApiRequestError(msg, r.status, j.error?.code ?? '')
   }
   return j as T
 }
@@ -124,5 +138,16 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
 
 export async function apiDelete<T>(path: string): Promise<T> {
   const r = await fetch(path, { method: 'DELETE', headers: headers() })
+  return parseApiResponse<T>(r)
+}
+
+/** Multipart upload (do not set Content-Type — browser sets boundary). */
+export async function apiUpload<T>(path: string, file: File, fieldName = 'file'): Promise<T> {
+  const fd = new FormData()
+  fd.append(fieldName, file)
+  const h: Record<string, string> = { Accept: 'application/json' }
+  const tok = getToken().trim()
+  if (tok) h.Authorization = `Bearer ${tok}`
+  const r = await fetch(path, { method: 'POST', headers: h, body: fd })
   return parseApiResponse<T>(r)
 }
