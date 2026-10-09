@@ -3824,19 +3824,23 @@ def build_app(
             )
         payload = _parse_inbound_json_body(raw_body)
         inbound_headers = {k: v for k, v in request.headers.items()}
-        # AR-62: always release inflight (incl. CancelledError / BaseException).
-        finished = False
+        # AR-62/74: release only if handling failed — never wipe a done claim after success.
+        handled = False
         try:
             out = await _handle_inbound_payload(provider, endpoint_id, payload, inbound_headers)
-            await webhook_store.finish_inbound_dedup(dedup_key, out)
-            finished = True
+            handled = True
+            try:
+                await webhook_store.finish_inbound_dedup(dedup_key, out)
+            except Exception:
+                # Memory already has done (finish mutates before _save); keep it for retries.
+                logger.exception("inbound dedup persist failed | key=%s", dedup_key)
             return {
                 "ok": True,
                 "trace_id": trace_id,
                 "data": {**out, "deduplicated": False},
             }
         finally:
-            if not finished:
+            if not handled:
                 try:
                     await webhook_store.finish_inbound_dedup(dedup_key, None)
                 except Exception:

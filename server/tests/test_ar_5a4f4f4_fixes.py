@@ -193,6 +193,39 @@ def test_inbound_claim_rolls_back_owned_on_save_failure(tmp_path: Path, monkeypa
     asyncio.run(_run())
 
 
+def test_inbound_persist_fail_after_handle_still_dedups(client, stub_agent, monkeypatch):
+    """AR-74: finish _save fail after handle must keep done in memory (no double process)."""
+    from unittest.mock import AsyncMock
+
+    from core.api import app as api_mod
+
+    stub_agent.chat = AsyncMock(return_value={"reply": "ok"})
+    real_save = api_mod.WebhookStore._save
+
+    async def save_fail_on_done(self) -> None:
+        for row in (self._state.get("inbound_dedup") or {}).values():
+            if isinstance(row, dict) and str(row.get("status") or "") == "done":
+                raise OSError("disk full on done")
+        await real_save(self)
+
+    monkeypatch.setattr(api_mod.WebhookStore, "_save", save_fail_on_done)
+
+    ep = f"ep-{uuid.uuid4().hex[:8]}"
+    path = f"/v1/webhooks/in/testprov/{ep}"
+    body = {"message": f"persist-{uuid.uuid4().hex}", "username": "u"}
+    headers = {"Idempotency-Key": f"ik-{uuid.uuid4().hex}"}
+
+    r1 = client.post(path, json=body, headers=headers)
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["data"].get("deduplicated") is False
+    assert stub_agent.chat.await_count == 1
+
+    r2 = client.post(path, json=body, headers=headers)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["data"].get("deduplicated") is True
+    assert stub_agent.chat.await_count == 1
+
+
 def test_restore_rejects_legacy_restore_literal(client, auth_headers, stub_backup):
     """AR-66: confirm must equal archive_name."""
     stub_backup.resolve_archive_path.return_value = Path("/tmp/x.zip")
