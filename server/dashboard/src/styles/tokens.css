@@ -1373,6 +1373,57 @@ input[type="checkbox"] {
   word-break: break-word;
   font-variant-numeric: tabular-nums;
 }
+.log-view-virtual {
+  position: relative;
+  contain: strict;
+}
+.log-view-nowrap {
+  white-space: pre;
+  word-break: normal;
+}
+.log-view-nowrap .log-line-text {
+  white-space: pre;
+}
+.log-toolbar {
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.log-line {
+  display: flex;
+  gap: 0.65rem;
+  min-height: 22px;
+  line-height: 22px;
+  padding: 0 0.15rem;
+}
+.log-line-num {
+  flex: 0 0 2.6rem;
+  text-align: right;
+  color: var(--muted);
+  opacity: 0.7;
+  user-select: none;
+}
+.log-line-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: inherit;
+  word-break: inherit;
+}
+.log-line-error { color: color-mix(in oklab, var(--danger) 85%, #fff); }
+.log-line-warn { color: color-mix(in oklab, var(--amber) 90%, #fff); }
+.log-line-info { color: #cbd5e1; }
+.log-line-debug { color: color-mix(in oklab, var(--muted) 80%, #94a3b8); }
+.log-line-other { color: #cbd5e1; }
+.plugin-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.65rem;
+}
+.plugin-filter-chip {
+  min-height: 28px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.72rem;
+}
 .split-files {
   display: grid;
   gap: 1rem;

@@ -224,8 +224,10 @@ docs/
 - [x] **B4** — sqlite backup API, двухфазный restore, drill, тесты на реальной SQLite (#25)
 - [x] **B5** — роли viewer без PII, rotate/logout-all, PBKDF2 600k, матрица ролей (#25)
 - [x] **D0** — Tailwind/токены/шрифты/shadcn/react-query/api client/vitest/`/__ui` (#25 + хвосты в follow-up)
-- [ ] **D1** — shell, ⌘K, theme, 404, robots, favicons, Playwright smoke (в follow-up PR)
-- [ ] **D2–D7** — экраны Status…Settings по DESIGN (в follow-up PR)
+- [x] **D1** — shell, ⌘K, theme, 404, robots, favicons, Playwright smoke (в follow-up PR)
+- [x] **D2** — Status: react-query, health history, audit recent, RestartProgress (в follow-up PR)
+- [x] **D3** — Modules + LogViewer v2 (virtual, level colors, filters) (в follow-up PR)
+- [ ] **D4–D7** — Memory…Settings по DESIGN (в follow-up PR)
 - [ ] **D8** — a11y/polish, react-doctor, чеклисты 5.1/5.2 (в follow-up PR)
 
 ### Готово, когда (3a)

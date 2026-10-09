@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   FilePlus,
   FileCode2,
@@ -8,11 +8,10 @@ import {
   RefreshCw,
   ScrollText,
   Settings2,
-  ToggleLeft,
-  ToggleRight,
   Trash2,
   Upload,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { ApiRequestError, apiDelete, apiGet, apiPatch, apiPost, apiPut, apiUpload } from '../api'
 import type { ApiEnvelope, PluginFileRow, PluginLogSource, PluginRow } from '../api'
 import { LogViewer } from '../components/LogViewer'
@@ -23,7 +22,10 @@ import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { Switch } from '../components/ui/switch'
 import { waitForCoreRestart } from '../lib/wait-for-core-restart'
+
+type PluginFilter = 'all' | 'enabled' | 'disabled' | 'resident' | 'on_demand'
 
 type PluginDetails = { plugin: PluginRow; config: Record<string, unknown> }
 type Tab = 'manage' | 'configs' | 'logs'
@@ -97,6 +99,8 @@ export function ModulesScreen() {
   const [softDescription, setSoftDescription] = useState('')
   const softResolveRef = useRef<((ok: boolean) => void) | null>(null)
   const uploadRef = useRef<HTMLInputElement>(null)
+  const [listQuery, setListQuery] = useState('')
+  const [listFilter, setListFilter] = useState<PluginFilter>('all')
 
   function softConfirm(title: string, description: string): Promise<boolean> {
     setSoftTitle(title)
@@ -286,11 +290,11 @@ export function ModulesScreen() {
       const lavaBit = selected === 'discord' && lava ? ` Lavalink: ${lava}.` : ''
       const restartScheduled = Boolean(r.data.result?.restart_scheduled)
       if (isResident && restartScheduled) {
-        setStatus(
-          enabled
-            ? `Модуль включён.${lavaBit} Ядро перезапускается…`
-            : `Модуль выключен.${lavaBit} Ядро перезапускается, чтобы остановить поток…`,
-        )
+        const msg = enabled
+          ? `Модуль включён.${lavaBit} Ядро перезапускается…`
+          : `Модуль выключен.${lavaBit} Ядро перезапускается, чтобы остановить поток…`
+        setStatus(msg)
+        toast.message(enabled ? 'Модуль включён' : 'Модуль выключен', { description: 'Ждём рестарт ядра…' })
         await finishRestartWait(enabled ? 'Модуль включён.' : 'Модуль выключен.')
         return
       }
@@ -303,6 +307,7 @@ export function ModulesScreen() {
               ? `Модуль включён в конфиге.${lavaBit} Нужен мягкий рестарт ядра.`
               : `Модуль выключен в конфиге.${lavaBit} Нужен мягкий рестарт ядра.`,
         )
+        toast.success(enabled ? 'Записано: включён' : 'Записано: выключен')
         await loadPlugins()
         await loadDetails(selected)
         if (
@@ -321,11 +326,14 @@ export function ModulesScreen() {
         return
       }
       setStatus(`Готово: ${r.data.operation_id}`)
+      toast.success(enabled ? 'Модуль включён' : 'Модуль выключен')
       await loadPlugins()
       await loadDetails(selected)
       setRestartBusy(false)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      setError(msg)
+      toast.error(msg)
       setRestartBusy(false)
     }
   }
@@ -614,6 +622,35 @@ export function ModulesScreen() {
     : []
   const logSources: LogSource[] = apiLogSources ?? fallbackLogSources
 
+  const filteredPlugins = useMemo(() => {
+    const q = listQuery.trim().toLowerCase()
+    return plugins.filter((p) => {
+      const life = String(p.lifecycle || '').toLowerCase()
+      if (listFilter === 'enabled' && !p.enabled) return false
+      if (listFilter === 'disabled' && p.enabled) return false
+      if (listFilter === 'resident' && life !== 'resident') return false
+      if (listFilter === 'on_demand' && life !== 'on_demand') return false
+      if (!q) return true
+      return (
+        p.id.toLowerCase().includes(q) ||
+        String(p.name || '')
+          .toLowerCase()
+          .includes(q) ||
+        String(p.version || '')
+          .toLowerCase()
+          .includes(q)
+      )
+    })
+  }, [plugins, listQuery, listFilter])
+
+  const filterChips: Array<{ id: PluginFilter; label: string }> = [
+    { id: 'all', label: 'Все' },
+    { id: 'enabled', label: 'Вкл.' },
+    { id: 'disabled', label: 'Выкл.' },
+    { id: 'resident', label: 'Resident' },
+    { id: 'on_demand', label: 'On-demand' },
+  ]
+
   const tabs: [Tab, string, typeof Settings2][] = [
     ['manage', 'Управление', Settings2],
     ['configs', 'Конфиги', FileCode2],
@@ -670,20 +707,52 @@ export function ModulesScreen() {
         <div className="card" style={{ height: 'fit-content' }}>
           <div className="card-header">
             <Puzzle size={15} className="card-icon" />
-            <span className="card-title">Установлено ({plugins.length})</span>
+            <span className="card-title">
+              Установлено ({filteredPlugins.length}
+              {filteredPlugins.length !== plugins.length ? ` / ${plugins.length}` : ''})
+            </span>
+          </div>
+          <input
+            aria-label="Поиск модулей"
+            className="input"
+            onChange={(e) => setListQuery(e.target.value)}
+            placeholder="Поиск: id, имя, версия"
+            style={{ marginBottom: '0.5rem', minHeight: 36 }}
+            value={listQuery}
+          />
+          <div className="plugin-filters" role="group" aria-label="Фильтр модулей">
+            {filterChips.map((chip) => (
+              <Button
+                key={chip.id}
+                aria-pressed={listFilter === chip.id}
+                className="plugin-filter-chip"
+                onClick={() => setListFilter(chip.id)}
+                size="sm"
+                type="button"
+                variant={listFilter === chip.id ? 'default' : 'secondary'}
+              >
+                {chip.label}
+              </Button>
+            ))}
           </div>
           <div className="plugin-list">
             {loadingPlugins && plugins.length === 0 && [1, 2, 3].map((i) => <Skeleton key={i} className="h-10" />)}
-            {plugins.map((p) => (
+            {filteredPlugins.map((p) => (
               <button
                 key={p.id}
                 aria-current={selected === p.id ? 'true' : undefined}
                 className={`plugin-item${selected === p.id ? ' active' : ''}`}
                 onClick={() => pickPlugin(p.id)}
+                title={`${p.name || p.id} · ${p.id} · v${p.version || '—'}`}
                 type="button"
               >
-                <span className="plugin-item-id">{p.id}</span>
+                <span className="plugin-item-id" title={p.id}>
+                  {p.name || p.id}
+                </span>
                 <span className="plugin-item-meta">
+                  <span className="mono" style={{ fontSize: '0.7rem', opacity: 0.8 }} title={p.id}>
+                    {p.id.length > 18 ? `${p.id.slice(0, 16)}…` : p.id}
+                  </span>
                   <span aria-hidden className={`status-dot ${p.enabled ? 'status-dot-ok' : 'status-dot-idle'}`} />
                   {p.enabled ? 'вкл.' : 'выкл.'}
                   <span
@@ -696,6 +765,9 @@ export function ModulesScreen() {
             ))}
             {!loadingPlugins && plugins.length === 0 && (
               <EmptyState icon={Puzzle} title="Нет модулей" description="Загрузи .zip с plugin.yaml." />
+            )}
+            {!loadingPlugins && plugins.length > 0 && filteredPlugins.length === 0 && (
+              <EmptyState icon={Puzzle} title="Ничего не найдено" description="Сбрось фильтр или поисковую строку." />
             )}
           </div>
         </div>
@@ -746,17 +818,15 @@ export function ModulesScreen() {
                     </p>
                   )}
                   <div className="row">
-                    <button
-                      aria-label="Включить или выключить модуль"
-                      aria-pressed={Boolean(details?.plugin.enabled)}
-                      className={`toggle-pill ${details?.plugin.enabled ? 'toggle-on' : 'toggle-off'}`}
-                      disabled={restartBusy || loadingDetails}
-                      onClick={() => void togglePlugin(!details?.plugin.enabled)}
-                      type="button"
-                    >
-                      {details?.plugin.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
-                      {details?.plugin.enabled ? 'Включён' : 'Выключен'}
-                    </button>
+                    <label className="row" style={{ gap: 10, minHeight: 40 }}>
+                      <Switch
+                        aria-label="Включить или выключить модуль"
+                        checked={Boolean(details?.plugin.enabled)}
+                        disabled={restartBusy || loadingDetails}
+                        onCheckedChange={(on) => void togglePlugin(on)}
+                      />
+                      <span className="hint">{details?.plugin.enabled ? 'Включён' : 'Выключен'}</span>
+                    </label>
                     {isOnDemand && (
                       <Button onClick={() => void invokePlugin()} type="button" variant="secondary">
                         <Play size={14} /> Вызвать
