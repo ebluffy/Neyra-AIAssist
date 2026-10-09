@@ -1,7 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import '@fontsource/fira-sans/400.css'
 import '@fontsource/fira-sans/500.css'
@@ -33,10 +32,8 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={200}>
-        <BrowserRouter>
-          <App />
-          <Toaster closeButton position="bottom-right" richColors theme="system" />
-        </BrowserRouter>
+        <App />
+        <Toaster closeButton position="bottom-right" richColors theme="system" />
       </TooltipProvider>
     </QueryClientProvider>
   </StrictMode>,

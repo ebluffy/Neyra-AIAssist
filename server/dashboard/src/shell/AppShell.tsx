@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   ChevronsLeft,
   ChevronsRight,
@@ -10,18 +10,8 @@ import {
 } from 'lucide-react'
 import { apiGet, clearSessionToken, getSessionToken } from '../api'
 import type { ApiEnvelope } from '../api'
-import { tryAllowNavigation } from '../lib/navigation-guard'
 import { applyTheme, getStoredTheme, type Theme } from '../lib/theme'
 import { getSidebarCollapsed, setSidebarCollapsed } from '../lib/ui-prefs'
-import { DocsScreen } from '../screens/DocsScreen'
-import { MemoryScreen } from '../screens/MemoryScreen'
-import { ModulesScreen } from '../screens/ModulesScreen'
-import { NotFoundScreen } from '../screens/NotFoundScreen'
-import { SettingsScreen } from '../screens/SettingsScreen'
-import { StatusScreen } from '../screens/StatusScreen'
-import { SystemScreen } from '../screens/SystemScreen'
-import { UiKitScreen } from '../screens/UiKitScreen'
-import { WebhooksScreen } from '../screens/WebhooksScreen'
 import { CommandPalette } from '../components/CommandPalette'
 import { ConnectionBanner } from '../components/ConnectionBanner'
 import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
@@ -46,9 +36,6 @@ export function AppShell() {
   const [logoutOpen, setLogoutOpen] = useState(false)
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [cmdOpen, setCmdOpen] = useState(false)
-  const [refreshPaused, setRefreshPaused] = useState(false)
-  const [lastOkAt, setLastOkAt] = useState<number | null>(null)
-  const [nowTick, setNowTick] = useState(() => Date.now())
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -74,16 +61,10 @@ export function AppShell() {
   }, [title])
 
   useEffect(() => {
-    const id = window.setInterval(() => setNowTick(Date.now()), 1000)
-    return () => window.clearInterval(id)
-  }, [])
-
-  useEffect(() => {
     void (async () => {
       try {
         const r = await apiGet<ApiEnvelope<{ api_version?: string; version?: string }>>('/v1/meta')
         setApiVersion(String(r.data.api_version ?? r.data.version ?? ''))
-        setLastOkAt(Date.now())
       } catch {
         setApiVersion('')
       }
@@ -119,13 +100,13 @@ export function AppShell() {
     setSidebarCollapsed(next)
   }
 
-  async function go(to: string) {
-    if (!(await tryAllowNavigation())) return
+  function onNavClick(e: MouseEvent, to: string) {
+    // Allow open-in-new-tab / modified clicks to use the real href.
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+    e.preventDefault()
     setMobileOpen(false)
     navigate(to)
   }
-
-  const agoSec = lastOkAt == null ? null : Math.max(0, Math.floor((nowTick - lastOkAt) / 1000))
 
   function renderNav(compact: boolean) {
     return (
@@ -138,10 +119,7 @@ export function AppShell() {
                 <NavLink
                   key={to}
                   className={({ isActive }) => `nav-item${isActive ? ' active' : ''}${compact ? ' nav-item-icon-only' : ''}`}
-                  onClick={(e) => {
-                    e.preventDefault()
-                    void go(to)
-                  }}
+                  onClick={(e) => onNavClick(e, to)}
                   to={to}
                   title={compact ? label : undefined}
                 >
@@ -266,43 +244,17 @@ export function AppShell() {
           </Sheet>
         </>
       ) : (
-        <aside
-          aria-label="Навигация"
-          className={`sidebar${collapsed ? ' sidebar-collapsed' : ''}`}
-        >
+        <aside aria-label="Навигация" className={`sidebar${collapsed ? ' sidebar-collapsed' : ''}`}>
           {sidebarInner({ compact: collapsed })}
         </aside>
       )}
 
       <div className="shell-main">
-        <Topbar
-          crumbs={crumbs}
-          lastFetchedAgoSec={agoSec}
-          onOpenCommand={() => setCmdOpen(true)}
-          onThemeToggle={onThemeToggle}
-          onToggleRefreshPause={() => setRefreshPaused((v) => !v)}
-          refreshPaused={refreshPaused}
-          theme={theme}
-        />
+        <Topbar crumbs={crumbs} onOpenCommand={() => setCmdOpen(true)} onThemeToggle={onThemeToggle} theme={theme} />
         <main className="main-area" id="main-content" tabIndex={-1}>
           <ConnectionBanner />
           <ErrorBoundary key={location.pathname}>
-            <Routes>
-              <Route element={<Navigate replace to="/status" />} path="/" />
-              <Route element={<Navigate replace to="/status" />} path="/home" />
-              <Route element={<Navigate replace to="/status" />} path="/dashboard" />
-              <Route element={<Navigate replace to="/modules" />} path="/plugins" />
-              <Route element={<StatusScreen />} path="/status" />
-              <Route element={<ModulesScreen />} path="/modules" />
-              <Route element={<MemoryScreen />} path="/memory" />
-              <Route element={<SystemScreen />} path="/system" />
-              <Route element={<SystemScreen initialTab="backup" />} path="/backups" />
-              <Route element={<WebhooksScreen />} path="/webhooks" />
-              <Route element={<SettingsScreen />} path="/settings" />
-              <Route element={<DocsScreen />} path="/api-docs" />
-              {import.meta.env.DEV ? <Route element={<UiKitScreen />} path="/__ui" /> : null}
-              <Route element={<NotFoundScreen />} path="*" />
-            </Routes>
+            <Outlet />
           </ErrorBoundary>
         </main>
       </div>

@@ -2,7 +2,6 @@ import { Command } from 'cmdk'
 import { Moon, Sun } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { tryAllowNavigation } from '../lib/navigation-guard'
 import { getStoredTheme, toggleTheme } from '../lib/theme'
 import { FLAT_NAV } from '../shell/nav'
 
@@ -41,8 +40,7 @@ export function CommandPalette({ controlledOpen, onOpenChange }: Props = {}) {
     }
   }, [setOpen])
 
-  async function go(to: string) {
-    if (!(await tryAllowNavigation())) return
+  function go(to: string) {
     setOpen(false)
     navigate(to)
   }
@@ -75,7 +73,7 @@ export function CommandPalette({ controlledOpen, onOpenChange }: Props = {}) {
               <Command.Item
                 key={to}
                 className="cmdk-item"
-                onSelect={() => void go(to)}
+                onSelect={() => go(to)}
                 value={`${label} ${to}`}
               >
                 <Icon aria-hidden className="cmdk-item-icon" size={16} strokeWidth={1.75} />

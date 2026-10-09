@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { KeyRound, Loader2, SlidersHorizontal, Sparkles } from 'lucide-react'
+import { useBlocker } from 'react-router-dom'
 import { apiGet, apiPost, getStoredApiToken, setToken } from '../api'
 import type { ApiEnvelope } from '../api'
 import { Button } from '../components/ui/button'
@@ -7,11 +8,6 @@ import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
-import {
-  allowNextNavigation,
-  setLeaveAsk,
-  setNavigationBlocker,
-} from '../lib/navigation-guard'
 
 type FieldDef = { key: string; label: string; kind?: 'text' | 'bool' | 'provider' }
 
@@ -214,47 +210,24 @@ export function SettingsScreen() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [anyDirty])
 
-  useEffect(() => {
-    setNavigationBlocker(() => !anyDirty)
-    setLeaveAsk(
-      anyDirty
-        ? () =>
-            softConfirm(
-              'Несохранённые изменения',
-              'Есть несохранённые изменения в Настройках. Уйти без применения?',
-            )
-        : null,
-    )
-    return () => {
-      setNavigationBlocker(null)
-      setLeaveAsk(null)
-    }
-  }, [anyDirty])
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      anyDirty && currentLocation.pathname !== nextLocation.pathname,
+  )
+  const leaveAskInFlight = useRef(false)
 
-  // Browser Back/Forward: pull back immediately when dirty, then DangerConfirm; confirm → go(-1).
   useEffect(() => {
-    if (!anyDirty) return
-    let undoing = false
-    const onPopState = () => {
-      if (undoing) return
-      undoing = true
-      window.history.go(1)
-      void softConfirm(
-        'Несохранённые изменения',
-        'Есть несохранённые изменения в Настройках. Уйти без применения?',
-      ).then((ok) => {
-        if (ok) {
-          allowNextNavigation()
-          window.history.go(-1)
-        }
-        undoing = false
-      })
-    }
-    window.addEventListener('popstate', onPopState)
-    return () => {
-      window.removeEventListener('popstate', onPopState)
-    }
-  }, [anyDirty])
+    if (blocker.state !== 'blocked' || leaveAskInFlight.current) return
+    leaveAskInFlight.current = true
+    void softConfirm(
+      'Несохранённые изменения',
+      'Есть несохранённые изменения в Настройках. Уйти без применения?',
+    ).then((ok) => {
+      leaveAskInFlight.current = false
+      if (ok) blocker.proceed?.()
+      else blocker.reset?.()
+    })
+  }, [blocker])
 
   async function selectTab(id: string) {
     if (id === tab) return

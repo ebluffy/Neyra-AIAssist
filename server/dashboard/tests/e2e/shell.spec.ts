@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import path from 'node:path'
 
-const shotDir = path.join('tests', 'e2e', 'screenshots')
+const shotDir = path.join('test-results', 'e2e-shots')
 
 test.describe('shell / gate', () => {
   test('gate shows login or setup and sets document title', async ({ page }, testInfo) => {

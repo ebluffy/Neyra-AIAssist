@@ -342,10 +342,18 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
                 <Button
                   disabled={!key}
                   onClick={() => {
-                    void navigator.clipboard.writeText(key).then(
-                      () => toast.success('Ключ скопирован'),
-                      () => toast.error('Не удалось скопировать'),
-                    )
+                    if (!navigator.clipboard?.writeText) {
+                      toast.error('Копирование недоступно по http — скопируйте вручную')
+                      return
+                    }
+                    try {
+                      void navigator.clipboard.writeText(key).then(
+                        () => toast.success('Ключ скопирован'),
+                        () => toast.error('Не удалось скопировать'),
+                      )
+                    } catch {
+                      toast.error('Копирование недоступно — скопируйте вручную')
+                    }
                   }}
                   type="button"
                   variant="ghost"
