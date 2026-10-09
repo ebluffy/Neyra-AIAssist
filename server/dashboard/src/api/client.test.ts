@@ -5,10 +5,8 @@ import {
   clearSessionToken,
   clearToken,
   getSessionToken,
-  getStoredApiToken,
   getToken,
   setSessionToken,
-  setToken,
 } from './client'
 
 describe('api/client token storage', () => {
@@ -32,17 +30,8 @@ describe('api/client token storage', () => {
     expect(getToken()).toBe('sess-abc')
   })
 
-  it('does not write API token to localStorage', () => {
-    setToken('mem-token')
-    expect(getStoredApiToken()).toBe('mem-token')
-    expect(localStorage.getItem('neyra_api_token')).toBeNull()
-    expect(getToken()).toBe('mem-token')
-  })
-
-  it('prefers session over memory token', () => {
-    setToken('mem')
-    setSessionToken('sess')
-    expect(getToken()).toBe('sess')
+  it('getToken is empty without session', () => {
+    expect(getToken()).toBe('')
   })
 })
 

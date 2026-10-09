@@ -957,6 +957,7 @@ export function ModulesScreen() {
                     </div>
                     {activeFile ? (
                       <textarea
+                        aria-label={`Содержимое файла ${activeFile}`}
                         className="textarea"
                         disabled={fileBusy}
                         onChange={(e) => setFileText(e.target.value)}

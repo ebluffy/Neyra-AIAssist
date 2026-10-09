@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { apiGet, clearSessionToken, getSessionToken } from '../api'
 import type { ApiEnvelope } from '../api'
-import { getStoredTheme, toggleTheme, type Theme } from '../lib/theme'
+import { toggleTheme, useResolvedTheme } from '../lib/theme'
 import { getSidebarCollapsed, setSidebarCollapsed } from '../lib/ui-prefs'
 import { CommandPalette } from '../components/CommandPalette'
 import { ConnectionBanner } from '../components/ConnectionBanner'
@@ -32,7 +32,7 @@ export function AppShell() {
   const [mobile, setMobile] = useState(false)
   const [collapsed, setCollapsed] = useState(() => getSidebarCollapsed())
   const [apiVersion, setApiVersion] = useState<string>('')
-  const [theme, setTheme] = useState<Theme>(() => getStoredTheme())
+  const theme = useResolvedTheme()
   const [logoutOpen, setLogoutOpen] = useState(false)
   const [logoutBusy, setLogoutBusy] = useState(false)
   const [cmdOpen, setCmdOpen] = useState(false)
@@ -89,7 +89,7 @@ export function AppShell() {
   }, [])
 
   function onThemeToggle() {
-    setTheme(toggleTheme())
+    toggleTheme()
   }
 
   function toggleCollapsed() {

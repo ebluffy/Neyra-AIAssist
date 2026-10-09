@@ -27,8 +27,8 @@ HTTP-стек живёт в **`server/core/api/`** (Control API), это не м
 | Память | `/memory` | stats, people, diary, search, LTM |
 | Система | `/system` | meta, backup, DLQ summary |
 | Вебхуки | `/webhooks` | routes, deliveries, DLQ |
-| Настройки | `/settings` | Bearer override + `GET/POST` runtime config (allowlist) |
-| API Docs | `/api-docs` | Swagger / ReDoc / Markdown |
+| Настройки | `/settings` | доступ (rotate / logout-all), тема/плотность, `GET/POST` runtime config (allowlist) |
+| API Docs | `/api-docs` | Swagger / ReDoc / Markdown, оглавление |
 
 ## Runtime config
 

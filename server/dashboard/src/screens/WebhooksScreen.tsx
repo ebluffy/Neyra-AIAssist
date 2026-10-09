@@ -197,15 +197,16 @@ function InboundPanel() {
           <code className="inline-code">content</code> уходит в чат Нейры, событие публикуется в шину ядра. Управление
           эндпоинтами пока без интерфейса — это каркас.
         </p>
-        <div className="field-row">
+        <label className="field-row">
           <span className="label-text" style={{ paddingTop: '0.6rem', fontSize: '0.8rem' }}>endpoint_id</span>
           <input
+            aria-label="endpoint_id"
             className="input input-mono"
             onChange={(e) => setEndpointId(e.target.value)}
             placeholder="default"
             value={endpointId}
           />
-        </div>
+        </label>
         {pingMsg && <InlineFeedback tone={pingMsg.tone}>{pingMsg.text}</InlineFeedback>}
         <div className="table-wrap">
           <table className="table">

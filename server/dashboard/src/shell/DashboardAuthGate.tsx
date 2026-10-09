@@ -284,14 +284,17 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
             aria-hidden
           />
 
-          <label className="dash-auth-label">
-            <KeyRound size={14} />
-            Ключ доступа
+          <div className="dash-auth-label">
+            <label htmlFor="dash-access-key">
+              <KeyRound aria-hidden size={14} />
+              Ключ доступа
+            </label>
             <div className="dash-auth-input-row">
               <input
                 autoComplete={isSetup ? 'new-password' : 'current-password'}
                 autoFocus
                 className="dash-auth-input"
+                id="dash-access-key"
                 name="password"
                 onChange={(ev) => setKey(ev.target.value)}
                 onKeyUp={(ev) => setCapsOn(ev.getModifierState?.('CapsLock') ?? false)}
@@ -308,7 +311,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
                 {showKey ? <EyeOff aria-hidden size={16} strokeWidth={1.75} /> : <Eye aria-hidden size={16} strokeWidth={1.75} />}
               </button>
             </div>
-          </label>
+          </div>
           {capsOn ? <p className="dash-auth-caps">Включён Caps Lock</p> : null}
           <p className="dash-auth-len tabular-nums" aria-live="polite">
             Длина: {key.trim().length}

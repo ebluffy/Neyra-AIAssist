@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { BookOpenText, ExternalLink, FileText, Search } from 'lucide-react'
+import rehypeSlug from 'rehype-slug'
 import remarkGfm from 'remark-gfm'
 import { apiGet, apiGetText } from '../api'
 import type { ApiEnvelope } from '../api'
@@ -12,32 +13,19 @@ import { Skeleton } from '../components/ui/skeleton'
 
 type DocItem = { id: string; title: string; path?: string; lang?: string }
 type DocSection = { id: string; title: string; items: DocItem[] }
-type Heading = { id: string; text: string; level: number }
+export type DocHeading = { id: string; text: string; level: number }
 
 const REPORT_ISSUE_URL = 'https://github.com/ebluffy/Neyra-AIAssist/issues/new'
 
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
-    .replace(/^-+|-+$/g, '')
-}
-
-function extractHeadings(md: string): Heading[] {
-  const out: Heading[] = []
-  const seen = new Map<string, number>()
-  for (const line of md.split('\n')) {
-    const m = /^(#{1,3})\s+(.+)$/.exec(line.trim())
-    if (!m) continue
-    const text = m[2].replace(/[*_`#]/g, '').trim()
-    if (!text) continue
-    let id = slugify(text) || 'section'
-    const n = (seen.get(id) ?? 0) + 1
-    seen.set(id, n)
-    if (n > 1) id = `${id}-${n}`
-    out.push({ id, text, level: m[1].length })
-  }
-  return out
+/** Build TOC from rehype-slug ids already in the rendered article. */
+export function headingsFromArticle(root: ParentNode | null): DocHeading[] {
+  if (!root) return []
+  const nodes = root.querySelectorAll('h1[id], h2[id], h3[id]')
+  return Array.from(nodes).map((el) => ({
+    id: el.id,
+    text: (el.textContent || '').trim(),
+    level: Number(el.tagName.slice(1)),
+  }))
 }
 
 export function DocsScreen() {
@@ -49,6 +37,8 @@ export function DocsScreen() {
   const [loadingCat, setLoadingCat] = useState(true)
   const [loadingDoc, setLoadingDoc] = useState(false)
   const [headingQuery, setHeadingQuery] = useState('')
+  const [headings, setHeadings] = useState<DocHeading[]>([])
+  const articleRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -80,7 +70,6 @@ export function DocsScreen() {
     [sections, tab],
   )
 
-  const headings = useMemo(() => extractHeadings(markdown), [markdown])
   const filteredHeadings = useMemo(() => {
     const q = headingQuery.trim().toLowerCase()
     if (!q) return headings
@@ -94,6 +83,7 @@ export function DocsScreen() {
       setLoadingDoc(true)
       setError('')
       setHeadingQuery('')
+      setHeadings([])
       try {
         const text = await apiGetText(`/v1/docs/markdown/${docId}`)
         if (!cancelled) setMarkdown(text)
@@ -110,6 +100,17 @@ export function DocsScreen() {
       cancelled = true
     }
   }, [docId])
+
+  useEffect(() => {
+    if (loadingDoc || !markdown) {
+      setHeadings([])
+      return
+    }
+    const id = window.requestAnimationFrame(() => {
+      setHeadings(headingsFromArticle(articleRef.current))
+    })
+    return () => window.cancelAnimationFrame(id)
+  }, [markdown, loadingDoc])
 
   return (
     <div className="page-content stack">
@@ -180,7 +181,7 @@ export function DocsScreen() {
               ))}
             </div>
             <div className="docs-layout">
-              <div className="docs-nav" role="navigation" aria-label="Файлы">
+              <nav className="docs-nav" aria-label="Файлы">
                 {(activeSection?.items ?? []).map((it) => (
                   <button
                     key={it.id}
@@ -199,7 +200,7 @@ export function DocsScreen() {
                     title="Пусто"
                   />
                 )}
-              </div>
+              </nav>
               <div className="docs-body">
                 {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
                 {loadingDoc ? (
@@ -241,39 +242,8 @@ export function DocsScreen() {
                         </nav>
                       </aside>
                     ) : null}
-                    <article className="prose docs-prose max-w-none">
-                      <ReactMarkdown
-                        components={{
-                          h1: ({ children, ...props }) => {
-                            const text = String(children)
-                            const id = headings.find((h) => h.level === 1 && h.text === text)?.id ?? slugify(text)
-                            return (
-                              <h1 id={id} {...props}>
-                                {children}
-                              </h1>
-                            )
-                          },
-                          h2: ({ children, ...props }) => {
-                            const text = String(children)
-                            const id = headings.find((h) => h.level === 2 && h.text === text)?.id ?? slugify(text)
-                            return (
-                              <h2 id={id} {...props}>
-                                {children}
-                              </h2>
-                            )
-                          },
-                          h3: ({ children, ...props }) => {
-                            const text = String(children)
-                            const id = headings.find((h) => h.level === 3 && h.text === text)?.id ?? slugify(text)
-                            return (
-                              <h3 id={id} {...props}>
-                                {children}
-                              </h3>
-                            )
-                          },
-                        }}
-                        remarkPlugins={[remarkGfm]}
-                      >
+                    <article ref={articleRef} className="prose docs-prose max-w-none">
+                      <ReactMarkdown rehypePlugins={[rehypeSlug]} remarkPlugins={[remarkGfm]}>
                         {markdown}
                       </ReactMarkdown>
                     </article>

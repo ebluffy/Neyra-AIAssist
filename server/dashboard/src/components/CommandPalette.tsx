@@ -2,7 +2,7 @@ import { Command } from 'cmdk'
 import { Moon, Sun } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getStoredTheme, toggleTheme } from '../lib/theme'
+import { toggleTheme, useResolvedTheme } from '../lib/theme'
 import { FLAT_NAV } from '../shell/nav'
 
 type Props = {
@@ -21,7 +21,7 @@ export function CommandPalette({ controlledOpen, onOpenChange }: Props = {}) {
     },
     [controlledOpen, onOpenChange, open],
   )
-  const [theme, setTheme] = useState(getStoredTheme)
+  const theme = useResolvedTheme()
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -49,13 +49,11 @@ export function CommandPalette({ controlledOpen, onOpenChange }: Props = {}) {
 
   return (
     <div
-      aria-label="Закрыть палитру"
       className="cmdk-overlay"
       onClick={() => setOpen(false)}
       onKeyDown={(e) => {
         if (e.key === 'Escape') setOpen(false)
       }}
-      role="presentation"
     >
       <Command
         className="cmdk-dialog"
@@ -83,7 +81,7 @@ export function CommandPalette({ controlledOpen, onOpenChange }: Props = {}) {
             <Command.Item
               className="cmdk-item"
               onSelect={() => {
-                setTheme(toggleTheme())
+                toggleTheme()
                 setOpen(false)
               }}
               value="тема theme dark light"

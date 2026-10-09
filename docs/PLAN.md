@@ -231,7 +231,7 @@ docs/
 - [x] **D5** — System: LogViewer v2, health checks, backups + RestartProgress on restore (в follow-up PR)
 - [x] **D6** — Webhooks: RHF+zod outbound form, Switch (в follow-up PR)
 - [x] **D7** — Settings/access/docs по DESIGN (в follow-up PR)
-- [ ] **D8** — a11y/polish, react-doctor, чеклисты 5.1/5.2 (в follow-up PR)
+- [x] **D8** — a11y/polish, react-doctor, чеклисты 5.1/5.2 (в follow-up PR)
 
 ### Готово, когда (3a)
 

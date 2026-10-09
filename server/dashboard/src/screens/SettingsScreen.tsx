@@ -8,7 +8,8 @@ import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
-import { getThemePreference, setThemePreference, type ThemePreference } from '../lib/theme'
+import { pluralRu } from '../lib/plural-ru'
+import { setThemePreference, useThemePreference, type ThemePreference } from '../lib/theme'
 import { getDensity, setDensity, type Density } from '../lib/ui-prefs'
 
 type FieldDef = { key: string; label: string; kind?: 'text' | 'bool' | 'provider' }
@@ -126,16 +127,35 @@ const RESTART_KEYS = new Set([
   'agent.fast_path.enabled',
 ])
 
-async function rotateAccessKey(currentKey: string, newKey: string): Promise<string> {
-  const r = await fetch('/v1/dashboard/auth/rotate', {
-    method: 'POST',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ current_key: currentKey, new_key: newKey }),
-  })
-  const j = (await r.json()) as {
-    ok?: boolean
-    data?: { session_token?: string }
-    error?: { message?: string }
+export async function rotateAccessKey(currentKey: string, newKey: string): Promise<string> {
+  const ctrl = new AbortController()
+  const timer = window.setTimeout(() => ctrl.abort(), 30_000)
+  let r: Response
+  try {
+    r = await fetch('/v1/dashboard/auth/rotate', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_key: currentKey, new_key: newKey }),
+      signal: ctrl.signal,
+    })
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new Error('Таймаут запроса смены ключа')
+    }
+    throw e
+  } finally {
+    window.clearTimeout(timer)
+  }
+  const text = await r.text()
+  const trimmed = text.trimStart()
+  if (trimmed.startsWith('<') || trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<!doctype')) {
+    throw new Error(`Сервер недоступен (HTTP ${r.status || '—'}). Попробуй позже.`)
+  }
+  let j: { ok?: boolean; data?: { session_token?: string }; error?: { message?: string } }
+  try {
+    j = JSON.parse(text) as typeof j
+  } catch {
+    throw new Error(`Не удалось разобрать ответ API (HTTP ${r.status})`)
   }
   if (!r.ok || j.ok === false) {
     throw new Error(j.error?.message || `HTTP ${r.status}`)
@@ -180,7 +200,7 @@ export function SettingsScreen() {
   const [newKey2, setNewKey2] = useState('')
   const [accessBusy, setAccessBusy] = useState(false)
   const [logoutAllOpen, setLogoutAllOpen] = useState(false)
-  const [themePref, setThemePref] = useState<ThemePreference>(() => getThemePreference())
+  const themePref = useThemePreference()
   const [density, setDensityState] = useState<Density>(() => getDensity())
 
   function softConfirm(title: string, description: string): Promise<boolean> {
@@ -501,9 +521,7 @@ export function SettingsScreen() {
             <select
               className="select"
               onChange={(e) => {
-                const pref = e.target.value as ThemePreference
-                setThemePref(pref)
-                setThemePreference(pref)
+                setThemePreference(e.target.value as ThemePreference)
               }}
               value={themePref}
             >
@@ -586,7 +604,7 @@ export function SettingsScreen() {
         <div aria-live="polite" className="settings-dirty-bar" role="status">
           <span>
             Изменено {allDirtyKeys.length}{' '}
-            {allDirtyKeys.length === 1 ? 'поле' : allDirtyKeys.length < 5 ? 'поля' : 'полей'}
+            {pluralRu(allDirtyKeys.length, 'поле', 'поля', 'полей')}
           </span>
           <div className="row">
             <Button disabled={saving} onClick={discardDirty} size="sm" type="button" variant="secondary">

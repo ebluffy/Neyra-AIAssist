@@ -23,8 +23,8 @@ HTTP lives in **`server/core/api/`**. Bind / public URL / dashboard flags: **`se
 | Memory | `/memory` | stats, people, diary, search, LTM |
 | System | `/system` | meta, backup, DLQ summary |
 | Webhooks | `/webhooks` | routes, deliveries, DLQ |
-| Settings | `/settings` | Bearer override + runtime config allowlist |
-| API Docs | `/api-docs` | Swagger / ReDoc / Markdown |
+| Settings | `/settings` | access (rotate / logout-all), theme/density, runtime config allowlist |
+| API Docs | `/api-docs` | Swagger / ReDoc / Markdown, TOC |
 
 ## Runtime config
 
