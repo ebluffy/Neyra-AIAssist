@@ -328,7 +328,7 @@ export function SettingsScreen() {
           <span className="card-title">Токен API</span>
         </div>
         <label className="label">
-          <span className="label-text">Токен API (localStorage)</span>
+          <span className="label-text">Токен API (только в памяти вкладки)</span>
           <input
             autoComplete="off"
             className="input input-mono"
@@ -337,15 +337,18 @@ export function SettingsScreen() {
             value={token}
           />
         </label>
+        <p className="hint" style={{ marginTop: '0.45rem' }}>
+          Не пишется в localStorage. Сессия входа — в sessionStorage.
+        </p>
         <div style={{ marginTop: '0.75rem' }}>
           <Button
             onClick={() => {
               setToken(token)
-              setStatus('Токен сохранён')
+              setStatus('Токен в памяти')
             }}
             type="button"
           >
-            Сохранить токен
+            Применить токен
           </Button>
         </div>
       </div>

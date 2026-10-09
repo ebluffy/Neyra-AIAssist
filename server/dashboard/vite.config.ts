@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -13,5 +14,10 @@ export default defineConfig({
       '/docs': { target: apiTarget, changeOrigin: true },
       '/redoc': { target: apiTarget, changeOrigin: true },
     },
+  },
+  test: {
+    environment: 'jsdom',
+    globals: false,
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
   },
 })

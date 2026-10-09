@@ -18,7 +18,9 @@ Ops console for a personal AI agent. Dense, technical, calm — a control surfac
 
 ## Palette
 
-Source: `src/styles/tokens.css`.
+Source: `src/styles/tokens.css`. Theme via `data-theme="dark|light"` on `<html>` (UI preference in `localStorage`; never for tokens/secrets).
+
+### Dark (default)
 
 | Role | Token | Value |
 |------|-------|-------|
@@ -30,13 +32,25 @@ Source: `src/styles/tokens.css`.
 | Accent (brand reserve) | `--purple` | `#8b5cf6` — logo/legacy only, not chrome |
 | Status | `--emerald` / `--amber` / `--danger` | ok / warn / error |
 
+### Light
+
+Same roles; canvas `#f1f5f9`, surfaces white/`#e8eef6`, text `#0f172a`, accent cyan `#0891b2`. Toggle in sidebar / ⌘K.
+
 Radius scale: `--radius-sm` 6 / `--radius` 8 / `--radius-lg` 12.
 
 ## Typography
 
-- UI: **Fira Sans** (`--sans`). No Inter/Roboto.
+- UI: **Fira Sans** (`--sans`), local `@fontsource` — no Google Fonts CDN, no Inter/Roboto.
 - Code / IDs: **Fira Code** (`--mono`) + `tabular-nums` for live numbers.
 - Titles: solid `--text`, `text-wrap: balance`. No gradient fill on headings.
+- Document title: `«Экран · Neyra»`.
+
+## Shared components
+
+- `ErrorState` — message + optional `code` / `trace_id` copy + retry.
+- `DangerConfirmDialog` — type-to-confirm for destructive actions.
+- ⌘K command palette (`cmdk`) for nav + theme.
+- Toasts via `sonner`. Auth session: `sessionStorage` only; Settings API override is memory-only.
 
 ## Layout
 
@@ -54,9 +68,9 @@ Radius scale: `--radius-sm` 6 / `--radius` 8 / `--radius-lg` 12.
 
 ## Do / Don't
 
-**Do:** cyan for active/focus/primary CTA; solid surfaces; table + expand for deliveries; lifecycle badges.
+**Do:** cyan for active/focus/primary CTA; solid surfaces; table + expand for deliveries; lifecycle badges; Tailwind 3.4 tokens aligned to CSS vars.
 
-**Don't:** purple grid backgrounds, ambient orbs, glass on every card, gradient titles, glow on nav/logo/status dots, pill radius on every control, emoji rows, Inter stack.
+**Don't:** purple grid backgrounds, ambient orbs, glass on every card, gradient titles, glow on nav/logo/status dots, pill radius on every control, emoji rows, Inter stack, `neon-purple` / `grid-pattern` / `pulse-glow` utilities.
 
 ## References
 

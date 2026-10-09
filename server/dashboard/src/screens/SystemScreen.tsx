@@ -93,8 +93,10 @@ function Kv({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function SystemScreen() {
-  const [tab, setTab] = useState<Tab>('overview')
+type SystemScreenProps = { initialTab?: Tab }
+
+export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
+  const [tab, setTab] = useState<Tab>(initialTab)
   const [meta, setMeta] = useState<Record<string, unknown> | null>(null)
   const [health, setHealth] = useState<HealthData | null>(null)
   const [archives, setArchives] = useState<BackupArchive[]>([])
