@@ -263,7 +263,7 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
         }>
       >('/v1/backup/restore', {
         archive_name: name,
-        confirm: 'RESTORE',
+        confirm: name,
       })
       const safety =
         r.data.pre_restore_backup_name ||

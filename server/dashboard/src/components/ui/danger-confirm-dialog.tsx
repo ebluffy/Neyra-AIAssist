@@ -5,8 +5,8 @@ type Props = {
   open: boolean
   title: string
   description: string
-  /** Phrase the user must type to enable confirm. */
-  confirmPhrase: string
+  /** Phrase the user must type to enable confirm. Empty = click-to-confirm (unsaved nav). */
+  confirmPhrase?: string
   confirmLabel?: string
   cancelLabel?: string
   busy?: boolean
@@ -18,7 +18,7 @@ export function DangerConfirmDialog({
   open,
   title,
   description,
-  confirmPhrase,
+  confirmPhrase = '',
   confirmLabel = 'Подтвердить',
   cancelLabel = 'Отмена',
   busy = false,
@@ -30,7 +30,8 @@ export function DangerConfirmDialog({
   const inputRef = useRef<HTMLInputElement>(null)
   const titleId = useId()
   const descId = useId()
-  const match = typed.trim() === confirmPhrase
+  const needsPhrase = Boolean(confirmPhrase && confirmPhrase.length > 0)
+  const match = !needsPhrase || typed.trim() === confirmPhrase
 
   if (open !== wasOpen) {
     setWasOpen(open)
@@ -69,23 +70,25 @@ export function DangerConfirmDialog({
         <p className="page-sub" id={descId} style={{ marginBottom: '1rem' }}>
           {description}
         </p>
-        <label className="label">
-          <span className="label-text">
-            Введите <span className="inline-code">{confirmPhrase}</span>
-          </span>
-          <input
-            ref={inputRef}
-            autoComplete="off"
-            className="input input-mono"
-            disabled={busy}
-            onChange={(e) => setTyped(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && match && !busy) onConfirm()
-            }}
-            spellCheck={false}
-            value={typed}
-          />
-        </label>
+        {needsPhrase ? (
+          <label className="label">
+            <span className="label-text">
+              Введите <span className="inline-code">{confirmPhrase}</span>
+            </span>
+            <input
+              ref={inputRef}
+              autoComplete="off"
+              className="input input-mono"
+              disabled={busy}
+              onChange={(e) => setTyped(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && match && !busy) onConfirm()
+              }}
+              spellCheck={false}
+              value={typed}
+            />
+          </label>
+        ) : null}
         <div className="row" style={{ marginTop: '1rem', justifyContent: 'flex-end' }}>
           <Button disabled={busy} onClick={onCancel} type="button" variant="secondary">
             {cancelLabel}

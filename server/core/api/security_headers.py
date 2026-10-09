@@ -4,12 +4,26 @@ from __future__ import annotations
 
 from typing import Callable
 
+# Default CSP for API + SPA (no third-party scripts).
 CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: https://cdn.discordapp.com https://media.discordapp.net; "
     "font-src 'self'; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'"
+)
+
+# AR-65: Swagger UI / ReDoc load CDN scripts + inline bootstraps.
+CSP_DOCS = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "img-src 'self' data: https://fastapi.tiangolo.com https://cdn.jsdelivr.net; "
+    "font-src 'self' data: https://cdn.jsdelivr.net; "
     "connect-src 'self'; "
     "frame-ancestors 'none'; "
     "base-uri 'none'; "
@@ -33,7 +47,8 @@ class SecurityHeadersMiddleware:
         async def send_wrapper(message):  # type: ignore[no-untyped-def]
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
-                headers.setdefault("content-security-policy", CSP)
+                csp = CSP_DOCS if path in ("/docs", "/redoc", "/openapi.json") else CSP
+                headers.setdefault("content-security-policy", csp)
                 headers.setdefault("x-content-type-options", "nosniff")
                 headers.setdefault("referrer-policy", "no-referrer")
                 headers.setdefault("x-robots-tag", "noindex, nofollow")

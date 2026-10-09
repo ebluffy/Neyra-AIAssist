@@ -27,7 +27,7 @@ def redact_text(text: str, extra_secrets: Iterable[str] | None = None) -> str:
     if extra_secrets:
         for s in extra_secrets:
             s = (s or "").strip()
-            if len(s) >= 16 and s in out:
+            if len(s) >= 8 and s in out:
                 out = out.replace(s, "***")
     return out
 
@@ -66,13 +66,37 @@ class RedactionFilter(logging.Filter):
         return True
 
 
+def _attach_filter(target: logging.Filterer, filt: logging.Filter) -> None:
+    """Attach filter if an equivalent type is not already present."""
+    want = type(filt)
+    for existing in getattr(target, "filters", []) or []:
+        if isinstance(existing, want):
+            # Refresh extra secrets on redaction filter when reinstalling.
+            if isinstance(existing, RedactionFilter) and isinstance(filt, RedactionFilter):
+                existing._extra = list(filt._extra)
+            return
+    target.addFilter(filt)
+
+
 def install_log_filters(extra_secrets: Iterable[str] | None = None) -> None:
-    """Attach filters to root + uvicorn loggers (idempotent-ish)."""
+    """AR-63: attach filters to handlers (not only loggers) so child loggers are covered."""
     trace = TraceIdFilter()
     red = RedactionFilter(extra_secrets=extra_secrets)
-    for name in ("", "neyra", "neyra.api", "uvicorn", "uvicorn.access", "uvicorn.error"):
+
+    root = logging.getLogger()
+    # Ensure at least one handler exists so handler-level filters apply.
+    if not root.handlers:
+        logging.basicConfig(level=logging.INFO)
+
+    for h in list(root.handlers):
+        _attach_filter(h, trace)
+        _attach_filter(h, red)
+
+    for name in ("uvicorn", "uvicorn.access", "uvicorn.error", "neyra"):
         lg = logging.getLogger(name)
-        if not any(isinstance(f, TraceIdFilter) for f in lg.filters):
-            lg.addFilter(trace)
-        if not any(isinstance(f, RedactionFilter) for f in lg.filters):
-            lg.addFilter(red)
+        for h in list(lg.handlers):
+            _attach_filter(h, trace)
+            _attach_filter(h, red)
+        # Also on the logger itself for records that never bubble (propagate=False).
+        _attach_filter(lg, trace)
+        _attach_filter(lg, red)

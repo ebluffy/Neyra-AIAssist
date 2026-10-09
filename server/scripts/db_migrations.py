@@ -16,7 +16,12 @@ if str(SERVER_ROOT) not in sys.path:
 def _versions(db: Path) -> list[int]:
     if not db.is_file():
         return []
-    conn = sqlite3.connect(str(db))
+    # Read-only URI so status never mutates a live Hub DB (AR-67).
+    uri = f"file:{db.resolve().as_posix()}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return []
     try:
         try:
             rows = conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
@@ -41,8 +46,17 @@ def main() -> int:
         cfg = load_config(SERVER_ROOT)
     except Exception:
         cfg = {}
-    data_dir = Path(args.data_dir) if args.data_dir else resolve_data_dir(SERVER_ROOT, cfg if isinstance(cfg, dict) else {})
-    mem_db = data_dir / "memory" / "neyra_memory.db"
+    cfg_dict = cfg if isinstance(cfg, dict) else {}
+    data_dir = Path(args.data_dir) if args.data_dir else resolve_data_dir(SERVER_ROOT, cfg_dict)
+    # AR-67: honour memory.sqlite_path (same resolution as SqliteStore / backup).
+    mem_cfg = cfg_dict.get("memory") if isinstance(cfg_dict.get("memory"), dict) else {}
+    raw_sqlite = str(mem_cfg.get("sqlite_path") or "").strip()
+    if raw_sqlite:
+        mem_db = Path(raw_sqlite)
+        if not mem_db.is_absolute():
+            mem_db = (SERVER_ROOT / mem_db).resolve()
+    else:
+        mem_db = data_dir / "memory" / "neyra_memory.db"
     dash_db = data_dir / "dashboard_auth.sqlite"
 
     from core.memory.migrations import MIGRATIONS

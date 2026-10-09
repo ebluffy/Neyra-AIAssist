@@ -1,10 +1,12 @@
-# Allow intentional fake secrets used only in unit tests (redaction / error envelope).
-# History of this PR still contains an older test string that matched generic-api-key;
-# keep the path allowlisted so gitleaks does not fail the scan of the PR commit range.
+# Extend default rules — a bare config with no [[rules]] disables scanning (AR-57).
+[extend]
+useDefault = true
+
 title = "Neyra gitleaks"
 
+# Narrow allowlist: only intentional fake leak markers in one test file (history of 640c57e).
 [[allowlists]]
-description = "Pytest fixtures with deliberate leak markers (not real credentials)"
+description = "Intentional redaction fixture markers (not real credentials)"
 paths = [
-  '''server/tests/.*''',
+  '''(^|/)server/tests/test_errors_and_trace\.py$''',
 ]

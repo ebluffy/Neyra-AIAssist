@@ -50,6 +50,7 @@ from core.reflection import ReflectionEngine
 from core.runtime import HealthMonitor
 
 logger = logging.getLogger("neyra.api")
+# Filters re-installed in build_app with API tokens as extra_secrets (AR-63).
 install_log_filters()
 
 API_VERSION = "1.1.0"
@@ -885,35 +886,114 @@ class WebhookStore:
             self._state["deliveries"][did] = {**base, **row}
             await self._save()
 
-    async def get_inbound_dedup(self, key: str) -> dict[str, Any] | None:
-        """Return cached inbound response for an idempotency key, if any."""
+    _INBOUND_DEDUP_TTL_BODY_SEC = 600.0
+    _INBOUND_DEDUP_TTL_HEADER_SEC = 86400.0
+
+    def _inbound_ttl_seconds(self, key: str) -> float:
+        return (
+            self._INBOUND_DEDUP_TTL_HEADER_SEC
+            if str(key).startswith("hdr:")
+            else self._INBOUND_DEDUP_TTL_BODY_SEC
+        )
+
+    def _inbound_row_fresh(self, row: dict[str, Any], *, ttl_seconds: float) -> bool:
+        stored = str(row.get("stored_at") or "").strip()
+        if not stored:
+            return False
+        try:
+            ts = datetime.fromisoformat(stored.replace("Z", "+00:00"))
+            if ts.tzinfo is not None:
+                age = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
+            else:
+                age = (datetime.now() - ts).total_seconds()
+            return age <= ttl_seconds
+        except Exception:
+            return False
+
+    async def claim_inbound_dedup(self, key: str) -> tuple[str, dict[str, Any] | None]:
+        """AR-62: under lock — return (hit|inflight|proceed, payload?).
+
+        hit: fresh completed cache (no reply field).
+        inflight: another request is processing this key.
+        proceed: caller reserved the key and must finish/release.
+        """
         kid = str(key or "").strip()
         if not kid:
-            return None
+            return ("proceed", None)
+        ttl = self._inbound_ttl_seconds(kid)
         async with self._lock:
-            row = (self._state.get("inbound_dedup") or {}).get(kid)
-            return dict(row) if isinstance(row, dict) else None
+            store = self._state.setdefault("inbound_dedup", {})
+            if not isinstance(store, dict):
+                store = {}
+                self._state["inbound_dedup"] = store
+            row = store.get(kid)
+            if isinstance(row, dict):
+                status = str(row.get("status") or "done")
+                if status == "inflight" and self._inbound_row_fresh(row, ttl_seconds=ttl):
+                    return ("inflight", None)
+                if status == "done" and self._inbound_row_fresh(row, ttl_seconds=ttl):
+                    data = row.get("data")
+                    return ("hit", dict(data) if isinstance(data, dict) else {})
+                store.pop(kid, None)
+            store[kid] = {
+                "key": kid,
+                "status": "inflight",
+                "stored_at": _utc_now(),
+            }
+            while len(store) > self._INBOUND_DEDUP_MAX:
+                oldest = next(iter(store))
+                if oldest == kid:
+                    # Avoid evicting the key we just claimed.
+                    keys = list(store.keys())
+                    if len(keys) < 2:
+                        break
+                    oldest = keys[1] if keys[0] == kid else keys[0]
+                store.pop(oldest, None)
+            await self._save()
+            return ("proceed", None)
 
-    async def put_inbound_dedup(self, key: str, data: dict[str, Any]) -> None:
-        """Remember inbound result; keep at most _INBOUND_DEDUP_MAX keys (FIFO by inserted order)."""
+    async def finish_inbound_dedup(self, key: str, data: dict[str, Any] | None) -> None:
+        """Complete claim: store meta without reply, or drop on failure."""
         kid = str(key or "").strip()
         if not kid:
             return
         async with self._lock:
             store = self._state.setdefault("inbound_dedup", {})
             if not isinstance(store, dict):
-                store = {}
-                self._state["inbound_dedup"] = store
-            store[kid] = {
-                "key": kid,
-                "stored_at": _utc_now(),
-                "data": data,
-            }
-            while len(store) > self._INBOUND_DEDUP_MAX:
-                # dict preserves insertion order (Py3.7+)
-                oldest = next(iter(store))
-                store.pop(oldest, None)
+                return
+            if data is None:
+                store.pop(kid, None)
+            else:
+                # Never persist LLM reply / PII — only acceptance metadata.
+                safe = {
+                    "accepted": bool(data.get("accepted", True)),
+                    "provider": data.get("provider"),
+                    "endpoint_id": data.get("endpoint_id"),
+                    "deduplicated": False,
+                }
+                store[kid] = {
+                    "key": kid,
+                    "status": "done",
+                    "stored_at": _utc_now(),
+                    "data": safe,
+                }
             await self._save()
+
+    async def get_inbound_dedup(self, key: str) -> dict[str, Any] | None:
+        """Legacy helper — prefer claim_inbound_dedup."""
+        kid = str(key or "").strip()
+        if not kid:
+            return None
+        async with self._lock:
+            row = (self._state.get("inbound_dedup") or {}).get(kid)
+            if not isinstance(row, dict):
+                return None
+            if not self._inbound_row_fresh(row, ttl_seconds=self._inbound_ttl_seconds(kid)):
+                return None
+            return dict(row)
+
+    async def put_inbound_dedup(self, key: str, data: dict[str, Any]) -> None:
+        await self.finish_inbound_dedup(key, data)
 
     async def get_delivery(self, delivery_id: str) -> dict[str, Any] | None:
         async with self._lock:
@@ -1086,6 +1166,16 @@ def build_app(
         servers=openapi_servers,
     )
     root = Path(project_root).resolve() if project_root is not None else _project_root()
+    # AR-63: re-install redaction on handlers with live API secrets.
+    _api_for_redact = config.get("api") if isinstance(config.get("api"), dict) else {}
+    install_log_filters(
+        extra_secrets=[
+            str(_api_for_redact.get("token") or "").strip(),
+            str(_api_for_redact.get("viewer_token") or "").strip(),
+            str(_api_for_redact.get("maint_token") or "").strip(),
+            str(_api_for_redact.get("webhook_inbound_secret") or "").strip(),
+        ]
+    )
     if shared_agent is not None:
         agent = shared_agent
         if shared_monitor is None or shared_backup_manager is None:
@@ -2958,13 +3048,12 @@ def build_app(
         api_role: str = Depends(dep_viewer),
     ):
         trace_id = _trace_id(request)
-        src = (source or "system").strip().lower()
-        # B5: chat.log and api_audit.jsonl contain PII — maint+.
-        if src in ("chat", "audit") and not _role_at_least(api_role, "maint"):
-            raise ApiError("forbidden", "chat/audit logs require maint+", 403)
         path = plugin_ops_helpers.resolve_log_source(root, source)
         if path is None:
             raise ApiError("bad_request", "unknown log source", 400)
+        # AR-60 / B5: block by resolved path so aliases (chat.log, api_audit.jsonl) cannot bypass.
+        if path.name in {"chat.log", "api_audit.jsonl"} and not _role_at_least(api_role, "maint"):
+            raise ApiError("forbidden", "chat/audit logs require maint+", 403)
         text = await asyncio.to_thread(plugin_ops_helpers.tail_text_file, path, max_lines=tail)
         return {
             "ok": True,
@@ -3408,11 +3497,11 @@ def build_app(
     ):
         trace_id = _trace_id(request)
         archive_name = body.archive_name.strip()
-        # confirm must match archive_name (stricter than literal "RESTORE").
-        if body.confirm.strip() != archive_name and body.confirm.strip() != "RESTORE":
+        # AR-66: confirm must equal archive_name (no legacy "RESTORE").
+        if body.confirm.strip() != archive_name:
             raise ApiError(
                 "restore_confirm_required",
-                'Pass confirm equal to archive_name (or legacy "RESTORE")',
+                "Pass confirm equal to archive_name",
                 400,
             )
         _audit("backup_restore", trace_id, api_role, {"archive_name": archive_name})
@@ -3694,17 +3783,30 @@ def build_app(
                     headers={"x-trace-id": trace_id},
                 )
         dedup_key = _inbound_idempotency_key(provider, endpoint_id, request, raw_body)
-        cached = await webhook_store.get_inbound_dedup(dedup_key)
-        if cached and isinstance(cached.get("data"), dict):
-            replay = dict(cached["data"])
+        claim, cached = await webhook_store.claim_inbound_dedup(dedup_key)
+        if claim == "hit":
+            replay = dict(cached or {})
             replay["deduplicated"] = True
             return {"ok": True, "trace_id": trace_id, "data": replay}
+        if claim == "inflight":
+            return JSONResponse(
+                status_code=409,
+                content=_err_payload(trace_id, "dedup_in_flight", "Duplicate inbound delivery in progress"),
+                headers={"x-trace-id": trace_id},
+            )
         payload = _parse_inbound_json_body(raw_body)
         inbound_headers = {k: v for k, v in request.headers.items()}
-        out = await _handle_inbound_payload(provider, endpoint_id, payload, inbound_headers)
-        out_store = {**out, "deduplicated": False}
-        await webhook_store.put_inbound_dedup(dedup_key, out_store)
-        return {"ok": True, "trace_id": trace_id, "data": out_store}
+        try:
+            out = await _handle_inbound_payload(provider, endpoint_id, payload, inbound_headers)
+        except Exception:
+            await webhook_store.finish_inbound_dedup(dedup_key, None)
+            raise
+        await webhook_store.finish_inbound_dedup(dedup_key, out)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {**out, "deduplicated": False},
+        }
 
     @app.get("/v1/webhooks/in/{provider}/{endpoint_id}/health")
     async def v1_webhooks_inbound_health(
@@ -3730,6 +3832,11 @@ def build_app(
         authorization = websocket.headers.get("authorization")
         try:
             ws_role = _require_ws_auth(token, authorization, config, dash_auth)
+            # AR-61: anon only for console-local (same as REST B-1); behind proxy → 1008.
+            if ws_role == "anon":
+                peer = websocket.client.host if websocket.client else "unknown"
+                if not _is_console_local_client(peer=peer, headers=websocket.headers):
+                    raise ApiError("unauthorized", "Missing bearer token", 401)
             # Same bar as POST /v1/chat (admin): viewer must not mutate memory / spend LLM.
             if not _role_at_least(ws_role, "admin"):
                 raise ApiError("forbidden", "WebSocket chat requires admin (same as POST /v1/chat)", 403)
@@ -3839,6 +3946,11 @@ def build_app(
         authorization = websocket.headers.get("authorization")
         try:
             ws_role = _require_ws_auth(token, authorization, config, dash_auth)
+            # AR-61: anon only for console-local (same as REST B-1).
+            if ws_role == "anon":
+                peer = websocket.client.host if websocket.client else "unknown"
+                if not _is_console_local_client(peer=peer, headers=websocket.headers):
+                    raise ApiError("unauthorized", "Missing bearer token", 401)
             if not _role_at_least(ws_role, "viewer"):
                 raise ApiError("forbidden", "WebSocket audio requires viewer+", 403)
         except ApiError:

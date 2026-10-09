@@ -93,14 +93,18 @@ def stub_backup() -> MagicMock:
 
 @pytest.fixture()
 def app(api_config: dict[str, Any], stub_agent, stub_monitor, stub_backup, tmp_path: Path):
+    """AR-58: never use live SERVER_ROOT — WebhookStore/logs must stay under tmp_path."""
     from core.api.app import build_app
 
+    project_root = tmp_path / "project"
+    (project_root / "logs").mkdir(parents=True)
+    (project_root / "modules").mkdir(parents=True)
     return build_app(
         api_config,
         shared_agent=stub_agent,
         shared_monitor=stub_monitor,
         shared_backup_manager=stub_backup,
-        project_root=SERVER_ROOT,
+        project_root=project_root,
     )
 
 

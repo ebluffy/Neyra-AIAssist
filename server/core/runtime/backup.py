@@ -76,7 +76,19 @@ class BackupManager:
             else:
                 dst = tmp_root / "memory"
             if p.is_dir():
-                shutil.copytree(p, dst, dirs_exist_ok=True)
+                # AR-59: never copy live Hub .db / -wal / -shm into memory/ —
+                # sqlite backup API overlay is the authoritative consistent snapshot.
+                basenames: set[str] = set()
+                for sp in self._sqlite_paths():
+                    basenames.add(sp.name)
+                    if not sp.name.endswith(("-wal", "-shm")):
+                        basenames.add(sp.name + "-wal")
+                        basenames.add(sp.name + "-shm")
+
+                def _ignore(_dir: str, names: list[str]) -> set[str]:
+                    return {n for n in names if n in basenames}
+
+                shutil.copytree(p, dst, dirs_exist_ok=True, ignore=_ignore)
             else:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(p, dst)
@@ -244,6 +256,19 @@ class BackupManager:
             for p in db_only.iterdir():
                 if p.is_file():
                     shutil.copy2(p, staging_mem / p.name)
+                    # AR-59: when overlay brings a consistent .db without sidecars,
+                    # drop any stale -wal/-shm left from the full memory/ tree.
+                    if p.suffix == ".db":
+                        for side in (
+                            staging_mem / (p.name + "-wal"),
+                            staging_mem / (p.name + "-shm"),
+                        ):
+                            overlay_side = db_only / side.name
+                            if side.exists() and not overlay_side.is_file():
+                                try:
+                                    side.unlink()
+                                except OSError:
+                                    pass
                 elif p.is_dir() and not has_full:
                     dest = staging_mem / p.name
                     if dest.exists():

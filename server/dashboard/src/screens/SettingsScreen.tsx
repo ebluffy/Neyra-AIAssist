@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { KeyRound, Loader2, SlidersHorizontal, Sparkles } from 'lucide-react'
 import { apiGet, apiPost, getStoredApiToken, setToken } from '../api'
 import type { ApiEnvelope } from '../api'
 import { Button } from '../components/ui/button'
+import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
@@ -143,6 +144,25 @@ export function SettingsScreen() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [softOpen, setSoftOpen] = useState(false)
+  const [softTitle, setSoftTitle] = useState('')
+  const [softDescription, setSoftDescription] = useState('')
+  const softResolveRef = useRef<((ok: boolean) => void) | null>(null)
+
+  function softConfirm(title: string, description: string): Promise<boolean> {
+    setSoftTitle(title)
+    setSoftDescription(description)
+    setSoftOpen(true)
+    return new Promise((resolve) => {
+      softResolveRef.current = resolve
+    })
+  }
+
+  function finishSoft(ok: boolean) {
+    setSoftOpen(false)
+    softResolveRef.current?.(ok)
+    softResolveRef.current = null
+  }
 
   const allKeys = useMemo(() => TABS.flatMap((t) => t.fields.map((f) => f.key)), [])
 
@@ -217,10 +237,17 @@ export function SettingsScreen() {
     }
   }, [anyDirty])
 
-  function selectTab(id: string) {
+  async function selectTab(id: string) {
     if (id === tab) return
     if (dirtyKeys.length > 0) {
-      if (!window.confirm('На этой вкладке есть несохранённые изменения. Уйти без применения?')) return
+      if (
+        !(await softConfirm(
+          'Несохранённые изменения',
+          'На этой вкладке есть несохранённые изменения. Уйти без применения?',
+        ))
+      ) {
+        return
+      }
     }
     setTab(id)
     setStatus('')
@@ -367,7 +394,7 @@ export function SettingsScreen() {
             <Button
               key={t.id}
               aria-selected={tab === t.id}
-              onClick={() => selectTab(t.id)}
+              onClick={() => void selectTab(t.id)}
               role="tab"
               size="sm"
               type="button"
@@ -400,6 +427,17 @@ export function SettingsScreen() {
         {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
         {status && <InlineFeedback tone="success">{status}</InlineFeedback>}
       </div>
+
+      <DangerConfirmDialog
+        busy={false}
+        confirmLabel="Уйти"
+        confirmPhrase=""
+        description={softDescription}
+        onCancel={() => finishSoft(false)}
+        onConfirm={() => finishSoft(true)}
+        open={softOpen}
+        title={softTitle}
+      />
     </div>
   )
 }
