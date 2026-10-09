@@ -214,7 +214,8 @@ docs/
 
 ### Веб-панель v2 и hardening API
 
-Этапы основного PR (T0–D8). Чекбоксы ставятся только по факту merge/приёмки.
+Скоуп текущего PR hardening: **T0–B5 + D0**. Чекбоксы ставятся только по факту merge/приёмки.
+**D1–D8** (shell/Playwright, экраны, a11y/чеклисты) — отдельный follow-up PR; не входят в merge-gate этого PR.
 
 - [ ] **T0** — `server/tests/` + pytest, `requirements-dev.txt`, CI jobs pytest/dashboard/secrets, `typecheck`, README ключ ≥32
 - [ ] **B1** — ошибки без `str(e)`, `trace_id`, redaction, anon за прокси, security headers, docs gate
@@ -223,9 +224,9 @@ docs/
 - [ ] **B4** — sqlite backup API, двухфазный restore, drill, тесты на реальной SQLite
 - [ ] **B5** — роли viewer без PII, rotate/logout-all, PBKDF2 600k, матрица ролей
 - [ ] **D0** — Tailwind/токены/шрифты/shadcn/react-query/api client/vitest/`/__ui`
-- [ ] **D1** — shell, ⌘K, theme, 404, robots, favicons, Playwright smoke
-- [ ] **D2–D7** — экраны Status…Settings по DESIGN
-- [ ] **D8** — a11y/polish, react-doctor, чеклисты 5.1/5.2
+- [ ] **D1** *(follow-up)* — shell, ⌘K, theme, 404, robots, favicons, Playwright smoke
+- [ ] **D2–D7** *(follow-up)* — экраны Status…Settings по DESIGN
+- [ ] **D8** *(follow-up)* — a11y/polish, react-doctor, чеклисты 5.1/5.2
 
 ### Готово, когда (3a)
 

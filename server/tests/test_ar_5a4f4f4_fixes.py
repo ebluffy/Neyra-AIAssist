@@ -45,13 +45,56 @@ def test_inbound_dedup_ttl_allows_replay(client, stub_agent, monkeypatch):
     assert stub_agent.chat.await_count == 1
 
     # Expire all inbound dedup rows.
-    store = None
     # Reach store via a fresh claim with TTL=0 by patching the class constant.
     monkeypatch.setattr(api_mod.WebhookStore, "_INBOUND_DEDUP_TTL_BODY_SEC", 0.0)
     r3 = client.post(path, json=body)
     assert r3.status_code == 200
     assert r3.json()["data"].get("deduplicated") is False
     assert stub_agent.chat.await_count == 2
+
+
+def test_inbound_cancel_clears_inflight_for_retry(client, stub_agent, tmp_path):
+    """AR-62: CancelledError releases inflight; provider retry gets 200."""
+    import asyncio
+    import concurrent.futures
+    import json
+    from unittest.mock import AsyncMock
+
+    from core.api.app import WebhookStore
+
+    ep = f"ep-{uuid.uuid4().hex[:8]}"
+    path = f"/v1/webhooks/in/testprov/{ep}"
+    body = {"message": f"cancel-{uuid.uuid4().hex}", "username": "u"}
+    headers = {"Idempotency-Key": f"ik-{uuid.uuid4().hex}"}
+
+    stub_agent.chat = AsyncMock(side_effect=asyncio.CancelledError())
+    cancelled = False
+    try:
+        client.post(path, json=body, headers=headers)
+    except (asyncio.CancelledError, concurrent.futures.CancelledError):
+        cancelled = True
+    assert cancelled, "first request must surface cancel"
+
+    # Retry after cancel must not be stuck on 409 inflight.
+    stub_agent.chat = AsyncMock(return_value={"reply": "ok-after-cancel"})
+    r2 = client.post(path, json=body, headers=headers)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["data"].get("deduplicated") is False
+    assert stub_agent.chat.await_count == 1
+
+    # Restart clears leftover inflight rows (disk).
+    state_path = tmp_path / "project" / "logs" / "webhooks_state.json"
+    raw = state_path.read_text(encoding="utf-8") if state_path.is_file() else "{}"
+    data = json.loads(raw) if raw.strip() else {}
+    data.setdefault("inbound_dedup", {})["hdr:stuck"] = {
+        "key": "hdr:stuck",
+        "status": "inflight",
+        "stored_at": "2000-01-01T00:00:00+00:00",
+    }
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(data), encoding="utf-8")
+    ws = WebhookStore(tmp_path / "project")
+    assert "hdr:stuck" not in (ws._state.get("inbound_dedup") or {})
 
 
 def test_restore_rejects_legacy_restore_literal(client, auth_headers, stub_backup):
@@ -113,8 +156,8 @@ def test_person_accounts_indexes_explain(tmp_path: Path):
 
 
 def test_backup_restore_real_sqlite_integrity(tmp_path: Path, monkeypatch):
-    """T-B4 / AR-59: WAL live DB → backup → restore staging has integrity_check ok."""
-    import os
+    """T-B4 / AR-69: keep WAL open during backup; archive must not ship -wal; beta present."""
+    import zipfile
 
     from core.runtime.backup import BackupManager
 
@@ -122,17 +165,17 @@ def test_backup_restore_real_sqlite_integrity(tmp_path: Path, monkeypatch):
     mem = base / "data" / "memory"
     mem.mkdir(parents=True)
     db = mem / "neyra_memory.db"
+    wal = Path(str(db) + "-wal")
     conn = sqlite3.connect(str(db))
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA wal_autocheckpoint=0")
     conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
     conn.execute("INSERT INTO t(v) VALUES ('alpha')")
     conn.commit()
-    # Leave uncheckpointed WAL content.
-    conn.execute("INSERT INTO t(v) VALUES ('beta-unck')")
-    # Do not commit — still in WAL after another connection? Commit so WAL has pages.
+    # beta stays only in WAL while connection stays open.
+    conn.execute("INSERT INTO t(v) VALUES ('beta')")
     conn.commit()
-    conn.close()
-    assert (mem / "neyra_memory.db-wal").exists() or True  # wal may exist
+    assert wal.exists(), "WAL must exist while connection is open"
 
     backups = base / "backups"
     backups.mkdir()
@@ -147,29 +190,31 @@ def test_backup_restore_real_sqlite_integrity(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(base)
     try:
         bak = mgr.run_backup("test")
-        name = Path(str(bak["archive"])).name
-        # Corrupt live wal marker to prove we don't restore it over snapshot.
-        wal = Path(str(db) + "-wal")
-        if wal.exists():
-            wal.write_bytes(b"STALE" * 20)
+        archive = Path(str(bak["archive"]))
+        name = archive.name
+        with zipfile.ZipFile(archive) as zf:
+            names = zf.namelist()
+            assert not any(n.endswith("neyra_memory.db-wal") for n in names), names
+            assert any(n.endswith("neyra_memory.db") for n in names), names
+
+        # Corrupt live WAL after backup — must not land in staging.
+        wal.write_bytes(b"STALE" * 20)
         pending = mgr.prepare_restore(name)
         assert pending.get("pending")
-        # Inspect staging: no stale wal next to overlaid db when API snapshot used.
         staged = base / ".neyra_pending_restore" / "memory"
         assert staged.is_dir()
         db_staged = staged / "neyra_memory.db"
         assert db_staged.is_file()
-        # Stale wal from memory/ copy must not sit beside consistent snapshot.
-        assert not (staged / "neyra_memory.db-wal").exists() or (
-            staged / "neyra_memory.db-wal"
-        ).read_bytes()[:5] != b"STALE"
-        c2 = sqlite3.connect(str(db_staged))
+        assert not (staged / "neyra_memory.db-wal").exists()
+        c2 = sqlite3.connect(f"file:{db_staged}?mode=ro", uri=True)
         try:
             row = c2.execute("PRAGMA integrity_check").fetchone()
             assert row and row[0] == "ok"
             vals = [r[0] for r in c2.execute("SELECT v FROM t ORDER BY id").fetchall()]
             assert "alpha" in vals
+            assert "beta" in vals
         finally:
             c2.close()
     finally:
+        conn.close()
         monkeypatch.chdir(cwd)

@@ -4,15 +4,10 @@ title = "Neyra gitleaks"
 [extend]
 useDefault = true
 
-# Historical fake token from 640c57e (fixed in tip). Keep allowlist narrow.
-[[allowlists]]
-id = "test-errors-and-trace-fixture"
-description = "Intentional redaction fixture markers (not real credentials)"
-regexTarget = "match"
-regexes = [
-  '''sk-leak123456789012''',
-  '''SECRET_PATH_/tmp/leak_and_token=''',
-]
+# gitleaks 8.24.3 (CI) understands singular [allowlist], not [[allowlists]] (AR-68).
+# Also covered by .gitleaksignore fingerprint for the historical 640c57e finding.
+[allowlist]
+description = "Intentional redaction fixture file (not real credentials)"
 paths = [
   '''server/tests/test_errors_and_trace\.py''',
 ]

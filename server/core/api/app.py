@@ -703,6 +703,13 @@ class WebhookStore:
                     if did in (raw.get("deliveries") or {}):
                         raw["deliveries"][did] = {**raw["deliveries"][did], **row}
                     changed = True
+            # AR-62: after restart nobody owns inflight claims — drop them.
+            dedup = raw.get("inbound_dedup") or {}
+            if isinstance(dedup, dict):
+                for kid, row in list(dedup.items()):
+                    if isinstance(row, dict) and str(row.get("status") or "") == "inflight":
+                        dedup.pop(kid, None)
+                        changed = True
             if changed:
                 try:
                     self.path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -888,6 +895,8 @@ class WebhookStore:
 
     _INBOUND_DEDUP_TTL_BODY_SEC = 600.0
     _INBOUND_DEDUP_TTL_HEADER_SEC = 86400.0
+    # AR-62: stuck inflight must expire quickly (retries after cancel/crash).
+    _INBOUND_DEDUP_TTL_INFLIGHT_SEC = 120.0
 
     def _inbound_ttl_seconds(self, key: str) -> float:
         return (
@@ -929,7 +938,9 @@ class WebhookStore:
             row = store.get(kid)
             if isinstance(row, dict):
                 status = str(row.get("status") or "done")
-                if status == "inflight" and self._inbound_row_fresh(row, ttl_seconds=ttl):
+                if status == "inflight" and self._inbound_row_fresh(
+                    row, ttl_seconds=self._INBOUND_DEDUP_TTL_INFLIGHT_SEC
+                ):
                     return ("inflight", None)
                 if status == "done" and self._inbound_row_fresh(row, ttl_seconds=ttl):
                     data = row.get("data")
@@ -3796,17 +3807,23 @@ def build_app(
             )
         payload = _parse_inbound_json_body(raw_body)
         inbound_headers = {k: v for k, v in request.headers.items()}
+        # AR-62: always release inflight (incl. CancelledError / BaseException).
+        finished = False
         try:
             out = await _handle_inbound_payload(provider, endpoint_id, payload, inbound_headers)
-        except Exception:
-            await webhook_store.finish_inbound_dedup(dedup_key, None)
-            raise
-        await webhook_store.finish_inbound_dedup(dedup_key, out)
-        return {
-            "ok": True,
-            "trace_id": trace_id,
-            "data": {**out, "deduplicated": False},
-        }
+            await webhook_store.finish_inbound_dedup(dedup_key, out)
+            finished = True
+            return {
+                "ok": True,
+                "trace_id": trace_id,
+                "data": {**out, "deduplicated": False},
+            }
+        finally:
+            if not finished:
+                try:
+                    await webhook_store.finish_inbound_dedup(dedup_key, None)
+                except Exception:
+                    logger.exception("inbound dedup release failed | key=%s", dedup_key)
 
     @app.get("/v1/webhooks/in/{provider}/{endpoint_id}/health")
     async def v1_webhooks_inbound_health(
