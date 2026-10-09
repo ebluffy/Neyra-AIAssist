@@ -411,6 +411,21 @@ async def _rate_limit_allow(bucket_key: str, max_per_minute: int) -> bool:
         return True
 
 
+def _inbound_idempotency_key(
+    provider: str,
+    endpoint_id: str,
+    request: Request,
+    raw_body: bytes,
+) -> str:
+    """Stable key for inbound webhook dedup (header preferred, else body hash)."""
+    for header in ("idempotency-key", "x-idempotency-key", "x-neyra-delivery-id"):
+        raw = request.headers.get(header)
+        if raw and str(raw).strip():
+            return f"hdr:{provider}:{endpoint_id}:{str(raw).strip()}"
+    digest = hashlib.sha256(raw_body or b"").hexdigest()
+    return f"body:{provider}:{endpoint_id}:{digest}"
+
+
 def _parse_inbound_json_body(raw: bytes) -> dict[str, Any]:
     if not raw:
         return {}
@@ -664,16 +679,19 @@ class WebhookStore:
         self._lock = asyncio.Lock()
         self._state = self._load()
 
+    _INBOUND_DEDUP_MAX = 500
+
     def _load(self) -> dict[str, Any]:
         if not self.path.is_file():
-            return {"routes": {}, "deliveries": {}, "dlq": {}}
+            return {"routes": {}, "deliveries": {}, "dlq": {}, "inbound_dedup": {}}
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
-                return {"routes": {}, "deliveries": {}, "dlq": {}}
+                return {"routes": {}, "deliveries": {}, "dlq": {}, "inbound_dedup": {}}
             raw.setdefault("routes", {})
             raw.setdefault("deliveries", {})
             raw.setdefault("dlq", {})
+            raw.setdefault("inbound_dedup", {})
             # Stuck "retrying" from a crash mid-retry → back to failed (AR-41).
             changed = False
             for did, row in list((raw.get("dlq") or {}).items()):
@@ -691,7 +709,7 @@ class WebhookStore:
                     pass
             return raw
         except Exception:
-            return {"routes": {}, "deliveries": {}, "dlq": {}}
+            return {"routes": {}, "deliveries": {}, "dlq": {}, "inbound_dedup": {}}
 
     async def _save(self) -> None:
         text = json.dumps(self._state, ensure_ascii=False, indent=2)
@@ -865,6 +883,36 @@ class WebhookStore:
             self._state["dlq"][did] = row
             base = self._state["deliveries"].get(did) if isinstance(self._state["deliveries"].get(did), dict) else {}
             self._state["deliveries"][did] = {**base, **row}
+            await self._save()
+
+    async def get_inbound_dedup(self, key: str) -> dict[str, Any] | None:
+        """Return cached inbound response for an idempotency key, if any."""
+        kid = str(key or "").strip()
+        if not kid:
+            return None
+        async with self._lock:
+            row = (self._state.get("inbound_dedup") or {}).get(kid)
+            return dict(row) if isinstance(row, dict) else None
+
+    async def put_inbound_dedup(self, key: str, data: dict[str, Any]) -> None:
+        """Remember inbound result; keep at most _INBOUND_DEDUP_MAX keys (FIFO by inserted order)."""
+        kid = str(key or "").strip()
+        if not kid:
+            return
+        async with self._lock:
+            store = self._state.setdefault("inbound_dedup", {})
+            if not isinstance(store, dict):
+                store = {}
+                self._state["inbound_dedup"] = store
+            store[kid] = {
+                "key": kid,
+                "stored_at": _utc_now(),
+                "data": data,
+            }
+            while len(store) > self._INBOUND_DEDUP_MAX:
+                # dict preserves insertion order (Py3.7+)
+                oldest = next(iter(store))
+                store.pop(oldest, None)
             await self._save()
 
     async def get_delivery(self, delivery_id: str) -> dict[str, Any] | None:
@@ -1056,7 +1104,8 @@ def build_app(
     ws_idle_timeout = max(5, int(ws_cfg.get("idle_timeout_seconds", 60)))
     ws_ping_interval = max(2, int(ws_cfg.get("ping_interval_seconds", 20)))
     ws_close_grace = max(1, int(ws_cfg.get("close_grace_seconds", 5)))
-    webhook_store = WebhookStore(root)
+    # Persist under data_dir so tests/tmp and production data stay isolated from repo logs/.
+    webhook_store = WebhookStore(resolve_data_dir(root, config))
     plugin_ops: dict[str, dict[str, Any]] = {}
     dash_auth = DashboardAuthStore(resolve_data_dir(root, config) / "dashboard_auth.sqlite")
     app.state.dashboard_auth = dash_auth
@@ -3645,10 +3694,18 @@ def build_app(
                     content=_err_payload(trace_id, "invalid_signature", "Invalid or missing X-Neyra-Signature"),
                     headers={"x-trace-id": trace_id},
                 )
+        dedup_key = _inbound_idempotency_key(provider, endpoint_id, request, raw_body)
+        cached = await webhook_store.get_inbound_dedup(dedup_key)
+        if cached and isinstance(cached.get("data"), dict):
+            replay = dict(cached["data"])
+            replay["deduplicated"] = True
+            return {"ok": True, "trace_id": trace_id, "data": replay}
         payload = _parse_inbound_json_body(raw_body)
         inbound_headers = {k: v for k, v in request.headers.items()}
         out = await _handle_inbound_payload(provider, endpoint_id, payload, inbound_headers)
-        return {"ok": True, "trace_id": trace_id, "data": out}
+        out_store = {**out, "deduplicated": False}
+        await webhook_store.put_inbound_dedup(dedup_key, out_store)
+        return {"ok": True, "trace_id": trace_id, "data": out_store}
 
     @app.get("/v1/webhooks/in/{provider}/{endpoint_id}/health")
     async def v1_webhooks_inbound_health(

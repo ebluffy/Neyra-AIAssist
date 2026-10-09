@@ -18,6 +18,7 @@ import type { ApiEnvelope, PluginFileRow, PluginLogSource, PluginRow } from '../
 import { LogViewer } from '../components/LogViewer'
 import type { LogSource } from '../components/LogViewer'
 import { Button } from '../components/ui/button'
+import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
@@ -90,6 +91,7 @@ export function ModulesScreen() {
   const [uploading, setUploading] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [apiLogSources, setApiLogSources] = useState<LogSource[] | null>(null)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const uploadRef = useRef<HTMLInputElement>(null)
 
   // Configs tab
@@ -536,10 +538,12 @@ export function ModulesScreen() {
 
   async function deletePlugin() {
     if (!selected || isProtected || restartBusy) return
-    const warn = isResident
-      ? ' Это resident-модуль — ядро будет перезапущено.'
-      : ''
-    if (!window.confirm(`Удалить модуль «${selected}» вместе с его папкой? Действие необратимо.${warn}`)) return
+    setDeleteConfirmOpen(true)
+  }
+
+  async function doDeletePlugin() {
+    if (!selected || isProtected || restartBusy) return
+    setDeleteConfirmOpen(false)
     setError(null)
     setRestartBusy(true)
     setStatus('Удаляю…')
@@ -859,6 +863,23 @@ export function ModulesScreen() {
           )}
         </div>
       </div>
+
+      <DangerConfirmDialog
+        busy={restartBusy}
+        confirmLabel="Удалить"
+        confirmPhrase="УДАЛИТЬ"
+        description={
+          selected
+            ? `Удалить модуль «${selected}» вместе с папкой. Необратимо.${
+                isResident ? ' Resident-модуль — ядро будет перезапущено.' : ''
+              }`
+            : ''
+        }
+        onCancel={() => !restartBusy && setDeleteConfirmOpen(false)}
+        onConfirm={() => void doDeletePlugin()}
+        open={deleteConfirmOpen}
+        title="Удалить модуль?"
+      />
     </div>
   )
 }

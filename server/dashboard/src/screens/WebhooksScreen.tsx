@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, FlaskConical, KeyRound, RefreshCw, RotateCcw
 import { apiDelete, apiGet, apiPatch, apiPost } from '../api'
 import type { ApiEnvelope, WebhookDelivery, WebhookEventTypes, WebhookRoute } from '../api'
 import { Button } from '../components/ui/button'
+import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
@@ -270,6 +271,10 @@ export function WebhooksScreen() {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [retryAllBusy, setRetryAllBusy] = useState(false)
+  const [danger, setDanger] = useState<
+    null | { kind: 'delete-route'; route: WebhookRoute } | { kind: 'retry-all-dlq' }
+  >(null)
+  const [dangerBusy, setDangerBusy] = useState(false)
 
   const group = useMemo(
     () => (groupUrl ? routes.filter((r) => r.target_url === groupUrl) : []),
@@ -479,7 +484,11 @@ export function WebhooksScreen() {
   }
 
   async function deleteRoute(route: WebhookRoute) {
-    if (!window.confirm(`Удалить маршрут ${route.route_id} (${route.event_type})?`)) return
+    setDanger({ kind: 'delete-route', route })
+  }
+
+  async function doDeleteRoute(route: WebhookRoute) {
+    setDangerBusy(true)
     setError(null)
     try {
       await apiDelete<ApiEnvelope<unknown>>(`/v1/webhooks/out/routes/${route.route_id}`)
@@ -491,8 +500,12 @@ export function WebhooksScreen() {
         })
       }
       await load()
+      setDanger(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+      setDanger(null)
+    } finally {
+      setDangerBusy(false)
     }
   }
 
@@ -508,7 +521,11 @@ export function WebhooksScreen() {
 
   async function retryAllDlq() {
     if (dlq.length === 0) return
-    if (!window.confirm(`Повторить доставку всех ${dlq.length} записей из очереди ошибок?`)) return
+    setDanger({ kind: 'retry-all-dlq' })
+  }
+
+  async function doRetryAllDlq() {
+    setDanger(null)
     setError(null)
     setRetryAllBusy(true)
     try {
@@ -845,6 +862,26 @@ export function WebhooksScreen() {
           </div>
         </>
       )}
+
+      <DangerConfirmDialog
+        busy={dangerBusy || retryAllBusy}
+        confirmLabel={danger?.kind === 'retry-all-dlq' ? 'Повторить' : 'Удалить'}
+        confirmPhrase={danger?.kind === 'retry-all-dlq' ? 'ПОВТОРИТЬ' : 'УДАЛИТЬ'}
+        description={
+          danger?.kind === 'delete-route'
+            ? `Удалить маршрут ${danger.route.route_id} (${danger.route.event_type})?`
+            : danger?.kind === 'retry-all-dlq'
+              ? `Повторить доставку всех ${dlq.length} записей из очереди ошибок?`
+              : ''
+        }
+        onCancel={() => !(dangerBusy || retryAllBusy) && setDanger(null)}
+        onConfirm={() => {
+          if (danger?.kind === 'delete-route') void doDeleteRoute(danger.route)
+          else if (danger?.kind === 'retry-all-dlq') void doRetryAllDlq()
+        }}
+        open={danger != null}
+        title={danger?.kind === 'retry-all-dlq' ? 'Повторить очередь ошибок?' : 'Удалить маршрут?'}
+      />
     </div>
   )
 }

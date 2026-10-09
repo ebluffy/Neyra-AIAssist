@@ -6,11 +6,14 @@ import type { ApiEnvelope, BackupArchive, HealthData } from '../api'
 import { LogViewer } from '../components/LogViewer'
 import type { LogSource } from '../components/LogViewer'
 import { Button } from '../components/ui/button'
+import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
 import { waitForCoreRestart } from '../lib/wait-for-core-restart'
+
+type SystemDanger = { kind: 'restart' } | { kind: 'restore'; name: string }
 
 type Tab = 'overview' | 'health' | 'logs' | 'backup'
 
@@ -115,6 +118,7 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
   const [healthLoading, setHealthLoading] = useState(false)
   const [backupLoading, setBackupLoading] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
+  const [danger, setDanger] = useState<SystemDanger | null>(null)
 
   const loadHealth = useCallback(async () => {
     setHealthLoading(true)
@@ -205,13 +209,11 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
   }
 
   async function softRestart() {
-    if (
-      !window.confirm(
-        'Мягкий рестарт всего процесса Neyra? Resident-модули (Discord) и Lavalink поднимутся заново. Дашборд на несколько секунд отвалится.',
-      )
-    ) {
-      return
-    }
+    setDanger({ kind: 'restart' })
+  }
+
+  async function doSoftRestart() {
+    setDanger(null)
     setError(null)
     setStatus('Мягкий рестарт… ждём подъёма API')
     setRestartBusy(true)
@@ -226,7 +228,6 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
   }
 
   async function runBackup() {
-    if (!window.confirm('Запустить бэкап сейчас?')) return
     setBusy(true)
     setStatus('')
     setError(null)
@@ -242,17 +243,11 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
   }
 
   async function restoreBackup(name: string) {
-    if (
-      !window.confirm(
-        `ВОССТАНОВИТЬ из «${name}»?\n\nПеред заменой будет создан страховочный бэкап текущего состояния (pre_restore). Подмена памяти применится при перезапуске ядра.`,
-      )
-    ) {
-      return
-    }
-    if (window.prompt(`Для подтверждения введи имя архива:\n${name}`) !== name) {
-      setStatus('Восстановление отменено: имя архива не совпало.')
-      return
-    }
+    setDanger({ kind: 'restore', name })
+  }
+
+  async function doRestoreBackup(name: string) {
+    setDanger(null)
     setBusy(true)
     setStatus('Готовлю восстановление…')
     setError(null)
@@ -601,6 +596,24 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
           </div>
         )}
       </div>
+
+      <DangerConfirmDialog
+        busy={restartBusy || busy}
+        confirmLabel={danger?.kind === 'restore' ? 'Восстановить' : 'Перезапустить'}
+        confirmPhrase={danger?.kind === 'restore' ? danger.name : 'РЕСТАРТ'}
+        description={
+          danger?.kind === 'restore'
+            ? `Перед заменой будет создан страховочный бэкап (pre_restore). Подмена памяти применится при перезапуске ядра.\nАрхив: ${danger.name}`
+            : 'Мягкий рестарт всего процесса Neyra. Resident-модули (Discord) и Lavalink поднимутся заново. Дашборд на несколько секунд отвалится.'
+        }
+        onCancel={() => !(restartBusy || busy) && setDanger(null)}
+        onConfirm={() => {
+          if (danger?.kind === 'restore') void doRestoreBackup(danger.name)
+          else if (danger?.kind === 'restart') void doSoftRestart()
+        }}
+        open={danger != null}
+        title={danger?.kind === 'restore' ? 'Восстановить из бэкапа?' : 'Перезапустить Neyra?'}
+      />
     </div>
   )
 }

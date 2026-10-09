@@ -46,7 +46,8 @@ def test_unhandled_5xx_hides_exception_text(app, auth_headers, monkeypatch):
     import core.api.app as api_mod
 
     def boom(_cfg):
-        raise RuntimeError("SECRET_PATH_/tmp/leak_and_token=sk-leak123456789012")
+        # Deliberately awkward text for redaction checks — avoid gitleaks generic-api-key shape.
+        raise RuntimeError("LEAK_MARKER path=/tmp/hidden detail=should-not-echo-xyz")
 
     monkeypatch.setattr(api_mod, "api_public_root", boom)
     # raise_server_exceptions=False: assert the JSON envelope, not TestClient re-raise.
@@ -56,8 +57,9 @@ def test_unhandled_5xx_hides_exception_text(app, auth_headers, monkeypatch):
     body = r.json()
     assert body["error"]["code"] == "internal_error"
     msg = body["error"]["message"]
-    assert "SECRET_PATH" not in msg
-    assert "sk-leak" not in msg
+    assert "LEAK_MARKER" not in msg
+    assert "should-not-echo" not in msg
+    assert "/tmp/hidden" not in msg
     assert "Внутренняя ошибка" in msg or "internal" in msg.lower() or "trace" in msg.lower()
 
 

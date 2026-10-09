@@ -81,29 +81,41 @@ class BackupManager:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(p, dst)
         # Ensure Hub SQLite via sqlite3 backup API (consistent snapshot; not copy2 of live WAL).
+        # Never open -wal/-shm as databases — connect/close can delete sidecar files.
+        # Use mode=ro so a failed probe cannot mutate live WAL.
         mem_dir = tmp_root / "data" / "memory"
         mem_dir.mkdir(parents=True, exist_ok=True)
         copied_db: list[str] = []
         import sqlite3
 
         for p in self._sqlite_paths():
-            if p.exists() and p.is_file():
-                dst = mem_dir / p.name
+            if not (p.exists() and p.is_file()):
+                continue
+            if p.name.endswith("-wal") or p.name.endswith("-shm"):
+                continue
+            dst = mem_dir / p.name
+            try:
+                uri = f"file:{p.resolve().as_posix()}?mode=ro"
+                src_conn = sqlite3.connect(uri, uri=True, timeout=30)
                 try:
-                    src_conn = sqlite3.connect(str(p), timeout=30)
+                    dst_conn = sqlite3.connect(str(dst))
                     try:
-                        dst_conn = sqlite3.connect(str(dst))
-                        try:
-                            src_conn.backup(dst_conn)
-                        finally:
-                            dst_conn.close()
+                        src_conn.backup(dst_conn)
                     finally:
-                        src_conn.close()
-                    copied_db.append(p.name)
-                except Exception as e:
-                    logger.warning("sqlite backup API failed for %s (%s); falling back to copy2", p.name, e)
-                    shutil.copy2(p, dst)
-                    copied_db.append(p.name)
+                        dst_conn.close()
+                finally:
+                    src_conn.close()
+                copied_db.append(p.name)
+                # API snapshot is consistent — do not copy live -wal/-shm.
+            except Exception as e:
+                logger.warning("sqlite backup API failed for %s (%s); falling back to copy2", p.name, e)
+                shutil.copy2(p, dst)
+                copied_db.append(p.name)
+                for suffix in ("-wal", "-shm"):
+                    side = Path(str(p) + suffix)
+                    if side.exists() and side.is_file():
+                        shutil.copy2(side, mem_dir / side.name)
+                        copied_db.append(side.name)
         mem = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
         chroma = Path(str(mem.get("chroma_db_path") or "./data/memory/chroma_db"))
         manifest = {
