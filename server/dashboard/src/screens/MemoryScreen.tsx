@@ -89,6 +89,7 @@ export function MemoryScreen() {
   >([])
   const [danger, setDanger] = useState<MemoryDanger | null>(null)
   const [dangerBusy, setDangerBusy] = useState(false)
+  const [peopleQuery, setPeopleQuery] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -479,10 +480,25 @@ export function MemoryScreen() {
     }
   })()
 
-  const sortedPeople = useMemo(
-    () => [...people].sort((a, b) => personLabel(a).localeCompare(personLabel(b), 'ru')),
-    [people],
-  )
+  const sortedPeople = useMemo(() => {
+    const q = peopleQuery.trim().toLowerCase()
+    return [...people]
+      .filter((p) => {
+        if (!q) return true
+        const hay = [
+          p.id,
+          p.display_name,
+          ...(p.names ?? []),
+          ...(p.aliases ?? []),
+          ...(p.accounts ?? []).flatMap((a) => [a.handle, a.display_name, a.platform_user_id]),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+        return hay.includes(q)
+      })
+      .sort((a, b) => personLabel(a).localeCompare(personLabel(b), 'ru'))
+  }, [people, peopleQuery])
 
   return (
     <div className="page-content stack">
@@ -537,38 +553,43 @@ export function MemoryScreen() {
             ) : (
               <div className="grid-3">
                 {[
-                  { label: 'STM (краткая)', value: memory?.short_memory_size },
-                  { label: 'Chroma (RAG)', value: memory?.hub?.chroma_records ?? memory?.long_memory_records },
                   { label: 'Люди', value: memory?.people_records ?? memory?.hub?.people },
-                  { label: 'Журнал чата', value: memory?.hub?.chat_log },
+                  { label: 'Факты', value: memory?.hub?.person_facts },
+                  { label: 'Chroma (RAG)', value: memory?.hub?.chroma_records ?? memory?.long_memory_records },
                   { label: 'Дневник', value: memory?.hub?.diary_notes },
-                  { label: 'Режим RAG', value: memory?.hub?.rag_write_mode },
+                  { label: 'Журнал', value: memory?.hub?.journal_entries },
+                  { label: 'Режим RAG', value: memory?.hub?.rag_write_mode ?? (memory?.hub?.rag_enabled === false ? 'off' : '—') },
+                  { label: 'STM', value: memory?.short_memory_size },
+                  { label: 'Журнал чата', value: memory?.hub?.chat_log },
                 ].map(({ label, value }) => (
                   <div key={label} className="stat-tile">
                     <p className="stat-label">{label}</p>
-                    <p className="stat-value-md">{value ?? '—'}</p>
+                    <p className="stat-value-md tabular-nums">{value ?? '—'}</p>
                   </div>
                 ))}
               </div>
             )}
           </div>
-          <div className="card">
+          <div className="card" style={{ borderColor: 'color-mix(in oklab, var(--danger) 35%, var(--border))' }}>
             <div className="card-header">
-              <Trash2 size={15} className="card-icon" />
-              <span className="card-title">Очистка памяти</span>
+              <Trash2 size={15} className="card-icon" style={{ color: 'var(--danger)' }} />
+              <span className="card-title">Опасная зона · wipe</span>
             </div>
             <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.85rem', lineHeight: 1.45 }}>
-              Cutover Memory v2: можно стереть слои по отдельности или всё сразу. Действия необратимы.
+              Необратимо. Перед wipe на стенде сделай бэкап. Подтверждение — фраза <code className="inline-code">WIPE</code>.
             </p>
-            <div className="row">
+            <div className="row" style={{ flexWrap: 'wrap' }}>
               <Button disabled={wipeBusy} onClick={() => void runWipe(['diary'], 'дневник')} type="button" variant="warn">
-                Очистить дневник
+                Дневник
               </Button>
               <Button disabled={wipeBusy} onClick={() => void runWipe(['journal'], 'журнал')} type="button" variant="warn">
-                Очистить журнал
+                Журнал
               </Button>
               <Button disabled={wipeBusy} onClick={() => void runWipe(['people'], 'людей')} type="button" variant="warn">
-                Очистить людей
+                Люди
+              </Button>
+              <Button disabled={wipeBusy} onClick={() => void runWipe(['ltm'], 'Chroma LTM')} type="button" variant="warn">
+                LTM
               </Button>
               <Button
                 disabled={wipeBusy}
@@ -579,9 +600,9 @@ export function MemoryScreen() {
                   )
                 }
                 type="button"
-                variant="warn"
+                variant="danger"
               >
-                Очистить всю память
+                Вся память
               </Button>
             </div>
           </div>
@@ -610,28 +631,48 @@ export function MemoryScreen() {
               </div>
             </div>
           )}
-          {(proposals.length > 0 || recentMerges.some((m) => !m.undone_at)) && (
+              {(proposals.length > 0 || recentMerges.some((m) => !m.undone_at)) && (
             <div className="card" style={{ gridColumn: '1 / -1' }}>
               <div className="card-header">
-                <span className="card-title">Merge: заявки и отмена</span>
+                <span className="card-title">Предложения объединения и undo</span>
               </div>
               <div className="stack-sm">
-                {proposals.map((p) => (
-                  <div key={String(p.id)} className="row-between">
-                    <span style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>
-                      заявка #{p.id}: {p.person_a} ↔ {p.person_b}
-                      {p.reason ? ` — ${p.reason}` : ''}
-                    </span>
-                    <span style={{ display: 'inline-flex', gap: 6 }}>
-                      <Button onClick={() => void applyProposal(Number(p.id))} size="sm" type="button" variant="cyan">
-                        Склеить
-                      </Button>
-                      <Button onClick={() => void rejectProposal(Number(p.id))} size="sm" type="button" variant="ghost">
-                        Отклонить
-                      </Button>
-                    </span>
-                  </div>
-                ))}
+                {proposals.map((p) => {
+                  const left = people.find((x) => String(x.id) === String(p.person_a))
+                  const right = people.find((x) => String(x.id) === String(p.person_b))
+                  return (
+                    <div key={String(p.id)} className="merge-proposal-card">
+                      <div className="merge-proposal-sides">
+                        <div className="merge-proposal-side">
+                          <p className="stat-label">A → survivor</p>
+                          <p className="mono" style={{ fontSize: '0.8rem' }}>
+                            {left ? personLabel(left) : p.person_a}
+                          </p>
+                          <p className="hint mono">{p.person_a}</p>
+                        </div>
+                        <span className="hint" aria-hidden>
+                          ↔
+                        </span>
+                        <div className="merge-proposal-side">
+                          <p className="stat-label">B → source</p>
+                          <p className="mono" style={{ fontSize: '0.8rem' }}>
+                            {right ? personLabel(right) : p.person_b}
+                          </p>
+                          <p className="hint mono">{p.person_b}</p>
+                        </div>
+                      </div>
+                      {p.reason ? <p className="hint">{p.reason}</p> : null}
+                      <div className="row">
+                        <Button onClick={() => void applyProposal(Number(p.id))} size="sm" type="button" variant="cyan">
+                          Объединить
+                        </Button>
+                        <Button onClick={() => void rejectProposal(Number(p.id))} size="sm" type="button" variant="secondary">
+                          Отклонить
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })}
                 {recentMerges
                   .filter((m) => m.id != null && !m.undone_at)
                   .slice(0, 5)
@@ -641,7 +682,7 @@ export function MemoryScreen() {
                         merge_log #{m.id}: {m.source_id} → {m.survivor_id}
                       </span>
                       <Button onClick={() => void undoMerge(Number(m.id))} size="sm" type="button" variant="warn">
-                        Отменить merge
+                        Отменить
                       </Button>
                     </div>
                   ))}
@@ -656,7 +697,8 @@ export function MemoryScreen() {
           <div className="card" style={{ height: 'fit-content' }}>
             <div className="card-header" style={{ justifyContent: 'space-between' }}>
               <span className="card-title" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                <Users size={15} className="card-icon" /> Список ({people.length})
+                <Users size={15} className="card-icon" /> Список ({sortedPeople.length}
+                {sortedPeople.length !== people.length ? ` / ${people.length}` : ''})
               </span>
               <Button
                 onClick={() => {
@@ -674,23 +716,52 @@ export function MemoryScreen() {
                 <Plus size={14} /> Новый
               </Button>
             </div>
+            <input
+              aria-label="Поиск людей"
+              className="input"
+              onChange={(e) => setPeopleQuery(e.target.value)}
+              placeholder="Поиск: id, ник, alias…"
+              style={{ marginBottom: '0.5rem', minHeight: 36 }}
+              value={peopleQuery}
+            />
             <div className="stack-sm">
-              {sortedPeople.map((p) => (
-                <button
-                  key={String(p.id)}
-                  aria-current={selectedPerson === String(p.id) && !creating ? 'true' : undefined}
-                  className={`plugin-item${selectedPerson === String(p.id) && !creating ? ' active' : ''}`}
-                  onClick={() => {
-                    setCreating(false)
-                    setSelectedPerson(String(p.id))
-                  }}
-                  type="button"
-                >
-                  <span>{personLabel(p)}</span>
-                  <span style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--muted)' }}>{p.id}</span>
-                </button>
-              ))}
+              {sortedPeople.map((p) => {
+                const avatar = (p.accounts || []).find((a) => a.avatar_url)?.avatar_url
+                return (
+                  <button
+                    key={String(p.id)}
+                    aria-current={selectedPerson === String(p.id) && !creating ? 'true' : undefined}
+                    className={`plugin-item${selectedPerson === String(p.id) && !creating ? ' active' : ''}`}
+                    onClick={() => {
+                      setCreating(false)
+                      setSelectedPerson(String(p.id))
+                    }}
+                    title={String(p.id)}
+                    type="button"
+                  >
+                    <span className="row" style={{ gap: 8, minWidth: 0 }}>
+                      {avatar ? (
+                        <img
+                          alt=""
+                          className="person-avatar"
+                          height={28}
+                          loading="lazy"
+                          src={avatar}
+                          width={28}
+                        />
+                      ) : null}
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{personLabel(p)}</span>
+                    </span>
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--muted)' }} title={String(p.id)}>
+                      {String(p.id || '').length > 18 ? `${String(p.id).slice(0, 16)}…` : p.id}
+                    </span>
+                  </button>
+                )
+              })}
               {people.length === 0 && <EmptyState icon={Users} title="Нет людей" description="Карточки появятся из Discord или создай вручную." />}
+              {people.length > 0 && sortedPeople.length === 0 && (
+                <EmptyState icon={Users} title="Ничего не найдено" description="Сбрось поисковую строку." />
+              )}
             </div>
           </div>
 
@@ -724,11 +795,23 @@ export function MemoryScreen() {
                   <div className="stack-sm">
                     <p className="stat-label">Аккаунты</p>
                     {accounts.map((a, i) => (
-                      <p key={i} style={{ fontSize: '0.8rem', fontFamily: 'var(--mono)' }}>
-                        {a.platform}:{a.platform_user_id}
-                        {a.handle ? ` @${a.handle}` : ''}
-                        {a.display_name ? ` (${a.display_name})` : ''}
-                      </p>
+                      <div key={i} className="row" style={{ gap: 8, alignItems: 'center' }}>
+                        {a.avatar_url ? (
+                          <img
+                            alt={a.display_name || a.handle || a.platform_user_id || 'avatar'}
+                            className="person-avatar"
+                            height={28}
+                            loading="lazy"
+                            src={a.avatar_url}
+                            width={28}
+                          />
+                        ) : null}
+                        <p style={{ fontSize: '0.8rem', fontFamily: 'var(--mono)', margin: 0 }}>
+                          {a.platform}:{a.platform_user_id}
+                          {a.handle ? ` @${a.handle}` : ''}
+                          {a.display_name ? ` (${a.display_name})` : ''}
+                        </p>
+                      </div>
                     ))}
                   </div>
                 )}

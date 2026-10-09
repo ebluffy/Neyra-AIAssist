@@ -1425,6 +1425,32 @@ input[type="checkbox"] {
   padding: 0.15rem 0.55rem;
   font-size: 0.72rem;
 }
+.person-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+.merge-proposal-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.65rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--bg);
+}
+.merge-proposal-sides {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 0.5rem;
+  align-items: center;
+}
+.merge-proposal-side {
+  min-width: 0;
+}
 .split-files {
   display: grid;
   gap: 1rem;

@@ -227,7 +227,8 @@ docs/
 - [x] **D1** — shell, ⌘K, theme, 404, robots, favicons, Playwright smoke (в follow-up PR)
 - [x] **D2** — Status: react-query, health history, audit recent, RestartProgress (в follow-up PR)
 - [x] **D3** — Modules + LogViewer v2 (virtual, level colors, filters) (в follow-up PR)
-- [ ] **D4–D7** — Memory…Settings по DESIGN (в follow-up PR)
+- [x] **D4** — Memory: KPI, people search, merge side-by-side, wipe zone (в follow-up PR)
+- [ ] **D5–D7** — System…Settings по DESIGN (в follow-up PR)
 - [ ] **D8** — a11y/polish, react-doctor, чеклисты 5.1/5.2 (в follow-up PR)
 
 ### Готово, когда (3a)
