@@ -961,16 +961,15 @@ class WebhookStore:
                 "stored_at": _utc_now(),
             }
             self._owned_inbound.add(kid)
+            # AR-72: never evict process-owned keys (would reopen AR-70 double-process).
             while len(store) > self._INBOUND_DEDUP_MAX:
-                oldest = next(iter(store))
-                if oldest == kid:
-                    # Avoid evicting the key we just claimed.
-                    keys = list(store.keys())
-                    if len(keys) < 2:
-                        break
-                    oldest = keys[1] if keys[0] == kid else keys[0]
-                store.pop(oldest, None)
-                self._owned_inbound.discard(oldest)
+                victim = next(
+                    (k for k in store if k != kid and k not in self._owned_inbound),
+                    None,
+                )
+                if victim is None:
+                    break  # all slots live requests — prefer >MAX over a duplicate
+                store.pop(victim, None)
             await self._save()
             return ("proceed", None)
 

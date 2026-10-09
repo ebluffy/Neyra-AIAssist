@@ -137,6 +137,29 @@ def test_inbound_owned_blocks_parallel_after_disk_ttl(app, stub_agent, monkeypat
     asyncio.run(_run())
 
 
+def test_inbound_eviction_skips_owned_keys(tmp_path: Path, monkeypatch):
+    """AR-72: MAX overflow must not evict owned A — claim(A) stays inflight."""
+    import asyncio
+
+    from core.api.app import WebhookStore
+
+    monkeypatch.setattr(WebhookStore, "_INBOUND_DEDUP_MAX", 2)
+    root = tmp_path / "prj"
+    (root / "logs").mkdir(parents=True)
+    ws = WebhookStore(root)
+
+    async def _run() -> None:
+        assert (await ws.claim_inbound_dedup("hdr:A"))[0] == "proceed"
+        assert (await ws.claim_inbound_dedup("hdr:B"))[0] == "proceed"
+        assert (await ws.claim_inbound_dedup("hdr:C"))[0] == "proceed"
+        assert (await ws.claim_inbound_dedup("hdr:D"))[0] == "proceed"
+        # Flood kept A owned; retry must not get proceed (would double-process).
+        assert (await ws.claim_inbound_dedup("hdr:A"))[0] == "inflight"
+        assert "hdr:A" in ws._owned_inbound
+
+    asyncio.run(_run())
+
+
 def test_restore_rejects_legacy_restore_literal(client, auth_headers, stub_backup):
     """AR-66: confirm must equal archive_name."""
     stub_backup.resolve_archive_path.return_value = Path("/tmp/x.zip")
