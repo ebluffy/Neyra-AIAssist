@@ -2,7 +2,6 @@ import type { LucideIcon } from 'lucide-react'
 import {
   BookOpenText,
   Brain,
-  DatabaseBackup,
   Gauge,
   PlugZap,
   Server,
@@ -42,7 +41,6 @@ export const NAV_GROUPS: NavGroup[] = [
     label: 'Сервер',
     items: [
       { to: '/system', label: 'Система', icon: Server },
-      { to: '/backups', label: 'Бэкапы', icon: DatabaseBackup },
       { to: '/settings', label: 'Настройки', icon: Settings },
     ],
   },
@@ -59,8 +57,7 @@ export const TITLE_MAP: Array<{ match: (p: string) => boolean; title: string; cr
   { match: (p) => p === '/status' || p.startsWith('/status/'), title: 'Статус', crumbs: ['Статус'] },
   { match: (p) => p === '/modules' || p.startsWith('/modules/'), title: 'Модули', crumbs: ['Модули'] },
   { match: (p) => p === '/memory' || p.startsWith('/memory/'), title: 'Память', crumbs: ['Память'] },
-  { match: (p) => p === '/system' || p.startsWith('/system/'), title: 'Система', crumbs: ['Система'] },
-  { match: (p) => p === '/backups' || p.startsWith('/backups/'), title: 'Бэкапы', crumbs: ['Бэкапы'] },
+  { match: (p) => p === '/system' || p.startsWith('/system/') || p === '/backups' || p.startsWith('/backups/'), title: 'Система', crumbs: ['Система'] },
   { match: (p) => p === '/webhooks' || p.startsWith('/webhooks/'), title: 'Вебхуки', crumbs: ['Вебхуки'] },
   { match: (p) => p === '/settings' || p.startsWith('/settings/'), title: 'Настройки', crumbs: ['Настройки'] },
   { match: (p) => p === '/api-docs' || p.startsWith('/api-docs/'), title: 'Документация', crumbs: ['Документация'] },

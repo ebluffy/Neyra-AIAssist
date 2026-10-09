@@ -721,7 +721,7 @@ export function ModulesScreen() {
             className="input"
             onChange={(e) => setListQuery(e.target.value)}
             placeholder="Поиск: id, имя, версия"
-            style={{ marginBottom: '0.5rem', minHeight: 36 }}
+            style={{ marginBottom: '0.5rem', minHeight: 44 }}
             value={listQuery}
           />
           <div className="plugin-filters" role="group" aria-label="Фильтр модулей">
@@ -745,24 +745,19 @@ export function ModulesScreen() {
               <button
                 key={p.id}
                 aria-current={selected === p.id ? 'true' : undefined}
-                className={`plugin-item${selected === p.id ? ' active' : ''}`}
+                className={`plugin-item${selected === p.id ? ' active' : ''}${p.enabled ? '' : ' plugin-item-off'}`}
                 onClick={() => pickPlugin(p.id)}
-                title={`${p.name || p.id} · ${p.id} · v${p.version || '—'}`}
+                title={`${p.name || p.id} · ${p.id} · v${p.version || '—'} · ${p.enabled ? 'вкл.' : 'выкл.'} · ${lifeLabel(p.lifecycle)}`}
                 type="button"
               >
-                <span className="plugin-item-id" title={p.id}>
-                  {p.name || p.id}
+                <span className="plugin-item-main">
+                  <span className="plugin-item-name">{p.name || p.id}</span>
+                  <span className="plugin-item-id mono">{p.id}</span>
                 </span>
                 <span className="plugin-item-meta">
-                  <span className="mono" style={{ fontSize: '0.7rem', opacity: 0.8 }} title={p.id}>
-                    {p.id.length > 18 ? `${p.id.slice(0, 16)}…` : p.id}
-                  </span>
-                  <span aria-hidden className={`status-dot ${p.enabled ? 'status-dot-ok' : 'status-dot-idle'}`} />
-                  {p.enabled ? 'вкл.' : 'выкл.'}
-                  <span
-                    className={`life-badge${String(p.lifecycle).toLowerCase() === 'resident' ? ' life-badge-resident' : ''}`}
-                  >
-                    {lifeLabel(p.lifecycle)}
+                  <span className={`plugin-status${p.enabled ? ' on' : ' off'}`}>
+                    <span aria-hidden className={`status-dot ${p.enabled ? 'status-dot-ok' : 'status-dot-idle'}`} />
+                    {p.enabled ? 'вкл.' : 'выкл.'}
                   </span>
                 </span>
               </button>

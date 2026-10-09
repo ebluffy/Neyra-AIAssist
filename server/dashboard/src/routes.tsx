@@ -31,7 +31,7 @@ export const appRoutes: RouteObject[] = [
       { path: 'modules', element: <ModulesScreen /> },
       { path: 'memory', element: <MemoryScreen /> },
       { path: 'system', element: <SystemScreen /> },
-      { path: 'backups', element: <SystemScreen initialTab="backup" /> },
+      { path: 'backups', element: <Navigate replace to="/system" /> },
       { path: 'webhooks', element: <WebhooksScreen /> },
       { path: 'settings', element: <SettingsScreen /> },
       { path: 'api-docs', element: <DocsScreen /> },
