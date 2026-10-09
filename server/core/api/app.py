@@ -664,6 +664,62 @@ def _audit_file_append(cfg: dict, root: Path, entry: dict[str, Any]) -> None:
         logger.warning("audit log append failed: %s", e)
 
 
+def _read_jsonl_tail(path: Path, limit: int, *, chunk_size: int = 65_536) -> list[dict[str, Any]]:
+    """Return up to ``limit`` newest JSON objects from a JSONL file (newest first).
+
+    Reads from the end of the file in chunks so large audit/health logs are not
+    loaded entirely into memory. Invalid / blank lines are skipped. Parsing happens
+    while scanning so a long run of trailing garbage does not starve the limit.
+    """
+    if limit <= 0 or not path.is_file():
+        return []
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    if size <= 0:
+        return []
+
+    def _parse_line(raw: bytes) -> dict[str, Any] | None:
+        text = raw.decode("utf-8", errors="replace").strip()
+        if not text:
+            return None
+        try:
+            row = json.loads(text)
+        except Exception:
+            return None
+        return row if isinstance(row, dict) else None
+
+    rows: list[dict[str, Any]] = []
+    with path.open("rb") as f:
+        pos = size
+        buf = b""
+        early_exit = False
+        while pos > 0 and len(rows) < limit:
+            step = min(chunk_size, pos)
+            pos -= step
+            f.seek(pos)
+            chunk = f.read(step)
+            buf = chunk + buf
+            parts = buf.split(b"\n")
+            buf = parts[0]
+            for part in reversed(parts[1:]):
+                row = _parse_line(part)
+                if row is not None:
+                    rows.append(row)
+                    if len(rows) >= limit:
+                        early_exit = True
+                        break
+            if early_exit:
+                break
+        # Only flush the leading partial when we scanned all the way to offset 0.
+        if not early_exit and pos == 0 and buf:
+            row = _parse_line(buf)
+            if row is not None and len(rows) < limit:
+                rows.append(row)
+    return rows
+
+
 def _mask_secret(s: str) -> str:
     raw = (s or "").strip()
     if not raw:
@@ -1934,36 +1990,68 @@ def build_app(
         trace_id = _trace_id(request)
         log_path = Path(getattr(monitor, "log_path", root / "logs" / "health_status.jsonl"))
         cutoff = time.time() - hours * 3600
-        points: list[dict[str, Any]] = []
-        if log_path.is_file():
-            try:
-                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                for line in lines[-2000:]:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except Exception:
-                        continue
-                    ts = row.get("timestamp")
-                    try:
-                        epoch = datetime.fromisoformat(str(ts)).timestamp() if ts else 0.0
-                    except Exception:
-                        epoch = 0.0
-                    if epoch and epoch < cutoff:
-                        continue
-                    points.append(
-                        {
-                            "timestamp": ts,
-                            "ok": bool(row.get("ok")),
-                            "backend_ok": bool((row.get("backend") or {}).get("ok", True)),
-                            "storage_ok": bool((row.get("storage") or {}).get("ok", True)),
-                        }
-                    )
-            except Exception:
-                logger.exception("health history read failed | trace_id=%s", trace_id)
+
+        def _load() -> list[dict[str, Any]]:
+            # Newest-first tail, then chronological for the chart.
+            newest = _read_jsonl_tail(log_path, 2000)
+            out: list[dict[str, Any]] = []
+            for row in reversed(newest):
+                ts = row.get("timestamp")
+                try:
+                    epoch = datetime.fromisoformat(str(ts)).timestamp() if ts else 0.0
+                except Exception:
+                    epoch = 0.0
+                if epoch and epoch < cutoff:
+                    continue
+                out.append(
+                    {
+                        "timestamp": ts,
+                        "ok": bool(row.get("ok")),
+                        "backend_ok": bool((row.get("backend") or {}).get("ok", True)),
+                        "storage_ok": bool((row.get("storage") or {}).get("ok", True)),
+                    }
+                )
+            return out
+
+        try:
+            points = await asyncio.to_thread(_load)
+        except Exception:
+            logger.exception("health history read failed | trace_id=%s", trace_id)
+            points = []
         return {"ok": True, "trace_id": trace_id, "data": {"hours": hours, "points": points}}
+
+    @app.get("/v1/audit/recent")
+    async def v1_audit_recent(
+        request: Request,
+        limit: int = Query(default=10, ge=1, le=100),
+        _: None = Depends(dep_maint),
+    ):
+        """Last N rows from api_audit.jsonl (maint+)."""
+        trace_id = _trace_id(request)
+        ia = config.get("api") if isinstance(config.get("api"), dict) else {}
+        rel = str(ia.get("audit_log_path", "./logs/api_audit.jsonl")).strip()
+        path = Path(rel)
+        if not path.is_absolute():
+            path = root / path
+
+        def _load() -> list[dict[str, Any]]:
+            newest = _read_jsonl_tail(path, limit)
+            return [
+                {
+                    "ts": row.get("ts") or row.get("timestamp"),
+                    "op": row.get("op"),
+                    "role": row.get("role"),
+                    "trace_id": row.get("trace_id"),
+                }
+                for row in newest
+            ]
+
+        try:
+            rows = await asyncio.to_thread(_load)
+        except Exception:
+            logger.exception("audit recent read failed | trace_id=%s", trace_id)
+            rows = []
+        return {"ok": True, "trace_id": trace_id, "data": {"items": rows}}
 
     @app.get("/v1/health")
     async def v1_health(request: Request, _: None = Depends(dep_viewer)):

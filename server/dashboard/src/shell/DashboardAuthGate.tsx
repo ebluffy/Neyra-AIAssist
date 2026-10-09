@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { Cpu, KeyRound, Lock, RefreshCw } from 'lucide-react'
+import { Copy, Cpu, Eye, EyeOff, KeyRound, Lock, RefreshCw } from 'lucide-react'
 import { clearSessionToken, hasDashboardSession, setSessionToken } from '../api'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
+import { toast } from 'sonner'
 
 const MIN_LEN = 32
 
@@ -18,7 +19,7 @@ function clearDashboardGateKey(): void {
 }
 
 function generateHexKey(): string {
-  const bytes = new Uint8Array(16)
+  const bytes = new Uint8Array(32)
   crypto.getRandomValues(bytes)
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
@@ -64,6 +65,20 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [showKey, setShowKey] = useState(false)
+  const [capsOn, setCapsOn] = useState(false)
+  const [savedOk, setSavedOk] = useState(false)
+
+  useEffect(() => {
+    document.title =
+      mode === 'setup' || mode === 'setup_remote_blocked'
+        ? 'Первичная настройка · Neyra'
+        : mode === 'login'
+          ? 'Вход · Neyra'
+          : mode === 'loading'
+            ? 'Вход · Neyra'
+            : document.title
+  }, [mode])
 
   useEffect(() => {
     let cancelled = false
@@ -269,20 +284,39 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
             aria-hidden
           />
 
-          <label className="dash-auth-label">
-            <KeyRound size={14} />
-            Ключ доступа
-            <input
-              autoComplete={isSetup ? 'new-password' : 'current-password'}
-              autoFocus
-              className="dash-auth-input"
-              name="password"
-              onChange={(ev) => setKey(ev.target.value)}
-              placeholder={isSetup ? 'минимум 32 символа или «Сгенерировать»' : 'ключ доступа'}
-              type="password"
-              value={key}
-            />
-          </label>
+          <div className="dash-auth-label">
+            <label htmlFor="dash-access-key">
+              <KeyRound aria-hidden size={14} />
+              Ключ доступа
+            </label>
+            <div className="dash-auth-input-row">
+              <input
+                autoComplete={isSetup ? 'new-password' : 'current-password'}
+                autoFocus
+                className="dash-auth-input"
+                id="dash-access-key"
+                name="password"
+                onChange={(ev) => setKey(ev.target.value)}
+                onKeyUp={(ev) => setCapsOn(ev.getModifierState?.('CapsLock') ?? false)}
+                placeholder={isSetup ? 'минимум 32 символа или «Сгенерировать»' : 'ключ доступа'}
+                type={showKey ? 'text' : 'password'}
+                value={key}
+              />
+              <button
+                aria-label={showKey ? 'Скрыть ключ' : 'Показать ключ'}
+                className="dash-auth-eye"
+                onClick={() => setShowKey((v) => !v)}
+                type="button"
+              >
+                {showKey ? <EyeOff aria-hidden size={16} strokeWidth={1.75} /> : <Eye aria-hidden size={16} strokeWidth={1.75} />}
+              </button>
+            </div>
+          </div>
+          {capsOn ? <p className="dash-auth-caps">Включён Caps Lock</p> : null}
+          <p className="dash-auth-len tabular-nums" aria-live="polite">
+            Длина: {key.trim().length}
+            {key.trim().length > 0 && key.trim().length < MIN_LEN ? ` (нужно ≥ ${MIN_LEN})` : ''}
+          </p>
           {isSetup && (
             <>
               <label className="dash-auth-label">
@@ -293,24 +327,60 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
                   className="dash-auth-input"
                   name="password-confirm"
                   onChange={(ev) => setConfirm(ev.target.value)}
-                  type="password"
+                  type={showKey ? 'text' : 'password'}
                   value={confirm}
                 />
               </label>
-              <Button
-                className="dash-auth-generate"
-                disabled={busy}
-                onClick={fillGenerated}
-                type="button"
-                variant="secondary"
-              >
-                <RefreshCw size={14} />
-                Сгенерировать hex (32)
-              </Button>
+              <div className="row" style={{ gap: '0.5rem' }}>
+                <Button
+                  className="dash-auth-generate"
+                  disabled={busy}
+                  onClick={fillGenerated}
+                  type="button"
+                  variant="secondary"
+                >
+                  <RefreshCw size={14} />
+                  Сгенерировать (64 hex)
+                </Button>
+                <Button
+                  disabled={!key}
+                  onClick={() => {
+                    if (!navigator.clipboard?.writeText) {
+                      toast.error('Копирование недоступно по http — скопируйте вручную')
+                      return
+                    }
+                    try {
+                      void navigator.clipboard.writeText(key).then(
+                        () => toast.success('Ключ скопирован'),
+                        () => toast.error('Не удалось скопировать'),
+                      )
+                    } catch {
+                      toast.error('Копирование недоступно — скопируйте вручную')
+                    }
+                  }}
+                  type="button"
+                  variant="ghost"
+                >
+                  <Copy size={14} />
+                  Копировать
+                </Button>
+              </div>
+              <label className="dash-auth-check">
+                <input checked={savedOk} onChange={(e) => setSavedOk(e.target.checked)} type="checkbox" />
+                Я сохранил ключ
+              </label>
             </>
           )}
           {error && <p className="dash-auth-error">{error}</p>}
-          <Button disabled={busy || (isSetup ? key.trim().length < MIN_LEN : key.trim().length < 8)} type="submit">
+          <Button
+            disabled={
+              busy ||
+              (isSetup
+                ? key.trim().length < MIN_LEN || key.trim() !== confirm.trim() || !savedOk
+                : key.trim().length < 8)
+            }
+            type="submit"
+          >
             {busy ? '…' : isSetup ? 'Создать и войти' : 'Войти'}
           </Button>
         </form>

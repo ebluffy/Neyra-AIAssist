@@ -214,19 +214,24 @@ docs/
 
 ### Веб-панель v2 и hardening API
 
-Скоуп текущего PR hardening: **T0–B5 + D0**. Чекбоксы ставятся только по факту merge/приёмки.
-**D1–D8** (shell/Playwright, экраны, a11y/чеклисты) — отдельный follow-up PR; не входят в merge-gate этого PR.
+Чекбоксы — только по факту merge/приёмки. **#25** (T0–B5 + D0 foundations) смержен.
+Текущий follow-up PR: **`dash/d1-d8-ops-console`** (хвосты D0 + D1–D8).
 
-- [ ] **T0** — `server/tests/` + pytest, `requirements-dev.txt`, CI jobs pytest/dashboard/secrets, `typecheck`, README ключ ≥32
-- [ ] **B1** — ошибки без `str(e)`, `trace_id`, redaction, anon за прокси, security headers, docs gate
-- [ ] **B2** — pydantic bodies (`extra=forbid`), timeouts, RPM/429, webhook dedup
-- [ ] **B3** — атомарные миграции, транзакции, индексы, health live/ready/history
-- [ ] **B4** — sqlite backup API, двухфазный restore, drill, тесты на реальной SQLite
-- [ ] **B5** — роли viewer без PII, rotate/logout-all, PBKDF2 600k, матрица ролей
-- [ ] **D0** — Tailwind/токены/шрифты/shadcn/react-query/api client/vitest/`/__ui`
-- [ ] **D1** *(follow-up)* — shell, ⌘K, theme, 404, robots, favicons, Playwright smoke
-- [ ] **D2–D7** *(follow-up)* — экраны Status…Settings по DESIGN
-- [ ] **D8** *(follow-up)* — a11y/polish, react-doctor, чеклисты 5.1/5.2
+- [x] **T0** — `server/tests/` + pytest, `requirements-dev.txt`, CI jobs pytest/dashboard/secrets, `typecheck`, README ключ ≥32 (#25)
+- [x] **B1** — ошибки без `str(e)`, `trace_id`, redaction, anon за прокси, security headers, docs gate (#25)
+- [x] **B2** — pydantic bodies (`extra=forbid`), timeouts, RPM/429, webhook dedup (#25)
+- [x] **B3** — атомарные миграции, транзакции, индексы, health live/ready/history (#25)
+- [x] **B4** — sqlite backup API, двухфазный restore, drill, тесты на реальной SQLite (#25)
+- [x] **B5** — роли viewer без PII, rotate/logout-all, PBKDF2 600k, матрица ролей (#25)
+- [x] **D0** — Tailwind/токены/шрифты/shadcn/react-query/api client/vitest/`/__ui` (#25 + хвосты в follow-up)
+- [x] **D1** — shell, ⌘K, theme, 404, robots, favicons, Playwright smoke (в follow-up PR)
+- [x] **D2** — Status: react-query, health history, audit recent, RestartProgress (в follow-up PR)
+- [x] **D3** — Modules + LogViewer v2 (virtual, level colors, filters) (в follow-up PR)
+- [x] **D4** — Memory: KPI, people search, merge side-by-side, wipe zone (в follow-up PR)
+- [x] **D5** — System: LogViewer v2, health checks, backups + RestartProgress on restore (в follow-up PR)
+- [x] **D6** — Webhooks: RHF+zod outbound form, Switch (в follow-up PR)
+- [x] **D7** — Settings/access/docs по DESIGN (в follow-up PR)
+- [x] **D8** — a11y/polish, react-doctor, чеклисты 5.1/5.2 (в follow-up PR)
 
 ### Готово, когда (3a)
 

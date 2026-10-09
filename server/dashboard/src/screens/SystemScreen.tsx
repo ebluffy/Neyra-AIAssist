@@ -5,12 +5,14 @@ import { apiGet, apiPost } from '../api'
 import type { ApiEnvelope, BackupArchive, HealthData } from '../api'
 import { LogViewer } from '../components/LogViewer'
 import type { LogSource } from '../components/LogViewer'
+import { RestartProgress } from '../components/RestartProgress'
 import { Button } from '../components/ui/button'
 import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { collectHealthIssues, healthBlockReasons, healthTileState } from '../lib/health'
 import { waitForCoreRestart } from '../lib/wait-for-core-restart'
 
 type SystemDanger = { kind: 'restart' } | { kind: 'restore'; name: string }
@@ -54,39 +56,6 @@ function str(v: unknown): string {
   return String(v)
 }
 
-function collectHealthIssues(health: HealthData | null): string[] {
-  if (!health) return []
-  const issues: string[] = []
-  const backend = health.backend as Record<string, unknown> | undefined
-  if (backend && backend.ok === false) {
-    const providers = backend.providers
-    if (Array.isArray(providers)) {
-      for (const p of providers) {
-        if (!p || typeof p !== 'object') continue
-        const row = p as Record<string, unknown>
-        if (row.ok === false) {
-          const prov = String(row.provider ?? '?')
-          issues.push(row.error ? `LLM ${prov}: ${String(row.error)}` : `LLM ${prov}: HTTP ${String(row.status_code ?? '—')}`)
-        }
-      }
-    }
-    if (!issues.length) issues.push(backend.error ? `LLM-бэкенд: ${String(backend.error)}` : 'LLM-бэкенд: проверка не прошла')
-  }
-  const storage = health.storage as Record<string, unknown> | undefined
-  if (storage && storage.ok === false) {
-    const missing = Array.isArray(storage.missing) ? storage.missing.map(String) : []
-    issues.push(missing.length ? `Хранилище: нет ${missing.join(', ')}` : 'Хранилище: ошибка')
-  }
-  const integrations = health.integrations as Record<string, unknown> | undefined
-  if (integrations && integrations.ok === false) {
-    const list = Array.isArray(integrations.issues) ? integrations.issues.map(String) : []
-    issues.push(list.length ? `Интеграции: ${list.join('; ')}` : 'Интеграции: ошибка')
-  }
-  const heal = health.self_healing as Record<string, unknown> | undefined
-  if (heal && heal.ok === false) issues.push('Самолечение модулей: ошибка')
-  return issues
-}
-
 function Kv({ label, value }: { label: string; value: string }) {
   return (
     <div className="kv-row">
@@ -119,6 +88,10 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
   const [backupLoading, setBackupLoading] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
   const [danger, setDanger] = useState<SystemDanger | null>(null)
+  const [restartStep, setRestartStep] = useState<'stop' | 'offline' | 'online' | 'error'>('stop')
+  const [restartMsg, setRestartMsg] = useState<string | null>(null)
+  const [restartTitle, setRestartTitle] = useState('Мягкий перезапуск')
+  const [showRestartCard, setShowRestartCard] = useState(false)
 
   const loadHealth = useCallback(async () => {
     setHealthLoading(true)
@@ -188,20 +161,36 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
 
-  async function waitAfterRestart(prefix: string) {
+  function beginRestartCard(title: string, step: 'stop' | 'offline' | 'online' | 'error', message: string) {
+    setShowRestartCard(true)
+    setRestartTitle(title)
+    setRestartStep(step)
+    setRestartMsg(message)
+  }
+
+  function dismissRestartCard() {
+    setShowRestartCard(false)
+    setRestartMsg(null)
+  }
+
+  async function waitAfterRestart(prefix: string, title: string) {
     setRestartBusy(true)
+    beginRestartCard(title, 'offline', `${prefix} Offline → online…`)
     try {
       const outcome = await waitForCoreRestart()
       if (outcome === 'online') {
-        setStatus(`${prefix} Сервер снова онлайн.`)
+        beginRestartCard(title, 'online', `${prefix} Сервер снова онлайн.`)
+        setStatus('')
         await load()
         if (tab === 'health') await loadHealth()
         if (tab === 'backup') await loadBackups()
       } else if (outcome === 'no_downtime') {
+        beginRestartCard(title, 'error', 'Рестарт не остановил процесс (API не уходил в offline).')
         setStatus('')
-        setError('Рестарт не остановил процесс (API не уходил в offline). Проверь systemd/логи или systemctl restart neyra.')
+        setError('Проверь systemd/логи или systemctl restart neyra.')
       } else {
-        setStatus(`${prefix} Сервер долго не отвечает — обнови страницу через минуту.`)
+        beginRestartCard(title, 'error', `${prefix} Сервер долго не отвечает — обнови страницу через минуту.`)
+        setStatus('')
       }
     } finally {
       setRestartBusy(false)
@@ -215,19 +204,21 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
   async function doSoftRestart() {
     setDanger(null)
     setError(null)
-    setStatus('Мягкий рестарт… ждём подъёма API')
+    setStatus('')
     setRestartBusy(true)
+    beginRestartCard('Мягкий перезапуск', 'stop', 'Останавливаем процесс…')
     try {
       await apiPost<ApiEnvelope<{ note?: string }>>('/v1/system/restart', {})
-      await waitAfterRestart('Мягкий рестарт.')
+      await waitAfterRestart('Мягкий рестарт.', 'Мягкий перезапуск')
     } catch (e) {
-      setStatus('')
+      beginRestartCard('Мягкий перезапуск', 'error', 'Запрос рестарта не принят')
       setError(e instanceof Error ? e.message : String(e))
       setRestartBusy(false)
     }
   }
 
   async function runBackup() {
+    dismissRestartCard()
     setBusy(true)
     setStatus('')
     setError(null)
@@ -248,6 +239,7 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
 
   async function doRestoreBackup(name: string) {
     setDanger(null)
+    dismissRestartCard()
     setBusy(true)
     setStatus('Готовлю восстановление…')
     setError(null)
@@ -273,9 +265,11 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
       const expectCreated = (r.data.created_at || '').trim()
       const expectArchive = (r.data.archive_name || name).trim()
       if (r.data.restart_scheduled) {
-        setStatus(`Восстановление подготовлено.${safetyNote} Ядро перезапускается…`)
+        setStatus('')
+        const restoreTitle = 'Восстановление из бэкапа'
+        beginRestartCard(restoreTitle, 'stop', `Восстановление подготовлено.${safetyNote} Ядро перезапускается…`)
         setBusy(false)
-        await waitAfterRestart(`Ожидаю результат restore при старте.${safetyNote}`)
+        await waitAfterRestart(`Restore.${safetyNote}`, restoreTitle)
         try {
           const lr = await apiGet<
             ApiEnvelope<{
@@ -296,19 +290,21 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
             (!expectCreated || (result.created_at || '') === expectCreated) &&
             (!expectCreated || !result.at || result.at >= expectCreated)
           if (matches && result?.status === 'applied') {
-            setStatus(`Восстановление применено (${expectArchive}).${safetyNote}`)
+            beginRestartCard(restoreTitle, 'online', `Восстановление применено (${expectArchive}).${safetyNote}`)
           } else if (matches && (result?.status === 'failed' || result?.status === 'rollback_failed')) {
-            setStatus('')
+            beginRestartCard(restoreTitle, 'error', `Restore не применился.${safetyNote}`)
             setError(
               `Восстановление при старте не применилось${result.error ? `: ${result.error}` : ''}.${safetyNote}`,
             )
           } else {
-            setStatus(
+            beginRestartCard(
+              restoreTitle,
+              'online',
               `Рестарт выполнен.${safetyNote} Результат этого restore неизвестен (нет свежего last_restore_apply).`,
             )
           }
         } catch {
-          setStatus(`Рестарт выполнен.${safetyNote} Результат apply не прочитан.`)
+          beginRestartCard(restoreTitle, 'online', `Рестарт выполнен.${safetyNote} Результат apply не прочитан.`)
         }
         await loadBackups()
         return
@@ -351,6 +347,7 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
           <Button
             disabled={loading}
             onClick={() => {
+              dismissRestartCard()
               void load()
               if (tab === 'health') void loadHealth()
               if (tab === 'backup') void loadBackups()
@@ -363,8 +360,16 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
           </Button>
         }
       />
-      {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
-      {status && <InlineFeedback tone="success">{status}</InlineFeedback>}
+      {!restartBusy && error ? <InlineFeedback tone="error">{error}</InlineFeedback> : null}
+      {!restartBusy && status ? <InlineFeedback tone="success">{status}</InlineFeedback> : null}
+      {showRestartCard ? (
+        <RestartProgress
+          message={restartMsg ?? undefined}
+          onDismiss={restartBusy ? undefined : dismissRestartCard}
+          step={restartStep}
+          title={restartTitle}
+        />
+      ) : null}
 
       <div className="card">
         <div className="panel-tabs panel-tabs-dense" role="tablist">
@@ -501,6 +506,36 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
                   <Kv label="Версия API" value={str(healthVersion)} />
                   {health.public_url != null && <Kv label="Публичный URL" value={str(health.public_url)} />}
                 </div>
+                <div className="grid-2">
+                  {(
+                    [
+                      ['LLM-бэкенд', 'backend' as const, health.backend],
+                      ['Хранилище', 'storage' as const, health.storage],
+                      ['Интеграции', 'integrations' as const, health.integrations],
+                      ['Самолечение', 'self_healing' as const, health.self_healing],
+                    ] as const
+                  ).map(([label, key, block]) => {
+                    const state = healthTileState(block)
+                    const reasons = healthBlockReasons(health, key)
+                    return (
+                      <div className="stat-tile" key={label}>
+                        <p className="stat-label">{label}</p>
+                        <p
+                          className={`stat-value-md ${
+                            state === 'ok' ? 'text-ok' : state === 'warn' ? 'text-warn' : 'text-muted'
+                          }`}
+                        >
+                          {state === 'ok' ? 'ок' : state === 'warn' ? 'проблема' : 'нет данных'}
+                        </p>
+                        {reasons.length > 0 ? (
+                          <p className="hint" style={{ marginTop: 4 }}>
+                            {reasons.join('; ')}
+                          </p>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+                </div>
                 <div>
                   <Link className="btn btn-secondary btn-sm" to="/status">
                     Баланс LLM и модели
@@ -511,7 +546,16 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
               <EmptyState icon={Activity} title="Нет данных" description="Не удалось получить /v1/health." />
             )}
             <div>
-              <Button disabled={healthLoading} onClick={() => void loadHealth()} size="sm" type="button" variant="secondary">
+              <Button
+                disabled={healthLoading}
+                onClick={() => {
+                  dismissRestartCard()
+                  void loadHealth()
+                }}
+                size="sm"
+                type="button"
+                variant="secondary"
+              >
                 {healthLoading ? 'Проверяю…' : 'Проверить снова'}
               </Button>
             </div>
@@ -525,7 +569,16 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
             <div className="row-between">
               <p className="hint">Локальные архивы бэкапа (роль maint и выше).</p>
               <div className="row">
-                <Button disabled={backupLoading} onClick={() => void loadBackups()} size="sm" type="button" variant="secondary">
+                <Button
+                  disabled={backupLoading}
+                  onClick={() => {
+                    dismissRestartCard()
+                    void loadBackups()
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
                   {backupLoading ? 'Загрузка…' : 'Обновить список'}
                 </Button>
                 <Button disabled={busy || restartBusy} onClick={() => void runBackup()} type="button">

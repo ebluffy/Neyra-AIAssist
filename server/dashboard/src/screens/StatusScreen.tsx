@@ -1,11 +1,14 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useState } from 'react'
 import { Activity, Database, RefreshCw, RotateCcw, Wallet } from 'lucide-react'
-import { apiGet, apiPost } from '../api'
+import { ApiRequestError, apiGet, apiPost } from '../api'
 import type { ApiEnvelope, BalanceData, HealthData, PluginRow, ProviderBalance } from '../api'
+import { HealthHistoryStrip } from '../components/HealthHistoryStrip'
+import { RestartProgress } from '../components/RestartProgress'
 import { Button } from '../components/ui/button'
 import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { EmptyState } from '../components/ui/empty-state'
-import { InlineFeedback } from '../components/ui/inline-feedback'
+import { ErrorState } from '../components/ui/error-state'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
 import { waitForCoreRestart } from '../lib/wait-for-core-restart'
@@ -81,7 +84,10 @@ function ProviderBalanceBlock({ name, block }: { name: string; block: ProviderBa
     <div className="stack-sm" style={{ marginBottom: '0.75rem' }}>
       <p style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text)' }}>{name}</p>
       {block._error ? (
-        <InlineFeedback tone="error">{block._error}{block.detail ? `: ${block.detail}` : ''}</InlineFeedback>
+        <p className="page-sub" role="alert" style={{ color: 'var(--danger)' }}>
+          {block._error}
+          {block.detail ? `: ${block.detail}` : ''}
+        </p>
       ) : (
         <>
           <div className="grid-4">
@@ -110,67 +116,106 @@ function ProviderBalanceBlock({ name, block }: { name: string; block: ProviderBa
 }
 
 export function StatusScreen() {
-  const [loading, setLoading] = useState(false)
+  const qc = useQueryClient()
   const [error, setError] = useState<string | null>(null)
-  const [health, setHealth] = useState<HealthData | null>(null)
-  const [balance, setBalance] = useState<BalanceData | null>(null)
-  const [plugins, setPlugins] = useState<PluginRow[]>([])
-  const [models, setModels] = useState<{ roles?: Record<string, { role?: string; provider?: string; model?: string }> } | null>(null)
   const [restartMsg, setRestartMsg] = useState<string | null>(null)
   const [restartBusy, setRestartBusy] = useState(false)
-  const [restartTone, setRestartTone] = useState<'success' | 'info' | 'error'>('success')
+  const [restartStep, setRestartStep] = useState<'stop' | 'offline' | 'online' | 'error'>('stop')
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const [h, b, p, m] = await Promise.all([
-        apiGet<ApiEnvelope<HealthData>>('/v1/health'),
-        apiGet<ApiEnvelope<BalanceData>>('/v1/llm/balance'),
-        apiGet<ApiEnvelope<{ plugins: PluginRow[] }>>('/v1/plugins'),
-        apiGet<ApiEnvelope<{ roles?: Record<string, { role?: string; provider?: string; model?: string }> }>>('/v1/llm/models'),
-      ])
-      setHealth(h.data)
-      setBalance(b.data)
-      setPlugins(p.data.plugins ?? [])
-      setModels(m.data)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const [tabVisible, setTabVisible] = useState(() => document.visibilityState === 'visible')
 
   useEffect(() => {
-    void load()
-  }, [load])
+    const onVis = () => setTabVisible(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
+
+  const pollOk = tabVisible && !restartBusy
+  const healthQ = useQuery({
+    queryKey: ['status', 'health'],
+    queryFn: async () => (await apiGet<ApiEnvelope<HealthData>>('/v1/health')).data,
+    refetchInterval: pollOk ? 15_000 : false,
+  })
+  const restQ = useQuery({
+    queryKey: ['status', 'rest'],
+    queryFn: async () => {
+      const [b, p, m] = await Promise.all([
+        apiGet<ApiEnvelope<BalanceData>>('/v1/llm/balance'),
+        apiGet<ApiEnvelope<{ plugins: PluginRow[] }>>('/v1/plugins'),
+        apiGet<ApiEnvelope<{ roles?: Record<string, { role?: string; provider?: string; model?: string }> }>>(
+          '/v1/llm/models',
+        ),
+      ])
+      return { balance: b.data, plugins: p.data.plugins ?? [], models: m.data }
+    },
+    refetchInterval: pollOk ? 60_000 : false,
+  })
+  const historyQ = useQuery({
+    queryKey: ['status', 'health-history'],
+    queryFn: async () =>
+      (await apiGet<ApiEnvelope<{ hours: number; points: Array<Record<string, unknown>> }>>('/v1/health/history?hours=24'))
+        .data,
+    refetchInterval: pollOk ? 60_000 : false,
+  })
+  const auditQ = useQuery({
+    queryKey: ['status', 'audit-recent'],
+    queryFn: async (): Promise<{
+      items: Array<{ ts?: string; op?: string; role?: string; trace_id?: string }>
+      forbidden?: boolean
+    }> => {
+      try {
+        return (
+          await apiGet<ApiEnvelope<{ items: Array<{ ts?: string; op?: string; role?: string; trace_id?: string }> }>>(
+            '/v1/audit/recent?limit=10',
+          )
+        ).data
+      } catch (e) {
+        if (e instanceof ApiRequestError && e.status === 403) {
+          return { items: [], forbidden: true }
+        }
+        throw e
+      }
+    },
+    refetchInterval: (q) => (pollOk && !q.state.data?.forbidden ? 60_000 : false),
+    retry: false,
+  })
+
+  const health = healthQ.data ?? null
+  const balance = restQ.data?.balance ?? null
+  const plugins = restQ.data?.plugins ?? []
+  const models = restQ.data?.models ?? null
+  const loading = healthQ.isLoading || restQ.isLoading
+  const load = useCallback(async () => {
+    setError(null)
+    await Promise.all([healthQ.refetch(), restQ.refetch(), historyQ.refetch(), auditQ.refetch()])
+  }, [healthQ, restQ, historyQ, auditQ])
 
   async function softRestart() {
     setRestartConfirmOpen(false)
     setRestartBusy(true)
     setRestartMsg(null)
-    setRestartTone('info')
+    setRestartStep('stop')
     setError(null)
     try {
       await apiPost<ApiEnvelope<{ note?: string }>>('/v1/system/restart', {})
+      setRestartStep('offline')
       setRestartMsg('Процесс останавливается. Ждём offline → online…')
       const outcome = await waitForCoreRestart()
       if (outcome === 'online') {
-        setRestartTone('success')
+        setRestartStep('online')
         setRestartMsg('Сервер снова онлайн.')
-        await load()
+        await qc.invalidateQueries({ queryKey: ['status'] })
       } else if (outcome === 'no_downtime') {
-        setRestartTone('error')
+        setRestartStep('error')
         setRestartMsg(
           'Рестарт не остановил процесс (API не уходил в offline). Проверь systemd/логи или systemctl restart neyra.',
         )
       } else {
-        setRestartTone('info')
+        setRestartStep('error')
         setRestartMsg('Сервер долго не отвечает — обновите страницу вручную через минуту.')
       }
     } catch (e) {
-      setRestartTone('error')
+      setRestartStep('error')
       setRestartMsg(e instanceof Error ? e.message : String(e))
     } finally {
       setRestartBusy(false)
@@ -208,8 +253,63 @@ export function StatusScreen() {
         }
       />
 
-      {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
-      {restartMsg && <InlineFeedback tone={restartTone}>{restartMsg}</InlineFeedback>}
+      {!restartBusy && (error || healthQ.error || restQ.error) ? (
+        <ErrorState
+          error={error || healthQ.error || restQ.error || 'Ошибка загрузки'}
+          onRetry={() => void load()}
+        />
+      ) : null}
+      {restartBusy || restartMsg ? (
+        <RestartProgress message={restartMsg ?? undefined} step={restartStep} />
+      ) : null}
+
+      <div className="card">
+        <div className="card-header">
+          <span className="card-title">Доступность за 24 ч</span>
+        </div>
+        {historyQ.error ? (
+          <ErrorState error={historyQ.error} onRetry={() => void historyQ.refetch()} title="История health" />
+        ) : (
+          <HealthHistoryStrip
+            loading={historyQ.isLoading}
+            points={
+              (historyQ.data?.points as Array<{
+                timestamp?: string
+                ok?: boolean
+                backend_ok?: boolean
+                storage_ok?: boolean
+              }>) ?? []
+            }
+          />
+        )}
+      </div>
+
+      <div className="grid-4">
+        <div className="stat-tile">
+          <p className="stat-label">Ядро</p>
+          <p className="stat-value-md tabular-nums">{statusLabel(rawStatus)}</p>
+          <p className="hint">{formatUptime(health?.uptime_seconds)}</p>
+        </div>
+        <div className="stat-tile">
+          <p className="stat-label">Модули</p>
+          <p className="stat-value-md tabular-nums">
+            {plugins.filter((p) => p.enabled).length} / {plugins.length}
+          </p>
+          <p className="hint">включено / всего</p>
+        </div>
+        <div className="stat-tile">
+          <p className="stat-label">Хранилище</p>
+          <p className="stat-value-md tabular-nums">
+            {fmtNum((health?.storage as Record<string, unknown> | undefined)?.ping_ms ?? (health?.storage as Record<string, unknown> | undefined)?.ok)}
+          </p>
+          <p className="hint">ping / ok</p>
+        </div>
+        <div className="stat-tile">
+          <p className="stat-label">LLM</p>
+          <p className="stat-value-md tabular-nums">{Object.keys(models?.roles ?? {}).length || '—'}</p>
+          <p className="hint">ролей</p>
+        </div>
+      </div>
 
       <div className="split-status">
         <div className="card">
@@ -327,7 +427,53 @@ export function StatusScreen() {
 
       <div className="card">
         <div className="card-header">
+          <span className="card-title">Последние действия</span>
+        </div>
+        {auditQ.isLoading ? (
+          <Skeleton className="h-24" />
+        ) : auditQ.error ? (
+          <ErrorState
+            error={auditQ.error}
+            onRetry={() => void auditQ.refetch()}
+            title="Аудит"
+          />
+        ) : auditQ.data?.forbidden ? (
+          <p className="page-sub">Недоступно для роли.</p>
+        ) : (auditQ.data?.items?.length ?? 0) === 0 ? (
+          <p className="page-sub">Лента аудита пуста.</p>
+        ) : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  {['Операция', 'Роль', 'Время', 'trace_id'].map((h) => (
+                    <th key={h}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {auditQ.data!.items.map((row, i) => (
+                  <tr key={`${row.trace_id ?? ''}-${i}`}>
+                    <td className="mono">{row.op ?? '—'}</td>
+                    <td>{row.role ?? '—'}</td>
+                    <td className="tabular-nums">{row.ts ? String(row.ts).replace('T', ' ').slice(0, 19) : '—'}</td>
+                    <td className="mono" style={{ fontSize: '0.75rem' }}>
+                      {row.trace_id ?? '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-header">
           <span className="card-title">Модули (обзор)</span>
+          <Link className="btn btn-secondary btn-sm" to="/modules">
+            Открыть
+          </Link>
         </div>
         <div className="table-wrap">
           <table className="table">
