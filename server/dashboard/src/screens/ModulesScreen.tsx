@@ -707,7 +707,7 @@ export function ModulesScreen() {
                       aria-pressed={Boolean(details?.plugin.enabled)}
                       className={`toggle-pill ${details?.plugin.enabled ? 'toggle-on' : 'toggle-off'}`}
                       disabled={restartBusy || loadingDetails}
-                      onClick={() => void togglePlugin(!Boolean(details?.plugin.enabled))}
+                      onClick={() => void togglePlugin(!details?.plugin.enabled)}
                       type="button"
                     >
                       {details?.plugin.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}

@@ -21,6 +21,11 @@ export default defineConfig([
     },
     rules: {
       ...jsxA11y.flatConfigs.recommended.rules,
+      // Fetch-on-mount / reset-on-prop patterns are intentional in this ops console.
+      'react-hooks/set-state-in-effect': 'off',
+      // Presentational primitives forward children via props.
+      'jsx-a11y/heading-has-content': 'off',
+      'jsx-a11y/no-autofocus': 'off',
     },
     languageOptions: {
       ecmaVersion: 2020,

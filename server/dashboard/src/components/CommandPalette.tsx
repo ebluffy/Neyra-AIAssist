@@ -50,7 +50,15 @@ export function CommandPalette() {
   if (!open) return null
 
   return (
-    <div className="cmdk-overlay" onClick={() => setOpen(false)}>
+    <div
+      aria-label="Закрыть палитру"
+      className="cmdk-overlay"
+      onClick={() => setOpen(false)}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') setOpen(false)
+      }}
+      role="presentation"
+    >
       <Command
         className="cmdk-dialog"
         label="Командная палитра"

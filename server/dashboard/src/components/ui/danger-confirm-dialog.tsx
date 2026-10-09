@@ -26,16 +26,19 @@ export function DangerConfirmDialog({
   onCancel,
 }: Props) {
   const [typed, setTyped] = useState('')
+  const [wasOpen, setWasOpen] = useState(open)
   const inputRef = useRef<HTMLInputElement>(null)
   const titleId = useId()
   const descId = useId()
   const match = typed.trim() === confirmPhrase
 
+  if (open !== wasOpen) {
+    setWasOpen(open)
+    if (open) setTyped('')
+  }
+
   useEffect(() => {
-    if (!open) {
-      setTyped('')
-      return
-    }
+    if (!open) return
     const t = window.setTimeout(() => inputRef.current?.focus(), 40)
     return () => window.clearTimeout(t)
   }, [open])

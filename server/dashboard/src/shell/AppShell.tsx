@@ -15,9 +15,8 @@ import {
   Webhook,
   X,
 } from 'lucide-react'
-import { apiGet, getSessionToken } from '../api'
+import { apiGet, clearSessionToken, getSessionToken } from '../api'
 import type { ApiEnvelope } from '../api'
-import { clearDashboardGateKey } from './DashboardAuthGate'
 import { allowNavigation } from '../lib/navigation-guard'
 import { applyTheme, getStoredTheme, type Theme } from '../lib/theme'
 import { DocsScreen } from '../screens/DocsScreen'
@@ -124,7 +123,7 @@ export function AppShell() {
         // best-effort
       }
     }
-    clearDashboardGateKey()
+    clearSessionToken()
     window.location.assign('/')
   }, [])
 

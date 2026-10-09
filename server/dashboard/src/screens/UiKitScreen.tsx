@@ -42,7 +42,7 @@ export function UiKitScreen() {
       </div>
 
       <div className="card">
-        <InlineFeedback message="Инфо-баннер" tone="info" />
+        <InlineFeedback tone="info">Инфо-баннер</InlineFeedback>
       </div>
 
       <div className="card">
