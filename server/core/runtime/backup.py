@@ -26,7 +26,14 @@ LAST_APPLY_NAME = "last_restore_apply.json"
 
 
 class SqliteRollbackError(RuntimeError):
-    """External sqlite could not be rolled back after a failed place."""
+    """External sqlite could not be rolled back after a failed place.
+
+    ``asides`` holds ``(live, aside)`` pairs that were not restored (AR-55).
+    """
+
+    def __init__(self, message: str, *, asides: list[tuple[Path, Path]] | None = None):
+        super().__init__(message)
+        self.asides: list[tuple[Path, Path]] = list(asides or [])
 
 
 class BackupManager:
@@ -227,6 +234,9 @@ class BackupManager:
         status = str(result.get("status") or "")
         if not status:
             status = "applied" if result.get("applied") else "failed"
+        sqlite_asides = result.get("sqlite_aside_paths") or []
+        if not isinstance(sqlite_asides, list):
+            sqlite_asides = []
         payload = {
             "status": status,
             "archive_name": result.get("archive_name") or "",
@@ -234,6 +244,7 @@ class BackupManager:
             "at": str(result.get("at") or datetime.now().isoformat(timespec="seconds")),
             "created_at": str(result.get("created_at") or ""),
             "aside_path": str(result.get("aside_path") or ""),
+            "sqlite_aside_paths": [str(p) for p in sqlite_asides if p],
         }
         self._last_apply_path().write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
@@ -330,6 +341,8 @@ class BackupManager:
         db.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         moved: list[tuple[Path, Path]] = []
+        # Only paths this restore created — never unlink pre-existing live sidecars (AR-54).
+        created: list[Path] = []
         tmp_db = db.parent / f".{db.name}.restore-tmp-{ts}"
         try:
             for suffix in ("", "-wal", "-shm"):
@@ -345,10 +358,13 @@ class BackupManager:
                 moved.append((live, aside))
             shutil.copy2(cand, tmp_db)
             os.replace(tmp_db, db)
+            created.append(db)
             for suffix in ("-wal", "-shm"):
                 side_src = staged_mem / (db.name + suffix)
                 if side_src.is_file():
-                    shutil.copy2(side_src, Path(str(db) + suffix))
+                    side_dst = Path(str(db) + suffix)
+                    shutil.copy2(side_src, side_dst)
+                    created.append(side_dst)
             for _live, aside in moved:
                 if aside.exists():
                     try:
@@ -364,34 +380,42 @@ class BackupManager:
                     tmp_db.unlink()
                 except OSError:
                     pass
-            # Drop new sidecars that were not part of the live set we moved aside.
-            for suffix in ("-wal", "-shm"):
-                side = Path(str(db) + suffix)
-                if side.exists() and not any(live == side for live, _ in moved):
+            # Drop only restore-created files that are not the live set we moved aside.
+            moved_lives = {live for live, _ in moved}
+            for path in created:
+                if path.exists() and path not in moved_lives:
                     try:
-                        side.unlink()
+                        path.unlink()
                     except OSError:
                         pass
             rollback_ok = True
+            leftover: list[tuple[Path, Path]] = []
             for live, aside in reversed(moved):
                 try:
-                    if live.exists():
-                        if live.is_dir():
-                            shutil.rmtree(live)
-                        else:
-                            live.unlink()
+                    if live.exists() and live in created:
+                        try:
+                            if live.is_dir():
+                                shutil.rmtree(live)
+                            else:
+                                live.unlink()
+                        except OSError:
+                            pass
                     if live.exists():
                         rollback_ok = False
+                        leftover.append((live, aside))
                         continue
                     if aside.exists():
                         aside.rename(live)
                     else:
                         rollback_ok = False
+                        leftover.append((live, aside))
                 except OSError:
                     logger.exception("Could not restore sqlite aside %s → %s", aside, live)
                     rollback_ok = False
+                    leftover.append((live, aside))
             if not rollback_ok:
-                raise SqliteRollbackError("sqlite_rollback_failed") from e
+                unresolved = leftover or [(live, a) for live, a in moved if a.exists()]
+                raise SqliteRollbackError("sqlite_rollback_failed", asides=unresolved) from e
             raise
 
     def prepare_restore(self, archive_name: str) -> dict:
@@ -440,13 +464,21 @@ class BackupManager:
         finally:
             shutil.rmtree(unpack_root, ignore_errors=True)
 
-    def _write_pending_blocked(self, *, archive_name: object, aside_path: str, error: str) -> None:
+    def _write_pending_blocked(
+        self,
+        *,
+        archive_name: object,
+        aside_path: str,
+        error: str,
+        sqlite_aside_paths: list[str] | None = None,
+    ) -> None:
         """Freeze pending so auto-restart cannot re-apply after rollback_failed (AR-52)."""
         pending = self._pending_root()
         pending.mkdir(parents=True, exist_ok=True)
         payload = {
             "archive_name": archive_name or "",
             "aside_path": aside_path,
+            "sqlite_aside_paths": list(sqlite_aside_paths or []),
             "error": error,
             "at": datetime.now().isoformat(timespec="seconds"),
         }
@@ -478,6 +510,7 @@ class BackupManager:
                 "archive_name": blocked.get("archive_name") or "",
                 "error": str(blocked.get("error") or "pending_blocked"),
                 "aside_path": str(blocked.get("aside_path") or ""),
+                "sqlite_aside_paths": list(blocked.get("sqlite_aside_paths") or []),
                 "at": str(blocked.get("at") or datetime.now().isoformat(timespec="seconds")),
             }
             try:
@@ -541,6 +574,15 @@ class BackupManager:
             logger.exception("Pending restore apply failed | archive=%s", archive_name)
             rolled = self._rollback_aside(mem_dst, aside)
             sqlite_rb_failed = isinstance(e, SqliteRollbackError)
+            sqlite_asides: list[str] = []
+            if sqlite_rb_failed:
+                for _live, a_path in getattr(e, "asides", []) or []:
+                    if a_path is not None and Path(a_path).exists():
+                        sqlite_asides.append(str(a_path))
+            # Memory aside_path only if that folder still exists (AR-55).
+            mem_aside_s = ""
+            if aside is not None and aside.exists():
+                mem_aside_s = str(aside)
             if rolled and not sqlite_rb_failed:
                 failed = {
                     "applied": False,
@@ -553,7 +595,6 @@ class BackupManager:
                     "at": datetime.now().isoformat(timespec="seconds"),
                 }
             else:
-                aside_s = str(aside) if aside else ""
                 failed = {
                     "applied": False,
                     "status": "rollback_failed",
@@ -561,15 +602,17 @@ class BackupManager:
                     "archive_name": archive_name,
                     "error": type(e).__name__,
                     "memory_root": str(mem_dst),
-                    "aside_path": aside_s,
+                    "aside_path": mem_aside_s,
+                    "sqlite_aside_paths": sqlite_asides,
                     "created_at": created_at,
                     "at": datetime.now().isoformat(timespec="seconds"),
                 }
                 try:
                     self._write_pending_blocked(
                         archive_name=archive_name,
-                        aside_path=aside_s,
+                        aside_path=mem_aside_s,
                         error=type(e).__name__,
+                        sqlite_aside_paths=sqlite_asides,
                     )
                 except Exception:
                     logger.exception("Could not write pending blocked.json")

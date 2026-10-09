@@ -494,6 +494,157 @@ def test_external_db_rollback_after_os_replace_wal_fail() -> None:
         td.cleanup()
 
 
+def test_sqlite_rename_fail_on_wal_keeps_live_wal() -> None:
+    """AR-54: rename fail on -wal must not unlink the live WAL."""
+    from unittest import mock
+
+    from core.runtime.backup import BackupManager, PENDING_DIR_NAME, PENDING_FLAG
+
+    td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    try:
+        base = Path(td.name)
+        mem = base / "memory"
+        mem.mkdir()
+        (mem / "keep.txt").write_text("alive", encoding="utf-8")
+        chroma = mem / "chroma_db"
+        chroma.mkdir()
+        (chroma / "x.txt").write_text("c", encoding="utf-8")
+        ext_db = base / "elsewhere" / "hub.db"
+        ext_db.parent.mkdir(parents=True)
+        ext_db.write_text("live-db", encoding="utf-8")
+        wal = Path(str(ext_db) + "-wal")
+        wal.write_text("live-wal", encoding="utf-8")
+        backups = base / "backups"
+        backups.mkdir()
+        cfg = {
+            "backup": {"local_dir": str(backups)},
+            "memory": {"chroma_db_path": str(chroma), "sqlite_path": str(ext_db)},
+        }
+        mgr = BackupManager(cfg)
+        cwd = Path.cwd()
+        try:
+            os.chdir(base)
+            bak = mgr.run_backup("seed")
+            name = Path(str(bak["archive"])).name
+            (mem / "keep.txt").write_text("changed", encoding="utf-8")
+            ext_db.write_text("changed-db", encoding="utf-8")
+            wal.write_text("live-wal", encoding="utf-8")
+            mgr.prepare_restore(name)
+
+            real_rename = Path.rename
+
+            def _rename(self: Path, target, *a, **k):
+                if self.name.endswith("-wal") or str(self).endswith("-wal"):
+                    raise OSError("wal locked")
+                return real_rename(self, target, *a, **k)
+
+            with mock.patch.object(Path, "rename", _rename):
+                out = mgr.apply_pending_restore()
+            assert out is not None and out.get("applied") is False
+            assert out.get("status") == "failed"
+            assert ext_db.read_text(encoding="utf-8") == "changed-db"
+            assert wal.read_text(encoding="utf-8") == "live-wal"
+            orphans = list(ext_db.parent.glob("*.pre-restore-*"))
+            assert orphans == [], f"sqlite aside orphans: {orphans}"
+            assert (base / PENDING_DIR_NAME / PENDING_FLAG).is_file()
+        finally:
+            os.chdir(cwd)
+    finally:
+        td.cleanup()
+
+
+def test_sqlite_rollback_failed_records_db_aside_paths() -> None:
+    """AR-55: SqliteRollbackError must record existing *.db.pre-restore-* paths."""
+    from unittest import mock
+
+    from core.runtime.backup import (
+        BackupManager,
+        PENDING_BLOCKED,
+        PENDING_DIR_NAME,
+        PENDING_MEMORY,
+    )
+
+    td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    try:
+        base = Path(td.name)
+        mem = base / "memory"
+        mem.mkdir()
+        (mem / "keep.txt").write_text("alive", encoding="utf-8")
+        chroma = mem / "chroma_db"
+        chroma.mkdir()
+        (chroma / "x.txt").write_text("c", encoding="utf-8")
+        ext_db = base / "elsewhere" / "hub.db"
+        ext_db.parent.mkdir(parents=True)
+        ext_db.write_text("live-db", encoding="utf-8")
+        wal = Path(str(ext_db) + "-wal")
+        wal.write_text("live-wal", encoding="utf-8")
+        backups = base / "backups"
+        backups.mkdir()
+        cfg = {
+            "backup": {"local_dir": str(backups)},
+            "memory": {"chroma_db_path": str(chroma), "sqlite_path": str(ext_db)},
+        }
+        mgr = BackupManager(cfg)
+        cwd = Path.cwd()
+        try:
+            os.chdir(base)
+            bak = mgr.run_backup("seed")
+            name = Path(str(bak["archive"])).name
+            (mem / "keep.txt").write_text("changed", encoding="utf-8")
+            ext_db.write_text("changed-db", encoding="utf-8")
+            wal.write_text("changed-wal", encoding="utf-8")
+            mgr.prepare_restore(name)
+            (base / PENDING_DIR_NAME / PENDING_MEMORY / "hub.db-wal").write_text(
+                "bak-wal", encoding="utf-8"
+            )
+
+            real_copy2 = __import__("shutil").copy2
+            real_rename = Path.rename
+            phase = {"after_replace": False}
+
+            def _boom_wal_copy2(src, dst, *a, **k):
+                if str(dst).endswith("-wal") or str(src).endswith("-wal"):
+                    phase["after_replace"] = True
+                    raise OSError("wal copy2 failed")
+                return real_copy2(src, dst, *a, **k)
+
+            def _rename(self: Path, target, *a, **k):
+                # After os.replace, refuse to put live db back from aside.
+                if (
+                    phase["after_replace"]
+                    and self.name.startswith("hub.db.pre-restore-")
+                    and not self.name.endswith(("-wal", "-shm"))
+                    and Path(target).name == "hub.db"
+                ):
+                    raise OSError("cannot restore db aside")
+                return real_rename(self, target, *a, **k)
+
+            with mock.patch("shutil.copy2", side_effect=_boom_wal_copy2):
+                with mock.patch.object(Path, "rename", _rename):
+                    out = mgr.apply_pending_restore()
+            assert out is not None
+            assert out.get("status") == "rollback_failed"
+            paths = out.get("sqlite_aside_paths") or []
+            assert paths, f"expected sqlite_aside_paths, got {out}"
+            assert any(Path(p).exists() and "hub.db.pre-restore-" in p for p in paths)
+            # Memory was rolled back — aside_path should be empty or gone.
+            mem_aside = str(out.get("aside_path") or "")
+            assert not mem_aside or not Path(mem_aside).exists()
+            blocked = base / PENDING_DIR_NAME / PENDING_BLOCKED
+            assert blocked.is_file()
+            import json
+
+            raw = json.loads(blocked.read_text(encoding="utf-8"))
+            assert any(
+                Path(p).exists() and "hub.db.pre-restore-" in p
+                for p in (raw.get("sqlite_aside_paths") or [])
+            )
+        finally:
+            os.chdir(cwd)
+    finally:
+        td.cleanup()
+
+
 if __name__ == "__main__":
     test_restore_from_real_run_backup()
     test_restore_nonstandard_chroma_parent_name()
@@ -504,4 +655,6 @@ if __name__ == "__main__":
     test_restore_refuses_parent_of_backup_dir()
     test_swap_inner_rollback_failure_is_rollback_failed()
     test_external_db_rollback_after_os_replace_wal_fail()
+    test_sqlite_rename_fail_on_wal_keeps_live_wal()
+    test_sqlite_rollback_failed_records_db_aside_paths()
     print("OK test_backup_restore_offline")
