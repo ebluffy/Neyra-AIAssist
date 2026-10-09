@@ -49,11 +49,14 @@ export function CommandPalette({ controlledOpen, onOpenChange }: Props = {}) {
 
   return (
     <div
+      aria-label="Закрыть палитру"
       className="cmdk-overlay"
       onClick={() => setOpen(false)}
       onKeyDown={(e) => {
         if (e.key === 'Escape') setOpen(false)
       }}
+      role="button"
+      tabIndex={-1}
     >
       <Command
         className="cmdk-dialog"

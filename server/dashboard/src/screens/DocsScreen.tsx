@@ -10,23 +10,12 @@ import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { headingsFromArticle, type DocHeading } from '../lib/docs-toc'
 
 type DocItem = { id: string; title: string; path?: string; lang?: string }
 type DocSection = { id: string; title: string; items: DocItem[] }
-export type DocHeading = { id: string; text: string; level: number }
 
 const REPORT_ISSUE_URL = 'https://github.com/ebluffy/Neyra-AIAssist/issues/new'
-
-/** Build TOC from rehype-slug ids already in the rendered article. */
-export function headingsFromArticle(root: ParentNode | null): DocHeading[] {
-  if (!root) return []
-  const nodes = root.querySelectorAll('h1[id], h2[id], h3[id]')
-  return Array.from(nodes).map((el) => ({
-    id: el.id,
-    text: (el.textContent || '').trim(),
-    level: Number(el.tagName.slice(1)),
-  }))
-}
 
 export function DocsScreen() {
   const [sections, setSections] = useState<DocSection[]>([])

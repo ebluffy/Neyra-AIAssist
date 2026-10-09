@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { headingsFromArticle } from './DocsScreen'
+import { headingsFromArticle } from '../lib/docs-toc'
 
 describe('headingsFromArticle', () => {
   it('reads rehype-slug ids and plain text including nested markup', () => {

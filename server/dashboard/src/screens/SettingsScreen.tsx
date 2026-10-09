@@ -8,6 +8,7 @@ import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { rotateAccessKey } from '../lib/dashboard-auth'
 import { pluralRu } from '../lib/plural-ru'
 import { setThemePreference, useThemePreference, type ThemePreference } from '../lib/theme'
 import { getDensity, setDensity, type Density } from '../lib/ui-prefs'
@@ -126,44 +127,6 @@ const RESTART_KEYS = new Set([
   'health_monitor.interval_seconds',
   'agent.fast_path.enabled',
 ])
-
-export async function rotateAccessKey(currentKey: string, newKey: string): Promise<string> {
-  const ctrl = new AbortController()
-  const timer = window.setTimeout(() => ctrl.abort(), 30_000)
-  let r: Response
-  try {
-    r = await fetch('/v1/dashboard/auth/rotate', {
-      method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ current_key: currentKey, new_key: newKey }),
-      signal: ctrl.signal,
-    })
-  } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') {
-      throw new Error('Таймаут запроса смены ключа')
-    }
-    throw e
-  } finally {
-    window.clearTimeout(timer)
-  }
-  const text = await r.text()
-  const trimmed = text.trimStart()
-  if (trimmed.startsWith('<') || trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<!doctype')) {
-    throw new Error(`Сервер недоступен (HTTP ${r.status || '—'}). Попробуй позже.`)
-  }
-  let j: { ok?: boolean; data?: { session_token?: string }; error?: { message?: string } }
-  try {
-    j = JSON.parse(text) as typeof j
-  } catch {
-    throw new Error(`Не удалось разобрать ответ API (HTTP ${r.status})`)
-  }
-  if (!r.ok || j.ok === false) {
-    throw new Error(j.error?.message || `HTTP ${r.status}`)
-  }
-  const session = j.data?.session_token?.trim()
-  if (!session) throw new Error('Сервер не выдал session_token')
-  return session
-}
 
 function serialize(v: unknown): string {
   if (v == null) return ''
