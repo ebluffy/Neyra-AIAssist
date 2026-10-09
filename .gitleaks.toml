@@ -1,0 +1,10 @@
+# Allow intentional fake secrets used only in unit tests (redaction / error envelope).
+# History of this PR still contains an older test string that matched generic-api-key;
+# keep the path allowlisted so gitleaks does not fail the scan of the PR commit range.
+title = "Neyra gitleaks"
+
+[[allowlists]]
+description = "Pytest fixtures with deliberate leak markers (not real credentials)"
+paths = [
+  '''server/tests/.*''',
+]

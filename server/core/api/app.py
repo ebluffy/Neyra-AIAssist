@@ -1104,8 +1104,7 @@ def build_app(
     ws_idle_timeout = max(5, int(ws_cfg.get("idle_timeout_seconds", 60)))
     ws_ping_interval = max(2, int(ws_cfg.get("ping_interval_seconds", 20)))
     ws_close_grace = max(1, int(ws_cfg.get("close_grace_seconds", 5)))
-    # Persist under data_dir so tests/tmp and production data stay isolated from repo logs/.
-    webhook_store = WebhookStore(resolve_data_dir(root, config))
+    webhook_store = WebhookStore(root)
     plugin_ops: dict[str, dict[str, Any]] = {}
     dash_auth = DashboardAuthStore(resolve_data_dir(root, config) / "dashboard_auth.sqlite")
     app.state.dashboard_auth = dash_auth
