@@ -1703,8 +1703,10 @@ def check_webhook_hmac_and_dlq_retry() -> list[str]:
                         dels = client.get("/v1/webhooks/deliveries", headers=admin)
                         drows = ((dels.json().get("data") or {}).get("deliveries") or []) if dels.status_code == 200 else []
                         b1 = next((x for x in drows if x.get("delivery_id") == "b1"), None)
-                        if b1 is not None and str(b1.get("status") or "") == "retried":
-                            errs.append("AR-48 history must not be retried after dispatch exception")
+                        if b1 is None or str(b1.get("status") or "") != "failed":
+                            errs.append(
+                                f"AR-48/53 history want b1 status=failed, got {b1}"
+                            )
             finally:
                 shutil.rmtree(boom_root, ignore_errors=True)
         finally:

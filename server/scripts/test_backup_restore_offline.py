@@ -369,6 +369,131 @@ def test_restore_refuses_parent_of_backup_dir() -> None:
         td.cleanup()
 
 
+def test_swap_inner_rollback_failure_is_rollback_failed() -> None:
+    """AR-47: copytree fail + rmtree no-op → rollback_failed with aside_path."""
+    from unittest import mock
+
+    from core.runtime.backup import BackupManager, PENDING_BLOCKED, PENDING_DIR_NAME
+
+    td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    try:
+        base = Path(td.name)
+        mem = base / "memory"
+        mem.mkdir()
+        (mem / "keep.txt").write_text("alive", encoding="utf-8")
+        chroma = mem / "chroma_db"
+        chroma.mkdir()
+        (chroma / "x.txt").write_text("c", encoding="utf-8")
+        db = mem / "neyra_memory.db"
+        db.write_text("db", encoding="utf-8")
+        backups = base / "backups"
+        backups.mkdir()
+        cfg = {
+            "backup": {"local_dir": str(backups)},
+            "memory": {"chroma_db_path": str(chroma), "sqlite_path": str(db)},
+        }
+        mgr = BackupManager(cfg)
+        cwd = Path.cwd()
+        try:
+            os.chdir(base)
+            bak = mgr.run_backup("seed")
+            name = Path(str(bak["archive"])).name
+            (mem / "keep.txt").write_text("changed", encoding="utf-8")
+            mgr.prepare_restore(name)
+
+            def _partial_copytree(src, dst, *a, **k):
+                Path(dst).mkdir(parents=True, exist_ok=True)
+                (Path(dst) / "partial.txt").write_text("half", encoding="utf-8")
+                raise OSError("copytree failed midway")
+
+            def _noop_rmtree(path, *a, **k):
+                return None
+
+            with mock.patch("shutil.copytree", side_effect=_partial_copytree):
+                with mock.patch("shutil.rmtree", side_effect=_noop_rmtree):
+                    out = mgr.apply_pending_restore()
+            assert out is not None
+            assert out.get("status") == "rollback_failed"
+            assert out.get("aside_path")
+            aside = Path(str(out["aside_path"]))
+            assert aside.is_dir()
+            assert (aside / "keep.txt").read_text(encoding="utf-8") == "changed"
+            assert (base / PENDING_DIR_NAME / PENDING_BLOCKED).is_file()
+            # Second call must not re-apply (AR-52).
+            again = mgr.apply_pending_restore()
+            assert again is not None and again.get("status") == "rollback_failed"
+            assert again.get("blocked") is True
+        finally:
+            os.chdir(cwd)
+    finally:
+        td.cleanup()
+
+
+def test_external_db_rollback_after_os_replace_wal_fail() -> None:
+    """AR-51: copy2 fails on -wal after os.replace → live db/wal restored, no orphans."""
+    from unittest import mock
+
+    from core.runtime.backup import BackupManager, PENDING_DIR_NAME, PENDING_FLAG
+
+    td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    try:
+        base = Path(td.name)
+        mem = base / "memory"
+        mem.mkdir()
+        (mem / "keep.txt").write_text("alive", encoding="utf-8")
+        chroma = mem / "chroma_db"
+        chroma.mkdir()
+        (chroma / "x.txt").write_text("c", encoding="utf-8")
+        ext_db = base / "elsewhere" / "hub.db"
+        ext_db.parent.mkdir(parents=True)
+        ext_db.write_text("live-db", encoding="utf-8")
+        Path(str(ext_db) + "-wal").write_text("live-wal", encoding="utf-8")
+        backups = base / "backups"
+        backups.mkdir()
+        cfg = {
+            "backup": {"local_dir": str(backups)},
+            "memory": {"chroma_db_path": str(chroma), "sqlite_path": str(ext_db)},
+        }
+        mgr = BackupManager(cfg)
+        cwd = Path.cwd()
+        try:
+            os.chdir(base)
+            bak = mgr.run_backup("seed")
+            name = Path(str(bak["archive"])).name
+            (mem / "keep.txt").write_text("changed", encoding="utf-8")
+            ext_db.write_text("changed-db", encoding="utf-8")
+            Path(str(ext_db) + "-wal").write_text("changed-wal", encoding="utf-8")
+            mgr.prepare_restore(name)
+            # Ensure staged memory has -wal so place_sqlite copies it after os.replace.
+            from core.runtime.backup import PENDING_MEMORY
+
+            staged_wal = base / PENDING_DIR_NAME / PENDING_MEMORY / "hub.db-wal"
+            staged_wal.write_text("bak-wal", encoding="utf-8")
+
+            real_copy2 = __import__("shutil").copy2
+
+            def _boom_wal_copy2(src, dst, *a, **k):
+                if str(dst).endswith("-wal") or str(src).endswith("-wal"):
+                    raise OSError("wal copy2 failed")
+                return real_copy2(src, dst, *a, **k)
+
+            with mock.patch("shutil.copy2", side_effect=_boom_wal_copy2):
+                out = mgr.apply_pending_restore()
+            assert out is not None and out.get("applied") is False
+            assert (mem / "keep.txt").read_text(encoding="utf-8") == "changed"
+            assert ext_db.read_text(encoding="utf-8") == "changed-db"
+            assert Path(str(ext_db) + "-wal").read_text(encoding="utf-8") == "changed-wal"
+            orphans = list(ext_db.parent.glob("*.pre-restore-*"))
+            assert orphans == [], f"sqlite aside orphans: {orphans}"
+            mem_orphans = list(mem.parent.glob("memory.pre-restore-*"))
+            assert mem_orphans == [], f"memory aside orphans: {mem_orphans}"
+            assert (base / PENDING_DIR_NAME / PENDING_FLAG).is_file()
+        finally:
+            os.chdir(cwd)
+    finally:
+        td.cleanup()
+
+
 if __name__ == "__main__":
     test_restore_from_real_run_backup()
     test_restore_nonstandard_chroma_parent_name()
@@ -377,4 +502,6 @@ if __name__ == "__main__":
     test_apply_rolls_back_when_external_db_copy_fails()
     test_external_sqlite_without_db_keeps_live_wal()
     test_restore_refuses_parent_of_backup_dir()
+    test_swap_inner_rollback_failure_is_rollback_failed()
+    test_external_db_rollback_after_os_replace_wal_fail()
     print("OK test_backup_restore_offline")

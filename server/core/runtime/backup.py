@@ -20,8 +20,13 @@ logger = logging.getLogger("neyra.backup")
 
 PENDING_DIR_NAME = ".neyra_pending_restore"
 PENDING_FLAG = "pending.json"
+PENDING_BLOCKED = "blocked.json"
 PENDING_MEMORY = "memory"
 LAST_APPLY_NAME = "last_restore_apply.json"
+
+
+class SqliteRollbackError(RuntimeError):
+    """External sqlite could not be rolled back after a failed place."""
 
 
 class BackupManager:
@@ -259,16 +264,22 @@ class BackupManager:
         raise RuntimeError("could not allocate aside path for restore")
 
     @staticmethod
-    def _swap_tree_via_rename(src_dir: Path, dst_dir: Path) -> Path | None:
+    def _swap_tree_via_rename(
+        src_dir: Path,
+        dst_dir: Path,
+        *,
+        aside: Path | None = None,
+    ) -> Path | None:
         """Move dst aside, copy src into place. Returns aside path (or None if no prior dst).
 
-        On copy failure, restores the aside folder. Caller deletes aside only after
-        the full apply (including external sqlite) succeeds.
+        ``aside`` may be pre-allocated by the caller so a failed inner rollback still
+        exposes the path. On copy failure, restores the aside folder when possible.
+        Caller deletes aside only after the full apply (including external sqlite) succeeds.
         """
         dst_dir.parent.mkdir(parents=True, exist_ok=True)
-        aside: Path | None = None
         if dst_dir.exists():
-            aside = BackupManager._unique_aside_path(dst_dir)
+            if aside is None:
+                aside = BackupManager._unique_aside_path(dst_dir)
             dst_dir.rename(aside)
         try:
             shutil.copytree(src_dir, dst_dir)
@@ -347,23 +358,40 @@ class BackupManager:
                             aside.unlink()
                     except OSError:
                         pass
-        except Exception:
+        except Exception as e:
             if tmp_db.exists():
                 try:
                     tmp_db.unlink()
                 except OSError:
                     pass
-            if db.exists() and not any(live == db for live, _ in moved):
-                try:
-                    db.unlink()
-                except OSError:
-                    pass
-            for live, aside in reversed(moved):
-                if aside.exists() and not live.exists():
+            # Drop new sidecars that were not part of the live set we moved aside.
+            for suffix in ("-wal", "-shm"):
+                side = Path(str(db) + suffix)
+                if side.exists() and not any(live == side for live, _ in moved):
                     try:
-                        aside.rename(live)
+                        side.unlink()
                     except OSError:
-                        logger.exception("Could not restore sqlite aside %s → %s", aside, live)
+                        pass
+            rollback_ok = True
+            for live, aside in reversed(moved):
+                try:
+                    if live.exists():
+                        if live.is_dir():
+                            shutil.rmtree(live)
+                        else:
+                            live.unlink()
+                    if live.exists():
+                        rollback_ok = False
+                        continue
+                    if aside.exists():
+                        aside.rename(live)
+                    else:
+                        rollback_ok = False
+                except OSError:
+                    logger.exception("Could not restore sqlite aside %s → %s", aside, live)
+                    rollback_ok = False
+            if not rollback_ok:
+                raise SqliteRollbackError("sqlite_rollback_failed") from e
             raise
 
     def prepare_restore(self, archive_name: str) -> dict:
@@ -412,14 +440,51 @@ class BackupManager:
         finally:
             shutil.rmtree(unpack_root, ignore_errors=True)
 
+    def _write_pending_blocked(self, *, archive_name: object, aside_path: str, error: str) -> None:
+        """Freeze pending so auto-restart cannot re-apply after rollback_failed (AR-52)."""
+        pending = self._pending_root()
+        pending.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "archive_name": archive_name or "",
+            "aside_path": aside_path,
+            "error": error,
+            "at": datetime.now().isoformat(timespec="seconds"),
+        }
+        (pending / PENDING_BLOCKED).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     def apply_pending_restore(self) -> dict | None:
         """Apply staged restore if a pending flag exists. Call before opening Hub/Chroma.
 
         On failure: roll live memory back, keep pending staging, write failed result (AR-43/47).
+        After ``rollback_failed``, pending is blocked until an admin clears it (AR-52).
         """
         pending = self._pending_root()
         flag_path = pending / PENDING_FLAG
+        blocked_path = pending / PENDING_BLOCKED
         staged = pending / PENDING_MEMORY
+        if blocked_path.is_file():
+            try:
+                blocked = json.loads(blocked_path.read_text(encoding="utf-8"))
+            except Exception:
+                blocked = {}
+            out = {
+                "applied": False,
+                "status": "rollback_failed",
+                "pending": True,
+                "blocked": True,
+                "archive_name": blocked.get("archive_name") or "",
+                "error": str(blocked.get("error") or "pending_blocked"),
+                "aside_path": str(blocked.get("aside_path") or ""),
+                "at": str(blocked.get("at") or datetime.now().isoformat(timespec="seconds")),
+            }
+            try:
+                self.write_last_apply_result(out)
+            except Exception:
+                logger.exception("Could not write last_restore_apply.json for blocked pending")
+            return out
         if not flag_path.is_file() or not staged.is_dir():
             if pending.exists() and not flag_path.is_file():
                 shutil.rmtree(pending, ignore_errors=True)
@@ -440,10 +505,11 @@ class BackupManager:
         mem_dst = Path(str(flag.get("memory_root") or self._memory_root()))
         archive_name = flag.get("archive_name")
         created_at = str(flag.get("created_at") or "")
-        aside: Path | None = None
+        # Pre-allocate aside so a failed inner rollback still exposes the path (AR-47).
+        aside: Path | None = self._unique_aside_path(mem_dst) if mem_dst.exists() else None
         try:
             self._assert_safe_memory_dst(mem_dst)
-            aside = self._swap_tree_via_rename(staged, mem_dst)
+            aside = self._swap_tree_via_rename(staged, mem_dst, aside=aside)
             self._place_sqlite_outside_memory(staged, mem_dst)
             out = {
                 "applied": True,
@@ -474,7 +540,8 @@ class BackupManager:
         except Exception as e:
             logger.exception("Pending restore apply failed | archive=%s", archive_name)
             rolled = self._rollback_aside(mem_dst, aside)
-            if rolled:
+            sqlite_rb_failed = isinstance(e, SqliteRollbackError)
+            if rolled and not sqlite_rb_failed:
                 failed = {
                     "applied": False,
                     "status": "failed",
@@ -486,6 +553,7 @@ class BackupManager:
                     "at": datetime.now().isoformat(timespec="seconds"),
                 }
             else:
+                aside_s = str(aside) if aside else ""
                 failed = {
                     "applied": False,
                     "status": "rollback_failed",
@@ -493,10 +561,18 @@ class BackupManager:
                     "archive_name": archive_name,
                     "error": type(e).__name__,
                     "memory_root": str(mem_dst),
-                    "aside_path": str(aside) if aside else "",
+                    "aside_path": aside_s,
                     "created_at": created_at,
                     "at": datetime.now().isoformat(timespec="seconds"),
                 }
+                try:
+                    self._write_pending_blocked(
+                        archive_name=archive_name,
+                        aside_path=aside_s,
+                        error=type(e).__name__,
+                    )
+                except Exception:
+                    logger.exception("Could not write pending blocked.json")
             try:
                 self.write_last_apply_result(failed)
             except Exception:
