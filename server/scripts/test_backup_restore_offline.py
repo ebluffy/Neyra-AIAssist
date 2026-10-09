@@ -645,6 +645,124 @@ def test_sqlite_rollback_failed_records_db_aside_paths() -> None:
         td.cleanup()
 
 
+def test_partial_wal_copy_cleaned_when_no_live_wal() -> None:
+    """AR-56: mid-write copy2 of -wal with no prior live wal → no leftover -wal."""
+    from unittest import mock
+
+    from core.runtime.backup import BackupManager, PENDING_DIR_NAME, PENDING_MEMORY
+
+    td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    try:
+        base = Path(td.name)
+        mem = base / "memory"
+        mem.mkdir()
+        (mem / "keep.txt").write_text("alive", encoding="utf-8")
+        chroma = mem / "chroma_db"
+        chroma.mkdir()
+        (chroma / "x.txt").write_text("c", encoding="utf-8")
+        ext_db = base / "elsewhere" / "hub.db"
+        ext_db.parent.mkdir(parents=True)
+        ext_db.write_text("live-db", encoding="utf-8")
+        # No live -wal
+        backups = base / "backups"
+        backups.mkdir()
+        cfg = {
+            "backup": {"local_dir": str(backups)},
+            "memory": {"chroma_db_path": str(chroma), "sqlite_path": str(ext_db)},
+        }
+        mgr = BackupManager(cfg)
+        cwd = Path.cwd()
+        try:
+            os.chdir(base)
+            bak = mgr.run_backup("seed")
+            name = Path(str(bak["archive"])).name
+            (mem / "keep.txt").write_text("changed", encoding="utf-8")
+            ext_db.write_text("changed-db", encoding="utf-8")
+            mgr.prepare_restore(name)
+            (base / PENDING_DIR_NAME / PENDING_MEMORY / "hub.db-wal").write_text(
+                "bak-wal-full", encoding="utf-8"
+            )
+
+            real_copy2 = __import__("shutil").copy2
+
+            def _partial_wal(src, dst, *a, **k):
+                if str(dst).endswith("-wal") or str(src).endswith("-wal"):
+                    Path(dst).write_text("partial", encoding="utf-8")
+                    raise OSError("wal copy mid-write")
+                return real_copy2(src, dst, *a, **k)
+
+            with mock.patch("shutil.copy2", side_effect=_partial_wal):
+                out = mgr.apply_pending_restore()
+            assert out is not None and out.get("status") == "failed"
+            assert ext_db.read_text(encoding="utf-8") == "changed-db"
+            assert not Path(str(ext_db) + "-wal").exists()
+            assert list(ext_db.parent.glob("*.pre-restore-*")) == []
+        finally:
+            os.chdir(cwd)
+    finally:
+        td.cleanup()
+
+
+def test_partial_wal_copy_restores_live_wal() -> None:
+    """AR-56: mid-write copy2 of -wal with prior live wal → live-wal restored."""
+    from unittest import mock
+
+    from core.runtime.backup import BackupManager, PENDING_DIR_NAME, PENDING_MEMORY
+
+    td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    try:
+        base = Path(td.name)
+        mem = base / "memory"
+        mem.mkdir()
+        (mem / "keep.txt").write_text("alive", encoding="utf-8")
+        chroma = mem / "chroma_db"
+        chroma.mkdir()
+        (chroma / "x.txt").write_text("c", encoding="utf-8")
+        ext_db = base / "elsewhere" / "hub.db"
+        ext_db.parent.mkdir(parents=True)
+        ext_db.write_text("live-db", encoding="utf-8")
+        wal = Path(str(ext_db) + "-wal")
+        wal.write_text("live-wal", encoding="utf-8")
+        backups = base / "backups"
+        backups.mkdir()
+        cfg = {
+            "backup": {"local_dir": str(backups)},
+            "memory": {"chroma_db_path": str(chroma), "sqlite_path": str(ext_db)},
+        }
+        mgr = BackupManager(cfg)
+        cwd = Path.cwd()
+        try:
+            os.chdir(base)
+            bak = mgr.run_backup("seed")
+            name = Path(str(bak["archive"])).name
+            (mem / "keep.txt").write_text("changed", encoding="utf-8")
+            ext_db.write_text("changed-db", encoding="utf-8")
+            wal.write_text("live-wal", encoding="utf-8")
+            mgr.prepare_restore(name)
+            (base / PENDING_DIR_NAME / PENDING_MEMORY / "hub.db-wal").write_text(
+                "bak-wal-full", encoding="utf-8"
+            )
+
+            real_copy2 = __import__("shutil").copy2
+
+            def _partial_wal(src, dst, *a, **k):
+                if str(dst).endswith("-wal") or str(src).endswith("-wal"):
+                    Path(dst).write_text("partial", encoding="utf-8")
+                    raise OSError("wal copy mid-write")
+                return real_copy2(src, dst, *a, **k)
+
+            with mock.patch("shutil.copy2", side_effect=_partial_wal):
+                out = mgr.apply_pending_restore()
+            assert out is not None and out.get("status") == "failed"
+            assert ext_db.read_text(encoding="utf-8") == "changed-db"
+            assert wal.read_text(encoding="utf-8") == "live-wal"
+            assert list(ext_db.parent.glob("*.pre-restore-*")) == []
+        finally:
+            os.chdir(cwd)
+    finally:
+        td.cleanup()
+
+
 if __name__ == "__main__":
     test_restore_from_real_run_backup()
     test_restore_nonstandard_chroma_parent_name()
@@ -657,4 +775,6 @@ if __name__ == "__main__":
     test_external_db_rollback_after_os_replace_wal_fail()
     test_sqlite_rename_fail_on_wal_keeps_live_wal()
     test_sqlite_rollback_failed_records_db_aside_paths()
+    test_partial_wal_copy_cleaned_when_no_live_wal()
+    test_partial_wal_copy_restores_live_wal()
     print("OK test_backup_restore_offline")

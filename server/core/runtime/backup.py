@@ -357,14 +357,15 @@ class BackupManager:
                 live.rename(aside)
                 moved.append((live, aside))
             shutil.copy2(cand, tmp_db)
-            os.replace(tmp_db, db)
+            # Mark before replace/copy so a mid-write failure still cleans up (AR-56).
             created.append(db)
+            os.replace(tmp_db, db)
             for suffix in ("-wal", "-shm"):
                 side_src = staged_mem / (db.name + suffix)
                 if side_src.is_file():
                     side_dst = Path(str(db) + suffix)
-                    shutil.copy2(side_src, side_dst)
                     created.append(side_dst)
+                    shutil.copy2(side_src, side_dst)
             for _live, aside in moved:
                 if aside.exists():
                     try:
