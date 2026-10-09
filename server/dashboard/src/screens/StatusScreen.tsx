@@ -9,7 +9,6 @@ import { Button } from '../components/ui/button'
 import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { EmptyState } from '../components/ui/empty-state'
 import { ErrorState } from '../components/ui/error-state'
-import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
 import { waitForCoreRestart } from '../lib/wait-for-core-restart'
@@ -85,7 +84,10 @@ function ProviderBalanceBlock({ name, block }: { name: string; block: ProviderBa
     <div className="stack-sm" style={{ marginBottom: '0.75rem' }}>
       <p style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text)' }}>{name}</p>
       {block._error ? (
-        <InlineFeedback tone="error">{block._error}{block.detail ? `: ${block.detail}` : ''}</InlineFeedback>
+        <p className="page-sub" role="alert" style={{ color: 'var(--danger)' }}>
+          {block._error}
+          {block.detail ? `: ${block.detail}` : ''}
+        </p>
       ) : (
         <>
           <div className="grid-4">
@@ -118,7 +120,6 @@ export function StatusScreen() {
   const [error, setError] = useState<string | null>(null)
   const [restartMsg, setRestartMsg] = useState<string | null>(null)
   const [restartBusy, setRestartBusy] = useState(false)
-  const [restartTone, setRestartTone] = useState<'success' | 'info' | 'error'>('success')
   const [restartStep, setRestartStep] = useState<'stop' | 'offline' | 'online' | 'error'>('stop')
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false)
   const [tabVisible, setTabVisible] = useState(() => document.visibilityState === 'visible')
@@ -129,10 +130,11 @@ export function StatusScreen() {
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
+  const pollOk = tabVisible && !restartBusy
   const healthQ = useQuery({
     queryKey: ['status', 'health'],
     queryFn: async () => (await apiGet<ApiEnvelope<HealthData>>('/v1/health')).data,
-    refetchInterval: tabVisible ? 15_000 : false,
+    refetchInterval: pollOk ? 15_000 : false,
   })
   const restQ = useQuery({
     queryKey: ['status', 'rest'],
@@ -146,29 +148,25 @@ export function StatusScreen() {
       ])
       return { balance: b.data, plugins: p.data.plugins ?? [], models: m.data }
     },
-    refetchInterval: tabVisible ? 60_000 : false,
+    refetchInterval: pollOk ? 60_000 : false,
   })
   const historyQ = useQuery({
     queryKey: ['status', 'health-history'],
     queryFn: async () =>
       (await apiGet<ApiEnvelope<{ hours: number; points: Array<Record<string, unknown>> }>>('/v1/health/history?hours=24'))
         .data,
-    refetchInterval: tabVisible ? 60_000 : false,
+    refetchInterval: pollOk ? 60_000 : false,
   })
   const auditQ = useQuery({
     queryKey: ['status', 'audit-recent'],
-    queryFn: async () => {
-      try {
-        return (
-          await apiGet<ApiEnvelope<{ items: Array<{ ts?: string; op?: string; role?: string; trace_id?: string }> }>>(
-            '/v1/audit/recent?limit=10',
-          )
-        ).data
-      } catch {
-        return { items: [] as Array<{ ts?: string; op?: string; role?: string; trace_id?: string }> }
-      }
-    },
-    refetchInterval: tabVisible ? 60_000 : false,
+    queryFn: async () =>
+      (
+        await apiGet<ApiEnvelope<{ items: Array<{ ts?: string; op?: string; role?: string; trace_id?: string }> }>>(
+          '/v1/audit/recent?limit=10',
+        )
+      ).data,
+    refetchInterval: pollOk ? 60_000 : false,
+    retry: false,
   })
 
   const health = healthQ.data ?? null
@@ -185,7 +183,6 @@ export function StatusScreen() {
     setRestartConfirmOpen(false)
     setRestartBusy(true)
     setRestartMsg(null)
-    setRestartTone('info')
     setRestartStep('stop')
     setError(null)
     try {
@@ -195,23 +192,19 @@ export function StatusScreen() {
       const outcome = await waitForCoreRestart()
       if (outcome === 'online') {
         setRestartStep('online')
-        setRestartTone('success')
         setRestartMsg('Сервер снова онлайн.')
         await qc.invalidateQueries({ queryKey: ['status'] })
       } else if (outcome === 'no_downtime') {
         setRestartStep('error')
-        setRestartTone('error')
         setRestartMsg(
           'Рестарт не остановил процесс (API не уходил в offline). Проверь systemd/логи или systemctl restart neyra.',
         )
       } else {
         setRestartStep('error')
-        setRestartTone('info')
         setRestartMsg('Сервер долго не отвечает — обновите страницу вручную через минуту.')
       }
     } catch (e) {
       setRestartStep('error')
-      setRestartTone('error')
       setRestartMsg(e instanceof Error ? e.message : String(e))
     } finally {
       setRestartBusy(false)
@@ -249,25 +242,35 @@ export function StatusScreen() {
         }
       />
 
-      {(error || healthQ.error || restQ.error) && (
+      {!restartBusy && (error || healthQ.error || restQ.error) ? (
         <ErrorState
           error={error || healthQ.error || restQ.error || 'Ошибка загрузки'}
           onRetry={() => void load()}
         />
-      )}
+      ) : null}
       {restartBusy || restartMsg ? (
         <RestartProgress message={restartMsg ?? undefined} step={restartStep} />
       ) : null}
-      {restartMsg && !restartBusy ? <InlineFeedback tone={restartTone}>{restartMsg}</InlineFeedback> : null}
 
       <div className="card">
         <div className="card-header">
           <span className="card-title">Доступность за 24 ч</span>
         </div>
-        <HealthHistoryStrip
-          loading={historyQ.isLoading}
-          points={(historyQ.data?.points as Array<{ timestamp?: string; ok?: boolean; backend_ok?: boolean; storage_ok?: boolean }>) ?? []}
-        />
+        {historyQ.error ? (
+          <ErrorState error={historyQ.error} onRetry={() => void historyQ.refetch()} title="История health" />
+        ) : (
+          <HealthHistoryStrip
+            loading={historyQ.isLoading}
+            points={
+              (historyQ.data?.points as Array<{
+                timestamp?: string
+                ok?: boolean
+                backend_ok?: boolean
+                storage_ok?: boolean
+              }>) ?? []
+            }
+          />
+        )}
       </div>
 
       <div className="grid-4">
@@ -417,8 +420,14 @@ export function StatusScreen() {
         </div>
         {auditQ.isLoading ? (
           <Skeleton className="h-24" />
+        ) : auditQ.error ? (
+          <ErrorState
+            error={auditQ.error}
+            onRetry={() => void auditQ.refetch()}
+            title="Аудит"
+          />
         ) : (auditQ.data?.items?.length ?? 0) === 0 ? (
-          <p className="page-sub">Лента аудита пуста или недоступна для роли.</p>
+          <p className="page-sub">Лента аудита пуста.</p>
         ) : (
           <div className="table-wrap">
             <table className="table">

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -27,7 +27,7 @@ vi.mock('../api', async () => {
   }
 })
 
-function renderApp(initialPath = '/settings') {
+function renderApp(opts?: { initialEntries?: string[]; initialIndex?: number }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const router = createMemoryRouter(
     [
@@ -39,7 +39,10 @@ function renderApp(initialPath = '/settings') {
         ],
       },
     ],
-    { initialEntries: [initialPath] },
+    {
+      initialEntries: opts?.initialEntries ?? ['/settings'],
+      initialIndex: opts?.initialIndex,
+    },
   )
   render(
     <QueryClientProvider client={qc}>
@@ -54,12 +57,13 @@ describe('SettingsScreen useBlocker', () => {
     vi.clearAllMocks()
   })
   afterEach(() => {
+    cleanup()
     vi.restoreAllMocks()
   })
 
   it('asks before leave, cancel keeps dirty value, leave proceeds once', async () => {
     const user = userEvent.setup()
-    const router = renderApp('/settings')
+    const router = renderApp()
     await screen.findByRole('heading', { name: 'Настройки' })
 
     const input = screen.getByLabelText(/Модель речи/i)
@@ -90,5 +94,29 @@ describe('SettingsScreen useBlocker', () => {
     await user.click(screen.getByRole('button', { name: 'Отмена' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
     expect((input2 as HTMLInputElement).value).toBe('again-dirty')
+  })
+
+  it('POP back: cancel keeps dirty; leave goes to previous route once', async () => {
+    const user = userEvent.setup()
+    const router = renderApp({ initialEntries: ['/status', '/settings'], initialIndex: 1 })
+    await screen.findByRole('heading', { name: 'Настройки' })
+
+    const input = screen.getByLabelText(/Модель речи/i)
+    await user.clear(input)
+    await user.type(input, 'pop-dirty')
+
+    await router.navigate(-1)
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Отмена' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+    expect((input as HTMLInputElement).value).toBe('pop-dirty')
+
+    await router.navigate(-1)
+    await screen.findByRole('alertdialog')
+    await user.click(screen.getByRole('button', { name: 'Уйти' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/status'))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByText('STATUS_OK')).toBeTruthy()
   })
 })

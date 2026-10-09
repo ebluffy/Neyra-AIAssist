@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react'
+import { CheckCircle2, Loader2, XCircle } from 'lucide-react'
 
 type Step = 'stop' | 'offline' | 'online' | 'error'
 
@@ -8,23 +8,24 @@ type Props = {
   elapsedSec?: number
 }
 
-const LABELS: Record<Step, string> = {
+const LABELS: Record<Exclude<Step, 'error'>, string> = {
   stop: 'Остановка…',
   offline: 'Offline — ждём подъём…',
   online: 'Online',
-  error: 'Ошибка рестарта',
 }
 
 export function RestartProgress({ step, message, elapsedSec }: Props) {
-  const steps: Step[] = ['stop', 'offline', 'online']
+  const steps: Array<Exclude<Step, 'error'>> = ['stop', 'offline', 'online']
+  const Icon = step === 'online' ? CheckCircle2 : step === 'error' ? XCircle : Loader2
+  const spinning = step === 'stop' || step === 'offline'
   return (
     <div className="card" aria-live="polite">
       <div className="card-header">
-        <Loader2
+        <Icon
           aria-hidden
-          className={step === 'online' || step === 'error' ? undefined : 'spin'}
+          color={step === 'online' ? 'var(--emerald)' : step === 'error' ? 'var(--danger)' : undefined}
           size={15}
-          style={step !== 'online' && step !== 'error' ? { animation: 'spin 1s linear infinite' } : undefined}
+          style={spinning ? { animation: 'spin 1s linear infinite' } : undefined}
         />
         <span className="card-title">Мягкий перезапуск</span>
         {elapsedSec != null ? <span className="hint tabular-nums">{elapsedSec} с</span> : null}
