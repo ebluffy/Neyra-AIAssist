@@ -261,6 +261,8 @@ export function SystemScreen() {
           pre_restore_backup?: string
           pre_restore_backup_name?: string
           pending?: boolean
+          created_at?: string
+          archive_name?: string
         }>
       >('/v1/backup/restore', {
         archive_name: name,
@@ -271,6 +273,8 @@ export function SystemScreen() {
         (r.data.pre_restore_backup ? r.data.pre_restore_backup.split(/[/\\]/).pop() : '') ||
         ''
       const safetyNote = safety ? ` Страховочный архив: ${safety}.` : ''
+      const expectCreated = (r.data.created_at || '').trim()
+      const expectArchive = (r.data.archive_name || name).trim()
       if (r.data.restart_scheduled) {
         setStatus(`Восстановление подготовлено.${safetyNote} Ядро перезапускается…`)
         setBusy(false)
@@ -282,25 +286,32 @@ export function SystemScreen() {
                 status?: string
                 archive_name?: string
                 error?: string
+                created_at?: string
+                at?: string
               } | null
             }>
           >('/v1/backup/list')
           const result = lr.data.last_restore_apply
           setLastRestoreApply(result ?? null)
-          if (result?.status === 'applied') {
-            setStatus(
-              `Восстановление применено${result.archive_name ? ` (${result.archive_name})` : ''}.${safetyNote}`,
-            )
-          } else if (result?.status === 'failed') {
+          const matches =
+            !!result &&
+            (result.archive_name || '') === expectArchive &&
+            (!expectCreated || (result.created_at || '') === expectCreated) &&
+            (!expectCreated || !result.at || result.at >= expectCreated)
+          if (matches && result?.status === 'applied') {
+            setStatus(`Восстановление применено (${expectArchive}).${safetyNote}`)
+          } else if (matches && (result?.status === 'failed' || result?.status === 'rollback_failed')) {
             setStatus('')
             setError(
               `Восстановление при старте не применилось${result.error ? `: ${result.error}` : ''}.${safetyNote}`,
             )
           } else {
-            setStatus(`Рестарт выполнен.${safetyNote} Статус apply пока неизвестен — обнови список бэкапов.`)
+            setStatus(
+              `Рестарт выполнен.${safetyNote} Результат этого restore неизвестен (нет свежего last_restore_apply).`,
+            )
           }
         } catch {
-          setStatus(`Рестарт выполнен.${safetyNote}`)
+          setStatus(`Рестарт выполнен.${safetyNote} Результат apply не прочитан.`)
         }
         await loadBackups()
         return
@@ -528,7 +539,15 @@ export function SystemScreen() {
             {lastRestoreApply?.status ? (
               <p className="hint" style={{ margin: 0 }}>
                 Последний restore при старте:{' '}
-                <strong>{lastRestoreApply.status}</strong>
+                <strong>
+                  {lastRestoreApply.status === 'applied'
+                    ? 'применён'
+                    : lastRestoreApply.status === 'rollback_failed'
+                      ? 'откат не удался'
+                      : lastRestoreApply.status === 'failed'
+                        ? 'не применён'
+                        : lastRestoreApply.status}
+                </strong>
                 {lastRestoreApply.archive_name ? ` · ${lastRestoreApply.archive_name}` : ''}
                 {lastRestoreApply.error ? ` · ${lastRestoreApply.error}` : ''}
                 {lastRestoreApply.at ? ` · ${lastRestoreApply.at}` : ''}

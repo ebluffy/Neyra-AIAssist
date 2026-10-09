@@ -241,6 +241,59 @@ def test_apply_pending_restore_rolls_back_on_copy_failure() -> None:
         td.cleanup()
 
 
+def test_apply_rolls_back_when_external_db_copy_fails() -> None:
+    """AR-47: copy2 failure after tree swap restores memory and leaves no aside orphan."""
+    from unittest import mock
+
+    from core.runtime.backup import BackupManager, PENDING_DIR_NAME, PENDING_FLAG
+
+    td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    try:
+        base = Path(td.name)
+        mem = base / "memory"
+        mem.mkdir()
+        (mem / "keep.txt").write_text("alive", encoding="utf-8")
+        chroma = mem / "chroma_db"
+        chroma.mkdir()
+        (chroma / "x.txt").write_text("c", encoding="utf-8")
+        ext_db = base / "elsewhere" / "hub.db"
+        ext_db.parent.mkdir(parents=True)
+        ext_db.write_text("live-db", encoding="utf-8")
+        Path(str(ext_db) + "-wal").write_text("live-wal", encoding="utf-8")
+        backups = base / "backups"
+        backups.mkdir()
+        cfg = {
+            "backup": {"local_dir": str(backups)},
+            "memory": {"chroma_db_path": str(chroma), "sqlite_path": str(ext_db)},
+        }
+        mgr = BackupManager(cfg)
+        cwd = Path.cwd()
+        try:
+            os.chdir(base)
+            bak = mgr.run_backup("seed")
+            name = Path(str(bak["archive"])).name
+            (mem / "keep.txt").write_text("changed", encoding="utf-8")
+            ext_db.write_text("changed-db", encoding="utf-8")
+            mgr.prepare_restore(name)
+
+            def _boom_copy2(src, dst, *a, **k):
+                raise OSError("copy2 failed")
+
+            with mock.patch("shutil.copy2", side_effect=_boom_copy2):
+                out = mgr.apply_pending_restore()
+            assert out is not None and out.get("applied") is False
+            assert (mem / "keep.txt").read_text(encoding="utf-8") == "changed"
+            assert ext_db.read_text(encoding="utf-8") == "changed-db"
+            assert Path(str(ext_db) + "-wal").read_text(encoding="utf-8") == "live-wal"
+            orphans = list(mem.parent.glob("memory.pre-restore-*"))
+            assert orphans == [], f"aside orphans left: {orphans}"
+            assert (base / PENDING_DIR_NAME / PENDING_FLAG).is_file()
+        finally:
+            os.chdir(cwd)
+    finally:
+        td.cleanup()
+
+
 def test_external_sqlite_without_db_keeps_live_wal() -> None:
     """AR-46: no .db in archive → do not delete live -wal/-shm."""
     from core.runtime.backup import BackupManager
@@ -321,6 +374,7 @@ if __name__ == "__main__":
     test_restore_nonstandard_chroma_parent_name()
     test_restore_external_sqlite_clears_live_wal()
     test_apply_pending_restore_rolls_back_on_copy_failure()
+    test_apply_rolls_back_when_external_db_copy_fails()
     test_external_sqlite_without_db_keeps_live_wal()
     test_restore_refuses_parent_of_backup_dir()
     print("OK test_backup_restore_offline")

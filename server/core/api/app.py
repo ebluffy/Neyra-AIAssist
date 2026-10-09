@@ -3126,6 +3126,7 @@ def build_app(
                 **res,
                 "pre_restore_backup": pre_path,
                 "pre_restore_backup_name": Path(pre_path).name if pre_path else "",
+                "created_at": res.get("created_at") or "",
                 "restart_scheduled": True,
             },
         }
@@ -3265,7 +3266,6 @@ def build_app(
                 )
                 await webhook_store.release_dlq_retry(did, error="route_missing")
                 continue
-            redelivered: dict[str, Any] = {}
             try:
                 redelivered = await _dispatch_webhook(
                     webhook_store,
@@ -3273,16 +3273,22 @@ def build_app(
                     row.get("payload") or {},
                     source="dlq_retry_all",
                 )
-            except Exception:
+            except Exception as e:
                 logger.exception(
                     "dlq_retry_all_failed | delivery_id=%s trace_id=%s",
                     did,
                     trace_id,
                 )
-            # After attempt: history gets retried + link; DLQ loses the original.
+                # Keep event in DLQ as failed — do not mark retried (AR-48).
+                await webhook_store.release_dlq_retry(did, error=type(e).__name__)
+                continue
+            new_id = str(redelivered.get("delivery_id") or "")
+            if not new_id:
+                await webhook_store.release_dlq_retry(did, error="empty_redelivery")
+                continue
             await webhook_store.finish_dlq_retry(
                 did,
-                retried_as=str(redelivered.get("delivery_id") or ""),
+                retried_as=new_id,
                 status="retried",
             )
 

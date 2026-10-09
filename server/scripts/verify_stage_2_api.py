@@ -1614,21 +1614,99 @@ def check_webhook_hmac_and_dlq_retry() -> list[str]:
             if str(stuck.get("status") or "") != "failed":
                 errs.append(f"WebhookStore load must reset retrying→failed, got {stuck}")
 
-            # POST retry-all while only retrying rows exist in the in-memory store → queued 0
-            ok_before = hits["ok"]
-            with TestClient(app, client=("127.0.0.1", 50000)) as client:
-                # Replace DLQ with a single already-retrying row via finish path is hard;
-                # seed through claim: after first claim_twice above, store is separate.
-                # Use a dedicated ephemeral app whose store file has only retrying AFTER
-                # we bypass _load by claiming then... Instead POST with empty claimable set:
-                # write failed row, claim it via API once (queued>=1), then POST again while
-                # still retrying isn't possible because TestClient finishes background first.
-                # Unit claim tests above are the required AR-37 proof; also assert no extra ok.
-                r_again = client.post("/v1/webhooks/dlq/retry-all", headers=admin)
-                if r_again.status_code != 202:
-                    errs.append(f"extra retry-all want 202, got {r_again.status_code}")
-            if hits["ok"] > max(1, ok_before):
-                errs.append(f"ok POSTs must not grow from claim tests, got {hits['ok']}")
+            # AR-48: dispatch exception must keep DLQ entry as failed (not retried).
+            from unittest import mock
+            from core.api import app as api_mod
+
+            async def _boom_dispatch(*_a: Any, **_k: Any) -> dict[str, Any]:
+                raise RuntimeError("dispatch_boom")
+
+            boom_root = Path(tempfile.mkdtemp(prefix="neyra_boom_"))
+            try:
+                (boom_root / "logs").mkdir(parents=True)
+                (boom_root / "modules").mkdir(parents=True)
+                (boom_root / "logs" / "webhooks_state.json").write_text(
+                    json.dumps(
+                        {
+                            "routes": {
+                                "route_ok": {
+                                    "route_id": "route_ok",
+                                    "event_type": "debug.ok",
+                                    "target_url": f"http://127.0.0.1:{port}/ok",
+                                    "secret": "hook-secret",
+                                    "enabled": True,
+                                    "max_retries": 0,
+                                }
+                            },
+                            "deliveries": {
+                                "b1": {
+                                    "delivery_id": "b1",
+                                    "route_id": "route_ok",
+                                    "status": "failed",
+                                    "payload": {"event_type": "debug.ok"},
+                                }
+                            },
+                            "dlq": {
+                                "b1": {
+                                    "delivery_id": "b1",
+                                    "route_id": "route_ok",
+                                    "status": "failed",
+                                    "payload": {"event_type": "debug.ok"},
+                                }
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                boom_app = build_app(
+                    {
+                        "paths": {"data_dir": str(data_tmp / "boom")},
+                        "api": {
+                            "host": "127.0.0.1",
+                            "port": 8787,
+                            "token": "admin-secret",
+                            "viewer_token": "viewer-secret",
+                            "maint_token": "maint-secret",
+                            "public_base_url": "",
+                            "public_path_prefix": "/api",
+                            "audit_log_enabled": False,
+                            "rate_limit_requests_per_minute": 0,
+                            "websocket": {
+                                "idle_timeout_seconds": 5,
+                                "ping_interval_seconds": 20,
+                                "close_grace_seconds": 1,
+                            },
+                        },
+                        "dashboard": {"enabled": False},
+                        "llm": {
+                            "talk_model": {"provider": "openrouter", "model": "x"},
+                            "brain_model": {"provider": "openrouter", "model": "x"},
+                            "memory_model": {"provider": "openrouter", "model": "x"},
+                            "vision_model": {"provider": "openrouter", "model": "x"},
+                            "providers": {"openrouter": {"model": "x"}},
+                        },
+                    },
+                    shared_agent=agent,
+                    shared_monitor=monitor,
+                    shared_backup_manager=MagicMock(),
+                    project_root=boom_root,
+                )
+                with mock.patch.object(api_mod, "_dispatch_webhook", side_effect=_boom_dispatch):
+                    with TestClient(boom_app, client=("127.0.0.1", 50000)) as client:
+                        br = client.post("/v1/webhooks/dlq/retry-all", headers=admin)
+                        if br.status_code != 202:
+                            errs.append(f"AR-48 retry-all want 202, got {br.status_code}")
+                        dlq = client.get("/v1/webhooks/dlq", headers=admin)
+                        items = ((dlq.json().get("data") or {}).get("items") or []) if dlq.status_code == 200 else []
+                        if len(items) != 1 or str(items[0].get("status") or "") != "failed":
+                            errs.append(f"AR-48 DLQ want 1 failed row, got {items}")
+                        dels = client.get("/v1/webhooks/deliveries", headers=admin)
+                        drows = ((dels.json().get("data") or {}).get("deliveries") or []) if dels.status_code == 200 else []
+                        b1 = next((x for x in drows if x.get("delivery_id") == "b1"), None)
+                        if b1 is not None and str(b1.get("status") or "") == "retried":
+                            errs.append("AR-48 history must not be retried after dispatch exception")
+            finally:
+                shutil.rmtree(boom_root, ignore_errors=True)
         finally:
             shutil.rmtree(claim_root, ignore_errors=True)
             shutil.rmtree(reset_dir, ignore_errors=True)

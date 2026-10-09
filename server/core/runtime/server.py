@@ -103,6 +103,13 @@ def run_neyra_server(config: dict) -> None:
                 "Pending restore applied before agent start | archive=%s",
                 applied.get("archive_name"),
             )
+        elif applied and str(applied.get("status") or "") == "rollback_failed":
+            logger.error(
+                "Pending restore rollback_failed | archive=%s aside=%s — refusing silent start",
+                applied.get("archive_name"),
+                applied.get("aside_path"),
+            )
+            sys.exit(1)
         elif applied and not applied.get("applied"):
             logger.error(
                 "Pending restore failed before agent start | archive=%s error=%s",
