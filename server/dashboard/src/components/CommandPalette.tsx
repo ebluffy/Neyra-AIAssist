@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { tryAllowNavigation } from '../lib/navigation-guard'
 import { getStoredTheme, toggleTheme } from '../lib/theme'
 
 const NAV_ITEMS = [
@@ -42,7 +43,8 @@ export function CommandPalette() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  function go(to: string) {
+  async function go(to: string) {
+    if (!(await tryAllowNavigation())) return
     setOpen(false)
     navigate(to)
   }
@@ -75,7 +77,7 @@ export function CommandPalette() {
               <Command.Item
                 key={to}
                 className="cmdk-item"
-                onSelect={() => go(to)}
+                onSelect={() => void go(to)}
                 value={`${label} ${to}`}
               >
                 <Icon aria-hidden className="cmdk-item-icon" size={16} strokeWidth={1.75} />

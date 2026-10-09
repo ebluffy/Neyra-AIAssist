@@ -7,7 +7,11 @@ import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
-import { allowNavigation, setNavigationBlocker } from '../lib/navigation-guard'
+import {
+  allowNextNavigation,
+  setLeaveAsk,
+  setNavigationBlocker,
+} from '../lib/navigation-guard'
 
 type FieldDef = { key: string; label: string; kind?: 'text' | 'bool' | 'provider' }
 
@@ -211,25 +215,40 @@ export function SettingsScreen() {
   }, [anyDirty])
 
   useEffect(() => {
-    setNavigationBlocker(() => {
-      if (!anyDirty) return true
-      return window.confirm('Есть несохранённые изменения в Настройках. Уйти без применения?')
-    })
-    return () => setNavigationBlocker(null)
+    setNavigationBlocker(() => !anyDirty)
+    setLeaveAsk(
+      anyDirty
+        ? () =>
+            softConfirm(
+              'Несохранённые изменения',
+              'Есть несохранённые изменения в Настройках. Уйти без применения?',
+            )
+        : null,
+    )
+    return () => {
+      setNavigationBlocker(null)
+      setLeaveAsk(null)
+    }
   }, [anyDirty])
 
-  // Browser Back/Forward: undo with history.go(1) when user cancels (no sentinel pushState).
+  // Browser Back/Forward: pull back immediately when dirty, then DangerConfirm; confirm → go(-1).
   useEffect(() => {
     if (!anyDirty) return
     let undoing = false
     const onPopState = () => {
       if (undoing) return
-      if (allowNavigation()) return
       undoing = true
       window.history.go(1)
-      window.setTimeout(() => {
+      void softConfirm(
+        'Несохранённые изменения',
+        'Есть несохранённые изменения в Настройках. Уйти без применения?',
+      ).then((ok) => {
+        if (ok) {
+          allowNextNavigation()
+          window.history.go(-1)
+        }
         undoing = false
-      }, 0)
+      })
     }
     window.addEventListener('popstate', onPopState)
     return () => {

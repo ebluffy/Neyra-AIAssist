@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import {
   BookOpenText,
   Brain,
@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import { apiGet, clearSessionToken, getSessionToken } from '../api'
 import type { ApiEnvelope } from '../api'
-import { allowNavigation } from '../lib/navigation-guard'
+import { tryAllowNavigation } from '../lib/navigation-guard'
 import { applyTheme, getStoredTheme, type Theme } from '../lib/theme'
 import { DocsScreen } from '../screens/DocsScreen'
 import { MemoryScreen } from '../screens/MemoryScreen'
@@ -64,6 +64,7 @@ export function AppShell() {
   const [logoutOpen, setLogoutOpen] = useState(false)
   const [logoutBusy, setLogoutBusy] = useState(false)
   const location = useLocation()
+  const navigate = useNavigate()
 
   useEffect(() => {
     const check = () => setMobile(window.innerWidth < 768)
@@ -173,15 +174,16 @@ export function AppShell() {
               key={to}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
               onClick={(e) => {
-                if (!allowNavigation()) {
-                  e.preventDefault()
-                  return
-                }
-                setOpen(false)
+                e.preventDefault()
+                void (async () => {
+                  if (!(await tryAllowNavigation())) return
+                  setOpen(false)
+                  navigate(to)
+                })()
               }}
               to={to}
             >
-              <Icon aria-hidden className="nav-item-icon" size={18} />
+              <Icon aria-hidden className="nav-item-icon" size={18} strokeWidth={1.75} />
               {label}
             </NavLink>
           ))}

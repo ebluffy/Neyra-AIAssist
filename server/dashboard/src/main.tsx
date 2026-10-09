@@ -12,6 +12,7 @@ import '@fontsource/fira-code/500.css'
 import '@fontsource/fira-code/600.css'
 import './styles/tokens.css'
 import App from './App.tsx'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { initTheme } from './lib/theme'
 
 initTheme()
@@ -29,10 +30,12 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <App />
-        <Toaster closeButton position="bottom-right" richColors theme="system" />
-      </BrowserRouter>
+      <TooltipProvider delayDuration={200}>
+        <BrowserRouter>
+          <App />
+          <Toaster closeButton position="bottom-right" richColors theme="system" />
+        </BrowserRouter>
+      </TooltipProvider>
     </QueryClientProvider>
   </StrictMode>,
 )

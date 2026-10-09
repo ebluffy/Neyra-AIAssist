@@ -1,5 +1,6 @@
 import type { Config } from 'tailwindcss'
 import typography from '@tailwindcss/typography'
+import animate from 'tailwindcss-animate'
 
 export default {
   darkMode: ['class'],
@@ -9,10 +10,37 @@ export default {
       colors: {
         background: 'var(--bg)',
         foreground: 'var(--text)',
-        card: 'var(--surface)',
-        muted: 'var(--muted)',
+        card: {
+          DEFAULT: 'var(--surface)',
+          foreground: 'var(--text)',
+        },
+        popover: {
+          DEFAULT: 'var(--surface)',
+          foreground: 'var(--text)',
+        },
+        primary: {
+          DEFAULT: 'var(--cyan)',
+          foreground: 'var(--accent-fg, #06222a)',
+        },
+        secondary: {
+          DEFAULT: 'var(--surface-2)',
+          foreground: 'var(--text)',
+        },
+        muted: {
+          DEFAULT: 'var(--surface-2)',
+          foreground: 'var(--muted)',
+        },
+        accent: {
+          DEFAULT: 'var(--cyan)',
+          foreground: 'var(--accent-fg, #06222a)',
+        },
+        destructive: {
+          DEFAULT: 'var(--danger)',
+          foreground: '#ffffff',
+        },
         border: 'var(--border)',
-        accent: 'var(--cyan)',
+        input: 'var(--border)',
+        ring: 'var(--cyan)',
         'accent-cyan': 'var(--cyan)',
         surface: 'var(--surface)',
         'surface-2': 'var(--surface-2)',
@@ -56,5 +84,5 @@ export default {
       },
     },
   },
-  plugins: [typography],
+  plugins: [typography, animate],
 } satisfies Config
