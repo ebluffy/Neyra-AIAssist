@@ -185,6 +185,24 @@ body::before {
   white-space: nowrap;
 }
 .tabular-nums { font-variant-numeric: tabular-nums; }
+.health-strip-chart { width: 100%; min-height: 72px; }
+.health-strip.skeleton-block {
+  min-height: 72px;
+  border-radius: var(--radius);
+  background: linear-gradient(90deg, var(--surface-2), var(--surface), var(--surface-2));
+  background-size: 200% 100%;
+  animation: shimmer 2s linear infinite;
+}
+.restart-steps { list-style: none; display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.5rem 0; padding: 0; }
+.restart-step {
+  font-size: 0.75rem;
+  color: var(--muted);
+  padding: 0.25rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.restart-step.active { color: var(--text); border-color: var(--cyan); }
+.restart-step.done { color: var(--emerald); border-color: color-mix(in oklab, var(--emerald) 40%, var(--border)); }
 
 .sr-only {
   position: absolute;

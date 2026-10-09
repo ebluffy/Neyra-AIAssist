@@ -1965,6 +1965,47 @@ def build_app(
                 logger.exception("health history read failed | trace_id=%s", trace_id)
         return {"ok": True, "trace_id": trace_id, "data": {"hours": hours, "points": points}}
 
+    @app.get("/v1/audit/recent")
+    async def v1_audit_recent(
+        request: Request,
+        limit: int = Query(default=10, ge=1, le=100),
+        _: None = Depends(dep_maint),
+    ):
+        """Last N rows from api_audit.jsonl (maint+)."""
+        trace_id = _trace_id(request)
+        ia = config.get("api") if isinstance(config.get("api"), dict) else {}
+        rel = str(ia.get("audit_log_path", "./logs/api_audit.jsonl")).strip()
+        path = Path(rel)
+        if not path.is_absolute():
+            path = root / path
+        rows: list[dict[str, Any]] = []
+        if path.is_file():
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                for line in reversed(lines):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    rows.append(
+                        {
+                            "ts": row.get("ts") or row.get("timestamp"),
+                            "op": row.get("op"),
+                            "role": row.get("role"),
+                            "trace_id": row.get("trace_id"),
+                        }
+                    )
+                    if len(rows) >= limit:
+                        break
+            except Exception:
+                logger.exception("audit recent read failed | trace_id=%s", trace_id)
+        return {"ok": True, "trace_id": trace_id, "data": {"items": rows}}
+
     @app.get("/v1/health")
     async def v1_health(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
