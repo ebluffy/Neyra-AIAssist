@@ -5,6 +5,7 @@ import { apiGet, apiPost } from '../api'
 import type { ApiEnvelope, BackupArchive, HealthData } from '../api'
 import { LogViewer } from '../components/LogViewer'
 import type { LogSource } from '../components/LogViewer'
+import { RestartProgress } from '../components/RestartProgress'
 import { Button } from '../components/ui/button'
 import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { EmptyState } from '../components/ui/empty-state'
@@ -119,6 +120,8 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
   const [backupLoading, setBackupLoading] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
   const [danger, setDanger] = useState<SystemDanger | null>(null)
+  const [restartStep, setRestartStep] = useState<'stop' | 'offline' | 'online' | 'error'>('stop')
+  const [restartMsg, setRestartMsg] = useState<string | null>(null)
 
   const loadHealth = useCallback(async () => {
     setHealthLoading(true)
@@ -190,18 +193,26 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
 
   async function waitAfterRestart(prefix: string) {
     setRestartBusy(true)
+    setRestartStep('offline')
+    setRestartMsg(`${prefix} Offline → online…`)
     try {
       const outcome = await waitForCoreRestart()
       if (outcome === 'online') {
-        setStatus(`${prefix} Сервер снова онлайн.`)
+        setRestartStep('online')
+        setRestartMsg(`${prefix} Сервер снова онлайн.`)
+        setStatus('')
         await load()
         if (tab === 'health') await loadHealth()
         if (tab === 'backup') await loadBackups()
       } else if (outcome === 'no_downtime') {
+        setRestartStep('error')
+        setRestartMsg('Рестарт не остановил процесс (API не уходил в offline).')
         setStatus('')
         setError('Рестарт не остановил процесс (API не уходил в offline). Проверь systemd/логи или systemctl restart neyra.')
       } else {
-        setStatus(`${prefix} Сервер долго не отвечает — обнови страницу через минуту.`)
+        setRestartStep('error')
+        setRestartMsg(`${prefix} Сервер долго не отвечает — обнови страницу через минуту.`)
+        setStatus('')
       }
     } finally {
       setRestartBusy(false)
@@ -215,13 +226,16 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
   async function doSoftRestart() {
     setDanger(null)
     setError(null)
-    setStatus('Мягкий рестарт… ждём подъёма API')
+    setStatus('')
     setRestartBusy(true)
+    setRestartStep('stop')
+    setRestartMsg('Мягкий рестарт… останавливаем процесс')
     try {
       await apiPost<ApiEnvelope<{ note?: string }>>('/v1/system/restart', {})
       await waitAfterRestart('Мягкий рестарт.')
     } catch (e) {
-      setStatus('')
+      setRestartStep('error')
+      setRestartMsg(e instanceof Error ? e.message : String(e))
       setError(e instanceof Error ? e.message : String(e))
       setRestartBusy(false)
     }
@@ -273,9 +287,11 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
       const expectCreated = (r.data.created_at || '').trim()
       const expectArchive = (r.data.archive_name || name).trim()
       if (r.data.restart_scheduled) {
-        setStatus(`Восстановление подготовлено.${safetyNote} Ядро перезапускается…`)
+        setStatus('')
+        setRestartStep('stop')
+        setRestartMsg(`Восстановление подготовлено.${safetyNote} Ядро перезапускается…`)
         setBusy(false)
-        await waitAfterRestart(`Ожидаю результат restore при старте.${safetyNote}`)
+        await waitAfterRestart(`Restore.${safetyNote}`)
         try {
           const lr = await apiGet<
             ApiEnvelope<{
@@ -296,19 +312,22 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
             (!expectCreated || (result.created_at || '') === expectCreated) &&
             (!expectCreated || !result.at || result.at >= expectCreated)
           if (matches && result?.status === 'applied') {
-            setStatus(`Восстановление применено (${expectArchive}).${safetyNote}`)
+            setRestartMsg(`Восстановление применено (${expectArchive}).${safetyNote}`)
           } else if (matches && (result?.status === 'failed' || result?.status === 'rollback_failed')) {
-            setStatus('')
+            setRestartStep('error')
+            setRestartMsg(
+              `Восстановление при старте не применилось${result.error ? `: ${result.error}` : ''}.${safetyNote}`,
+            )
             setError(
               `Восстановление при старте не применилось${result.error ? `: ${result.error}` : ''}.${safetyNote}`,
             )
           } else {
-            setStatus(
+            setRestartMsg(
               `Рестарт выполнен.${safetyNote} Результат этого restore неизвестен (нет свежего last_restore_apply).`,
             )
           }
         } catch {
-          setStatus(`Рестарт выполнен.${safetyNote} Результат apply не прочитан.`)
+          setRestartMsg(`Рестарт выполнен.${safetyNote} Результат apply не прочитан.`)
         }
         await loadBackups()
         return
@@ -363,8 +382,9 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
           </Button>
         }
       />
-      {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
-      {status && <InlineFeedback tone="success">{status}</InlineFeedback>}
+      {!restartBusy && error ? <InlineFeedback tone="error">{error}</InlineFeedback> : null}
+      {!restartBusy && status ? <InlineFeedback tone="success">{status}</InlineFeedback> : null}
+      {restartBusy || restartMsg ? <RestartProgress message={restartMsg ?? undefined} step={restartStep} /> : null}
 
       <div className="card">
         <div className="panel-tabs panel-tabs-dense" role="tablist">
@@ -500,6 +520,32 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
                   <Kv label="Аптайм" value={formatUptime(health.uptime_seconds)} />
                   <Kv label="Версия API" value={str(healthVersion)} />
                   {health.public_url != null && <Kv label="Публичный URL" value={str(health.public_url)} />}
+                </div>
+                <div className="grid-2">
+                  {(
+                    [
+                      ['LLM-бэкенд', health.backend],
+                      ['Хранилище', health.storage],
+                      ['Интеграции', health.integrations],
+                      ['Самолечение', health.self_healing],
+                    ] as const
+                  ).map(([label, block]) => {
+                    const row = (block && typeof block === 'object' ? block : {}) as Record<string, unknown>
+                    const ok = row.ok !== false
+                    return (
+                      <div className="stat-tile" key={label}>
+                        <p className="stat-label">{label}</p>
+                        <p className={`stat-value-md ${ok ? '' : ''}`} style={{ color: ok ? 'var(--emerald)' : 'var(--amber)' }}>
+                          {ok ? 'ок' : 'проблема'}
+                        </p>
+                        {row.error != null ? (
+                          <p className="hint" style={{ marginTop: 4 }}>
+                            {String(row.error)}
+                          </p>
+                        ) : null}
+                      </div>
+                    )
+                  })}
                 </div>
                 <div>
                   <Link className="btn btn-secondary btn-sm" to="/status">

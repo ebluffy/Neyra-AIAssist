@@ -500,6 +500,17 @@ export function MemoryScreen() {
       .sort((a, b) => personLabel(a).localeCompare(personLabel(b), 'ru'))
   }, [people, peopleQuery])
 
+  function avatarSrc(url?: string): string | undefined {
+    if (!url) return undefined
+    try {
+      const u = new URL(url)
+      if (!u.searchParams.has('size')) u.searchParams.set('size', '64')
+      return u.toString()
+    } catch {
+      return url.includes('?') ? `${url}&size=64` : `${url}?size=64`
+    }
+  }
+
   return (
     <div className="page-content stack">
       <PageHeader
@@ -721,12 +732,12 @@ export function MemoryScreen() {
               className="input"
               onChange={(e) => setPeopleQuery(e.target.value)}
               placeholder="Поиск: id, ник, alias…"
-              style={{ marginBottom: '0.5rem', minHeight: 36 }}
+              style={{ marginBottom: '0.5rem', minHeight: 44 }}
               value={peopleQuery}
             />
             <div className="stack-sm">
               {sortedPeople.map((p) => {
-                const avatar = (p.accounts || []).find((a) => a.avatar_url)?.avatar_url
+                const avatar = avatarSrc((p.accounts || []).find((a) => a.avatar_url)?.avatar_url)
                 return (
                   <button
                     key={String(p.id)}
@@ -796,13 +807,13 @@ export function MemoryScreen() {
                     <p className="stat-label">Аккаунты</p>
                     {accounts.map((a, i) => (
                       <div key={i} className="row" style={{ gap: 8, alignItems: 'center' }}>
-                        {a.avatar_url ? (
+                        {avatarSrc(a.avatar_url) ? (
                           <img
                             alt={a.display_name || a.handle || a.platform_user_id || 'avatar'}
                             className="person-avatar"
                             height={28}
                             loading="lazy"
-                            src={a.avatar_url}
+                            src={avatarSrc(a.avatar_url)}
                             width={28}
                           />
                         ) : null}
