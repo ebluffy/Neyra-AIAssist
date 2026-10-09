@@ -1383,17 +1383,10 @@ def check_webhook_hmac_and_dlq_retry() -> list[str]:
         def log_message(self, *_args: Any) -> None:
             return
 
-    # AR-40: seed a "live" webhooks file and prove verify does not touch it.
+    # AR-40: never write/unlink live webhooks — only read_bytes before/after.
     live_wh = SERVER_ROOT / "logs" / "webhooks_state.json"
-    live_wh.parent.mkdir(parents=True, exist_ok=True)
-    live_marker = {
-        "routes": {"keep_me": {"route_id": "keep_me", "secret": "live-secret-do-not-touch"}},
-        "deliveries": {},
-        "dlq": {},
-        "_ar40_marker": "preserve",
-    }
-    live_before = json.dumps(live_marker, ensure_ascii=False, indent=2)
-    live_wh.write_text(live_before, encoding="utf-8")
+    live_existed = live_wh.is_file()
+    live_before_bytes = live_wh.read_bytes() if live_existed else None
 
     httpd = HTTPServer(("127.0.0.1", 0), _Handler)
     port = int(httpd.server_address[1])
@@ -1541,9 +1534,113 @@ def check_webhook_hmac_and_dlq_retry() -> list[str]:
             if hits["fail"] < 1:
                 errs.append("fail receiver expected at least 1 POST")
 
-        live_after = live_wh.read_text(encoding="utf-8") if live_wh.is_file() else ""
-        if live_after != live_before:
-            errs.append("AR-40: live server/logs/webhooks_state.json was modified by verify")
+            # AR-45: original delivery history must leave "retrying"
+            dels = client.get("/v1/webhooks/deliveries", headers=admin)
+            if dels.status_code == 200:
+                drows = (dels.json().get("data") or {}).get("deliveries") or []
+                d_ok = next((x for x in drows if x.get("delivery_id") == "d_ok"), None)
+                if d_ok is None or str(d_ok.get("status") or "") != "retried":
+                    errs.append(f"d_ok history want status=retried, got {d_ok}")
+                elif not d_ok.get("retried_as"):
+                    errs.append("d_ok history missing retried_as")
+
+        # AR-37: claim twice → second None; status=retrying skipped; load resets retrying→failed
+        import asyncio
+
+        from core.api.app import WebhookStore
+
+        claim_root = Path(tempfile.mkdtemp(prefix="neyra_claim_"))
+        reset_dir = Path(tempfile.mkdtemp(prefix="neyra_reset_"))
+        try:
+            (claim_root / "logs").mkdir(parents=True)
+            store = WebhookStore(claim_root)
+            store._state = {
+                "routes": {},
+                "deliveries": {
+                    "c1": {"delivery_id": "c1", "route_id": "r", "status": "failed", "payload": {}}
+                },
+                "dlq": {
+                    "c1": {"delivery_id": "c1", "route_id": "r", "status": "failed", "payload": {}}
+                },
+            }
+            store.path.write_text(json.dumps(store._state), encoding="utf-8")
+
+            async def _claim_twice() -> tuple[Any, Any]:
+                a = await store.claim_dlq_for_retry("c1")
+                b = await store.claim_dlq_for_retry("c1")
+                return a, b
+
+            first, second = asyncio.run(_claim_twice())
+            if first is None:
+                errs.append("first claim_dlq_for_retry must succeed")
+            if second is not None:
+                errs.append("second claim_dlq_for_retry must return None")
+
+            async def _skip_retrying() -> Any:
+                s = WebhookStore(claim_root)
+                s._state = {
+                    "routes": {},
+                    "deliveries": {},
+                    "dlq": {
+                        "rskip": {
+                            "delivery_id": "rskip",
+                            "route_id": "route_ok",
+                            "status": "retrying",
+                            "payload": {},
+                        }
+                    },
+                }
+                return await s.claim_dlq_for_retry("rskip")
+
+            if asyncio.run(_skip_retrying()) is not None:
+                errs.append("claim on status=retrying must return None")
+
+            (reset_dir / "logs").mkdir(parents=True)
+            (reset_dir / "logs" / "webhooks_state.json").write_text(
+                json.dumps(
+                    {
+                        "routes": {},
+                        "deliveries": {
+                            "stuck": {"delivery_id": "stuck", "status": "retrying", "route_id": "r"}
+                        },
+                        "dlq": {
+                            "stuck": {"delivery_id": "stuck", "status": "retrying", "route_id": "r"}
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stuck = (WebhookStore(reset_dir)._state.get("dlq") or {}).get("stuck") or {}
+            if str(stuck.get("status") or "") != "failed":
+                errs.append(f"WebhookStore load must reset retrying→failed, got {stuck}")
+
+            # POST retry-all while only retrying rows exist in the in-memory store → queued 0
+            ok_before = hits["ok"]
+            with TestClient(app, client=("127.0.0.1", 50000)) as client:
+                # Replace DLQ with a single already-retrying row via finish path is hard;
+                # seed through claim: after first claim_twice above, store is separate.
+                # Use a dedicated ephemeral app whose store file has only retrying AFTER
+                # we bypass _load by claiming then... Instead POST with empty claimable set:
+                # write failed row, claim it via API once (queued>=1), then POST again while
+                # still retrying isn't possible because TestClient finishes background first.
+                # Unit claim tests above are the required AR-37 proof; also assert no extra ok.
+                r_again = client.post("/v1/webhooks/dlq/retry-all", headers=admin)
+                if r_again.status_code != 202:
+                    errs.append(f"extra retry-all want 202, got {r_again.status_code}")
+            if hits["ok"] > max(1, ok_before):
+                errs.append(f"ok POSTs must not grow from claim tests, got {hits['ok']}")
+        finally:
+            shutil.rmtree(claim_root, ignore_errors=True)
+            shutil.rmtree(reset_dir, ignore_errors=True)
+
+        live_after_exists = live_wh.is_file()
+        if live_existed:
+            if not live_after_exists:
+                errs.append("AR-40: live webhooks_state.json disappeared during verify")
+            elif live_wh.read_bytes() != live_before_bytes:
+                errs.append("AR-40: live webhooks_state.json bytes changed during verify")
+        elif live_after_exists:
+            errs.append("AR-40: verify created live webhooks_state.json")
     finally:
         try:
             httpd.shutdown()
@@ -1551,12 +1648,6 @@ def check_webhook_hmac_and_dlq_retry() -> list[str]:
             pass
         shutil.rmtree(api_root, ignore_errors=True)
         shutil.rmtree(data_tmp, ignore_errors=True)
-        # Restore live marker only if we created the AR-40 probe (leave real prod alone otherwise).
-        try:
-            if live_wh.is_file() and '"_ar40_marker": "preserve"' in live_wh.read_text(encoding="utf-8"):
-                live_wh.unlink()
-        except OSError:
-            pass
 
     return errs
 

@@ -98,13 +98,19 @@ def run_neyra_server(config: dict) -> None:
     backup_manager = BackupManager(config)
     try:
         applied = backup_manager.apply_pending_restore()
-        if applied:
+        if applied and applied.get("applied"):
             logger.info(
                 "Pending restore applied before agent start | archive=%s",
                 applied.get("archive_name"),
             )
+        elif applied and not applied.get("applied"):
+            logger.error(
+                "Pending restore failed before agent start | archive=%s error=%s",
+                applied.get("archive_name"),
+                applied.get("error"),
+            )
     except Exception:
-        logger.exception("Pending restore failed; continuing with live memory")
+        logger.exception("Pending restore raised; continuing with live memory")
 
     agent = NeyraAgent(config)
     reflection = ReflectionEngine(config, agent)

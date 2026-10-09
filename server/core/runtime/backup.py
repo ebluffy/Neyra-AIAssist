@@ -20,6 +20,7 @@ logger = logging.getLogger("neyra.backup")
 PENDING_DIR_NAME = ".neyra_pending_restore"
 PENDING_FLAG = "pending.json"
 PENDING_MEMORY = "memory"
+LAST_APPLY_NAME = "last_restore_apply.json"
 
 
 class BackupManager:
@@ -211,16 +212,62 @@ class BackupManager:
             return None
         return staging_mem
 
+    def _last_apply_path(self) -> Path:
+        return self.local_dir / LAST_APPLY_NAME
+
+    def write_last_apply_result(self, result: dict) -> None:
+        """Persist last pending-restore outcome for API/UI (AR-44)."""
+        self.local_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "status": "applied" if result.get("applied") else "failed",
+            "archive_name": result.get("archive_name") or "",
+            "error": str(result.get("error") or "")[:200],
+            "at": datetime.now().isoformat(timespec="seconds"),
+        }
+        if result.get("applied"):
+            payload["status"] = "applied"
+        self._last_apply_path().write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def read_last_apply_result(self) -> dict | None:
+        path = self._last_apply_path()
+        if not path.is_file():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else None
+        except Exception:
+            return None
+
     @staticmethod
-    def _replace_tree(src_dir: Path, dst_dir: Path) -> None:
-        """Replace destination directory contents (no merge of stale files)."""
-        if dst_dir.exists():
-            shutil.rmtree(dst_dir)
+    def _swap_tree_via_rename(src_dir: Path, dst_dir: Path) -> Path | None:
+        """Move dst aside, copy src into place. Returns backup path (or None if no prior dst).
+
+        On copy failure, restores the aside folder. Does not delete the aside copy;
+        caller removes it after a successful startup.
+        """
         dst_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(src_dir, dst_dir)
+        aside: Path | None = None
+        if dst_dir.exists():
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            aside = dst_dir.parent / f"{dst_dir.name}.pre-restore-{ts}"
+            if aside.exists():
+                shutil.rmtree(aside, ignore_errors=True)
+            dst_dir.rename(aside)
+        try:
+            shutil.copytree(src_dir, dst_dir)
+        except Exception:
+            if aside is not None and aside.exists():
+                if dst_dir.exists():
+                    shutil.rmtree(dst_dir, ignore_errors=True)
+                aside.rename(dst_dir)
+            raise
+        return aside
 
     def _place_sqlite_outside_memory(self, staged_mem: Path, mem_dst: Path) -> None:
-        """If sqlite_path is outside memory root, copy DB and drop live WAL/SHM (AR-42)."""
+        """If sqlite_path is outside memory root, copy DB; clear WAL only when .db replaced (AR-46)."""
         mem_cfg = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
         db = Path(str(mem_cfg.get("sqlite_path") or (mem_dst / "neyra_memory.db")))
         try:
@@ -231,8 +278,15 @@ class BackupManager:
             db_outside = True
         if not db_outside:
             return
-        # Always drop live sidecars when replacing an external .db so a missing
-        # archive WAL cannot pair with a restored .db (SQLite would replay it).
+        cand = staged_mem / db.name
+        if not cand.is_file():
+            matches = list(staged_mem.glob("*.db"))
+            cand = matches[0] if matches else cand
+        if not cand.is_file():
+            # No DB in archive — leave live .db and its WAL alone.
+            return
+        db.parent.mkdir(parents=True, exist_ok=True)
+        # Drop live sidecars only when we actually replace the .db.
         for suffix in ("-wal", "-shm"):
             side = Path(str(db) + suffix)
             if side.is_file():
@@ -240,18 +294,12 @@ class BackupManager:
                     side.unlink()
                 except OSError as e:
                     logger.warning("Could not remove sqlite sidecar %s: %s", side, e)
-        cand = staged_mem / db.name
-        if not cand.is_file():
-            matches = list(staged_mem.glob("*.db"))
-            cand = matches[0] if matches else cand
-        if cand.is_file():
-            db.parent.mkdir(parents=True, exist_ok=True)
-            if db.is_file():
-                try:
-                    db.unlink()
-                except OSError as e:
-                    logger.warning("Could not remove old sqlite file %s: %s", db, e)
-            shutil.copy2(cand, db)
+        if db.is_file():
+            try:
+                db.unlink()
+            except OSError as e:
+                logger.warning("Could not remove old sqlite file %s: %s", db, e)
+        shutil.copy2(cand, db)
         for suffix in ("-wal", "-shm"):
             leaf = db.name + suffix
             side_src = staged_mem / leaf
@@ -303,42 +351,68 @@ class BackupManager:
             shutil.rmtree(unpack_root, ignore_errors=True)
 
     def apply_pending_restore(self) -> dict | None:
-        """Apply staged restore if a pending flag exists. Call before opening Hub/Chroma."""
+        """Apply staged restore if a pending flag exists. Call before opening Hub/Chroma.
+
+        On failure: roll live memory back, keep pending staging, write failed result (AR-43/44).
+        """
         pending = self._pending_root()
         flag_path = pending / PENDING_FLAG
         staged = pending / PENDING_MEMORY
         if not flag_path.is_file() or not staged.is_dir():
-            if pending.exists():
+            if pending.exists() and not flag_path.is_file():
                 shutil.rmtree(pending, ignore_errors=True)
             return None
         try:
             flag = json.loads(flag_path.read_text(encoding="utf-8"))
         except Exception:
-            logger.exception("pending restore flag unreadable; discarding")
-            shutil.rmtree(pending, ignore_errors=True)
-            return None
+            logger.exception("pending restore flag unreadable; leaving pending in place")
+            self.write_last_apply_result(
+                {"applied": False, "archive_name": "", "error": "pending_flag_unreadable"}
+            )
+            return {"applied": False, "pending": True, "error": "pending_flag_unreadable"}
         mem_dst = Path(str(flag.get("memory_root") or self._memory_root()))
+        archive_name = flag.get("archive_name")
+        aside: Path | None = None
         try:
             self._assert_safe_memory_dst(mem_dst)
-            self._replace_tree(staged, mem_dst)
+            aside = self._swap_tree_via_rename(staged, mem_dst)
             self._place_sqlite_outside_memory(staged, mem_dst)
             out = {
                 "applied": True,
                 "pending": False,
-                "archive_name": flag.get("archive_name"),
+                "archive_name": archive_name,
                 "restored_from": flag.get("archive_path"),
                 "restored_paths": [str(mem_dst)],
                 "memory_root": str(mem_dst),
                 "logs_restored": False,
             }
+            self.write_last_apply_result(out)
+            # Only remove pending after a successful swap.
+            shutil.rmtree(pending, ignore_errors=True)
+            # Drop the aside copy after success (live tree is the restored one).
+            if aside is not None and aside.exists():
+                shutil.rmtree(aside, ignore_errors=True)
             logger.info(
                 "Applied pending restore | archive=%s memory_root=%s",
-                flag.get("archive_name"),
+                archive_name,
                 mem_dst,
             )
             return out
-        finally:
-            shutil.rmtree(pending, ignore_errors=True)
+        except Exception as e:
+            logger.exception("Pending restore apply failed | archive=%s", archive_name)
+            failed = {
+                "applied": False,
+                "pending": True,
+                "archive_name": archive_name,
+                "error": type(e).__name__,
+                "memory_root": str(mem_dst),
+            }
+            try:
+                self.write_last_apply_result(failed)
+            except Exception:
+                logger.exception("Could not write last_restore_apply.json")
+            # Keep pending so a later start can retry; do not delete staging.
+            return failed
 
     def restore_backup(self, archive_name: str) -> dict:
         """Prepare then apply immediately (offline tests / no open Hub).

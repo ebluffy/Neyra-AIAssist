@@ -176,6 +176,118 @@ def test_restore_external_sqlite_clears_live_wal() -> None:
         td.cleanup()
 
 
+def test_apply_pending_restore_rolls_back_on_copy_failure() -> None:
+    """AR-43: failing copytree leaves live memory and keeps pending staging."""
+    from unittest import mock
+
+    from core.runtime.backup import BackupManager, PENDING_DIR_NAME, PENDING_FLAG, PENDING_MEMORY
+
+    td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    try:
+        base = Path(td.name)
+        mem = base / "memory"
+        mem.mkdir()
+        (mem / "keep.txt").write_text("alive", encoding="utf-8")
+        chroma = mem / "chroma_db"
+        chroma.mkdir()
+        (chroma / "x.txt").write_text("c", encoding="utf-8")
+        backups = base / "backups"
+        backups.mkdir()
+        cfg = {
+            "backup": {"local_dir": str(backups)},
+            "memory": {
+                "chroma_db_path": str(chroma),
+                "sqlite_path": str(mem / "neyra_memory.db"),
+            },
+        }
+        (mem / "neyra_memory.db").write_text("db", encoding="utf-8")
+        mgr = BackupManager(cfg)
+        cwd = Path.cwd()
+        try:
+            os.chdir(base)
+            bak = mgr.run_backup("seed")
+            name = Path(str(bak["archive"])).name
+            (mem / "keep.txt").write_text("changed", encoding="utf-8")
+            mgr.prepare_restore(name)
+            pending = base / PENDING_DIR_NAME
+            assert (pending / PENDING_FLAG).is_file()
+            assert (pending / PENDING_MEMORY).is_dir()
+
+            real_copytree = __import__("shutil").copytree
+
+            def _boom(src, dst, *a, **k):
+                raise OSError("disk full")
+
+            with mock.patch("shutil.copytree", side_effect=_boom):
+                out = mgr.apply_pending_restore()
+            assert out is not None and out.get("applied") is False
+            assert out.get("pending") is True
+            assert (mem / "keep.txt").read_text(encoding="utf-8") == "changed"
+            assert (pending / PENDING_FLAG).is_file()
+            assert (pending / PENDING_MEMORY).is_dir()
+            last = mgr.read_last_apply_result()
+            assert last is not None and last.get("status") == "failed"
+            # Successful apply still works after a failed attempt.
+            with mock.patch("shutil.copytree", real_copytree):
+                ok = mgr.apply_pending_restore()
+            assert ok is not None and ok.get("applied") is True
+            assert (mem / "keep.txt").read_text(encoding="utf-8") == "alive"
+            assert not pending.exists()
+            last2 = mgr.read_last_apply_result()
+            assert last2 is not None and last2.get("status") == "applied"
+        finally:
+            os.chdir(cwd)
+    finally:
+        td.cleanup()
+
+
+def test_external_sqlite_without_db_keeps_live_wal() -> None:
+    """AR-46: no .db in archive → do not delete live -wal/-shm."""
+    from core.runtime.backup import BackupManager
+    import zipfile
+
+    td = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    try:
+        base = Path(td.name)
+        mem = base / "memory"
+        mem.mkdir()
+        chroma = mem / "chroma_db"
+        chroma.mkdir()
+        (chroma / "x.txt").write_text("c", encoding="utf-8")
+        ext_db = base / "elsewhere" / "hub.db"
+        ext_db.parent.mkdir(parents=True)
+        ext_db.write_text("live-db", encoding="utf-8")
+        Path(str(ext_db) + "-wal").write_text("keep-wal", encoding="utf-8")
+        backups = base / "backups"
+        backups.mkdir()
+        staging = base / "staging"
+        (staging / "memory" / "chroma_db").mkdir(parents=True)
+        (staging / "memory" / "chroma_db" / "x.txt").write_text("from-bak", encoding="utf-8")
+        (staging / "data" / "memory").mkdir(parents=True)
+        # No hub.db in archive
+        (staging / "backup_manifest.json").write_text("{}", encoding="utf-8")
+        zip_path = backups / "neyra-backup-nodb.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for p in staging.rglob("*"):
+                if p.is_file():
+                    zf.write(p, p.relative_to(staging).as_posix())
+        cfg = {
+            "backup": {"local_dir": str(backups)},
+            "memory": {"chroma_db_path": str(chroma), "sqlite_path": str(ext_db)},
+        }
+        mgr = BackupManager(cfg)
+        cwd = Path.cwd()
+        try:
+            os.chdir(base)
+            mgr.restore_backup("neyra-backup-nodb.zip")
+        finally:
+            os.chdir(cwd)
+        assert ext_db.read_text(encoding="utf-8") == "live-db"
+        assert Path(str(ext_db) + "-wal").read_text(encoding="utf-8") == "keep-wal"
+    finally:
+        td.cleanup()
+
+
 def test_restore_refuses_parent_of_backup_dir() -> None:
     from core.runtime.backup import BackupManager
 
@@ -208,5 +320,7 @@ if __name__ == "__main__":
     test_restore_from_real_run_backup()
     test_restore_nonstandard_chroma_parent_name()
     test_restore_external_sqlite_clears_live_wal()
+    test_apply_pending_restore_rolls_back_on_copy_failure()
+    test_external_sqlite_without_db_keeps_live_wal()
     test_restore_refuses_parent_of_backup_dir()
     print("OK test_backup_restore_offline")

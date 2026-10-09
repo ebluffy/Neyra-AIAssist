@@ -765,6 +765,29 @@ class WebhookStore:
             await self._save()
             return True
 
+    async def finish_dlq_retry(
+        self,
+        delivery_id: str,
+        *,
+        retried_as: str = "",
+        status: str = "retried",
+    ) -> None:
+        """Mark original delivery history as retried and drop it from DLQ (AR-45)."""
+        did = str(delivery_id or "").strip()
+        if not did:
+            return
+        async with self._lock:
+            self._state["dlq"].pop(did, None)
+            row = self._state["deliveries"].get(did)
+            if isinstance(row, dict):
+                row = dict(row)
+                row["status"] = status
+                if retried_as:
+                    row["retried_as"] = retried_as
+                row["updated_at"] = _utc_now()
+                self._state["deliveries"][did] = row
+            await self._save()
+
     async def claim_dlq_for_retry(self, delivery_id: str) -> dict[str, Any] | None:
         """Atomically mark a DLQ row as retrying. Returns None if missing or already claimed."""
         did = str(delivery_id or "").strip()
@@ -3041,7 +3064,12 @@ def build_app(
     async def v1_backup_list(request: Request, _: None = Depends(dep_maint)):
         trace_id = _trace_id(request)
         rows = await asyncio.to_thread(backup_manager.list_backups)
-        return {"ok": True, "trace_id": trace_id, "data": {"archives": rows}}
+        last_apply = await asyncio.to_thread(backup_manager.read_last_apply_result)
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"archives": rows, "last_restore_apply": last_apply},
+        }
 
     @app.post("/v1/backup/restore")
     async def v1_backup_restore(request: Request, api_role: str = Depends(dep_admin)):
@@ -3223,7 +3251,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": {"items": rows}}
 
     async def _retry_dlq_rows(rows: list[dict[str, Any]], *, trace_id: str) -> None:
-        """Retry claimed DLQ rows: dispatch first, then drop original (AR-41)."""
+        """Retry claimed DLQ rows: dispatch first, then mark original retried (AR-41/45)."""
         for row in rows:
             did = str(row.get("delivery_id") or "")
             route_id = str(row.get("route_id") or "")
@@ -3237,8 +3265,9 @@ def build_app(
                 )
                 await webhook_store.release_dlq_retry(did, error="route_missing")
                 continue
+            redelivered: dict[str, Any] = {}
             try:
-                await _dispatch_webhook(
+                redelivered = await _dispatch_webhook(
                     webhook_store,
                     route,
                     row.get("payload") or {},
@@ -3250,8 +3279,12 @@ def build_app(
                     did,
                     trace_id,
                 )
-            # Drop original only after the attempt so a mid-retry restart keeps the event.
-            await webhook_store.remove_dlq(did)
+            # After attempt: history gets retried + link; DLQ loses the original.
+            await webhook_store.finish_dlq_retry(
+                did,
+                retried_as=str(redelivered.get("delivery_id") or ""),
+                status="retried",
+            )
 
     @app.post("/v1/webhooks/dlq/retry-all")
     async def v1_webhooks_dlq_retry_all(

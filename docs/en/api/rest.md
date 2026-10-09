@@ -31,7 +31,7 @@ See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens
 - `GET /v1/memory/stats`
 - `POST /v1/config/update`
 - `POST /v1/backup/run`
-- `GET /v1/backup/list` — local BackupManager zip archives
+- `GET /v1/backup/list` — local BackupManager zip archives + `last_restore_apply` (`applied`/`failed`)
 - `POST /v1/backup/restore` — `{ archive_name, confirm: "RESTORE" }` (admin); validates archive, then `pre_restore` backup, then stages a pending swap; live memory is replaced only on core start (soft-restart required); does not touch logs/
 
 ## Plugins

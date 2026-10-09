@@ -98,6 +98,12 @@ export function SystemScreen() {
   const [meta, setMeta] = useState<Record<string, unknown> | null>(null)
   const [health, setHealth] = useState<HealthData | null>(null)
   const [archives, setArchives] = useState<BackupArchive[]>([])
+  const [lastRestoreApply, setLastRestoreApply] = useState<{
+    status?: string
+    archive_name?: string
+    error?: string
+    at?: string
+  } | null>(null)
   const [dlqCount, setDlqCount] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState('')
@@ -123,8 +129,19 @@ export function SystemScreen() {
   const loadBackups = useCallback(async () => {
     setBackupLoading(true)
     try {
-      const r = await apiGet<ApiEnvelope<{ archives?: BackupArchive[] }>>('/v1/backup/list')
+      const r = await apiGet<
+        ApiEnvelope<{
+          archives?: BackupArchive[]
+          last_restore_apply?: {
+            status?: string
+            archive_name?: string
+            error?: string
+            at?: string
+          } | null
+        }>
+      >('/v1/backup/list')
       setArchives(r.data.archives ?? [])
+      setLastRestoreApply(r.data.last_restore_apply ?? null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -257,7 +274,35 @@ export function SystemScreen() {
       if (r.data.restart_scheduled) {
         setStatus(`Восстановление подготовлено.${safetyNote} Ядро перезапускается…`)
         setBusy(false)
-        await waitAfterRestart(`Восстановление применено при старте.${safetyNote}`)
+        await waitAfterRestart(`Ожидаю результат restore при старте.${safetyNote}`)
+        try {
+          const lr = await apiGet<
+            ApiEnvelope<{
+              last_restore_apply?: {
+                status?: string
+                archive_name?: string
+                error?: string
+              } | null
+            }>
+          >('/v1/backup/list')
+          const result = lr.data.last_restore_apply
+          setLastRestoreApply(result ?? null)
+          if (result?.status === 'applied') {
+            setStatus(
+              `Восстановление применено${result.archive_name ? ` (${result.archive_name})` : ''}.${safetyNote}`,
+            )
+          } else if (result?.status === 'failed') {
+            setStatus('')
+            setError(
+              `Восстановление при старте не применилось${result.error ? `: ${result.error}` : ''}.${safetyNote}`,
+            )
+          } else {
+            setStatus(`Рестарт выполнен.${safetyNote} Статус apply пока неизвестен — обнови список бэкапов.`)
+          }
+        } catch {
+          setStatus(`Рестарт выполнен.${safetyNote}`)
+        }
+        await loadBackups()
         return
       }
       setStatus(`Восстановление подготовлено.${safetyNote} Нужен мягкий рестарт.`)
@@ -480,6 +525,15 @@ export function SystemScreen() {
                 </Button>
               </div>
             </div>
+            {lastRestoreApply?.status ? (
+              <p className="hint" style={{ margin: 0 }}>
+                Последний restore при старте:{' '}
+                <strong>{lastRestoreApply.status}</strong>
+                {lastRestoreApply.archive_name ? ` · ${lastRestoreApply.archive_name}` : ''}
+                {lastRestoreApply.error ? ` · ${lastRestoreApply.error}` : ''}
+                {lastRestoreApply.at ? ` · ${lastRestoreApply.at}` : ''}
+              </p>
+            ) : null}
             <div className="table-wrap">
               <table className="table">
                 <thead>
