@@ -1,34 +1,27 @@
 import { Command } from 'cmdk'
-import {
-  BookOpenText,
-  Brain,
-  DatabaseBackup,
-  Gauge,
-  Moon,
-  PlugZap,
-  Server,
-  Settings,
-  Sun,
-  Webhook,
-} from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { Moon, Sun } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getStoredTheme, toggleTheme } from '../lib/theme'
+import { toggleTheme, useResolvedTheme } from '../lib/theme'
+import { FLAT_NAV } from '../shell/nav'
 
-const NAV_ITEMS = [
-  { to: '/status', label: 'Статус', icon: Gauge },
-  { to: '/modules', label: 'Модули', icon: PlugZap },
-  { to: '/memory', label: 'Память', icon: Brain },
-  { to: '/system', label: 'Система', icon: Server },
-  { to: '/backups', label: 'Бэкапы', icon: DatabaseBackup },
-  { to: '/webhooks', label: 'Вебхуки', icon: Webhook },
-  { to: '/settings', label: 'Настройки', icon: Settings },
-  { to: '/api-docs', label: 'Документация', icon: BookOpenText },
-]
+type Props = {
+  controlledOpen?: boolean
+  onOpenChange?: (open: boolean) => void
+}
 
-export function CommandPalette() {
-  const [open, setOpen] = useState(false)
-  const [theme, setTheme] = useState(getStoredTheme)
+export function CommandPalette({ controlledOpen, onOpenChange }: Props = {}) {
+  const [internalOpen, setInternalOpen] = useState(false)
+  const open = controlledOpen ?? internalOpen
+  const setOpen = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) => {
+      const value = typeof next === 'function' ? next(open) : next
+      if (controlledOpen === undefined) setInternalOpen(value)
+      onOpenChange?.(value)
+    },
+    [controlledOpen, onOpenChange, open],
+  )
+  const theme = useResolvedTheme()
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -38,9 +31,14 @@ export function CommandPalette() {
         setOpen((v) => !v)
       }
     }
+    const onCustom = () => setOpen(true)
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+    window.addEventListener('neyra:open-command-palette', onCustom)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('neyra:open-command-palette', onCustom)
+    }
+  }, [setOpen])
 
   function go(to: string) {
     setOpen(false)
@@ -51,12 +49,8 @@ export function CommandPalette() {
 
   return (
     <div
-      aria-label="Закрыть палитру"
       className="cmdk-overlay"
       onClick={() => setOpen(false)}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') setOpen(false)
-      }}
       role="presentation"
     >
       <Command
@@ -71,7 +65,7 @@ export function CommandPalette() {
         <Command.List className="cmdk-list">
           <Command.Empty className="cmdk-empty">Ничего не найдено</Command.Empty>
           <Command.Group>
-            {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+            {FLAT_NAV.map(({ to, label, icon: Icon }) => (
               <Command.Item
                 key={to}
                 className="cmdk-item"
@@ -85,7 +79,7 @@ export function CommandPalette() {
             <Command.Item
               className="cmdk-item"
               onSelect={() => {
-                setTheme(toggleTheme())
+                toggleTheme()
                 setOpen(false)
               }}
               value="тема theme dark light"

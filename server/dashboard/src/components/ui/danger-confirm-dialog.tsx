@@ -1,5 +1,15 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Button } from './button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { cn } from '@/lib/utils'
 
 type Props = {
   open: boolean
@@ -28,8 +38,7 @@ export function DangerConfirmDialog({
   const [typed, setTyped] = useState('')
   const [wasOpen, setWasOpen] = useState(open)
   const inputRef = useRef<HTMLInputElement>(null)
-  const titleId = useId()
-  const descId = useId()
+  const phraseId = useId()
   const needsPhrase = Boolean(confirmPhrase && confirmPhrase.length > 0)
   const match = !needsPhrase || typed.trim() === confirmPhrase
 
@@ -39,43 +48,35 @@ export function DangerConfirmDialog({
   }
 
   useEffect(() => {
-    if (!open) return
+    if (!open || !needsPhrase) return
     const t = window.setTimeout(() => inputRef.current?.focus(), 40)
     return () => window.clearTimeout(t)
-  }, [open])
-
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busy) onCancel()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, busy, onCancel])
-
-  if (!open) return null
+  }, [open, needsPhrase])
 
   return (
-    <div
-      aria-labelledby={titleId}
-      aria-describedby={descId}
-      aria-modal="true"
-      className="danger-dialog-overlay"
-      role="dialog"
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && !busy) onCancel()
+      }}
     >
-      <div className="danger-dialog-card">
-        <h2 className="page-title" id={titleId} style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>
-          {title}
-        </h2>
-        <p className="page-sub" id={descId} style={{ marginBottom: '1rem' }}>
-          {description}
-        </p>
+      <AlertDialogContent
+        className={cn(
+          'border-[var(--border-hi)] bg-[var(--surface)] text-[var(--text)] shadow-[var(--shadow-border)]',
+          needsPhrase && 'border-t-4 border-t-[var(--danger)]',
+        )}
+      >
+        <AlertDialogHeader>
+          <AlertDialogTitle className="text-[var(--text)] text-wrap-balance">{title}</AlertDialogTitle>
+          <AlertDialogDescription className="text-[var(--muted)]">{description}</AlertDialogDescription>
+        </AlertDialogHeader>
         {needsPhrase ? (
-          <label className="label">
+          <label className="label" htmlFor={phraseId}>
             <span className="label-text">
               Введите <span className="inline-code">{confirmPhrase}</span>
             </span>
             <input
+              id={phraseId}
               ref={inputRef}
               autoComplete="off"
               className="input input-mono"
@@ -89,15 +90,22 @@ export function DangerConfirmDialog({
             />
           </label>
         ) : null}
-        <div className="row" style={{ marginTop: '1rem', justifyContent: 'flex-end' }}>
-          <Button disabled={busy} onClick={onCancel} type="button" variant="secondary">
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy} onClick={onCancel}>
             {cancelLabel}
-          </Button>
-          <Button disabled={!match || busy} onClick={onConfirm} type="button" variant="danger">
+          </AlertDialogCancel>
+          <AlertDialogAction
+            className={cn(!match || busy ? 'pointer-events-none opacity-50' : '', 'btn-danger')}
+            disabled={!match || busy}
+            onClick={(e) => {
+              e.preventDefault()
+              if (match && !busy) onConfirm()
+            }}
+          >
             {busy ? '…' : confirmLabel}
-          </Button>
-        </div>
-      </div>
-    </div>
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }

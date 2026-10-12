@@ -3,17 +3,14 @@ const SESSION_TOKEN_KEY = 'neyra_dashboard_session'
 const LEGACY_TOKEN_KEY = 'neyra_api_token'
 const DEFAULT_TIMEOUT_MS = 30_000
 
-/** Memory-only API token override (Settings). Never persisted to localStorage. */
-let memoryApiToken = ''
-
 try {
   localStorage.removeItem(LEGACY_TOKEN_KEY)
 } catch {
   /* ignore */
 }
 
+/** Purge legacy API token key from localStorage (no longer used as Bearer). */
 export function clearToken(): void {
-  memoryApiToken = ''
   try {
     localStorage.removeItem(LEGACY_TOKEN_KEY)
   } catch {
@@ -26,20 +23,8 @@ export function clearSessionToken(): void {
   sessionStorage.removeItem(SESSION_TOKEN_KEY)
 }
 
-/** Memory-only API token from Settings (not localStorage). */
-export function getStoredApiToken(): string {
-  return memoryApiToken
-}
-
 export function getToken(): string {
-  const session = sessionStorage.getItem(SESSION_TOKEN_KEY)?.trim()
-  if (session) return session
-  return memoryApiToken.trim()
-}
-
-/** Set memory-only API token override (Settings). Empty clears. */
-export function setToken(t: string): void {
-  memoryApiToken = t.trim()
+  return sessionStorage.getItem(SESSION_TOKEN_KEY)?.trim() ?? ''
 }
 
 /** Session Bearer from gate login — sessionStorage only. */

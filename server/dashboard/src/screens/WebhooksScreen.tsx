@@ -1,4 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Controller, useForm, useWatch } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
 import { ChevronDown, ChevronRight, FlaskConical, KeyRound, RefreshCw, RotateCcw, Save, Trash2, Webhook } from 'lucide-react'
 import { apiDelete, apiGet, apiPatch, apiPost } from '../api'
 import type { ApiEnvelope, WebhookDelivery, WebhookEventTypes, WebhookRoute } from '../api'
@@ -7,6 +9,8 @@ import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
+import { Switch } from '../components/ui/switch'
+import { webhookOutboundSchema, type WebhookOutboundValues } from '../lib/webhook-form'
 
 const ALL_EVENTS = '*'
 const NEW_URL = '__new__'
@@ -193,15 +197,16 @@ function InboundPanel() {
           <code className="inline-code">content</code> уходит в чат Нейры, событие публикуется в шину ядра. Управление
           эндпоинтами пока без интерфейса — это каркас.
         </p>
-        <div className="field-row">
+        <label className="field-row">
           <span className="label-text" style={{ paddingTop: '0.6rem', fontSize: '0.8rem' }}>endpoint_id</span>
           <input
+            aria-label="endpoint_id"
             className="input input-mono"
             onChange={(e) => setEndpointId(e.target.value)}
             placeholder="default"
             value={endpointId}
           />
-        </div>
+        </label>
         {pingMsg && <InlineFeedback tone={pingMsg.tone}>{pingMsg.text}</InlineFeedback>}
         <div className="table-wrap">
           <table className="table">
@@ -257,13 +262,20 @@ export function WebhooksScreen() {
 
   // Form (one "panel" = one target URL with a set of events)
   const [formReady, setFormReady] = useState(false)
-  const [enabled, setEnabled] = useState(true)
-  const [url, setUrl] = useState('')
-  const [secret, setSecret] = useState('')
-  const [maxRetries, setMaxRetries] = useState(String(DEFAULT_RETRIES))
-  const [events, setEvents] = useState<Set<string>>(new Set())
   const [groupUrl, setGroupUrl] = useState('')
   const [testEvent, setTestEvent] = useState('')
+  const form = useForm<WebhookOutboundValues>({
+    resolver: zodResolver(webhookOutboundSchema),
+    defaultValues: {
+      enabled: true,
+      url: '',
+      secret: '',
+      maxRetries: DEFAULT_RETRIES,
+      events: [],
+    },
+  })
+  const eventsList = useWatch({ control: form.control, name: 'events' })
+  const events = useMemo(() => new Set(eventsList ?? []), [eventsList])
 
   const [status, setStatus] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -283,15 +295,20 @@ export function WebhooksScreen() {
   const savedMask = group.find((r) => r.secret_masked)?.secret_masked ?? ''
   const destinations = useMemo(() => Array.from(new Set(routes.map((r) => r.target_url))), [routes])
 
-  const applyGroup = useCallback((list: WebhookRoute[], target: string) => {
-    const same = list.filter((x) => x.target_url === target)
-    setGroupUrl(target)
-    setUrl(target)
-    setSecret('')
-    setEnabled(same.length === 0 ? true : same.some((x) => x.enabled))
-    setEvents(new Set(same.map((x) => x.event_type)))
-    setMaxRetries(String(same[0]?.max_retries ?? DEFAULT_RETRIES))
-  }, [])
+  const applyGroup = useCallback(
+    (list: WebhookRoute[], target: string) => {
+      const same = list.filter((x) => x.target_url === target)
+      setGroupUrl(target)
+      form.reset({
+        enabled: same.length === 0 ? true : same.some((x) => x.enabled),
+        url: target,
+        secret: '',
+        maxRetries: same[0]?.max_retries ?? DEFAULT_RETRIES,
+        events: same.map((x) => x.event_type),
+      })
+    },
+    [form],
+  )
 
   const loadDeliveries = useCallback(async (filter: string) => {
     const q = filter ? `?status=${encodeURIComponent(filter)}` : ''
@@ -347,11 +364,13 @@ export function WebhooksScreen() {
   function pickDestination(value: string) {
     if (value === NEW_URL) {
       setGroupUrl('')
-      setUrl('')
-      setSecret('')
-      setEnabled(true)
-      setEvents(new Set())
-      setMaxRetries(String(DEFAULT_RETRIES))
+      form.reset({
+        enabled: true,
+        url: '',
+        secret: '',
+        maxRetries: DEFAULT_RETRIES,
+        events: [],
+      })
       return
     }
     applyGroup(routes, value)
@@ -365,56 +384,43 @@ export function WebhooksScreen() {
   }
 
   function toggleEvent(ev: string, on: boolean) {
-    setEvents((prev) => {
-      const next = new Set(prev)
-      if (ev === ALL_EVENTS) {
-        next.clear()
-        if (on) next.add(ALL_EVENTS)
-        return next
-      }
-      next.delete(ALL_EVENTS)
-      if (on) next.add(ev)
-      else next.delete(ev)
-      return next
-    })
+    const prev = new Set(form.getValues('events'))
+    if (ev === ALL_EVENTS) {
+      prev.clear()
+      if (on) prev.add(ALL_EVENTS)
+    } else {
+      prev.delete(ALL_EVENTS)
+      if (on) prev.add(ev)
+      else prev.delete(ev)
+    }
+    form.setValue('events', Array.from(prev), { shouldValidate: true, shouldDirty: true })
   }
 
-  async function save() {
-    const target = url.trim()
-    if (!/^https?:\/\/.{3,}/i.test(target)) {
-      setError('Укажи корректный URL (http:// или https://)')
-      return
-    }
-    if (events.size === 0) {
-      setError('Выбери хотя бы одно событие')
-      return
-    }
-    const retries = Number(maxRetries)
-    if (!Number.isInteger(retries) || retries < 0 || retries > 10) {
-      setError('Повторы: целое число от 0 до 10')
-      return
-    }
+  async function save(values: WebhookOutboundValues) {
+    const target = values.url.trim()
+    const retries = values.maxRetries
+    const eventSet = new Set(values.events)
     setError(null)
     setSaving(true)
     setStatus('Сохраняю…')
     try {
-      const sec = secret.trim()
+      const sec = values.secret.trim()
       const existing = new Map(group.map((r) => [r.event_type, r]))
       let created = 0
       let updated = 0
       let removed = 0
       for (const r of group) {
-        if (!events.has(r.event_type)) {
+        if (!eventSet.has(r.event_type)) {
           await apiDelete<ApiEnvelope<unknown>>(`/v1/webhooks/out/routes/${r.route_id}`)
           removed += 1
         }
       }
-      for (const ev of events) {
+      for (const ev of eventSet) {
         const cur = existing.get(ev)
         if (cur) {
           await apiPatch<ApiEnvelope<WebhookRoute>>(`/v1/webhooks/out/routes/${cur.route_id}`, {
             target_url: target,
-            enabled,
+            enabled: values.enabled,
             max_retries: retries,
             ...(sec ? { secret: sec } : {}),
           })
@@ -425,14 +431,14 @@ export function WebhooksScreen() {
             event_type: ev,
             target_url: target,
             secret: sec,
-            enabled,
+            enabled: values.enabled,
             max_retries: retries,
           })
           created += 1
         }
       }
       setGroupUrl(target)
-      setSecret('')
+      form.setValue('secret', '')
       setStatus(`Сохранено: создано ${created}, обновлено ${updated}, удалено ${removed}.`)
       await load()
     } catch (e) {
@@ -493,11 +499,11 @@ export function WebhooksScreen() {
     try {
       await apiDelete<ApiEnvelope<unknown>>(`/v1/webhooks/out/routes/${route.route_id}`)
       if (route.target_url === groupUrl) {
-        setEvents((prev) => {
-          const next = new Set(prev)
-          next.delete(route.event_type)
-          return next
-        })
+        form.setValue(
+          'events',
+          form.getValues('events').filter((ev) => ev !== route.event_type),
+          { shouldDirty: true },
+        )
       }
       await load()
       setDanger(null)
@@ -595,21 +601,44 @@ export function WebhooksScreen() {
               <span className="card-title">Исходящий вебхук</span>
             </div>
 
-            <div className="stack">
+            <form
+              className="stack"
+              onSubmit={(e) => {
+                void form.handleSubmit(
+                  (values) => {
+                    void save(values)
+                  },
+                  (errs) => {
+                    const first =
+                      errs.url?.message ||
+                      errs.events?.message ||
+                      errs.maxRetries?.message ||
+                      errs.secret?.message ||
+                      'Проверь форму'
+                    setError(String(first))
+                  },
+                )(e)
+              }}
+            >
               <div className="switch-row">
                 <div>
                   <div style={{ fontSize: '0.88rem', fontWeight: 500 }}>Отправка включена</div>
                   <div className="hint">Выключенные маршруты остаются в списке, но события не отправляют.</div>
                 </div>
-                <button
-                  aria-label="Включить или выключить исходящий вебхук"
-                  aria-pressed={enabled}
-                  className={`toggle-pill ${enabled ? 'toggle-on' : 'toggle-off'}`}
-                  onClick={() => setEnabled((v) => !v)}
-                  type="button"
-                >
-                  {enabled ? 'Включён' : 'Выключен'}
-                </button>
+                <Controller
+                  control={form.control}
+                  name="enabled"
+                  render={({ field }) => (
+                    <label className="row" style={{ gap: 10, minHeight: 40 }}>
+                      <Switch
+                        aria-label="Включить или выключить исходящий вебхук"
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                      <span className="hint">{field.value ? 'Включён' : 'Выключен'}</span>
+                    </label>
+                  )}
+                />
               </div>
 
               <div className="field-row">
@@ -634,9 +663,8 @@ export function WebhooksScreen() {
                 <div className="row-tools">
                   <input
                     className="input input-mono"
-                    onChange={(e) => setUrl(e.target.value)}
                     placeholder="https://example.com/neyra-webhook"
-                    value={url}
+                    {...form.register('url')}
                   />
                   <select
                     aria-label="Тип теста"
@@ -671,12 +699,17 @@ export function WebhooksScreen() {
                     <input
                       autoComplete="off"
                       className="input input-mono"
-                      onChange={(e) => setSecret(e.target.value)}
                       placeholder={savedMask ? `Сохранён: ${savedMask} — оставь пустым, чтобы не менять` : 'Без секрета'}
                       type="password"
-                      value={secret}
+                      {...form.register('secret')}
                     />
-                    <Button className="shrink-0" onClick={() => setSecret(randomSecret())} size="sm" type="button" variant="secondary">
+                    <Button
+                      className="shrink-0"
+                      onClick={() => form.setValue('secret', randomSecret(), { shouldDirty: true })}
+                      size="sm"
+                      type="button"
+                      variant="secondary"
+                    >
                       <KeyRound aria-hidden size={13} /> Сгенерировать
                     </Button>
                   </div>
@@ -698,10 +731,9 @@ export function WebhooksScreen() {
                     className="input input-mono"
                     max={10}
                     min={0}
-                    onChange={(e) => setMaxRetries(e.target.value)}
                     style={{ maxWidth: 120 }}
                     type="number"
-                    value={maxRetries}
+                    {...form.register('maxRetries', { valueAsNumber: true })}
                   />
                   <p className="hint">Сколько раз повторять неудачную доставку (0–10).</p>
                 </div>
@@ -714,7 +746,7 @@ export function WebhooksScreen() {
                   </div>
                   <Button
                     disabled={events.size === 0}
-                    onClick={() => setEvents(new Set())}
+                    onClick={() => form.setValue('events', [], { shouldValidate: true, shouldDirty: true })}
                     size="sm"
                     type="button"
                     variant="secondary"
@@ -748,11 +780,11 @@ export function WebhooksScreen() {
 
               <hr className="divider" style={{ margin: 0 }} />
               <div className="row" style={{ justifyContent: 'flex-end' }}>
-                <Button disabled={saving} onClick={() => void save()} type="button">
+                <Button disabled={saving} type="submit">
                   <Save size={14} /> {saving ? 'Сохранение…' : 'Сохранить'}
                 </Button>
               </div>
-            </div>
+            </form>
           </div>
 
           <div className="card">

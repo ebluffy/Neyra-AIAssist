@@ -1,13 +1,8 @@
-import { DashboardAuthGate } from './shell/DashboardAuthGate'
-import { AppShell } from './shell/AppShell'
-import { ErrorBoundary } from './components/ErrorBoundary'
+import { RouterProvider, createBrowserRouter } from 'react-router-dom'
+import { appRoutes } from './routes'
+
+const router = createBrowserRouter(appRoutes)
 
 export default function App() {
-  return (
-    <DashboardAuthGate>
-      <ErrorBoundary>
-        <AppShell />
-      </ErrorBoundary>
-    </DashboardAuthGate>
-  )
+  return <RouterProvider router={router} />
 }
