@@ -755,6 +755,11 @@ export function ModulesScreen() {
                   <span className="plugin-item-id mono">{p.id}</span>
                 </span>
                 <span className="plugin-item-meta">
+                  {String(p.lifecycle || '').toLowerCase() === 'resident' && (
+                    <span className="life-badge life-badge-resident" title="Lifecycle: resident">
+                      resident
+                    </span>
+                  )}
                   <span className={`plugin-status${p.enabled ? ' on' : ' off'}`}>
                     <span aria-hidden className={`status-dot ${p.enabled ? 'status-dot-ok' : 'status-dot-idle'}`} />
                     {p.enabled ? 'вкл.' : 'выкл.'}

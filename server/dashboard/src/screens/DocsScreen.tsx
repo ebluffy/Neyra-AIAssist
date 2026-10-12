@@ -232,7 +232,17 @@ export function DocsScreen() {
                       </aside>
                     ) : null}
                     <article ref={articleRef} className="prose docs-prose max-w-none">
-                      <ReactMarkdown rehypePlugins={[rehypeSlug]} remarkPlugins={[remarkGfm]}>
+                      <ReactMarkdown
+                        components={{
+                          table: (props) => (
+                            <div className="table-scroll">
+                              <table {...props} />
+                            </div>
+                          ),
+                        }}
+                        rehypePlugins={[rehypeSlug]}
+                        remarkPlugins={[remarkGfm]}
+                      >
                         {markdown}
                       </ReactMarkdown>
                     </article>

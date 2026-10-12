@@ -1007,11 +1007,6 @@ body::before {
   background: transparent;
 }
 .plugin-item-off .plugin-item-name { color: var(--muted); font-weight: 500; }
-.plugin-item-life {
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 0.7rem;
-}
 .plugin-item:hover { border-color: var(--border-hi); color: var(--text); }
 /* Active: inset bar only — no outer glow (DESIGN / antislop) */
 .plugin-item.active {
@@ -1288,8 +1283,9 @@ input[type="checkbox"] {
 }
 .docs-nav-title { display: block; font-size: 0.82rem; font-weight: 600; overflow-wrap: anywhere; }
 .docs-layout > * { min-width: 0; }
-.docs-layout pre, .docs-layout table { max-width: 100%; overflow-x: auto; }
-.docs-layout table { display: block; }
+.docs-layout pre { max-width: 100%; overflow-x: auto; }
+/* Horizontal scroll lives on the wrapper — never change <table> display (breaks table semantics). */
+.table-scroll { max-width: 100%; overflow-x: auto; }
 .docs-nav-id {
   display: block;
   font-family: var(--mono);

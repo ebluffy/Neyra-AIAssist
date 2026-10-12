@@ -155,6 +155,11 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
     void load()
   }, [load])
 
+  // Keep the tab in sync when the route changes between /system and /backups.
+  useEffect(() => {
+    setTab(initialTab)
+  }, [initialTab])
+
   useEffect(() => {
     if (tab === 'health' && !health) void loadHealth()
     if (tab === 'backup' && archives.length === 0) void loadBackups()
