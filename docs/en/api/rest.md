@@ -1,6 +1,34 @@
 # REST Endpoints
 
+Diary/journal management in the Control API is **admin-global**: deleting an
+entry by ID or wiping a section acts across owners/channels. These routes
+require the admin role; viewer/maintainer tokens do not grant deletion rights.
+Optional owner/channel filters in the storage layer are internal filtering
+tools, not per-user authorization for these administrative endpoints.
+
+## Discord context and model evidence (3a)
+
+`POST /v1/chat` and WS `/v1/ws/chat` chat messages accept optional `discord_context`. Legacy requests remain compatible. The object contains `source: "discord"`, `current_user` (id/handle/display_name), `channel` (id/name/type), nullable `guild` (id/name), `message` (id/content/mentions/reference), `addressed_to_bot`, and `response_target` (channel_id/message_id). See the complete JSON example in the [Russian reference](../../ru/api/rest.md).
+
+The Discord adapter captures metadata before removing the bot mention. DM guilds and unresolved reference authors are null. Context author/channel IDs override legacy request identity fields. Names and content are untrusted data, not system instructions. Response targets must match the current message/channel; unknown fields and invalid or oversized data are rejected.
+
+Prompts receive a separate human-role metadata block without `message.content`, with at most 10 mentions. The full typed object remains available to the pipeline. The block is omitted from the reduced-context streaming retry. Discord disables model-generated user/role/everyone mentions; an explicit reply may mention its author.
+
+REST `data.model_trace` and WS `done.model_trace` contain `turn_id`, UTC `timestamp`, `status`, `without_llm`, and `calls[]`. Each call records `lane`, `purpose`, `attempt`, `provider`, `configured_model`, nullable `reported_model`, `has_images`, and `status`. Missing provider evidence is never replaced with the configured model. Attempts count pipeline calls, excluding SDK-internal retries. Brain-native images are attributed to the brain call. Successful turns persist evidence in SQLite chat metadata; terminal reports are also published as `llm.turn.completed`.
+
+`GET /v1/llm/activity?limit=20` requires viewer or higher, with limit 1–100. It returns `data.items`, newest first, from an in-process buffer of 200 turns. Reports exclude dialogue content, owner/channel IDs, secrets, and internal reasoning. Restart clears the buffer. Discord `/model` privately reports the caller's last turn in the current channel without an LLM call.
+
 ## Breaking changes (API 1.1.0)
+
+`GET /v1/memory/short` (maint+) returns bounded actual process-history windows
+by owner/channel, without hidden reasoning. `GET /v1/memory/long` (maint+)
+returns up to 200 profile facts with sources (up to 20 per profile, first 50
+profiles); this is not a complete Chroma export. Diary remains automatic and
+the journal is shown under System → memory events. Admin delete/wipe routes
+are unchanged. Both activity and model evidence now include independent
+background reports (`kind`, nullable `parent_turn_id`), timings and usage when
+reported. Retention is 200 turns plus 200 jobs; activity returns the newest
+requested items across both. See [model trace](../../MODEL_TRACE.md).
 
 - Env: `INTERNAL_API_*` → `API_*` (startup fails if old names are set; no dual-read).
 - `POST /v1/plugins/{id}/reload|restart` — on_demand: hot re-import; resident: core soft-restart (`restart_scheduled`).

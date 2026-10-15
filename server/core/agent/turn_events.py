@@ -72,6 +72,10 @@ def publish_chat_turn_failed(
     channel_id: Optional[str],
     error: str,
 ) -> None:
+    from core.agent.model_trace import ACTIVE_TRACE
+    trace = ACTIVE_TRACE.get()
+    if trace is not None and not trace.closed:
+        trace.failed = True
     event_bus.publish(
         CoreEvent(
             CHAT_TURN_FAILED,

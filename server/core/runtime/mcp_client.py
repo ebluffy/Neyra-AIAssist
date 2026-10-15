@@ -269,10 +269,18 @@ class MCPClientManager:
             self._errors[name] = None
             try:
                 if spec.transport == "stdio":
+                    if not _HAS_MCP:
+                        self._errors[name] = "missing executable"
+                        logger.warning("MCP server %s unavailable: MCP runtime is missing", name)
+                        break
                     await self._one_stdio_session(name, spec)
                 else:
                     await self._one_sse_session(name, spec)
             except asyncio.CancelledError:
+                break
+            except FileNotFoundError as e:
+                self._errors[name] = "missing executable"
+                logger.warning("MCP server %s unavailable: executable is missing", name)
                 break
             except Exception as e:
                 self._errors[name] = str(e)

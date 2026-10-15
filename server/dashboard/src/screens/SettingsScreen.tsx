@@ -8,18 +8,28 @@ import { DangerConfirmDialog } from '../components/ui/danger-confirm-dialog'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { rotateAccessKey } from '../lib/dashboard-auth'
 import { pluralRu } from '../lib/plural-ru'
 import { setThemePreference, useThemePreference, type ThemePreference } from '../lib/theme'
 import { getDensity, setDensity, type Density } from '../lib/ui-prefs'
 
-type FieldDef = { key: string; label: string; kind?: 'text' | 'bool' | 'provider' }
+type FieldDef = { key: string; label: string; kind?: 'text' | 'bool' | 'provider' | 'conversation' }
+
+const CONVERSATION_MODES = [
+  { value: 'default', label: 'По persona', description: 'Стиль из persona, без дополнительных ограничений.' },
+  { value: 'brief', label: 'Кратко', description: 'Суть в нескольких предложениях, с необходимыми фактами.' },
+  { value: 'detailed', label: 'Подробно', description: 'Объяснения, шаги и примеры. Длину ограничивает лимит токенов ответа.' },
+  { value: 'technical', label: 'Технически', description: 'Точные термины, команды и код, когда они нужны.' },
+  { value: 'no_jokes', label: 'Без шуток', description: 'Спокойный тон без мемов, сарказма и подколов.' },
+] as const
 
 const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
   {
     id: 'talk',
     title: 'Речь',
     fields: [
+      { key: 'agent.conversation_mode', label: 'Режим общения', kind: 'conversation' },
       { key: 'llm.talk_model.model', label: 'Модель речи' },
       { key: 'llm.talk_model.provider', label: 'Провайдер', kind: 'provider' },
       { key: 'llm.talk_model.temperature', label: 'Температура' },
@@ -152,6 +162,7 @@ export function SettingsScreen() {
   const [providers, setProviders] = useState<string[]>([])
   const [status, setStatus] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [modeError, setModeError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [softOpen, setSoftOpen] = useState(false)
@@ -191,7 +202,7 @@ export function SettingsScreen() {
         '/v1/config/runtime',
       )
       const next: Record<string, string> = {}
-      for (const k of allKeys) next[k] = serialize(r.data.values?.[k])
+      for (const k of allKeys) next[k] = serialize(r.data.values?.[k] ?? (k === 'agent.conversation_mode' ? 'default' : undefined))
       setValues(next)
       setInitial(next)
       const list = Array.isArray(r.data.providers) ? r.data.providers.map(String).filter(Boolean) : []
@@ -276,6 +287,7 @@ export function SettingsScreen() {
 
   async function applyRuntime(keys: string[]) {
     setError(null)
+    setModeError(null)
     setStatus('')
     setSaving(true)
     try {
@@ -287,7 +299,8 @@ export function SettingsScreen() {
       }
       await apiPost<ApiEnvelope<unknown>>('/v1/config/update', { updates })
       const needRestart = keys.some((k) => RESTART_KEYS.has(k))
-      setStatus(
+      setStatus(keys.length === 1 && keys[0] === 'agent.conversation_mode'
+        ? 'Режим сохранён и применяется к следующим ответам.' :
         needRestart
           ? `Сохранено ${Object.keys(updates).length} ключ(ей). Часть полей требует мягкого рестарта.`
           : `Сохранено на диск и применено: ${Object.keys(updates).length} ключ(ей). LLM пересобран при смене моделей/провайдера.`,
@@ -296,6 +309,7 @@ export function SettingsScreen() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setError(msg)
+      if (keys.includes('agent.conversation_mode')) setModeError(msg)
       if (/диск|disk|llm_rebind|пересобран/i.test(msg)) {
         setStatus('На диске могло сохраниться — при ошибке LLM сделай мягкий рестарт или повтори «Применить».')
       }
@@ -308,9 +322,32 @@ export function SettingsScreen() {
     setValues({ ...initial })
     setStatus('Изменения отменены')
     setError(null)
+    setModeError(null)
   }
 
   function renderField(f: FieldDef) {
+    if (f.kind === 'conversation') {
+      const value = values[f.key] || 'default'
+      const selected = CONVERSATION_MODES.find((mode) => mode.value === value)
+      return (
+        <div className="label" key={f.key}>
+          <label className="label-text" htmlFor="conversation-mode">Режим общения</label>
+          <Select disabled={saving} onValueChange={(next) => {
+            setValues((v) => ({ ...v, [f.key]: next }))
+            setModeError(null)
+          }} value={value}>
+            <SelectTrigger className="min-h-11" aria-describedby={modeError ? 'conversation-mode-hint conversation-mode-error' : 'conversation-mode-hint'} aria-invalid={Boolean(modeError)} id="conversation-mode">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent><SelectGroup>
+              {CONVERSATION_MODES.map((mode) => <SelectItem key={mode.value} value={mode.value}>{mode.label}</SelectItem>)}
+            </SelectGroup></SelectContent>
+          </Select>
+          <p className="hint" id="conversation-mode-hint">{selected?.description} Применяется после сохранения, без перезапуска.</p>
+          {modeError && <div id="conversation-mode-error"><InlineFeedback tone="error">{modeError}</InlineFeedback></div>}
+        </div>
+      )
+    }
     const commonLabel = (
       <span className="label-text">
         {f.label}{' '}
@@ -517,8 +554,8 @@ export function SettingsScreen() {
           <span className="card-title">Runtime-конфиг</span>
         </div>
         <p style={{ fontSize: '0.8rem', color: 'var(--muted)', margin: '0 0 0.65rem' }}>
-          «Применить» пишет в <span style={{ fontFamily: 'var(--mono)' }}>config/*.yaml</span> и сразу пересобирает LLM-клиенты
-          (без мягкого перезапуска). Если LLM не пересобрался — на диске уже может быть новое значение; мягкий рестарт подхватит его.
+          «Применить» сохраняет настройки на сервере. Режим общения действует со следующего ответа.
+          При смене моделей или провайдера LLM-клиенты пересобираются; поля с пометкой требуют перезапуска.
         </p>
         <div className="tabs-row" role="tablist" aria-label="Разделы конфига">
           {TABS.map((t) => (

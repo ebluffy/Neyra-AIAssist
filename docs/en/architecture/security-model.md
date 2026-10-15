@@ -7,6 +7,10 @@
 - When tokens are set: `viewer` reads; `maint+` soft-restart; `admin` chat/mutate. Prefer least privilege.
 - **Dashboard UI gate:** separate access key (PBKDF2 hash in `server/data/dashboard_auth.sqlite`, minimum **32** characters on setup). First-time `POST /v1/dashboard/auth/setup` is open only while the key is unset; without Bearer it requires a **console-local** loopback peer with **no** `CF-Connecting-IP` / `X-Real-IP`; from the public edge only primary `API_TOKEN` (not viewer/maint). Login/setup returns a short-lived **session token** (SPA keeps it in `sessionStorage`); `_resolve_role` accepts that session as **admin** alongside `API_TOKEN` / viewer / maint. Failed logins are rate-limited per client IP.
 
+Dashboard login and rotate share an in-process failed-key counter per IP: five failures in a sliding 300-second window, then 429 **before** key verification, even for a correct key. Existing sessions remain valid during lockout. Restarting the process resets the counter.
+
+`POST /v1/dashboard/auth/rotate` requires a valid dashboard-session Bearer plus `current_key` / `new_key`; it revokes old sessions and returns a replacement in `data.session_token`, with `trace_id` and `data.rotated: true`. A wrong current key must not clear the tab's session. Logout requires a valid session; repeating logout with a revoked token returns 401. Logout-all accepts an admin API token or a valid dashboard session.
+
 ## Secrets
 
 - Store secrets in `server/.env` only; `apply_env_secrets` injects them at boot. Do **not** commit `server/config.yaml`, `server/config/*.yaml`, plugin `config.yaml`, or `.env`.
@@ -14,6 +18,8 @@
 - Do not log `Authorization` headers or raw API keys.
 
 ## Memory isolation
+
+- Supplied Discord context uses current-user and channel IDs for turn scope; display names are not identity. `/model` selects only the caller's last turn in the current channel. Viewer can read `/v1/llm/activity`, whose reports exclude owner/channel IDs and dialogue content.
 
 - Chronological `recall_chat` / `POST /v1/memory/chat/recall` **require** `user_id` and/or `channel_id`.
 - Semantic `search_memory` / `POST /v1/memory/search` **require** `user_id` (dialogs and `session_archive_digest` are owner-only; shared is `type=knowledge` only). Tool `user_id` args are ignored in favor of turn-scope (`ContextVar`).

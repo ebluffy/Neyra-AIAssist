@@ -44,11 +44,13 @@ function renderSettings() {
 describe('SettingsScreen access rotate', () => {
   beforeEach(() => {
     setSessionToken.mockClear()
+    sessionStorage.setItem('neyra_dashboard_session', 'current-sess')
     vi.stubGlobal('fetch', vi.fn())
   })
 
   afterEach(() => {
     cleanup()
+    sessionStorage.clear()
     vi.unstubAllGlobals()
   })
 
@@ -95,10 +97,30 @@ describe('SettingsScreen access rotate', () => {
     await user.type(screen.getByLabelText('Повтор нового ключа'), key)
     await user.click(screen.getByRole('button', { name: 'Сменить ключ доступа' }))
     await waitFor(() => expect(setSessionToken).toHaveBeenCalledWith('new-sess'))
+    expect(fetch).toHaveBeenCalledWith('/v1/dashboard/auth/rotate', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer current-sess' }),
+    }))
     expect(screen.getByText(/Ключ доступа сменён/i)).toBeTruthy()
     expect((screen.getByLabelText('Текущий ключ') as HTMLInputElement).value).toBe('')
     expect((screen.getByLabelText('Новый ключ') as HTMLInputElement).value).toBe('')
     expect((screen.getByLabelText('Повтор нового ключа') as HTMLInputElement).value).toBe('')
+  })
+
+  it('keeps the current session and form on a wrong-key 401', async () => {
+    const user = userEvent.setup()
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({
+      ok: false, error: { message: 'Invalid access key' },
+    }), { status: 401 }))
+    renderSettings()
+    await screen.findByRole('heading', { name: 'Настройки' })
+    await user.type(screen.getByLabelText('Текущий ключ'), 'a'.repeat(32))
+    await user.type(screen.getByLabelText('Новый ключ'), 'b'.repeat(32))
+    await user.type(screen.getByLabelText('Повтор нового ключа'), 'b'.repeat(32))
+    await user.click(screen.getByRole('button', { name: 'Сменить ключ доступа' }))
+    await screen.findByText('Invalid access key')
+    expect(sessionStorage.getItem('neyra_dashboard_session')).toBe('current-sess')
+    expect(setSessionToken).not.toHaveBeenCalled()
+    expect((screen.getByLabelText('Текущий ключ') as HTMLInputElement).value).toBe('a'.repeat(32))
   })
 })
 

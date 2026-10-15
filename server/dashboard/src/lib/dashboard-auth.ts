@@ -1,4 +1,6 @@
-/** Public rotate (no session Bearer) — avoids 401 session redirect on wrong key. */
+import { getSessionToken } from '../api/client'
+
+/** Use session auth directly so a wrong current key does not trigger the API client's 401 redirect. */
 export async function rotateAccessKey(currentKey: string, newKey: string): Promise<string> {
   const ctrl = new AbortController()
   const timer = window.setTimeout(() => ctrl.abort(), 30_000)
@@ -6,7 +8,11 @@ export async function rotateAccessKey(currentKey: string, newKey: string): Promi
   try {
     r = await fetch('/v1/dashboard/auth/rotate', {
       method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${getSessionToken()}`,
+      },
       body: JSON.stringify({ current_key: currentKey, new_key: newKey }),
       signal: ctrl.signal,
     })

@@ -237,6 +237,10 @@ async def try_handle_fast_path(
         return None
 
     internal_uid = agent._resolve_internal_user_id(discord_user_id, username)
+    from core.agent.model_trace import ACTIVE_TRACE
+    trace = ACTIVE_TRACE.get()
+    if trace is not None:
+        trace.memory_owner_id = internal_uid
     try:
         speaker_label = agent._resolve_speaker_label(
             username, discord_user_id, author_display_name

@@ -92,7 +92,10 @@ def install_log_filters(extra_secrets: Iterable[str] | None = None) -> None:
         _attach_filter(h, trace)
         _attach_filter(h, red)
 
-    for name in ("uvicorn", "uvicorn.access", "uvicorn.error", "neyra"):
+    for name in (
+        "uvicorn", "uvicorn.access", "uvicorn.error", "neyra",
+        "ddgs", "duckduckgo_search", "httpx", "httpcore",
+    ):
         lg = logging.getLogger(name)
         for h in list(lg.handlers):
             _attach_filter(h, trace)

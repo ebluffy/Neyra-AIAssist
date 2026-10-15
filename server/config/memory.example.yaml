@@ -44,6 +44,10 @@ memory:
   # RU: Жёсткий лимит хранимых записей дневника.
   diary_max_entries: 5000
 
+  # One scoped first-person diary note after each completed exchange, in background.
+  # Replaces the ignored legacy llm.async_reflection and emotional diary options.
+  diary_after_turn: true
+
   # EN: Enables hourly automatic diary notes.
   # RU: Включает почасовые автоматические заметки в дневник.
   diary_hourly_enabled: true
@@ -129,10 +133,10 @@ memory:
     max_window_chars: 8000
     max_diary_chars: 1200
 
-  # EN: Persona affect in diary / PeopleDB / LTM metadata (memory_model). ltm_emotion_sync adds latency per turn.
-  # RU: Эмоции персоны в дневнике / досье / метаданные LTM; ltm_emotion_sync — доп. задержка на ход.
+  # Optional LTM tone metadata; runs in background, not on the response path.
   emotional_layer:
     enabled: false
+    # Deprecated, ignored: diary is controlled by memory.diary_after_turn above.
     diary_after_turn: true
     diary_emotion_min_interval_seconds: 90
     max_diary_emotion_chars: 480

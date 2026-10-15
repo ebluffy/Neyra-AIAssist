@@ -28,6 +28,7 @@ async def run_chat(
     author_display_name: Optional[str],
     lyrics_marker: str,
     avatar_url: Optional[str] = None,
+    discord_context=None,
 ) -> dict:
     """Run one non-streaming chat turn; return text/sounds/thoughts/raw."""
     try:
@@ -60,6 +61,7 @@ async def run_chat(
         lyrics_marker=lyrics_marker,
         log_lane="chat",
         avatar_url=avatar_url,
+        discord_context=discord_context,
     )
     try:
         try:
@@ -86,6 +88,8 @@ async def run_chat(
                 vision_caption=caption_ok or None,
                 vision_images=vision_images if prep.brain_native_vis else None,
                 brain_system=prep.brain_sys,
+                **({"context_data": prep.brain_data} if getattr(prep, "brain_data", "") else {}),
+                **({"discord_context": prep.discord_context} if getattr(prep, "discord_context", None) is not None else {}),
                 lyrics_mode=prep.lyrics_mode,
             )
         except Exception as e:
@@ -106,7 +110,7 @@ async def run_chat(
 
         system_prompt = build_talk_system_prompt(agent, prep, brain_context=brain_context)
         messages = build_talk_messages(
-            agent, prep, system_prompt, user_message=user_message, vision_images=vision_images
+            agent, prep, system_prompt, user_message=user_message, vision_images=vision_images, brain_context=brain_context
         )
         final_messages_used = messages
 
@@ -118,7 +122,8 @@ async def run_chat(
                 if prep.lyrics_mode
                 else agent.llm_talk
             )
-            response = await agent._ainvoke_text_with_fallback(messages, llm=cap_llm)
+            from core.agent.model_trace import invoke
+            response = await invoke(agent, cap_llm, messages, lane="talk", purpose="reply", images=bool(prep.talk_vm), invoker=agent._ainvoke_text_with_fallback)
             agent._log_model_route(agent._extract_model_name(response), lane="talk")
             raw_response = response.content if hasattr(response, "content") else str(response)
         except Exception as e:

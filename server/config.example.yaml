@@ -46,9 +46,8 @@ assistant:
   # EN: When appearance_always=true, cap injected chars (0 = no cap).
   # RU: При appearance_always=true — лимит символов (0 = без лимита).
   appearance_max_chars: 400
-  # EN: Compact identity snippet for brain lane (not full talk style).
-  # RU: Компактная выжимка личности для brain (не полный talk-стиль).
-  persona_in_brain: true
+  # Deprecated compatibility keys: persona is always talk-only.
+  persona_in_brain: false
   persona_brain_max_chars: 600
 
   # EN: Fallback if persona.md is missing. Prefer editing prompts/persona.md.

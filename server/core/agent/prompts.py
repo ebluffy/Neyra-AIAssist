@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 from .micro_plan import MicroPlanSettings
+from .conversation_modes import conversation_mode_hint
 
 
 def build_talk_system_prompt(
@@ -28,18 +29,19 @@ def build_talk_system_prompt(
     attached_image_caption: str = "",
     working_memory_context: str = "",
     pre_context: str = "",
+    conversation_mode: str = "default",
 ) -> str:
     """Assemble talk-lane system prompt. Order: role → active → mentioned → rules → RAG → rest."""
     from core.llm.profile import is_local_openai_compatible_provider
 
     if is_local_openai_compatible_provider(backend):
-        hw_note = "\n[СИСТЕМНАЯ ИНФОРМАЦИЯ: Работаешь через локальный/self-host OpenAI-compatible LLM endpoint.]"
+        hw_note = "\n[SYSTEM INFORMATION: You are running through a local/self-hosted OpenAI-compatible LLM endpoint.]"
     else:
-        hw_note = "\n[СИСТЕМНАЯ ИНФОРМАЦИЯ: Работаешь через облачный LLM API (OpenAI-compatible).]"
+        hw_note = "\n[SYSTEM INFORMATION: You are running through a cloud OpenAI-compatible LLM API.]"
 
     now = datetime.now()
     time_only = (
-        f"\n\n[ВРЕМЯ И СРЕДА]\nТекущие дата и время (локально сервера): "
+        f"\n\n[TIME AND ENVIRONMENT]\nCurrent server-local date and time: "
         f"{now.strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
@@ -50,139 +52,132 @@ def build_talk_system_prompt(
     active_lines: list[str] = []
     if username:
         active_lines.append(
-            f"Сейчас говоришь с: {username}. "
-            "Это основной адресат текущей реплики; тон и обращение — в первую очередь к этому человеку."
+            f"Current speaker label: {username}. "
+            "Address the current speaker; a display label is not an identity or permission boundary."
         )
     if people_context_active:
         active_lines.append(people_context_active.strip())
     if active_lines:
-        sections.append("\n# АКТИВНЫЙ СОБЕСЕДНИК\n" + "\n\n".join(active_lines))
+        sections.append("\n# ACTIVE SPEAKER\n" + "\n\n".join(active_lines))
 
     if people_context_mentioned:
         sections.append(
-            "\n# УПОМЯНУТЫЕ ЛЮДИ (дополнительный контекст)\n"
+            "\n# MENTIONED PEOPLE (additional context)\n"
             f"{people_context_mentioned.strip()}"
         )
     if people_context_active and people_context_mentioned:
         sections.append(
-            "\n[ПРИОРИТЕТ ДОСЬЕ]\n"
-            "Если сведения об активном собеседнике и об упомянутых людях расходятся — "
-            "ориентируйся на активного собеседника для тона и адресации ответа."
+            "\n[DOSSIER PRIORITY]\n"
+            "Do not confuse the current speaker with mentioned people. Resolve contradictions using IDs and provenance."
         )
 
     rule_chunks: list[str] = [
-        "[КРИТИЧЕСКОЕ ПРАВИЛО ОТВЕТА]\n"
-        "Запрещено выводить теги/блоки внутреннего мышления: "
-        "<think>, <thought>, <think> и любые их варианты. "
-        "Отвечай сразу готовым текстом для пользователя.",
-        "[АНТИ-ПОВТОР И РЕЛЕВАНТНОСТЬ]\n"
-        "Сначала ответь ПО СМЫСЛУ текущего сообщения пользователя. "
-        "Токсичность/локальные мемы/подколы используй как приправу, а не как основной контент. "
-        "Не повторяй дословно свои последние фразы из истории чата.",
+        "[CRITICAL RESPONSE RULE]\n"
+        "Never expose private reasoning tags or blocks: <think>, <thought>, or variants. "
+        "Return only the finished user-facing text.",
+        "[ANTI-REPETITION AND RELEVANCE]\n"
+        "Answer the meaning of the current user message first. "
+        "Follow the configured persona without adding an independent conversational style. "
+        "Do not repeat your recent phrases verbatim.",
     ]
     if micro_plan.enabled:
         if micro_plan.mode == "anchor":
             rule_chunks.append(
-                "[МИКРО-ПЛАНИРОВАНИЕ]\n"
-                "Перед финальным ответом сформируй короткий внутренний план (до 8 слов) "
-                "в anchor-формате, затем сам ответ пользователю. "
-                "Не используй markdown.\n"
-                "Шаблон (ОБЯЗАТЕЛЬНЫЙ формат):\n"
-                f"Пользователь: Ало, как дела?\n"
-                f"Нейра: {micro_plan.anchor_prefix} коротко поприветствовать. "
-                f"{micro_plan.anchor_reply} Привет! Всё нормально, как ты?\n"
-                f"Если не можешь соблюсти формат с {micro_plan.anchor_prefix} и "
-                f"{micro_plan.anchor_reply}, не пиши план вообще и сразу отвечай пользователю."
+                "[MICRO-PLANNING]\n"
+                "Before the final answer, form a short private plan (up to 8 words) "
+                "in anchor format, then answer the user. Preserve the selected conversation mode.\n"
+                "REQUIRED FORMAT EXAMPLE:\n"
+                f"User: Hello, how are you?\n"
+                f"Neyra: {micro_plan.anchor_prefix} greet briefly. "
+                f"{micro_plan.anchor_reply} I am fine, how are you?\n"
+                f"If you cannot follow the {micro_plan.anchor_prefix} and "
+                f"{micro_plan.anchor_reply} format, omit the plan and answer directly."
             )
         else:
             rule_chunks.append(
-                "[МИКРО-ПЛАНИРОВАНИЕ]\n"
-                f"Перед основным текстом добавь КОРОТКИЙ внутренний план в тегах "
-                f"{micro_plan.start}...{micro_plan.end} (до 8 слов), "
-                "после него сразу дай обычный ответ для пользователя. "
-                "Не используй markdown.\n"
-                "Шаблон (ОБЯЗАТЕЛЬНЫЙ формат):\n"
-                f"Пользователь: Ало, как дела?\n"
-                f"Нейра: {micro_plan.start}поприветствовать и коротко ответить{micro_plan.end} "
-                "Привет! Всё нормально, как ты?\n"
-                f"Если не можешь соблюсти формат {micro_plan.start}...{micro_plan.end}, "
-                "не пиши план вообще и сразу давай обычный ответ."
+                "[MICRO-PLANNING]\n"
+                f"Before the main text, add a SHORT private plan in {micro_plan.start}...{micro_plan.end} "
+                "(up to 8 words), then answer the user. Preserve the selected conversation mode.\n"
+                "REQUIRED FORMAT EXAMPLE:\n"
+                f"User: Hello, how are you?\n"
+                f"Neyra: {micro_plan.start}greet and answer briefly{micro_plan.end} "
+                "I am fine, how are you?\n"
+                f"If you cannot follow {micro_plan.start}...{micro_plan.end}, omit the plan and answer directly."
             )
-    sections.append("\n# ПРАВИЛА ПОВЕДЕНИЯ И СТИЛЬ ОТВЕТА\n" + "\n\n".join(rule_chunks))
+    sections.append("\n# BEHAVIOR AND RESPONSE STYLE\n" + "\n\n".join(rule_chunks))
 
     if (working_memory_context or "").strip():
         sections.append(
-            "\n# РАБОЧАЯ ПАМЯТЬ (1–3 дня, сжатый слой)\n"
-            "Краткие договорённости и задачи из недавних суток; если противоречит RAG — приоритет у фактов из RAG, "
-            "но не игнорируй явные «свежие» обещания из этого блока без причины.\n"
+            "\n# WORKING MEMORY (1-3 days, compact layer)\n"
+            "Recent agreements and tasks; if this conflicts with RAG, prefer RAG facts, but do not ignore explicit recent commitments without a reason.\n"
             f"{working_memory_context.strip()}"
         )
 
     if extra_memories:
         memories_text = "\n".join(f"- {m[:300]}" for m in extra_memories)
         sections.append(
-            "\n# ДОЛГОСРОЧНАЯ ПАМЯТЬ (RAG, фрагменты прошлых разговоров)\n"
+            "\n# LONG-TERM MEMORY (RAG, excerpts from prior conversations)\n"
             f"{memories_text}"
         )
 
     if brain_router_context:
         sections.append(
-            "\n# КОНТЕКСТ МАРШРУТИЗАТОРА (brain: инструменты и факты)\n"
+            "\n# ROUTER CONTEXT (brain: tools and facts)\n"
             f"{brain_router_context.strip()}"
         )
 
     if diary_context:
-        sections.append(f"\n# ЛИЧНЫЙ ДНЕВНИК НЕЙРЫ (последние заметки)\n{diary_context}")
+        sections.append(f"\n# NEYRA DIARY (recent notes)\n{diary_context}")
 
     if web_context:
         sections.append(
-            f"\n# АКТУАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА (по запросу пользователя)\n{web_context}\n"
-            "(Опирайся на эти данные, если они релевантны вопросу.)"
+            f"\n# CURRENT WEB DATA (requested by the user)\n{web_context}\n"
+            "(Use these data when relevant to the question.)"
         )
 
     if tool_context:
         sections.append(
-            f"\n# РЕЗУЛЬТАТЫ ИНСТРУМЕНТОВ (уже посчитано кодом, не выдумывай другое)\n{tool_context}"
+            f"\n# TOOL RESULTS (computed by code; do not invent alternatives)\n{tool_context}"
         )
 
     if mcp_tools_catalog:
         sections.append(
-            "\n# ДОСТУПНЫЕ ВНЕШНИЕ ИНСТРУМЕНТЫ (MCP)\n"
+            "\n# AVAILABLE EXTERNAL TOOLS (MCP)\n"
             f"{mcp_tools_catalog.strip()}\n"
-            "(Имена с префиксом mcp_ зарезервированы для вызова через ядро; не имитируй JSON-RPC.)"
+            "(Names with the mcp_ prefix are reserved for core tool calls; do not imitate JSON-RPC.)"
         )
 
     if (attached_image_caption or "").strip():
         sections.append(
-            "\n# ИЗОБРАЖЕНИЕ К ЭТОЙ РЕПЛИКЕ (конспект VL)\n"
+            "\n# IMAGE ATTACHED TO THIS TURN (VL summary)\n"
             f"{attached_image_caption.strip()}"
         )
 
     if has_vision_images:
         sections.append(
-            "\n[ЗРЕНИЕ — ПРИОРИТЕТ НАД БРЕДОМ И ПОДКОЛАМИ]\n"
-            "К этому сообщению прикреплены изображения; тебе в запрос переданы пиксели через VL-модель.\n"
-            "СНАЧАЛА по делу: 1–3 коротких предложения — что на картинке (интерфейс, люди, текст на скрине — "
-            "перечисли читаемое дословно или очень близко). Опирайся только на видимое, не выдумывай.\n"
-            "ЗАПРЕЩЕНО вместо описания отвечать шаблонами вроде «ничего не вижу», «почти ничего», "
-            "«смотри нормально», «слепой», «криворукий», «что за хрень на картинке» — это будет ложь: изображение передано.\n"
-            "После обязательного описания можешь одной фразой в своём тоне, без Markdown."
+            "\n[VISION PRIORITY]\n"
+            "An image or its caption is attached. Answer the visual question using visible evidence. "
+            "Transcribe legible text accurately; distinguish observations from uncertainty. "
+            "Do not invent details or claim pixel access when only a caption is available. "
+            "Keep the configured persona, language and conversation mode."
         )
     elif last_image_context:
         sections.append(
-            "\n[ПОСЛЕДНИЙ СКРИН В ЭТОМ КАНАЛЕ — НОВОГО ВЛОЖЕНИЯ НЕТ]\n"
-            "Ниже сжатая заметка с прошлого VL-хода (внутренний разбор, либо конспект ответа, если монолога не было). "
-            "Если юзер переспрашивает про ту картинку — опирайся на это; для новых деталей по пикселям попроси скинуть скрин снова.\n"
+            "\n[PREVIOUS IMAGE: NO NEW ATTACHMENT]\n"
+            "The following is a summary of the previous image turn, not current pixel input. "
+            "For details missing from the summary, ask for the image again.\n"
             f"{last_image_context}"
         )
 
+    mode_hint = conversation_mode_hint(conversation_mode)
+    if mode_hint:
+        sections.append("\n" + mode_hint)
+
     if lyrics_mode:
         sections.append(
-            "\n[РЕЖИМ ТЕКСТА ПЕСНИ / ПОЛНЫЙ ВЫВОД]\n"
-            "Пользователь запросил текст песни (по данным из веб-поиска). "
-            "На этот ход не действует правило отвечать очень кратко (1–3 предложения): выведи текст полностью. "
-            "Сохраняй переносы строк и пустые строки между куплетами, как в источнике; "
-            "не сжимай весь ответ в один абзац."
+            "\n[LYRICS MODE / FULL OUTPUT]\n"
+            "The user requested song lyrics from the supplied source. Brevity mode must not shorten them. "
+            "Preserve line breaks and blank lines between verses; do not compress the text into one paragraph."
         )
 
     return "\n".join(sections)
@@ -205,41 +200,39 @@ def build_brain_system_prompt(
 ) -> str:
     """Compact brain-lane system prompt: tools/facts + optional identity snippet."""
     lines: list[str] = [
-        "Ты служебный маршрутизатор (brain) ассистента Нейра.",
-        "Не имитируй финальный ответ пользователю и не копируй разговорный стиль talk-модели.",
-        "Если доступны инструменты — вызывай их через tool_calls, когда это нужно для фактов.",
-        "Когда данных достаточно или инструменты не нужны — выдай сжатое резюме для следующей модели (talk): "
-        "факты, результаты инструментов, намерение пользователя; по-русски; без приветствий и без тегов мышления.",
+        "You are Neyra's internal planning and routing lane (brain).",
+        "Do not imitate a final user-facing answer or the talk model's conversational style.",
+        "When tools are available, call them through tool_calls when facts require them.",
+        "When enough data is available, return a compact routing summary for talk: facts, tool results, and user intent. Do not greet, expose private reasoning, or claim to be the final speaker.",
     ]
-    if (identity_snippet or "").strip():
-        lines.append(identity_snippet.strip())
+    # Legacy identity_snippet is accepted for call compatibility, never injected into brain.
     if (pre_context or "").strip():
         lines.append(pre_context.strip())
     if username:
-        lines.append(f"Текущий собеседник в подписи сообщений: {username}.")
+        lines.append(f"Current speaker label: {username}.")
     if people_context_active:
-        lines.append("# Активный собеседник\n" + people_context_active.strip())
+        lines.append("# ACTIVE SPEAKER\n" + people_context_active.strip())
     if people_context_mentioned:
-        lines.append("# Упомянутые люди\n" + people_context_mentioned.strip())
+        lines.append("# MENTIONED PEOPLE\n" + people_context_mentioned.strip())
     if (working_memory_context or "").strip():
-        lines.append("# Рабочая память (1–3 дня)\n" + working_memory_context.strip())
+        lines.append("# WORKING MEMORY (1-3 days)\n" + working_memory_context.strip())
     if extra_memories:
         mt = "\n".join(f"- {m[:400]}" for m in extra_memories)
-        lines.append("# Фрагменты памяти (RAG)\n" + mt)
+        lines.append("# MEMORY EXCERPTS (RAG)\n" + mt)
     if diary_context:
-        lines.append("# Дневник (недавние заметки)\n" + diary_context.strip())
+        lines.append("# DIARY (recent notes)\n" + diary_context.strip())
     if web_context:
-        lines.append("# Веб / актуальные данные\n" + web_context.strip())
+        lines.append("# WEB / CURRENT DATA\n" + web_context.strip())
     if tool_context:
-        lines.append("# Уже посчитано кодом (не выдумывай другое)\n" + tool_context.strip())
+        lines.append("# COMPUTED BY CODE (do not invent alternatives)\n" + tool_context.strip())
     if last_image_context:
         lines.append(
-            "# Последний скрин в канале (нет нового вложения)\n" + last_image_context.strip()
+            "# LAST IMAGE IN CHANNEL (no new attachment)\n" + last_image_context.strip()
         )
     if mcp_tools_catalog:
         lines.append(
-            "# Доступные MCP-инструменты\n"
+            "# AVAILABLE MCP TOOLS\n"
             + mcp_tools_catalog.strip()
-            + "\n(Имена с префиксом mcp_ — только через tool_calls.)"
+            + "\n(Names with the mcp_ prefix may only be used through tool_calls.)"
         )
     return "\n\n".join(lines)

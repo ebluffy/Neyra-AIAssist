@@ -1,4 +1,4 @@
-# Neyra Windows Client
+# Neyra Client — Windows and Linux
 
 Thin control app for the local (or publicly published) Neyra server. **Tauri 2 + React + TypeScript**.
 
@@ -7,7 +7,12 @@ Talks to the same Control API as the server dashboard (`/v1`, WebSocket chat).
 
 ## Status
 
-**Scaffold only.** MVP screens (Connect, Chat, Status, Modules), Credential Manager for tokens, NSIS installer, and updater land in **Stage 3** — see [docs/PLAN.md](../docs/PLAN.md) §3.
+**Scaffold only.** Implementation follows completion of the agreed server work.
+MVP screens (Connect, Chat, Status, Modules), platform-specific secure token
+storage, packaging and updater remain planned in [docs/PLAN.md](../docs/PLAN.md)
+§3b. Windows uses Credential Manager and NSIS; Linux's secret-store adapter and
+distribution formats will be selected and tested separately. Neither platform
+is implemented or validated yet.
 
 Default server URL comes from **user settings**, not a hardcoded build-time host. For demos the public origin may be `https://neyra.owyx.site` (frp publish; data stays on the home server).
 

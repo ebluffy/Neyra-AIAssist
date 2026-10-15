@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
-import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -16,18 +15,12 @@ logger = logging.getLogger("neyra.plugin_builder")
 
 @dataclass(frozen=True)
 class PluginBuilderSettings:
-    """
-    Личный tool: минимальные настройки прямо в файле (без config.yaml).
+    """Explicit coder connection; runtime defaults come from layered LLM config."""
 
-    Приоритет ключа:
-    1) api_key (в аргументах tool-call)
-    2) OPENROUTER_API_KEY из .env / окружения
-    """
-
-    # OpenRouter OpenAI-compatible endpoint
-    base_url: str = "https://openrouter.ai/api/v1"
-    # Минимально-адекватная дефолтная модель для код-генерации. Меняй здесь при необходимости.
-    model: str = "tencent/hy3-preview:free"
+    base_url: str = ""
+    model: str = ""
+    provider: str = ""
+    headers: dict = field(default_factory=dict)
     # Защита: блокируем изменение этих плагинов из tool-а
     plugin_blacklist: tuple[str, ...] = ("discord",)
 
@@ -96,15 +89,23 @@ def _normalize_rel_path(rel: str, *, plugin_id: str) -> str:
     return "/".join(parts)
 
 
-def _openrouter_key(explicit_key: str | None) -> str | None:
-    k = (explicit_key or "").strip()
-    if k:
-        return k
-    k = (os.getenv("OPENROUTER_API_KEY") or "").strip()
-    return k or None
+def coder_connection(config: dict):
+    from core.llm.profile import resolve_openai_compatible_connection, resolve_role_provider
+
+    llm = config.get("llm") or {}
+    role = "coder_model" if llm.get("coder_model") else "brain_model"
+    block = llm.get(role) or {}
+    model = block.get("model") if isinstance(block, dict) else block
+    if not model:
+        raise ValueError("Configure llm.coder_model.model or llm.brain_model.model")
+    if role == "coder_model" and isinstance(block, dict) and not block.get("provider"):
+        config = {**config, "llm": {**llm, "coder_model": {**block, "provider": resolve_role_provider(config, "brain_model")}}}
+    connection = resolve_openai_compatible_connection(config, role=role)
+    return PluginBuilderSettings(base_url=connection.base_url, model=str(model), provider=connection.provider,
+                                 headers=dict(connection.default_headers)), connection.api_key
 
 
-def _call_openrouter_chat(
+def _call_openai_chat(
     *,
     settings: PluginBuilderSettings,
     api_key: str,
@@ -113,13 +114,11 @@ def _call_openrouter_chat(
     timeout_s: float = 120.0,
 ) -> str:
     url = f"{settings.base_url.rstrip('/')}/chat/completions"
-    logger.info("PluginBuilder: call OpenRouter coder | model=%s", settings.model)
+    logger.info("PluginBuilder: coder | provider=%s model=%s", settings.provider or "explicit", settings.model)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        # Рекомендованные заголовки OpenRouter (не обязательны)
-        "HTTP-Referer": "https://github.com/KORESHon/Neyra-AIAssist",
-        "X-Title": "Neyra Plugin Builder Tool",
+        **settings.headers,
     }
     payload = {
         "model": settings.model,
@@ -129,10 +128,21 @@ def _call_openrouter_chat(
         ],
         "temperature": 0.2,
     }
-    with httpx.Client(timeout=timeout_s) as client:
-        r = client.post(url, headers=headers, json=payload)
-        r.raise_for_status()
-        data = r.json()
+    from core.agent.model_trace import begin_call, end_call
+    from types import SimpleNamespace
+    call = begin_call(None, "coder", "plugin_generation", model=SimpleNamespace(model_name=settings.model))
+    if call is not None:
+        call["provider"] = settings.provider or None
+    try:
+        with httpx.Client(timeout=timeout_s) as client:
+            r = client.post(url, headers=headers, json=payload)
+            r.raise_for_status()
+            data = r.json()
+        end_call(call, SimpleNamespace(response_metadata={"model": data.get("model"),
+            "request_id": r.headers.get("x-request-id"), "usage": data.get("usage")}))
+    except BaseException:
+        end_call(call, status="failed")
+        raise
     try:
         return data["choices"][0]["message"]["content"]
     except Exception:
@@ -140,11 +150,12 @@ def _call_openrouter_chat(
 
 
 def create_or_edit_plugin_impl(
-    *,
     plugin_id: str,
     task: str,
+    *,
     api_key: str | None = None,
     settings: PluginBuilderSettings | None = None,
+    config: dict | None = None,
 ) -> dict[str, Any]:
     """
     Генерирует/правит файлы плагина внутри modules/<plugin_id>.
@@ -152,7 +163,12 @@ def create_or_edit_plugin_impl(
     Возвращает структурированный результат (дикт), чтобы агент мог кратко пересказать.
     """
 
-    settings = settings or PluginBuilderSettings()
+    key = api_key
+    if settings is None:
+        settings, configured_key = coder_connection(config or {})
+        key = key or configured_key
+    if not settings.base_url or not settings.model:
+        raise ValueError("Coder endpoint and model must be configured")
     pid = _normalize_plugin_id(plugin_id)
     if not pid:
         return {"ok": False, "error": "plugin_id is empty"}
@@ -164,9 +180,8 @@ def create_or_edit_plugin_impl(
     plugin_dir = (modules / pid).resolve()
     _path_jail_check(plugin_dir, modules)
 
-    key = _openrouter_key(api_key)
     if not key:
-        return {"ok": False, "error": "OpenRouter API key missing (api_key arg or OPENROUTER_API_KEY env)"}
+        return {"ok": False, "error": "Coder provider API key is missing"}
 
     loader = PluginLoader(root=root)
     existed = plugin_dir.exists()
@@ -183,8 +198,7 @@ def create_or_edit_plugin_impl(
         try:
             for p in sorted(plugin_dir.glob("*.py")):
                 existing_files[p.name] = p.read_text(encoding="utf-8", errors="replace")[:20000]
-            for p in sorted(plugin_dir.glob("*.yaml")):
-                existing_files[p.name] = p.read_text(encoding="utf-8", errors="replace")[:20000]
+            # Configuration may contain provider credentials; never send it to the model.
             for p in sorted(plugin_dir.glob("*.md")):
                 existing_files[p.name] = p.read_text(encoding="utf-8", errors="replace")[:20000]
         except Exception:
@@ -192,15 +206,15 @@ def create_or_edit_plugin_impl(
             existing_files = {}
 
     system = (
-        "Ты — инженер по плагинам проекта Neyra.\n"
-        "Нужно сгенерировать изменения плагина в modules/<plugin_id>.\n"
-        "ВЫХОД СТРОГО: JSON вида {\"files\": [{\"path\": \"relative/path\", \"content\": \"...\"}], \"notes\": \"...\"}.\n"
-        "Запрещено менять что-либо вне modules/<plugin_id>.\n"
-        "Не трогай плагины: discord.\n"
-        "ВАЖНО: Все пути files[].path должны быть ОТНОСИТЕЛЬНЫМИ к корню плагина (НЕ включать modules/<id>/).\n"
-        "Если создаёшь новый плагин: добавь modules/<plugin_id>/plugin.yaml и modules/<plugin_id>/main.py.\n"
-        "В plugin.yaml ОБЯЗАТЕЛЬНО укажи main_script: \"main.py\" (не пустой).\n"
-        "Не добавляй бинарные данные.\n"
+        "You are Neyra's plugin engineer.\n"
+        "Generate plugin changes under modules/<plugin_id>.\n"
+        "OUTPUT MUST BE JSON: {\"files\": [{\"path\": \"relative/path\", \"content\": \"...\"}], \"notes\": \"...\"}.\n"
+        "Do not change anything outside modules/<plugin_id>.\n"
+        "Do not modify the discord plugin.\n"
+        "All files[].path values MUST be relative to the plugin root and must not include modules/<id>/.\n"
+        "For a new plugin, add plugin.yaml and main.py.\n"
+        "plugin.yaml MUST set main_script: \"main.py\".\n"
+        "Do not include binary data.\n"
     )
     user = json.dumps(
         {
@@ -211,7 +225,7 @@ def create_or_edit_plugin_impl(
         ensure_ascii=False,
     )
 
-    raw = _call_openrouter_chat(settings=settings, api_key=key, system=system, user=user)
+    raw = _call_openai_chat(settings=settings, api_key=key, system=system, user=user)
     try:
         plan = json.loads(raw)
     except Exception as e:
@@ -244,6 +258,7 @@ def create_or_edit_plugin_impl(
     except Exception as e:
         if existed and backup_ok and backup_path:
             loader.rollback_plugin(pid, backup_path=backup_path)
+        logger.warning("PluginBuilder: write failed | plugin_id=%s error_type=%s", pid, type(e).__name__)
         return {"ok": False, "error": f"Write failed: {e}", "written": written}
 
     logger.info("PluginBuilder: wrote files | plugin_id=%s count=%s", pid, len(written))
@@ -314,4 +329,3 @@ def create_or_edit_plugin_impl(
         "written": written,
         "notes": str(plan.get("notes") or "")[:2000],
     }
-

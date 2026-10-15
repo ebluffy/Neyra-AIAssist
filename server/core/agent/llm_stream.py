@@ -15,24 +15,17 @@ def extract_model_name(payload: Any) -> Optional[str]:
     if isinstance(md, dict):
         model = md.get("model_name") or md.get("model")
         if model:
-            return str(model)
+            return str(model)[:256]
     md2 = getattr(payload, "metadata", None) or {}
     if isinstance(md2, dict):
         model = md2.get("model_name") or md2.get("model")
         if model:
-            return str(model)
+            return str(model)[:256]
     return None
 
 
 def log_model_route(agent: Any, used_model: Optional[str], *, lane: str = "talk") -> None:
-    if not used_model:
-        return
-    primary = str(getattr(agent, "llm_primary_model", "") or "")
-    fallback = str(getattr(agent, "llm_fallback_model", "") or "")
-    route = "primary"
-    if fallback and fallback in used_model:
-        route = "fallback"
-    logger.info("LLM route | lane=%s | route=%s | model=%s", lane, route, used_model)
+    logger.info("LLM route | lane=%s | reported_model=%s", lane, used_model or "not_reported")
 
 
 async def astream_text_with_fallback(
@@ -47,15 +40,21 @@ async def astream_text_with_fallback(
     last_err: Optional[Exception] = None
 
     for attempt in range(1, attempts + 1):
+        from .model_trace import begin_call, end_call, mark_first_meaningful_token, observe_payload
+        call = begin_call(agent, "talk", "stream_reply", images=any(isinstance(getattr(m, "content", None), list) for m in messages), model=model)
         started = time.monotonic()
         stream = model.astream(messages)
         it = stream.__aiter__()
         try:
-            first_chunk = await asyncio.wait_for(it.__anext__(), timeout=first_timeout)
-            first_token = message_content_to_text(
-                first_chunk.content if hasattr(first_chunk, "content") else first_chunk
-            )
+            deadline = time.monotonic() + first_timeout
+            while True:
+                first_chunk = await asyncio.wait_for(it.__anext__(), timeout=max(0, deadline - time.monotonic()))
+                observe_payload(call, first_chunk)
+                first_token = message_content_to_text(getattr(first_chunk, "content", ""))
+                if first_token:
+                    break
             if first_token:
+                mark_first_meaningful_token(call)
                 route = "primary" if attempt == 1 else "primary_retry"
                 logger.info(
                     "LLM first token | route=%s | delay=%.3fs",
@@ -64,9 +63,14 @@ async def astream_text_with_fallback(
                 )
             yield first_chunk
             async for ch in it:
+                observe_payload(call, ch)
+                if message_content_to_text(getattr(ch, "content", "")):
+                    mark_first_meaningful_token(call)
                 yield ch
+            end_call(call)
             return
         except asyncio.TimeoutError as e:
+            end_call(call, status="failed")
             last_err = TimeoutError(
                 f"LLM first-token timeout after {first_timeout:.1f}s "
                 f"(attempt {attempt}/{attempts})"
@@ -80,13 +84,21 @@ async def astream_text_with_fallback(
             )
             continue
         except StopAsyncIteration:
+            end_call(call)
             return
         except Exception as e:
+            end_call(call, status="failed")
             last_err = e
             if attempt >= attempts:
                 raise
             logger.warning("LLM stream attempt failed, retrying same model: %s", e)
             continue
+        finally:
+            if call is not None and call["status"] == "running":
+                end_call(call, status="cancelled")
+            close = getattr(it, "aclose", None)
+            if close is not None:
+                await close()
 
     if last_err:
         raise last_err

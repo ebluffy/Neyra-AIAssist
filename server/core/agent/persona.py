@@ -121,9 +121,9 @@ def format_appearance_section(
     if always and max_chars > 0 and len(text) > max_chars:
         text = text[:max_chars].rstrip() + "…"
     return (
-        "\n\n# ВНЕШНОСТЬ / ВИЗУАЛЬНЫЙ КАНОН\n"
-        "Используй только когда речь о виде, аватаре, картинке или образе. "
-        "Не навязывай описание внешности в обычном текстовом чате.\n"
+        "\n\n# APPEARANCE / VISUAL CANON\n"
+        "Use only when appearance, avatar or visual depiction is relevant. "
+        "Do not introduce appearance descriptions into unrelated text chat.\n"
         f"{text}"
     )
 
@@ -153,22 +153,5 @@ def persona_brain_snippet(
     *,
     max_chars: Optional[int] = None,
 ) -> str:
-    """Compact identity for brain lane (no full talk style dump by default)."""
-    asst = _assistant_block(config)
-    if asst.get("persona_in_brain") is False:
-        return ""
-    persona = load_persona_text(config, project_root)
-    if not persona:
-        return ""
-    limit = max_chars
-    if limit is None:
-        limit = int(asst.get("persona_brain_max_chars") or 600)
-    if limit > 0 and len(persona) > limit:
-        persona = persona[:limit].rstrip() + "…"
-    name = str(asst.get("name") or "Neyra").strip() or "Neyra"
-    # Collapse excessive blank lines for brain compactness
-    persona = re.sub(r"\n{3,}", "\n\n", persona)
-    return (
-        f"# IDENTITY (компактно; не копируй стиль talk-модели дословно)\n"
-        f"Ассистент: {name}.\n{persona}"
-    )
+    """Deprecated compatibility helper: persona belongs exclusively to talk."""
+    return ""

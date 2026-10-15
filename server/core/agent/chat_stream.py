@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import aclosing
 from typing import Any, AsyncIterator, Optional
 
 from core.agent.reply_pipeline import (
@@ -28,6 +29,7 @@ async def iter_chat_stream(
     author_display_name: Optional[str],
     lyrics_marker: str,
     avatar_url: Optional[str] = None,
+    discord_context=None,
 ) -> AsyncIterator[dict]:
     """Yield token/error/done chunks for streaming chat."""
     try:
@@ -71,6 +73,7 @@ async def iter_chat_stream(
         lyrics_marker=lyrics_marker,
         log_lane="stream",
         avatar_url=avatar_url,
+        discord_context=discord_context,
     )
     try:
         try:
@@ -97,6 +100,8 @@ async def iter_chat_stream(
                 vision_caption=caption_ok or None,
                 vision_images=vision_images if prep.brain_native_vis else None,
                 brain_system=prep.brain_sys,
+                **({"context_data": prep.brain_data} if getattr(prep, "brain_data", "") else {}),
+                **({"discord_context": prep.discord_context} if getattr(prep, "discord_context", None) is not None else {}),
                 lyrics_mode=prep.lyrics_mode,
             )
         except Exception as e:
@@ -132,7 +137,7 @@ async def iter_chat_stream(
             )
 
         messages = build_talk_messages(
-            agent, prep, system_prompt, user_message=user_message, vision_images=vision_images
+            agent, prep, system_prompt, user_message=user_message, vision_images=vision_images, brain_context=brain_context
         )
         final_messages_used = messages
 
@@ -145,17 +150,18 @@ async def iter_chat_stream(
 
         async def _consume_stream(stream_iter: Any, *, retry: bool = False) -> AsyncIterator[dict]:
             nonlocal raw_response, used_model_name, raw_chunk_count, yielded_chunk_count
-            async for chunk in stream_iter:
-                if used_model_name is None:
-                    used_model_name = agent._extract_model_name(chunk)
-                token = chunk.content if hasattr(chunk, "content") else str(chunk)
-                if token:
-                    raw_chunk_count += 1
-                    raw_response += token
-                    visible = agent._filter_micro_plan_token(token, plan_state)
-                    if visible:
-                        yield {"type": "token", "text": visible}
-                        yielded_chunk_count += 1
+            async with aclosing(stream_iter):
+                async for chunk in stream_iter:
+                    if used_model_name is None:
+                        used_model_name = agent._extract_model_name(chunk)
+                    token = chunk.content if hasattr(chunk, "content") else str(chunk)
+                    if token:
+                        raw_chunk_count += 1
+                        raw_response += token
+                        visible = agent._filter_micro_plan_token(token, plan_state)
+                        if visible:
+                            yield {"type": "token", "text": visible}
+                            yielded_chunk_count += 1
             tail = agent._finalize_micro_plan_state(plan_state)
             if tail:
                 yield {"type": "token", "text": tail}
@@ -170,16 +176,17 @@ async def iter_chat_stream(
             )
 
         try:
-            async for item in _consume_stream(
+            async with aclosing(_consume_stream(
                 agent._astream_text_with_fallback(messages, llm=stream_llm)
-            ):
-                yield item
+            )) as stream:
+                async for item in stream:
+                    yield item
         except Exception as e:
             err_str = (str(e) or "").strip() or type(e).__name__
             if isinstance(e, TimeoutError) or type(e).__name__ == "TimeoutError":
                 err_str = (
-                    "таймаут ответа модели (first token). "
-                    "Повтори позже или увеличь llm.talk_model.primary_first_token_timeout_seconds"
+                    "Model response timed out while waiting for the first token. "
+                    "Try again later or increase llm.talk_model.primary_first_token_timeout_seconds"
                 )
             if (
                 "context size has been exceeded" in err_str.lower()
@@ -187,7 +194,7 @@ async def iter_chat_stream(
             ):
                 context_exceeded = True
                 logger.warning(
-                    "Контекст переполнен (LMStudio n_ctx мал)! Архив (если вкл.) + trim STM / урезание промпта..."
+                    "Context overflow detected. Archive if enabled, trim STM, and retry with reduced context."
                 )
                 try:
                     from core.agent.session_archive import archive_session
@@ -219,14 +226,16 @@ async def iter_chat_stream(
                     user_message=user_message,
                     vision_images=vision_images,
                     with_micro_plan_prefill=False,
+                    drop_extra_context=True,
                 )
                 final_messages_used = messages_retry
                 try:
-                    async for item in _consume_stream(
+                    async with aclosing(_consume_stream(
                         agent._astream_text_with_fallback(messages_retry, llm=stream_llm),
                         retry=True,
-                    ):
-                        yield item
+                    )) as stream:
+                        async for item in stream:
+                            yield item
                 except Exception as e2:
                     logger.error("Ошибка повторного запроса (даже с урезанным контекстом): %s", e2)
                     agent._publish_chat_turn_failed(

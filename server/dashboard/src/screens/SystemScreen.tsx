@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { apiGet, apiPost } from '../api'
 import type { ApiEnvelope, BackupArchive, HealthData } from '../api'
 import { LogViewer } from '../components/LogViewer'
+import { CoreJournalPanel } from '../components/MemoryLayers'
 import type { LogSource } from '../components/LogViewer'
 import { RestartProgress } from '../components/RestartProgress'
 import { Button } from '../components/ui/button'
@@ -14,10 +15,11 @@ import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
 import { collectHealthIssues, healthBlockReasons, healthTileState } from '../lib/health'
 import { waitForCoreRestart } from '../lib/wait-for-core-restart'
+import { navigatePanelTabs } from '../lib/panel-tabs'
 
 type SystemDanger = { kind: 'restart' } | { kind: 'restore'; name: string }
 
-type Tab = 'overview' | 'health' | 'logs' | 'backup'
+type Tab = 'overview' | 'health' | 'logs' | 'backup' | 'journal'
 
 const LOG_SOURCES: LogSource[] = [
   { id: 'system', label: 'Система' },
@@ -327,6 +329,7 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
     ['overview', 'Обзор', Info],
     ['health', 'Здоровье', Activity],
     ['logs', 'Логи', ScrollText],
+    ['journal', 'События памяти', ScrollText],
     ['backup', 'Бэкап', DatabaseBackup],
   ]
 
@@ -377,11 +380,15 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
       ) : null}
 
       <div className="card">
-        <div className="panel-tabs panel-tabs-dense" role="tablist">
+        <div className="panel-tabs panel-tabs-dense" role="tablist" aria-label="Разделы системы">
           {tabs.map(([id, label, Icon]) => (
             <button
               key={id}
+              id={`system-tab-${id}`}
+              aria-controls={`system-panel-${id}`}
               aria-selected={tab === id}
+              tabIndex={tab === id ? 0 : -1}
+              onKeyDown={navigatePanelTabs}
               className={`panel-tab${tab === id ? ' active' : ''}`}
               onClick={() => setTab(id)}
               role="tab"
@@ -392,6 +399,7 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
           ))}
         </div>
 
+        <div role="tabpanel" id={`system-panel-${tab}`} aria-labelledby={`system-tab-${tab}`} tabIndex={0} className="focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
         {tab === 'overview' && (
           <div className="stack">
             <div>
@@ -568,6 +576,7 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
         )}
 
         {tab === 'logs' && <LogViewer sources={LOG_SOURCES} />}
+        {tab === 'journal' && <CoreJournalPanel />}
 
         {tab === 'backup' && (
           <div className="stack">
@@ -653,6 +662,7 @@ export function SystemScreen({ initialTab = 'overview' }: SystemScreenProps) {
             </div>
           </div>
         )}
+        </div>
       </div>
 
       <DangerConfirmDialog

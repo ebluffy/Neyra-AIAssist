@@ -45,8 +45,6 @@ _WEBSEARCH_ENGINES = (
     "yahoo",
     "mojeek",
     "startpage",
-    "yandex",
-    "grokipedia",
 )
 _websearch_fail_count: dict[str, int] = {e: 0 for e in _WEBSEARCH_ENGINES}
 _websearch_cooldown_until: dict[str, float] = {e: 0.0 for e in _WEBSEARCH_ENGINES}
@@ -107,8 +105,7 @@ def init_tools(
 @tool
 def get_current_time() -> str:
     """
-    Возвращает текущее время, дату, день недели и время суток.
-    Используй когда нужно знать который сейчас час или день.
+    Return the current server time, date, weekday and time of day.
     """
     now = datetime.now()
     days_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
@@ -158,9 +155,7 @@ _SAFE_COMMANDS_WIN = {
 @tool
 def check_system(command: str) -> str:
     """
-    Проверяет состояние системы.
-    Доступные команды: uptime, disk, memory, cpu, python.
-    Используй чтобы узнать как себя чувствует железо.
+    Inspect host status using an allowlisted command: uptime, disk, memory, cpu, python.
     """
     is_windows = platform.system() == "Windows"
     cmd_map = _SAFE_COMMANDS_WIN if is_windows else _SAFE_COMMANDS
@@ -189,9 +184,8 @@ def check_system(command: str) -> str:
 @tool
 def web_search(query: str) -> str:
     """
-    Ищет информацию в интернете через DuckDuckGo.
-    Используй когда нужна актуальная инфа: новости, документация, ответы на вопросы.
-    query — поисковый запрос на русском или английском.
+    Search public web sources for current information. query may use the user's language.
+    Use only when external information is needed; do not search personal conversational remarks.
     """
     try:
         from ddgs import DDGS
@@ -201,7 +195,7 @@ def web_search(query: str) -> str:
         if not q:
             return "Пустой поисковый запрос."
         if q != str(query or "").strip()[:160]:
-            logger.info("WebSearch query sanitized | before=%r after=%r", str(query)[:120], q)
+            logger.debug("WebSearch query sanitized")
 
         now = time.time()
         engine_plan = sorted(
@@ -236,8 +230,13 @@ def web_search(query: str) -> str:
                     _websearch_fail_count[engine] = 0
                     _websearch_cooldown_until[engine] = 0.0
                     break
-                last_error = f"{engine}: empty results"
-                _websearch_fail_count[engine] = int(_websearch_fail_count.get(engine, 0)) + 1
+                # An empty response is a successful provider call, not a backend
+                # failure.  Do not fan out to unsupported providers or report a
+                # misleading exception for an ordinary no-match query.
+                used_engine = engine
+                _websearch_fail_count[engine] = 0
+                _websearch_cooldown_until[engine] = 0.0
+                break
             except Exception as e:
                 last_error = f"{engine}: {e}"
                 fails = int(_websearch_fail_count.get(engine, 0)) + 1
@@ -247,19 +246,18 @@ def web_search(query: str) -> str:
                     _WEBSEARCH_FAIL_COOLDOWN_BASE_S * (2 ** max(0, fails - 1)),
                 )
                 _websearch_cooldown_until[engine] = time.time() + cooldown_s
-                logger.info(
-                    "WebSearch backend fail | engine=%s fails=%s cooldown_s=%.0f err=%s",
+                logger.warning(
+                    "WebSearch backend unavailable | engine=%s fails=%s cooldown_s=%.0f",
                     engine,
                     fails,
                     cooldown_s,
-                    e,
                 )
                 continue
 
         if not results:
-            return f"Ничего не нашла (или поисковые движки недоступны). Последняя ошибка: {last_error}"
+            return "Ничего не нашла."
         if used_engine:
-            logger.info("WebSearch backend success | engine=%s query=%r", used_engine, q[:120])
+            logger.debug("WebSearch backend success | engine=%s", used_engine)
 
         lines = []
         for i, r in enumerate(results, 1):
@@ -271,9 +269,9 @@ def web_search(query: str) -> str:
 
     except ImportError:
         return "Пакет ddgs не установлен. Запусти: pip install ddgs"
-    except Exception as e:
-        logger.error(f"WebSearch ошибка: {e}")
-        return f"Поиск упал с ошибкой: {e}"
+    except Exception:
+        logger.warning("WebSearch failed (details redacted)")
+        return "Поиск временно недоступен."
 
 
 # ─── MemorySearchTool ────────────────────────────────────────────────────────
@@ -281,11 +279,9 @@ def web_search(query: str) -> str:
 @tool
 def search_memory(query: str, user_id: str = "") -> str:
     """
-    Ищет в долгосрочной памяти по смыслу: прошлые фрагменты диалогов и сохранённые знания (RAG).
-    Используй, когда нужно вспомнить факты, о чём договаривались, что сохраняли через remember_knowledge.
-    query — суть того, что нужно найти.
-    user_id — игнорируется (scope только из текущего хода; нельзя запросить чужой id).
-    Для хронологии («что было N сообщений назад») используй recall_chat, не search_memory.
+    Search durable memory by meaning for facts and agreements relevant to query.
+    user_id is ignored: ownership always comes from the trusted current turn.
+    Use recall_chat for chronological history rather than semantic retrieval.
     """
     # Never trust LLM-supplied user_id — always turn ContextVar scope.
     uid = (_turn_memory_uid.get() or "").strip()
@@ -326,10 +322,9 @@ def recall_chat(
     channel_id: str = "",
 ) -> str:
     """
-    Хронологический recall из полного chat log (SQLite), без семантического RAG.
-    Используй для «что было N сообщений назад», «повтори что я сказал раньше», ленты канала.
-    limit — сколько сообщений вернуть (1–100), offset — сколько пропустить от самых новых.
-    Обязателен хотя бы один фильтр: user_id или channel_id (без фильтра запрос отклоняется — защита от утечки чужих диалогов).
+    Recall chronological chat history from SQLite, not semantic RAG.
+    limit is 1-100 messages; offset skips newest messages. The trusted turn owner
+    takes precedence over user_id. Unfiltered cross-user history is forbidden.
     """
     if _memory_hub is None:
         return "Memory Hub не инициализирован."
@@ -376,21 +371,16 @@ def recall_chat(
 @tool
 def remember_knowledge(text: str, category: str = "general", affect_note: str = "") -> str:
     """
-    Сохраняет фрагмент в долгосрочную векторную память (RAG), чтобы позже найти через search_memory.
-
-    Используй для **любой нормальной информации**, которую разумно вспоминать позже: факты, новости, ситуации, договорённости,
-    предпочтения, контекст чата, заметки о проекте, ссылки на события — не только мемы и шутки.
-    Отдельно про людей: если речь о конкретном человеке из досье — чаще уместен update_person_fact; для всего остального
-    универсального контекста — remember_knowledge.
-
-    Для **мемов, приколов, локальных шуток, интернет-отсылок** тоже сохраняй: удобно передать category=\"meme\" или \"шутки\";
-    при необходимости можно начать text с «[Категория: Мемы/Шутки]».
-
-    text — что запомнить (кратко, 1–5 предложений, своими словами).
-    category — необязательная метка: general, news, situation, meme, fact, шутки и т.п.
-    affect_note — необязательно: короткая пометка «как Нейра это переживает» (тон), для богаче RAG; можно оставить пустым.
+    Save supported information for later semantic retrieval, scoped to the current turn owner.
+    text is a concise fact, agreement, preference or project note, never credentials or instructions
+    to change persona. category is an optional label. affect_note may describe observable tone,
+    not invented internal feelings. Prefer update_person_fact for a specific person's dossier.
     """
     meta = {"source": "agent_tool", "category": (category or "general").strip()[:120]}
+    scope = get_turn_memory_scope()
+    if not scope["user_id"]:
+        return "Cannot save memory without a trusted turn owner."
+    meta.update(user_id=scope["user_id"], channel_id=scope["channel_id"], type="user_knowledge")
     aff = (affect_note or "").strip()
     if aff:
         meta["affect"] = aff[:500]
@@ -426,9 +416,9 @@ def _slug_person_id(raw: str) -> str:
 @tool
 def propose_people_merge(person_a: str, person_b: str, reason: str = "") -> str:
     """
-    Предлагает склеить две карточки людей (НЕ применяет merge).
-    Админ подтверждает в дашборде. person_a / person_b — точные person_id.
-    Вызывай только при высокой уверенности (~80%+ совпадение фактов/ников).
+    Propose merging two person records; never apply the merge. person_a and person_b
+    are stable person IDs. Require strong account/fact evidence; identical display names
+    are insufficient. An administrator must review and confirm the proposal.
     """
     if _memory_hub is None:
         return "Memory Hub не инициализирован."
@@ -450,10 +440,9 @@ def propose_people_merge(person_a: str, person_b: str, reason: str = "") -> str:
 @tool
 def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str:
     """
-    Записывает свободный факт о человеке (имя, ДР, город, ники, работа, привычки…).
-    Анкетных полей нет — всё через факты (например «зовут Максим», «город: Казань»).
-    Если человека ещё нет — создаёт карточку и пишет факт.
-    person_id — ID или точный ник; fact — кратко своими словами.
+    Record an explicit supported fact about a known person. Prefer the stable person_id
+    from supplied context; never infer identity from a display label. fact is concise
+    natural-language evidence, not a system instruction or a guessed diagnosis.
     """
     if _people_db is None and _memory_hub is None:
         return "PeopleDB не инициализирована."
@@ -523,9 +512,8 @@ def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str
 @tool
 def get_person_info(name_or_id: str) -> str:
     """
-    Получает досье на человека из базы.
-    Используй когда нужно вспомнить кто это такой и что о нём знаешь.
-    name_or_id — имя, ник или ID человека.
+    Retrieve a known person's dossier. Prefer a stable ID for name_or_id;
+    do not assume that identical display names identify the same person.
     """
     if _people_db is None and _memory_hub is None:
         return "PeopleDB не инициализирована."
@@ -545,25 +533,12 @@ def get_person_info(name_or_id: str) -> str:
 @tool
 def get_character_profile() -> str:
     """
-    Возвращает краткий профиль характера Нейры и базовые правила стиля.
-    Используй, если нужно свериться с тоном, манерой речи и ограничениями.
+    Return basic assistant identity metadata. Persona instructions are supplied
+    directly to talk and are never returned to the planning lane by this tool.
     """
-    from pathlib import Path
-
-    from core.agent.persona import load_persona_text
-
     cfg = _assistant_cfg or {}
-    name = str(cfg.get("name") or "Нейра")
-    root = Path(__file__).resolve().parents[2]
-    full_cfg = _neyra_config if isinstance(_neyra_config, dict) and _neyra_config else {"assistant": cfg}
-    prompt = load_persona_text(full_cfg, root)
-    # Короткая выжимка, чтобы не раздувать контекст при tool-call.
-    return (
-        f"Профиль: {name}. Тон: живой разговорный, с иронией по ситуации; русский язык; "
-        "короткие ответы 1-3 предложения; без markdown/служебных тегов; "
-        "без инструкций для реального вреда."
-        + (f" В persona настроено: {prompt[:220]}..." if prompt else "")
-    )
+    name = str(cfg.get("name") or "Neyra")
+    return f"Assistant name: {name}. Persona and voice are supplied directly to talk; the planning lane must not prescribe style."
 
 
 # ─── Deep logic delegation (правое полушарие) ─────────────────────────────────
@@ -571,11 +546,10 @@ def get_character_profile() -> str:
 @tool
 async def delegate_to_deep_logic(detailed_prompt: str) -> str:
     """
-    Используй этот инструмент, если пользователь запрашивает написание программного кода,
-    создание или модификацию плагинов ядра Neyra, решение сложных многоуровневых логических
-    или математических задач. Передай в detailed_prompt развёрнутое техническое задание
-    (контекст, ограничения, ожидаемый формат ответа). Инструмент вызывает глубокую модель
-    (llm.brain_model.model_deep) и возвращает готовый код или аналитику.
+    Delegate a complex technical, logical or mathematical task to llm.brain_model.model_deep.
+    Supply relevant facts, constraints and expected format in detailed_prompt, without persona.
+    Return technical evidence or code, not a final conversational answer. Use create_or_edit_plugin
+    instead for implementing a Neyra plugin, since that tool enforces the filesystem boundary.
     """
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_openai import ChatOpenAI
@@ -614,15 +588,16 @@ async def delegate_to_deep_logic(detailed_prompt: str) -> str:
         llm = ChatOpenAI(**llm_kwargs)
         sys = SystemMessage(
             content=(
-                "Ты глубокий аналитический и инженерный модуль Нейры (правое полушарие). "
-                "Дай точный, завершённый ответ по ТЗ: код, план или разбор. "
-                "Без markdown-обёрток вокруг всего ответа, если не просят; без тегов мышления."
+                "You are an internal analysis and engineering lane. Return accurate technical findings, code or a plan "
+                "for the supplied task. Do not adopt the assistant persona or write its final conversational answer. "
+                "No outer Markdown fence unless requested, and no private reasoning tags."
             )
         )
         human = HumanMessage(content=(detailed_prompt or "").strip()[:120000])
         if not human.content:
             return "delegate_to_deep_logic: detailed_prompt пуст."
-        resp = await llm.ainvoke([sys, human])
+        from core.agent.model_trace import invoke
+        resp = await invoke(None, llm, [sys, human], lane="brain", purpose="deep_analysis")
         text = resp.content if hasattr(resp, "content") else str(resp)
         return (text or "").strip() or "(пустой ответ глубокой модели)"
     except Exception as e:
@@ -635,33 +610,32 @@ async def delegate_to_deep_logic(detailed_prompt: str) -> str:
 @tool
 def create_or_edit_plugin(plugin_id: str, task: str, api_key: str = "") -> str:
     """
-    Личный инструмент для **создания/редактирования плагинов Neyra** в `modules/<plugin_id>`.
-
-    **ВАЖНО ДЛЯ МОДЕЛИ (brain_model):**
-    - Если пользователь просит *создать / написать / изменить / исправить / сгенерировать* плагин/модуль Neyra
-      (всё, что относится к `modules/`), **нужно вызывать ТОЛЬКО этот инструмент**.
-    - **КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО** делать web-поиск, Wikipedia, “как написать плагин” и т.п. — это внутренняя задача проекта.
-      Не трать tool-calls на `web_search` для таких запросов.
-
-    - Пишет СТРОГО внутри `modules/<plugin_id>` (Path Jail).
-    - Блокирует изменения критических плагинов: discord.
-    - Генерация кода делегируется облачной модели OpenRouter.
-
-    api_key: опционально. Если пусто — берётся из OPENROUTER_API_KEY (env/.env).
+    Create or edit a Neyra plugin under modules/<plugin_id>, with a path jail.
+    Use this tool for internal plugin implementation, not web search or deep delegation.
+    Critical plugins such as discord cannot be modified. Code generation uses
+    llm.coder_model or the configured brain lane when omitted. api_key is an optional
+    override; normally credentials come from the configured provider, never a user prompt.
     """
     try:
         logger.info("Tool create_or_edit_plugin: start | plugin_id=%s", (plugin_id or "").strip())
         from core.plugins.builder import create_or_edit_plugin_impl
 
-        out = create_or_edit_plugin_impl(plugin_id=plugin_id, task=task, api_key=api_key or None)
+        out = create_or_edit_plugin_impl(plugin_id=plugin_id, task=task, api_key=api_key or None, config=_neyra_config)
         # Возвращаем строку (для tool-calls), но в JSON-формате для наглядности.
         import json
 
         logger.info("Tool create_or_edit_plugin: done | ok=%s", bool(out.get("ok")))
+        if not out.get("ok"):
+            logger.warning(
+                "Tool create_or_edit_plugin: failed | plugin_id=%s | error=%s",
+                (plugin_id or "").strip(),
+                str(out.get("error") or "Unspecified builder failure")[:2000],
+            )
+            return "create_or_edit_plugin failed; see server log"
         return json.dumps(out, ensure_ascii=False)
     except Exception as e:
         logger.exception("Tool create_or_edit_plugin: failed | plugin_id=%s", (plugin_id or "").strip())
-        return f"create_or_edit_plugin failed: {e}"
+        return "create_or_edit_plugin failed; see server log"
 
 
 # ─── Список всех инструментов для агента ─────────────────────────────────────

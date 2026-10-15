@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Optional
+from core.agent.model_trace import invoke
 
 logger = logging.getLogger("neyra.agent.brain_phase")
 
 # User-facing stub when brain is down. Plain text only (no [SOUND:] tags).
 BRAIN_DOWN_USER_MESSAGE = (
-    "Нейра умерла в сетевом плане: мозг не отвечает. "
-    "Без мозга молчу — попробуй позже."
+    "Мозг Neyra недоступен. Повторите попытку позже."
 )
 
 
@@ -23,6 +23,8 @@ async def run_brain_tool_phase(
     vision_images: Optional[list[tuple[str, str]]] = None,
     brain_system: str,
     lyrics_mode: bool,
+    discord_context=None,
+    context_data: str = "",
 ) -> str:
     """Run llm_brain tool-loop; return text for talk «brain» section."""
     from langchain_core.messages import AIMessage as LC_AIMessage
@@ -34,22 +36,22 @@ async def run_brain_tool_phase(
         parts.append(agent._format_spoken_user_message(um, speaker_label))
     vc = (vision_caption or "").strip()
     if vc and not vision_images:
-        parts.append("[Конспект изображения VL]\n" + vc)
-    human_content = "\n\n".join(parts) if parts else "(пустое сообщение)"
+        parts.append("[VISION SUMMARY]\n" + vc)
+    human_content = "\n\n".join(parts) if parts else "(empty message)"
     if lyrics_mode:
         human_content += (
-            "\n\n[Оговорка] Пользователь запросил режим текста песни — "
-            "учитывай для инструментов/поиска."
+            "\n\n[LYRICS REQUEST] The user requested song lyrics. "
+            "Preserve the full lyrics brief for tools and retrieval."
         )
 
     if vision_images:
         human_msg = agent._make_human_turn(
-            um or "Что на изображении? Учти контекст для инструментов.",
+            um or "What is shown in the image? Use the context for tool planning.",
             vision_images,
             speaker_label=speaker_label,
         )
         if vc:
-            extra = "\n\n[Доп. контекст VL]\n" + vc
+            extra = "\n\n[ADDITIONAL VISION CONTEXT]\n" + vc
             if isinstance(human_msg.content, list):
                 human_msg.content[0]["text"] = str(human_msg.content[0].get("text", "")) + extra
             else:
@@ -57,10 +59,13 @@ async def run_brain_tool_phase(
     else:
         human_msg = HumanMessage(content=human_content)
 
-    messages: list[Any] = [
-        SystemMessage(content=brain_system),
-        human_msg,
-    ]
+    from core.agent.discord_context import context_prompt
+    messages: list[Any] = [SystemMessage(content=brain_system)]
+    if discord_context is not None:
+        messages.append(HumanMessage(content=context_prompt(discord_context)))
+    if context_data:
+        messages.append(HumanMessage(content=context_data))
+    messages.append(human_msg)
 
     mcp_cfg = agent.config.get("mcp_client") if isinstance(agent.config.get("mcp_client"), dict) else {}
     use_tool_loop = bool(mcp_cfg.get("llm_tool_calls")) and bool(agent.tools)
@@ -75,7 +80,7 @@ async def run_brain_tool_phase(
 
     try:
         if not use_tool_loop:
-            response = await agent._ainvoke_text_with_fallback(messages, llm=brain_llm)
+            response = await invoke(agent, brain_llm, messages, lane="brain", purpose="routing", images=bool(vision_images), invoker=agent._ainvoke_text_with_fallback)
             agent._log_model_route(agent._extract_model_name(response), lane="brain")
             from core.llm.message_content import message_content_to_text
 
@@ -88,7 +93,7 @@ async def run_brain_tool_phase(
         step = 0
         response = None
         while step < max_tool_steps:
-            response = await agent._ainvoke_text_with_fallback(messages, llm=bound)
+            response = await invoke(agent, bound, messages, lane="brain", purpose="tools", images=bool(vision_images), invoker=agent._ainvoke_text_with_fallback)
             agent._log_model_route(agent._extract_model_name(response), lane="brain")
             tcalls = getattr(response, "tool_calls", None) if isinstance(response, LC_AIMessage) else None
             if not tcalls:
@@ -111,7 +116,7 @@ async def run_brain_tool_phase(
                 messages.append(ToolMessage(content=out, tool_call_id=tid))
             step += 1
         if response is None:
-            response = await agent._ainvoke_text_with_fallback(messages, llm=brain_llm)
+            response = await invoke(agent, brain_llm, messages, lane="brain", purpose="summary", images=bool(vision_images), invoker=agent._ainvoke_text_with_fallback)
             agent._log_model_route(agent._extract_model_name(response), lane="brain")
         from core.llm.message_content import message_content_to_text
 

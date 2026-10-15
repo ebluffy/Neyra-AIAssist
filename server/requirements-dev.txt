@@ -1,3 +1,7 @@
 # Dev / CI test dependencies (not required for runtime).
 pytest>=8.0.0
 pytest-timeout>=2.3.0
+# Real message objects for offline talk-prompt tests; no provider clients required.
+langchain-core>=0.3.0
+# Offline message/command adapter tests; never logs in to Discord.
+discord.py>=2.3.0

@@ -8,8 +8,10 @@ core.neyra — главный оркестратор агента Нейры (е
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
+from contextlib import aclosing
 from typing import Any, Optional
 
 import core.agent.micro_plan as _micro_plan
@@ -21,6 +23,8 @@ from core.agent.reply_postprocess import (
 )
 from core.runtime.event_bus import EventBus
 from core.runtime.identity import UnifiedIdentityMapper
+from core.agent.discord_context import DiscordContext
+from core.agent.model_trace import turn_conversation_mode
 
 logger = logging.getLogger("neyra.agent")
 
@@ -52,6 +56,8 @@ class NeyraAgent:
         self._last_vision_note_by_channel: dict[str, str] = {}
 
         self.event_bus = EventBus()
+        from core.agent.model_trace import ModelActivity
+        self.model_activity = ModelActivity()
         self.identity = UnifiedIdentityMapper()
 
         self._setup_llm()
@@ -61,7 +67,6 @@ class NeyraAgent:
         self._project_root = Path(__file__).resolve().parents[1]
         self._wm_turns_since_refresh = 0
         self._wm_last_refresh_mono = 0.0
-        self._emotion_last_mono = 0.0
         logger.info(f"NeyraAgent инициализирован | mode={self.mode}")
 
     # ─── Инициализация ─────────────────────────────────────────────────────
@@ -203,6 +208,7 @@ class NeyraAgent:
             attached_image_caption=attached_image_caption,
             working_memory_context=working_memory_context,
             pre_context=pre_context,
+            conversation_mode=turn_conversation_mode(self.config),
         )
 
     def _build_brain_system_prompt(
@@ -221,11 +227,10 @@ class NeyraAgent:
         pre_context: str = "",
     ) -> str:
         """Компактный системный промпт для brain: инструменты/факты + короткий identity snippet."""
-        from core.agent.persona import persona_brain_snippet
         from core.agent.prompts import build_brain_system_prompt
 
         return build_brain_system_prompt(
-            identity_snippet=persona_brain_snippet(self.config, self._project_root),
+            identity_snippet="",
             extra_memories=extra_memories,
             people_context_active=people_context_active,
             people_context_mentioned=people_context_mentioned,
@@ -245,12 +250,13 @@ class NeyraAgent:
         vision_images: list[tuple[str, str]],
         *,
         speaker_label: str,
+        discord_context: DiscordContext | None = None,
     ) -> str:
         """Краткий текстовый конспект изображений через VL-модель (до brain/talk)."""
         from core.agent.vision_context import caption_vision_images
 
         return await caption_vision_images(
-            self, user_message, vision_images, speaker_label=speaker_label
+            self, user_message, vision_images, speaker_label=speaker_label, discord_context=discord_context
         )
 
     async def _run_brain_tool_phase(
@@ -262,6 +268,8 @@ class NeyraAgent:
         vision_images: Optional[list[tuple[str, str]]] = None,
         brain_system: str,
         lyrics_mode: bool,
+        discord_context=None,
+        context_data: str = "",
     ) -> str:
         """Маршрутизация и tool-loop на llm_brain; возвращает текст для секции talk «brain»."""
         from core.agent.brain_phase import run_brain_tool_phase
@@ -274,6 +282,8 @@ class NeyraAgent:
             vision_images=vision_images,
             brain_system=brain_system,
             lyrics_mode=lyrics_mode,
+            discord_context=discord_context,
+            context_data=context_data,
         )
 
     def _make_vision_memory_note(self, thoughts: str, clean_text: str) -> str:
@@ -375,31 +385,6 @@ class NeyraAgent:
         log_model_route(self, used_model, lane=lane)
 
 
-    async def _run_async_reflection(
-        self,
-        user_message: str,
-        assistant_text: str,
-        username: Optional[str],
-        discord_user_id: Optional[str],
-    ) -> None:
-        from core.agent.memory_jobs import run_async_reflection
-
-        await run_async_reflection(
-            self, user_message, assistant_text, username, discord_user_id
-        )
-
-    def _schedule_async_reflection(
-        self,
-        user_message: str,
-        assistant_text: str,
-        username: Optional[str],
-        discord_user_id: Optional[str],
-    ) -> None:
-        from core.agent.memory_jobs import schedule_async_reflection
-
-        schedule_async_reflection(
-            self, user_message, assistant_text, username, discord_user_id
-        )
 
     def _format_stm_tail(self, max_messages: int = 12) -> str:
         from core.agent.memory_jobs import format_stm_tail
@@ -464,25 +449,6 @@ class NeyraAgent:
             self, user_message, clean_text, metadata, speaker_label
         )
 
-    def _schedule_emotion_diary(
-        self,
-        *,
-        user_message: str,
-        assistant_text: str,
-        speaker_label: str,
-        username: Optional[str],
-        discord_user_id: Optional[str],
-    ) -> None:
-        from core.agent.memory_jobs import schedule_emotion_diary
-
-        schedule_emotion_diary(
-            self,
-            user_message=user_message,
-            assistant_text=assistant_text,
-            speaker_label=speaker_label,
-            username=username,
-            discord_user_id=discord_user_id,
-        )
 
     async def _ainvoke_text_with_fallback(self, messages: list[Any], *, llm=None):
         """Обычный нестриминговый вызов (одна модель)."""
@@ -493,8 +459,9 @@ class NeyraAgent:
         """Стриминговый вызов live-модели с guard по first-token timeout и 1 ретраем."""
         from core.agent.llm_stream import astream_text_with_fallback
 
-        async for chunk in astream_text_with_fallback(self, messages, llm=llm):
-            yield chunk
+        async with aclosing(astream_text_with_fallback(self, messages, llm=llm)) as stream:
+            async for chunk in stream:
+                yield chunk
 
 
     # ─── Вспомогательные методы ────────────────────────────────────────────
@@ -590,6 +557,9 @@ class NeyraAgent:
             lyrics_marker=LYRICS_REQUEST_MARKER,
             extract_think_blocks=self._extract_think_blocks,
             extract_sound_tags=self._extract_sound_tags,
+            conversation_mode=turn_conversation_mode(self.config),
+            reply_max_tokens=self.reply_max_tokens,
+            persona=self._build_system_prompt(),
         )
 
     def _log_thought(self, thought: str, user_msg: str):
@@ -737,6 +707,7 @@ class NeyraAgent:
         channel_id: Optional[str] = None,
         author_display_name: Optional[str] = None,
         avatar_url: Optional[str] = None,
+        discord_context: DiscordContext | None = None,
     ) -> dict:
         """
         Основной метод чата.
@@ -751,17 +722,33 @@ class NeyraAgent:
         """
         from core.agent.chat import run_chat
 
-        return await run_chat(
-            self,
-            user_message=user_message,
-            username=username,
-            discord_user_id=discord_user_id,
-            vision_images=vision_images,
-            channel_id=channel_id,
-            author_display_name=author_display_name,
-            lyrics_marker=LYRICS_REQUEST_MARKER,
-            avatar_url=avatar_url,
-        )
+        from core.agent.model_trace import ACTIVE_TRACE, TurnTrace, finish
+        from core.agent.discord_context import DiscordContext
+        if discord_context is not None:
+            discord_context = DiscordContext.model_validate(discord_context)
+            discord_user_id = discord_context.current_user.id
+            username = discord_context.current_user.handle
+            author_display_name = discord_context.current_user.display_name
+            channel_id = discord_context.channel.id
+        trace = TurnTrace(discord_user_id, channel_id, self.config)
+        token = ACTIVE_TRACE.set(trace)
+        try:
+            out = await run_chat(
+                self, user_message=user_message, username=username,
+                discord_user_id=discord_user_id, vision_images=vision_images,
+                channel_id=channel_id, author_display_name=author_display_name,
+                lyrics_marker=LYRICS_REQUEST_MARKER, avatar_url=avatar_url,
+                discord_context=discord_context,
+            )
+            return {**out, "model_trace": finish(self, trace)}
+        except asyncio.CancelledError:
+            finish(self, trace, "cancelled")
+            raise
+        except BaseException:
+            finish(self, trace, "failed")
+            raise
+        finally:
+            ACTIVE_TRACE.reset(token)
 
     async def chat_stream(
         self,
@@ -772,6 +759,7 @@ class NeyraAgent:
         channel_id: Optional[str] = None,
         author_display_name: Optional[str] = None,
         avatar_url: Optional[str] = None,
+        discord_context: DiscordContext | None = None,
     ):
         """
         Стриминговый чат — yield'ит токены сразу как модель их генерирует.
@@ -785,18 +773,39 @@ class NeyraAgent:
         """
         from core.agent.chat_stream import iter_chat_stream
 
-        async for chunk in iter_chat_stream(
-            self,
-            user_message=user_message,
-            username=username,
-            discord_user_id=discord_user_id,
-            vision_images=vision_images,
-            channel_id=channel_id,
-            author_display_name=author_display_name,
-            lyrics_marker=LYRICS_REQUEST_MARKER,
-            avatar_url=avatar_url,
-        ):
-            yield chunk
+        from core.agent.model_trace import ACTIVE_TRACE, TurnTrace, finish
+        from core.agent.discord_context import DiscordContext
+        if discord_context is not None:
+            discord_context = DiscordContext.model_validate(discord_context)
+            discord_user_id = discord_context.current_user.id
+            username = discord_context.current_user.handle
+            author_display_name = discord_context.current_user.display_name
+            channel_id = discord_context.channel.id
+        trace = TurnTrace(discord_user_id, channel_id, self.config)
+        token = ACTIVE_TRACE.set(trace)
+        stream = iter_chat_stream(
+            self, user_message=user_message, username=username,
+            discord_user_id=discord_user_id, vision_images=vision_images,
+            channel_id=channel_id, author_display_name=author_display_name,
+            lyrics_marker=LYRICS_REQUEST_MARKER, avatar_url=avatar_url,
+            discord_context=discord_context,
+        )
+        try:
+            async for chunk in stream:
+                if chunk.get("type") in ("done", "error"):
+                    chunk = {**chunk, "model_trace": finish(self, trace, "failed" if chunk["type"] == "error" else None)}
+                ACTIVE_TRACE.reset(token)
+                try:
+                    yield chunk
+                finally:
+                    token = ACTIVE_TRACE.set(trace)
+        finally:
+            try:
+                await stream.aclose()
+            finally:
+                if not trace.closed:
+                    finish(self, trace, "cancelled")
+                ACTIVE_TRACE.reset(token)
 
     async def summarize_ltm_corpus(self, combined_dialog_text: str, *, consolidation: bool = False) -> str:
         """
@@ -810,9 +819,12 @@ class NeyraAgent:
             self, combined_dialog_text, consolidation=consolidation
         )
 
-    def reset_context(self, channel_id: Optional[str] = None):
+    def reset_context(self, channel_id: Optional[str] = None, *, user_id: str = ""):
         """Синхронный сброс STM (без archive). Предпочитай ``reset_context_async``."""
-        self.short_memory.clear()
+        if user_id and hasattr(self.short_memory, "clear_scope"):
+            self.short_memory.clear_scope(user_id, channel_id)
+        else:
+            self.short_memory.clear()
         if channel_id is not None:
             self._last_vision_note_by_channel.pop(str(channel_id), None)
         else:
@@ -851,7 +863,7 @@ class NeyraAgent:
             )
         except Exception as e:
             logger.warning("session_archive on reset failed (soft): %s", e)
-        self.reset_context(channel_id)
+        self.reset_context(channel_id, user_id=user_id)
         return arch if isinstance(arch, dict) else {}
 
     def get_stats(self) -> dict:

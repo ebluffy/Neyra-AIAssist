@@ -49,18 +49,24 @@ def _test_contextvar_isolation() -> None:
 
 
 def _test_rag_postfilter_shared_only_knowledge() -> None:
-    """Mirror LongTermMemory.search post-filter rule."""
-
-    def allow(uid: str, owner: str, typ: str) -> bool:
-        owner = (owner or "").strip()
-        typ = (typ or "").strip().lower()
-        return owner == uid or typ == "knowledge"
-
-    assert allow("bob", "bob", "session_archive_digest")
-    assert not allow("bob", "alice", "session_archive_digest")
-    assert not allow("bob", "", "session_archive_digest")
-    assert allow("bob", "", "knowledge")
-    assert allow("bob", "alice", "knowledge")
+    """Exercise the production filter, including provider-side filtering failure."""
+    from types import SimpleNamespace
+    from core.memory.stores import LongTermMemory
+    for fallback in (False, True):
+        memory = LongTermMemory.__new__(LongTermMemory)
+        memory.top_k = 10
+        memory._init = lambda: None
+        memory._embedder = SimpleNamespace(encode=lambda *args, **kwargs: SimpleNamespace(tolist=lambda: [1.0]))
+        def query(**kwargs):
+            if fallback and "where" in kwargs:
+                raise ValueError("unsupported filter")
+            return {"documents": [["mine", "foreign", "unknown", "shared", "owned-knowledge"]],
+                    "metadatas": [[{"user_id": "bob", "type": "session_archive_digest"},
+                                   {"user_id": "alice", "type": "session_archive_digest"},
+                                   {"type": "session_archive_digest"}, {"type": "knowledge"},
+                                   {"user_id": "alice", "type": "knowledge"}]]}
+        memory._collection = SimpleNamespace(count=lambda: 5, query=query)
+        assert memory.search("test", user_id="bob") == ["mine", "shared"]
 
 
 def _test_scoped_archive_skips_foreign_stm() -> None:
@@ -185,7 +191,7 @@ def _test_diary_prompt_skips_session_archive() -> None:
     from core.memory.hub import MemoryHub
 
     class _FakeSqlite:
-        def list_diary_notes(self, *, limit=20, newest_first=True):
+        def list_diary_notes(self, *, limit=20, newest_first=True, owner_id=None, channel_id=None):
             return [
                 {
                     "ts": "2026-01-01T00:00:00Z",

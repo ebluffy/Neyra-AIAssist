@@ -79,6 +79,12 @@ async def ensure_mcp(agent: Any) -> None:
 
 
 async def stop_mcp(agent: Any) -> None:
+    import asyncio
+    jobs = list(getattr(agent, "_background_jobs", set()))
+    for job in jobs:
+        job.cancel()
+    if jobs:
+        await asyncio.gather(*jobs, return_exceptions=True)
     if not agent.mcp_manager:
         return
     try:

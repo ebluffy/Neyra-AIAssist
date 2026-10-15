@@ -25,13 +25,15 @@ import yaml
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core.runtime.win_runtime import apply_runtime_patches
 
 apply_runtime_patches()
 
 from core.api.dashboard_auth import DashboardAuthStore, MIN_KEY_LEN
+from core.agent.discord_context import DiscordContext
+from core.agent.model_trace import activity_for
 from core.api.client_ip import is_console_local_client as _is_console_local_client
 from core.api.client_ip import is_loopback_ip as _is_loopback_ip_pure
 from core.api.client_ip import resolve_client_ip as _resolve_client_ip_pure
@@ -58,7 +60,7 @@ _PROCESS_STARTED_AT = time.time()
 _DASH_LOGIN_FAILS: dict[str, list[float]] = {}
 _DASH_LOGIN_LOCK = threading.Lock()
 _DASH_LOGIN_WINDOW_S = 300.0
-_DASH_LOGIN_MAX_FAILS = 10
+_DASH_LOGIN_MAX_FAILS = 5
 
 # Runtime config keys mutable via dashboard Settings (no secrets).
 CONFIG_RUNTIME_ALLOWLIST: frozenset[str] = frozenset(
@@ -101,6 +103,7 @@ CONFIG_RUNTIME_ALLOWLIST: frozenset[str] = frozenset(
         "llm.provider",
         "llm.base_url",
         "agent.fast_path.enabled",
+        "agent.conversation_mode",
         "logging.level",
         "memory.rag_write_mode",
         "health_monitor.enabled",
@@ -126,7 +129,7 @@ def _config_get_path(cfg: dict, path: str) -> Any:
 
 def runtime_config_snapshot(cfg: dict) -> dict[str, Any]:
     """Allowlisted runtime values only (no API keys / .env secrets)."""
-    out: dict[str, Any] = {}
+    out: dict[str, Any] = {"agent.conversation_mode": "default"}
     for key in sorted(CONFIG_RUNTIME_ALLOWLIST):
         val = _config_get_path(cfg, key)
         if val is not None:
@@ -204,10 +207,13 @@ class ApiError(Exception):
 
 
 def _trace_id(request: Request) -> str:
-    tid = resolve_trace_id(
-        request.headers.get("x-trace-id"),
-        request.headers.get("x-request-id"),
-    )
+    tid = getattr(request.state, "trace_id", "")
+    if not tid:
+        tid = resolve_trace_id(
+            request.headers.get("x-trace-id"),
+            request.headers.get("x-request-id"),
+        )
+        request.state.trace_id = tid
     set_trace_id(tid)
     return tid
 
@@ -449,6 +455,7 @@ class ChatRequest(_ApiBody):
     author_display_name: Optional[str] = Field(default=None, max_length=120)
     avatar_url: Optional[str] = Field(default=None, max_length=500)
     platform: Optional[str] = Field(default=None, max_length=40)
+    discord_context: DiscordContext | None = None
 
 
 class DashboardGateKeyRequest(_ApiBody):
@@ -638,6 +645,7 @@ class WsChatMessage(_ApiBody):
     channel_id: Optional[str] = Field(default=None, max_length=120)
     author_display_name: Optional[str] = Field(default=None, max_length=120)
     display_name: Optional[str] = Field(default=None, max_length=120)
+    discord_context: DiscordContext | None = None
 
 
 def _utc_now() -> str:
@@ -1507,8 +1515,13 @@ def build_app(
             channel_id=body.channel_id,
             author_display_name=body.author_display_name,
             avatar_url=body.avatar_url,
+            **({"discord_context": body.discord_context} if body.discord_context is not None else {}),
         )
         return {"ok": True, "trace_id": trace_id, "data": out}
+
+    @app.get("/v1/llm/activity")
+    async def v1_llm_activity(request: Request, limit: int = Query(default=20, ge=1, le=100), _: str = Depends(dep_viewer)):
+        return {"ok": True, "trace_id": _trace_id(request), "data": {"items": activity_for(agent).recent(limit)}}
 
     @app.post("/v1/memory/search")
     async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_maint)):
@@ -1694,11 +1707,32 @@ def build_app(
         _audit("debug_reset_context", trace_id, api_role, data)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
+    def _short_memory_windows():
+        memory = agent.short_memory
+        windows = memory.windows() if hasattr(memory, "windows") else [
+            {"owner_id": None, "channel_id": None, "messages": memory.get_history()}
+        ]
+        result = []
+        remaining = 24_000
+        for window in reversed(windows[-50:]):
+            messages = []
+            for message in reversed(window["messages"][-20:]):
+                content = str(message.get("content", ""))[:min(4000, remaining)]
+                if remaining <= 0:
+                    break
+                messages.append({"role": str(message.get("role", "")), "content": content})
+                remaining -= len(content)
+            result.append({"owner_id": window.get("owner_id"), "channel_id": window.get("channel_id"), "messages": list(reversed(messages))})
+            if remaining <= 0:
+                break
+        return list(reversed(result))
+
     @app.get("/v1/debug/memory")
     async def v1_debug_memory(request: Request, _: None = Depends(dep_maint)):
         """Краткосрочная память (история), сводная статистика агента и счётчики RAG."""
         trace_id = _trace_id(request)
-        hist = agent.short_memory.get_history()
+        windows = _short_memory_windows()
+        hist = [message for window in windows for message in window["messages"]]
         trimmed: list[dict[str, Any]] = []
         total_chars = 0
         max_total = 24_000
@@ -1732,6 +1766,7 @@ def build_app(
             "trace_id": trace_id,
             "data": {
                 "short_term_messages": trimmed,
+                "short_term_windows": windows,
                 "agent_stats": agent.get_stats(),
                 "hub": hub_stats,
                 "rag": {
@@ -1824,14 +1859,16 @@ def build_app(
         """Public: verify dashboard access key and issue a short-lived session Bearer."""
         trace_id = _trace_id(request)
         ip = _client_ip(request)
-        if not _dash_login_rate_ok(ip):
-            raise ApiError("rate_limited", "Too many failed login attempts", 429)
         if not dash_auth.is_configured():
             raise ApiError("setup_required", "Create a dashboard access key first", 400)
+        if not _dash_login_rate_ok(ip):
+            raise ApiError("rate_limited", "Too many failed login attempts. Try again later.", 429)
         if not dash_auth.verify(body.key):
             _dash_login_fail(ip)
             logger.info("dashboard login failed ip=%s", ip)
             raise ApiError("unauthorized", "Invalid access key", 401)
+        with _DASH_LOGIN_LOCK:
+            _DASH_LOGIN_FAILS.pop(ip, None)
         session = dash_auth.issue_session()
         return {
             "ok": True,
@@ -1844,22 +1881,57 @@ def build_app(
         request: Request,
         authorization: Optional[str] = Header(default=None),
     ):
-        """Revoke the current dashboard session Bearer (idempotent)."""
+        """Revoke a valid dashboard session Bearer; revoked/expired sessions return 401."""
         trace_id = _trace_id(request)
         raw = (authorization or "").strip()
-        if raw.startswith("Bearer "):
-            tok = raw.removeprefix("Bearer ").strip()
-            if tok:
-                dash_auth.revoke_session(tok)
+        if not raw.startswith("Bearer "):
+            raise ApiError("unauthorized", "Missing bearer token", 401)
+        tok = raw.removeprefix("Bearer ").strip()
+        if not tok:
+            raise ApiError("unauthorized", "Missing bearer token", 401)
+        if not dash_auth.verify_session(tok):
+            raise ApiError("unauthorized", "Invalid bearer token", 401)
+        dash_auth.revoke_session(tok)
         return {"ok": True, "trace_id": trace_id, "data": {"revoked": True}}
 
-    @app.post("/v1/dashboard/auth/rotate")
-    async def v1_dashboard_auth_rotate(body: DashboardRotateRequest, request: Request):
+    @app.post(
+        "/v1/dashboard/auth/rotate",
+        openapi_extra={"requestBody": {
+            "required": True,
+            "content": {"application/json": {"schema": DashboardRotateRequest.model_json_schema()}},
+        }},
+    )
+    async def v1_dashboard_auth_rotate(
+        request: Request,
+        authorization: Optional[str] = Header(default=None),
+    ):
         """Rotate dashboard access key; revokes all sessions. Rate-limited like login."""
         trace_id = _trace_id(request)
         ip = _client_ip(request)
+
+        # Authenticate before parsing so unauthenticated callers receive 401.
+        raw = (authorization or "").strip()
+        if not raw.startswith("Bearer "):
+            raise ApiError("unauthorized", "Missing bearer token", 401)
+        tok = raw.removeprefix("Bearer ").strip()
+        if not tok:
+            raise ApiError("unauthorized", "Missing bearer token", 401)
+        if not dash_auth.verify_session(tok):
+            raise ApiError("unauthorized", "Invalid bearer token", 401)
+
         if not _dash_login_rate_ok(ip):
             raise ApiError("rate_limited", "Too many auth attempts", 429)
+
+        try:
+            body = DashboardRotateRequest.model_validate(await request.json())
+        except ValidationError as e:
+            for err in e.errors():
+                if err.get("loc") == ("new_key",) and err.get("type") == "string_too_short":
+                    raise ApiError("bad_request", f"New key must be at least {MIN_KEY_LEN} characters", 400)
+            raise ApiError("bad_request", "Invalid request body", 400)
+        except Exception:
+            raise ApiError("bad_request", "Invalid request body", 400)
+
         if not dash_auth.is_configured():
             raise ApiError("setup_required", "Create a dashboard access key first", 400)
         try:
@@ -1869,12 +1941,12 @@ def build_app(
             raise ApiError("unauthorized", "Invalid access key", 401)
         except ValueError:
             raise ApiError("bad_request", f"New key must be at least {MIN_KEY_LEN} characters", 400)
-        session = dash_auth.issue_session()
+        new_session = dash_auth.issue_session()
         _audit("dashboard_auth_rotate", trace_id, "admin")
         return {
             "ok": True,
             "trace_id": trace_id,
-            "data": {"rotated": True, "session_token": session},
+            "data": {"rotated": True, "session_token": new_session},
         }
 
     @app.post("/v1/dashboard/auth/logout-all")
@@ -2104,6 +2176,28 @@ def build_app(
                 ),
             },
         }
+
+    @app.get("/v1/memory/short")
+    async def v1_memory_short(request: Request, _: None = Depends(dep_maint)):
+        """Actual process STM windows; privileged ops view, no hidden reasoning."""
+        memory = agent.short_memory
+        return {"ok": True, "trace_id": _trace_id(request), "data": {"windows": _short_memory_windows(),
+            "max_messages_per_window": getattr(memory, "max_messages", None)}}
+
+    @app.get("/v1/memory/long")
+    async def v1_memory_long(request: Request, _: None = Depends(dep_maint)):
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        def load():
+            entries = []
+            for person in hub.list_people()[:50]:
+                for fact in hub.list_person_facts(str(person["id"]), limit=20):
+                    entries.append({**fact, "person_id": person["id"], "source": fact.get("source") or "person_facts"})
+                    if len(entries) >= 200:
+                        return entries
+            return entries
+        return {"ok": True, "trace_id": _trace_id(request), "data": {"entries": await asyncio.to_thread(load)}}
 
     @app.get("/v1/memory/stats")
     async def v1_memory_stats(request: Request, _: None = Depends(dep_viewer)):
@@ -3523,6 +3617,13 @@ def build_app(
         for k, v in body.updates.items():
             if k not in CONFIG_RUNTIME_ALLOWLIST:
                 raise ApiError("forbidden_update", f"Path not allowed: {k}", 403)
+            if k == "agent.conversation_mode":
+                from core.agent.conversation_modes import conversation_mode_hint
+
+                try:
+                    conversation_mode_hint(v)
+                except ValueError as e:
+                    raise ApiError("bad_request", "agent.conversation_mode: expected one of default, brief, detailed, technical, no_jokes", 400) from e
             updates_applied[k] = v
 
         # Snapshot for rollback if disk write or LLM rebind fails after partial in-memory apply.
@@ -3537,8 +3638,8 @@ def build_app(
 
                 persisted = persist_allowlisted_updates(root, updates_applied)
             except Exception as e:
-                logger.exception("Failed to persist runtime config updates")
-                raise ApiError("persist_failed", f"Disk write failed (runtime unchanged): {e}", 500) from e
+                logger.exception("Failed to persist runtime config updates | trace_id=%s", trace_id)
+                raise ApiError("persist_failed", "Disk write failed (runtime unchanged)", 500) from e
 
         for k, v in updates_applied.items():
             _safe_set(config, k, v)
@@ -3549,7 +3650,7 @@ def build_app(
                 agent._setup_llm()
                 llm_rebound = True
             except Exception as e:
-                logger.exception("LLM rebind after config update failed; rolling back memory")
+                logger.exception("LLM rebind after config update failed; rolling back memory | trace_id=%s", trace_id)
                 for k, old in rollback.items():
                     if old is None:
                         # best-effort: set previous missing as empty-ish skip — leave key if newly created
@@ -3559,7 +3660,7 @@ def build_app(
                     "llm_rebind_failed",
                     (
                         "Сохранено на диск, но LLM-клиенты не пересобраны "
-                        f"(runtime откатан; мягкий рестарт подхватит диск): {e}"
+                        "(runtime откатан; мягкий рестарт подхватит диск)"
                     ),
                     500,
                 ) from e
@@ -4027,6 +4128,7 @@ def build_app(
                     discord_user_id=platform_user_id,
                     channel_id=channel_id,
                     author_display_name=ws_author_disp,
+                    **({"discord_context": parsed.discord_context} if parsed.discord_context is not None else {}),
                 ):
                     if chunk.get("type") == "token":
                         await websocket.send_json(
@@ -4038,12 +4140,13 @@ def build_app(
                                 "type": "done",
                                 "text": chunk.get("text", ""),
                                 "sounds": chunk.get("sounds", []),
+                                "model_trace": chunk.get("model_trace"),
                                 "trace_id": trace_id,
                             }
                         )
                     elif chunk.get("type") == "error":
                         await websocket.send_json(
-                            {"type": "error", "code": "chat_error", "message": chunk.get("text", ""), "trace_id": trace_id}
+                            {"type": "error", "code": "chat_error", "message": chunk.get("text", ""), "model_trace": chunk.get("model_trace"), "trace_id": trace_id}
                         )
             except WebSocketDisconnect:
                 break

@@ -48,6 +48,7 @@ def build_pre_context(
     *,
     internal_user_id: str,
     user_message: str = "",
+    channel_id: str | None = None,
 ) -> str:
     """
     Build marked PRE-CONTEXT block or empty string if disabled / nothing to say.
@@ -82,15 +83,15 @@ def build_pre_context(
         if "diary" in sources:
             hub = getattr(agent, "memory_hub", None)
             if hub is not None:
-                diary = str(hub.diary_recent_text(limit=3) or "").strip()
+                diary = str(hub.diary_recent_text(limit=3, owner_id=uid, channel_id=channel_id) or "").strip()
                 if diary:
-                    parts.append("дневник:\n" + _clip(diary, per))
+                    parts.append("diary:\n" + _clip(diary, per))
 
         if "wm" in sources:
             # MUST stay user-scoped
             wm = str(agent._read_working_memory_for_prompt(uid) or "").strip()
             if wm:
-                parts.append("рабочая память (этот пользователь):\n" + _clip(wm, per))
+                parts.append("working memory (current user):\n" + _clip(wm, per))
 
         if "semantic" in sources:
             # Not wired: string-only RAG has no user_id metadata yet (Auto Review / PLAN).
@@ -104,9 +105,7 @@ def build_pre_context(
             return ""
         body = _clip(body, max_chars)
         return (
-            "# PRE-CONTEXT (внутренний намёк)\n"
-            "Краткий внутренний контекст перед ответом. Не цитируй этот блок дословно "
-            "как «из базы» и не выдавай его пользователю как служебный текст.\n"
+            "# PRE-CONTEXT DATA\n"
             f"{body}"
         )
     except Exception as e:

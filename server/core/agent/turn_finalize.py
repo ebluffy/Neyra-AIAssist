@@ -38,6 +38,10 @@ async def finalize_successful_turn(
     }
     if isinstance(extra_meta, dict) and extra_meta:
         metadata.update(extra_meta)
+    from core.agent.model_trace import snapshot
+    trace = snapshot()
+    if trace is not None:
+        metadata["model_trace"] = trace
     await agent._append_turn_to_chat_log(
         user_text=spoken_user,
         assistant_text=clean_text,
@@ -47,19 +51,19 @@ async def finalize_successful_turn(
         source=source,
         meta=metadata,
     )
-    await agent._save_dialog_to_ltm_with_emotion(
-        user_message, clean_text, metadata, speaker_label
-    )
+    hub = getattr(agent, "memory_hub", None)
+    if hub is None or getattr(hub, "rag_write_mode", "off") != "off":
+        from core.agent.model_trace import spawn_background
+        spawn_background(agent, "semantic_dialog", lambda: agent._save_dialog_to_ltm_with_emotion(
+            user_message, clean_text, metadata, speaker_label))
 
     agent._log_thought(thoughts, user_message)
     agent._log_chat(user_message, clean_text, metadata)
     agent._store_vision_note_if_needed(channel_id, vision_images, thoughts, clean_text)
-    agent._schedule_async_reflection(
-        user_message=user_message,
-        assistant_text=clean_text,
-        username=username,
-        discord_user_id=discord_user_id,
-    )
+    from core.agent.memory_jobs import schedule_turn_diary
+    schedule_turn_diary(agent, user_message=user_message, assistant_text=clean_text,
+                        internal_user_id=internal_uid, channel_id=channel_id,
+                        speaker_label=speaker_label)
     agent._schedule_working_memory_refresh(
         internal_user_id=internal_uid,
         user_message=user_message,
@@ -67,18 +71,11 @@ async def finalize_successful_turn(
         speaker_label=speaker_label,
         stm_trimmed=stm_trimmed,
     )
-    agent._schedule_emotion_diary(
-        user_message=user_message,
-        assistant_text=clean_text,
-        speaker_label=speaker_label,
-        username=username,
-        discord_user_id=discord_user_id,
-    )
     for s in saved_facts:
         agent.diary.add_entry(
             text=f"Зафиксировала новый факт в досье: {s}",
             source="memory_update",
-            meta={"username": username or "unknown"},
+            meta={"username": username or "unknown", "user_id": internal_uid, "channel_id": channel_id},
         )
 
     agent._publish_memory_and_chat_events(

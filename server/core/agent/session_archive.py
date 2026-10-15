@@ -94,15 +94,15 @@ def format_diary_digest(
             n_asst += 1
             if include_assistant_tail and len(asst_bits) < 3:
                 asst_bits.append(content[:120])
-    head = f"[session_archive/{reason}] msgs={len(history or [])} U={n_user} A={n_asst}"
+    head = f"Я сохранила сессию: {n_user} сообщений собеседника и {n_asst} моих ответов. [session_archive/{reason}]"
     if not asst_bits:
         return head
     body = " | ".join(asst_bits)
-    note = f"{head}. A-tail: {body}"
+    note = f"{head} Мои ответы (фрагменты): {body}"
     if max_chars > 0 and len(note) > max_chars:
         budget = max(40, max_chars - len(head) - 12)
         body = _tail_chars(body, budget)
-        note = f"{head}. A-tail: {body}"
+        note = f"{head} Мои ответы (фрагменты): {body}"
         if len(note) > max_chars:
             note = note[: max_chars - 1].rstrip() + "…"
     return note
@@ -255,6 +255,8 @@ async def archive_session(
                 hub.add_diary_note(
                     note,
                     source="session_archive",
+                    owner_id=uid or None,
+                    channel_id=ch,
                     meta={
                         "reason": reason,
                         "user_id": uid or None,

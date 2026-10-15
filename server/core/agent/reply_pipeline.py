@@ -56,24 +56,32 @@ async def retry_short_reply_if_empty(
         return current_text
     try:
         from langchain_core.messages import SystemMessage
+        from core.agent.model_trace import turn_conversation_mode
+        structured = turn_conversation_mode(agent.config) in ("detailed", "technical") or any(
+            "[LYRICS MODE" in str(getattr(message, "content", "")) for message in messages)
+        instruction = (
+            "Return a complete answer in the user's language, preserving detail, structure, code and requested full text. "
+            if structured else "Return an answer in the user's language. "
+        )
 
         guard = SystemMessage(
             content=(
-                "Срочный повтор: ответь ОДНОЙ короткой фразой по-русски (до 18 слов), "
-                "без тегов, скобок и внутреннего мышления."
+                "Retry only the talk lane. " + instruction +
+                "Do not expose private reasoning or change the configured persona or conversation mode."
             )
         )
         retry_messages = [messages[0], guard, *messages[1:]] if messages else [guard]
-        resp = await agent.llm_talk.ainvoke(retry_messages)
+        from core.agent.model_trace import invoke
+        resp = await invoke(agent, agent.llm_talk, retry_messages, lane="talk", purpose="empty_reply_retry")
         raw = resp.content if hasattr(resp, "content") else str(resp)
         text_no_think, _ = agent._extract_think_blocks(raw)
         clean, _ = agent._extract_sound_tags(text_no_think)
         clean = (clean or "").strip()
         if clean:
-            logger.info("Пустой ответ восстановлен через short re-ask")
+            logger.info("Empty reply recovered through short re-ask")
             return clean
     except Exception as e:
-        logger.warning("Short re-ask ошибка: %s", e)
+        logger.warning("Short re-ask failed: %s", e)
     return current_text
 
 

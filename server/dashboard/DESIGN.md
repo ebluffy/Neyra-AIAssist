@@ -36,6 +36,8 @@ Source: `src/styles/tokens.css`. Theme via `data-theme="dark|light"` on `<html>`
 
 Same roles; canvas `#f1f5f9`, surfaces white/`#e8eef6`, text `#0f172a`, accent cyan `#0891b2`. Toggle in sidebar / ⌘K.
 
+Sidebar shading ends at `--bg` in both themes. Cyan outline actions use `--cyan` for text; light warning actions use `--warn-fg: #92400e` to retain readable contrast.
+
 Radius scale: `--radius-sm` 6 / `--radius` 8 / `--radius-lg` 12.
 
 ## Typography

@@ -18,6 +18,7 @@ import random
 from datetime import datetime, timezone
 import re
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
 
 import discord
@@ -27,6 +28,7 @@ from discord.ext import tasks
 from discord.app_commands import Choice
 
 from core.llm.profile import resolve_openai_compatible_connection
+from core.agent.model_trace import begin_call, end_call, traced_background
 
 from core.runtime.event_bus import (
     MUSIC_CLEAR,
@@ -278,7 +280,9 @@ class NeyraDiscordBot(discord.Client):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(intents=intents)
+        super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions(
+            everyone=False, roles=False, users=False, replied_user=True,
+        ))
         self.tree = app_commands.CommandTree(self)
 
         self.agent = agent
@@ -378,8 +382,8 @@ class NeyraDiscordBot(discord.Client):
             return
 
         default_prompt = (
-            "[System]: Придумай спонтанное сообщение для чата, используй актуальные мемы или коротко прокомментируй тишину. "
-            "Не пиши, что это команда или задание. Одна или две короткие реплики, как живая участница чата."
+            "Start a spontaneous conversation in the channel with one or two short remarks. "
+            "Use the configured persona and the channel's language. Do not invent current events or present this request as a chat message."
         )
         prompt = str(proactive.get("prompt") or "").strip() or default_prompt
         uname = str(proactive.get("username") or "neyra_proactive").strip() or "neyra_proactive"
@@ -467,6 +471,7 @@ class NeyraDiscordBot(discord.Client):
     def _candidate_music_intent(self, text: str) -> Optional[dict[str, str]]:
         return candidate_music_intent(text)
 
+    @traced_background("discord_intent")
     async def _classify_intent(self, user_text: str) -> str:
         """
         Микро-классификатор для маршрутизации Discord: музыка vs текст песни vs обычный чат.
@@ -480,10 +485,9 @@ class NeyraDiscordBot(discord.Client):
             "GET_LYRICS — user wants song lyrics/text only, not playback.\n"
             "CHAT — everything else: banter, questions, quoting/pasting song lyrics, "
             "or mentioning words like track/song/music without asking to play.\n"
-            "When unsure between PLAY_MUSIC and CHAT, prefer CHAT.\n"
-            "User text: "
-            + (user_text or "")
+            "When unsure between PLAY_MUSIC and CHAT, prefer CHAT."
         )
+        call = None
         try:
             conn = resolve_openai_compatible_connection(self.config, role="memory_model")
             model = _intent_classifier_model(self.config)
@@ -495,14 +499,16 @@ class NeyraDiscordBot(discord.Client):
             headers.update({str(k): str(v) for k, v in dict(conn.default_headers).items()})
             body: dict[str, Any] = {
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": user_text or ""}],
                 "max_tokens": 16,
                 "temperature": 0.0,
             }
+            call = begin_call(getattr(self, "agent", None), "memory", "discord_intent", model=SimpleNamespace(model_name=model))
             async with httpx.AsyncClient(timeout=20.0) as client:
                 r = await client.post(url, headers=headers, json=body)
             r.raise_for_status()
             data = r.json()
+            end_call(call, SimpleNamespace(response_metadata={"model_name": data.get("model"), "id": data.get("id"), "headers": dict(r.headers), "token_usage": data.get("usage")}))
             choice = (data.get("choices") or [{}])[0]
             msg = choice.get("message") or {}
             content = str(msg.get("content") or "").strip()
@@ -510,8 +516,12 @@ class NeyraDiscordBot(discord.Client):
             if label in INTENT_LABELS:
                 return label
             return "CHAT"
+        except asyncio.CancelledError:
+            end_call(call, status="cancelled")
+            raise
         except Exception as ex:
-            logger.warning("Discord intent classifier failed: %s", ex)
+            end_call(call, status="failed")
+            logger.warning("Discord intent classifier failed: %s", type(ex).__name__)
             return "CHAT"
 
     def _on_music_result(self, event: CoreEvent) -> None:
@@ -575,6 +585,22 @@ class NeyraDiscordBot(discord.Client):
                 )
 
     async def setup_hook(self) -> None:
+        @self.tree.command(name="model", description="Модели последнего собственного ответа в этом канале")
+        async def slash_model(interaction: discord.Interaction):
+            from core.agent.model_trace import activity_for
+            report = activity_for(self.agent).for_owner(str(interaction.user.id), str(interaction.channel_id))
+            if report is None:
+                text = "Отчёта о вашем последнем ответе в этом канале пока нет."
+            elif report["without_llm"]:
+                text = "Последний ответ обработан без вызова LLM." if report["status"] == "completed" else "Последний ход не завершён; LLM не вызывалась."
+            else:
+                text = "\n".join(
+                    f"{c['lane']} · {c['purpose']} · {c['status']}: провайдер={c['provider'] or 'неизвестен'}; "
+                    f"настроено={c['configured_model'] or 'неизвестно'}; сообщено={c['reported_model'] or 'не сообщена'}"
+                    for c in report["calls"]
+                )
+            await interaction.response.send_message(text[:1900], ephemeral=True)
+
         @self.tree.command(name="reset", description="Сбросить краткую память диалога")
         async def slash_reset(interaction: discord.Interaction):
             uid = ""
@@ -787,9 +813,9 @@ class NeyraDiscordBot(discord.Client):
             )
         elif vision_imgs:
             logger.info("Discord: vision attachments ready | n=%s", len(vision_imgs))
-        content = message.content
-        for mention in message.mentions:
-            content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
+        from core.agent.discord_context import context_from_message
+        discord_context = context_from_message(message, str(self.user.id))
+        content = message.content.replace(f"<@{self.user.id}>", "").replace(f"<@!{self.user.id}>", "")
         content = content.strip() or "*молчишь*"
         if vision_imgs and content == "*молчишь*":
             content = "Что на изображении? Коротко по-русски."
@@ -1024,6 +1050,7 @@ class NeyraDiscordBot(discord.Client):
                 vision_images=vision_imgs if vision_imgs else None,
                 lyrics_mode=(route == "GET_LYRICS"),
                 avatar_url=avatar_url or None,
+                discord_context=discord_context,
             )
         )
 
@@ -1076,6 +1103,7 @@ class NeyraDiscordBot(discord.Client):
         vision_images: Optional[list[tuple[str, str]]],
         lyrics_mode: bool = False,
         avatar_url: Optional[str] = None,
+        discord_context=None,
     ) -> None:
         async with text_channel.typing():
             response_msg = (
@@ -1097,6 +1125,7 @@ class NeyraDiscordBot(discord.Client):
                     channel_id=channel_id_str,
                     author_display_name=author_display_name,
                     avatar_url=avatar_url,
+                    discord_context=discord_context,
                 ):
                     if chunk["type"] == "token":
                         full_raw += chunk["text"]

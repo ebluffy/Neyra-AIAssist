@@ -15,6 +15,12 @@
 | `neyra_write_config` | `POST /v1/config/update` — только разрешённые поля ядра |
 | `neyra_inspect_memory` | `GET /v1/debug/memory` — STM + статистика + RAG |
 
+STM возвращается в `short_term_windows` по owner/channel, из того же снимка,
+что `/v1/memory/short`: до 50 окон, 20 сообщений на окно, 4000 символов на
+сообщение и 24000 суммарно. `short_term_messages` сохранён как плоское
+представление для совместимости. Просмотр вне хода видит scoped историю;
+окна не означают один общий prompt модели. Требуется maintainer или admin.
+
 ### Lifecycle (`neyra_lifecycle`)
 
 По умолчанию выключен — API вернёт **403**, пока не задано:
