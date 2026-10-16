@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from core.text_resources import prompt_text
+
 logger = logging.getLogger("neyra.agent.reply_pipeline")
 
 
@@ -47,9 +49,9 @@ def sanitize_raw_reply(
 
 
 async def retry_short_reply_if_empty(
-    agent: Any, messages: list[Any], current_text: str
+    agent: Any, messages: list[Any], current_text: str, *, lyrics_mode: bool = False
 ) -> str:
-    """If cleaned reply is the empty placeholder, ask talk LLM for one short phrase."""
+    """Retry an empty reply while preserving the turn's output requirements."""
     from core.agent.reply_postprocess import EMPTY_REPLY_PLACEHOLDER
 
     if (current_text or "").strip() != EMPTY_REPLY_PLACEHOLDER:
@@ -57,17 +59,16 @@ async def retry_short_reply_if_empty(
     try:
         from langchain_core.messages import SystemMessage
         from core.agent.model_trace import turn_conversation_mode
-        structured = turn_conversation_mode(agent.config) in ("detailed", "technical") or any(
-            "[LYRICS MODE" in str(getattr(message, "content", "")) for message in messages)
+        structured = lyrics_mode or turn_conversation_mode(agent.config) in ("detailed", "technical")
         instruction = (
-            "Return a complete answer in the user's language, preserving detail, structure, code and requested full text. "
-            if structured else "Return an answer in the user's language. "
+            prompt_text("reply.retry_complete")
+            if structured else prompt_text("reply.retry_plain")
         )
 
         guard = SystemMessage(
             content=(
-                "Retry only the talk lane. " + instruction +
-                "Do not expose private reasoning or change the configured persona or conversation mode."
+                prompt_text("reply.retry_lane") + instruction +
+                prompt_text("reply.retry_constraints")
             )
         )
         retry_messages = [messages[0], guard, *messages[1:]] if messages else [guard]
@@ -91,9 +92,12 @@ async def polish_clean_reply(
     user_message: str,
     clean_text: str,
     messages: list[Any],
+    lyrics_mode: bool,
 ) -> str:
-    """Short re-ask if empty placeholder, then anti-repeat paraphrase."""
-    clean_text = await retry_short_reply_if_empty(agent, messages, clean_text)
+    """Retry an empty reply, then apply the anti-repeat paraphrase."""
+    clean_text = await retry_short_reply_if_empty(
+        agent, messages, clean_text, lyrics_mode=lyrics_mode
+    )
     return await agent._de_repeat_reply(user_message, clean_text)
 
 

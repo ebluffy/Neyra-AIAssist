@@ -3,6 +3,13 @@
 The offline contract is implemented in the production pipeline. Actual model
 adherence remains a live acceptance item.
 
+Follow-up §14: system policy text now comes from
+`server/resources/prompts/en.json` through `core/text_resources.py`. Builders
+retain assembly/roles/limits; persona is still loaded separately. Exact builder
+outputs and all five modes are frozen against merged #27 fixtures. See
+[TEXT_RESOURCES.md](TEXT_RESOURCES.md) for keys, parameters, localization boundaries
+and the remaining text migration.
+
 | Path | Instructions | Data and boundary |
 | --- | --- | --- |
 | `agent/prompts.py`, `persona.py` | English service policy; configurable persona/appearance only for talk | Persona language stays user controlled; brain identity snippet disabled even under legacy persona_in_brain |
@@ -32,5 +39,7 @@ third-person entries stay as history; new generation requests first person.
 Model compliance, useful retrieval, latency/billing and production migration
 remain separate live acceptance.
 
-Text extraction/localization (§14), voice/DAVE (§11), Agent loop (§10) and
-Windows client are subsequent work outside this PR.
+Text extraction/localization (§14) has a first server implementation; remaining
+UI/Discord/API translations and data wrappers are still open. Mood/Relations
+(§7.5) is a near-term priority. Agent loop (§10) and Windows/Linux client come
+last; voice/DAVE (§11) is deferred until after the thesis or spare time.

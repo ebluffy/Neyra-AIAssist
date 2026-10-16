@@ -14,6 +14,8 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from core.text_resources import prompt_text
+
 logger = logging.getLogger("neyra.agent.persona")
 
 _APPEARANCE_MARKERS = (
@@ -120,12 +122,7 @@ def format_appearance_section(
         return ""
     if always and max_chars > 0 and len(text) > max_chars:
         text = text[:max_chars].rstrip() + "…"
-    return (
-        "\n\n# APPEARANCE / VISUAL CANON\n"
-        "Use only when appearance, avatar or visual depiction is relevant. "
-        "Do not introduce appearance descriptions into unrelated text chat.\n"
-        f"{text}"
-    )
+    return prompt_text("appearance.visual_canon", text=text)
 
 
 def build_talk_base_prompt(

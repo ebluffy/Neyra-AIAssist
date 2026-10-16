@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 import re
 
+from core.text_resources import message_text
+
 logger = logging.getLogger("neyra.agent.reply_postprocess")
 
-EMPTY_REPLY_PLACEHOLDER = "Затупила на секунду. Повтори коротко, пожалуйста."
+
+EMPTY_REPLY_PLACEHOLDER = message_text("reply.empty")
 
 
 def extract_sound_tags(text: str, *, preserve_line_breaks: bool = True) -> tuple[str, list[str]]:

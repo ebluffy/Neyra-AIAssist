@@ -148,6 +148,7 @@ async def run_chat(
             user_message=user_message,
             clean_text=clean_text,
             messages=final_messages_used,
+            lyrics_mode=prep.lyrics_mode,
         )
 
         await finalize_successful_turn(

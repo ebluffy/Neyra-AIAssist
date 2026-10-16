@@ -53,6 +53,7 @@ Docker: `docker compose up --build` (root compose includes `server/`).
 | HTTP bind, public URL, dashboard | `server/config/server.yaml` (`api:`, `dashboard:`) |
 | Secrets | `server/.env` only |
 | Key inventory | [docs/config-keys.md](docs/config-keys.md) |
+| English service prompts and initial ru/en messages | `server/resources/`; [resource contract](docs/TEXT_RESOURCES.md) |
 
 No legacy dual-read: use `llm.talk_model` / `llm.brain_model` / … with `provider` — not top-level `BACKEND` or `openrouter:`.
 

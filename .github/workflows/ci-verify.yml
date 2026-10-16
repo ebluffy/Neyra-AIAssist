@@ -87,6 +87,8 @@ jobs:
         run: python server/scripts/verify_stage_1c.py
       - name: Check dual LLM backends
         run: python server/scripts/verify_stage_1d.py
+      - name: Validate static text resources
+        run: python server/scripts/verify_text_resources.py
       - name: Offline memory / security smokes
         run: |
           cd server

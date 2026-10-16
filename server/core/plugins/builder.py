@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from core.plugins.loader import PluginLoader
+from core.text_resources import prompt_text
 
 logger = logging.getLogger("neyra.plugin_builder")
 
@@ -205,17 +206,7 @@ def create_or_edit_plugin_impl(
             # не критично — просто без контекста
             existing_files = {}
 
-    system = (
-        "You are Neyra's plugin engineer.\n"
-        "Generate plugin changes under modules/<plugin_id>.\n"
-        "OUTPUT MUST BE JSON: {\"files\": [{\"path\": \"relative/path\", \"content\": \"...\"}], \"notes\": \"...\"}.\n"
-        "Do not change anything outside modules/<plugin_id>.\n"
-        "Do not modify the discord plugin.\n"
-        "All files[].path values MUST be relative to the plugin root and must not include modules/<id>/.\n"
-        "For a new plugin, add plugin.yaml and main.py.\n"
-        "plugin.yaml MUST set main_script: \"main.py\".\n"
-        "Do not include binary data.\n"
-    )
+    system = prompt_text("coder.plugin_generation")
     user = json.dumps(
         {
             "plugin_id": pid,
