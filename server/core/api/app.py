@@ -18,7 +18,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 import httpx
 import yaml
@@ -41,6 +41,7 @@ from core.api.log_redaction import install_log_filters
 from core.api.request_context import get_trace_id, resolve_trace_id, set_trace_id
 from core.api.security_headers import SecurityHeadersMiddleware
 from core.neyra import NeyraAgent
+from core.runtime.features import FEATURE_DEFAULTS
 from core.runtime.backup import BackupManager
 from core.runtime.event_bus import CoreEvent
 from core.runtime.paths import resolve_data_dir
@@ -65,6 +66,7 @@ _DASH_LOGIN_MAX_FAILS = 5
 # Runtime config keys mutable via dashboard Settings (no secrets).
 CONFIG_RUNTIME_ALLOWLIST: frozenset[str] = frozenset(
     {
+        *FEATURE_DEFAULTS,
         "llm.talk_model",
         "llm.brain_model",
         "llm.memory_model",
@@ -129,7 +131,7 @@ def _config_get_path(cfg: dict, path: str) -> Any:
 
 def runtime_config_snapshot(cfg: dict) -> dict[str, Any]:
     """Allowlisted runtime values only (no API keys / .env secrets)."""
-    out: dict[str, Any] = {"agent.conversation_mode": "default"}
+    out: dict[str, Any] = {"agent.conversation_mode": "default", **FEATURE_DEFAULTS}
     for key in sorted(CONFIG_RUNTIME_ALLOWLIST):
         val = _config_get_path(cfg, key)
         if val is not None:
@@ -514,6 +516,12 @@ class PersonMergeRequest(_ApiBody):
 
 class MemoryWipeRequest(_ApiBody):
     scopes: list[str] = Field(min_length=1)
+    confirm: str = Field(min_length=1, max_length=32)
+
+
+class AffectResetRequest(_ApiBody):
+    scope: Literal["mood", "relations"]
+    person_id: Optional[str] = Field(default=None, min_length=1, max_length=120)
     confirm: str = Field(min_length=1, max_length=32)
 
 
@@ -2199,6 +2207,41 @@ def build_app(
             return entries
         return {"ok": True, "trace_id": _trace_id(request), "data": {"entries": await asyncio.to_thread(load)}}
 
+    @app.get("/v1/memory/affect")
+    async def v1_memory_affect(request: Request, person_id: Annotated[Optional[str], Query(min_length=1, max_length=120)] = None, _: None = Depends(dep_viewer)):
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        try:
+            data = await asyncio.to_thread(hub.affect_snapshot, person_id)
+        except KeyError:
+            raise ApiError("person_not_found", "Person not found", 404)
+        return {"ok": True, "trace_id": _trace_id(request), "data": data}
+
+    @app.post("/v1/memory/affect/reset")
+    async def v1_memory_affect_reset(body: AffectResetRequest, request: Request, api_role: str = Depends(dep_admin)):
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        if body.confirm != "WIPE":
+            raise ApiError("wipe_confirm_required", "Pass confirm: WIPE", 400)
+        if body.person_id and body.scope != "relations":
+            raise ApiError("invalid_affect_reset", "person_id is only valid for relations", 400)
+        from core.runtime.paths import resolve_data_dir
+        backup_dir = resolve_data_dir(root, config) / "backups"
+        try:
+            if body.person_id:
+                data = await asyncio.to_thread(hub.reset_relation, body.person_id, backup_dir=backup_dir)
+            else:
+                data = await asyncio.to_thread(hub.wipe, [body.scope], backup_dir=backup_dir)
+        except KeyError:
+            raise ApiError("person_not_found", "Person not found", 404)
+        except Exception:
+            logger.exception("Affect reset failed")
+            raise ApiError("affect_reset_failed", "State reset failed; see server log", 500)
+        _audit("affect_reset", _trace_id(request), api_role, {"scope": body.scope, "person_id": body.person_id, "backup": data.get("backup")})
+        return {"ok": True, "trace_id": _trace_id(request), "data": data}
+
     @app.get("/v1/memory/stats")
     async def v1_memory_stats(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
@@ -3617,6 +3660,10 @@ def build_app(
         for k, v in body.updates.items():
             if k not in CONFIG_RUNTIME_ALLOWLIST:
                 raise ApiError("forbidden_update", f"Path not allowed: {k}", 403)
+            if k in FEATURE_DEFAULTS and type(v) is not bool:
+                raise ApiError("bad_request", f"{k}: expected boolean", 400)
+            if k == "memory.rag_write_mode" and v not in ("off", "digest", "important_only", "legacy_dialog"):
+                raise ApiError("bad_request", "memory.rag_write_mode: invalid mode", 400)
             if k == "agent.conversation_mode":
                 from core.agent.conversation_modes import conversation_mode_hint
 
@@ -3643,6 +3690,13 @@ def build_app(
 
         for k, v in updates_applied.items():
             _safe_set(config, k, v)
+
+        hub = getattr(agent, "memory_hub", None)
+        if hub is not None:
+            if {"memory.mood.enabled", "memory.relations.enabled"}.intersection(updates_applied):
+                await asyncio.to_thread(hub.invalidate_affect_turns)
+            if "memory.rag_write_mode" in updates_applied:
+                hub.rag_write_mode = updates_applied["memory.rag_write_mode"]
 
         llm_rebound = False
         if any(str(k).startswith("llm.") for k in updates_applied):

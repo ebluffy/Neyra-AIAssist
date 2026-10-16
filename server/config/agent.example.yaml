@@ -2,6 +2,10 @@
 # EN/RU: see docs/PLAN.md §1c and docs/config-keys.md
 #
 agent:
+  # Allow a separate talk call to rephrase consecutive repeated answers.
+  de_repeat:
+    enabled: true
+
   # EN: Talk style: default (persona), brief, detailed, technical, no_jokes.
   # RU: Стиль ответа: default (persona), brief, detailed, technical, no_jokes.
   conversation_mode: default

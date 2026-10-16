@@ -235,3 +235,11 @@
 | `modules/discord/config.yaml` | top-level `discord` |
 | other `modules/<id>/config.yaml` | `plugins.<id>` |
 | Core API / dashboard | `server/config/server.yaml` → `api:` / `dashboard:` |
+
+
+## Optional subsystem switches
+
+See [SUBSYSTEM_CONTROLS.md](SUBSYSTEM_CONTROLS.md) for all 15 keys, defaults,
+layer persistence and restart requirements. Mood/relations flags stop writes and
+talk injection independently; disabling preserves stored state. API accepts
+actual boolean values only. `memory.rag_write_mode` applies to the active Hub.

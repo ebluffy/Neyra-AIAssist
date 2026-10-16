@@ -36,6 +36,7 @@ class TurnTrace:
     kind: str = "turn"
     parent_turn_id: str | None = None
     memory_owner_id: str | None = None
+    affect_generations: dict | None = None
 
     def __post_init__(self):
         self.conversation_mode = (self.config.get("agent") or {}).get("conversation_mode", "default")

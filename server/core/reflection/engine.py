@@ -722,6 +722,9 @@ class ReflectionEngine:
 
     def start_scheduler(self):
         """Запускает APScheduler для ночной рефлексии."""
+        from core.runtime.features import feature_enabled
+        if not feature_enabled(self.config, "memory.reflection_enabled"):
+            return None
         try:
             from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
