@@ -6,6 +6,7 @@ import logging
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
+from core.text_resources import prompt_text
 from .conversation_modes import conversation_mode_hint
 
 logger = logging.getLogger("neyra.agent.de_repeat")
@@ -55,16 +56,16 @@ async def de_repeat_reply(
             temperature=0.9,
         )
         instruction = (
-            "Rewrite the assistant reply in the user's language: preserve detail, structure, lists, and code, "
+            prompt_text("rewrite.detailed")
             if conversation_mode != "brief" else
-            "Rewrite the assistant reply in the user's language: keep it short, natural, and without Markdown, "
+            prompt_text("rewrite.brief")
         )
         from core.agent.model_trace import invoke
         resp = await invoke(None, rewrite_llm,
             [
                 SystemMessage(
                     content=(
-                        persona + "\n" + instruction + "without <think>/<thought> tags and without copying the same phrase."
+                        persona + "\n" + instruction + prompt_text("rewrite.private_reasoning_rule")
                         + "\n" + conversation_mode_hint(conversation_mode)
                     )
                 ),

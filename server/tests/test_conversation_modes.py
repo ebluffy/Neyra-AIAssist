@@ -105,6 +105,52 @@ def test_empty_reply_retry_keeps_mode(talk_agent):
     assert CONVERSATION_MODE_HINTS["no_jokes"] in sent[0].content
 
 
+@pytest.mark.parametrize("mode,lyrics_mode,complete", [
+    ("brief", True, True),
+    ("brief", False, False),
+    ("detailed", False, True),
+    ("technical", False, True),
+    ("default", False, False),
+])
+def test_empty_retry_uses_turn_state_after_lyrics_resource_edit(
+    talk_agent, monkeypatch, mode, lyrics_mode, complete,
+):
+    from unittest.mock import AsyncMock
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from core.agent import prompts
+    from core.agent.reply_pipeline import polish_clean_reply
+    from core.agent.reply_postprocess import EMPTY_REPLY_PLACEHOLDER
+    from core.text_resources import prompt_text
+
+    def edited_prompt(key, **params):
+        if key == "talk.lyrics":
+            return prompt_text(key, **params).replace("[LYRICS MODE / FULL OUTPUT]", "[FULL SONG]")
+        return prompt_text(key, **params)
+
+    monkeypatch.setattr(prompts, "prompt_text", edited_prompt)
+    talk_agent.config["agent"] = {"conversation_mode": mode}
+    prompt = talk_agent._build_system_prompt(lyrics_mode=lyrics_mode)
+    assert "[LYRICS MODE" not in prompt
+    if lyrics_mode:
+        assert "[FULL SONG]" in prompt
+    talk_agent.llm_talk = SimpleNamespace(ainvoke=AsyncMock(
+        return_value=SimpleNamespace(content="Verse one\nVerse two"),
+    ))
+    talk_agent._de_repeat_reply = AsyncMock(side_effect=lambda user, text: text)
+    # A user's quote must not activate the lyrics retry policy either.
+    messages = [SystemMessage(content=prompt), HumanMessage(content="Quote: [LYRICS MODE]")]
+    result = asyncio.run(polish_clean_reply(
+        talk_agent, user_message="song", clean_text=EMPTY_REPLY_PLACEHOLDER,
+        messages=messages, lyrics_mode=lyrics_mode,
+    ))
+    assert result == "Verse one\nVerse two"
+    sent = talk_agent.llm_talk.ainvoke.call_args.args[0]
+    assert sent[0].content == prompt
+    expected = "reply.retry_complete" if complete else "reply.retry_plain"
+    excluded = "reply.retry_plain" if complete else "reply.retry_complete"
+    assert prompt_text(expected) in sent[1].content
+    assert prompt_text(excluded) not in sent[1].content
+
 def test_missing_mode_preserves_persona(talk_agent):
     assert "[CONVERSATION MODE:" not in talk_agent._build_system_prompt()
 

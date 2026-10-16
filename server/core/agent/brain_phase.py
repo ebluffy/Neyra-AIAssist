@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Optional
+
 from core.agent.model_trace import invoke
+from core.text_resources import message_text, prompt_text
 
 logger = logging.getLogger("neyra.agent.brain_phase")
 
 # User-facing stub when brain is down. Plain text only (no [SOUND:] tags).
-BRAIN_DOWN_USER_MESSAGE = (
-    "Мозг Neyra недоступен. Повторите попытку позже."
-)
+BRAIN_DOWN_USER_MESSAGE = message_text("brain.unavailable")
 
 
 async def run_brain_tool_phase(
@@ -39,14 +39,11 @@ async def run_brain_tool_phase(
         parts.append("[VISION SUMMARY]\n" + vc)
     human_content = "\n\n".join(parts) if parts else "(empty message)"
     if lyrics_mode:
-        human_content += (
-            "\n\n[LYRICS REQUEST] The user requested song lyrics. "
-            "Preserve the full lyrics brief for tools and retrieval."
-        )
+        human_content += prompt_text("brain.lyrics_request")
 
     if vision_images:
         human_msg = agent._make_human_turn(
-            um or "What is shown in the image? Use the context for tool planning.",
+            um or prompt_text("brain.vision_question"),
             vision_images,
             speaker_label=speaker_label,
         )

@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING
 
 from langchain_core.tools import tool
 
+from core.text_resources import prompt_text
+
 if TYPE_CHECKING:
     from core.memory import LongTermMemory, PeopleDB
 
@@ -587,11 +589,7 @@ async def delegate_to_deep_logic(detailed_prompt: str) -> str:
             llm_kwargs["max_tokens"] = int(brain_cap)
         llm = ChatOpenAI(**llm_kwargs)
         sys = SystemMessage(
-            content=(
-                "You are an internal analysis and engineering lane. Return accurate technical findings, code or a plan "
-                "for the supplied task. Do not adopt the assistant persona or write its final conversational answer. "
-                "No outer Markdown fence unless requested, and no private reasoning tags."
-            )
+            content=prompt_text("delegate.deep_analysis")
         )
         human = HumanMessage(content=(detailed_prompt or "").strip()[:120000])
         if not human.content:

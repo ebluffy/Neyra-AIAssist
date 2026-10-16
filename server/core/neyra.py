@@ -503,11 +503,15 @@ class NeyraAgent:
             empty_placeholder=EMPTY_REPLY_PLACEHOLDER,
         )
 
-    async def _retry_short_reply_if_empty(self, messages: list[Any], current_text: str) -> str:
-        """Если после очистки ответ пустой, делаем быстрый короткий re-ask одной фразой."""
+    async def _retry_short_reply_if_empty(
+        self, messages: list[Any], current_text: str, *, lyrics_mode: bool = False
+    ) -> str:
+        """Повторить пустой ответ с учётом требований текущего хода."""
         from core.agent.reply_pipeline import retry_short_reply_if_empty
 
-        return await retry_short_reply_if_empty(self, messages, current_text)
+        return await retry_short_reply_if_empty(
+            self, messages, current_text, lyrics_mode=lyrics_mode
+        )
 
     def _strip_leading_micro_plan(self, text: str) -> tuple[str, str]:
         """Удаляет ведущий [PLAN]...[/PLAN] (или кастомные теги) из ответа."""

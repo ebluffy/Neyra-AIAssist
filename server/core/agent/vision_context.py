@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from core.text_resources import prompt_text
+
 logger = logging.getLogger("neyra.agent.vision_context")
 
 
@@ -22,15 +24,11 @@ async def caption_vision_images(
     if not vision_images or not agent.llm_vision:
         return ""
     sys = SystemMessage(
-        content=(
-            "You are the vision lane. Describe what is visible in 1-8 concise sentences. "
-            "For multiple images, enumerate them in order. Transcribe visible text when possible. "
-            "Do not adopt an assistant persona and do not use Markdown headings."
-        )
+        content=prompt_text("vision.caption")
     )
     from core.agent.discord_context import context_prompt
     human = agent._make_human_turn(
-        (user_message or "").strip() or "What is shown in the image?",
+        (user_message or "").strip() or prompt_text("vision.default_question"),
         vision_images,
         speaker_label=speaker_label,
     )

@@ -27,8 +27,9 @@ from discord import app_commands
 from discord.ext import tasks
 from discord.app_commands import Choice
 
-from core.llm.profile import resolve_openai_compatible_connection
 from core.agent.model_trace import begin_call, end_call, traced_background
+from core.llm.profile import resolve_openai_compatible_connection
+from core.text_resources import prompt_text
 
 from core.runtime.event_bus import (
     MUSIC_CLEAR,
@@ -381,10 +382,7 @@ class NeyraDiscordBot(discord.Client):
             logger.warning("proactive: нет текстового канала — задайте discord.channel_ids или discord.proactive.channel_id")
             return
 
-        default_prompt = (
-            "Start a spontaneous conversation in the channel with one or two short remarks. "
-            "Use the configured persona and the channel's language. Do not invent current events or present this request as a chat message."
-        )
+        default_prompt = prompt_text("discord.proactive")
         prompt = str(proactive.get("prompt") or "").strip() or default_prompt
         uname = str(proactive.get("username") or "neyra_proactive").strip() or "neyra_proactive"
         pid = str(proactive.get("platform_user_id") or "discord_proactive").strip() or "discord_proactive"
@@ -477,16 +475,7 @@ class NeyraDiscordBot(discord.Client):
         Микро-классификатор для маршрутизации Discord: музыка vs текст песни vs обычный чат.
         Модель — llm.memory_model (provider + id из той же роли).
         """
-        prompt = (
-            "You are an intent classifier for a Discord bot that CAN join a voice channel "
-            "and play audio via Lavalink. Reply with EXACTLY ONE label:\n"
-            "PLAY_MUSIC — user clearly wants audio played in Discord voice "
-            "(e.g. 'включи …', 'поставь трек', 'play …', 'зайди в войс и включи').\n"
-            "GET_LYRICS — user wants song lyrics/text only, not playback.\n"
-            "CHAT — everything else: banter, questions, quoting/pasting song lyrics, "
-            "or mentioning words like track/song/music without asking to play.\n"
-            "When unsure between PLAY_MUSIC and CHAT, prefer CHAT."
-        )
+        prompt = prompt_text("discord.intent_classifier")
         call = None
         try:
             conn = resolve_openai_compatible_connection(self.config, role="memory_model")
