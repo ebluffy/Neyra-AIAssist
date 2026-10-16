@@ -100,6 +100,8 @@ class SqliteStore:
                         self._migrate_v3()
                     elif version == 4:
                         self._migrate_v4()
+                    elif version == 5:
+                        self._migrate_v5()
                     else:
                         for stmt in _split_sql_statements(sql):
                             self._conn.execute(stmt)
@@ -137,6 +139,18 @@ class SqliteStore:
         cols = self._table_columns("merge_log")
         if "undone_at" not in cols:
             self._conn.execute("ALTER TABLE merge_log ADD COLUMN undone_at TEXT")
+
+    def _migrate_v5(self) -> None:
+        for table in ("diary_notes", "journal_entries"):
+            columns = self._table_columns(table)
+            for column in ("owner_id", "channel_id", "provenance", "freshness"):
+                if column not in columns:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+        if "dedupe_key" not in self._table_columns("diary_notes"):
+            self._conn.execute("ALTER TABLE diary_notes ADD COLUMN dedupe_key TEXT")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_diary_scope ON diary_notes(owner_id, channel_id, ts)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_journal_scope ON journal_entries(owner_id, channel_id, ts)")
+        self._conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_diary_dedupe ON diary_notes(dedupe_key) WHERE dedupe_key IS NOT NULL")
 
     def _ensure_merge_proposals_table(self) -> None:
         self._conn.execute(
@@ -276,6 +290,14 @@ class SqliteStore:
                     pass
                 raise
         return ids
+
+    def update_turn_trace(self, turn_id: str, report: dict) -> None:
+        with self._lock:
+            rows = self._conn.execute("SELECT id, meta FROM chat_log WHERE turn_id = ?", (turn_id,)).fetchall()
+            for row in rows:
+                meta = json.loads(row["meta"]) if row["meta"] else {}
+                meta["model_trace"] = report
+                self._conn.execute("UPDATE chat_log SET meta = ? WHERE id = ?", (self._dumps(meta), row["id"]))
 
     def list_chat(
         self,
@@ -1273,32 +1295,64 @@ class SqliteStore:
         emotion: Optional[str] = None,
         meta: Any = None,
         ts: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        provenance: Optional[str] = None,
+        freshness: Optional[str] = None,
+        dedupe_key: Optional[str] = None,
     ) -> int:
         with self._lock:
+            values = (to_utc_iso(ts) if ts else _now_iso(), text, source, emotion,
+                      self._dumps(meta), owner_id, channel_id, provenance, freshness, dedupe_key)
+            if dedupe_key is not None:
+                row = self._conn.execute(
+                    """SELECT id, ts, text, source, emotion, meta, owner_id, channel_id,
+                       provenance, freshness FROM diary_notes WHERE dedupe_key = ?""",
+                    (dedupe_key,),
+                ).fetchone()
+                if row is not None:
+                    self._conn.execute(
+                        """UPDATE diary_notes SET ts = ?, text = ?, source = ?, emotion = ?, meta = ?,
+                           owner_id = ?, channel_id = ?, provenance = ?, freshness = ? WHERE id = ?""",
+                        (values[0], values[1], values[2] if values[2] is not None else row[3],
+                         values[3] if values[3] is not None else row[4],
+                         values[4] if meta is not None else row[5],
+                         values[5] if values[5] is not None else row[6],
+                         values[6] if values[6] is not None else row[7],
+                         values[7] if values[7] is not None else row[8],
+                         values[8] if values[8] is not None else row[9], int(row[0])),
+                    )
+                    self._conn.commit()
+                    return int(row[0])
             cur = self._conn.execute(
-                """
-                INSERT INTO diary_notes(ts, text, source, emotion, meta)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (to_utc_iso(ts) if ts else _now_iso(), text, source, emotion, self._dumps(meta)),
+                """INSERT INTO diary_notes(ts, text, source, emotion, meta, owner_id, channel_id,
+                   provenance, freshness, dedupe_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                values,
             )
             return int(cur.lastrowid)
 
-    def list_diary_notes(self, *, limit: int = 20, newest_first: bool = True) -> list[dict[str, Any]]:
+    def list_diary_notes(self, *, limit: int = 20, newest_first: bool = True,
+                         owner_id: Optional[str] = None, channel_id: Optional[str] = None) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 500))
         order = "DESC" if newest_first else "ASC"
         with self._lock:
-            cur = self._conn.execute(
-                f"SELECT * FROM diary_notes ORDER BY ts {order}, id {order} LIMIT ?",
-                (limit,),
-            )
+            where, args = [], []
+            if owner_id is not None:
+                where.append("owner_id = ?"); args.append(owner_id)
+            if channel_id is not None:
+                where.append("channel_id = ?"); args.append(channel_id)
+            clause = (" WHERE " + " AND ".join(where)) if where else ""
+            cur = self._conn.execute(f"SELECT * FROM diary_notes{clause} ORDER BY ts {order}, id {order} LIMIT ?", (*args, limit))
             return [self._row_to_dict(r) for r in cur.fetchall()]
 
-    def delete_diary_note(self, note_id: int) -> bool:
+    def delete_diary_note(self, note_id: int, *, owner_id: Optional[str] = None,
+                          channel_id: Optional[str] = None) -> bool:
         with self._lock:
+            where, args = ["id = ?"], [int(note_id)]
+            if owner_id is not None: where.append("owner_id = ?"); args.append(owner_id)
+            if channel_id is not None: where.append("channel_id = ?"); args.append(channel_id)
             cur = self._conn.execute(
-                "DELETE FROM diary_notes WHERE id = ?",
-                (int(note_id),),
+                "DELETE FROM diary_notes WHERE " + " AND ".join(where), args,
             )
             return cur.rowcount > 0
 
@@ -1310,34 +1364,47 @@ class SqliteStore:
         kind: Optional[str] = None,
         meta: Any = None,
         ts: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        provenance: Optional[str] = None,
+        freshness: Optional[str] = None,
     ) -> int:
         with self._lock:
             cur = self._conn.execute(
                 """
-                INSERT INTO journal_entries(ts, title, text, kind, meta)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO journal_entries(ts, title, text, kind, meta, owner_id, channel_id,
+                                            provenance, freshness)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (to_utc_iso(ts) if ts else _now_iso(), title, text, kind, self._dumps(meta)),
+                (to_utc_iso(ts) if ts else _now_iso(), title, text, kind, self._dumps(meta),
+                 owner_id, channel_id, provenance, freshness),
             )
             return int(cur.lastrowid)
 
     def list_journal_entries(
-        self, *, limit: int = 50, newest_first: bool = True
+        self, *, limit: int = 50, newest_first: bool = True,
+        owner_id: Optional[str] = None, channel_id: Optional[str] = None
     ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 1000))
         order = "DESC" if newest_first else "ASC"
         with self._lock:
-            cur = self._conn.execute(
-                f"SELECT * FROM journal_entries ORDER BY ts {order}, id {order} LIMIT ?",
-                (limit,),
-            )
+            where, args = [], []
+            if owner_id is not None:
+                where.append("owner_id = ?"); args.append(owner_id)
+            if channel_id is not None:
+                where.append("channel_id = ?"); args.append(channel_id)
+            clause = (" WHERE " + " AND ".join(where)) if where else ""
+            cur = self._conn.execute(f"SELECT * FROM journal_entries{clause} ORDER BY ts {order}, id {order} LIMIT ?", (*args, limit))
             return [self._row_to_dict(r) for r in cur.fetchall()]
 
-    def delete_journal_entry(self, entry_id: int) -> bool:
+    def delete_journal_entry(self, entry_id: int, *, owner_id: Optional[str] = None,
+                             channel_id: Optional[str] = None) -> bool:
         with self._lock:
+            where, args = ["id = ?"], [int(entry_id)]
+            if owner_id is not None: where.append("owner_id = ?"); args.append(owner_id)
+            if channel_id is not None: where.append("channel_id = ?"); args.append(channel_id)
             cur = self._conn.execute(
-                "DELETE FROM journal_entries WHERE id = ?",
-                (int(entry_id),),
+                "DELETE FROM journal_entries WHERE " + " AND ".join(where), args,
             )
             return cur.rowcount > 0
 

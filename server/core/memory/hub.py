@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+import threading
+from functools import wraps
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -21,6 +23,32 @@ from core.memory.sqlite_store import SqliteStore
 from core.runtime.timeutil import configure_timezone, now_storage_iso, to_utc_iso
 
 logger = logging.getLogger("neyra.memory.hub")
+
+
+def guarded_write(*scopes):
+    def decorate(function):
+        @wraps(function)
+        def run(self, *args, **kwargs):
+            from core.agent.model_trace import MEMORY_JOB
+            with self._write_lock:
+                job = MEMORY_JOB.get()
+                if job and job[0] is self and any(job[1].get(scope, 0) != self._generations.get(scope, 0) for scope in scopes):
+                    import asyncio
+                    raise asyncio.CancelledError("Memory job invalidated by scoped wipe")
+                return function(self, *args, **kwargs)
+        return run
+    return decorate
+
+
+def serialized_wipe(function):
+    @wraps(function)
+    def run(self, *args, **kwargs):
+        with self._write_lock:
+            result = function(self, *args, **kwargs)
+            for scope in result.get("deleted", {}):
+                self._generations[scope] = self._generations.get(scope, 0) + 1
+            return result
+    return run
 
 
 def _now_iso() -> str:
@@ -45,6 +73,8 @@ class MemoryHub:
     ):
         mem = config.get("memory") if isinstance(config.get("memory"), dict) else {}
         self.config = config
+        self._write_lock = threading.RLock()
+        self._generations = {}
         self.mem_cfg = mem
         self.event_bus = event_bus
         self._long_memory = long_memory
@@ -194,13 +224,21 @@ class MemoryHub:
             return []
         return self.semantic.search(query, n_results=n_results, user_id=user_id)
 
+    @guarded_write("ltm")
+    def mutate_semantic(self, operation, *args, **kwargs):
+        """Serialize maintenance writes with wipes and reject stale background jobs."""
+        return operation(*args, **kwargs)
+
+    @guarded_write("ltm")
     def remember_knowledge(
         self, text: str, metadata: Optional[dict[str, Any]] = None
     ) -> tuple[bool, str]:
         if self.rag_write_mode == "off":
             return False, "rag_write_mode=off"
         meta = dict(metadata or {})
-        if "type" not in meta:
+        if meta.get("user_id"):
+            meta["type"] = "user_knowledge"
+        elif "type" not in meta:
             meta["type"] = "knowledge"
         ok, info = self.semantic.add_knowledge(text, meta)
         if ok and self.event_bus is not None:
@@ -216,6 +254,7 @@ class MemoryHub:
                 logger.debug("long_term_write event failed: %s", e)
         return ok, info
 
+    @guarded_write("ltm")
     def save_dialog_semantic(
         self, user_msg: str, assistant_msg: str, metadata: Optional[dict[str, Any]] = None
     ) -> bool:
@@ -247,6 +286,7 @@ class MemoryHub:
             meta=meta,
         )
 
+    @guarded_write("people")
     def add_person_fact(
         self,
         person_id: str,
@@ -603,6 +643,7 @@ class MemoryHub:
     def undo_merge(self, merge_log_id: int) -> dict[str, Any]:
         return self.sqlite.undo_merge_atomic(int(merge_log_id))
 
+    @serialized_wipe
     def wipe(self, scopes: list[str], *, backup_dir: Optional[Path] = None) -> dict[str, Any]:
         """Clear selected memory scopes. Optional backup of SQLite before wipe."""
         allowed = {
@@ -668,6 +709,7 @@ class MemoryHub:
                 out["ltm"] = 0
         return {"deleted": out, "backup": backup_path, "chroma_backup": chroma_backup}
 
+    @guarded_write("diary")
     def add_diary_note(
         self,
         text: str,
@@ -676,14 +718,24 @@ class MemoryHub:
         emotion: Optional[str] = None,
         meta: Optional[dict[str, Any]] = None,
         ts: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        provenance: Optional[str] = None,
+        freshness: Optional[str] = None,
+        dedupe_key: Optional[str] = None,
     ) -> int:
         return self.sqlite.add_diary_note(
-            text=text, source=source, emotion=emotion, meta=meta, ts=ts
+            text=text, source=source, emotion=emotion, meta=meta, ts=ts,
+            owner_id=owner_id, channel_id=channel_id, provenance=provenance,
+            freshness=freshness, dedupe_key=dedupe_key,
         )
 
-    def list_diary_notes(self, *, limit: int = 20, newest_first: bool = True) -> list[dict[str, Any]]:
-        return self.sqlite.list_diary_notes(limit=limit, newest_first=newest_first)
+    def list_diary_notes(self, *, limit: int = 20, newest_first: bool = True,
+                         owner_id: Optional[str] = None, channel_id: Optional[str] = None) -> list[dict[str, Any]]:
+        return self.sqlite.list_diary_notes(limit=limit, newest_first=newest_first,
+                                            owner_id=owner_id, channel_id=channel_id)
 
+    @guarded_write("journal")
     def add_journal_entry(
         self,
         text: str,
@@ -693,9 +745,15 @@ class MemoryHub:
         meta: Optional[dict[str, Any]] = None,
         ts: Optional[str] = None,
         publish_event: bool = True,
+        owner_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        provenance: Optional[str] = None,
+        freshness: Optional[str] = None,
     ) -> int:
         row_id = self.sqlite.add_journal_entry(
-            text=text, title=title, kind=kind, meta=meta, ts=ts
+            text=text, title=title, kind=kind, meta=meta, ts=ts,
+            owner_id=owner_id, channel_id=channel_id, provenance=provenance,
+            freshness=freshness,
         )
         if publish_event and self.event_bus is not None:
             try:
@@ -711,10 +769,13 @@ class MemoryHub:
         return row_id
 
     def list_journal_entries(
-        self, *, limit: int = 50, newest_first: bool = True
+        self, *, limit: int = 50, newest_first: bool = True,
+        owner_id: Optional[str] = None, channel_id: Optional[str] = None
     ) -> list[dict[str, Any]]:
-        return self.sqlite.list_journal_entries(limit=limit, newest_first=newest_first)
+        return self.sqlite.list_journal_entries(limit=limit, newest_first=newest_first,
+                                                owner_id=owner_id, channel_id=channel_id)
 
+    @guarded_write("working_memory")
     def save_wm_snapshot(
         self,
         content: str,
@@ -919,10 +980,21 @@ class MemoryHub:
     def delete_journal_entry(self, entry_id: int) -> bool:
         return self.sqlite.delete_journal_entry(entry_id)
 
-    def diary_recent_text(self, limit: int = 10) -> str:
+    def diary_recent_text(
+        self, limit: int = 10, *, owner_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
+    ) -> str:
         """Diary for prompt: Neyra first-person notes only (skip session_archive)."""
         lim = max(1, min(int(limit), 8))
-        rows = self.list_diary_notes(limit=max(lim * 3, lim), newest_first=True)
+        try:
+            rows = self.list_diary_notes(
+                limit=max(lim * 3, lim), newest_first=True,
+                owner_id=owner_id, channel_id=channel_id,
+            )
+        except TypeError:
+            if owner_id is not None or channel_id is not None:
+                raise
+            rows = self.list_diary_notes(limit=max(lim * 3, lim), newest_first=True)
         if not rows:
             return ""
         rows = list(reversed(rows))

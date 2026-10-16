@@ -134,9 +134,26 @@ MIGRATION_004_SQL = """
 -- see SqliteStore._migrate_v4
 """
 
+MIGRATION_005_SQL = """
+-- Memory Hub ownership and provenance. Nullable columns preserve legacy rows.
+ALTER TABLE diary_notes ADD COLUMN owner_id TEXT;
+ALTER TABLE diary_notes ADD COLUMN channel_id TEXT;
+ALTER TABLE diary_notes ADD COLUMN provenance TEXT;
+ALTER TABLE diary_notes ADD COLUMN freshness TEXT;
+ALTER TABLE diary_notes ADD COLUMN dedupe_key TEXT;
+ALTER TABLE journal_entries ADD COLUMN owner_id TEXT;
+ALTER TABLE journal_entries ADD COLUMN channel_id TEXT;
+ALTER TABLE journal_entries ADD COLUMN provenance TEXT;
+ALTER TABLE journal_entries ADD COLUMN freshness TEXT;
+CREATE INDEX IF NOT EXISTS idx_diary_scope ON diary_notes(owner_id, channel_id, ts);
+CREATE INDEX IF NOT EXISTS idx_journal_scope ON journal_entries(owner_id, channel_id, ts);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_diary_dedupe ON diary_notes(dedupe_key) WHERE dedupe_key IS NOT NULL;
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001_SQL),
     (2, MIGRATION_002_SQL),
     (3, MIGRATION_003_SQL),
     (4, MIGRATION_004_SQL),
+    (5, MIGRATION_005_SQL),
 ]

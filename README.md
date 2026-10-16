@@ -4,7 +4,7 @@
 
 # Neyra - AIAssist
 
-Modular personal AI assistant: local **Neyra Server** + optional Windows control client.
+Modular personal AI assistant: local **Neyra Server** + planned Windows/Linux control client.
 
 **Repository:** [github.com/ebluffy/Neyra-AIAssist](https://github.com/ebluffy/Neyra-AIAssist)
 
@@ -18,7 +18,7 @@ Modular personal AI assistant: local **Neyra Server** + optional Windows control
 - Plugins under `server/modules/` (`discord`, `local_voice`, template `000EXAMPLE`)
 - Server web dashboard in `server/dashboard/` (React + Vite + Tailwind; access-key gate)
 - Dev MCP in `devtools/mcp_server/` (Cursor debug; not part of runtime packages)
-- Product Windows client scaffold in `client/` (Tauri MVP = Stage 3)
+- Product Windows/Linux client scaffold in `client/` (Tauri MVP after server completion; not implemented)
 
 ## Layout
 
@@ -89,7 +89,7 @@ Plugin SDK: [HELP.md](server/modules/000EXAMPLE/HELP.md) · [HELP-RU.md](server/
 
 | Done | Next |
 |------|------|
-| Layout 1b, config layers 1c, dual LLM 1d, Control API Wave 1, dashboard gate | Stage 3 Windows client + domain publish |
+| Layout 1b, config layers 1c, dual LLM 1d, Control API Wave 1, dashboard gate | Server completion, then Windows/Linux client; see PLAN |
 
 ## Support
 

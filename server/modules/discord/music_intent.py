@@ -169,7 +169,9 @@ class MusicRoutePlan:
 
 def plan_music_route(content: str) -> MusicRoutePlan:
     """Pure step 1: decide if classifier is needed (bot inserts LLM call between steps)."""
-    music_candidate = candidate_music_intent(content)
+    # GIF/media requests are not music unless the user explicitly asks to play it.
+    media_only = bool(re.search(r"\b(?:gif|гифк|мем)\b", content, re.IGNORECASE))
+    music_candidate = None if media_only and not has_play_verb(content) else candidate_music_intent(content)
     lyrics_hint = lyrics_request_hint(content)
     soft_music = soft_music_hint(content)
     play_verb = has_play_verb(content)

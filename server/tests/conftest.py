@@ -14,6 +14,11 @@ if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
 
 
+@pytest.fixture(autouse=True)
+def isolate_runtime_data(monkeypatch):
+    monkeypatch.delenv("NEYRA_DATA_DIR", raising=False)
+
+
 @pytest.fixture()
 def data_dir(tmp_path: Path) -> Path:
     d = tmp_path / "data"

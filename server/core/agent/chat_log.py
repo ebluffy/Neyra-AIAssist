@@ -23,7 +23,9 @@ async def append_turn_to_chat_log(
     latency_ms: Optional[float] = None,
 ) -> str:
     """Append user+assistant rows for one turn. Returns turn_id or \"\" on failure."""
-    turn_id = memory_hub.new_turn_id()
+    from core.agent.model_trace import ACTIVE_TRACE
+    trace = ACTIVE_TRACE.get()
+    turn_id = trace.id if trace is not None and not trace.closed else memory_hub.new_turn_id()
     base_meta = dict(meta or {})
     rows = [
         {

@@ -6,6 +6,8 @@ import logging
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
+from .conversation_modes import conversation_mode_hint
+
 logger = logging.getLogger("neyra.agent.de_repeat")
 
 
@@ -18,6 +20,9 @@ async def de_repeat_reply(
     lyrics_marker: str,
     extract_think_blocks: Callable[[str], tuple[str, str]],
     extract_sound_tags: Callable[..., tuple[str, list[str]]],
+    conversation_mode: str = "default",
+    reply_max_tokens: int = 90,
+    persona: str = "",
 ) -> str:
     """
     If the new reply nearly duplicates the previous assistant message,
@@ -41,35 +46,44 @@ async def de_repeat_reply(
     if sim < 0.92:
         return text
 
-    logger.warning("Anti-repeat: похожий ответ (similarity=%.2f), делаю перефраз", sim)
+    logger.warning("Anti-repeat: similar reply (similarity=%.2f), rewriting", sim)
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        rewrite_llm = llm_talk.bind(max_tokens=90, temperature=0.9)
-        resp = await rewrite_llm.ainvoke(
+        rewrite_llm = llm_talk.bind(
+            max_tokens=min(reply_max_tokens, 90) if conversation_mode == "brief" else reply_max_tokens,
+            temperature=0.9,
+        )
+        instruction = (
+            "Rewrite the assistant reply in the user's language: preserve detail, structure, lists, and code, "
+            if conversation_mode != "brief" else
+            "Rewrite the assistant reply in the user's language: keep it short, natural, and without Markdown, "
+        )
+        from core.agent.model_trace import invoke
+        resp = await invoke(None, rewrite_llm,
             [
                 SystemMessage(
                     content=(
-                        "Перефразируй реплику ассистента по-русски: коротко, живо, без markdown, "
-                        "без тегов <think>/<thought>, без копирования той же фразы."
+                        persona + "\n" + instruction + "without <think>/<thought> tags and without copying the same phrase."
+                        + "\n" + conversation_mode_hint(conversation_mode)
                     )
                 ),
                 HumanMessage(
                     content=(
-                        f"Запрос пользователя: {user_message}\n"
-                        f"Предыдущая реплика ассистента: {prev_assistant}\n"
-                        f"Новая реплика-клон: {text}\n"
-                        "Нужна новая формулировка с тем же смыслом."
+                        f"User request: {user_message}\n"
+                        f"Previous assistant reply: {prev_assistant}\n"
+                        f"Duplicate candidate: {text}\n"
+                        "Return a fresh formulation with the same meaning."
                     )
                 ),
-            ]
+            ], lane="talk", purpose="rewrite",
         )
         raw = resp.content if hasattr(resp, "content") else str(resp)
         text_no_think, _ = extract_think_blocks(raw)
-        alt, _ = extract_sound_tags(text_no_think)
+        alt, _ = extract_sound_tags(text_no_think, preserve_line_breaks=True)
         alt = (alt or "").strip()
         if alt and alt.lower() != prev_assistant.lower():
             return alt
     except Exception as e:
-        logger.warning("Anti-repeat перефраз не удался: %s", e)
+        logger.warning("Anti-repeat rewrite failed: %s", e)
     return text

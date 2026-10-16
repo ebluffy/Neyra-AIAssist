@@ -15,6 +15,13 @@ Official Python MCP SDK (`mcp` package): connect Cursor (or any MCP client) to N
 | `neyra_write_config` | `POST /v1/config/update` — only allow-listed keys |
 | `neyra_inspect_memory` | `GET /v1/debug/memory` — STM + stats + RAG |
 
+STM is reported as bounded `short_term_windows` by owner/channel, using the
+same snapshot as `/v1/memory/short` (50 windows, 20 messages per window, 4000
+characters per message, 24000 total). `short_term_messages` is retained as a
+flattened compatibility view. Inspection outside a chat turn includes scoped
+history; it does not imply that those windows form one model prompt. Maintainer
+or admin access is required.
+
 ### Lifecycle tool (`neyra_lifecycle`)
 
 Disabled by default. The API returns **403** unless either:

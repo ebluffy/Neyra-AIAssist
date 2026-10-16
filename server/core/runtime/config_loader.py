@@ -207,7 +207,14 @@ def validate_config_schema(cfg: dict[str, Any]) -> list[str]:
             if not str(talk.get("provider") or "").strip():
                 errors.append("llm.talk_model.provider: expected non-empty str")
 
-    _opt_dict("agent")
+    agent_cfg = _opt_dict("agent")
+    if agent_cfg is not None and "conversation_mode" in agent_cfg:
+        from core.agent.conversation_modes import conversation_mode_hint
+
+        try:
+            conversation_mode_hint(agent_cfg["conversation_mode"])
+        except ValueError as e:
+            errors.append(str(e))
     _opt_dict("voice")
     _opt_dict("backup")
     _opt_dict("external_storage")

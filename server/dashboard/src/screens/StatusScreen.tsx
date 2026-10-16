@@ -13,6 +13,7 @@ import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
 import { waitForCoreRestart } from '../lib/wait-for-core-restart'
 import { Link } from 'react-router-dom'
+import { ModelActivity } from '../components/ModelActivity'
 
 function fmtNum(v: unknown): string {
   if (v == null || v === '') return '—'
@@ -139,16 +140,21 @@ export function StatusScreen() {
   const restQ = useQuery({
     queryKey: ['status', 'rest'],
     queryFn: async () => {
-      const [b, p, m] = await Promise.all([
-        apiGet<ApiEnvelope<BalanceData>>('/v1/llm/balance'),
+      const [p, m] = await Promise.all([
         apiGet<ApiEnvelope<{ plugins: PluginRow[] }>>('/v1/plugins'),
         apiGet<ApiEnvelope<{ roles?: Record<string, { role?: string; provider?: string; model?: string }> }>>(
           '/v1/llm/models',
         ),
       ])
-      return { balance: b.data, plugins: p.data.plugins ?? [], models: m.data }
+      return { plugins: p.data.plugins ?? [], models: m.data }
     },
     refetchInterval: pollOk ? 60_000 : false,
+  })
+  const balanceQ = useQuery({
+    queryKey: ['status', 'balance'],
+    queryFn: async () => (await apiGet<ApiEnvelope<BalanceData>>('/v1/llm/balance')).data,
+    refetchInterval: pollOk ? 60_000 : false,
+    retry: false,
   })
   const historyQ = useQuery({
     queryKey: ['status', 'health-history'],
@@ -181,14 +187,14 @@ export function StatusScreen() {
   })
 
   const health = healthQ.data ?? null
-  const balance = restQ.data?.balance ?? null
+  const balance = balanceQ.data ?? null
   const plugins = restQ.data?.plugins ?? []
   const models = restQ.data?.models ?? null
   const loading = healthQ.isLoading || restQ.isLoading
   const load = useCallback(async () => {
     setError(null)
-    await Promise.all([healthQ.refetch(), restQ.refetch(), historyQ.refetch(), auditQ.refetch()])
-  }, [healthQ, restQ, historyQ, auditQ])
+    await Promise.all([healthQ.refetch(), restQ.refetch(), balanceQ.refetch(), historyQ.refetch(), auditQ.refetch()])
+  }, [healthQ, restQ, balanceQ, historyQ, auditQ])
 
   async function softRestart() {
     setRestartConfirmOpen(false)
@@ -370,7 +376,7 @@ export function StatusScreen() {
               </span>
             </p>
           )}
-          {loading && balance == null ? (
+          {balanceQ.error ? <ErrorState error={balanceQ.error} onRetry={() => void balanceQ.refetch()} /> : balanceQ.isLoading && balance == null ? (
             <div className="stack-sm">
               <Skeleton className="h-16" />
               <Skeleton className="h-10" />
@@ -397,7 +403,7 @@ export function StatusScreen() {
 
       <div className="card">
         <div className="card-header">
-          <span className="card-title">Модели (роли)</span>
+          <span className="card-title">Настроенные модели</span>
         </div>
         <div className="grid-2">
           {loading && models == null && (
@@ -424,6 +430,8 @@ export function StatusScreen() {
           ))}
         </div>
       </div>
+
+      <ModelActivity polling={pollOk} />
 
       <div className="card">
         <div className="card-header">

@@ -84,28 +84,73 @@ class ShortTermMemory:
 
     def __init__(self, max_messages: int = 10):
         self.max_messages = max_messages
-        self._history: list[dict] = []  # [{"role": "user"|"assistant", "content": "..."}]
+        from collections import OrderedDict
+        self._windows = OrderedDict()
+        self._legacy = []
+        self._lock = threading.RLock()
+
+    def _scope(self):
+        from core.agent.model_trace import ACTIVE_TRACE
+        trace = ACTIVE_TRACE.get()
+        return (trace.memory_owner_id or trace.user_id, trace.channel_id) if trace is not None else None
+
+    @property
+    def _history(self):
+        scope = self._scope()
+        if scope is None:
+            return self._legacy
+        if scope not in self._windows:
+            self._windows[scope] = []
+        self._windows.move_to_end(scope)
+        while len(self._windows) > 200:
+            self._windows.popitem(last=False)
+        return self._windows[scope]
+
+    @_history.setter
+    def _history(self, value):
+        scope = self._scope()
+        if scope is None:
+            self._legacy = value
+        else:
+            self._windows[scope] = value
+
+    def windows(self):
+        with self._lock:
+            return [{"owner_id": owner, "channel_id": channel, "messages": list(history)}
+                    for (owner, channel), history in self._windows.items()]
+
+    def clear_scope(self, owner_id, channel_id):
+        with self._lock:
+            self._windows.pop((owner_id, channel_id), None)
+            self._legacy.clear()
 
     def add(self, role: str, content: str) -> None:
-        self._history.append({"role": role, "content": content})
-        # Обрезаем до max_messages (всегда пары)
-        if len(self._history) > self.max_messages:
-            self._history = self._history[-self.max_messages:]
+        with self._lock:
+            self._history.append({"role": role, "content": content})
+            if len(self._history) > self.max_messages:
+                self._history = self._history[-self.max_messages:]
 
     def get_history(self) -> list[dict]:
-        return list(self._history)
+        with self._lock:
+            return list(self._history)
 
     def clear(self) -> None:
-        self._history.clear()
+        with self._lock:
+            if self._scope() is None:
+                self._windows.clear()
+            self._history.clear()
 
     def trim_to_half(self) -> None:
         """Обрезает историю до половины — используется при переполнении контекста."""
-        half = max(2, len(self._history) // 2)
-        self._history = self._history[-half:]
-        logger.info(f"ShortTermMemory обрезана до {len(self._history)} сообщений")
+        with self._lock:
+            half = max(2, len(self._history) // 2)
+            self._history = self._history[-half:]
 
     def __len__(self) -> int:
-        return len(self._history)
+        with self._lock:
+            if self._scope() is None:
+                return len(self._legacy) + sum(len(history) for history in self._windows.values())
+            return len(self._history)
 
 
 # ─── Долгосрочная память (ChromaDB RAG) ──────────────────────────────────────
@@ -367,7 +412,7 @@ class LongTermMemory:
                 typ = str(m.get("type") or "").strip().lower()
                 owner = str(m.get("user_id") or "").strip()
                 # Shared knowledge only; digests/dialogs require matching owner.
-                if owner == uid or typ == "knowledge":
+                if owner == uid or (typ == "knowledge" and not owner):
                     out.append(doc)
                 elif not used_where and not owner and typ in ("", "dialog", "chat"):
                     # Ambiguous legacy dialog without user_id — skip when scoping
@@ -898,6 +943,8 @@ class NeyraDiary:
                 emotion=str(emo)[:500] if emo else None,
                 meta=meta,
                 ts=entry["timestamp"],
+                owner_id=(meta or {}).get("user_id"),
+                channel_id=(meta or {}).get("channel_id"),
             )
             return True
         except Exception as e:

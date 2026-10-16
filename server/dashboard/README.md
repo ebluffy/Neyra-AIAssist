@@ -33,7 +33,19 @@ npm run build
 
 Then start the server from `server/` (`python main.py`). Open `http://127.0.0.1:8787/`.
 
-## Docs
+## Offline browser integration
+
+`npm run test:e2e` starts a separate backend on localhost:18787 and Vite on :5173.
+The backend uses temporary SQLite/configuration and deterministic LLM substitutes;
+it never loads runtime YAML or `.env`, logs into Discord, or calls real providers.
+Install `server/requirements-dev.txt` and the minimal API dependencies from CI.
+Set `NEYRA_E2E_PYTHON` to the dev interpreter (for example the absolute path to
+`server/.venv/bin/python`); the default is `python`. Install Playwright Chromium.
+The suite covers mode persistence into actual prompts, model reports, errors,
+keyboard input, themes, mobile layout, module toggle/invoke, people creation,
+backup, and a restart request whose process-exit action is stubbed.
+
+## Documentation links
 
 - RU: [docs/ru/architecture/web-ui.md](../../docs/ru/architecture/web-ui.md)
 - EN: [docs/en/architecture/web-ui.md](../../docs/en/architecture/web-ui.md)

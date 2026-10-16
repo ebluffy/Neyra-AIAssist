@@ -23,6 +23,14 @@ def test_valid_incoming_trace_id_accepted(client, auth_headers):
     assert r.headers.get("x-trace-id") == tid
 
 
+def test_generated_trace_id_matches_body_and_is_unique_per_request(client, auth_headers):
+    responses = [client.get("/v1/meta", headers=auth_headers["viewer"]) for _ in range(2)]
+    for response in responses:
+        assert response.status_code == 200
+        assert response.json()["trace_id"] == response.headers["x-trace-id"]
+    assert responses[0].json()["trace_id"] != responses[1].json()["trace_id"]
+
+
 def test_invalid_trace_id_replaced(client, auth_headers):
     bad = "bad tid with spaces!!"
     r = client.get("/v1/meta", headers={**auth_headers["viewer"], "x-trace-id": bad})

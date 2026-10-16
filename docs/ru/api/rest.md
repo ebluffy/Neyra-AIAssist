@@ -1,6 +1,48 @@
 # REST Endpoints
 
+Удаление дневника/журнала в Control API является **глобальным действием admin**:
+удаление по ID и очистка раздела не ограничиваются владельцем/каналом. Viewer
+и maintainer не имеют права удаления. Необязательные owner/channel-фильтры
+хранилища служат внутренней фильтрации, а не пользовательской авторизации
+этих административных endpoints.
+
+## Контекст Discord и отчёт о моделях (3a)
+
+`POST /v1/chat` и сообщение `chat` в `/v1/ws/chat` принимают необязательный `discord_context`. Старые запросы без поля совместимы.
+
+```json
+{
+  "text": "Привет",
+  "discord_context": {
+    "source": "discord",
+    "current_user": {"id": "123", "handle": "example", "display_name": "Example"},
+    "channel": {"id": "77", "name": "general", "type": "text"},
+    "guild": {"id": "88", "name": "Example guild"},
+    "message": {"id": "42", "content": "<@999> Привет", "mentions": [{"id": "999"}], "reference": null},
+    "addressed_to_bot": true,
+    "response_target": {"channel_id": "77", "message_id": "42"}
+  }
+}
+```
+
+Адаптер собирает контекст до удаления обращения к боту. В DM `guild=null`; неизвестный автор reference остаётся `null`. При переданном контексте ID автора/канала и display name берутся из него, а не из старых полей запроса. Имена/текст — данные, не системные инструкции. Target должен совпадать с текущим каналом/сообщением. Неизвестные поля, неверные типы и превышения ограничений отклоняются.
+
+В промпты передаётся отдельный human-блок метаданных без `message.content`, максимум с 10 упоминаниями. Полный типизированный объект остаётся в pipeline. При streaming-повторе с урезанным контекстом блок убирается. Discord запрещает произвольные user/role/everyone-пинги из ответа модели; явный reply может упомянуть автора исходного сообщения.
+
+REST `data.model_trace` и финальный WS `done.model_trace` содержат `turn_id`, UTC `timestamp`, `status`, `without_llm` и `calls[]`. Вызов содержит `lane`, `purpose`, `attempt`, `provider`, `configured_model`, `reported_model`, `has_images`, `status`. Отсутствующий ID провайдера — `reported_model=null`, а не подстановка настроенной модели. `attempt` считает вызовы pipeline, а не внутренние повторы SDK. Brain-native vision отмечается на вызове brain. Отчёт успешного хода сохраняется в SQLite chat metadata; завершённые/ошибочные/отменённые ходы публикуются как `llm.turn.completed`.
+
+`GET /v1/llm/activity?limit=20` доступен viewer/maint/admin; limit 1–100. Возвращает `data.items`, новые первыми, из буфера последних 200 ходов. Отчёты не содержат текстов диалога, user/channel IDs, ключей и внутреннего мышления. Буфер очищается при рестарте. Discord `/model` приватно показывает последний собственный ход в текущем канале без вызова LLM.
+
 ## Breaking changes (API 1.1.0)
+
+`GET /v1/memory/short` (maint+) возвращает ограниченные окна фактической истории
+по owner/channel, без скрытых рассуждений. `GET /v1/memory/long` (maint+)
+возвращает до 200 фактов профилей с источником (до 20 на профиль, первые 50
+профилей), не полный экспорт Chroma. Дневник автоматический; журнал вынесен в
+System → события памяти. Admin delete/wipe API сохранены. Activity также
+включает отдельные background reports (`kind`, nullable `parent_turn_id`),
+тайминги и usage при наличии. Хранятся отдельно 200 ходов и 200 jobs; выдача
+activity объединяет их по времени. Подробнее — [model trace](../../MODEL_TRACE.md).
 
 - Env: `INTERNAL_API_*` → `API_*` (старт падает, если старые имена заданы; dual-read нет).
 - `POST /v1/plugins/{id}/reload|restart` — on_demand: hot re-import; resident: soft-restart ядра (`restart_scheduled`).

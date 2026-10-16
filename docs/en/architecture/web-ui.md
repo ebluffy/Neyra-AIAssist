@@ -28,6 +28,8 @@ HTTP lives in **`server/core/api/`**. Bind / public URL / dashboard flags: **`se
 
 ## Runtime config
 
+Settings → Speech includes the conversation-mode selector with save, discard, and inline errors. Status separates configured roles from recent call evidence, displaying requested and provider-reported model IDs independently. Missing model evidence stays unknown. Balance failures do not hide model data. Activity history is process-local and clears on restart.
+
 - `GET /v1/config/runtime` — allowlisted values (no `.env` secrets).
 - `POST /v1/config/update` — write the same keys.
 

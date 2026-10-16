@@ -78,6 +78,8 @@ class TurnPrep:
     include_appearance: bool
     pre_context: str
     brain_sys: str
+    discord_context: Any = None
+    brain_data: str = ""
 
 
 async def prepare_turn(
@@ -92,9 +94,14 @@ async def prepare_turn(
     lyrics_marker: str,
     log_lane: str = "chat",
     avatar_url: Optional[str] = None,
+    discord_context=None,
 ) -> TurnPrep:
     """Gather RAG/people/tools/vision inputs and build brain system prompt."""
     internal_uid = agent._resolve_internal_user_id(discord_user_id, username)
+    from core.agent.model_trace import ACTIVE_TRACE
+    trace = ACTIVE_TRACE.get()
+    if trace is not None:
+        trace.memory_owner_id = internal_uid
     await agent._ensure_mcp()
 
     try:
@@ -132,7 +139,7 @@ async def prepare_turn(
     people_active, people_others = agent._split_people_context_for_prompt(
         mentioned, username, discord_user_id
     )
-    diary_ctx = agent.memory_hub.diary_recent_text(limit=6)
+    diary_ctx = agent.memory_hub.diary_recent_text(limit=6, owner_id=internal_uid, channel_id=channel_id)
     web_ctx = agent._handle_websearch_trigger(user_message)
     tool_ctx = agent._collect_tool_context(user_message)
     speaker_label = agent._resolve_speaker_label(username, discord_user_id, author_display_name)
@@ -163,7 +170,8 @@ async def prepare_turn(
     if vplan.need_talk_caption:
         try:
             attached_caption = await agent._caption_vision_images(
-                user_message, vision_images, speaker_label=speaker_label
+                user_message, vision_images, speaker_label=speaker_label,
+                **({"discord_context": discord_context} if discord_context is not None else {}),
             )
         except Exception as e:
             logger.warning("VL caption (%s): ошибка — %s", log_lane, e)
@@ -190,6 +198,7 @@ async def prepare_turn(
         agent,
         internal_user_id=internal_uid,
         user_message=user_message,
+        channel_id=channel_id,
     )
     if pre_context:
         logger.debug(
@@ -198,21 +207,9 @@ async def prepare_turn(
             "on",
         )
 
-    brain_sys = agent._build_brain_system_prompt(
-        extra_memories=memories,
-        people_context_active=people_active,
-        people_context_mentioned=people_others,
-        diary_context=diary_ctx,
-        username=speaker_label,
-        web_context=web_ctx,
-        tool_context=tool_ctx,
-        mcp_tools_catalog=mcp_catalog,
-        last_image_context=last_img_ctx,
-        working_memory_context=wm_snip,
-        pre_context=pre_context if lane_wants_pre_context(agent.config, "brain") else "",
-    )
-
-    return TurnPrep(
+    brain_sys = agent._build_brain_system_prompt()
+    prep = TurnPrep(
+        discord_context=discord_context,
         internal_uid=internal_uid,
         memories=memories,
         mentioned=mentioned,
@@ -236,3 +233,7 @@ async def prepare_turn(
         pre_context=pre_context if lane_wants_pre_context(agent.config, "talk") else "",
         brain_sys=brain_sys,
     )
+    from core.agent.talk_messages import turn_context_data
+    from dataclasses import replace
+    prep.brain_data = turn_context_data(replace(prep, pre_context=pre_context if lane_wants_pre_context(agent.config, "brain") else ""))
+    return prep

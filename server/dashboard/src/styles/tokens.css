@@ -59,6 +59,7 @@
   --cyan:      #0e7490;
   --cyan-dim:  #0e7490;
   --accent-fg: #ffffff;
+  --warn-fg:   #92400e;
   --pink:      #db2777;
   --blue:      #2563eb;
   --emerald:   #059669;
@@ -220,7 +221,7 @@ body::before {
 .sidebar {
   width: 232px;
   min-height: 100vh;
-  background: linear-gradient(180deg, var(--surface) 0%, #0e1524 100%);
+  background: linear-gradient(180deg, var(--surface) 0%, var(--bg) 100%);
   border-right: 1px solid var(--border);
   box-shadow: 1px 0 0 oklch(1 0 0 / 0.03);
   display: flex;
@@ -748,14 +749,14 @@ body::before {
 .btn-warn {
   background: rgba(245,158,11,0.1);
   border-color: rgba(245,158,11,0.3);
-  color: #fcd34d;
+  color: var(--warn-fg, #fcd34d);
 }
 .btn-warn:hover { background: rgba(245,158,11,0.18); }
 
 .btn-cyan {
   background: rgba(34,211,238,0.1);
   border-color: rgba(34,211,238,0.3);
-  color: #67e8f9;
+  color: var(--cyan);
 }
 .btn-cyan:hover { background: rgba(34,211,238,0.18); }
 

@@ -7,6 +7,10 @@
 - Когда токены заданы: `viewer` — чтение; `maint+` — soft-restart; `admin` — чат/мутации. Минимум прав.
 - **Gate дашборда:** отдельный ключ доступа (хеш PBKDF2 в `server/data/dashboard_auth.sqlite`, минимум **32** символа при setup). Первый `POST /v1/dashboard/auth/setup` — пока ключ не задан; без Bearer — только с **консольного** loopback (нет `CF-Connecting-IP`/`X-Real-IP`); с публичного края — только primary `API_TOKEN` (не viewer/maint). Login/setup выдаёт короткоживущий **session token** (SPA — `sessionStorage`); `_resolve_role` принимает сессию как **admin** наряду с `API_TOKEN` / viewer / maint. Неудачные login — rate-limit по IP.
 
+Dashboard login и rotate используют общий счётчик неудачных проверок ключа по IP: пять ошибок в скользящем окне 300 секунд, затем 429 **до** проверки ключа, даже если ключ верный. Существующая сессия при lockout остаётся действительной. Счётчик хранится в памяти процесса и сбрасывается при его рестарте.
+
+`POST /v1/dashboard/auth/rotate` требует действительную dashboard-сессию Bearer и `current_key` / `new_key`; старые сессии отзываются, новая выдаётся в `data.session_token`. Ответ содержит `trace_id` и `data.rotated: true`. Ошибка текущего ключа не должна очищать сессию вкладки. Logout требует действительную сессию; повторный logout с отозванным токеном возвращает 401. Logout-all принимает admin API token или действительную dashboard-сессию.
+
 ## Секреты
 
 - Секреты только в `server/.env`; `apply_env_secrets` подставляет при старте. **Не коммить** `server/config.yaml`, `server/config/*.yaml`, plugin `config.yaml`, `.env`.
@@ -14,6 +18,8 @@
 - Не логируй `Authorization` и сырые API keys.
 
 ## Изоляция памяти
+
+- `discord_context.current_user.id` и `channel.id` определяют scope переданного Discord-хода; display name не является идентификатором. `/model` читает только собственный последний ход в текущем канале. Viewer может читать `/v1/llm/activity`, но отчёты не содержат owner/channel IDs и содержимого диалога.
 
 - Хронологический `recall_chat` / `POST /v1/memory/chat/recall` **требуют** `user_id` и/или `channel_id`.
 - Семантический `search_memory` / `POST /v1/memory/search` **требуют** `user_id` (диалоги и `session_archive_digest` — только owner; общий shared — лишь `type=knowledge`). Аргумент `user_id` у tool игнорируется в пользу turn-scope (`ContextVar`).

@@ -5,8 +5,16 @@ llm:
   providers:
     aihope:
       base_url: "https://aihope.fun/v1"
+      # Enable only if the gateway supports stream_options.include_usage.
+      capabilities:
+        supports_stream_usage: false
     openrouter:
       base_url: "https://openrouter.ai/api/v1"
+
+  # Optional plugin generation role. If omitted, uses brain_model/provider.
+  # coder_model:
+  #   provider: aihope
+  #   model: "your-coder-model"
 
   talk_model:
     provider: openrouter
@@ -62,6 +70,7 @@ llm:
     anchor_plan: "PLAN:"
     anchor_reply: "SAY:"
 
+  # Deprecated, ignored: use memory.diary_after_turn (one canonical scoped diary job).
   async_reflection:
     enabled: false
     temperature: 0.6

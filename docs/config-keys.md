@@ -25,10 +25,11 @@
 | `assistant.appearance_path` | str | "prompts/appearance.md" | core/agent/persona.py | `server/config.yaml` | — | current |
 | `assistant.appearance_always` | bool | False | core/agent/persona.py | `server/config.yaml` | — | current |
 | `assistant.appearance_max_chars` | int | 400 | core/agent/persona.py | `server/config.yaml` | — | current |
-| `assistant.persona_in_brain` | bool | True | core/agent/persona.py | `server/config.yaml` | — | current |
-| `assistant.persona_brain_max_chars` | int | 600 | core/agent/persona.py | `server/config.yaml` | — | current |
+| `assistant.persona_in_brain` | bool | False | core/agent/persona.py | `server/config.yaml` | — | deprecated, ignored; talk-only persona |
+| `assistant.persona_brain_max_chars` | int | 600 | core/agent/persona.py | `server/config.yaml` | — | deprecated, ignored |
 | `assistant.system_prompt` | str | see config.example.yaml | core/agent/persona.py | `server/config.yaml` | — | current |
 | `llm.providers.aihope.base_url` | str | "https://aihope.fun/v1" | core/llm/profile.py + secrets (.env) | `server/config/llm.yaml` | — | current |
+| `llm.providers.aihope.capabilities.supports_stream_usage` | bool | False | core/llm/profile.py + agent/llm_setup.py | `server/config/llm.yaml` | — | opt-in per compatible provider |
 | `llm.providers.openrouter.base_url` | str | "https://openrouter.ai/api/v1" | core/llm/profile.py + secrets (.env) | `server/config/llm.yaml` | — | current |
 | `llm.talk_model.provider` | str | "openrouter" | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
 | `llm.talk_model.model` | str | "qwen/qwen3.8-27b:free" | core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
@@ -73,12 +74,13 @@
 | `llm.micro_planning.end_tag` | str | "[/PLAN]" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
 | `llm.micro_planning.anchor_plan` | str | "PLAN:" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
 | `llm.micro_planning.anchor_reply` | str | "SAY:" | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.async_reflection.enabled` | bool | False | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.async_reflection.temperature` | float | 0.6 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.async_reflection.max_tokens` | int | 1200 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.async_reflection.timeout_seconds` | int | 60 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.async_reflection.max_retries` | int | 1 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
-| `llm.async_reflection.max_note_chars` | int | 1200 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | current |
+| `llm.async_reflection.enabled` | bool | False | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | deprecated, ignored; use memory.diary_after_turn |
+| `llm.async_reflection.temperature` | float | 0.6 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | deprecated, ignored; use memory.diary_after_turn |
+| `llm.async_reflection.max_tokens` | int | 1200 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | deprecated, ignored; use memory.diary_after_turn |
+| `llm.async_reflection.timeout_seconds` | int | 60 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | deprecated, ignored; use memory.diary_after_turn |
+| `llm.async_reflection.max_retries` | int | 1 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | deprecated, ignored; use memory.diary_after_turn |
+| `llm.async_reflection.max_note_chars` | int | 1200 | core/llm/, core/agent/llm_setup.py | `server/config/llm.yaml` | — | deprecated, ignored; use memory.diary_after_turn |
+| `agent.conversation_mode` | str | "default" | core/agent/ | `server/config/agent.yaml` | — | current |
 | `agent.fast_path.enabled` | bool | False | core/agent/ | `server/config/agent.yaml` | — | current |
 | `agent.fast_path.min_confidence` | float | 1.0 | core/agent/ | `server/config/agent.yaml` | — | current |
 | `agent.fast_path.intents` | list | see agent.example.yaml | core/agent/ | `server/config/agent.yaml` | — | current |
@@ -91,6 +93,7 @@
 | `memory.diary_path` | str | "./data/memory/neyra_diary.jsonl" | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
 | `memory.thoughts_log` | str | "./data/memory/thoughts.log" | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
 | `memory.diary_max_entries` | int | 5000 | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
+| `memory.diary_after_turn` | bool | True | core/agent/memory_jobs.py | `server/config/memory.yaml` | — | background diary per completed turn |
 | `memory.diary_hourly_enabled` | bool | True | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
 | `memory.diary_hourly_min_lines` | int | 6 | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
 | `memory.rag_enabled` | bool | True | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
@@ -129,10 +132,10 @@
 | `memory.session_archive.max_window_chars` | int | 8000 | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
 | `memory.session_archive.max_diary_chars` | int | 1200 | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
 | `memory.emotional_layer.enabled` | bool | False | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
-| `memory.emotional_layer.diary_after_turn` | bool | True | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
-| `memory.emotional_layer.diary_emotion_min_interval_seconds` | int | 90 | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
-| `memory.emotional_layer.max_diary_emotion_chars` | int | 480 | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
-| `memory.emotional_layer.diary_emotion_max_tokens` | int | 350 | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
+| `memory.emotional_layer.diary_after_turn` | bool | True | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | deprecated, ignored; use memory.diary_after_turn |
+| `memory.emotional_layer.diary_emotion_min_interval_seconds` | int | 90 | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | deprecated, ignored; use memory.diary_after_turn |
+| `memory.emotional_layer.max_diary_emotion_chars` | int | 480 | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | deprecated, ignored; use memory.diary_after_turn |
+| `memory.emotional_layer.diary_emotion_max_tokens` | int | 350 | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | deprecated, ignored; use memory.diary_after_turn |
 | `memory.emotional_layer.ltm_emotion_sync` | bool | False | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
 | `memory.emotional_layer.ltm_emotion_max_tokens` | int | 180 | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |
 | `memory.ltm_auto_prune.enabled` | bool | True | core/memory/, apply_resolved_memory_paths | `server/config/memory.yaml` | — | current |

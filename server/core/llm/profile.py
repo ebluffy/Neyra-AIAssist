@@ -75,6 +75,7 @@ _DEFAULT_CAPABILITIES: dict[str, bool] = {
     "supports_stream": True,
     "supports_vision": True,
     "supports_tool_calls": False,
+    "supports_stream_usage": False,
 }
 
 
@@ -433,6 +434,10 @@ def resolve_openai_compatible_connection(
     raw_caps = llm.get("capabilities")
     if isinstance(raw_caps, dict):
         for k, v in raw_caps.items():
+            if k in _DEFAULT_CAPABILITIES:
+                caps[k] = bool(v)
+    if isinstance(prov_over.get("capabilities"), dict):
+        for k, v in prov_over["capabilities"].items():
             if k in _DEFAULT_CAPABILITIES:
                 caps[k] = bool(v)
 

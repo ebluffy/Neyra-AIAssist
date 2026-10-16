@@ -129,12 +129,11 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     talk_retries = int(cfg.get("max_retries", cfg.get("primary_max_retries", 1)))
     brain_timeout = float(cfg.get("brain_timeout_seconds", cfg.get("timeout_seconds", talk_timeout)))
     brain_retries = int(cfg.get("brain_max_retries", cfg.get("max_retries", talk_retries)))
-    ar_cfg0 = cfg.get("async_reflection") if isinstance(cfg.get("async_reflection"), dict) else {}
     reflection_timeout = float(
-        cfg.get("reflection_timeout_seconds", ar_cfg0.get("timeout_seconds", talk_timeout))
+        cfg.get("reflection_timeout_seconds", talk_timeout)
     )
     reflection_retries = int(
-        cfg.get("reflection_max_retries", ar_cfg0.get("max_retries", talk_retries))
+        cfg.get("reflection_max_retries", talk_retries)
     )
     extra_body: dict[str, Any] = {}
     if "reasoning_enabled" in cfg:
@@ -157,6 +156,8 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "max_retries": talk_retries,
         "model_kwargs": {"extra_body": extra_body} if extra_body else {},
         "default_headers": hdr_talk,
+        "include_response_headers": True,
+        "stream_usage": bool(conn_talk.capabilities.get("supports_stream_usage")),
     }
     talk_kwargs.update(_force_chat_completions(conn_talk.provider))
     agent.llm_talk = ChatOpenAI(**talk_kwargs)
@@ -177,6 +178,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "max_retries": brain_retries,
         "model_kwargs": {"extra_body": extra_body} if extra_body else {},
         "default_headers": hdr_brain,
+        "include_response_headers": True,
     }
     brain_llm_kwargs.update(_force_chat_completions(conn_brain.provider))
     if agent.brain_max_tokens is not None:
@@ -194,6 +196,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "timeout": reflection_timeout,
         "max_retries": reflection_retries,
         "default_headers": hdr_memory,
+        "include_response_headers": True,
     }
     memory_llm_kwargs.update(_force_chat_completions(conn_memory.provider))
     if agent.reflection_max_tokens is not None:
@@ -213,8 +216,6 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     agent.primary_first_token_timeout = float(
         cfg.get("primary_first_token_timeout_seconds", talk_timeout)
     )
-    agent.async_reflection_cfg = cfg.get("async_reflection") or {}
-    agent.async_reflection_enabled = bool(agent.async_reflection_cfg.get("enabled", False))
     agent.micro_planning_cfg = cfg.get("micro_planning") or {}
     agent.micro_planning_enabled = bool(agent.micro_planning_cfg.get("enabled", False))
     agent.micro_plan_mode = str(agent.micro_planning_cfg.get("mode", "tags")).strip().lower()
@@ -249,20 +250,14 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         talk_retries,
     )
     logger.info(
-        "LLM token budgets | reply=%s | brain=%s | lyrics_cap=%s | vision=%s | memory/reflection=%s | async_reflection_note_max=%s",
+        "LLM token budgets | reply=%s | brain=%s | lyrics_cap=%s | vision=%s | memory/reflection=%s",
         agent.reply_max_tokens,
         agent.brain_max_tokens,
         getattr(agent, "lyrics_reply_max_tokens", 0),
         agent.vision_max_tokens,
         agent.reflection_max_tokens,
-        int(agent.async_reflection_cfg.get("max_tokens", 500)),
     )
     logger.info("LLM vision_model id (resolved)=%s @%s", vision_model_id, conn_vision.provider)
-    if agent.async_reflection_enabled:
-        logger.info(
-            "Async reflection включен | memory_model=%s (поведение из async_reflection.*)",
-            memory_model,
-        )
 
     agent.llm_with_tools = agent.llm_brain
     agent.llm_capabilities = dict(conn_talk.capabilities)
@@ -293,6 +288,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
                 timeout=float(cfg.get("vision_timeout_seconds", 180)),
                 model_kwargs={"extra_body": extra_body} if extra_body else {},
                 default_headers=hdr_vision,
+                include_response_headers=True,
                 **_force_chat_completions(conn_vision.provider),
             )
             logger.info("Зрение: VL-модель (%s) — %s", conn_vision.provider, vmodel)

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { BookOpen, Brain, NotebookPen, Plus, Search, Trash2, Users } from 'lucide-react'
+import { BookOpen, Brain, NotebookPen, Plus, Trash2, Users, ScrollText } from 'lucide-react'
+import { ShortMemoryPanel, LongMemoryPanel } from '../components/MemoryLayers'
 import { apiDelete, apiGet, apiPatch, apiPost } from '../api'
 import type { ApiEnvelope, MemoryPolicies, MemoryStats } from '../api'
 import { Button } from '../components/ui/button'
@@ -9,6 +10,7 @@ import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
 import { avatarSrc } from '../lib/avatar'
+import { navigatePanelTabs } from '../lib/panel-tabs'
 
 type MemoryDanger =
   | { kind: 'delete-person'; id: string }
@@ -16,7 +18,6 @@ type MemoryDanger =
   | { kind: 'apply-proposal'; id: number }
   | { kind: 'undo-merge'; id: number }
   | { kind: 'delete-diary'; id: number }
-  | { kind: 'delete-journal'; id: number }
   | { kind: 'wipe'; scopes: string[]; label: string }
   | { kind: 'ltm'; path: '/v1/memory/prune' | '/v1/memory/summarize'; body: Record<string, unknown> }
 
@@ -46,10 +47,9 @@ type MergeProposal = {
   status?: string
 }
 type DiaryNote = Record<string, unknown>
-type JournalEntry = Record<string, unknown>
 
 export function MemoryScreen() {
-  const [tab, setTab] = useState<'overview' | 'people' | 'diary' | 'search' | 'ltm'>('overview')
+  const [tab, setTab] = useState<'overview' | 'people' | 'diary' | 'short' | 'ltm'>('overview')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState('')
@@ -70,13 +70,6 @@ export function MemoryScreen() {
   const [mergeSource, setMergeSource] = useState('')
   const [diary, setDiary] = useState<DiaryNote[]>([])
   const [selectedNote, setSelectedNote] = useState(0)
-  const [journal, setJournal] = useState<JournalEntry[]>([])
-  const [selectedJournal, setSelectedJournal] = useState(0)
-  const [diaryDraft, setDiaryDraft] = useState('')
-  const [journalDraft, setJournalDraft] = useState('')
-  const [journalTitle, setJournalTitle] = useState('')
-  const [searchQ, setSearchQ] = useState('')
-  const [searchHits, setSearchHits] = useState<unknown[] | null>(null)
   const [ltmBusy, setLtmBusy] = useState(false)
   const [ltmMsg, setLtmMsg] = useState<string | null>(null)
   const [pruneDays, setPruneDays] = useState('90')
@@ -96,7 +89,7 @@ export function MemoryScreen() {
     setLoading(true)
     setError(null)
     try {
-      const [m, pol, pe, di, jo, pr, ml] = await Promise.all([
+      const [m, pol, pe, di, pr, ml] = await Promise.all([
         apiGet<ApiEnvelope<MemoryStats>>('/v1/memory/stats'),
         apiGet<ApiEnvelope<MemoryPolicies>>('/v1/memory/policies'),
         apiGet<
@@ -106,7 +99,6 @@ export function MemoryScreen() {
           }>
         >('/v1/memory/people'),
         apiGet<ApiEnvelope<{ notes: DiaryNote[] }>>('/v1/memory/diary?limit=50'),
-        apiGet<ApiEnvelope<{ entries: JournalEntry[] }>>('/v1/memory/journal?limit=50'),
         apiGet<ApiEnvelope<{ proposals: MergeProposal[] }>>('/v1/memory/people/merge-proposals?status=pending'),
         apiGet<ApiEnvelope<{ merges: { id?: number; survivor_id?: string; source_id?: string; undone_at?: string | null }[] }>>(
           '/v1/memory/people/merge-log?limit=10',
@@ -118,7 +110,6 @@ export function MemoryScreen() {
       setPeople(plist)
       setSlugDuplicates(pe.data.slug_duplicates ?? [])
       setDiary(di.data.notes ?? [])
-      setJournal(jo.data.entries ?? [])
       setProposals(pr.data.proposals ?? [])
       setRecentMerges(ml.data.merges ?? [])
       setSelectedPerson((prev) => {
@@ -274,65 +265,17 @@ export function MemoryScreen() {
     }
   }
 
-  async function addDiary() {
-    if (!diaryDraft.trim()) return
-    try {
-      await apiPost('/v1/memory/diary', { text: diaryDraft.trim() })
-      setDiaryDraft('')
-      setStatus('Запись дневника добавлена')
-      await load()
-      setSelectedNote(0)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  async function addJournal() {
-    if (!journalDraft.trim()) return
-    try {
-      await apiPost('/v1/memory/journal', {
-        text: journalDraft.trim(),
-        title: journalTitle.trim() || undefined,
-        kind: 'manual',
-      })
-      setJournalDraft('')
-      setJournalTitle('')
-      setStatus('Запись журнала добавлена')
-      await load()
-      setSelectedJournal(0)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
   async function deleteDiaryNote(id: unknown) {
     const nid = Number(id)
     if (!Number.isFinite(nid)) return
     setDanger({ kind: 'delete-diary', id: nid })
   }
 
-  async function deleteJournalEntry(id: unknown) {
-    const nid = Number(id)
-    if (!Number.isFinite(nid)) return
-    setDanger({ kind: 'delete-journal', id: nid })
-  }
 
   async function runWipe(scopes: string[], label: string) {
     setDanger({ kind: 'wipe', scopes, label })
   }
 
-  async function runSearch() {
-    setError(null)
-    try {
-      const r = await apiPost<ApiEnvelope<{ results?: unknown[]; hits?: unknown[] }>>('/v1/memory/search', {
-        query: searchQ,
-        limit: 20,
-      })
-      setSearchHits(r.data.results ?? r.data.hits ?? [])
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
 
   async function runLtm(path: '/v1/memory/prune' | '/v1/memory/summarize', body: Record<string, unknown>, destructive: boolean) {
     if (destructive) {
@@ -403,11 +346,6 @@ export function MemoryScreen() {
           await load()
           break
         }
-        case 'delete-journal': {
-          await apiDelete(`/v1/memory/journal/${danger.id}`)
-          await load()
-          break
-        }
         case 'wipe': {
           setWipeBusy(true)
           await apiPost('/v1/memory/wipe', { scopes: danger.scopes, confirm: 'WIPE' })
@@ -464,8 +402,6 @@ export function MemoryScreen() {
         }
       case 'delete-diary':
         return { title: 'Удалить запись дневника?', description: 'Запись будет удалена без восстановления.', phrase: 'УДАЛИТЬ' }
-      case 'delete-journal':
-        return { title: 'Удалить запись журнала?', description: 'Запись будет удалена без восстановления.', phrase: 'УДАЛИТЬ' }
       case 'wipe':
         return {
           title: `Очистить ${danger.label}?`,
@@ -505,7 +441,7 @@ export function MemoryScreen() {
     <div className="page-content stack">
       <PageHeader
         title="Память"
-        subtitle="Люди (account-first), дневник, журнал и RAG"
+        subtitle="Короткая: контекст чата · промежуточная: дневник · долгая: сохранённые сведения"
         actions={
           <Button disabled={loading} onClick={() => void load()} type="button" variant="cyan">
             {loading ? 'Обновление…' : 'Обновить'}
@@ -520,14 +456,18 @@ export function MemoryScreen() {
           [
             ['overview', 'Обзор', Brain],
             ['people', 'Люди', Users],
-            ['diary', 'Дневник / журнал', NotebookPen],
-            ['search', 'Поиск RAG', Search],
+            ['short', 'Короткая память', ScrollText],
+            ['diary', 'Промежуточная память', NotebookPen],
             ['ltm', 'Долгая память', BookOpen],
           ] as const
         ).map(([id, label, Icon]) => (
           <button
             key={id}
+            id={`memory-tab-${id}`}
+            aria-controls={`memory-panel-${id}`}
             aria-selected={tab === id}
+            tabIndex={tab === id ? 0 : -1}
+            onKeyDown={navigatePanelTabs}
             className={`panel-tab${tab === id ? ' active' : ''}`}
             onClick={() => setTab(id)}
             role="tab"
@@ -538,6 +478,7 @@ export function MemoryScreen() {
         ))}
       </div>
 
+      <div role="tabpanel" id={`memory-panel-${tab}`} aria-labelledby={`memory-tab-${tab}`} tabIndex={0} className="stack focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
       {tab === 'overview' && (
         <div className="stack">
           <div className="card">
@@ -900,8 +841,10 @@ export function MemoryScreen() {
         </div>
       )}
 
+      {tab === 'short' && <ShortMemoryPanel />}
+      {tab === 'ltm' && <LongMemoryPanel />}
       {tab === 'diary' && (
-        <div className="grid-2">
+        <div className="stack">
           <div className="card">
             <div className="card-header" style={{ justifyContent: 'space-between' }}>
               <span className="card-title" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
@@ -911,13 +854,9 @@ export function MemoryScreen() {
                 Очистить
               </Button>
             </div>
-            <label className="label" style={{ marginBottom: '0.75rem' }}>
-              <span className="label-text">Новая запись</span>
-              <textarea className="textarea" onChange={(e) => setDiaryDraft(e.target.value)} rows={3} value={diaryDraft} />
-            </label>
-            <Button onClick={() => void addDiary()} style={{ marginBottom: '0.85rem' }} type="button">
-              Добавить в дневник
-            </Button>
+            <p className="muted" style={{ marginBottom: '0.85rem' }}>
+              Дневник формируется автоматически после успешной пары сообщения и ответа.
+            </p>
             <div className="stack-sm" style={{ marginBottom: '0.75rem', maxHeight: 180, overflow: 'auto' }}>
               {diary.map((n, i) => (
                 <div key={i} className="row" style={{ gap: 6, alignItems: 'stretch' }}>
@@ -950,86 +889,9 @@ export function MemoryScreen() {
               {diary[selectedNote] ? String(diary[selectedNote].text || JSON.stringify(diary[selectedNote], null, 2)) : '—'}
             </pre>
           </div>
-          <div className="card">
-            <div className="card-header" style={{ justifyContent: 'space-between' }}>
-              <span className="card-title">Журнал ядра ({journal.length})</span>
-              <Button disabled={wipeBusy} onClick={() => void runWipe(['journal'], 'журнал')} size="sm" type="button" variant="warn">
-                Очистить
-              </Button>
-            </div>
-            <label className="label">
-              <span className="label-text">Заголовок</span>
-              <input className="input" onChange={(e) => setJournalTitle(e.target.value)} value={journalTitle} />
-            </label>
-            <label className="label" style={{ marginBottom: '0.75rem' }}>
-              <span className="label-text">Текст</span>
-              <textarea className="textarea" onChange={(e) => setJournalDraft(e.target.value)} rows={3} value={journalDraft} />
-            </label>
-            <Button onClick={() => void addJournal()} style={{ marginBottom: '0.85rem' }} type="button">
-              Добавить в журнал
-            </Button>
-            <div className="stack-sm" style={{ marginBottom: '0.75rem', maxHeight: 180, overflow: 'auto' }}>
-              {journal.map((n, i) => (
-                <div key={i} className="row" style={{ gap: 6, alignItems: 'stretch' }}>
-                  <button
-                    className={`plugin-item${selectedJournal === i ? ' active' : ''}`}
-                    onClick={() => setSelectedJournal(i)}
-                    style={{ flex: 1 }}
-                    type="button"
-                  >
-                    <span style={{ fontSize: '0.8rem' }}>
-                      {String(n.title || n.kind || n.type || n.ts || `Событие ${i + 1}`)}
-                    </span>
-                  </button>
-                  {n.id != null && (
-                    <Button
-                      aria-label={`Удалить запись журнала ${String(n.id)}`}
-                      onClick={() => void deleteJournalEntry(n.id)}
-                      size="sm"
-                      type="button"
-                      variant="secondary"
-                    >
-                      <Trash2 aria-hidden size={13} />
-                    </Button>
-                  )}
-                </div>
-              ))}
-              {journal.length === 0 && <EmptyState icon={BookOpen} title="Пусто" description="Нет записей журнала." />}
-            </div>
-            <pre className="code-block" style={{ maxHeight: 220, overflow: 'auto' }}>
-              {journal[selectedJournal]
-                ? String(journal[selectedJournal].text || JSON.stringify(journal[selectedJournal], null, 2))
-                : '—'}
-            </pre>
-          </div>
         </div>
       )}
 
-      {tab === 'search' && (
-        <div className="card">
-          <div className="card-header">
-            <Search size={15} className="card-icon" />
-            <span className="card-title">Поиск по долгосрочной памяти (RAG)</span>
-          </div>
-          <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.85rem', lineHeight: 1.45 }}>
-            Семантический поиск по Chroma / Hub — не поиск по людям и не полнотекст дневника.
-          </p>
-          <div className="row" style={{ alignItems: 'flex-end', marginBottom: '0.75rem' }}>
-            <label className="label" style={{ flex: 1 }}>
-              <span className="label-text">Запрос</span>
-              <input className="input" onChange={(e) => setSearchQ(e.target.value)} value={searchQ} />
-            </label>
-            <Button onClick={() => void runSearch()} type="button">
-              Искать
-            </Button>
-          </div>
-          {searchHits && (
-            <pre className="code-block" style={{ maxHeight: 320, overflow: 'auto' }}>
-              {JSON.stringify(searchHits, null, 2)}
-            </pre>
-          )}
-        </div>
-      )}
 
       {tab === 'ltm' && (
         <div className="card">
@@ -1122,6 +984,7 @@ export function MemoryScreen() {
         </div>
       )}
 
+      </div>
       <DangerConfirmDialog
         busy={dangerBusy}
         confirmLabel="Подтвердить"

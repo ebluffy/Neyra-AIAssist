@@ -21,6 +21,13 @@ from typing import Any, Optional
 logger = logging.getLogger("neyra.ltm")
 
 
+def _mutate(agent, operation, *args, **kwargs):
+    hub = getattr(agent, "memory_hub", None)
+    if hub is not None:
+        return hub.mutate_semantic(operation, *args, **kwargs)
+    return operation(*args, **kwargs)
+
+
 def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -134,30 +141,43 @@ async def _legacy_execute_ltm_summarize(
     compress_with_llm: bool,
     digest_source: str,
 ) -> dict[str, Any]:
-    combined = "\n\n---\n\n".join((r[2] or "") for r in rows)
     digest_id: Optional[str] = None
+    digest_ids: list[str] = []
     digest_chars = 0
     if rows and compress_with_llm:
-        digest_text = await agent.summarize_ltm_corpus(combined, consolidation=False)
-        digest_chars = len(digest_text or "")
-        if digest_text:
+        groups = {}
+        for row in rows:
+            groups.setdefault(str(row[1].get("user_id") or ""), []).append(row)
+        planned = []
+        for owner, group in groups.items():
+            combined = "\n\n---\n\n".join((r[2] or "") for r in group)
+            digest_text = await agent.summarize_ltm_corpus(combined, consolidation=False)
+            if not (digest_text or "").strip():
+                raise RuntimeError("Empty memory digest; source records retained")
             meta = {
                 "type": "ltm_digest",
                 "source": digest_source,
                 "covers_older_than_days": str(older_than_days),
+                "user_id": owner,
             }
-
-            def _add() -> tuple[bool, str]:
-                return agent.long_memory.add_knowledge(digest_text, meta)
-
-            ok, info = await asyncio.to_thread(_add)
-            if ok:
+            planned.append((digest_text, meta))
+        try:
+            for digest_text, meta in planned:
+                ok, info = await asyncio.to_thread(_mutate, agent, agent.long_memory.add_knowledge, digest_text, meta)
+                if not ok:
+                    raise RuntimeError("Memory digest could not be stored; source records retained")
                 digest_id = info
+                digest_ids.append(info)
+                digest_chars += len(digest_text)
+        except BaseException:
+            if digest_ids:
+                await asyncio.to_thread(_mutate, agent, agent.long_memory.delete_document_ids, digest_ids)
+            raise
 
     archive_dir = resolve_ltm_archive_dir(config, root)
 
     def _arch() -> dict[str, Any]:
-        return agent.long_memory.archive_older_than(
+        return _mutate(agent, agent.long_memory.archive_older_than,
             older_than_days,
             archive_dir,
             types=types,
@@ -169,7 +189,7 @@ async def _legacy_execute_ltm_summarize(
     return {
         **arch_res,
         "digest_added_id": digest_id,
-        "digest_added_ids": [digest_id] if digest_id else [],
+        "digest_added_ids": digest_ids,
         "digest_chars": digest_chars,
         "consolidation": {"mode": "legacy_single_digest"},
     }
@@ -221,6 +241,13 @@ async def _clustered_execute_ltm_summarize(
         threshold=float(cm["similarity_threshold"]),
         max_cluster_chars=int(cm["max_cluster_chars"]),
     )
+    scoped_clusters = []
+    for cluster in clusters:
+        owners = {}
+        for index in cluster:
+            owners.setdefault(str(rows[index][1].get("user_id") or ""), []).append(index)
+        scoped_clusters.extend(owners.values())
+    clusters = scoped_clusters
 
     pending_manifest = {
         "batch_id": batch_id,
@@ -285,10 +312,11 @@ async def _clustered_execute_ltm_summarize(
                         "cluster_index": str(ci),
                         "cluster_bin": str(bi),
                         "source_doc_ids": ",".join(rows[j][0] for j in bin_idxs)[:8000],
+                        "user_id": str(rows[bin_idxs[0]][1].get("user_id") or ""),
                     }
 
                     def _add(text: str = digest_text, m: dict[str, Any] = meta) -> tuple[bool, str]:
-                        return agent.long_memory.add_knowledge(text, m)
+                        return _mutate(agent, agent.long_memory.add_knowledge, text, m)
 
                     ok, info = await asyncio.to_thread(_add)
                     if not ok:
@@ -303,7 +331,7 @@ async def _clustered_execute_ltm_summarize(
                 if cluster_bin_digest_ids:
 
                     def _rollback() -> None:
-                        agent.long_memory.delete_document_ids(cluster_bin_digest_ids)
+                        _mutate(agent, agent.long_memory.delete_document_ids, cluster_bin_digest_ids)
 
                     await asyncio.to_thread(_rollback)
                     for _xid in cluster_bin_digest_ids:
@@ -314,7 +342,7 @@ async def _clustered_execute_ltm_summarize(
         if cluster_ok:
 
             def _arch_one() -> dict[str, Any]:
-                return agent.long_memory.archive_row_tuples(
+                return _mutate(agent, agent.long_memory.archive_row_tuples,
                     rows_in_c,
                     archive_dir,
                     file_name_suffix=f"{batch_id[:12]}_c{ci}",
@@ -472,7 +500,7 @@ async def execute_ltm_summarize(
     archive_dir = resolve_ltm_archive_dir(config, root)
 
     def _arch_only() -> dict[str, Any]:
-        return agent.long_memory.archive_older_than(
+        return _mutate(agent, agent.long_memory.archive_older_than,
             older_than_days,
             archive_dir,
             types=types,

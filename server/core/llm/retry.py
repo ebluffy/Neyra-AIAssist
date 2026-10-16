@@ -1,5 +1,5 @@
 """
-Повторные вызовы memory_model при HTTP 429 / таймаутах (экспоненциальная задержка).
+    Retry memory-model calls after HTTP 429 or timeouts with exponential backoff.
 """
 
 from __future__ import annotations
@@ -38,26 +38,29 @@ async def ainvoke_with_rate_limit_backoff(
     base_delay_seconds: float = 2.0,
     max_delay_seconds: float = 60.0,
 ) -> Any:
-    """Вызывает llm.ainvoke с повторами при rate limit / таймауте."""
+    """Invoke the model with retries for rate limits and timeouts."""
     last_err: BaseException | None = None
     attempts = max(1, int(max_attempts))
     for attempt in range(1, attempts + 1):
         try:
+            from core.agent.model_trace import invoke
             if hasattr(llm, "ainvoke"):
-                return await llm.ainvoke(messages)
-            return await asyncio.to_thread(llm.invoke, messages)
+                return await invoke(None, llm, messages, lane="memory", purpose=lane)
+            async def sync_invoke(messages):
+                return await asyncio.to_thread(llm.invoke, messages)
+            return await invoke(None, llm, messages, lane="memory", purpose=lane, invoker=lambda messages, **kwargs: sync_invoke(messages))
         except Exception as e:
             last_err = e
             if attempt >= attempts or not is_retryable_llm_error(e):
                 raise
             delay = min(max_delay_seconds, base_delay_seconds * (2 ** (attempt - 1)))
             logger.warning(
-                "[WARNING] %s rate-limited. Retrying in %.1f seconds... (attempt %s/%s): %s",
+                "[WARNING] %s is retryable. Retrying in %.1f seconds (attempt %s/%s): %s",
                 lane,
                 delay,
                 attempt,
                 attempts,
-                e,
+                type(e).__name__,
             )
             await asyncio.sleep(delay)
     if last_err is not None:
