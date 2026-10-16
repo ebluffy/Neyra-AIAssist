@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type RefObject } from 'react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,6 +22,7 @@ type Props = {
   busy?: boolean
   onConfirm: () => void
   onCancel: () => void
+  returnFocusRef?: RefObject<HTMLElement | null>
 }
 
 export function DangerConfirmDialog({
@@ -34,6 +35,7 @@ export function DangerConfirmDialog({
   busy = false,
   onConfirm,
   onCancel,
+  returnFocusRef,
 }: Props) {
   const [typed, setTyped] = useState('')
   const [wasOpen, setWasOpen] = useState(open)
@@ -61,6 +63,12 @@ export function DangerConfirmDialog({
       }}
     >
       <AlertDialogContent
+        onCloseAutoFocus={(event) => {
+          if (returnFocusRef) {
+            event.preventDefault()
+            returnFocusRef.current?.focus()
+          }
+        }}
         className={cn(
           'border-[var(--border-hi)] bg-[var(--surface)] text-[var(--text)] shadow-[var(--shadow-border)]',
           needsPhrase && 'border-t-4 border-t-[var(--danger)]',

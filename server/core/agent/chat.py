@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from core.agent.public_errors import public_chat_error
 from core.agent.reply_pipeline import (
     log_micro_plan_metrics,
     polish_clean_reply,
@@ -48,6 +49,9 @@ async def run_chat(
         if fp is not None:
             return fp
     except Exception as fp_e:
+        from core.agent.talk_sessions import ConversationReset
+        if isinstance(fp_e, ConversationReset):
+            raise
         logger.warning("fast_path failed (soft, continue brain): %s", fp_e)
 
     prep = await prepare_turn(
@@ -102,6 +106,7 @@ async def run_chat(
                 error=f"brain: {e}",
             )
             return {
+                "code": "brain_unavailable",
                 "text": BRAIN_DOWN_USER_MESSAGE,
                 "sounds": ["bruh"],
                 "thoughts": "",
@@ -122,6 +127,8 @@ async def run_chat(
                 if prep.lyrics_mode
                 else agent.llm_talk
             )
+            from core.agent.talk_sessions import responses_talk_model
+            cap_llm = responses_talk_model(agent, cap_llm)
             from core.agent.model_trace import invoke
             response = await invoke(agent, cap_llm, messages, lane="talk", purpose="reply", images=bool(prep.talk_vm), invoker=agent._ainvoke_text_with_fallback)
             agent._log_model_route(agent._extract_model_name(response), lane="talk")
@@ -134,7 +141,8 @@ async def run_chat(
                 error=str(e),
             )
             return {
-                "text": f"[SOUND: bruh] Что-то сломалось на моей стороне: {e}",
+                "code": "generation_failed",
+                "text": public_chat_error({}),
                 "sounds": ["bruh"],
                 "thoughts": "",
                 "raw": "",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -28,8 +29,17 @@ async def finalize_successful_turn(
 ) -> dict:
     """Update STM, Hub chat_log, LTM, diaries/jobs, and Event Bus. Returns metadata dict."""
     spoken_user = agent._format_spoken_user_message(user_message, speaker_label)
-    agent.short_memory.add("user", spoken_user)
-    agent.short_memory.add("assistant", clean_text)
+    from core.agent.model_trace import ACTIVE_TRACE
+    active_scope = getattr(ACTIVE_TRACE.get(), "conversation_scope", None)
+    if active_scope is not None and active_scope.kind == "shared":
+        spoken_user = f"[author_id: {discord_user_id}]\n" + spoken_user
+    from contextlib import nullcontext
+    gate = getattr(ACTIVE_TRACE.get(), "conversation_gate", None)
+    with gate.manager.lock if gate else nullcontext():
+        if gate:
+            gate.ensure_current()
+        agent.short_memory.add("user", spoken_user)
+        agent.short_memory.add("assistant", clean_text)
 
     metadata = {
         "username": username or "unknown",
@@ -52,6 +62,13 @@ async def finalize_successful_turn(
         meta=metadata,
     )
     hub = getattr(agent, "memory_hub", None)
+    active = ACTIVE_TRACE.get()
+    if hub is not None and active is not None and active.affect_generations is not None:
+        try:
+            await asyncio.to_thread(hub.apply_affect_turn, turn_id=active.id, discord_id=discord_user_id,
+                                  text=user_message, generations=active.affect_generations)
+        except Exception:
+            logger.exception("Assistant state update failed")
     if hub is None or getattr(hub, "rag_write_mode", "off") != "off":
         from core.agent.model_trace import spawn_background
         spawn_background(agent, "semantic_dialog", lambda: agent._save_dialog_to_ltm_with_emotion(

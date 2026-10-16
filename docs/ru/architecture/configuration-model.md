@@ -19,4 +19,4 @@
 - HTTP Control API и dashboard → `server/config/server.yaml` (`api:`, `dashboard:`); реализация в `server/core/api/` (не plugin).
 - Остальные id → `plugins.<id>`.
 
-См. также [config-reference](../setup/config-reference.md) и `docs/config-keys.md`.
+См. также [config-reference](../setup/config-reference.md); defaults: `server/config/*.example.yaml`; полный список ключей: `python server/scripts/regen_config_keys_md.py` из корня репозитория (вывод в stdout).

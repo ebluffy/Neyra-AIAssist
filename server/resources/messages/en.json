@@ -1,4 +1,6 @@
 {
   "brain.unavailable": "Neyra brain is unavailable. Please try again later.",
-  "reply.empty": "I lost my train of thought for a moment. Please repeat briefly."
+  "reply.empty": "I lost my train of thought for a moment. Please repeat briefly.",
+  "reply.failed": "Unable to prepare a reply. Please try again.",
+  "discord.command_failed": "Could not complete the command. Please try again."
 }

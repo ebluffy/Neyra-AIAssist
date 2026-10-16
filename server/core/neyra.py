@@ -53,7 +53,7 @@ class NeyraAgent:
             or "aihope"
         ).lower()
         # Ключ: discord channel_id → текст заметки после последнего VL-хода (пока процесс жив)
-        self._last_vision_note_by_channel: dict[str, str] = {}
+        self._last_vision_note_by_scope: dict[tuple[str, str], str] = {}
 
         self.event_bus = EventBus()
         from core.agent.model_trace import ModelActivity
@@ -61,6 +61,8 @@ class NeyraAgent:
         self.identity = UnifiedIdentityMapper()
 
         self._setup_llm()
+        from core.agent.talk_sessions import sessions_for
+        sessions_for(self)
         self._setup_memory()
         self._setup_tools()
         self._setup_logs()
@@ -179,6 +181,7 @@ class NeyraAgent:
         working_memory_context: str = "",
         include_appearance: bool = False,
         pre_context: str = "",
+        include_environment: bool = True,
     ) -> str:
         """Собирает системный промпт. Порядок (B2): роль → активный → упомянутые → правила → RAG → остальное."""
         from core.agent.persona import build_talk_base_prompt
@@ -209,6 +212,7 @@ class NeyraAgent:
             working_memory_context=working_memory_context,
             pre_context=pre_context,
             conversation_mode=turn_conversation_mode(self.config),
+            include_environment=include_environment,
         )
 
     def _build_brain_system_prompt(
@@ -287,7 +291,7 @@ class NeyraAgent:
         )
 
     def _make_vision_memory_note(self, thoughts: str, clean_text: str) -> str:
-        """Текст для «памяти последнего скрина»: приоритет — CoT/think из ответа VL."""
+        """Текст последнего публичного ответа об изображении, без private reasoning."""
         from core.agent.vision_context import make_vision_memory_note
 
         vis = self._vision_pipeline_cfg()
@@ -303,12 +307,15 @@ class NeyraAgent:
         vision_images: Optional[list],
     ) -> Optional[str]:
         from core.agent.vision_context import last_image_context_for_prompt
+        from core.agent.model_trace import ACTIVE_TRACE
 
         vis_cfg = self._vision_pipeline_cfg()
+        trace = ACTIVE_TRACE.get()
         return last_image_context_for_prompt(
-            self._last_vision_note_by_channel,
+            self._last_vision_note_by_scope,
             channel_id,
             vision_images,
+            owner_id=trace.memory_owner_id if trace is not None else None,
             remember_last_image=bool(vis_cfg.get("remember_last_image", True)),
         )
 
@@ -320,14 +327,17 @@ class NeyraAgent:
         clean_text: str,
     ) -> None:
         from core.agent.vision_context import store_vision_note_if_needed
+        from core.agent.model_trace import ACTIVE_TRACE
 
         vis = self._vision_pipeline_cfg()
+        trace = ACTIVE_TRACE.get()
         store_vision_note_if_needed(
-            self._last_vision_note_by_channel,
+            self._last_vision_note_by_scope,
             channel_id,
             vision_images,
             thoughts,
             clean_text,
+            owner_id=trace.memory_owner_id if trace is not None else None,
             remember_last_image=bool(vis.get("remember_last_image", True)),
             max_chars=int(vis.get("last_image_note_max_chars", 1200)),
         )
@@ -549,21 +559,27 @@ class NeyraAgent:
             has_vision_images=has_vision_images,
         )
 
-    async def _de_repeat_reply(self, user_message: str, clean_text: str) -> str:
+    async def _de_repeat_reply(self, user_message: str, clean_text: str, *, messages: Optional[list] = None) -> str:
         """Если новый ответ почти дублирует предыдущий — быстрый перефраз."""
+        from core.runtime.features import feature_enabled
+        if not feature_enabled(self.config, "agent.de_repeat.enabled"):
+            return clean_text
+        from core.agent.talk_sessions import responses_talk_model
         from core.agent.de_repeat import de_repeat_reply
 
         return await de_repeat_reply(
             user_message=user_message,
             clean_text=clean_text,
             short_memory=self.short_memory,
-            llm_talk=self.llm_talk,
+            llm_talk=responses_talk_model(self, self.llm_talk),
             lyrics_marker=LYRICS_REQUEST_MARKER,
             extract_think_blocks=self._extract_think_blocks,
             extract_sound_tags=self._extract_sound_tags,
             conversation_mode=turn_conversation_mode(self.config),
             reply_max_tokens=self.reply_max_tokens,
-            persona=self._build_system_prompt(),
+            persona="" if messages else self._build_system_prompt(),
+            turn_messages=messages,
+            micro_plan=self._micro_plan_settings(),
         )
 
     def _log_thought(self, thought: str, user_msg: str):
@@ -725,6 +741,7 @@ class NeyraAgent:
         }
         """
         from core.agent.chat import run_chat
+        from core.agent.talk_sessions import ConversationReset
 
         from core.agent.model_trace import ACTIVE_TRACE, TurnTrace, finish
         from core.agent.discord_context import DiscordContext
@@ -735,8 +752,12 @@ class NeyraAgent:
             author_display_name = discord_context.current_user.display_name
             channel_id = discord_context.channel.id
         trace = TurnTrace(discord_user_id, channel_id, self.config)
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None:
+            trace.affect_generations = await asyncio.to_thread(hub.affect_generations)
         token = ACTIVE_TRACE.set(trace)
         try:
+            await self._enter_talk_session(trace, discord_user_id, username, channel_id, discord_context)
             out = await run_chat(
                 self, user_message=user_message, username=username,
                 discord_user_id=discord_user_id, vision_images=vision_images,
@@ -744,7 +765,14 @@ class NeyraAgent:
                 lyrics_marker=LYRICS_REQUEST_MARKER, avatar_url=avatar_url,
                 discord_context=discord_context,
             )
-            return {**out, "model_trace": finish(self, trace)}
+            status = "failed" if out.get("code") in ("brain_unavailable", "generation_failed") else None
+            if trace.talk_session is not None and status is None:
+                trace.talk_session.commit(self, out.get("text", ""))
+            return {**out, "model_trace": finish(self, trace, status)}
+        except ConversationReset:
+            from core.agent.public_errors import public_chat_error
+            return {"code": "generation_failed", "text": public_chat_error({}), "sounds": [],
+                    "thoughts": "", "raw": "", "model_trace": finish(self, trace, "failed")}
         except asyncio.CancelledError:
             finish(self, trace, "cancelled")
             raise
@@ -752,6 +780,7 @@ class NeyraAgent:
             finish(self, trace, "failed")
             raise
         finally:
+            self._close_talk_session(trace)
             ACTIVE_TRACE.reset(token)
 
     async def chat_stream(
@@ -776,6 +805,7 @@ class NeyraAgent:
                     sounds = chunk["sounds"]
         """
         from core.agent.chat_stream import iter_chat_stream
+        from core.agent.talk_sessions import ConversationReset
 
         from core.agent.model_trace import ACTIVE_TRACE, TurnTrace, finish
         from core.agent.discord_context import DiscordContext
@@ -786,6 +816,9 @@ class NeyraAgent:
             author_display_name = discord_context.current_user.display_name
             channel_id = discord_context.channel.id
         trace = TurnTrace(discord_user_id, channel_id, self.config)
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None:
+            trace.affect_generations = await asyncio.to_thread(hub.affect_generations)
         token = ACTIVE_TRACE.set(trace)
         stream = iter_chat_stream(
             self, user_message=user_message, username=username,
@@ -795,21 +828,60 @@ class NeyraAgent:
             discord_context=discord_context,
         )
         try:
+            await self._enter_talk_session(trace, discord_user_id, username, channel_id, discord_context)
             async for chunk in stream:
                 if chunk.get("type") in ("done", "error"):
+                    if trace.talk_session is not None and chunk["type"] == "done":
+                        trace.talk_session.commit(self, chunk.get("text", ""))
+                    self._close_talk_session(trace)
                     chunk = {**chunk, "model_trace": finish(self, trace, "failed" if chunk["type"] == "error" else None)}
                 ACTIVE_TRACE.reset(token)
                 try:
                     yield chunk
                 finally:
                     token = ACTIVE_TRACE.set(trace)
+        except ConversationReset:
+            from core.agent.public_errors import public_chat_error
+            chunk = {"type": "error", "code": "generation_failed", "text": public_chat_error({}),
+                     "model_trace": finish(self, trace, "failed")}
+            ACTIVE_TRACE.reset(token)
+            try:
+                yield chunk
+            finally:
+                token = ACTIVE_TRACE.set(trace)
         finally:
             try:
                 await stream.aclose()
             finally:
+                self._close_talk_session(trace)
                 if not trace.closed:
                     finish(self, trace, "cancelled")
                 ACTIVE_TRACE.reset(token)
+
+    async def _enter_talk_session(self, trace, user_id, username, channel_id, discord_context=None):
+        from core.agent.talk_sessions import ENABLED, sessions_for
+        from core.agent.conversation_scope import conversation_scope
+        from core.runtime.features import feature_enabled
+        if user_id:
+            owner = self._resolve_internal_user_id(user_id, username)
+            scope = trace.conversation_scope = conversation_scope(owner, channel_id, discord_context)
+            enabled = feature_enabled(self.config, ENABLED)
+            trace.conversation_gate = await sessions_for(self).enter(scope, wait_warmup=enabled)
+            if enabled:
+                trace.talk_session = trace.conversation_gate
+
+    def _close_talk_session(self, trace):
+        if trace.conversation_gate is not None:
+            trace.conversation_gate.close()
+            trace.conversation_gate.manager.schedule_cleanup()
+
+    def start_talk_sessions(self):
+        from core.agent.talk_sessions import sessions_for
+        sessions_for(self).start_warmup()
+
+    async def stop_talk_sessions(self):
+        from core.agent.talk_sessions import sessions_for
+        await sessions_for(self).stop()
 
     async def summarize_ltm_corpus(self, combined_dialog_text: str, *, consolidation: bool = False) -> str:
         """
@@ -825,14 +897,23 @@ class NeyraAgent:
 
     def reset_context(self, channel_id: Optional[str] = None, *, user_id: str = ""):
         """Синхронный сброс STM (без archive). Предпочитай ``reset_context_async``."""
+        manager = getattr(self, "talk_sessions", None)
+        if manager is not None:
+            manager.invalidate(owner=user_id or None, channel=channel_id)
         if user_id and hasattr(self.short_memory, "clear_scope"):
             self.short_memory.clear_scope(user_id, channel_id)
         else:
             self.short_memory.clear()
-        if channel_id is not None:
-            self._last_vision_note_by_channel.pop(str(channel_id), None)
-        else:
-            self._last_vision_note_by_channel.clear()
+        if channel_id is not None and hasattr(self.short_memory, "windows"):
+            for window in self.short_memory.windows():
+                if str(window["owner_id"]).startswith("shared:") and window["channel_id"] == str(channel_id):
+                    self.short_memory.clear_scope(window["owner_id"], window["channel_id"])
+        for owner, channel in list(self._last_vision_note_by_scope):
+            if user_id and owner != user_id:
+                continue
+            if channel_id is not None and channel != str(channel_id):
+                continue
+            self._last_vision_note_by_scope.pop((owner, channel), None)
         logger.info("Краткосрочная память сброшена")
 
     async def reset_context_async(

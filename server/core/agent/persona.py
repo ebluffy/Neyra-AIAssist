@@ -1,7 +1,7 @@
 """Persona / appearance artifacts for Stage 2A.
 
 Canonical:
-  assistant.persona_path → character, tone, bounds (talk always; brain optional cap)
+  assistant.persona_path → character, tone, bounds (talk only, every request)
   assistant.appearance_path → visual canon (only when relevant or appearance_always)
 
 Fallback: assistant.system_prompt if persona file missing/empty.

@@ -85,6 +85,8 @@ class MemoryHub:
             resolve_memory_path(Path.cwd(), config, raw, "./data/memory/neyra_memory.db")
         )
         self.sqlite = SqliteStore(path)
+        from core.memory.affect import AffectStore
+        self.affect = AffectStore(self.sqlite)
         self.rag_write_mode = str(mem.get("rag_write_mode") or "important_only").strip().lower()
         if self.rag_write_mode not in {"off", "digest", "important_only", "legacy_dialog"}:
             logger.warning("Unknown rag_write_mode=%r — using important_only", self.rag_write_mode)
@@ -109,6 +111,55 @@ class MemoryHub:
 
     def close(self) -> None:
         self.sqlite.close()
+
+    def affect_generations(self):
+        with self._write_lock:
+            return {scope: self._generations.get(scope, 0) for scope in ("mood", "relations", "people")}
+
+    def affect_snapshot(self, person_id=None):
+        from core.runtime.features import feature_enabled
+        result = self.affect.snapshot(person_id)
+        result["enabled"] = {scope: feature_enabled(self.config, f"memory.{scope}.enabled") for scope in ("mood", "relations")}
+        return result
+
+    def invalidate_affect_turns(self):
+        with self._write_lock:
+            for scope in ("mood", "relations"):
+                self._generations[scope] = self._generations.get(scope, 0) + 1
+
+    def affect_for_account(self, discord_id):
+        # Account ID is authoritative; aliases/display names never select a relationship.
+        with self.sqlite.lock:
+            account = self.sqlite.get_account("discord", str(discord_id)) if discord_id else None
+            return self.affect_snapshot(account["person_id"] if account else None)
+
+    def apply_affect_turn(self, *, turn_id, discord_id, text, generations):
+        with self._write_lock, self.sqlite.lock:
+            if generations != self.affect_generations():
+                return False
+            if self.affect.has_turn(turn_id):
+                return False
+            from core.runtime.features import feature_enabled
+            mood_on = feature_enabled(self.config, "memory.mood.enabled")
+            relations_on = feature_enabled(self.config, "memory.relations.enabled")
+            if not (mood_on or relations_on):
+                return False
+            account = self.sqlite.get_account("discord", str(discord_id)) if discord_id else None
+            if discord_id and account is None and relations_on:
+                person = self.ensure_person_for_account(platform="discord", platform_user_id=str(discord_id))
+                account = {"person_id": person["id"]}
+            return self.affect.apply_turn(turn_id=turn_id, person_id=account["person_id"] if account else None, text=text,
+                                          mood_enabled=mood_on, relations_enabled=relations_on)
+
+    @serialized_wipe
+    def reset_relation(self, person_id, *, backup_dir):
+        with self.sqlite.lock:
+            if self.sqlite.get_person(person_id) is None:
+                raise KeyError(person_id)
+            dest = Path(backup_dir) / f"neyra_relation_pre_reset_{uuid.uuid4().hex}.db"
+            self.sqlite.backup_to(dest)
+            count = self.affect.reset("relations", person_id)
+            return {"deleted": {"relations": count}, "backup": str(dest)}
 
     def new_turn_id(self) -> str:
         return str(uuid.uuid4())
@@ -299,26 +350,30 @@ class MemoryHub:
         aliases: Optional[list[str]] = None,
         display_name: Optional[str] = None,
         created_at: Optional[str] = None,
+        require_existing: bool = False,
     ) -> int:
-        if person_meta or aliases or display_name:
-            self.upsert_person(
-                person_id,
-                display_name=display_name,
-                aliases=aliases,
-                meta=person_meta,
+        with self.sqlite.lock:
+            if require_existing and self.sqlite.get_person(person_id) is None:
+                raise KeyError(person_id)
+            if person_meta or aliases or display_name:
+                self.upsert_person(
+                    person_id,
+                    display_name=display_name,
+                    aliases=aliases,
+                    meta=person_meta,
+                )
+            else:
+                # ensure row exists for FK
+                if self.sqlite.get_person(person_id) is None:
+                    self.upsert_person(person_id, display_name=display_name or person_id)
+            return self.sqlite.add_person_fact(
+                person_id=person_id,
+                fact=fact,
+                emotion_note=emotion_note,
+                source=source,
+                meta=meta,
+                created_at=created_at,
             )
-        else:
-            # ensure row exists for FK
-            if self.sqlite.get_person(person_id) is None:
-                self.upsert_person(person_id, display_name=display_name or person_id)
-        return self.sqlite.add_person_fact(
-            person_id=person_id,
-            fact=fact,
-            emotion_note=emotion_note,
-            source=source,
-            meta=meta,
-            created_at=created_at,
-        )
 
     def get_person(self, person_id: str) -> Optional[dict[str, Any]]:
         return self.sqlite.get_person(person_id)
@@ -457,16 +512,56 @@ class MemoryHub:
         avatar_url: Optional[str] = None,
     ) -> dict[str, Any]:
         """Resolve or create person by platform_user_id only (never auto-bind by nick)."""
-        from core.runtime.identity import UnifiedIdentityMapper
+        with self._write_lock, self.sqlite.lock:
+            from core.runtime.identity import UnifiedIdentityMapper
 
-        plat = (platform or "unknown").strip().lower()
-        puid = (platform_user_id or "").strip()
-        if not puid:
-            raise ValueError("platform_user_id required")
-        h = (handle or "").strip() or None
-        acc = self.sqlite.get_account(plat, puid)
-        if acc:
-            pid = str(acc.get("person_id") or "").strip()
+            plat = (platform or "unknown").strip().lower()
+            puid = (platform_user_id or "").strip()
+            if not puid:
+                raise ValueError("platform_user_id required")
+            h = (handle or "").strip() or None
+            acc = self.sqlite.get_account(plat, puid)
+            if acc:
+                pid = str(acc.get("person_id") or "").strip()
+                self.sqlite.upsert_person_account(
+                    person_id=pid,
+                    platform=plat,
+                    platform_user_id=puid,
+                    handle=h,
+                    display_name=display_name,
+                    avatar_url=avatar_url,
+                )
+                row = self.sqlite.get_person(pid)
+                return self._person_as_legacy_dict(row) if row else {"id": pid}
+
+            pid = UnifiedIdentityMapper.resolve(plat, puid)
+
+            # Same handle elsewhere → merge candidate only (do NOT bind accounts).
+            # Also catch legacy slug cards (person_id == handle) that are not in accounts yet.
+            if h:
+                others = {
+                    oid
+                    for oid in self.sqlite.find_person_ids_by_handle_norm(h)
+                    if oid and oid != pid
+                }
+                slug_row = self.sqlite.get_person(h) or self.sqlite.get_person(h.casefold())
+                if slug_row:
+                    slug_pid = str(slug_row.get("person_id") or "").strip()
+                    if slug_pid and slug_pid != pid:
+                        others.add(slug_pid)
+                for oid in others:
+                    try:
+                        self.sqlite.add_merge_proposal(
+                            person_a=oid,
+                            person_b=pid,
+                            reason=f"same_handle:{plat}:{h}",
+                        )
+                    except Exception as e:
+                        logger.debug("merge proposal: %s", e)
+
+            disp = (display_name or "").strip() or h or pid
+            aliases = [x for x in [h] if x]  # nick as alias for mentions; not identity
+            self.upsert_person(pid, display_name=disp, aliases=aliases or [pid], meta={})
             self.sqlite.upsert_person_account(
                 person_id=pid,
                 platform=plat,
@@ -477,45 +572,6 @@ class MemoryHub:
             )
             row = self.sqlite.get_person(pid)
             return self._person_as_legacy_dict(row) if row else {"id": pid}
-
-        pid = UnifiedIdentityMapper.resolve(plat, puid)
-
-        # Same handle elsewhere → merge candidate only (do NOT bind accounts).
-        # Also catch legacy slug cards (person_id == handle) that are not in accounts yet.
-        if h:
-            others = {
-                oid
-                for oid in self.sqlite.find_person_ids_by_handle_norm(h)
-                if oid and oid != pid
-            }
-            slug_row = self.sqlite.get_person(h) or self.sqlite.get_person(h.casefold())
-            if slug_row:
-                slug_pid = str(slug_row.get("person_id") or "").strip()
-                if slug_pid and slug_pid != pid:
-                    others.add(slug_pid)
-            for oid in others:
-                try:
-                    self.sqlite.add_merge_proposal(
-                        person_a=oid,
-                        person_b=pid,
-                        reason=f"same_handle:{plat}:{h}",
-                    )
-                except Exception as e:
-                    logger.debug("merge proposal: %s", e)
-
-        disp = (display_name or "").strip() or h or pid
-        aliases = [x for x in [h] if x]  # nick as alias for mentions; not identity
-        self.upsert_person(pid, display_name=disp, aliases=aliases or [pid], meta={})
-        self.sqlite.upsert_person_account(
-            person_id=pid,
-            platform=plat,
-            platform_user_id=puid,
-            handle=h,
-            display_name=display_name,
-            avatar_url=avatar_url,
-        )
-        row = self.sqlite.get_person(pid)
-        return self._person_as_legacy_dict(row) if row else {"id": pid}
 
     def allocate_person_id(
         self,
@@ -654,6 +710,8 @@ class MemoryHub:
             "working_memory",
             "ltm",
             "merge_log",
+            "mood",
+            "relations",
         }
         wanted = {str(s).strip().lower() for s in (scopes or []) if str(s).strip()}
         unknown = wanted - allowed - {"stm"}
@@ -667,7 +725,7 @@ class MemoryHub:
             try:
                 backup_dir = Path(backup_dir)
                 backup_dir.mkdir(parents=True, exist_ok=True)
-                ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+                ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex
                 dest = backup_dir / f"neyra_memory_pre_wipe_{ts}.db"
                 self.sqlite.backup_to(dest)
                 backup_path = str(dest)
@@ -683,7 +741,12 @@ class MemoryHub:
             except Exception as e:
                 raise RuntimeError(f"wipe backup failed: {e}") from e
         out: dict[str, int] = {}
+        for scope in ("mood", "relations"):
+            if scope in wanted:
+                out[scope] = self.affect.reset(scope)
         if "people" in wanted:
+            if "relations" not in out:
+                out["relations"] = self.affect.reset("relations")
             out["people"] = self.sqlite.clear_table("people")
             try:
                 out["merge_log"] = self.sqlite.clear_table("merge_log")
@@ -899,17 +962,14 @@ class MemoryHub:
         row = self.sqlite.get_person(ident)
         if row:
             return self._person_as_legacy_dict(row)
-        by_h = self.sqlite.find_person_ids_by_handle_norm(ident)
-        if len(by_h) == 1:
-            row = self.sqlite.get_person(by_h[0])
-            if row:
-                return self._person_as_legacy_dict(row)
+        candidates = set(self.sqlite.find_person_ids_by_handle_norm(ident))
         for person in self.list_people():
-            if str(person.get("id") or "").casefold() == ident_lower:
-                return person
             aliases = [str(n).casefold() for n in (person.get("names") or []) if str(n).strip()]
-            if ident_lower in aliases:
-                return person
+            if str(person.get("id") or "").casefold() == ident_lower or ident_lower in aliases:
+                candidates.add(person["id"])
+        if len(candidates) == 1:
+            row = self.sqlite.get_person(next(iter(candidates)))
+            return self._person_as_legacy_dict(row) if row else None
         return None
 
     def get_all_names_map(self) -> dict[str, str]:

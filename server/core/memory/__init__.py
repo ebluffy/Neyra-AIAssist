@@ -4,7 +4,7 @@ core.memory — Memory Hub v2 package.
 Hub SQLite (``core.memory.hub.MemoryHub``) is the sole store for people/diary/journal/
 working-memory once attached. ``stores`` holds thin helper classes
 (``ShortTermMemory``, ``LongTermMemory``/Chroma, ``PeopleDB``, ``NeyraDiary``); there is
-no on-disk legacy import path — see docs/adr/0001-memory-hub-v2.md.
+no on-disk legacy import path — see docs/PLAN.md, section 7.
 
 ``core.memory.legacy`` remains a one-release compat alias for ``stores``.
 """

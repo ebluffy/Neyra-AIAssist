@@ -1,6 +1,10 @@
 """Deterministic providers around the real turn pipeline and temporary SQLite."""
 
 import asyncio
+import json
+import threading
+
+import httpx
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -101,7 +105,7 @@ def offline_agent(root: Path, config=None):
     agent.micro_planning_enabled = False
     agent._micro_plan_settings = lambda: MicroPlanSettings(False, "tags", "[PLAN]", "[/PLAN]", "PLAN:", "SAY:", False)
     agent._micro_plan_metrics = {}
-    agent._last_vision_note_by_channel = {}
+    agent._last_vision_note_by_scope = {}
     agent._ensure_mcp = agent.start_mcp_clients = agent.stop_mcp_clients = nothing
     agent._detect_mentioned_names = lambda text: []
     agent._handle_memory_trigger = lambda *args: []
@@ -113,3 +117,43 @@ def offline_agent(root: Path, config=None):
         setattr(agent, method, lambda *args, **kwargs: None)
     agent.get_stats = lambda: {"model": agent.llm_talk_model, "talk_model": agent.llm_talk_model, "brain_model": agent.llm_brain_model, "short_memory_size": len(agent.short_memory), "long_memory_records": 0, "people_db_records": len(agent.people_db._cache)}
     return agent
+
+
+class OfflineResponsesGateway:
+    def __init__(self):
+        self.requests, self.deleted, self.responses = [], [], {}
+        self.failures = []
+        self.lock = threading.RLock()
+        self.incomplete = False
+        self.report_model = True
+        self.empty = False
+        self.bad_stream = False
+
+    def __call__(self, request):
+        with self.lock:
+            if request.method == 'DELETE':
+                self.deleted.append(request.url.path.rsplit('/', 1)[-1])
+                return httpx.Response(200, json={'deleted': True})
+            assert request.url.path == '/v1/responses'
+            body = json.loads(request.content)
+            self.requests.append(body)
+            if self.failures:
+                return httpx.Response(self.failures.pop(0), json={'error': {'code': 'previous_response_not_found'}})
+            rid = f'resp-{len(self.requests)}'
+            text = '' if self.empty else f'Ответ номер {len(self.requests)} завершён.'
+            self.empty = False
+            response = {'id': rid, 'status': 'incomplete' if self.incomplete else 'completed',
+                        'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': text}]}],
+                        'usage': {'input_tokens': 21, 'output_tokens': 7, 'input_tokens_details': {'cached_tokens': 10}}}
+            if self.report_model:
+                response['model'] = 'confirmed-model'
+            self.responses[rid] = response
+            if not body['stream']:
+                return httpx.Response(200, json=response, headers={'x-request-id': 'req-' + rid})
+            events = [dict(type='response.created', response={'id': rid}),
+                      dict(type='response.reasoning_text.delta', delta='PRIVATE REASONING'),
+                      dict(type='response.output_text.delta', delta=text)]
+            if not self.bad_stream:
+                events.append(dict(type='response.incomplete' if self.incomplete else 'response.completed', response=response))
+            data = ''.join('event: ' + event['type'] + '\ndata: ' + json.dumps(event) + '\n\n' for event in events)
+            return httpx.Response(200, text=data, headers={'content-type': 'text/event-stream', 'x-request-id': 'req-' + rid})

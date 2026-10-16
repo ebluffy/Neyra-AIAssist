@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BookOpen, Brain, NotebookPen, Plus, Trash2, Users, ScrollText } from 'lucide-react'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
+import { PeopleMerges, type MergeHistory } from '../components/PeopleMerges'
+import { AffectPanel } from '../components/AffectPanel'
 import { ShortMemoryPanel, LongMemoryPanel } from '../components/MemoryLayers'
 import { apiDelete, apiGet, apiPatch, apiPost } from '../api'
 import type { ApiEnvelope, MemoryPolicies, MemoryStats } from '../api'
@@ -79,7 +82,7 @@ export function MemoryScreen() {
   const [proposals, setProposals] = useState<MergeProposal[]>([])
   const [lastMergeLogId, setLastMergeLogId] = useState<number | null>(null)
   const [recentMerges, setRecentMerges] = useState<
-    { id?: number; survivor_id?: string; source_id?: string; undone_at?: string | null }[]
+    MergeHistory[]
   >([])
   const [danger, setDanger] = useState<MemoryDanger | null>(null)
   const [dangerBusy, setDangerBusy] = useState(false)
@@ -100,8 +103,8 @@ export function MemoryScreen() {
         >('/v1/memory/people'),
         apiGet<ApiEnvelope<{ notes: DiaryNote[] }>>('/v1/memory/diary?limit=50'),
         apiGet<ApiEnvelope<{ proposals: MergeProposal[] }>>('/v1/memory/people/merge-proposals?status=pending'),
-        apiGet<ApiEnvelope<{ merges: { id?: number; survivor_id?: string; source_id?: string; undone_at?: string | null }[] }>>(
-          '/v1/memory/people/merge-log?limit=10',
+        apiGet<ApiEnvelope<{ merges: MergeHistory[] }>>(
+          '/v1/memory/people/merge-log?limit=50',
         ),
       ])
       setMemory(m.data)
@@ -316,7 +319,7 @@ export function MemoryScreen() {
           const mid = Number(r.data?.merge_log_id)
           if (Number.isFinite(mid)) setLastMergeLogId(mid)
           setMergeSource('')
-          setStatus(Number.isFinite(mid) ? `Скрещены (merge_log #${mid})` : 'Карточки скрещены')
+          setStatus(Number.isFinite(mid) ? `Объединены (операция #${mid})` : 'Карточки объединены')
           await load()
           await loadPerson(danger.target)
           break
@@ -328,15 +331,13 @@ export function MemoryScreen() {
           )
           const mid = Number(r.data?.merge?.merge_log_id)
           if (Number.isFinite(mid)) setLastMergeLogId(mid)
-          setStatus(
-            Number.isFinite(mid) ? `Заявка #${danger.id} → merge_log #${mid}` : `Заявка #${danger.id} применена`,
-          )
+          setStatus(Number.isFinite(mid) ? `Карточки объединены. Операция #${mid}.` : 'Карточки объединены.')
           await load()
           break
         }
         case 'undo-merge': {
           await apiPost(`/v1/memory/people/merge/${danger.id}/undo`, {})
-          setStatus(`Merge #${danger.id} отменён`)
+          setStatus(`Объединение #${danger.id} отменено`)
           if (lastMergeLogId === danger.id) setLastMergeLogId(null)
           await load()
           break
@@ -384,19 +385,19 @@ export function MemoryScreen() {
         }
       case 'merge':
         return {
-          title: 'Скрестить карточки?',
-          description: `${danger.source} → ${danger.target}. Source будет удалён (можно отменить).`,
-          phrase: 'СКРЕСТИТЬ',
+          title: 'Объединить карточки?',
+          description: `${danger.source} → ${danger.target}. Карточка-источник будет удалена; объединение можно отменить.`,
+          phrase: 'ОБЪЕДИНИТЬ',
         }
       case 'apply-proposal':
         return {
           title: `Применить заявку #${danger.id}?`,
-          description: 'person_a станет survivor (можно отменить).',
+          description: 'Сохранится первая карточка. Факты и аккаунты второй будут перенесены; действие можно отменить.',
           phrase: 'ПРИМЕНИТЬ',
         }
       case 'undo-merge':
         return {
-          title: `Отменить merge #${danger.id}?`,
+          title: `Отменить объединение #${danger.id}?`,
           description: 'Карточки и факты вернутся к состоянию до слияния.',
           phrase: 'ОТМЕНИТЬ',
         }
@@ -481,6 +482,7 @@ export function MemoryScreen() {
       <div role="tabpanel" id={`memory-panel-${tab}`} aria-labelledby={`memory-tab-${tab}`} tabIndex={0} className="stack focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
       {tab === 'overview' && (
         <div className="stack">
+          <AffectPanel people={people} />
           <div className="card">
             <div className="card-header">
               <Brain size={15} className="card-icon card-icon-cyan" />
@@ -537,7 +539,7 @@ export function MemoryScreen() {
                 disabled={wipeBusy}
                 onClick={() =>
                   void runWipe(
-                    ['people', 'diary', 'journal', 'stm', 'ltm', 'chat_log', 'working_memory'],
+                    ['people', 'diary', 'journal', 'stm', 'ltm', 'chat_log', 'working_memory', 'mood', 'relations'],
                     'ВСЮ память',
                   )
                 }
@@ -552,7 +554,13 @@ export function MemoryScreen() {
       )}
 
       {tab === 'people' && (
-        <div className="split-modules">
+        <Tabs defaultValue="cards" className="min-w-0">
+          <TabsList aria-label="Разделы людей" className="mb-4 h-auto flex-wrap">
+            <TabsTrigger value="cards">Карточки</TabsTrigger>
+            <TabsTrigger value="merges">Объединения ({proposals.length})</TabsTrigger>
+          </TabsList>
+          <TabsContent value="merges"><PeopleMerges proposals={proposals} history={recentMerges} people={people} busy={loading || dangerBusy} onApply={(id) => void applyProposal(id)} onReject={rejectProposal} onUndo={(id) => void undoMerge(id)} onRefresh={() => void load()} /></TabsContent>
+          <TabsContent value="cards"><div className="split-modules">
           {slugDuplicates.length > 0 && (
             <div className="card" style={{ gridColumn: '1 / -1', borderColor: 'var(--amber)' }}>
               <div className="card-header">
@@ -570,69 +578,6 @@ export function MemoryScreen() {
                     </span>
                   </div>
                 ))}
-              </div>
-            </div>
-          )}
-              {(proposals.length > 0 || recentMerges.some((m) => !m.undone_at)) && (
-            <div className="card" style={{ gridColumn: '1 / -1' }}>
-              <div className="card-header">
-                <span className="card-title">Предложения объединения и undo</span>
-              </div>
-              <div className="stack-sm">
-                {proposals.map((p) => {
-                  const left = people.find((x) => String(x.id) === String(p.person_a))
-                  const right = people.find((x) => String(x.id) === String(p.person_b))
-                  return (
-                    <div key={String(p.id)} className="merge-proposal-card">
-                      <div className="merge-proposal-sides">
-                        <div className="merge-proposal-side">
-                          <p className="stat-label">A → survivor</p>
-                          <p className="mono" style={{ fontSize: '0.8rem' }}>
-                            {left ? personLabel(left) : p.person_a}
-                          </p>
-                          <p className="hint mono">{p.person_a}</p>
-                        </div>
-                        <span className="hint" aria-hidden>
-                          ↔
-                        </span>
-                        <div className="merge-proposal-side">
-                          <p className="stat-label">B → source</p>
-                          <p className="mono" style={{ fontSize: '0.8rem' }}>
-                            {right ? personLabel(right) : p.person_b}
-                          </p>
-                          <p className="hint mono">{p.person_b}</p>
-                        </div>
-                      </div>
-                      {p.reason ? <p className="hint">{p.reason}</p> : null}
-                      <div className="row">
-                        <Button onClick={() => void applyProposal(Number(p.id))} size="sm" type="button" variant="cyan">
-                          Объединить
-                        </Button>
-                        <Button onClick={() => void rejectProposal(Number(p.id))} size="sm" type="button" variant="secondary">
-                          Отклонить
-                        </Button>
-                      </div>
-                    </div>
-                  )
-                })}
-                {recentMerges
-                  .filter((m) => m.id != null && !m.undone_at)
-                  .slice(0, 5)
-                  .map((m) => (
-                    <div key={`ml-${m.id}`} className="row-between">
-                      <span style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>
-                        merge_log #{m.id}: {m.source_id} → {m.survivor_id}
-                      </span>
-                      <Button onClick={() => void undoMerge(Number(m.id))} size="sm" type="button" variant="warn">
-                        Отменить
-                      </Button>
-                    </div>
-                  ))}
-                {lastMergeLogId != null && (
-                  <p style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>
-                    Последний merge_log: #{lastMergeLogId}
-                  </p>
-                )}
               </div>
             </div>
           )}
@@ -838,7 +783,7 @@ export function MemoryScreen() {
               </div>
             )}
           </div>
-        </div>
+        </div></TabsContent></Tabs>
       )}
 
       {tab === 'short' && <ShortMemoryPanel />}

@@ -52,7 +52,9 @@ Docker: `docker compose up --build`.
 | Слои | `server/config/*.yaml` |
 | Bind, public URL, dashboard | `server/config/server.yaml` (`api:`, `dashboard:`) |
 | Секреты | только `server/.env` |
-| Инвентарь ключей | [docs/config-keys.md](docs/config-keys.md) |
+| Ключи и значения по умолчанию | `server/config/*.example.yaml`; [справочник конфигурации](docs/ru/setup/config-reference.md) |
+
+План и открытые критерии приёмки: [PLAN](docs/PLAN.md). История версий: [VERSION](docs/VERSION.md).
 
 Без legacy dual-read: роли `llm.*_model` с полем `provider` — не top-level `BACKEND` / `openrouter:`.
 

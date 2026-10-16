@@ -150,10 +150,52 @@ CREATE INDEX IF NOT EXISTS idx_journal_scope ON journal_entries(owner_id, channe
 CREATE UNIQUE INDEX IF NOT EXISTS idx_diary_dedupe ON diary_notes(dedupe_key) WHERE dedupe_key IS NOT NULL;
 """
 
+MIGRATION_006_SQL = """
+CREATE TABLE IF NOT EXISTS neyra_state (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    valence REAL NOT NULL CHECK(valence BETWEEN -1 AND 1),
+    arousal REAL NOT NULL CHECK(arousal BETWEEN 0 AND 1),
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS person_relations (
+    person_id TEXT PRIMARY KEY REFERENCES people(person_id) ON DELETE CASCADE,
+    affinity REAL NOT NULL CHECK(affinity BETWEEN -1 AND 1),
+    trust REAL NOT NULL CHECK(trust BETWEEN 0 AND 1),
+    familiarity REAL NOT NULL CHECK(familiarity BETWEEN 0 AND 1),
+    updated_at TEXT NOT NULL,
+    history TEXT NOT NULL DEFAULT '[]',
+    last_significant_event TEXT
+);
+CREATE TABLE IF NOT EXISTS affect_turns (
+    turn_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS affect_meta (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO affect_meta(key,value) VALUES('relations_revision',0);
+"""
+
+MIGRATION_007_SQL = """
+CREATE INDEX IF NOT EXISTS idx_affect_turns_created_at ON affect_turns(created_at);
+CREATE TABLE IF NOT EXISTS affect_mood_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    valence_used REAL NOT NULL,
+    arousal_used REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_affect_mood_actor_ts ON affect_mood_events(actor_id,ts);
+CREATE INDEX IF NOT EXISTS idx_affect_mood_ts ON affect_mood_events(ts);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001_SQL),
     (2, MIGRATION_002_SQL),
     (3, MIGRATION_003_SQL),
     (4, MIGRATION_004_SQL),
     (5, MIGRATION_005_SQL),
+    (6, MIGRATION_006_SQL),
+    (7, MIGRATION_007_SQL),
 ]

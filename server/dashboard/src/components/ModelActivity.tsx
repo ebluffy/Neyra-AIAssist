@@ -24,7 +24,7 @@ const labels: Record<string, string> = {
   turn_diary: 'Дневник хода', working_memory: 'Рабочая память', nightly_reflection: 'Рефлексия',
   reply: 'Ответ', stream_reply: 'Потоковый ответ', rewrite: 'Перефразирование',
   routing: 'Маршрутизация', tools: 'Инструменты', summary: 'Итог', caption: 'Описание изображения',
-  empty_reply_retry: 'Повтор пустого ответа',
+  empty_reply_retry: 'Повтор пустого ответа', persona_warmup: 'Прогрев persona',
 }
 
 export function ModelActivity({ polling }: { polling: boolean }) {

@@ -31,6 +31,7 @@ def build_talk_system_prompt(
     working_memory_context: str = "",
     pre_context: str = "",
     conversation_mode: str = "default",
+    include_environment: bool = True,
 ) -> str:
     """Assemble talk-lane system prompt. Order: role → active → mentioned → rules → RAG → rest."""
     from core.llm.profile import is_local_openai_compatible_provider
@@ -41,7 +42,7 @@ def build_talk_system_prompt(
         hw_note = prompt_text("talk.endpoint_cloud")
 
     now = datetime.now()
-    time_only = prompt_text("talk.environment", timestamp=now.strftime('%Y-%m-%d %H:%M:%S'))
+    time_only = prompt_text("talk.environment", timestamp=now.strftime('%Y-%m-%d %H:%M:%S')) if include_environment else ""
 
     sections: list[str] = [base_prompt + hw_note + time_only]
     if (pre_context or "").strip():
