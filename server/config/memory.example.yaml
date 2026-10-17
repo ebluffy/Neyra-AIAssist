@@ -2,6 +2,14 @@
 # EN/RU: see docs/PLAN.md §1c and docs/config-keys.md
 #
 memory:
+  # Independent talk-state switches; disabling preserves stored state.
+  mood:
+    enabled: true
+  relations:
+    enabled: true
+  # Background scheduler master; changes require restart.
+  reflection_enabled: true
+
   # EN: SQLite Memory Hub (source of truth for chat_log / structured memory). See docs/adr/0001-memory-hub-v2.md
   # RU: SQLite Memory Hub (истина chat_log / структурированной памяти). См. docs/adr/0001-memory-hub-v2.md
   sqlite_path: "./data/memory/neyra_memory.db"

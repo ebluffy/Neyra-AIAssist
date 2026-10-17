@@ -62,3 +62,8 @@ format specifications запрещены. Пропущенные и лишние
 **14 stage/offline scripts**, validator каталога; **10 desktop/mobile E2E**
 с временной SQLite и заглушками моделей. Dashboard build на Node 22 прошёл.
 UI-код не менялся; новая логика загрузки проверяется также CI этого PR.
+
+Дополнение §7.5: английская `talk.state_policy` описывает приоритет persona и
+границы использования mood/relations. Текущий каталог содержит **71** service
+block; ru/en messages по-прежнему 2/2. Состояние передаётся как HumanMessage,
+не как редактирование persona или brain policy. См. [MOOD_RELATIONS.md](MOOD_RELATIONS.md).

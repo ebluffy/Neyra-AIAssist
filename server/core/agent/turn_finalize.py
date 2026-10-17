@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -52,6 +53,14 @@ async def finalize_successful_turn(
         meta=metadata,
     )
     hub = getattr(agent, "memory_hub", None)
+    from core.agent.model_trace import ACTIVE_TRACE
+    active = ACTIVE_TRACE.get()
+    if hub is not None and active is not None and active.affect_generations is not None:
+        try:
+            await asyncio.to_thread(hub.apply_affect_turn, turn_id=active.id, discord_id=discord_user_id,
+                                  text=user_message, generations=active.affect_generations)
+        except Exception:
+            logger.exception("Assistant state update failed")
     if hub is None or getattr(hub, "rag_write_mode", "off") != "off":
         from core.agent.model_trace import spawn_background
         spawn_background(agent, "semantic_dialog", lambda: agent._save_dialog_to_ltm_with_emotion(

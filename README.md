@@ -54,6 +54,7 @@ Docker: `docker compose up --build` (root compose includes `server/`).
 | Secrets | `server/.env` only |
 | Key inventory | [docs/config-keys.md](docs/config-keys.md) |
 | English service prompts and initial ru/en messages | `server/resources/`; [resource contract](docs/TEXT_RESOURCES.md) |
+| Assistant mood and per-person relationships | SQLite + dashboard; [MVP contract and live acceptance](docs/MOOD_RELATIONS.md) |
 
 No legacy dual-read: use `llm.talk_model` / `llm.brain_model` / … with `provider` — not top-level `BACKEND` or `openrouter:`.
 

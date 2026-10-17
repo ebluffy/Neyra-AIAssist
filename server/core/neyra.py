@@ -551,6 +551,9 @@ class NeyraAgent:
 
     async def _de_repeat_reply(self, user_message: str, clean_text: str) -> str:
         """Если новый ответ почти дублирует предыдущий — быстрый перефраз."""
+        from core.runtime.features import feature_enabled
+        if not feature_enabled(self.config, "agent.de_repeat.enabled"):
+            return clean_text
         from core.agent.de_repeat import de_repeat_reply
 
         return await de_repeat_reply(
@@ -735,6 +738,9 @@ class NeyraAgent:
             author_display_name = discord_context.current_user.display_name
             channel_id = discord_context.channel.id
         trace = TurnTrace(discord_user_id, channel_id, self.config)
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None:
+            trace.affect_generations = await asyncio.to_thread(hub.affect_generations)
         token = ACTIVE_TRACE.set(trace)
         try:
             out = await run_chat(
@@ -786,6 +792,9 @@ class NeyraAgent:
             author_display_name = discord_context.current_user.display_name
             channel_id = discord_context.channel.id
         trace = TurnTrace(discord_user_id, channel_id, self.config)
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None:
+            trace.affect_generations = await asyncio.to_thread(hub.affect_generations)
         token = ACTIVE_TRACE.set(trace)
         stream = iter_chat_stream(
             self, user_message=user_message, username=username,

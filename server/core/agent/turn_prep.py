@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -80,6 +81,7 @@ class TurnPrep:
     brain_sys: str
     discord_context: Any = None
     brain_data: str = ""
+    affect_data: dict | None = None
 
 
 async def prepare_turn(
@@ -236,4 +238,8 @@ async def prepare_turn(
     from core.agent.talk_messages import turn_context_data
     from dataclasses import replace
     prep.brain_data = turn_context_data(replace(prep, pre_context=pre_context if lane_wants_pre_context(agent.config, "brain") else ""))
+    hub = getattr(agent, "memory_hub", None)
+    if hub is not None:
+        from core.memory.affect import talk_state
+        prep.affect_data = talk_state(await asyncio.to_thread(hub.affect_for_account, discord_user_id))
     return prep

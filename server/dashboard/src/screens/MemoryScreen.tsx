@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BookOpen, Brain, NotebookPen, Plus, Trash2, Users, ScrollText } from 'lucide-react'
+import { AffectPanel } from '../components/AffectPanel'
 import { ShortMemoryPanel, LongMemoryPanel } from '../components/MemoryLayers'
 import { apiDelete, apiGet, apiPatch, apiPost } from '../api'
 import type { ApiEnvelope, MemoryPolicies, MemoryStats } from '../api'
@@ -481,6 +482,7 @@ export function MemoryScreen() {
       <div role="tabpanel" id={`memory-panel-${tab}`} aria-labelledby={`memory-tab-${tab}`} tabIndex={0} className="stack focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
       {tab === 'overview' && (
         <div className="stack">
+          <AffectPanel people={people} />
           <div className="card">
             <div className="card-header">
               <Brain size={15} className="card-icon card-icon-cyan" />
@@ -537,7 +539,7 @@ export function MemoryScreen() {
                 disabled={wipeBusy}
                 onClick={() =>
                   void runWipe(
-                    ['people', 'diary', 'journal', 'stm', 'ltm', 'chat_log', 'working_memory'],
+                    ['people', 'diary', 'journal', 'stm', 'ltm', 'chat_log', 'working_memory', 'mood', 'relations'],
                     'ВСЮ память',
                   )
                 }

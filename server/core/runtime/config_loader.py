@@ -215,6 +215,22 @@ def validate_config_schema(cfg: dict[str, Any]) -> list[str]:
             conversation_mode_hint(agent_cfg["conversation_mode"])
         except ValueError as e:
             errors.append(str(e))
+    from core.runtime.features import FEATURE_DEFAULTS
+    for key in FEATURE_DEFAULTS:
+        value = cfg
+        for part in key.split("."):
+            # Empty optional YAML blocks inherit defaults, just like missing blocks.
+            if value is None:
+                break
+            if not isinstance(value, dict):
+                errors.append(f"{key}: parent must be a mapping")
+                break
+            if part not in value:
+                break
+            value = value[part]
+        else:
+            if type(value) is not bool:
+                errors.append(f"{key}: expected boolean")
     _opt_dict("voice")
     _opt_dict("backup")
     _opt_dict("external_storage")
@@ -252,6 +268,7 @@ _RUNTIME_PERSIST_LAYER: dict[str, str] = {
     "memory": "memory.yaml",
     "logging": "runtime.yaml",
     "health_monitor": "runtime.yaml",
+    "mcp_client": "modules.yaml",
 }
 
 

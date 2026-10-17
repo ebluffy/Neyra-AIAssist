@@ -85,6 +85,8 @@ class MemoryHub:
             resolve_memory_path(Path.cwd(), config, raw, "./data/memory/neyra_memory.db")
         )
         self.sqlite = SqliteStore(path)
+        from core.memory.affect import AffectStore
+        self.affect = AffectStore(self.sqlite)
         self.rag_write_mode = str(mem.get("rag_write_mode") or "important_only").strip().lower()
         if self.rag_write_mode not in {"off", "digest", "important_only", "legacy_dialog"}:
             logger.warning("Unknown rag_write_mode=%r — using important_only", self.rag_write_mode)
@@ -109,6 +111,55 @@ class MemoryHub:
 
     def close(self) -> None:
         self.sqlite.close()
+
+    def affect_generations(self):
+        with self._write_lock:
+            return {scope: self._generations.get(scope, 0) for scope in ("mood", "relations", "people")}
+
+    def affect_snapshot(self, person_id=None):
+        from core.runtime.features import feature_enabled
+        result = self.affect.snapshot(person_id)
+        result["enabled"] = {scope: feature_enabled(self.config, f"memory.{scope}.enabled") for scope in ("mood", "relations")}
+        return result
+
+    def invalidate_affect_turns(self):
+        with self._write_lock:
+            for scope in ("mood", "relations"):
+                self._generations[scope] = self._generations.get(scope, 0) + 1
+
+    def affect_for_account(self, discord_id):
+        # Account ID is authoritative; aliases/display names never select a relationship.
+        with self.sqlite.lock:
+            account = self.sqlite.get_account("discord", str(discord_id)) if discord_id else None
+            return self.affect_snapshot(account["person_id"] if account else None)
+
+    def apply_affect_turn(self, *, turn_id, discord_id, text, generations):
+        with self._write_lock, self.sqlite.lock:
+            if generations != self.affect_generations():
+                return False
+            if self.affect.has_turn(turn_id):
+                return False
+            from core.runtime.features import feature_enabled
+            mood_on = feature_enabled(self.config, "memory.mood.enabled")
+            relations_on = feature_enabled(self.config, "memory.relations.enabled")
+            if not (mood_on or relations_on):
+                return False
+            account = self.sqlite.get_account("discord", str(discord_id)) if discord_id else None
+            if discord_id and account is None and relations_on:
+                person = self.ensure_person_for_account(platform="discord", platform_user_id=str(discord_id))
+                account = {"person_id": person["id"]}
+            return self.affect.apply_turn(turn_id=turn_id, person_id=account["person_id"] if account else None, text=text,
+                                          mood_enabled=mood_on, relations_enabled=relations_on)
+
+    @serialized_wipe
+    def reset_relation(self, person_id, *, backup_dir):
+        with self.sqlite.lock:
+            if self.sqlite.get_person(person_id) is None:
+                raise KeyError(person_id)
+            dest = Path(backup_dir) / f"neyra_relation_pre_reset_{uuid.uuid4().hex}.db"
+            self.sqlite.backup_to(dest)
+            count = self.affect.reset("relations", person_id)
+            return {"deleted": {"relations": count}, "backup": str(dest)}
 
     def new_turn_id(self) -> str:
         return str(uuid.uuid4())
@@ -654,6 +705,8 @@ class MemoryHub:
             "working_memory",
             "ltm",
             "merge_log",
+            "mood",
+            "relations",
         }
         wanted = {str(s).strip().lower() for s in (scopes or []) if str(s).strip()}
         unknown = wanted - allowed - {"stm"}
@@ -667,7 +720,7 @@ class MemoryHub:
             try:
                 backup_dir = Path(backup_dir)
                 backup_dir.mkdir(parents=True, exist_ok=True)
-                ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+                ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex
                 dest = backup_dir / f"neyra_memory_pre_wipe_{ts}.db"
                 self.sqlite.backup_to(dest)
                 backup_path = str(dest)
@@ -683,7 +736,12 @@ class MemoryHub:
             except Exception as e:
                 raise RuntimeError(f"wipe backup failed: {e}") from e
         out: dict[str, int] = {}
+        for scope in ("mood", "relations"):
+            if scope in wanted:
+                out[scope] = self.affect.reset(scope)
         if "people" in wanted:
+            if "relations" not in out:
+                out["relations"] = self.affect.reset("relations")
             out["people"] = self.sqlite.clear_table("people")
             try:
                 out["merge_log"] = self.sqlite.clear_table("merge_log")

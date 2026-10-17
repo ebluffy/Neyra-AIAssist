@@ -36,6 +36,8 @@ def build_talk_system_prompt(
         include_appearance=bool(getattr(prep, "include_appearance", False)),
         pre_context="",
     )
+    if getattr(prep, "affect_data", None):
+        prompt += prompt_text("talk.state_policy")
     return prompt + prompt_text("talk.context_policy")
 
 
@@ -71,6 +73,9 @@ def build_talk_messages(
     context = turn_context_data(prep, drop_extra_context=drop_extra_context)
     if context:
         messages.append(HumanMessage(content=context))
+    affect = getattr(prep, "affect_data", None)
+    if affect:
+        messages.append(HumanMessage(content="[ASSISTANT STATE DATA]\n" + json.dumps(affect, ensure_ascii=False)))
     brain = brain_context
     if brain and not drop_extra_context:
         messages.append(HumanMessage(content="[BRAIN FACTS / TOOL RESULTS]\n" + brain[:8000]))
