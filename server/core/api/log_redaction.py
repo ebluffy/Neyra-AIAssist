@@ -11,6 +11,7 @@ from core.api.request_context import get_trace_id
 _BEARER_RE = re.compile(r"(?i)(Bearer\s+)([A-Za-z0-9._\-+/=]{8,})")
 _TOKEN_QS_RE = re.compile(r"(?i)([?&](?:token|access_token|api_key|key)=)([^&\s]+)")
 _SK_RE = re.compile(r"(?i)\b(sk-[A-Za-z0-9]{8,})")
+_URL_CREDENTIALS_RE = re.compile(r"(?i)(https?://)[^\s/?#]*@")
 _SECRET_KV_RE = re.compile(
     r"(?i)\b(api[_-]?key|api[_-]?token|secret|password|authorization)\s*[=:]\s*([^\s,;]+)"
 )
@@ -20,6 +21,7 @@ def redact_text(text: str, extra_secrets: Iterable[str] | None = None) -> str:
     if not text:
         return text
     out = text
+    out = _URL_CREDENTIALS_RE.sub(r"\1***@", out)
     out = _BEARER_RE.sub(r"\1***", out)
     out = _TOKEN_QS_RE.sub(r"\1***", out)
     out = _SK_RE.sub("sk-***", out)

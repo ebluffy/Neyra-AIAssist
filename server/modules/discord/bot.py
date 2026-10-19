@@ -279,10 +279,25 @@ class NeyraDiscordBot(discord.Client):
         config: dict,
         reflection: Optional["ReflectionEngine"] = None,
     ):
+        disc_cfg = config.get("discord", {}) or {}
+        env_proxy = (os.environ.get("DISCORD_PROXY_URL") or "").strip()
+        proxy = env_proxy or str(disc_cfg.get("proxy_url") or "").strip()
+        if proxy:
+            from urllib.parse import urlsplit
+
+            try:
+                parsed = urlsplit(proxy)
+                valid = parsed.scheme in {"http", "https"} and bool(parsed.hostname) and parsed.port != 0
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError("Discord proxy_url must be an HTTP(S) proxy URL")
+            if not env_proxy and (parsed.username is not None or parsed.password is not None):
+                raise ValueError("Discord proxy credentials must be set via DISCORD_PROXY_URL in .env, not in YAML")
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions(
+        super().__init__(intents=intents, proxy=proxy or None, allowed_mentions=discord.AllowedMentions(
             everyone=False, roles=False, users=False, replied_user=True,
         ))
         self.tree = app_commands.CommandTree(self)
@@ -290,7 +305,6 @@ class NeyraDiscordBot(discord.Client):
         self.agent = agent
         self.config = config
         self.reflection = reflection
-        disc_cfg = config.get("discord", {}) or {}
 
         from core.runtime.snowflake import parse_snowflake, parse_snowflake_list
 

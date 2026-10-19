@@ -7,6 +7,12 @@
 # EN: Enable/disable in modules/discord/plugin.yaml (`enabled:`).
 # RU: Вкл/выкл — в modules/discord/plugin.yaml (`enabled:`).
 
+# EN: Optional HTTP(S) proxy for Discord REST and gateway; DISCORD_PROXY_URL overrides it.
+# RU: Необязательный HTTP(S) прокси для Discord REST и gateway; DISCORD_PROXY_URL имеет приоритет.
+# EN: URLs containing credentials belong only in .env as DISCORD_PROXY_URL, never in YAML.
+# RU: URL с логином/паролем задавайте только в .env через DISCORD_PROXY_URL, не в YAML.
+# proxy_url: "http://127.0.0.1:7890"
+
 # EN: List of channel IDs where bot can answer without mention.
 # RU: ID каналов без @mention. Храните как строки — JS Number ломает snowflake (>2^53).
 channel_ids: []
