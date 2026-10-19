@@ -286,10 +286,10 @@ def test_discord_adapter_keeps_other_mentions_and_passes_context(tmp_path):
         bot._connection.user = message.mentions[0]
         bot._collect_image_attachments = AsyncMock(return_value=[])
         bot._classify_intent = AsyncMock(return_value="CHAT")
-        bot._run_chat_stream = AsyncMock()
+        bot._run_chat_reply = AsyncMock()
         await bot.on_message(message)
         await asyncio.sleep(0)
-        payload = bot._run_chat_stream.call_args.kwargs
+        payload = bot._run_chat_reply.call_args.kwargs
         assert "<@456>" in payload["content"]
         assert "<@999>" not in payload["content"]
         assert payload["discord_context"].message.content == message.content

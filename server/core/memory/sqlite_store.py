@@ -175,8 +175,9 @@ class SqliteStore:
         """Consistent SQLite backup (includes WAL) under store lock."""
         dest = Path(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            dest.unlink()
+        # Reserve the destination atomically: never overwrite an earlier backup.
+        with dest.open("xb"):
+            pass
         with self._lock:
             dst = sqlite3.connect(str(dest))
             try:
@@ -842,6 +843,9 @@ class SqliteStore:
                         survivor_id,
                     ),
                 )
+                relation_row = self._conn.execute("SELECT * FROM person_relations WHERE person_id=?", (source_id,)).fetchone()
+                source_relation = dict(relation_row) if relation_row else None
+                relation_revision = self._conn.execute("SELECT value FROM affect_meta WHERE key='relations_revision'").fetchone()[0]
                 self._conn.execute("DELETE FROM people WHERE person_id = ?", (source_id,))
 
                 # Placeholder snapshot; staled_proposals filled after rewrite/dedupe.
@@ -854,6 +858,8 @@ class SqliteStore:
                         "meta": o_dict.get("meta") if isinstance(o_dict.get("meta"), dict) else {},
                         "created_at": o_dict.get("created_at"),
                     },
+                    "source_relation": source_relation,
+                    "relation_revision": relation_revision,
                     "facts": facts_sample,
                     "fact_ids": fact_ids,
                     "accounts": accounts,
@@ -1028,6 +1034,7 @@ class SqliteStore:
                             f"account {plat}:{puid} reassigned away from survivor; cannot undo"
                         )
 
+                existing_relation = self._conn.execute("SELECT * FROM person_relations WHERE person_id=?", (source_id,)).fetchone()
                 created_at = str(person.get("created_at") or "").strip() or now
                 self._conn.execute(
                     """
@@ -1044,6 +1051,14 @@ class SqliteStore:
                         self._dumps(person.get("meta") or {}),
                     ),
                 )
+                relation = dict(existing_relation) if existing_relation else snap.get("source_relation")
+                revision = self._conn.execute("SELECT value FROM affect_meta WHERE key='relations_revision'").fetchone()[0]
+                if relation and (existing_relation or snap.get("relation_revision") == revision):
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO person_relations(person_id,affinity,trust,familiarity,updated_at,history,last_significant_event) VALUES(?,?,?,?,?,?,?)",
+                        (source_id, relation["affinity"], relation["trust"], relation["familiarity"],
+                         relation["updated_at"], relation["history"], relation["last_significant_event"]),
+                    )
                 if fact_ids:
                     placeholders = ",".join("?" * len(fact_ids))
                     self._conn.execute(

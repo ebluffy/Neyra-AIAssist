@@ -92,6 +92,9 @@ class ShortTermMemory:
     def _scope(self):
         from core.agent.model_trace import ACTIVE_TRACE
         trace = ACTIVE_TRACE.get()
+        scope = getattr(trace, "conversation_scope", None)
+        if scope is not None:
+            return scope.owner, scope.channel
         return (trace.memory_owner_id or trace.user_id, trace.channel_id) if trace is not None else None
 
     @property
@@ -715,20 +718,16 @@ class PeopleDB:
         prev_seen = self._cache[person_id].get("last_seen")
         self._cache[person_id].setdefault("dynamic_facts", []).append(entry)
         self._cache[person_id]["last_seen"] = datetime.now().isoformat()
-        logger.info(f"PeopleDB: факт добавлен [{person_id}]: {fact}")
         hub = getattr(self, "memory_hub", None)
         hub_ok = False
         if hub is not None:
             try:
-                person = self._cache[person_id]
                 hub.add_person_fact(
                     person_id,
                     fact,
                     emotion_note=em or None,
                     source="people_db",
-                    person_meta=person,
-                    aliases=list(person.get("names") or []),
-                    display_name=(person.get("names") or [person_id])[0],
+                    require_existing=True,
                 )
                 hub_ok = True
             except Exception as e:

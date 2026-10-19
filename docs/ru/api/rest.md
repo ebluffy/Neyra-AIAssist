@@ -42,7 +42,7 @@ REST `data.model_trace` и финальный WS `done.model_trace` содерж
 System → события памяти. Admin delete/wipe API сохранены. Activity также
 включает отдельные background reports (`kind`, nullable `parent_turn_id`),
 тайминги и usage при наличии. Хранятся отдельно 200 ходов и 200 jobs; выдача
-activity объединяет их по времени. Подробнее — [model trace](../../MODEL_TRACE.md).
+activity объединяет их по времени. Подробнее — [PLAN §12: телеметрия](../../PLAN.md#память-проверка-работы-и-улучшения).
 
 - Env: `INTERNAL_API_*` → `API_*` (старт падает, если старые имена заданы; dual-read нет).
 - `POST /v1/plugins/{id}/reload|restart` — on_demand: hot re-import; resident: soft-restart ядра (`restart_scheduled`).

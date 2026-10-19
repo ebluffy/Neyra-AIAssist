@@ -183,6 +183,7 @@ async def _run_brain_phase_raises() -> None:
 
     agent = SimpleNamespace(
         config={},
+        short_memory=SimpleNamespace(get_history=lambda: []),
         tools={},
         llm_brain=BoomLLM(),
         brain_max_tokens=None,

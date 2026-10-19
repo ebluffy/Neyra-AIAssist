@@ -439,7 +439,7 @@ def _test_plan_talk_vision() -> None:
     assert p.talk_vm is imgs
     assert p.has_vis_prompt is True
 
-    # brain-native + talk ≠ brain → caption, talk_vm None
+    # Native brain provides visual facts to a text-only talk without a second vision call.
     p2 = plan_talk_vision(
         imgs,
         brain_native_vis=True,
@@ -450,7 +450,7 @@ def _test_plan_talk_vision() -> None:
         vision_is_brain_client=True,
     )
     assert p2.talk_can_vl is False
-    assert p2.need_talk_caption is True
+    assert p2.need_talk_caption is False
     assert p2.talk_vm is None
     assert p2.has_vis_prompt is False
 

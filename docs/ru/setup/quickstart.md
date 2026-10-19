@@ -6,7 +6,7 @@
    - `pip install -r server/requirements.txt`
 2. Скопируйте `server/.env.example` → `server/.env` и заполните секреты.
 3. Короткий корневой конфиг: `server/config.example.yaml` → `server/config.yaml`.
-4. Слои: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). См. `docs/config-keys.md`.
+4. Слои: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). Defaults заданы в этих examples; полный список ключей: `python server/scripts/regen_config_keys_md.py` из корня репозитория (вывод в stdout).
 5. Discord и server-слой:
    - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
    - `server/config/server.example.yaml` → `server/config/server.yaml` (bind API + `api.public_*`, `dashboard:`)

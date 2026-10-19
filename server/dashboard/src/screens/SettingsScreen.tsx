@@ -9,12 +9,14 @@ import { InlineFeedback } from '../components/ui/inline-feedback'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
+import { TalkSessionStatus } from '../components/TalkSessionStatus'
 import { rotateAccessKey } from '../lib/dashboard-auth'
 import { pluralRu } from '../lib/plural-ru'
+import { navigatePanelTabs } from '../lib/panel-tabs'
 import { setThemePreference, useThemePreference, type ThemePreference } from '../lib/theme'
 import { getDensity, setDensity, type Density } from '../lib/ui-prefs'
 
-type FieldDef = { key: string; label: string; kind?: 'text' | 'bool' | 'provider' | 'conversation' }
+type FieldDef = { key: string; label: string; description?: string; kind?: 'text' | 'bool' | 'provider' | 'conversation' }
 
 const CONVERSATION_MODES = [
   { value: 'default', label: 'По persona', description: 'Стиль из persona, без дополнительных ограничений.' },
@@ -29,6 +31,8 @@ const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
     id: 'talk',
     title: 'Речь',
     fields: [
+      { key: 'llm.talk_model.responses.enabled', label: 'Сессии Responses для речи', kind: 'bool', description: 'Хранит историю диалога у провайдера. Persona передаётся при создании цепочки; лички изолированы, в беседе общая история канала. Требуется поддержка Responses шлюзом. По умолчанию выключено.' },
+      { key: 'llm.talk_model.responses.warmup_on_start', label: 'Прогрев persona при запуске', kind: 'bool', description: 'При включённых Responses делает платный запрос с persona без данных пользователей. Подготавливает общую заготовку для отдельных диалогов. Включение после сохранения запускает прогрев сразу; фоновое повторение не выполняется.' },
       { key: 'agent.conversation_mode', label: 'Режим общения', kind: 'conversation' },
       { key: 'llm.talk_model.model', label: 'Модель речи' },
       { key: 'llm.talk_model.provider', label: 'Провайдер', kind: 'provider' },
@@ -81,6 +85,42 @@ const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
     ],
   },
   {
+    id: 'behavior',
+    title: 'Поведение',
+    fields: [
+      { key: 'memory.mood.enabled', label: 'Настроение Нейры', kind: 'bool',
+        description: 'Выключено: настроение не обновляется и не передаётся в talk. Данные сохраняются; decay по времени продолжается.' },
+      { key: 'memory.relations.enabled', label: 'Отношения с людьми', kind: 'bool',
+        description: 'Выключено: отношения не обновляются и не передаются в talk. Данные сохраняются.' },
+      { key: 'memory.diary_after_turn', label: 'Дневник после каждого хода', kind: 'bool',
+        description: 'Создаёт личную запись после ответа. Периодический дневник управляется отдельно.' },
+      { key: 'memory.working_memory.enabled', label: 'Рабочая память', kind: 'bool',
+        description: 'Обновляет промежуточную сводку и использует её в контексте.' },
+      { key: 'memory.emotional_layer.enabled', label: 'Эмоциональные заметки памяти', kind: 'bool',
+        description: 'Разрешает анализ наблюдаемого тона при записи в долгую память; работает вместе с «Анализ тона для долгой памяти».' },
+      { key: 'memory.pre_context.enabled', label: 'Предварительная сводка контекста', kind: 'bool',
+        description: 'Подставляет разрешённые выдержки памяти перед ходом. Не выключает саму память.' },
+      { key: 'agent.de_repeat.enabled', label: 'Перефразирование повторов', kind: 'bool',
+        description: 'При похожих ответах разрешает дополнительный вызов talk для перефразирования.' },
+      { key: 'memory.small_reflection_enabled', label: 'Короткая рефлексия', kind: 'bool',
+        description: 'Периодическая фоновая рефлексия; изменение применяется после мягкого рестарта.' },
+      { key: 'memory.diary_hourly_enabled', label: 'Периодический дневник', kind: 'bool',
+        description: 'Часовые записи независимо от дневника после хода; применяется после мягкого рестарта.' },
+      { key: 'memory.emotional_layer.ltm_emotion_sync', label: 'Анализ тона для долгой памяти', kind: 'bool',
+        description: 'Дополнительный вызов модели памяти при записи LTM; требует включённых эмоциональных заметок.' },
+      { key: 'memory.rag_enabled', label: 'Поиск по долгой памяти (RAG)', kind: 'bool',
+        description: 'Загружает Chroma и разрешает поиск; включение/выключение после мягкого рестарта.' },
+      { key: 'memory.reflection_enabled', label: 'Планировщик памяти', kind: 'bool',
+        description: 'Фоновые рефлексия, дневник и обслуживание LTM. Не выключает записи после хода; нужен мягкий рестарт.' },
+      { key: 'memory.ltm_auto_prune.enabled', label: 'Автоматическая очистка LTM', kind: 'bool',
+        description: 'Плановая очистка долгой памяти. Требует планировщика и мягкого рестарта.' },
+      { key: 'memory.ltm_auto_summarize.enabled', label: 'Автоматическое сжатие LTM', kind: 'bool',
+        description: 'Плановое сжатие долгой памяти. Требует планировщика и мягкого рестарта.' },
+      { key: 'mcp_client.enabled', label: 'Внешние MCP-инструменты', kind: 'bool',
+        description: 'Подключение настроенных MCP-серверов. Без изменения адресов и секретов; нужен мягкий рестарт.' },
+    ],
+  },
+  {
     id: 'providers',
     title: 'Провайдеры',
     fields: [
@@ -101,7 +141,7 @@ const TABS: Array<{ id: string; title: string; fields: FieldDef[] }> = [
   },
 ]
 
-const BOOL_KEYS = new Set(TABS.flatMap((t) => t.fields.filter((f) => f.key.endsWith('.enabled') || f.key.includes('use_brain') || f.key.includes('remember_')).map((f) => f.key)).concat([
+const BOOL_KEYS = new Set(TABS.flatMap((t) => t.fields.filter((f) => f.kind === 'bool' || f.key.endsWith('.enabled') || f.key.includes('use_brain') || f.key.includes('remember_')).map((f) => f.key)).concat([
   'llm.vision_model.enabled',
   'llm.vision_model.use_brain_model_for_vision',
   'llm.vision_model.remember_last_image',
@@ -132,10 +172,15 @@ const NUMBER_KEYS = new Set([
 
 /** Fields that apply only after soft restart (hot-reload does not cover them). */
 const RESTART_KEYS = new Set([
-  'logging.level',
+  'mcp_client.enabled',
+  'memory.rag_enabled',
+  'memory.reflection_enabled',
+  'memory.ltm_auto_prune.enabled',
+  'memory.ltm_auto_summarize.enabled',
+  'memory.small_reflection_enabled',
+  'memory.diary_hourly_enabled',
   'health_monitor.enabled',
   'health_monitor.interval_seconds',
-  'agent.fast_path.enabled',
 ])
 
 function serialize(v: unknown): string {
@@ -351,7 +396,7 @@ export function SettingsScreen() {
     const commonLabel = (
       <span className="label-text">
         {f.label}{' '}
-        <span style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--muted)', fontWeight: 400 }}>
+        <span className="break-all" style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--muted)', fontWeight: 400 }}>
           ({f.key})
         </span>
         {RESTART_KEYS.has(f.key) ? (
@@ -367,12 +412,15 @@ export function SettingsScreen() {
           {commonLabel}
           <select
             className="select input-mono"
+            aria-label={f.label}
+            aria-describedby={f.description ? `${f.key}-help` : undefined}
             onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
             value={values[f.key] || 'false'}
           >
-            <option value="true">да</option>
-            <option value="false">нет</option>
+            <option value="true">Включено</option>
+            <option value="false">Выключено</option>
           </select>
+          {f.description && <span id={`${f.key}-help`} className="text-sm text-[var(--muted)]">{f.description}</span>}
         </label>
       )
     }
@@ -555,6 +603,7 @@ export function SettingsScreen() {
         </div>
         <p style={{ fontSize: '0.8rem', color: 'var(--muted)', margin: '0 0 0.65rem' }}>
           «Применить» сохраняет настройки на сервере. Режим общения действует со следующего ответа.
+          Переключатели без пометки действуют со следующего хода; уже начатые фоновые задачи могут завершиться.
           При смене моделей или провайдера LLM-клиенты пересобираются; поля с пометкой требуют перезапуска.
         </p>
         <div className="tabs-row" role="tablist" aria-label="Разделы конфига">
@@ -562,6 +611,8 @@ export function SettingsScreen() {
             <Button
               key={t.id}
               aria-selected={tab === t.id}
+              tabIndex={tab === t.id ? 0 : -1}
+              onKeyDown={navigatePanelTabs}
               onClick={() => void selectTab(t.id)}
               role="tab"
               size="sm"
@@ -573,14 +624,15 @@ export function SettingsScreen() {
           ))}
         </div>
         {loading ? (
-          <div className="stack" style={{ marginTop: '0.85rem' }}>
+          <div className="stack min-w-0 grid-cols-[minmax(0,1fr)]" style={{ marginTop: '0.85rem' }}>
             <Skeleton className="h-10" />
             <Skeleton className="h-10" />
             <Skeleton className="h-10" />
           </div>
         ) : (
-          <div className="stack" style={{ marginTop: '0.85rem' }}>
-            <div className="grid-2">{active.fields.map((f) => renderField(f))}</div>
+          <div className="stack min-w-0 grid-cols-[minmax(0,1fr)]" style={{ marginTop: '0.85rem' }}>
+            <div className="grid-2 min-w-0 [&>*]:min-w-0">{active.fields.map((f) => renderField(f))}</div>
+            {active.id === 'talk' && <TalkSessionStatus settingsDirty={anyDirty} />}
             <div className="row">
               <Button
                 disabled={saving || dirtyKeys.length === 0}

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Optional
 
 from core.agent.model_trace import invoke
+from core.agent.reply_postprocess import extract_think_blocks
 from core.text_resources import message_text, prompt_text
 
 logger = logging.getLogger("neyra.agent.brain_phase")
@@ -57,11 +59,18 @@ async def run_brain_tool_phase(
         human_msg = HumanMessage(content=human_content)
 
     from core.agent.discord_context import context_prompt
-    messages: list[Any] = [SystemMessage(content=brain_system)]
+    messages: list[Any] = [SystemMessage(content=brain_system + "\n\n" + prompt_text("brain.context_policy"))]
     if discord_context is not None:
         messages.append(HumanMessage(content=context_prompt(discord_context)))
     if context_data:
         messages.append(HumanMessage(content=context_data))
+    history = [
+        {"role": item["role"], "content": str(item.get("content") or "")[:1600]}
+        for item in agent.short_memory.get_history()[-12:]
+        if item.get("role") in ("user", "assistant")
+    ]
+    if history:
+        messages.append(HumanMessage(content="[RECENT DIALOGUE DATA]\n" + json.dumps(history, ensure_ascii=False)))
     messages.append(human_msg)
 
     mcp_cfg = agent.config.get("mcp_client") if isinstance(agent.config.get("mcp_client"), dict) else {}
@@ -84,7 +93,7 @@ async def run_brain_tool_phase(
             text = message_content_to_text(
                 response.content if hasattr(response, "content") else response
             )
-            return text.strip()
+            return extract_think_blocks(text)[0].strip()
 
         bound = brain_llm.bind_tools(list(agent.tools.values()))
         step = 0
@@ -110,8 +119,19 @@ async def run_brain_tool_phase(
                 if not tname:
                     continue
                 out = await agent._execute_tool(tname, **args)
-                messages.append(ToolMessage(content=out, tool_call_id=tid))
+                messages.append(ToolMessage(content=out, tool_call_id=tid, name=tname))
             step += 1
+        if response is not None and getattr(response, "tool_calls", None) and step >= max_tool_steps:
+            observed = [message for message in messages if isinstance(message, ToolMessage)]
+            return json.dumps({
+                "tool_budget_exhausted": True,
+                "omitted_results": max(0, len(observed) - 4),
+                "results": [
+                    {"tool": str(message.name or "")[:200], "result": str(message.content)[:1200],
+                     "truncated": len(str(message.content)) > 1200}
+                    for message in observed[-4:]
+                ],
+            }, ensure_ascii=False)
         if response is None:
             response = await invoke(agent, brain_llm, messages, lane="brain", purpose="summary", images=bool(vision_images), invoker=agent._ainvoke_text_with_fallback)
             agent._log_model_route(agent._extract_model_name(response), lane="brain")
@@ -120,7 +140,7 @@ async def run_brain_tool_phase(
         text = message_content_to_text(
             response.content if hasattr(response, "content") else response
         )
-        return text.strip()
+        return extract_think_blocks(text)[0].strip()
     except Exception as e:
         # Brain is required: do not silently continue with talk-only (GLM without Luna).
         logger.error("Brain phase failed (talk will not run): %s", e)

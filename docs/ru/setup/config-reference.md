@@ -8,7 +8,7 @@
 - `paths.data_dir` — корень runtime-данных (default `server/data` от корня репо; override — `NEYRA_DATA_DIR`)
 - `agent.fast_path` — allowlist команд умного дома (выкл. по умолчанию; публикует `home.*`; multi-client e2e — Этап 3+)
 - `agent.conversation_mode` в `server/config/agent.yaml` — глобальный стиль talk-ответов: `default` (persona без изменений), `brief` (кратко), `detailed` (подробно), `technical` (технически), `no_jokes` (без шуток/сарказма). Отсутствующий ключ равнозначен `default`; неизвестные значения и неверные типы отклоняются.
-- Слои в `server/config/` — полные ключи в `docs/config-keys.md`:
+- Слои в `server/config/` — defaults: `server/config/*.example.yaml`; полный список ключей: `python server/scripts/regen_config_keys_md.py` из корня репозитория (вывод в stdout):
   - `llm.yaml` — по ролям **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** с **`provider`**; провайдеры — **`llm.providers.<name>`**. Без top-level `BACKEND` / `openrouter:` / `vision:`.
   - `memory.yaml`, `voice.yaml`, `agent.yaml`, `modules.yaml`, `runtime.yaml`
 

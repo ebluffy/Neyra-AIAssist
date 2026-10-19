@@ -17,11 +17,9 @@ mention_only: false
 # EN: Per-user cooldown in seconds.
 cooldown_seconds: 3.0
 
-# EN: Stream edit interval for partial message updates.
-stream_edit_interval: 0.7
-
-# EN: Output mode: stream | final_only
-stream_output_mode: "stream"
+# EN: Chat replies are sent only after generation completes, without draft messages or edits.
+# RU: Ответ отправляется после генерации, без черновика с курсором и промежуточных правок.
+# Legacy stream_output_mode / stream_edit_interval are ignored.
 
 # EN: Optional guild ID for faster slash command sync; null for global sync.
 slash_sync_guild_id: null

@@ -6,6 +6,8 @@ import logging
 from contextlib import aclosing
 from typing import Any, AsyncIterator, Optional
 
+from core.agent.public_errors import public_chat_error
+from core.agent.reasoning_filter import ReasoningFilter
 from core.agent.reply_pipeline import (
     log_micro_plan_metrics,
     polish_clean_reply,
@@ -60,6 +62,9 @@ async def iter_chat_stream(
             }
             return
     except Exception as fp_e:
+        from core.agent.talk_sessions import ConversationReset
+        if isinstance(fp_e, ConversationReset):
+            raise
         logger.warning("fast_path (stream) failed (soft, continue brain): %s", fp_e)
 
     prep = await prepare_turn(
@@ -116,6 +121,7 @@ async def iter_chat_stream(
             )
             yield {
                 "type": "error",
+                "code": "brain_unavailable",
                 "text": BRAIN_DOWN_USER_MESSAGE,
                 "sounds": ["bruh"],
             }
@@ -127,6 +133,8 @@ async def iter_chat_stream(
             stream_llm = agent.llm_talk.bind(
                 max_tokens=max(agent.reply_max_tokens, agent.lyrics_reply_max_tokens)
             )
+        from core.agent.talk_sessions import responses_talk_model
+        stream_llm = responses_talk_model(agent, stream_llm)
         if vision_images:
             mode = "brain-native" if prep.brain_native_vis else "caption→brain→talk"
             logger.info(
@@ -145,8 +153,23 @@ async def iter_chat_stream(
         context_exceeded = False
         used_model_name: Optional[str] = None
         plan_state = agent._init_micro_plan_state()
+        reasoning_filter = ReasoningFilter()
         raw_chunk_count = 0
         yielded_chunk_count = 0
+        from core.agent.model_trace import ACTIVE_TRACE
+        trace = ACTIVE_TRACE.get()
+
+        def reset_hidden_attempt():
+            nonlocal raw_response, plan_state, reasoning_filter, raw_chunk_count, used_model_name
+            raw_response = ""
+            plan_state = agent._init_micro_plan_state()
+            reasoning_filter = ReasoningFilter()
+            raw_chunk_count = 0
+            used_model_name = None
+
+        if trace is not None:
+            trace.stream_control = {"public_emitted": lambda: yielded_chunk_count > 0,
+                                    "on_retry": reset_hidden_attempt}
 
         async def _consume_stream(stream_iter: Any, *, retry: bool = False) -> AsyncIterator[dict]:
             nonlocal raw_response, used_model_name, raw_chunk_count, yielded_chunk_count
@@ -158,11 +181,15 @@ async def iter_chat_stream(
                     if token:
                         raw_chunk_count += 1
                         raw_response += token
-                        visible = agent._filter_micro_plan_token(token, plan_state)
+                        visible = agent._filter_micro_plan_token(reasoning_filter.feed(token), plan_state)
                         if visible:
-                            yield {"type": "token", "text": visible}
+                            from core.agent.model_trace import mark_first_meaningful_token
+                            if trace and trace.calls:
+                                mark_first_meaningful_token(trace.calls[-1])
                             yielded_chunk_count += 1
-            tail = agent._finalize_micro_plan_state(plan_state)
+                            yield {"type": "token", "text": visible}
+            remaining = agent._filter_micro_plan_token(reasoning_filter.finish(), plan_state)
+            tail = remaining + agent._finalize_micro_plan_state(plan_state)
             if tail:
                 yield {"type": "token", "text": tail}
                 yielded_chunk_count += 1
@@ -183,12 +210,12 @@ async def iter_chat_stream(
                     yield item
         except Exception as e:
             err_str = (str(e) or "").strip() or type(e).__name__
-            if isinstance(e, TimeoutError) or type(e).__name__ == "TimeoutError":
+            if not raw_chunk_count and (isinstance(e, TimeoutError) or type(e).__name__ == "TimeoutError"):
                 err_str = (
                     "Model response timed out while waiting for the first token. "
                     "Try again later or increase llm.talk_model.primary_first_token_timeout_seconds"
                 )
-            if (
+            if not yielded_chunk_count and (
                 "context size has been exceeded" in err_str.lower()
                 or "context_length_exceeded" in err_str.lower()
             ):
@@ -227,8 +254,12 @@ async def iter_chat_stream(
                     vision_images=vision_images,
                     with_micro_plan_prefill=False,
                     drop_extra_context=True,
+                    brain_context=brain_context,
                 )
                 final_messages_used = messages_retry
+                raw_response = ""
+                plan_state = agent._init_micro_plan_state()
+                reasoning_filter = ReasoningFilter()
                 try:
                     async with aclosing(_consume_stream(
                         agent._astream_text_with_fallback(messages_retry, llm=stream_llm),
@@ -243,7 +274,7 @@ async def iter_chat_stream(
                         channel_id=channel_id,
                         error=str(e2),
                     )
-                    yield {"type": "error", "text": str(e2)}
+                    yield {"type": "error", "code": "generation_failed", "text": public_chat_error({})}
                     return
             else:
                 logger.error("Ошибка стриминга LLM: %s", e)
@@ -252,7 +283,7 @@ async def iter_chat_stream(
                     channel_id=channel_id,
                     error=err_str,
                 )
-                yield {"type": "error", "text": err_str}
+                yield {"type": "error", "code": "generation_failed", "text": public_chat_error({})}
                 return
 
         clean_text, thoughts, sounds = sanitize_raw_reply(

@@ -8,7 +8,7 @@
 - `paths.data_dir` — runtime data root (default `server/data` from repo root; override `NEYRA_DATA_DIR`)
 - `agent.fast_path` — regex allowlist for home commands (off by default; publishes `home.*`; multi-client e2e → Stage 3+)
 - `agent.conversation_mode` in `server/config/agent.yaml` — global talk style: `default` (unchanged persona), `brief`, `detailed`, `technical`, or `no_jokes`. Missing means `default`; unknown values and incorrect types are rejected.
-- Layer files under `server/config/` — see `docs/config-keys.md` for full keys:
+- Layer files under `server/config/` — defaults: `server/config/*.example.yaml`; full keys: `python server/scripts/regen_config_keys_md.py` from the repo root (prints to stdout):
   - `llm.yaml` — per-role **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** with **`provider`**; providers under **`llm.providers.<name>`**. No top-level `BACKEND` / `openrouter:` / `vision:`.
   - `memory.yaml`, `voice.yaml`, `agent.yaml`, `modules.yaml`, `runtime.yaml`
 

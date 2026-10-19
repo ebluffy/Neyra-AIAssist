@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Regenerate docs/config-keys.md (one leaf key per row) from tracked examples."""
+"""Print a Markdown key reference from tracked config examples to stdout."""
 
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 SERVER = REPO / "server"
-OUT = REPO / "docs" / "config-keys.md"
 
 FILES = [
     ("server/config.yaml", SERVER / "config.example.yaml"),
@@ -207,8 +207,7 @@ def main() -> None:
             "| Core API / dashboard | `config/server.yaml` → `api:` / `dashboard:` |\n",
         ]
     )
-    OUT.write_text("".join(lines), encoding="utf-8")
-    print(f"wrote {OUT} rows={len(rows)}")
+    sys.stdout.write("".join(lines))
 
 
 if __name__ == "__main__":

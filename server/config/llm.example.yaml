@@ -17,6 +17,9 @@ llm:
   #   model: "your-coder-model"
 
   talk_model:
+    responses:
+      enabled: false
+      warmup_on_start: false
     provider: openrouter
     model: "qwen/qwen3.8-27b:free"
     reply_max_tokens: 220

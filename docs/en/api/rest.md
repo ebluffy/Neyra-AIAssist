@@ -28,7 +28,7 @@ the journal is shown under System → memory events. Admin delete/wipe routes
 are unchanged. Both activity and model evidence now include independent
 background reports (`kind`, nullable `parent_turn_id`), timings and usage when
 reported. Retention is 200 turns plus 200 jobs; activity returns the newest
-requested items across both. See [model trace](../../MODEL_TRACE.md).
+requested items across both. See [PLAN §12: telemetry](../../PLAN.md#память-проверка-работы-и-улучшения).
 
 - Env: `INTERNAL_API_*` → `API_*` (startup fails if old names are set; no dual-read).
 - `POST /v1/plugins/{id}/reload|restart` — on_demand: hot re-import; resident: core soft-restart (`restart_scheduled`).

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -39,10 +40,8 @@ def plan_talk_vision(
     talk_can_vl = bool(has_vision_llm) and (
         (bool(talk_m) and bool(brain_m) and talk_m == brain_m) or talk_is_vision_client
     )
-    need_talk_caption = bool(has_vision_llm) and (
-        (not brain_native_vis and not vision_is_brain_client)
-        or (brain_native_vis and not talk_can_vl)
-    )
+    # Native brain already sees pixels; its routing output supplies visual facts to talk.
+    need_talk_caption = bool(has_vision_llm) and not brain_native_vis
 
     if brain_native_vis:
         talk_vm = imgs if talk_can_vl else None
@@ -80,6 +79,7 @@ class TurnPrep:
     brain_sys: str
     discord_context: Any = None
     brain_data: str = ""
+    affect_data: dict | None = None
 
 
 async def prepare_turn(
@@ -236,4 +236,12 @@ async def prepare_turn(
     from core.agent.talk_messages import turn_context_data
     from dataclasses import replace
     prep.brain_data = turn_context_data(replace(prep, pre_context=pre_context if lane_wants_pre_context(agent.config, "brain") else ""))
+    hub = getattr(agent, "memory_hub", None)
+    if hub is not None:
+        from core.memory.affect import talk_state
+        prep.affect_data = talk_state(await asyncio.to_thread(hub.affect_for_account, discord_user_id))
+    from core.agent.talk_messages import assistant_state_data
+    state = assistant_state_data(prep)
+    if state:
+        prep.brain_data += "\n\n" + state
     return prep

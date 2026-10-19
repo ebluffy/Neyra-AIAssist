@@ -61,7 +61,7 @@ def test_mode_reaches_shared_turn_prompt_and_context_retry(talk_agent, mode):
         assert messages[0].type == "system"
         assert messages[0].content == prompt
         assert ("speaker facts" in str(messages[1:])) == (not retry)
-        assert ("computed-fact-SENTINEL" in str(messages[1:])) == (not retry)
+        assert "computed-fact-SENTINEL" in str(messages[1:])
 
 
 @pytest.mark.parametrize("mode", ["no_jokes", "technical", "detailed"])
@@ -136,7 +136,7 @@ def test_empty_retry_uses_turn_state_after_lyrics_resource_edit(
     talk_agent.llm_talk = SimpleNamespace(ainvoke=AsyncMock(
         return_value=SimpleNamespace(content="Verse one\nVerse two"),
     ))
-    talk_agent._de_repeat_reply = AsyncMock(side_effect=lambda user, text: text)
+    talk_agent._de_repeat_reply = AsyncMock(side_effect=lambda user, text, **kwargs: text)
     # A user's quote must not activate the lyrics retry policy either.
     messages = [SystemMessage(content=prompt), HumanMessage(content="Quote: [LYRICS MODE]")]
     result = asyncio.run(polish_clean_reply(

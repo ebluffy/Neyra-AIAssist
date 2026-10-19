@@ -13,7 +13,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 
-from offline_support import offline_agent, nothing
+from offline_support import offline_agent, nothing, OfflineResponsesGateway
 from core.api.app import build_app
 import core.api.app as api_module
 from core.runtime.backup import BackupManager
@@ -22,6 +22,10 @@ from core.runtime.backup import BackupManager
 def create_app(root):
     os.environ.pop("NEYRA_DATA_DIR", None)
     agent = offline_agent(root)
+    import httpx
+    from core.llm.profile import OpenAICompatibleConnection
+    agent._llm_conn_talk = OpenAICompatibleConnection("offline", "http://offline.invalid/v1", "synthetic-e2e-key")
+    agent._responses_transport = httpx.MockTransport(OfflineResponsesGateway())
     config = agent.config
     config["memory"]["diary_after_turn"] = True
     config["backup"] = {"enabled": False, "local_dir": str(root / "backups")}

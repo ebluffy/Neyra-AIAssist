@@ -407,14 +407,6 @@ def _find_person(name_or_id: str, discord_id: str | None = None):
     return None
 
 
-def _slug_person_id(raw: str) -> str:
-    import re as _re
-
-    base = (raw or "").strip().lower()
-    slug = _re.sub(r"[^a-zA-Z0-9_\-]+", "_", base).strip("_") or "person"
-    return slug[:60]
-
-
 @tool
 def propose_people_merge(person_a: str, person_b: str, reason: str = "") -> str:
     """
@@ -454,59 +446,25 @@ def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str
     if not target_id or not (fact or "").strip():
         return "Нужны person_id и fact."
 
-    if _people_db is not None and target_id in getattr(_people_db, "_cache", {}):
-        success = _people_db.update_fact(target_id, fact, emotion=emo)
-        if success:
-            return f"Записала. Теперь знаю про {target_id}: {fact}"
-
-    person = _find_person(person_id)
-    if person:
-        pid = str(person.get("id") or "").strip()
-        if not pid:
-            return f"Не нашла человека '{person_id}' в базе. Проверь ID."
-        if _people_db is not None:
-            if pid not in _people_db._cache:
-                _people_db._cache[pid] = dict(person)
-            success = _people_db.update_fact(pid, fact, emotion=emo)
-            if success:
-                return f"Нашла по имени и записала про {(person.get('names') or [pid])[0]}: {fact}"
-            return f"Не удалось сохранить факт про {pid} (Hub/PeopleDB)."
-        if _memory_hub is not None:
-            try:
-                _memory_hub.add_person_fact(
-                    pid,
-                    fact,
-                    emotion_note=emo,
-                    source="tool",
-                    aliases=list(person.get("names") or []),
-                    display_name=(person.get("names") or [pid])[0],
-                    person_meta=person,
-                )
-                return f"Записала. Теперь знаю про {pid}: {fact}"
-            except Exception as e:
-                return f"Не удалось сохранить: {e}"
-
-    # New person from conversation
-    pid = _slug_person_id(target_id)
+    person = _find_person(target_id, discord_id=target_id if target_id.isdigit() else None)
+    if not person:
+        return "Не найден однозначный person_id. Используй ID существующей карточки; запись факта не создаёт людей."
+    pid = str(person.get("id") or "").strip()
     if _memory_hub is not None:
         try:
-            created = _memory_hub.save_person_dossier(
-                person_id=pid,
-                names=[target_id],
-                create=True,
-            )
-            _memory_hub.add_person_fact(pid, fact.strip(), emotion_note=emo, source="tool")
-            if _people_db is not None:
-                _people_db._cache[pid] = dict(created)
-            return f"Новый человек [{pid}] — создала досье и записала: {fact}"
-        except Exception as e:
-            return f"Не удалось создать досье: {e}"
+            _memory_hub.add_person_fact(pid, fact.strip(), emotion_note=emo, source="tool", require_existing=True)
+            return f"Записала факт про {pid}."
+        except KeyError:
+            return "Карточка удалена или объединена. Обнови person_id перед записью."
+        except Exception:
+            logger.exception("Person fact write failed")
+            return "Не удалось сохранить факт."
     if _people_db is not None:
-        _people_db.add_person(pid, [target_id])
-        ok = _people_db.update_fact(pid, fact, emotion=emo)
-        if ok:
-            return f"Новый человек [{pid}] — создала досье и записала: {fact}"
-    return f"Не нашла человека '{person_id}' в базе. Проверь ID."
+        if pid not in _people_db._cache:
+            _people_db._cache[pid] = dict(person)
+        if _people_db.update_fact(pid, fact, emotion=emo):
+            return f"Записала факт про {pid}."
+    return "Не удалось сохранить факт."
 
 
 # ─── GetPersonInfo ───────────────────────────────────────────────────────────

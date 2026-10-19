@@ -36,6 +36,11 @@ class TurnTrace:
     kind: str = "turn"
     parent_turn_id: str | None = None
     memory_owner_id: str | None = None
+    affect_generations: dict | None = None
+    talk_session: object | None = field(default=None, repr=False)
+    conversation_gate: object | None = field(default=None, repr=False)
+    conversation_scope: object | None = field(default=None, repr=False)
+    stream_control: dict | None = field(default=None, repr=False)
 
     def __post_init__(self):
         self.conversation_mode = (self.config.get("agent") or {}).get("conversation_mode", "default")
@@ -194,7 +199,7 @@ def _extract_provider_details(payload):
         usage = copy.deepcopy(direct_usage)
     if usage is not None:
         allowed = {"input_tokens", "output_tokens", "prompt_tokens", "completion_tokens", "total_tokens",
-                   "input_token_details", "output_token_details", "prompt_tokens_details", "completion_tokens_details",
+                   "input_token_details", "output_token_details", "input_tokens_details", "output_tokens_details", "prompt_tokens_details", "completion_tokens_details",
                    "cache_read_tokens", "cache_read_input_tokens", "cache_creation_tokens", "cache_creation_input_tokens"}
         detail_keys = {"cache_read", "cache_creation", "cached_tokens", "audio", "audio_tokens", "text", "text_tokens", "reasoning", "reasoning_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens"}
         def counts(value, depth=0):
@@ -245,7 +250,7 @@ def observe_payload(call, payload):
     if usage is not None:
         usage = {**(call.get("provider_usage") or {}), **usage}
         call["provider_usage"] = usage
-        details = usage.get("input_token_details") or usage.get("prompt_tokens_details") or {}
+        details = usage.get("input_token_details") or usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
         call["usage"] = {
             "input_tokens": usage.get("input_tokens", usage.get("prompt_tokens")),
             "output_tokens": usage.get("output_tokens", usage.get("completion_tokens")),
@@ -312,14 +317,18 @@ def traced_background(purpose):
 
 
 async def invoke(agent, llm, messages, *, lane, purpose, images=False, invoker=None):
-    call = begin_call(agent, lane, purpose, images=images, model=llm)
-    try:
-        result = await invoker(messages, llm=llm) if invoker else await llm.ainvoke(messages)
-    except BaseException as exc:
-        end_call(call, status="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed")
-        raise
-    end_call(call, result)
-    return result
+    from .responses_talk import ResponsesRetryable
+    for attempt in range(2):
+        call = begin_call(agent, lane, purpose, images=images, model=llm)
+        try:
+            result = await invoker(messages, llm=llm) if invoker else await llm.ainvoke(messages)
+        except BaseException as exc:
+            end_call(call, status="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed")
+            if isinstance(exc, ResponsesRetryable) and attempt == 0:
+                continue
+            raise
+        end_call(call, result)
+        return result
 
 
 def begin_task(agent, purpose, *, parent_call_id=None, parent_task_id=None):

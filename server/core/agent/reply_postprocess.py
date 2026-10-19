@@ -62,15 +62,12 @@ def _strip_model_garbage_tail(text: str) -> str:
 
 def extract_think_blocks(text: str) -> tuple[str, str]:
     """Cut ``<think>`` / ``<thought>`` blocks; return (clean text, joined thoughts)."""
-    pattern = r"<(?:redacted_thinking|think|thought)>(.*?)</(?:redacted_thinking|think|thought)>"
+    from core.agent.reasoning_filter import ReasoningFilter
+
+    pattern = r"<(?:redacted_thinking|think|thought)>(.*?)(?:</(?:redacted_thinking|think|thought)>|$)"
     thoughts = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-    clean = re.sub(pattern, "", text, flags=re.DOTALL | re.IGNORECASE)
-    clean = re.sub(
-        r"</?(?:redacted_thinking|think|thought)>",
-        "",
-        clean,
-        flags=re.IGNORECASE,
-    )
+    filter = ReasoningFilter()
+    clean = filter.feed(text) + filter.finish()
     clean = clean.strip()
     clean = re.sub(r"^[\s.,;:\-–—]+", "", clean).strip()
     return clean, "\n---\n".join(thoughts)

@@ -61,30 +61,35 @@ def make_vision_memory_note(
 
 
 def last_image_context_for_prompt(
-    store: dict[str, str],
+    store: dict[tuple[str, str], str],
     channel_id: Optional[str],
     vision_images: Optional[list],
     *,
+    owner_id: Optional[str] = None,
     remember_last_image: bool = True,
 ) -> Optional[str]:
-    if not remember_last_image or vision_images or not channel_id:
+    if not remember_last_image or vision_images or not channel_id or not owner_id:
         return None
-    return store.get(str(channel_id))
+    return store.get((str(owner_id), str(channel_id)))
 
 
 def store_vision_note_if_needed(
-    store: dict[str, str],
+    store: dict[tuple[str, str], str],
     channel_id: Optional[str],
     vision_images: Optional[list],
     thoughts: str,
     clean_text: str,
     *,
+    owner_id: Optional[str] = None,
     remember_last_image: bool = True,
     max_chars: int = 1200,
 ) -> None:
-    if not channel_id or not vision_images or not remember_last_image:
+    if not channel_id or not owner_id or not vision_images or not remember_last_image:
         return
     note = make_vision_memory_note(thoughts, clean_text, max_chars=max_chars)
     if note:
-        store[str(channel_id)] = note
+        key = (str(owner_id), str(channel_id))
+        if key not in store and len(store) >= 200:
+            store.pop(next(iter(store)))
+        store[key] = note
         logger.debug("Vision note stored for channel %s (%s chars)", channel_id, len(note))

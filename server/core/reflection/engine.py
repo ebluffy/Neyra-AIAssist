@@ -365,9 +365,7 @@ class ReflectionEngine:
                         pid,
                         fact,
                         source="reflection",
-                        aliases=list(person.get("names") or []),
-                        display_name=(person.get("names") or [pid])[0],
-                        person_meta=person,
+                        require_existing=True,
                     )
                     ok = True
                 except Exception:
@@ -722,6 +720,9 @@ class ReflectionEngine:
 
     def start_scheduler(self):
         """Запускает APScheduler для ночной рефлексии."""
+        from core.runtime.features import feature_enabled
+        if not feature_enabled(self.config, "memory.reflection_enabled"):
+            return None
         try:
             from apscheduler.schedulers.asyncio import AsyncIOScheduler
 

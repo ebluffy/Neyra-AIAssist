@@ -38,6 +38,16 @@ async def astream_text_with_fallback(
     first_timeout = max(0.1, float(getattr(agent, "primary_first_token_timeout", 8.0)))
     attempts = 2
     last_err: Optional[Exception] = None
+    from .model_trace import ACTIVE_TRACE
+    trace = ACTIVE_TRACE.get()
+    control = getattr(trace, "stream_control", None)
+
+    def public_emitted(raw_emitted):
+        return bool(control["public_emitted"]()) if control else raw_emitted
+
+    def reset_retry():
+        if control:
+            control["on_retry"]()
 
     for attempt in range(1, attempts + 1):
         from .model_trace import begin_call, end_call, mark_first_meaningful_token, observe_payload
@@ -45,6 +55,7 @@ async def astream_text_with_fallback(
         started = time.monotonic()
         stream = model.astream(messages)
         it = stream.__aiter__()
+        emitted = False
         try:
             deadline = time.monotonic() + first_timeout
             while True:
@@ -54,23 +65,33 @@ async def astream_text_with_fallback(
                 if first_token:
                     break
             if first_token:
-                mark_first_meaningful_token(call)
+                if not control:
+                    mark_first_meaningful_token(call)
                 route = "primary" if attempt == 1 else "primary_retry"
                 logger.info(
                     "LLM first token | route=%s | delay=%.3fs",
                     route,
                     time.monotonic() - started,
                 )
+            emitted = True
             yield first_chunk
             async for ch in it:
                 observe_payload(call, ch)
-                if message_content_to_text(getattr(ch, "content", "")):
+                if not control and message_content_to_text(getattr(ch, "content", "")):
                     mark_first_meaningful_token(call)
                 yield ch
             end_call(call)
             return
         except asyncio.TimeoutError as e:
             end_call(call, status="failed")
+            if public_emitted(emitted):
+                raise
+            if emitted:
+                last_err = e
+                if attempt >= attempts:
+                    raise
+                reset_retry()
+                continue
             last_err = TimeoutError(
                 f"LLM first-token timeout after {first_timeout:.1f}s "
                 f"(attempt {attempt}/{attempts})"
@@ -82,6 +103,8 @@ async def astream_text_with_fallback(
                 attempts,
                 first_timeout,
             )
+            if attempt < attempts:
+                reset_retry()
             continue
         except StopAsyncIteration:
             end_call(call)
@@ -89,9 +112,10 @@ async def astream_text_with_fallback(
         except Exception as e:
             end_call(call, status="failed")
             last_err = e
-            if attempt >= attempts:
+            if public_emitted(emitted) or attempt >= attempts:
                 raise
             logger.warning("LLM stream attempt failed, retrying same model: %s", e)
+            reset_retry()
             continue
         finally:
             if call is not None and call["status"] == "running":

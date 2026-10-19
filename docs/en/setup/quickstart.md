@@ -6,7 +6,7 @@
    - `pip install -r server/requirements.txt`
 2. Copy `server/.env.example` → `server/.env` and fill secrets.
 3. Copy short root config: `server/config.example.yaml` → `server/config.yaml`.
-4. Copy layers: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). See `docs/config-keys.md`.
+4. Copy layers: `server/config/*.example.yaml` → `server/config/*.yaml` (llm, agent, memory, voice, modules, runtime, server). Defaults are in those examples; full keys: `python server/scripts/regen_config_keys_md.py` from the repo root (prints to stdout).
 5. For Discord and the server layer:
    - `server/modules/discord/config.example.yaml` → `server/modules/discord/config.yaml`
    - `server/config/server.example.yaml` → `server/config/server.yaml` (API bind + `api.public_*`, `dashboard:`)

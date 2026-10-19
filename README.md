@@ -52,8 +52,12 @@ Docker: `docker compose up --build` (root compose includes `server/`).
 | Layers (llm, agent, memory, voice, modules, runtime, server) | `server/config/*.yaml` |
 | HTTP bind, public URL, dashboard | `server/config/server.yaml` (`api:`, `dashboard:`) |
 | Secrets | `server/.env` only |
-| Key inventory | [docs/config-keys.md](docs/config-keys.md) |
-| English service prompts and initial ru/en messages | `server/resources/`; [resource contract](docs/TEXT_RESOURCES.md) |
+| Config keys and defaults | `server/config/*.example.yaml`; [configuration guide](docs/en/setup/config-reference.md) |
+| English service prompts and initial ru/en messages | `server/resources/`; [PLAN §14](docs/PLAN.md#14-единая-папка-текстов-и-промптов-первая-поставка-реализована) |
+| Assistant mood and per-person relationships | SQLite + dashboard; [PLAN §7.5](docs/PLAN.md#75-mood--relations-серверный-mvp-реализован-локально-live-приёмка-открыта) |
+| Optional Responses talk sessions and persona warmup | Settings → Речь; [PLAN §12](docs/PLAN.md#12-приоритет-аудит-системных-промптов-и-связей-моделей) |
+
+Roadmap and open acceptance checks: [PLAN](docs/PLAN.md). Version history: [VERSION](docs/VERSION.md).
 
 No legacy dual-read: use `llm.talk_model` / `llm.brain_model` / … with `provider` — not top-level `BACKEND` or `openrouter:`.
 

@@ -3,7 +3,7 @@ Discord-интерфейс Нейры: диалог в тексте/картин
 
 Задача:
 - принимать сообщения и вложения;
-- стримить ответы агента;
+- отправлять готовые ответы агента;
 - обрабатывать музыкальные интенты и эмбеды очереди.
 """
 
@@ -16,6 +16,7 @@ import logging
 import os
 import random
 from datetime import datetime, timezone
+from contextlib import aclosing
 import re
 import time
 from types import SimpleNamespace
@@ -28,6 +29,7 @@ from discord.ext import tasks
 from discord.app_commands import Choice
 
 from core.agent.model_trace import begin_call, end_call, traced_background
+from core.agent.public_errors import public_chat_error
 from core.llm.profile import resolve_openai_compatible_connection
 from core.text_resources import prompt_text
 
@@ -56,7 +58,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("neyra.discord")
 
 MAX_MSG_LEN = 1900
-THINKING_DOT = "▌"
 QUEUE_PAGE_SIZE = 10
 # Discord embed field value limit; keep headroom for ellipsis
 EMBED_FIELD_SAFE = 1000
@@ -295,8 +296,6 @@ class NeyraDiscordBot(discord.Client):
 
         self.active_channel_ids: set[int] = set(parse_snowflake_list(disc_cfg.get("channel_ids", [])))
         self.mention_only: bool = bool(disc_cfg.get("mention_only", False))
-        self.stream_edit_interval: float = float(disc_cfg.get("stream_edit_interval", 0.8))
-        self.stream_output_mode: str = str(disc_cfg.get("stream_output_mode", "stream")).strip().lower()
         self._cooldown: float = float(disc_cfg.get("cooldown_seconds", 3.0))
         self._last_response: dict[int, float] = {}
         self._music_waiters: dict[str, asyncio.Future] = {}
@@ -739,9 +738,10 @@ class NeyraDiscordBot(discord.Client):
 
         @self.tree.error
         async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-            logger.exception("Slash: %s", error)
+            logger.error("Slash command failed", exc_info=(type(error), error, error.__traceback__))
             try:
-                msg = f"Ошибка команды: {error}"
+                from core.text_resources import message_text
+                msg = message_text("discord.command_failed")
                 if interaction.response.is_done():
                     await interaction.followup.send(msg[:2000], ephemeral=True)
                 else:
@@ -1028,7 +1028,7 @@ class NeyraDiscordBot(discord.Client):
         except Exception:
             avatar_url = ""
         asyncio.create_task(
-            self._run_chat_stream(
+            self._run_chat_reply(
                 text_channel=message.channel,
                 starter_message=message,
                 content=chat_content,
@@ -1079,7 +1079,7 @@ class NeyraDiscordBot(discord.Client):
             out.append((ct, b64))
         return out
 
-    async def _run_chat_stream(
+    async def _run_chat_reply(
         self,
         *,
         text_channel: discord.TextChannel,
@@ -1094,83 +1094,69 @@ class NeyraDiscordBot(discord.Client):
         avatar_url: Optional[str] = None,
         discord_context=None,
     ) -> None:
-        async with text_channel.typing():
-            response_msg = (
-                await starter_message.reply(THINKING_DOT, mention_author=False)
-                if starter_message
-                else await text_channel.send(THINKING_DOT)
-            )
-            full_raw = ""
-            last_edit = asyncio.get_event_loop().time()
-            done_data: dict = {}
-            output_mode = self._resolve_stream_output_mode()
+        async def send_first(text: str):
+            if starter_message is not None:
+                return await starter_message.reply(text, mention_author=False)
+            return await text_channel.send(text)
 
+        try:
+            result = None
+            generation_failed = False
+            async with aclosing(self.agent.chat_stream(
+                content,
+                username=username,
+                discord_user_id=discord_user_id,
+                vision_images=vision_images,
+                channel_id=channel_id_str,
+                author_display_name=author_display_name,
+                avatar_url=avatar_url,
+                discord_context=discord_context,
+            )) as stream:
+                async for chunk in stream:
+                    if chunk.get("type") in ("done", "error"):
+                        result = chunk
+                        generation_failed = chunk["type"] == "error"
+                        break
+            if result is None:
+                raise RuntimeError("Chat ended without a final result")
+        except Exception:
+            logger.exception("Не удалось подготовить ответ Discord")
             try:
-                async for chunk in self.agent.chat_stream(
-                    content,
-                    username=username,
-                    discord_user_id=discord_user_id,
-                    vision_images=vision_images,
-                    channel_id=channel_id_str,
-                    author_display_name=author_display_name,
-                    avatar_url=avatar_url,
-                    discord_context=discord_context,
-                ):
-                    if chunk["type"] == "token":
-                        full_raw += chunk["text"]
-                        if output_mode == "final_only":
-                            continue
-                        now = asyncio.get_event_loop().time()
-                        if now - last_edit >= self.stream_edit_interval:
-                            preview = self._make_preview(full_raw, lyrics_mode=lyrics_mode)
-                            try:
-                                await response_msg.edit(content=preview + THINKING_DOT)
-                                last_edit = now
-                            except discord.HTTPException:
-                                pass
-                    elif chunk["type"] == "done":
-                        done_data = chunk
-                    elif chunk["type"] == "error":
-                        err = chunk.get("text", "")
-                        await response_msg.edit(content=f"⚠️ {err or 'ошибка генерации'}")
-                        return
+                await send_first(public_chat_error({}))
+            except discord.HTTPException:
+                logger.exception("Не удалось отправить сообщение об ошибке Discord")
+            return
 
-                final_text = done_data.get("text", full_raw).strip() or "*(пустой ответ)*"
-                # Models sometimes emit literal \\n; always normalize before Discord send.
-                final_text = (
-                    final_text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
-                )
-                if lyrics_mode:
-                    parts = chunk_codeblock_message(final_text, limit=1900)
-                else:
-                    parts = chunk_message(final_text, limit=1900)
-                await response_msg.edit(content=parts[0])
-                sent_ids: list[int] = [response_msg.id]
-                for chunk in parts[1:]:
-                    sent = await text_channel.send(chunk)
-                    sent_ids.append(sent.id)
-                internal_uid = (
-                    self.agent.identity.resolve_from_discord(discord_user_id)
-                    or self.agent.identity.resolve_console(username)
-                )
-                self.agent.event_bus.publish(
-                    CoreEvent(
-                        NOTIFY_DISCORD_MESSAGE_SENT,
-                        "interfaces.discord",
-                        {
-                            "user_id": internal_uid,
-                            "channel_id": channel_id_str,
-                            "message_ids": sent_ids,
-                            "parts": len(parts),
-                        },
-                    )
-                )
-            except Exception as e:
-                logger.exception("Ошибка в _run_chat_stream: %s", e)
-                try:
-                    await response_msg.edit(content=f"⚠️ Что-то сломалось: {e}")
-                except Exception:
-                    pass
+        if generation_failed:
+            try:
+                await send_first(public_chat_error(result))
+            except discord.HTTPException:
+                logger.exception("Не удалось отправить сообщение об ошибке Discord")
+            return
+
+        final_text = str(result.get("text") or "").strip() or "*(пустой ответ)*"
+        final_text = final_text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+        parts = (chunk_codeblock_message if lyrics_mode else chunk_message)(final_text, limit=MAX_MSG_LEN)
+        try:
+            first = await send_first(parts[0])
+            sent_ids: list[int] = [first.id]
+            for part in parts[1:]:
+                sent = await text_channel.send(part)
+                sent_ids.append(sent.id)
+        except discord.HTTPException:
+            logger.exception("Не удалось отправить готовый ответ Discord")
+            return
+
+        internal_uid = (
+            self.agent.identity.resolve_from_discord(discord_user_id)
+            or self.agent.identity.resolve_console(username)
+        )
+        self.agent.event_bus.publish(CoreEvent(
+            NOTIFY_DISCORD_MESSAGE_SENT,
+            "interfaces.discord",
+            {"user_id": internal_uid, "channel_id": channel_id_str,
+             "message_ids": sent_ids, "parts": len(parts)},
+        ))
 
     def _make_preview(self, raw: str, *, lyrics_mode: bool = False) -> str:
         text = re.sub(
@@ -1190,9 +1176,6 @@ class NeyraDiscordBot(discord.Client):
         if len(text) > MAX_MSG_LEN - 10:
             text = text[: MAX_MSG_LEN - 10]
         return text
-
-    def _resolve_stream_output_mode(self) -> str:
-        return "final_only" if self.stream_output_mode == "final_only" else "stream"
 
 
 def run_discord_bot(agent: "NeyraAgent", config: dict) -> None:

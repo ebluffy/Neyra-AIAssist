@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from core.text_resources import prompt_text
 from .conversation_modes import conversation_mode_hint
+from .micro_plan import MicroPlanSettings, strip_leading, strip_blocks
 
 logger = logging.getLogger("neyra.agent.de_repeat")
 
@@ -24,6 +25,8 @@ async def de_repeat_reply(
     conversation_mode: str = "default",
     reply_max_tokens: int = 90,
     persona: str = "",
+    turn_messages: list[Any] | None = None,
+    micro_plan: MicroPlanSettings | None = None,
 ) -> str:
     """
     If the new reply nearly duplicates the previous assistant message,
@@ -60,27 +63,36 @@ async def de_repeat_reply(
             if conversation_mode != "brief" else
             prompt_text("rewrite.brief")
         )
+        rewrite_messages = [
+            SystemMessage(
+                content=(
+                    (persona + "\n" if not turn_messages else "")
+                    + instruction + prompt_text("rewrite.private_reasoning_rule")
+                    + "\n" + conversation_mode_hint(conversation_mode)
+                )
+            ),
+            HumanMessage(
+                content=(
+                    f"User request: {user_message}\n"
+                    f"Previous assistant reply: {prev_assistant}\n"
+                    f"Duplicate candidate: {text}\n"
+                    "Return a fresh formulation with the same meaning."
+                )
+            ),
+        ]
+        if turn_messages:
+            # Preserve the original persona, scoped context and state on this talk call.
+            context_messages = list(turn_messages)
+            if context_messages[-1].type == "ai":
+                context_messages.pop()
+            rewrite_messages = [context_messages[0], rewrite_messages[0], *context_messages[1:], rewrite_messages[1]]
         from core.agent.model_trace import invoke
-        resp = await invoke(None, rewrite_llm,
-            [
-                SystemMessage(
-                    content=(
-                        persona + "\n" + instruction + prompt_text("rewrite.private_reasoning_rule")
-                        + "\n" + conversation_mode_hint(conversation_mode)
-                    )
-                ),
-                HumanMessage(
-                    content=(
-                        f"User request: {user_message}\n"
-                        f"Previous assistant reply: {prev_assistant}\n"
-                        f"Duplicate candidate: {text}\n"
-                        "Return a fresh formulation with the same meaning."
-                    )
-                ),
-            ], lane="talk", purpose="rewrite",
-        )
+        resp = await invoke(None, rewrite_llm, rewrite_messages, lane="talk", purpose="rewrite")
         raw = resp.content if hasattr(resp, "content") else str(resp)
         text_no_think, _ = extract_think_blocks(raw)
+        if micro_plan is not None:
+            text_no_think, _ = strip_leading(text_no_think, micro_plan)
+            text_no_think, _, _ = strip_blocks(text_no_think, micro_plan)
         alt, _ = extract_sound_tags(text_no_think, preserve_line_breaks=True)
         alt = (alt or "").strip()
         if alt and alt.lower() != prev_assistant.lower():

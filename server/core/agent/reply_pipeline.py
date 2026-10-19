@@ -71,14 +71,16 @@ async def retry_short_reply_if_empty(
                 prompt_text("reply.retry_constraints")
             )
         )
-        retry_messages = [messages[0], guard, *messages[1:]] if messages else [guard]
+        context_messages = list(messages)
+        if context_messages and context_messages[-1].type == "ai":
+            context_messages.pop()
+        retry_messages = [context_messages[0], guard, *context_messages[1:]] if context_messages else [guard]
         from core.agent.model_trace import invoke
-        resp = await invoke(agent, agent.llm_talk, retry_messages, lane="talk", purpose="empty_reply_retry")
+        from core.agent.talk_sessions import responses_talk_model
+        resp = await invoke(agent, responses_talk_model(agent, agent.llm_talk), retry_messages, lane="talk", purpose="empty_reply_retry")
         raw = resp.content if hasattr(resp, "content") else str(resp)
-        text_no_think, _ = agent._extract_think_blocks(raw)
-        clean, _ = agent._extract_sound_tags(text_no_think)
-        clean = (clean or "").strip()
-        if clean:
+        clean, _, _ = sanitize_raw_reply(agent, raw, lyrics_mode=lyrics_mode, mode_label="empty_reply_retry")
+        if clean and clean != EMPTY_REPLY_PLACEHOLDER:
             logger.info("Empty reply recovered through short re-ask")
             return clean
     except Exception as e:
@@ -98,7 +100,7 @@ async def polish_clean_reply(
     clean_text = await retry_short_reply_if_empty(
         agent, messages, clean_text, lyrics_mode=lyrics_mode
     )
-    return await agent._de_repeat_reply(user_message, clean_text)
+    return await agent._de_repeat_reply(user_message, clean_text, messages=messages)
 
 
 def log_micro_plan_metrics(agent: Any) -> None:
