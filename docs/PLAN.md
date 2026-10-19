@@ -368,6 +368,8 @@ Ops Console D0–D8 смержен в **#26**. Текущий follow-up: **#27**
 - [ ] Подтвердить результат invoke и health хотя бы одного модуля. Текущий E2E проверяет только enable/disable; настоящий resident Discord остаётся в live-приёмке §3a.
 - [x] Документированы установка и восстановление после backup: `docs/{en,ru}/setup/quickstart.md`, `docs/{en,ru}/ops/deployment-local.md`, `docs/{en,ru}/ops/deployment-production.md`, `docs/{en,ru}/ops/backup-restore.md`. Offline restore/drill покрыт отдельным скриптом; восстановление целевого хоста ещё не проверено.
 - [ ] WSS-smoke по публичному URL зелёный.
+- [x] Преддеплойная правка 2026-10-19: исторический wipe PR #22 отделён от обычного обновления. Данные, конфиги и persona сохраняются; перед обновлением обязательны backup и проба миграций на копии.
+- [x] `scripts/db_migrations.py` использует runtime loader и `.env`, учитывает настроенный SQLite path и открывает БД только read-only. `--data-dir` явно выбирает стандартную копию `memory/neyra_memory.db`, не загружая live-конфиг. Exit codes: 0 — миграции присутствуют, 1 — база отсутствует/не читается либо есть неприменённые миграции, 2 — ошибка конфигурации без проверки другой базы. Семь offline-регрессий пройдены. АР PR #30: используется общий `load_dotenv_file`, тесты изолируют `os.environ` и проверяют неизменность унаследованного окружения; актуальная поставка указана в VERSION.
 
 
 
@@ -417,7 +419,7 @@ Ops Console D0–D8 смержен в **#26**. Текущий follow-up: **#27**
 
 Account-first модель людей без анкетных полей. Реализация в PR #22 вместе с фиксом music intent.
 
-**Cutover (обязательно при деплое):** полный wipe people/diary/journal (и при необходимости LTM) через `POST /v1/memory/wipe` с `confirm: "WIPE"`. Старые досье/анкеты не мигрируются. Migration 002/003 + backfill `meta.discord_ids` → `person_accounts` только чтобы не плодить дубли после частичного апгрейда без wipe; канонический путь — wipe.
+**Исторический cutover PR #22:** переход старых анкет на Memory v2 предусматривал отдельный согласованный wipe. Это не инструкция для каждого обновления. При обычном деплое сохраняются people/diary/journal/LTM, конфиги и persona; сначала backup и проверка миграций на копии SQLite. Миграции 6/7 добавляют состояние/отношения и не требуют очистки памяти. Wipe допустим только как отдельное явно запрошенное действие, а не часть деплоя или rollback.
 
 ### Модель
 
@@ -437,7 +439,7 @@ Account-first модель людей без анкетных полей. Реа
 - [x] Account-first resolve + строгие mentions; Discord передаёт id/nick/display/avatar.
 - [x] Diary/journal prompts не выдумывают чужие имена.
 - [x] propose-only merge + atomic merge/undo (full fact_ids, staled proposals restored) + wipe confirm/backup + proposals UI.
-- [x] Offline tests mention/resolve/merge/wipe + music soft-path зелёные; cutover = wipe.
+- [x] Offline tests mention/resolve/merge/wipe + music soft-path зелёные; исторический cutover отделён от обычного обновления без wipe.
 
 
 
