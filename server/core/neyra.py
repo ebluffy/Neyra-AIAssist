@@ -875,6 +875,7 @@ class NeyraAgent:
         if not user_id:
             return
         owner = self._resolve_internal_user_id(user_id, username)
+        trace.memory_owner_id = owner
         scope = trace.conversation_scope = conversation_scope(owner, channel_id, discord_context)
         enabled = feature_enabled(self.config, ENABLED)
         started = time.monotonic()

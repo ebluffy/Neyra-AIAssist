@@ -37,6 +37,8 @@ def test_failed_and_cancelled_turns_are_stored_outside_dialogue(tmp_path):
     agent = offline_agent(tmp_path)
     agent.llm_brain.failures = 1
     try:
+        owner = agent._resolve_internal_user_id("123", None)
+        assert owner != "123"
         failed = asyncio.run(agent.chat("PRIVATE-USER-TEXT", discord_user_id="123", channel_id="77"))
         assert failed["model_trace"]["status"] == "failed"
         assert failed["model_trace"]["error_class"] == "RuntimeError"
@@ -44,11 +46,10 @@ def test_failed_and_cancelled_turns_are_stored_outside_dialogue(tmp_path):
         assert agent.memory_hub.list_chat(limit=10) == []
         stored = _rows(agent)
         assert len(stored) == 1 and stored[0]["role"] == "model_trace" and stored[0]["text"] == ""
+        assert stored[0]["user_id"] == owner
         blob = stored[0]["meta"]
         assert "PRIVATE-USER-TEXT" not in blob and "123" not in blob
         assert json.loads(blob)["model_trace"]["turn_id"] == failed["model_trace"]["turn_id"]
-
-        owner = agent._resolve_internal_user_id("123", None)
         manager = sessions_for(agent)
         manager.gates[conversation_scope(owner, "77").key] = Future()
         entered = asyncio.Event()
@@ -70,11 +71,14 @@ def test_failed_and_cancelled_turns_are_stored_outside_dialogue(tmp_path):
         asyncio.run(cancel())
         evidence = [row for row in _rows(agent) if row["role"] == "model_trace"]
         assert len(evidence) == 2
-        cancelled = json.loads(evidence[-1]["meta"])["model_trace"]
+        cancelled_row = evidence[-1]
+        cancelled = json.loads(cancelled_row["meta"])["model_trace"]
         assert cancelled["status"] == "cancelled"
         assert cancelled["error_class"] == "CancelledError"
         assert cancelled["queue_wait_ms"] >= 0
-        assert "PRIVATE-CANCEL-TEXT" not in evidence[-1]["meta"]
+        assert cancelled_row["user_id"] == owner
+        assert "123" not in (cancelled_row["user_id"] or "")
+        assert "PRIVATE-CANCEL-TEXT" not in cancelled_row["meta"]
         assert agent.memory_hub.list_chat(limit=10) == []
     finally:
         agent.memory_hub.close()
