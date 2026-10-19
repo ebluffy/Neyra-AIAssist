@@ -8,6 +8,70 @@ from typing import Any
 from core.text_resources import prompt_text
 
 logger = logging.getLogger("neyra.agent.reply_pipeline")
+CHARS_PER_TOKEN = 4
+
+
+def visible_token_budget(agent: Any, lyrics_mode: bool = False) -> int:
+    if lyrics_mode:
+        return max(1, int(getattr(agent, "lyrics_reply_max_tokens", 4096)))
+    return max(1, int(getattr(agent, "reply_max_tokens", 320)))
+
+
+def clip_visible_reply(text: str, token_budget: int) -> str:
+    """Keep the shown reply inside the visible token budget. The API budget may be larger."""
+    limit = max(1, int(token_budget)) * CHARS_PER_TOKEN
+    if not text or len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    if space >= limit * 3 // 4:
+        cut = cut[:space]
+    return cut.rstrip()
+
+
+def responses_output_exceeds_visible(agent: Any, model: Any, lyrics_mode: bool = False) -> bool:
+    """Clip only when this turn's model is Responses and its API budget exceeds the visible cap."""
+    from core.agent.responses_talk import ResponsesTalk, max_output_tokens
+
+    if not isinstance(model, ResponsesTalk):
+        return False
+    cap = visible_token_budget(agent, lyrics_mode)
+    return max_output_tokens(agent, cap) > cap
+
+
+class VisibleClipper:
+    """Same cut as clip_visible_reply, releasing only the prefix that cannot move."""
+
+    def __init__(self, token_budget: int):
+        self.budget = max(1, int(token_budget))
+        self.limit = self.budget * CHARS_PER_TOKEN
+        self.acc = ""
+        self.shown = ""
+        self.cut = False
+
+    def push(self, piece: str) -> str:
+        if self.cut or not piece:
+            return ""
+        self.acc += piece
+        return self._emit(final=len(self.acc) >= self.limit)
+
+    def finish(self) -> str:
+        if self.cut:
+            return ""
+        return self._emit(final=True)
+
+    def _emit(self, final: bool) -> str:
+        if final or len(self.acc) >= self.limit:
+            target = clip_visible_reply(self.acc, self.budget)
+            if len(target) < len(self.acc):
+                self.cut = True
+        else:
+            target = self.acc[: self.limit * 3 // 4]
+        if len(target) < len(self.shown) or not target.startswith(self.shown):
+            target = self.shown
+        delta = target[len(self.shown):]
+        self.shown += delta
+        return delta
 
 
 def sanitize_raw_reply(

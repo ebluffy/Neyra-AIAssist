@@ -7,9 +7,12 @@ from typing import Any, Optional
 
 from core.agent.public_errors import public_chat_error
 from core.agent.reply_pipeline import (
+    clip_visible_reply,
     log_micro_plan_metrics,
     polish_clean_reply,
+    responses_output_exceeds_visible,
     sanitize_raw_reply,
+    visible_token_budget,
 )
 from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
 from core.agent.turn_finalize import finalize_successful_turn
@@ -158,6 +161,21 @@ async def run_chat(
             messages=final_messages_used,
             lyrics_mode=prep.lyrics_mode,
         )
+        if responses_output_exceeds_visible(agent, cap_llm, prep.lyrics_mode):
+            budget = visible_token_budget(agent, prep.lyrics_mode)
+            clipped = clip_visible_reply(clean_text, budget)
+            if len(clipped) < len(clean_text or ""):
+                from core.agent.model_trace import ACTIVE_TRACE, note_terminal
+                trace = ACTIVE_TRACE.get()
+                call = None
+                if trace is not None:
+                    for item in reversed(trace.calls):
+                        if item.get("lane") == "talk" and item.get("purpose") == "reply":
+                            call = item
+                            break
+                if call is not None and not call.get("truncated"):
+                    note_terminal(call, "visible_cap", "visible_cap", truncated=True)
+            clean_text = clipped
 
         await finalize_successful_turn(
             agent,

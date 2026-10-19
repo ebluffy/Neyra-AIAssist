@@ -178,6 +178,9 @@ def expand_role_nested(root: dict[str, Any]) -> dict[str, Any]:
         _nk = {
             "reply_max_tokens": "reply_max_tokens",
             "lyrics_reply_max_tokens": "lyrics_reply_max_tokens",
+            "max_output_tokens": "max_output_tokens",
+            "output_token_headroom": "output_token_headroom",
+            "turn_timeout_seconds": "turn_timeout_seconds",
             "temperature": "temperature",
             "top_p": "top_p",
             "presence_penalty": "presence_penalty",

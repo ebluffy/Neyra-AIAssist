@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from contextlib import aclosing
 from typing import Any, Optional
@@ -465,11 +466,11 @@ class NeyraAgent:
         model = llm or self.llm_talk
         return await model.ainvoke(messages)
 
-    async def _astream_text_with_fallback(self, messages: list[Any], *, llm=None):
+    async def _astream_text_with_fallback(self, messages: list[Any], *, llm=None, retry_layer=None):
         """Стриминговый вызов live-модели с guard по first-token timeout и 1 ретраем."""
         from core.agent.llm_stream import astream_text_with_fallback
 
-        async with aclosing(astream_text_with_fallback(self, messages, llm=llm)) as stream:
+        async with aclosing(astream_text_with_fallback(self, messages, llm=llm, retry_layer=retry_layer)) as stream:
             async for chunk in stream:
                 yield chunk
 
@@ -769,14 +770,20 @@ class NeyraAgent:
             if trace.talk_session is not None and status is None:
                 trace.talk_session.commit(self, out.get("text", ""))
             return {**out, "model_trace": finish(self, trace, status)}
-        except ConversationReset:
+        except ConversationReset as exc:
+            from core.agent.model_trace import note_turn_error
             from core.agent.public_errors import public_chat_error
+            note_turn_error(exc)
             return {"code": "generation_failed", "text": public_chat_error({}), "sounds": [],
                     "thoughts": "", "raw": "", "model_trace": finish(self, trace, "failed")}
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            from core.agent.model_trace import note_turn_error
+            note_turn_error(exc)
             finish(self, trace, "cancelled")
             raise
-        except BaseException:
+        except BaseException as exc:
+            from core.agent.model_trace import note_turn_error
+            note_turn_error(exc)
             finish(self, trace, "failed")
             raise
         finally:
@@ -840,8 +847,10 @@ class NeyraAgent:
                     yield chunk
                 finally:
                     token = ACTIVE_TRACE.set(trace)
-        except ConversationReset:
+        except ConversationReset as exc:
+            from core.agent.model_trace import note_turn_error
             from core.agent.public_errors import public_chat_error
+            note_turn_error(exc)
             chunk = {"type": "error", "code": "generation_failed", "text": public_chat_error({}),
                      "model_trace": finish(self, trace, "failed")}
             ACTIVE_TRACE.reset(token)
@@ -862,13 +871,20 @@ class NeyraAgent:
         from core.agent.talk_sessions import ENABLED, sessions_for
         from core.agent.conversation_scope import conversation_scope
         from core.runtime.features import feature_enabled
-        if user_id:
-            owner = self._resolve_internal_user_id(user_id, username)
-            scope = trace.conversation_scope = conversation_scope(owner, channel_id, discord_context)
-            enabled = feature_enabled(self.config, ENABLED)
+        trace.queue_wait_ms = 0.0
+        if not user_id:
+            return
+        owner = self._resolve_internal_user_id(user_id, username)
+        trace.memory_owner_id = owner
+        scope = trace.conversation_scope = conversation_scope(owner, channel_id, discord_context)
+        enabled = feature_enabled(self.config, ENABLED)
+        started = time.monotonic()
+        try:
             trace.conversation_gate = await sessions_for(self).enter(scope, wait_warmup=enabled)
             if enabled:
                 trace.talk_session = trace.conversation_gate
+        finally:
+            trace.queue_wait_ms = round((time.monotonic() - started) * 1000, 3)
 
     def _close_talk_session(self, trace):
         if trace.conversation_gate is not None:

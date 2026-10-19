@@ -9,9 +9,13 @@ from typing import Any, AsyncIterator, Optional
 from core.agent.public_errors import public_chat_error
 from core.agent.reasoning_filter import ReasoningFilter
 from core.agent.reply_pipeline import (
+    VisibleClipper,
+    clip_visible_reply,
     log_micro_plan_metrics,
     polish_clean_reply,
+    responses_output_exceeds_visible,
     sanitize_raw_reply,
+    visible_token_budget,
 )
 from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
 from core.agent.turn_finalize import finalize_successful_turn
@@ -151,6 +155,7 @@ async def iter_chat_stream(
 
         raw_response = ""
         context_exceeded = False
+        clip_visible = responses_output_exceeds_visible(agent, stream_llm, prep.lyrics_mode)
         used_model_name: Optional[str] = None
         plan_state = agent._init_micro_plan_state()
         reasoning_filter = ReasoningFilter()
@@ -171,8 +176,36 @@ async def iter_chat_stream(
             trace.stream_control = {"public_emitted": lambda: yielded_chunk_count > 0,
                                     "on_retry": reset_hidden_attempt}
 
+        def mark_visible_cap():
+            from core.agent.model_trace import end_call, note_terminal, running_call
+            call = running_call()
+            if call is None or call.get("truncated"):
+                return
+            note_terminal(call, "visible_cap", "visible_cap", truncated=True)
+            end_call(call, status="completed")
+
         async def _consume_stream(stream_iter: Any, *, retry: bool = False) -> AsyncIterator[dict]:
             nonlocal raw_response, used_model_name, raw_chunk_count, yielded_chunk_count
+            clipper = VisibleClipper(visible_token_budget(agent, prep.lyrics_mode)) if clip_visible else None
+
+            def take(piece: str) -> tuple[str, bool]:
+                if not piece:
+                    return "", False
+                if clipper is None:
+                    return piece, False
+                return clipper.push(piece), clipper.cut
+
+            def emit(piece: str):
+                nonlocal yielded_chunk_count
+                text, cut = take(piece)
+                if text:
+                    from core.agent.model_trace import mark_first_meaningful_token
+                    if trace and trace.calls:
+                        mark_first_meaningful_token(trace.calls[-1])
+                    yielded_chunk_count += 1
+                    return text, cut
+                return "", cut
+
             async with aclosing(stream_iter):
                 async for chunk in stream_iter:
                     if used_model_name is None:
@@ -181,18 +214,19 @@ async def iter_chat_stream(
                     if token:
                         raw_chunk_count += 1
                         raw_response += token
-                        visible = agent._filter_micro_plan_token(reasoning_filter.feed(token), plan_state)
+                        visible, cut = emit(agent._filter_micro_plan_token(reasoning_filter.feed(token), plan_state))
                         if visible:
-                            from core.agent.model_trace import mark_first_meaningful_token
-                            if trace and trace.calls:
-                                mark_first_meaningful_token(trace.calls[-1])
-                            yielded_chunk_count += 1
                             yield {"type": "token", "text": visible}
-            remaining = agent._filter_micro_plan_token(reasoning_filter.finish(), plan_state)
-            tail = remaining + agent._finalize_micro_plan_state(plan_state)
-            if tail:
-                yield {"type": "token", "text": tail}
-                yielded_chunk_count += 1
+                        if cut:
+                            mark_visible_cap()
+                            break
+            if clipper is None or not clipper.cut:
+                remaining = agent._filter_micro_plan_token(reasoning_filter.finish(), plan_state)
+                tail, cut = emit(remaining + agent._finalize_micro_plan_state(plan_state))
+                if tail:
+                    yield {"type": "token", "text": tail}
+                if cut:
+                    mark_visible_cap()
             agent._log_model_route(used_model_name, lane="talk")
             logger.debug(
                 "LLM stream stats | raw_chunks=%s | yielded_chunks=%s | micro_plan=%s%s",
@@ -202,6 +236,7 @@ async def iter_chat_stream(
                 " | retry=true" if retry else "",
             )
 
+        salvaged_error = None
         try:
             async with aclosing(_consume_stream(
                 agent._astream_text_with_fallback(messages, llm=stream_llm)
@@ -262,20 +297,25 @@ async def iter_chat_stream(
                 reasoning_filter = ReasoningFilter()
                 try:
                     async with aclosing(_consume_stream(
-                        agent._astream_text_with_fallback(messages_retry, llm=stream_llm),
+                        agent._astream_text_with_fallback(messages_retry, llm=stream_llm, retry_layer="context_overflow"),
                         retry=True,
                     )) as stream:
                         async for item in stream:
                             yield item
                 except Exception as e2:
-                    logger.error("Ошибка повторного запроса (даже с урезанным контекстом): %s", e2)
-                    agent._publish_chat_turn_failed(
-                        internal_user_id=prep.internal_uid,
-                        channel_id=channel_id,
-                        error=str(e2),
-                    )
-                    yield {"type": "error", "code": "generation_failed", "text": public_chat_error({})}
-                    return
+                    if yielded_chunk_count > 0:
+                        salvaged_error = e2
+                    else:
+                        logger.error("Ошибка повторного запроса (даже с урезанным контекстом): %s", type(e2).__name__)
+                        agent._publish_chat_turn_failed(
+                            internal_user_id=prep.internal_uid,
+                            channel_id=channel_id,
+                            error=str(e2),
+                        )
+                        yield {"type": "error", "code": "generation_failed", "text": public_chat_error({})}
+                        return
+            elif yielded_chunk_count > 0:
+                salvaged_error = e
             else:
                 logger.error("Ошибка стриминга LLM: %s", e)
                 agent._publish_chat_turn_failed(
@@ -286,16 +326,28 @@ async def iter_chat_stream(
                 yield {"type": "error", "code": "generation_failed", "text": public_chat_error({})}
                 return
 
+        if salvaged_error is not None:
+            from core.agent.model_trace import note_turn_error
+            note_turn_error(salvaged_error)
+            logger.error("LLM stream ended after visible text | error_class=%s", type(salvaged_error).__name__)
+
         clean_text, thoughts, sounds = sanitize_raw_reply(
             agent, raw_response, lyrics_mode=prep.lyrics_mode, mode_label="stream"
         )
-        clean_text = await polish_clean_reply(
-            agent,
-            user_message=user_message,
-            clean_text=clean_text,
-            messages=final_messages_used,
-            lyrics_mode=prep.lyrics_mode,
-        )
+        try:
+            clean_text = await polish_clean_reply(
+                agent,
+                user_message=user_message,
+                clean_text=clean_text,
+                messages=final_messages_used,
+                lyrics_mode=prep.lyrics_mode,
+            )
+        except Exception as polish_error:
+            if salvaged_error is None:
+                raise
+            logger.warning("Reply polish skipped | error_class=%s", type(polish_error).__name__)
+        if clip_visible:
+            clean_text = clip_visible_reply(clean_text, visible_token_budget(agent, prep.lyrics_mode))
 
         if context_exceeded:
             logger.info("Успешный ответ после переполнения контекста.")

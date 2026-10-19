@@ -170,6 +170,10 @@ def test_missing_parent_retries_fresh_and_keeps_per_attempt_trace(setup, stream)
         assert 'hello' in str(gateway.requests[-1]['input'])
         calls = [c for c in out['model_trace']['calls'] if c['lane'] == 'talk']
         assert [(c['attempt'], c['status']) for c in calls] == [(1, 'failed'), (2, 'completed')]
+        assert calls[0]['retry_layer'] is None and calls[0]['error_class'] == 'ResponsesRetryable'
+        assert calls[0]['http_status'] == 404 and calls[1]['http_status'] == 200
+        # Stream retries inside the talk stream wrapper; non-stream retries inside invoke.
+        assert calls[1]['retry_layer'] == ('stream_error' if stream else 'responses_history')
     asyncio.run(run())
 
 
@@ -183,17 +187,27 @@ def test_empty_and_missing_reported_model_are_honest(setup):
     assert out['model_trace']['status'] == 'completed'
 
 
-@pytest.mark.parametrize('failure', ['incomplete', 'bad_stream', 'auth'])
-def test_partial_errors_never_advance_remote_or_local_history(setup, failure):
+def test_auth_failure_does_not_record_history(setup):
     agent, gateway = setup
-    if failure == 'incomplete': gateway.incomplete = True
-    if failure == 'bad_stream': gateway.bad_stream = True
-    if failure == 'auth': gateway.failures = [401, 401]
+    gateway.failures = [401, 401]
     out = asyncio.run(turn(agent, stream=True))
     assert out['type'] == 'error'
     assert not sessions_for(agent).chains
     assert all(not w['messages'] for w in agent.short_memory.windows())
-    if failure != 'auth': assert len(gateway.requests) == 1
+
+
+@pytest.mark.parametrize('failure', ['incomplete', 'bad_stream'])
+def test_partial_visible_errors_keep_local_history_without_remote_chain(setup, failure):
+    agent, gateway = setup
+    if failure == 'incomplete': gateway.incomplete = True
+    if failure == 'bad_stream': gateway.bad_stream = True
+    out = asyncio.run(turn(agent, stream=True))
+    assert out['type'] == 'done'
+    assert 'Ответ' in out['text']
+    assert any(w['messages'] for w in agent.short_memory.windows())
+    assert out['model_trace']['error_class'] == 'ResponsesError'
+    assert not sessions_for(agent).chains
+    assert len(gateway.requests) == 1
 
 
 def test_cancelled_waiter_does_not_overtake_and_scopes_run_in_parallel(setup):
@@ -489,3 +503,111 @@ def test_reset_fast_path_does_not_fall_through_to_brain(setup, monkeypatch, stre
     assert out['code'] == 'generation_failed'
     assert not agent.llm_brain.messages and not gateway.requests
     assert out['model_trace']['without_llm']
+
+
+def test_output_budget_is_separate_from_the_visible_reply_cap(setup):
+    agent, gateway = setup
+    asyncio.run(turn(agent))
+    assert gateway.requests[0]['max_output_tokens'] == agent.reply_max_tokens + 2048
+    agent.config['llm']['talk_model']['max_output_tokens'] = 900
+    asyncio.run(turn(agent, text='next'))
+    assert gateway.requests[-1]['max_output_tokens'] == 900
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_max_output_truncation_finishes_with_the_partial_answer(setup, stream):
+    agent, gateway = setup
+    gateway.incomplete = True
+    gateway.incomplete_reason = 'max_output_tokens'
+    out = asyncio.run(turn(agent, stream=stream))
+    assert out.get('type', 'done') != 'error'
+    assert 'Ответ' in out['text']
+    purpose = 'stream_reply' if stream else 'reply'
+    call = next(c for c in out['model_trace']['calls'] if c['purpose'] == purpose and c['status'] == 'completed')
+    assert call['truncated'] is True
+    assert call['terminal_event'] == 'response.incomplete'
+    assert call['incomplete_reason'] == 'max_output_tokens'
+    assert call['usage']['reasoning_tokens'] == 40
+    assert call['usage']['output_tokens'] == 7
+    assert len(sessions_for(agent).chains) == 1
+    assert 'PRIVATE' not in json.dumps(out['model_trace'])
+
+
+def test_visible_cap_stops_the_stream_and_matches_the_saved_reply(setup):
+    from langchain_core.messages import AIMessageChunk
+    from core.agent.responses_talk import ResponsesTalk
+    agent, _gateway = setup
+    agent.reply_max_tokens = 2
+    consumed = {'n': 0}
+    original = ResponsesTalk.astream
+
+    async def fake(self, messages):
+        for _ in range(20):
+            consumed['n'] += 1
+            yield AIMessageChunk(content='abcdefghij')
+
+    ResponsesTalk.astream = fake
+
+    async def collect():
+        return [chunk async for chunk in agent.chat_stream('hello', discord_user_id='123', channel_id='77')]
+
+    try:
+        chunks = asyncio.run(collect())
+        assert consumed['n'] == 1
+        shown = ''.join(chunk['text'] for chunk in chunks if chunk['type'] == 'token')
+        assert chunks[-1]['type'] == 'done'
+        assert chunks[-1]['text'] == shown == 'abcdefgh'
+        call = next(c for c in chunks[-1]['model_trace']['calls'] if c['purpose'] == 'stream_reply')
+        assert call['truncated'] is True
+        assert call['incomplete_reason'] == 'visible_cap'
+        assert call['status'] == 'completed'
+        assert not sessions_for(agent).chains
+        saved = ' '.join(str(window['messages']) for window in agent.short_memory.windows())
+        assert 'abcdefghij' not in saved
+        assert 'abcdefgh' in saved
+    finally:
+        ResponsesTalk.astream = original
+
+
+def test_responses_flag_without_a_session_does_not_clip_chat_completions(setup):
+    from langchain_core.messages import AIMessageChunk
+    agent, _gateway = setup
+    agent.reply_max_tokens = 2
+    long_text = 'abcdefghij' * 3
+
+    async def stream(messages):
+        yield AIMessageChunk(content=long_text)
+
+    agent.llm_talk.astream = stream
+    chunks = asyncio.run(_collect(agent))
+    assert chunks[-1]['type'] == 'done'
+    assert chunks[-1]['text'] == long_text
+    talk = next(c for c in chunks[-1]['model_trace']['calls'] if c['purpose'] == 'stream_reply')
+    assert talk['truncated'] is False
+
+
+def test_nonstream_visible_clip_is_marked_on_the_talk_call(setup):
+    from langchain_core.messages import AIMessage
+    from core.agent.responses_talk import ResponsesTalk
+    agent, _gateway = setup
+    agent.reply_max_tokens = 2
+    original = ResponsesTalk.ainvoke
+
+    async def fake(self, messages):
+        return AIMessage(content='abcdefghij' * 3)
+
+    ResponsesTalk.ainvoke = fake
+    try:
+        out = asyncio.run(turn(agent))
+        assert out['text'] == 'abcdefgh'
+        call = next(c for c in out['model_trace']['calls'] if c['purpose'] == 'reply' and c['status'] == 'completed')
+        assert call['truncated'] is True
+        assert call['incomplete_reason'] == 'visible_cap'
+    finally:
+        ResponsesTalk.ainvoke = original
+
+
+def _collect(agent):
+    async def run():
+        return [chunk async for chunk in agent.chat_stream('hello')]
+    return run()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import asyncio
 import logging
+import re
 import threading
 import time
 import uuid
@@ -17,6 +18,10 @@ from datetime import datetime, timezone
 from core.runtime.event_bus import CoreEvent
 
 logger = logging.getLogger("neyra.model_trace")
+_CLASS_NAME = re.compile(r"[^A-Za-z0-9_]")
+_EVENT_TYPE = re.compile(r"[^A-Za-z0-9._:-]")
+RETRY_LAYERS = {"stream_timeout", "stream_error", "responses_history", "empty_reply", "context_overflow"}
+TRACE_ROLE = "model_trace"
 
 
 @dataclass
@@ -41,6 +46,8 @@ class TurnTrace:
     conversation_gate: object | None = field(default=None, repr=False)
     conversation_scope: object | None = field(default=None, repr=False)
     stream_control: dict | None = field(default=None, repr=False)
+    queue_wait_ms: float | None = None
+    error_class: str | None = None
 
     def __post_init__(self):
         self.conversation_mode = (self.config.get("agent") or {}).get("conversation_mode", "default")
@@ -50,7 +57,10 @@ class TurnTrace:
         return copy.deepcopy({
             "turn_id": self.id, "timestamp": self.started_at,
             "status": status or ("failed" if self.failed else "completed"),
-            "calls": self.calls, "tasks": self.tasks, "without_llm": not self.calls,
+            "error_class": self.error_class,
+            "queue_wait_ms": self.queue_wait_ms,
+            "calls": [_public_call(call) for call in self.calls],
+            "tasks": self.tasks, "without_llm": not self.calls,
             "ended_at": self.ended_at, "duration_ms": self.duration_ms,
             "kind": self.kind, "parent_turn_id": self.parent_turn_id,
         })
@@ -102,31 +112,126 @@ def snapshot():
     return trace.report() if trace and not trace.closed else None
 
 
+def class_name(exc) -> str:
+    raw = exc if isinstance(exc, str) else type(exc).__name__
+    cleaned = _CLASS_NAME.sub("", str(raw))[:64]
+    return cleaned or "Error"
+
+
+def _event_type(value):
+    if not isinstance(value, str):
+        return None
+    cleaned = _EVENT_TYPE.sub("", value)[:64]
+    return cleaned or None
+
+
+def _retry_layer(value):
+    return value if value in RETRY_LAYERS else None
+
+
+def _elapsed(call):
+    return round((time.monotonic() - call["_started_monotonic"]) * 1000, 3)
+
+
+def _public_call(call):
+    return {key: value for key, value in call.items() if not str(key).startswith("_")}
+
+
+def running_call():
+    trace = ACTIVE_TRACE.get()
+    if trace is None or trace.closed:
+        return None
+    for call in reversed(trace.calls):
+        if call.get("status") == "running":
+            return call
+    return None
+
+
+def note_turn_error(exc):
+    trace = ACTIVE_TRACE.get()
+    if trace is None or trace.closed or trace.error_class:
+        return
+    trace.error_class = class_name(exc)
+
+
+class _SdkRetryFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if isinstance(record.msg, str) and record.msg.startswith("Retrying request"):
+                call = running_call()
+                if call is not None:
+                    call["sdk_retries"] = int(call.get("sdk_retries") or 0) + 1
+        except Exception:
+            pass
+        return True
+
+
+def _install_sdk_retry_notes():
+    filt = _SdkRetryFilter()
+    for name in ("openai._base_client", "openai"):
+        log = logging.getLogger(name)
+        if not any(isinstance(item, _SdkRetryFilter) for item in log.filters):
+            log.addFilter(filt)
+
+
+def _terminal_error_class(trace, status):
+    if trace.error_class:
+        return trace.error_class
+    if status not in ("failed", "cancelled"):
+        return None
+    for call in reversed(trace.calls):
+        if call.get("error_class"):
+            return call["error_class"]
+    return "CancelledError" if status == "cancelled" else None
+
+
+def _persist_turn(agent, trace, report):
+    if trace.kind != "turn":
+        return
+    hub = getattr(agent, "memory_hub", None)
+    if hub is None:
+        return
+    try:
+        updated = hub.sqlite.update_turn_trace(trace.id, report)
+        if updated or report.get("status") not in ("failed", "cancelled"):
+            return
+        hub.sqlite.append_chat_rows([{
+            "role": TRACE_ROLE,
+            "text": "",
+            "user_id": trace.memory_owner_id,
+            "channel_id": trace.channel_id,
+            "source": TRACE_ROLE,
+            "turn_id": trace.id,
+            "meta": {"model_trace": report},
+        }])
+    except Exception:
+        logger.exception("Failed to persist model evidence")
+
+
 def finish(agent, trace, status=None):
     if trace.closed:
         return trace.report(status)
+    final = status or ("failed" if trace.failed else "completed")
     for call in trace.calls:
         if call["status"] == "running":
-            end_call(call, status="cancelled" if status == "cancelled" else "failed")
+            end_call(call, status="cancelled" if final == "cancelled" else "failed",
+                     error_class="CancelledError" if final == "cancelled" else None)
     for task in trace.tasks:
         if task["status"] == "running":
-            end_task(task, status="cancelled" if status == "cancelled" else "failed")
+            end_task(task, status="cancelled" if final == "cancelled" else "failed")
+    trace.error_class = _terminal_error_class(trace, final)
     trace.closed = True
     trace.ended_at = datetime.now(timezone.utc).isoformat()
     trace.duration_ms = round((time.monotonic() - getattr(trace, "_started_monotonic", time.monotonic())) * 1000, 3)
-    report = trace.report(status)
-    hub = getattr(agent, "memory_hub", None)
-    if trace.kind == "turn" and hub is not None:
-        try:
-            hub.sqlite.update_turn_trace(trace.id, report)
-        except Exception:
-            logger.exception("Failed to persist completed model evidence")
+    report = trace.report(final)
+    _persist_turn(agent, trace, report)
     activity_for(agent).append(trace, report)
     agent.event_bus.publish(CoreEvent("llm.turn.completed", "core.agent", report))
     return report
 
 
-def begin_call(agent, lane, purpose, attempt=None, images=False, model=None):
+def begin_call(agent, lane, purpose, attempt=None, images=False, model=None, retry_layer=None):
+    _install_sdk_retry_notes()
     trace = ACTIVE_TRACE.get()
     if trace is None or trace.closed:
         return None
@@ -159,7 +264,14 @@ def begin_call(agent, lane, purpose, attempt=None, images=False, model=None):
         "has_images": bool(images), "status": "running",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "duration_ms": None, "first_meaningful_token_at": None,
-        "first_meaningful_token_ms": None, "usage": None,
+        "first_meaningful_token_ms": None,
+        "headers_ms": None, "http_status": None,
+        "first_event_ms": None, "first_event_type": None,
+        "first_text_delta_ms": None, "first_reasoning_ms": None,
+        "terminal_event": None, "incomplete_reason": None, "truncated": False,
+        "retry_layer": _retry_layer(retry_layer), "sdk_retries": 0,
+        "error_class": None,
+        "usage": None,
         "provider_usage": None, "cost_estimate": None, "actual_billing": None,
     }
     call["_started_monotonic"] = time.monotonic()
@@ -213,26 +325,78 @@ def _extract_provider_details(payload):
     return provider_request_id, usage
 
 
-def mark_first_meaningful_token(call):
-    if call is None or call.get("first_meaningful_token_at") is not None:
+def _mark_once(call, key):
+    if call is None or call.get(key) is not None or "_started_monotonic" not in call:
+        return False
+    if call.get("status") != "running":
+        return False
+    call[key] = _elapsed(call)
+    return True
+
+
+def mark_response_headers(call, status):
+    if not _mark_once(call, "headers_ms"):
         return
-    now = time.monotonic()
+    if isinstance(status, int) and not isinstance(status, bool):
+        call["http_status"] = status
+
+
+def mark_first_event(call, event_type):
+    if not _mark_once(call, "first_event_ms"):
+        return
+    call["first_event_type"] = _event_type(event_type)
+
+
+def mark_first_text_delta(call):
+    _mark_once(call, "first_text_delta_ms")
+
+
+def mark_first_reasoning(call):
+    _mark_once(call, "first_reasoning_ms")
+
+
+def note_terminal(call, event, reason=None, truncated=False):
+    if call is None or call.get("status") not in ("running", "completed"):
+        return
+    event_name = _event_type(event)
+    reason_name = _event_type(reason)
+    if event_name:
+        call["terminal_event"] = event_name
+    if reason_name:
+        call["incomplete_reason"] = reason_name
+    if truncated:
+        call["truncated"] = True
+    logger.info(
+        "LLM terminal | event=%s reason=%s truncated=%s",
+        call.get("terminal_event"), call.get("incomplete_reason"), bool(call.get("truncated")),
+    )
+
+
+def mark_first_meaningful_token(call):
+    if call is None or call.get("first_meaningful_token_at") is not None or "_started_monotonic" not in call:
+        return
     call["first_meaningful_token_at"] = datetime.now(timezone.utc).isoformat()
-    call["first_meaningful_token_ms"] = round((now - call["_started_monotonic"]) * 1000, 3)
+    call["first_meaningful_token_ms"] = _elapsed(call)
 
 
-def end_call(call, payload=None, status="completed"):
+def end_call(call, payload=None, status="completed", error_class=None):
     if call is None or call.get("status") != "running":
         return
     observe_payload(call, payload)
     if call.get("first_meaningful_token_at") is None and payload is not None:
         mark_first_meaningful_token(call)
+    if error_class and not call.get("error_class"):
+        call["error_class"] = class_name(error_class)
     call["status"] = status
     call["ended_at"] = datetime.now(timezone.utc).isoformat()
     call["duration_ms"] = round((time.monotonic() - call["_started_monotonic"]) * 1000, 3)
     call.pop("_started_monotonic", None)
-    logger.info("LLM call | lane=%s purpose=%s attempt=%s provider=%s configured_model=%s reported_model=%s status=%s",
-                call["lane"], call["purpose"], call["attempt"], call["provider"], call["configured_model"], call["reported_model"], status)
+    logger.info(
+        "LLM call | lane=%s purpose=%s attempt=%s provider=%s configured_model=%s reported_model=%s status=%s error_class=%s retry_layer=%s sdk_retries=%s headers_ms=%s http_status=%s first_event_ms=%s first_event_type=%s first_text_delta_ms=%s first_meaningful_token_ms=%s duration_ms=%s",
+        call["lane"], call["purpose"], call["attempt"], call["provider"], call["configured_model"], call["reported_model"], status,
+        call.get("error_class"), call.get("retry_layer"), call.get("sdk_retries"), call.get("headers_ms"), call.get("http_status"),
+        call.get("first_event_ms"), call.get("first_event_type"), call.get("first_text_delta_ms"), call.get("first_meaningful_token_ms"), call.get("duration_ms"),
+    )
 
 
 def observe_payload(call, payload):
@@ -251,11 +415,15 @@ def observe_payload(call, payload):
         usage = {**(call.get("provider_usage") or {}), **usage}
         call["provider_usage"] = usage
         details = usage.get("input_token_details") or usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+        output_details = usage.get("output_token_details") or usage.get("output_tokens_details") or {}
+        if not isinstance(output_details, dict):
+            output_details = {}
         call["usage"] = {
             "input_tokens": usage.get("input_tokens", usage.get("prompt_tokens")),
             "output_tokens": usage.get("output_tokens", usage.get("completion_tokens")),
             "cache_read_tokens": usage.get("cache_read_tokens", usage.get("cache_read_input_tokens", details.get("cache_read", details.get("cached_tokens")))),
             "cache_creation_tokens": usage.get("cache_creation_tokens", usage.get("cache_creation_input_tokens", details.get("cache_creation"))),
+            "reasoning_tokens": usage.get("reasoning_tokens", output_details.get("reasoning_tokens", output_details.get("reasoning"))),
         }
         call["usage"] = {k: v for k, v in call["usage"].items() if v is not None}
 
@@ -316,15 +484,17 @@ def traced_background(purpose):
     return decorate
 
 
-async def invoke(agent, llm, messages, *, lane, purpose, images=False, invoker=None):
+async def invoke(agent, llm, messages, *, lane, purpose, images=False, invoker=None, retry_layer=None):
     from .responses_talk import ResponsesRetryable
+    layer = _retry_layer(retry_layer) or ("empty_reply" if purpose == "empty_reply_retry" else None)
     for attempt in range(2):
-        call = begin_call(agent, lane, purpose, images=images, model=llm)
+        call = begin_call(agent, lane, purpose, images=images, model=llm, retry_layer=layer)
         try:
             result = await invoker(messages, llm=llm) if invoker else await llm.ainvoke(messages)
         except BaseException as exc:
-            end_call(call, status="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed")
+            end_call(call, status="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed", error_class=exc)
             if isinstance(exc, ResponsesRetryable) and attempt == 0:
+                layer = "responses_history"
                 continue
             raise
         end_call(call, result)

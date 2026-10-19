@@ -125,6 +125,7 @@ class OfflineResponsesGateway:
         self.failures = []
         self.lock = threading.RLock()
         self.incomplete = False
+        self.incomplete_reason = None
         self.report_model = True
         self.empty = False
         self.bad_stream = False
@@ -145,6 +146,9 @@ class OfflineResponsesGateway:
             response = {'id': rid, 'status': 'incomplete' if self.incomplete else 'completed',
                         'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': text}]}],
                         'usage': {'input_tokens': 21, 'output_tokens': 7, 'input_tokens_details': {'cached_tokens': 10}}}
+            if self.incomplete_reason:
+                response['incomplete_details'] = {'reason': self.incomplete_reason}
+                response['usage']['output_tokens_details'] = {'reasoning_tokens': 40}
             if self.report_model:
                 response['model'] = 'confirmed-model'
             self.responses[rid] = response

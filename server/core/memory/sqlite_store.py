@@ -292,13 +292,14 @@ class SqliteStore:
                 raise
         return ids
 
-    def update_turn_trace(self, turn_id: str, report: dict) -> None:
+    def update_turn_trace(self, turn_id: str, report: dict) -> int:
         with self._lock:
             rows = self._conn.execute("SELECT id, meta FROM chat_log WHERE turn_id = ?", (turn_id,)).fetchall()
             for row in rows:
                 meta = json.loads(row["meta"]) if row["meta"] else {}
                 meta["model_trace"] = report
                 self._conn.execute("UPDATE chat_log SET meta = ? WHERE id = ?", (self._dumps(meta), row["id"]))
+            return len(rows)
 
     def list_chat(
         self,
@@ -311,8 +312,9 @@ class SqliteStore:
     ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 500))
         offset = max(0, int(offset))
-        clauses: list[str] = []
-        params: list[Any] = []
+        # role=model_trace is operator evidence for a failed turn, not dialogue.
+        clauses: list[str] = ["role != ?"]
+        params: list[Any] = ["model_trace"]
         if user_id:
             clauses.append("user_id = ?")
             params.append(user_id)

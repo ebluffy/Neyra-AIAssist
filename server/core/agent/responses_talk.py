@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from contextlib import asynccontextmanager
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from core.llm.profile import resolve_openai_compatible_connection
 from core.text_resources import prompt_text
+
+logger = logging.getLogger("neyra.llm.http")
+DEFAULT_OUTPUT_HEADROOM = 2048
 
 
 class ResponsesError(RuntimeError):
@@ -24,6 +29,39 @@ def connection(agent):
     return getattr(agent, "_llm_conn_talk", None) or resolve_openai_compatible_connection(agent.config, role="talk_model")
 
 
+def _safe_target(url):
+    parsed = urlsplit(str(url or ""))
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    path = parsed.path or "/"
+    if parsed.scheme and host:
+        return f"{parsed.scheme}://{host}{path}"
+    return path
+
+
+def _log_http(method, url, status, started, error_class=None):
+    duration_ms = (time.monotonic() - started) * 1000
+    target = _safe_target(url)
+    if error_class:
+        from .model_trace import class_name
+        logger.info(
+            "HTTP Request: %s %s status=%s duration_ms=%.1f error_class=%s",
+            method, target, "-" if status is None else status, duration_ms, class_name(error_class),
+        )
+        return
+    logger.info(
+        "HTTP Request: %s %s status=%s duration_ms=%.1f",
+        method, target, "-" if status is None else status, duration_ms,
+    )
+
+
+def _observe_response(method, url, response, started):
+    from .model_trace import mark_response_headers, running_call
+    _log_http(method, url, getattr(response, "status_code", None), started)
+    mark_response_headers(running_call(), getattr(response, "status_code", None))
+
+
 @asynccontextmanager
 async def client_for(agent, timeout, connection_override=None):
     conn = connection_override or connection(agent)
@@ -33,11 +71,31 @@ async def client_for(agent, timeout, connection_override=None):
 
 
 async def delete_response(agent, response_id, connection_override=None):
+    started = time.monotonic()
+    target = "/v1/responses"
     try:
         async with client_for(agent, 1.0, connection_override) as (client, url):
-            await client.delete(url + "/" + quote(response_id, safe=""))
-    except (httpx.HTTPError, ValueError):
-        pass
+            target = url + "/" + quote(response_id, safe="")
+            response = await client.delete(target)
+            _log_http("DELETE", target, response.status_code, started)
+    except (httpx.HTTPError, ValueError) as exc:
+        _log_http("DELETE", target, None, started, error_class=exc)
+
+
+def talk_cfg(agent):
+    return ((getattr(agent, "config", None) or {}).get("llm") or {}).get("talk_model") or {}
+
+
+def max_output_tokens(agent, visible_cap):
+    """API budget for reasoning and the reply. The visible cap stays separate."""
+    cfg = talk_cfg(agent)
+    explicit = cfg.get("max_output_tokens")
+    if explicit is not None:
+        return max(1, int(explicit))
+    headroom = cfg.get("output_token_headroom")
+    if headroom is None:
+        headroom = DEFAULT_OUTPUT_HEADROOM
+    return max(1, int(visible_cap) + max(0, int(headroom)))
 
 
 def output_text(response):
@@ -105,7 +163,7 @@ class ResponsesTalk:
         cfg = (self.agent.config.get("llm") or {}).get("talk_model") or {}
         cap = self.options.get("max_tokens", getattr(root, "max_tokens", None) or self.agent.reply_max_tokens)
         payload = {"model": self.model_name, "input": items, "store": True, "stream": stream,
-                   "max_output_tokens": int(cap)}
+                   "max_output_tokens": max_output_tokens(self.agent, cap)}
         for name in ("temperature", "top_p"):
             value = self.options.get(name, getattr(root, name, cfg.get(name)))
             if value is not None:
@@ -146,34 +204,68 @@ class ResponsesTalk:
             observe_payload(trace.calls[-1], AIMessageChunk(content="", response_metadata=metadata))
         return metadata
 
+    def incomplete_reason(self, response):
+        details = response.get("incomplete_details")
+        if not isinstance(details, dict):
+            return None
+        from .model_trace import _event_type
+        return _event_type(details.get("reason"))
+
+    def truncated(self, response):
+        return (response.get("status") == "incomplete" and self.incomplete_reason(response) == "max_output_tokens"
+                and bool(output_text(response).strip()))
+
     def completed(self, response, headers):
+        from .model_trace import note_terminal, running_call
         metadata = self.metadata(response, headers)
         rid, text = response.get("id"), output_text(response)
+        truncated = self.truncated(response)
+        event = "response.incomplete" if response.get("status") == "incomplete" else "response.completed"
+        note_terminal(running_call(), event, self.incomplete_reason(response), truncated)
         if rid:
             self.tx.candidate(str(rid), text, self._input_chars + len(text))
-        if response.get("status") != "completed":
-            raise ResponsesError("responses_" + str(response.get("status", "missing_terminal")))
+        if response.get("status") != "completed" and not truncated:
+            status = str(response.get("status", "missing_terminal"))
+            reason = self.incomplete_reason(response)
+            code = "responses_incomplete_" + reason if status == "incomplete" and reason else "responses_" + status
+            raise ResponsesError(code)
         if not rid or not text.strip():
             raise ResponsesRetryable("responses_empty_output")
+        if truncated:
+            metadata["truncated"] = True
         return metadata
 
     async def ainvoke(self, messages):
         payload = self.request(messages, False)
+        started = time.monotonic()
+        url = "/v1/responses"
+        logged = False
         try:
             async with client_for(self.agent, self.timeout, self.connection) as (client, url):
                 result = await client.post(url, json=payload)
+                _observe_response("POST", url, result, started)
+                logged = True
                 self.check_http(result, payload)
                 data = result.json()
                 metadata = self.completed(data, result.headers)
                 return AIMessage(content=output_text(data), response_metadata=metadata)
         except httpx.HTTPError as exc:
+            if not logged:
+                _log_http("POST", url, None, started, error_class=exc)
             raise ResponsesError("responses_transport_error") from exc
 
     async def astream(self, messages):
         payload = self.request(messages, True)
+        started = time.monotonic()
+        url = "/v1/responses"
+        logged = False
+        from .model_trace import mark_first_event, mark_first_reasoning, mark_first_text_delta, note_terminal, running_call
+        saw_text = False
         try:
             async with client_for(self.agent, self.timeout, self.connection) as (client, url):
                 async with client.stream("POST", url, json=payload) as result:
+                    _observe_response("POST", url, result, started)
+                    logged = True
                     if not result.is_success:
                         await result.aread()
                         self.check_http(result, payload)
@@ -192,20 +284,37 @@ class ResponsesTalk:
                             break
                         event = json.loads(raw)
                         kind = event.get("type")
+                        call = running_call()
+                        mark_first_event(call, kind)
+                        if kind == "response.output_text.delta":
+                            mark_first_text_delta(call)
                         response = event.get("response") or {}
                         if response:
                             self.metadata(response, result.headers)
                         if response.get("id") and seen_id is None:
                             seen_id = str(response["id"])
                             self.tx.candidates.append(seen_id)
+                        if isinstance(kind, str) and (kind.startswith("response.reasoning") or "reasoning_summary" in kind):
+                            mark_first_reasoning(call)
+                            yield AIMessageChunk(content="", additional_kwargs={"neyra_progress": "reasoning"})
+                            continue
                         if kind == "response.output_text.delta":
+                            if event.get("delta"):
+                                saw_text = True
                             yield AIMessageChunk(content=event.get("delta", ""))
                         elif kind == "response.completed":
                             metadata = self.completed(response, result.headers)
                             yield AIMessageChunk(content="", response_metadata=metadata)
                             return
+                        elif kind == "response.incomplete" and self.truncated(response):
+                            metadata = self.completed(response, result.headers)
+                            yield AIMessageChunk(content="" if saw_text else output_text(response), response_metadata=metadata)
+                            return
                         elif kind in ("error", "response.failed", "response.incomplete"):
+                            note_terminal(call, kind, self.incomplete_reason(response), False)
                             raise ResponsesError("responses_stream_failed")
                     raise ResponsesError("responses_missing_terminal")
         except httpx.HTTPError as exc:
+            if not logged:
+                _log_http("POST", url, None, started, error_class=exc)
             raise ResponsesError("responses_transport_error") from exc
