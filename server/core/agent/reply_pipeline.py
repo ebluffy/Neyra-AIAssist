@@ -8,6 +8,25 @@ from typing import Any
 from core.text_resources import prompt_text
 
 logger = logging.getLogger("neyra.agent.reply_pipeline")
+CHARS_PER_TOKEN = 4
+
+
+def visible_token_budget(agent: Any, lyrics_mode: bool = False) -> int:
+    if lyrics_mode:
+        return max(1, int(getattr(agent, "lyrics_reply_max_tokens", 4096)))
+    return max(1, int(getattr(agent, "reply_max_tokens", 320)))
+
+
+def clip_visible_reply(text: str, token_budget: int) -> str:
+    """Keep the shown reply inside the visible token budget. The API budget may be larger."""
+    limit = max(1, int(token_budget)) * CHARS_PER_TOKEN
+    if not text or len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    if space >= limit * 3 // 4:
+        cut = cut[:space]
+    return cut.rstrip()
 
 
 def sanitize_raw_reply(

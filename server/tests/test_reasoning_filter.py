@@ -77,7 +77,7 @@ def test_real_stream_never_publishes_reasoning_tokens(tmp_path, transport, unclo
 
 
 @pytest.mark.parametrize("error", [TimeoutError("mid-stream timeout"), RuntimeError("context_length_exceeded")])
-def test_partial_public_stream_is_not_replayed_or_recorded_as_success(tmp_path, error):
+def test_partial_public_stream_is_kept_and_not_replayed(tmp_path, error):
     agent = offline_agent(tmp_path)
     agent._publish_chat_turn_failed = MagicMock()
     attempts = []
@@ -94,10 +94,13 @@ def test_partial_public_stream_is_not_replayed_or_recorded_as_success(tmp_path, 
         output = asyncio.run(collect())
         assert len(attempts) == 1
         assert "".join(item["text"] for item in output if item["type"] == "token") == "PUBLIC-PARTIAL"
-        assert output[-1]["type"] == "error"
-        assert output[-1]["model_trace"]["status"] == "failed"
-        assert not agent.memory_hub.list_chat(limit=10)
-        assert all(not window["messages"] for window in agent.short_memory.windows())
-        assert agent._publish_chat_turn_failed.call_args.kwargs["error"] == str(error)
+        assert output[-1]["type"] == "done"
+        assert output[-1]["text"] == "PUBLIC-PARTIAL"
+        assert output[-1]["model_trace"]["status"] == "completed"
+        assert output[-1]["model_trace"]["error_class"] == type(error).__name__
+        assert "mid-stream" not in str(output[-1]["model_trace"])
+        assert "context_length_exceeded" not in str(output[-1]["model_trace"])
+        assert any(row["text"] == "PUBLIC-PARTIAL" for row in agent.memory_hub.list_chat(limit=10))
+        agent._publish_chat_turn_failed.assert_not_called()
     finally:
         agent.memory_hub.close()

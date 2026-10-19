@@ -194,9 +194,15 @@ def test_partial_errors_never_advance_remote_or_local_history(setup, failure):
     if failure == 'bad_stream': gateway.bad_stream = True
     if failure == 'auth': gateway.failures = [401, 401]
     out = asyncio.run(turn(agent, stream=True))
-    assert out['type'] == 'error'
     assert not sessions_for(agent).chains
-    assert all(not w['messages'] for w in agent.short_memory.windows())
+    if failure == 'auth':
+        assert out['type'] == 'error'
+        assert all(not w['messages'] for w in agent.short_memory.windows())
+    else:
+        assert out['type'] == 'done'
+        assert 'Ответ' in out['text']
+        assert any(w['messages'] for w in agent.short_memory.windows())
+        assert out['model_trace']['error_class'] == 'ResponsesError'
     if failure != 'auth': assert len(gateway.requests) == 1
 
 
@@ -493,3 +499,31 @@ def test_reset_fast_path_does_not_fall_through_to_brain(setup, monkeypatch, stre
     assert out['code'] == 'generation_failed'
     assert not agent.llm_brain.messages and not gateway.requests
     assert out['model_trace']['without_llm']
+
+
+def test_output_budget_is_separate_from_the_visible_reply_cap(setup):
+    agent, gateway = setup
+    asyncio.run(turn(agent))
+    assert gateway.requests[0]['max_output_tokens'] == agent.reply_max_tokens + 2048
+    agent.config['llm']['talk_model']['max_output_tokens'] = 900
+    asyncio.run(turn(agent, text='next'))
+    assert gateway.requests[-1]['max_output_tokens'] == 900
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_max_output_truncation_finishes_with_the_partial_answer(setup, stream):
+    agent, gateway = setup
+    gateway.incomplete = True
+    gateway.incomplete_reason = 'max_output_tokens'
+    out = asyncio.run(turn(agent, stream=stream))
+    assert out.get('type', 'done') != 'error'
+    assert 'Ответ' in out['text']
+    purpose = 'stream_reply' if stream else 'reply'
+    call = next(c for c in out['model_trace']['calls'] if c['purpose'] == purpose and c['status'] == 'completed')
+    assert call['truncated'] is True
+    assert call['terminal_event'] == 'response.incomplete'
+    assert call['incomplete_reason'] == 'max_output_tokens'
+    assert call['usage']['reasoning_tokens'] == 40
+    assert call['usage']['output_tokens'] == 7
+    assert len(sessions_for(agent).chains) == 1
+    assert 'PRIVATE' not in json.dumps(out['model_trace'])

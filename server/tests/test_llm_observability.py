@@ -3,11 +3,12 @@
 import asyncio
 import json
 import logging
+import time
 from concurrent.futures import Future
 
 import httpx
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 from core.agent.conversation_scope import conversation_scope
 from core.agent.model_trace import (
@@ -192,3 +193,73 @@ def test_retry_layer_labels_and_sdk_counter_ignore_the_message(tmp_path):
     finally:
         ACTIVE_TRACE.reset(token)
         agent.memory_hub.close()
+
+
+def test_reasoning_keeps_a_slow_stream_alive_without_publishing_it(tmp_path):
+    from core.agent.llm_stream import astream_text_with_fallback
+    agent = offline_agent(tmp_path)
+    agent.primary_first_token_timeout = 0.1
+    agent.config["llm"]["talk_model"]["turn_timeout_seconds"] = 1
+
+    async def stream(messages):
+        await asyncio.sleep(0.05)
+        yield AIMessageChunk(content="", additional_kwargs={"reasoning_content": "PRIVATE-REASONING"})
+        await asyncio.sleep(0.09)
+        yield AIMessageChunk(content="Видимый ответ")
+
+    agent.llm_talk.astream = stream
+
+    async def run():
+        trace = TurnTrace(None, None, agent.config)
+        token = ACTIVE_TRACE.set(trace)
+        try:
+            chunks = [chunk async for chunk in astream_text_with_fallback(agent, [])]
+            assert "".join(getattr(chunk, "content", "") or "" for chunk in chunks) == "Видимый ответ"
+            assert trace.calls[0]["first_reasoning_ms"] is not None
+            assert "PRIVATE-REASONING" not in json.dumps(trace.report())
+        finally:
+            ACTIVE_TRACE.reset(token)
+
+    try:
+        asyncio.run(run())
+    finally:
+        agent.memory_hub.close()
+
+
+def test_first_token_retry_stops_at_the_turn_budget(tmp_path):
+    from core.agent.llm_stream import astream_text_with_fallback
+    agent = offline_agent(tmp_path)
+    agent.primary_first_token_timeout = 1
+    agent.config["llm"]["talk_model"]["turn_timeout_seconds"] = 0.12
+
+    async def stream(messages):
+        await asyncio.Event().wait()
+        yield AIMessageChunk(content="нет")
+
+    agent.llm_talk.astream = stream
+
+    async def run():
+        trace = TurnTrace(None, None, agent.config)
+        token = ACTIVE_TRACE.set(trace)
+        started = time.monotonic()
+        try:
+            with pytest.raises(TimeoutError):
+                async for _ in astream_text_with_fallback(agent, []):
+                    pass
+            assert time.monotonic() - started < 0.45
+            assert len(trace.calls) == 1
+        finally:
+            ACTIVE_TRACE.reset(token)
+
+    try:
+        asyncio.run(run())
+    finally:
+        agent.memory_hub.close()
+
+
+def test_visible_reply_clip_uses_the_reply_budget_not_the_api_budget():
+    from core.agent.reply_pipeline import clip_visible_reply
+    assert clip_visible_reply("коротко", 20) == "коротко"
+    clipped = clip_visible_reply("abcdefghij klmnop", 1)
+    assert len(clipped) <= 4
+    assert "klmnop" not in clipped

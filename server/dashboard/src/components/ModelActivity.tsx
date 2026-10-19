@@ -14,6 +14,8 @@ export type ModelCall = {
   headers_ms?: number | null; http_status?: number | null
   first_event_ms?: number | null; first_event_type?: string | null; first_text_delta_ms?: number | null
   retry_layer?: string | null; sdk_retries?: number | null; error_class?: string | null
+  terminal_event?: string | null; incomplete_reason?: string | null; truncated?: boolean
+  first_reasoning_ms?: number | null
   usage?: { input_tokens?: number; output_tokens?: number; cache_read_tokens?: number } | null
 }
 export type ModelTurn = {
@@ -58,7 +60,7 @@ export function ModelActivity({ polling }: { polling: boolean }) {
             {' · '}{labels[turn.status] ?? turn.status}{turn.error_class ? ` · ${turn.error_class}` : ''}{turn.queue_wait_ms != null ? ` · очередь ${seconds(turn.queue_wait_ms)}` : ''}{turn.without_llm && ' · Без вызова LLM'}
           </summary>
           {turn.calls.map((call, i) => <div className="stack-sm rounded-md border border-border p-3" key={i}>
-            <p className="text-sm">{labels[call.lane] ?? call.lane} · {labels[call.purpose] ?? call.purpose} · {labels[call.status] ?? call.status} · попытка {call.attempt}{call.retry_layer ? ` · ${call.retry_layer}` : ''}{call.sdk_retries ? ` · sdk ${call.sdk_retries}` : ''}{call.error_class ? ` · ${call.error_class}` : ''}{call.has_images && ' · изображение'}</p>
+            <p className="text-sm">{labels[call.lane] ?? call.lane} · {labels[call.purpose] ?? call.purpose} · {labels[call.status] ?? call.status} · попытка {call.attempt}{call.retry_layer ? ` · ${call.retry_layer}` : ''}{call.sdk_retries ? ` · sdk ${call.sdk_retries}` : ''}{call.error_class ? ` · ${call.error_class}` : ''}{call.truncated ? ` · обрезан по лимиту${call.incomplete_reason ? ` (${call.incomplete_reason})` : ''}` : ''}{call.has_images && ' · изображение'}</p>
             <dl className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
               <div><dt className="hint">Провайдер</dt><dd className="break-all">{call.provider ?? 'Неизвестен'}</dd></div>
               <div><dt className="hint">Настроено</dt><dd className="break-all font-mono">{call.configured_model ?? 'Неизвестно'}</dd></div>

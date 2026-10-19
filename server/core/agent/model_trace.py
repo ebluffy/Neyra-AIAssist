@@ -175,10 +175,10 @@ def _install_sdk_retry_notes():
 
 
 def _terminal_error_class(trace, status):
-    if status not in ("failed", "cancelled"):
-        return None
     if trace.error_class:
         return trace.error_class
+    if status not in ("failed", "cancelled"):
+        return None
     for call in reversed(trace.calls):
         if call.get("error_class"):
             return call["error_class"]
@@ -267,7 +267,8 @@ def begin_call(agent, lane, purpose, attempt=None, images=False, model=None, ret
         "first_meaningful_token_ms": None,
         "headers_ms": None, "http_status": None,
         "first_event_ms": None, "first_event_type": None,
-        "first_text_delta_ms": None,
+        "first_text_delta_ms": None, "first_reasoning_ms": None,
+        "terminal_event": None, "incomplete_reason": None, "truncated": False,
         "retry_layer": _retry_layer(retry_layer), "sdk_retries": 0,
         "error_class": None,
         "usage": None,
@@ -350,6 +351,27 @@ def mark_first_text_delta(call):
     _mark_once(call, "first_text_delta_ms")
 
 
+def mark_first_reasoning(call):
+    _mark_once(call, "first_reasoning_ms")
+
+
+def note_terminal(call, event, reason=None, truncated=False):
+    if call is None or call.get("status") != "running":
+        return
+    event_name = _event_type(event)
+    reason_name = _event_type(reason)
+    if event_name:
+        call["terminal_event"] = event_name
+    if reason_name:
+        call["incomplete_reason"] = reason_name
+    if truncated:
+        call["truncated"] = True
+    logger.info(
+        "LLM terminal | event=%s reason=%s truncated=%s",
+        call.get("terminal_event"), call.get("incomplete_reason"), bool(call.get("truncated")),
+    )
+
+
 def mark_first_meaningful_token(call):
     if call is None or call.get("first_meaningful_token_at") is not None or "_started_monotonic" not in call:
         return
@@ -393,11 +415,15 @@ def observe_payload(call, payload):
         usage = {**(call.get("provider_usage") or {}), **usage}
         call["provider_usage"] = usage
         details = usage.get("input_token_details") or usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+        output_details = usage.get("output_token_details") or usage.get("output_tokens_details") or {}
+        if not isinstance(output_details, dict):
+            output_details = {}
         call["usage"] = {
             "input_tokens": usage.get("input_tokens", usage.get("prompt_tokens")),
             "output_tokens": usage.get("output_tokens", usage.get("completion_tokens")),
             "cache_read_tokens": usage.get("cache_read_tokens", usage.get("cache_read_input_tokens", details.get("cache_read", details.get("cached_tokens")))),
             "cache_creation_tokens": usage.get("cache_creation_tokens", usage.get("cache_creation_input_tokens", details.get("cache_creation"))),
+            "reasoning_tokens": usage.get("reasoning_tokens", output_details.get("reasoning_tokens", output_details.get("reasoning"))),
         }
         call["usage"] = {k: v for k, v in call["usage"].items() if v is not None}
 

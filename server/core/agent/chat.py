@@ -7,9 +7,11 @@ from typing import Any, Optional
 
 from core.agent.public_errors import public_chat_error
 from core.agent.reply_pipeline import (
+    clip_visible_reply,
     log_micro_plan_metrics,
     polish_clean_reply,
     sanitize_raw_reply,
+    visible_token_budget,
 )
 from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
 from core.agent.turn_finalize import finalize_successful_turn
@@ -158,6 +160,7 @@ async def run_chat(
             messages=final_messages_used,
             lyrics_mode=prep.lyrics_mode,
         )
+        clean_text = clip_visible_reply(clean_text, visible_token_budget(agent, prep.lyrics_mode))
 
         await finalize_successful_turn(
             agent,
