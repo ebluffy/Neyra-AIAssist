@@ -13,6 +13,8 @@
 
 ## 0.1.0 (в разработке)
 
+Наблюдаемость LLM без смены поведения: сорванный ход сохраняет `model_trace` в `chat_log` (`role=model_trace`, пустой текст, вне истории диалога) со `status` и `error_class`. У хода отдельно `queue_wait_ms`. У вызова, где видно, есть время до заголовков, первого SSE-события и первой текстовой дельты, слой повтора и счётчик повторов SDK. HTTP Responses пишется в `system.log` (`neyra.llm.http`, INFO) без тела и секретов.
+
 Обновлено: 2026-10-19. [PR #29](https://github.com/ebluffy/Neyra-AIAssist/pull/29) смержен как `b7e77b2`, преддеплойный [PR #30](https://github.com/ebluffy/Neyra-AIAssist/pull/30) — как `2340812`. Текущая работа — [PR #31](https://github.com/ebluffy/Neyra-AIAssist/pull/31), подключение Discord через прокси.
 Это первая запись журнала; прежним PR не назначаются вымышленные номера релизов.
 

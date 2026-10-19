@@ -170,6 +170,10 @@ def test_missing_parent_retries_fresh_and_keeps_per_attempt_trace(setup, stream)
         assert 'hello' in str(gateway.requests[-1]['input'])
         calls = [c for c in out['model_trace']['calls'] if c['lane'] == 'talk']
         assert [(c['attempt'], c['status']) for c in calls] == [(1, 'failed'), (2, 'completed')]
+        assert calls[0]['retry_layer'] is None and calls[0]['error_class'] == 'ResponsesRetryable'
+        assert calls[0]['http_status'] == 404 and calls[1]['http_status'] == 200
+        # Stream retries inside the talk stream wrapper; non-stream retries inside invoke.
+        assert calls[1]['retry_layer'] == ('stream_error' if stream else 'responses_history')
     asyncio.run(run())
 
 

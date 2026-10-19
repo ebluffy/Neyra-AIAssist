@@ -262,7 +262,7 @@ async def iter_chat_stream(
                 reasoning_filter = ReasoningFilter()
                 try:
                     async with aclosing(_consume_stream(
-                        agent._astream_text_with_fallback(messages_retry, llm=stream_llm),
+                        agent._astream_text_with_fallback(messages_retry, llm=stream_llm, retry_layer="context_overflow"),
                         retry=True,
                     )) as stream:
                         async for item in stream:

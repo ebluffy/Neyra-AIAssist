@@ -249,6 +249,8 @@ def test_metadata_only_stream_does_not_disable_first_text_timeout(tmp_path):
                     pytest.fail("Metadata must not be emitted as answer text")
             assert len(trace.calls) == 2
             assert all(c["status"] == "failed" and c["first_meaningful_token_ms"] is None for c in trace.calls)
+            assert [c["retry_layer"] for c in trace.calls] == [None, "stream_timeout"]
+            assert all(c["error_class"] == "TimeoutError" for c in trace.calls)
             finish(agent, trace, "failed")
         finally:
             ACTIVE_TRACE.reset(token)

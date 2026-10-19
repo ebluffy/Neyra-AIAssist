@@ -29,7 +29,7 @@ def log_model_route(agent: Any, used_model: Optional[str], *, lane: str = "talk"
 
 
 async def astream_text_with_fallback(
-    agent: Any, messages: list[Any], *, llm: Any = None
+    agent: Any, messages: list[Any], *, llm: Any = None, retry_layer: str | None = None
 ) -> AsyncIterator[Any]:
     """Streaming call with first-token timeout guard and one retry on the same model."""
     from core.llm.message_content import message_content_to_text
@@ -49,9 +49,10 @@ async def astream_text_with_fallback(
         if control:
             control["on_retry"]()
 
+    layer = retry_layer
     for attempt in range(1, attempts + 1):
-        from .model_trace import begin_call, end_call, mark_first_meaningful_token, observe_payload
-        call = begin_call(agent, "talk", "stream_reply", images=any(isinstance(getattr(m, "content", None), list) for m in messages), model=model)
+        from .model_trace import begin_call, end_call, mark_first_meaningful_token, mark_first_text_delta, observe_payload
+        call = begin_call(agent, "talk", "stream_reply", images=any(isinstance(getattr(m, "content", None), list) for m in messages), model=model, retry_layer=layer)
         started = time.monotonic()
         stream = model.astream(messages)
         it = stream.__aiter__()
@@ -63,6 +64,7 @@ async def astream_text_with_fallback(
                 observe_payload(call, first_chunk)
                 first_token = message_content_to_text(getattr(first_chunk, "content", ""))
                 if first_token:
+                    mark_first_text_delta(call)
                     break
             if first_token:
                 if not control:
@@ -77,19 +79,22 @@ async def astream_text_with_fallback(
             yield first_chunk
             async for ch in it:
                 observe_payload(call, ch)
-                if not control and message_content_to_text(getattr(ch, "content", "")):
-                    mark_first_meaningful_token(call)
+                if message_content_to_text(getattr(ch, "content", "")):
+                    mark_first_text_delta(call)
+                    if not control:
+                        mark_first_meaningful_token(call)
                 yield ch
             end_call(call)
             return
         except asyncio.TimeoutError as e:
-            end_call(call, status="failed")
+            end_call(call, status="failed", error_class=e)
             if public_emitted(emitted):
                 raise
             if emitted:
                 last_err = e
                 if attempt >= attempts:
                     raise
+                layer = "stream_timeout"
                 reset_retry()
                 continue
             last_err = TimeoutError(
@@ -104,22 +109,24 @@ async def astream_text_with_fallback(
                 first_timeout,
             )
             if attempt < attempts:
+                layer = "stream_timeout"
                 reset_retry()
             continue
         except StopAsyncIteration:
             end_call(call)
             return
         except Exception as e:
-            end_call(call, status="failed")
+            end_call(call, status="failed", error_class=e)
             last_err = e
             if public_emitted(emitted) or attempt >= attempts:
                 raise
             logger.warning("LLM stream attempt failed, retrying same model: %s", e)
+            layer = "stream_error"
             reset_retry()
             continue
         finally:
             if call is not None and call["status"] == "running":
-                end_call(call, status="cancelled")
+                end_call(call, status="cancelled", error_class="CancelledError")
             close = getattr(it, "aclose", None)
             if close is not None:
                 await close()

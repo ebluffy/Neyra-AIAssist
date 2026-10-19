@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from contextlib import asynccontextmanager
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from core.llm.profile import resolve_openai_compatible_connection
 from core.text_resources import prompt_text
+
+logger = logging.getLogger("neyra.llm.http")
 
 
 class ResponsesError(RuntimeError):
@@ -24,6 +28,39 @@ def connection(agent):
     return getattr(agent, "_llm_conn_talk", None) or resolve_openai_compatible_connection(agent.config, role="talk_model")
 
 
+def _safe_target(url):
+    parsed = urlsplit(str(url or ""))
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    path = parsed.path or "/"
+    if parsed.scheme and host:
+        return f"{parsed.scheme}://{host}{path}"
+    return path
+
+
+def _log_http(method, url, status, started, error_class=None):
+    duration_ms = (time.monotonic() - started) * 1000
+    target = _safe_target(url)
+    if error_class:
+        from .model_trace import class_name
+        logger.info(
+            "HTTP Request: %s %s status=%s duration_ms=%.1f error_class=%s",
+            method, target, "-" if status is None else status, duration_ms, class_name(error_class),
+        )
+        return
+    logger.info(
+        "HTTP Request: %s %s status=%s duration_ms=%.1f",
+        method, target, "-" if status is None else status, duration_ms,
+    )
+
+
+def _observe_response(method, url, response, started):
+    from .model_trace import mark_response_headers, running_call
+    _log_http(method, url, getattr(response, "status_code", None), started)
+    mark_response_headers(running_call(), getattr(response, "status_code", None))
+
+
 @asynccontextmanager
 async def client_for(agent, timeout, connection_override=None):
     conn = connection_override or connection(agent)
@@ -33,11 +70,15 @@ async def client_for(agent, timeout, connection_override=None):
 
 
 async def delete_response(agent, response_id, connection_override=None):
+    started = time.monotonic()
+    target = "/v1/responses"
     try:
         async with client_for(agent, 1.0, connection_override) as (client, url):
-            await client.delete(url + "/" + quote(response_id, safe=""))
-    except (httpx.HTTPError, ValueError):
-        pass
+            target = url + "/" + quote(response_id, safe="")
+            response = await client.delete(target)
+            _log_http("DELETE", target, response.status_code, started)
+    except (httpx.HTTPError, ValueError) as exc:
+        _log_http("DELETE", target, None, started, error_class=exc)
 
 
 def output_text(response):
@@ -159,21 +200,34 @@ class ResponsesTalk:
 
     async def ainvoke(self, messages):
         payload = self.request(messages, False)
+        started = time.monotonic()
+        url = "/v1/responses"
+        logged = False
         try:
             async with client_for(self.agent, self.timeout, self.connection) as (client, url):
                 result = await client.post(url, json=payload)
+                _observe_response("POST", url, result, started)
+                logged = True
                 self.check_http(result, payload)
                 data = result.json()
                 metadata = self.completed(data, result.headers)
                 return AIMessage(content=output_text(data), response_metadata=metadata)
         except httpx.HTTPError as exc:
+            if not logged:
+                _log_http("POST", url, None, started, error_class=exc)
             raise ResponsesError("responses_transport_error") from exc
 
     async def astream(self, messages):
         payload = self.request(messages, True)
+        started = time.monotonic()
+        url = "/v1/responses"
+        logged = False
+        from .model_trace import mark_first_event, mark_first_text_delta, running_call
         try:
             async with client_for(self.agent, self.timeout, self.connection) as (client, url):
                 async with client.stream("POST", url, json=payload) as result:
+                    _observe_response("POST", url, result, started)
+                    logged = True
                     if not result.is_success:
                         await result.aread()
                         self.check_http(result, payload)
@@ -192,6 +246,10 @@ class ResponsesTalk:
                             break
                         event = json.loads(raw)
                         kind = event.get("type")
+                        call = running_call()
+                        mark_first_event(call, kind)
+                        if kind == "response.output_text.delta":
+                            mark_first_text_delta(call)
                         response = event.get("response") or {}
                         if response:
                             self.metadata(response, result.headers)
@@ -208,4 +266,6 @@ class ResponsesTalk:
                             raise ResponsesError("responses_stream_failed")
                     raise ResponsesError("responses_missing_terminal")
         except httpx.HTTPError as exc:
+            if not logged:
+                _log_http("POST", url, None, started, error_class=exc)
             raise ResponsesError("responses_transport_error") from exc

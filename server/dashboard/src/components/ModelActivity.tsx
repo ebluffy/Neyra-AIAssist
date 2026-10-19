@@ -11,11 +11,19 @@ export type ModelCall = {
   provider: string | null; configured_model: string | null; reported_model: string | null
   has_images: boolean
   provider_request_id?: string | null; duration_ms?: number | null; first_meaningful_token_ms?: number | null
+  headers_ms?: number | null; http_status?: number | null
+  first_event_ms?: number | null; first_event_type?: string | null; first_text_delta_ms?: number | null
+  retry_layer?: string | null; sdk_retries?: number | null; error_class?: string | null
   usage?: { input_tokens?: number; output_tokens?: number; cache_read_tokens?: number } | null
 }
 export type ModelTurn = {
   turn_id: string; timestamp: string; status: string; without_llm: boolean; calls: ModelCall[]
   kind?: string; parent_turn_id?: string | null
+  queue_wait_ms?: number | null; error_class?: string | null
+}
+
+function seconds(value: number | null | undefined) {
+  return value == null ? 'Не измерено' : `${(value / 1000).toFixed(2)} с`
 }
 
 const labels: Record<string, string> = {
@@ -47,16 +55,17 @@ export function ModelActivity({ polling }: { polling: boolean }) {
           <summary className="cursor-pointer py-3 text-sm">
             <time dateTime={turn.timestamp}>{new Date(turn.timestamp).toLocaleTimeString('ru-RU')}</time>
             {turn.kind === 'background' && ' · Фоновая задача'}
-            {' · '}{labels[turn.status] ?? turn.status}{turn.without_llm && ' · Без вызова LLM'}
+            {' · '}{labels[turn.status] ?? turn.status}{turn.error_class ? ` · ${turn.error_class}` : ''}{turn.queue_wait_ms != null ? ` · очередь ${seconds(turn.queue_wait_ms)}` : ''}{turn.without_llm && ' · Без вызова LLM'}
           </summary>
           {turn.calls.map((call, i) => <div className="stack-sm rounded-md border border-border p-3" key={i}>
-            <p className="text-sm">{labels[call.lane] ?? call.lane} · {labels[call.purpose] ?? call.purpose} · {labels[call.status] ?? call.status} · попытка {call.attempt}{call.has_images && ' · изображение'}</p>
+            <p className="text-sm">{labels[call.lane] ?? call.lane} · {labels[call.purpose] ?? call.purpose} · {labels[call.status] ?? call.status} · попытка {call.attempt}{call.retry_layer ? ` · ${call.retry_layer}` : ''}{call.sdk_retries ? ` · sdk ${call.sdk_retries}` : ''}{call.error_class ? ` · ${call.error_class}` : ''}{call.has_images && ' · изображение'}</p>
             <dl className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
               <div><dt className="hint">Провайдер</dt><dd className="break-all">{call.provider ?? 'Неизвестен'}</dd></div>
               <div><dt className="hint">Настроено</dt><dd className="break-all font-mono">{call.configured_model ?? 'Неизвестно'}</dd></div>
               <div><dt className="hint">Сообщено провайдером</dt><dd className="break-all font-mono">{call.reported_model ?? 'Не сообщена'}</dd></div>
               <div><dt className="hint">ID запроса провайдера</dt><dd className="break-all font-mono">{call.provider_request_id ?? 'Не сообщён'}</dd></div>
               <div><dt className="hint">Длительность / первый текст</dt><dd>{call.duration_ms == null ? 'Не измерена' : `${(call.duration_ms / 1000).toFixed(2)} с`} / {call.first_meaningful_token_ms == null ? 'Не измерен' : `${(call.first_meaningful_token_ms / 1000).toFixed(2)} с`}</dd></div>
+              <div><dt className="hint">Заголовки / первое событие / первая дельта</dt><dd>{seconds(call.headers_ms)}{call.http_status != null ? ` · HTTP ${call.http_status}` : ''} / {seconds(call.first_event_ms)}{call.first_event_type ? ` · ${call.first_event_type}` : ''} / {seconds(call.first_text_delta_ms)}</dd></div>
               <div><dt className="hint">Токены: вход / выход / кэш</dt><dd>{call.usage?.input_tokens ?? 'Не сообщено'} / {call.usage?.output_tokens ?? 'Не сообщено'} / {call.usage?.cache_read_tokens ?? 'Не сообщено'}</dd></div>
             </dl>
           </div>)}
