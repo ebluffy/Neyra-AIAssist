@@ -29,13 +29,11 @@ def clip_visible_reply(text: str, token_budget: int) -> str:
     return cut.rstrip()
 
 
-def responses_output_exceeds_visible(agent: Any, lyrics_mode: bool = False) -> bool:
-    """Client clip applies only when Responses may generate more than the visible cap."""
-    from core.agent.responses_talk import max_output_tokens
-    from core.agent.talk_sessions import ENABLED
-    from core.runtime.features import feature_enabled
+def responses_output_exceeds_visible(agent: Any, model: Any, lyrics_mode: bool = False) -> bool:
+    """Clip only when this turn's model is Responses and its API budget exceeds the visible cap."""
+    from core.agent.responses_talk import ResponsesTalk, max_output_tokens
 
-    if not feature_enabled(getattr(agent, "config", {}) or {}, ENABLED):
+    if not isinstance(model, ResponsesTalk):
         return False
     cap = visible_token_budget(agent, lyrics_mode)
     return max_output_tokens(agent, cap) > cap

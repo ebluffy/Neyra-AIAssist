@@ -356,7 +356,7 @@ def mark_first_reasoning(call):
 
 
 def note_terminal(call, event, reason=None, truncated=False):
-    if call is None or call.get("status") != "running":
+    if call is None or call.get("status") not in ("running", "completed"):
         return
     event_name = _event_type(event)
     reason_name = _event_type(reason)

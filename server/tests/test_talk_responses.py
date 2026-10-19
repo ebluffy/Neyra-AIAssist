@@ -567,3 +567,47 @@ def test_visible_cap_stops_the_stream_and_matches_the_saved_reply(setup):
         assert 'abcdefgh' in saved
     finally:
         ResponsesTalk.astream = original
+
+
+def test_responses_flag_without_a_session_does_not_clip_chat_completions(setup):
+    from langchain_core.messages import AIMessageChunk
+    agent, _gateway = setup
+    agent.reply_max_tokens = 2
+    long_text = 'abcdefghij' * 3
+
+    async def stream(messages):
+        yield AIMessageChunk(content=long_text)
+
+    agent.llm_talk.astream = stream
+    chunks = asyncio.run(_collect(agent))
+    assert chunks[-1]['type'] == 'done'
+    assert chunks[-1]['text'] == long_text
+    talk = next(c for c in chunks[-1]['model_trace']['calls'] if c['purpose'] == 'stream_reply')
+    assert talk['truncated'] is False
+
+
+def test_nonstream_visible_clip_is_marked_on_the_talk_call(setup):
+    from langchain_core.messages import AIMessage
+    from core.agent.responses_talk import ResponsesTalk
+    agent, _gateway = setup
+    agent.reply_max_tokens = 2
+    original = ResponsesTalk.ainvoke
+
+    async def fake(self, messages):
+        return AIMessage(content='abcdefghij' * 3)
+
+    ResponsesTalk.ainvoke = fake
+    try:
+        out = asyncio.run(turn(agent))
+        assert out['text'] == 'abcdefgh'
+        call = next(c for c in out['model_trace']['calls'] if c['purpose'] == 'reply' and c['status'] == 'completed')
+        assert call['truncated'] is True
+        assert call['incomplete_reason'] == 'visible_cap'
+    finally:
+        ResponsesTalk.ainvoke = original
+
+
+def _collect(agent):
+    async def run():
+        return [chunk async for chunk in agent.chat_stream('hello')]
+    return run()

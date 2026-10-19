@@ -155,7 +155,7 @@ async def iter_chat_stream(
 
         raw_response = ""
         context_exceeded = False
-        clip_visible = responses_output_exceeds_visible(agent, prep.lyrics_mode)
+        clip_visible = responses_output_exceeds_visible(agent, stream_llm, prep.lyrics_mode)
         used_model_name: Optional[str] = None
         plan_state = agent._init_micro_plan_state()
         reasoning_filter = ReasoningFilter()
