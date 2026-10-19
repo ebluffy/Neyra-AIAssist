@@ -257,6 +257,30 @@ def test_first_token_retry_stops_at_the_turn_budget(tmp_path):
         agent.memory_hub.close()
 
 
+def test_chat_completions_are_not_clipped_by_the_responses_character_cap(tmp_path):
+    agent = offline_agent(tmp_path)
+    agent.reply_max_tokens = 2
+    long_text = "abcdefghij" * 3
+
+    async def stream(messages):
+        yield AIMessageChunk(content=long_text)
+
+    agent.llm_talk.astream = stream
+
+    async def collect():
+        return [chunk async for chunk in agent.chat_stream("hello")]
+
+    try:
+        chunks = asyncio.run(collect())
+        assert chunks[-1]["type"] == "done"
+        assert chunks[-1]["text"] == long_text
+        assert "".join(chunk["text"] for chunk in chunks if chunk["type"] == "token") == long_text
+        talk = [call for call in chunks[-1]["model_trace"]["calls"] if call["purpose"] == "stream_reply"]
+        assert talk and talk[-1]["truncated"] is False
+    finally:
+        agent.memory_hub.close()
+
+
 def test_visible_reply_clip_uses_the_reply_budget_not_the_api_budget():
     from core.agent.reply_pipeline import clip_visible_reply
     assert clip_visible_reply("коротко", 20) == "коротко"

@@ -187,23 +187,27 @@ def test_empty_and_missing_reported_model_are_honest(setup):
     assert out['model_trace']['status'] == 'completed'
 
 
-@pytest.mark.parametrize('failure', ['incomplete', 'bad_stream', 'auth'])
-def test_partial_errors_never_advance_remote_or_local_history(setup, failure):
+def test_auth_failure_does_not_record_history(setup):
+    agent, gateway = setup
+    gateway.failures = [401, 401]
+    out = asyncio.run(turn(agent, stream=True))
+    assert out['type'] == 'error'
+    assert not sessions_for(agent).chains
+    assert all(not w['messages'] for w in agent.short_memory.windows())
+
+
+@pytest.mark.parametrize('failure', ['incomplete', 'bad_stream'])
+def test_partial_visible_errors_keep_local_history_without_remote_chain(setup, failure):
     agent, gateway = setup
     if failure == 'incomplete': gateway.incomplete = True
     if failure == 'bad_stream': gateway.bad_stream = True
-    if failure == 'auth': gateway.failures = [401, 401]
     out = asyncio.run(turn(agent, stream=True))
+    assert out['type'] == 'done'
+    assert 'Ответ' in out['text']
+    assert any(w['messages'] for w in agent.short_memory.windows())
+    assert out['model_trace']['error_class'] == 'ResponsesError'
     assert not sessions_for(agent).chains
-    if failure == 'auth':
-        assert out['type'] == 'error'
-        assert all(not w['messages'] for w in agent.short_memory.windows())
-    else:
-        assert out['type'] == 'done'
-        assert 'Ответ' in out['text']
-        assert any(w['messages'] for w in agent.short_memory.windows())
-        assert out['model_trace']['error_class'] == 'ResponsesError'
-    if failure != 'auth': assert len(gateway.requests) == 1
+    assert len(gateway.requests) == 1
 
 
 def test_cancelled_waiter_does_not_overtake_and_scopes_run_in_parallel(setup):
@@ -527,3 +531,39 @@ def test_max_output_truncation_finishes_with_the_partial_answer(setup, stream):
     assert call['usage']['output_tokens'] == 7
     assert len(sessions_for(agent).chains) == 1
     assert 'PRIVATE' not in json.dumps(out['model_trace'])
+
+
+def test_visible_cap_stops_the_stream_and_matches_the_saved_reply(setup):
+    from langchain_core.messages import AIMessageChunk
+    from core.agent.responses_talk import ResponsesTalk
+    agent, _gateway = setup
+    agent.reply_max_tokens = 2
+    consumed = {'n': 0}
+    original = ResponsesTalk.astream
+
+    async def fake(self, messages):
+        for _ in range(20):
+            consumed['n'] += 1
+            yield AIMessageChunk(content='abcdefghij')
+
+    ResponsesTalk.astream = fake
+
+    async def collect():
+        return [chunk async for chunk in agent.chat_stream('hello', discord_user_id='123', channel_id='77')]
+
+    try:
+        chunks = asyncio.run(collect())
+        assert consumed['n'] == 1
+        shown = ''.join(chunk['text'] for chunk in chunks if chunk['type'] == 'token')
+        assert chunks[-1]['type'] == 'done'
+        assert chunks[-1]['text'] == shown == 'abcdefgh'
+        call = next(c for c in chunks[-1]['model_trace']['calls'] if c['purpose'] == 'stream_reply')
+        assert call['truncated'] is True
+        assert call['incomplete_reason'] == 'visible_cap'
+        assert call['status'] == 'completed'
+        assert not sessions_for(agent).chains
+        saved = ' '.join(str(window['messages']) for window in agent.short_memory.windows())
+        assert 'abcdefghij' not in saved
+        assert 'abcdefgh' in saved
+    finally:
+        ResponsesTalk.astream = original

@@ -9,9 +9,11 @@ from typing import Any, AsyncIterator, Optional
 from core.agent.public_errors import public_chat_error
 from core.agent.reasoning_filter import ReasoningFilter
 from core.agent.reply_pipeline import (
+    VisibleClipper,
     clip_visible_reply,
     log_micro_plan_metrics,
     polish_clean_reply,
+    responses_output_exceeds_visible,
     sanitize_raw_reply,
     visible_token_budget,
 )
@@ -153,8 +155,7 @@ async def iter_chat_stream(
 
         raw_response = ""
         context_exceeded = False
-        visible_sent = 0
-        visible_limit = visible_token_budget(agent, prep.lyrics_mode) * 4
+        clip_visible = responses_output_exceeds_visible(agent, prep.lyrics_mode)
         used_model_name: Optional[str] = None
         plan_state = agent._init_micro_plan_state()
         reasoning_filter = ReasoningFilter()
@@ -175,8 +176,36 @@ async def iter_chat_stream(
             trace.stream_control = {"public_emitted": lambda: yielded_chunk_count > 0,
                                     "on_retry": reset_hidden_attempt}
 
+        def mark_visible_cap():
+            from core.agent.model_trace import end_call, note_terminal, running_call
+            call = running_call()
+            if call is None or call.get("truncated"):
+                return
+            note_terminal(call, "visible_cap", "visible_cap", truncated=True)
+            end_call(call, status="completed")
+
         async def _consume_stream(stream_iter: Any, *, retry: bool = False) -> AsyncIterator[dict]:
-            nonlocal raw_response, used_model_name, raw_chunk_count, yielded_chunk_count, visible_sent
+            nonlocal raw_response, used_model_name, raw_chunk_count, yielded_chunk_count
+            clipper = VisibleClipper(visible_token_budget(agent, prep.lyrics_mode)) if clip_visible else None
+
+            def take(piece: str) -> tuple[str, bool]:
+                if not piece:
+                    return "", False
+                if clipper is None:
+                    return piece, False
+                return clipper.push(piece), clipper.cut
+
+            def emit(piece: str):
+                nonlocal yielded_chunk_count
+                text, cut = take(piece)
+                if text:
+                    from core.agent.model_trace import mark_first_meaningful_token
+                    if trace and trace.calls:
+                        mark_first_meaningful_token(trace.calls[-1])
+                    yielded_chunk_count += 1
+                    return text, cut
+                return "", cut
+
             async with aclosing(stream_iter):
                 async for chunk in stream_iter:
                     if used_model_name is None:
@@ -185,26 +214,19 @@ async def iter_chat_stream(
                     if token:
                         raw_chunk_count += 1
                         raw_response += token
-                        visible = agent._filter_micro_plan_token(reasoning_filter.feed(token), plan_state)
-                        if visible and visible_sent < visible_limit:
-                            room = visible_limit - visible_sent
-                            visible = visible[:room]
-                            visible_sent += len(visible)
-                        elif visible:
-                            visible = ""
+                        visible, cut = emit(agent._filter_micro_plan_token(reasoning_filter.feed(token), plan_state))
                         if visible:
-                            from core.agent.model_trace import mark_first_meaningful_token
-                            if trace and trace.calls:
-                                mark_first_meaningful_token(trace.calls[-1])
-                            yielded_chunk_count += 1
                             yield {"type": "token", "text": visible}
-            remaining = agent._filter_micro_plan_token(reasoning_filter.finish(), plan_state)
-            tail = remaining + agent._finalize_micro_plan_state(plan_state)
-            if tail and visible_sent < visible_limit:
-                tail = tail[:visible_limit - visible_sent]
-                visible_sent += len(tail)
-                yield {"type": "token", "text": tail}
-                yielded_chunk_count += 1
+                        if cut:
+                            mark_visible_cap()
+                            break
+            if clipper is None or not clipper.cut:
+                remaining = agent._filter_micro_plan_token(reasoning_filter.finish(), plan_state)
+                tail, cut = emit(remaining + agent._finalize_micro_plan_state(plan_state))
+                if tail:
+                    yield {"type": "token", "text": tail}
+                if cut:
+                    mark_visible_cap()
             agent._log_model_route(used_model_name, lane="talk")
             logger.debug(
                 "LLM stream stats | raw_chunks=%s | yielded_chunks=%s | micro_plan=%s%s",
@@ -324,7 +346,8 @@ async def iter_chat_stream(
             if salvaged_error is None:
                 raise
             logger.warning("Reply polish skipped | error_class=%s", type(polish_error).__name__)
-        clean_text = clip_visible_reply(clean_text, visible_token_budget(agent, prep.lyrics_mode))
+        if clip_visible:
+            clean_text = clip_visible_reply(clean_text, visible_token_budget(agent, prep.lyrics_mode))
 
         if context_exceeded:
             logger.info("Успешный ответ после переполнения контекста.")

@@ -10,6 +10,7 @@ from core.agent.reply_pipeline import (
     clip_visible_reply,
     log_micro_plan_metrics,
     polish_clean_reply,
+    responses_output_exceeds_visible,
     sanitize_raw_reply,
     visible_token_budget,
 )
@@ -160,7 +161,8 @@ async def run_chat(
             messages=final_messages_used,
             lyrics_mode=prep.lyrics_mode,
         )
-        clean_text = clip_visible_reply(clean_text, visible_token_budget(agent, prep.lyrics_mode))
+        if responses_output_exceeds_visible(agent, prep.lyrics_mode):
+            clean_text = clip_visible_reply(clean_text, visible_token_budget(agent, prep.lyrics_mode))
 
         await finalize_successful_turn(
             agent,

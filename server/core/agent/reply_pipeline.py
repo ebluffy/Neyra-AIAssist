@@ -29,6 +29,53 @@ def clip_visible_reply(text: str, token_budget: int) -> str:
     return cut.rstrip()
 
 
+def responses_output_exceeds_visible(agent: Any, lyrics_mode: bool = False) -> bool:
+    """Client clip applies only when Responses may generate more than the visible cap."""
+    from core.agent.responses_talk import max_output_tokens
+    from core.agent.talk_sessions import ENABLED
+    from core.runtime.features import feature_enabled
+
+    if not feature_enabled(getattr(agent, "config", {}) or {}, ENABLED):
+        return False
+    cap = visible_token_budget(agent, lyrics_mode)
+    return max_output_tokens(agent, cap) > cap
+
+
+class VisibleClipper:
+    """Same cut as clip_visible_reply, releasing only the prefix that cannot move."""
+
+    def __init__(self, token_budget: int):
+        self.budget = max(1, int(token_budget))
+        self.limit = self.budget * CHARS_PER_TOKEN
+        self.acc = ""
+        self.shown = ""
+        self.cut = False
+
+    def push(self, piece: str) -> str:
+        if self.cut or not piece:
+            return ""
+        self.acc += piece
+        return self._emit(final=len(self.acc) >= self.limit)
+
+    def finish(self) -> str:
+        if self.cut:
+            return ""
+        return self._emit(final=True)
+
+    def _emit(self, final: bool) -> str:
+        if final or len(self.acc) >= self.limit:
+            target = clip_visible_reply(self.acc, self.budget)
+            if len(target) < len(self.acc):
+                self.cut = True
+        else:
+            target = self.acc[: self.limit * 3 // 4]
+        if len(target) < len(self.shown) or not target.startswith(self.shown):
+            target = self.shown
+        delta = target[len(self.shown):]
+        self.shown += delta
+        return delta
+
+
 def sanitize_raw_reply(
     agent: Any,
     raw_response: str,
