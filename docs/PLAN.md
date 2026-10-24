@@ -16,188 +16,26 @@
 
 Установщик сервера остаётся в backlog. Для демонстрации сервера достаточно Docker Compose или systemd на домашнем сервере и `run_neyra.bat` на Windows. Установщик клиента NSIS и автообновление входят в Этап 3, но не являются минимумом защиты: для защиты достаточно собранного `setup.exe`.
 
-## 1. Архитектурные принципы
+## Реализованная основа и постоянные правила
 
-- Один Neyra Server содержит ядро, память, LLM-маршрутизацию, STT/TTS, инструменты, модули и Event Bus.
-- Клиент — тонкое окно управления: он не оркестрирует агента, не хранит память и не принимает серверные решения.
-- Вся серверная бизнес-логика и состояние находятся на сервере; клиент получает их через Control API.
-- Клиент собирается со своим UI, стилями, иконками, шрифтами и звуками и открывается без сервера с состоянием «сервер недоступен».
-- На сервере остаются чат, история, память, конфиги, промпты, модули, логи, статус и TTS; клиент только воспроизводит полученное аудио.
-- `core/` не изменять без необходимости, которую нельзя закрыть модулем, Internal API или Event Bus.
-- Конфигурация разделяется по слоям; секреты не коммитятся.
-- Dev MCP отделяется от runtime-поставки.
+Этапы 1a–1d и 2 завершены: аудит, перенос server/client/devtools, слои конфигурации, роли LLM-провайдеров и единый Control API. Их подробные чеклисты и старые прогоны удалены из рабочего плана; история остаётся в Git и [VERSION.md](VERSION.md).
 
-
-
-## 1a. Аудит
-
-Аудит завершён; исходная карта сохранена в истории Git. Актуальная структура, пути данных и правила конфигурации приведены в §1b/§1c, общие руководства — в `docs/en/` и `docs/ru/`.
-
-### Готово, когда
-
-- [x] Исходные каталоги и направления переноса проверены; итоговая карта приведена в §1b.
-- [x] Отдельно учтены `.env`, YAML-конфиги, `memory/`, `logs/` и Lavalink JAR, которые Git не переносит.
-- [x] Зафиксированы реальные пути `interfaces/discord/`, `interfaces/internal_api/`, `interfaces/local_voice/`, `interfaces/000EXAMPLE/` и `tools/mcp_server/`.
-- [x] Тема, объект, предмет и цель ВКР сверены с исходным планом и не изменены.
-
-
-
-## 1b. Атомарная перестройка server/client/devtools
-
-Этап выполняется целиком в одной рабочей ветке и без legacy-алиасов.
-
-### Целевая структура
-
-```text
-server/
-  core/
-  modules/
-  dashboard/
-  config/
-  scripts/
-  prompts/
-  sounds/
-  models/
-  data/
-client/
-devtools/
-docs/
-```
-
-
-| Сейчас                              | После 1b                                   | Действие                                                                                         |
-| ----------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `core/`                             | `server/core/`                             | перенести серверное ядро                                                                         |
-| `interfaces/`                       | `server/modules/`                          | перенести серверные модули и обновить imports                                                    |
-| `frontend/`                         | `server/dashboard/`                        | перенести существующий серверный dashboard                                                       |
-| `scripts/`                          | `server/scripts/`                          | перенести серверные проверки и утилиты                                                           |
-| `prompts/`                          | `server/prompts/`                          | перенести серверные prompt/persona-файлы                                                         |
-| `sounds/`                           | `server/sounds/`                           | перенести серверные звуки; UI-звуки клиента входят в client bundle                               |
-| `models/`                           | `server/models/` или внешний runtime cache | классифицировать; кэш не включать в package без необходимости                                    |
-| `tools/mcp_server/`                 | `devtools/mcp_server/`                     | переместить dev-only MCP, не включать в server/client package                                    |
-| `memory/`                           | `server/data/memory/`                      | SQLite Hub, Chroma и пользовательская память; перенос только migration helper с проверкой hashes |
-| `logs/`                             | `server/logs/`                             | runtime logs; перенос migration helper с проверкой                                               |
-| отсутствующий продуктовый `client/` | `client/`                                  | создать отдельный Tauri-проект, не переиспользовать `frontend/`                                  |
-| корневой `PLAN.md`                  | удалить                                    | канон уже в `docs/PLAN.md`; дубликат не оставлять                                                |
-
-
-Путь к данным читается из `paths.data_dir` (default: `server/data` относительно корня репозитория или `./data` при работе из `server/`), override — `NEYRA_DATA_DIR`. После 1b физический default указывает на `server/data/`.
-
-До любых операций нужен полный внешний backup проекта и runtime-данных. Скрипт `server/scripts/migrate_runtime_layout.py`: сначала `--dry-run` (таблица), затем прогон с hash/size и `--report-memory` (Hub/Chroma). Переносит root `config.yaml`, `.env`, module configs, `memory/` → `server/data/memory/`, `logs/` → `server/logs/`, опционально legacy `Lavalink.jar` (или `fetch_lavalink.py`). Без `--force` target не перезаписывается; source удаляется только с `--remove-source` / `--cleanup-legacy-root`. Прогоны и приёмка зафиксированы в PR #14.
-
-После переноса `main.py` все entrypoints (`run_neyra.bat`, `run_neyra.sh`, Windows launcher, Docker, `scripts/healthcheck.py`, `scripts/invoke_plugin.py`) запускаются из `server/` или задают `PYTHONPATH=server`.
-
-Упаковка пакетов внутри `core/` (`core.memory`, `core.plugins`, …) выполнена отдельным этапом. Этап **1b этого PLAN** относится к перестройке `server/` / `client/` / `devtools/`.
-
-### Готово, когда
-
-- [x] Выполнен полный backup до `git mv` и до миграции ignored-файлов.
-- [x] Серверные файлы перенесены в `server/`, создан отдельный `client/`, dev MCP перенесён в `devtools/mcp_server/`.
-- [x] Ignored-конфиги, `.env`, `memory/` → `server/data/memory/`, `logs/` → `server/logs/` перенесены; Lavalink JAR — `.gitignore` + `fetch_lavalink.py` (опционально FILE move в migrate).
-- [x] SQLite Hub, Chroma и пользовательская память доступны без потери данных по новому default path `server/data/`.
-- [x] Все entrypoints работают из `server/` или через `PYTHONPATH=server`.
-- [x] Нет дубликатов runtime в корне (`.env`, `config.yaml`, `memory/`, `logs/`); канон только под `server/`.
-- [x] Нет переходных алиасов и fallback-импортов на старую структуру (loader/builder/MCP только `server/modules/`).
-- [x] Поиск по коду, скриптам, Docker и README (кроме исторической карты в этом PLAN) не находит `interfaces/`, `frontend/`, `tools/mcp_server` — проверка: `python server/scripts/verify_stage_1b.py`.
-- [x] Docker: тонкий `docker-compose.yml` в корне (include), реализация в `server/` (`Dockerfile`, `docker-compose.yml`, `.dockerignore`).
-- [x] `Lavalink.jar` не в git; локально через `server/scripts/fetch_lavalink.py` (см. `.gitignore`).
-- [x] Миграция памяти на `server/data/memory/` с hash/size check в `migrate_runtime_layout.py`; Hub/Chroma доступны после переноса.
-- [x] Запущены compileall, healthcheck и smoke локально; CI — `.github/workflows/ci-verify.yml` (job Layout & tree); детали в PR #14.
-- [x] CI `Stage 1b verify` зелёный на head PR.
-- [x] Политика переноса memory/logs подтверждена владельцем в PR #14.
-- [x] `paths.data_dir` / `NEYRA_DATA_DIR` доходят до Hub/Chroma через `apply_resolved_memory_paths` (`server/core/runtime/paths.py`).
-- [x] Корневой `PLAN.md` удалён; канон только `docs/PLAN.md`.
-
-
-
-## 1c. Слои конфигурации и схема
-
-- `server/config.yaml` — короткий корневой конфиг, включая `assistant.*` и `paths.data_dir`.
-- `server/config/llm.yaml` — провайдеры, профили и роли моделей.
-- `server/config/agent.yaml` — agent, prompt/runtime и vision settings.
-- `server/config/memory.yaml` — память, external storage и backup.
-- `server/config/voice.yaml` — voice providers и STT/TTS.
-- `server/config/modules.yaml` — включение модулей и MCP allowlist.
-- `server/config/runtime.yaml` — logging и runtime settings.
-- `server/config/server.yaml` — Internal API, bind host, port и dashboard settings.
-- `server/.env` — только секреты; `HF_TOKEN` и `HUGGING_FACE_HUB_TOKEN` optional и закомментированы в example.
-
-В начале 1c групповые записи inventory заменяются подробной таблицей: один ключ на строку, точный тип, default, источник чтения, target file, env override и compatibility status. До изменения общего loader проверяется фактический consumer и merge-поведение `server/modules/local_voice/config.yaml`.
-
-### Готово, когда
-
-- [x] `server/config.yaml` не содержит дублирующей глубокой конфигурации и сохраняет совместимые defaults.
-- [x] Типы и defaults заданы в `server/config/*.example.yaml` и schema; layering/override описаны в §1c и `docs/{en,ru}/setup/config-reference.md`. Полный список ключей выводит `python server/scripts/regen_config_keys_md.py`, без создания отдельного документа.
-- [x] Loader валидирует схему до запуска и сохраняет понятные ошибки.
-- [x] `paths.data_dir` и `NEYRA_DATA_DIR` проверены на `server/data` после переноса memory/logs.
-- [x] Consumer и merge-поведение `server/modules/local_voice/config.yaml` проверены; поведение voice не исчезает молча (`verify_stage_1c.py`).
-- [x] Legacy env aliases поддержаны с warning once (`YANDEX_ID_KEY`, `HUGGING_FACE_HUB_TOKEN`).
-
-
-
-## 1d. Dual LLM backend (AIHope + OpenRouter)
-
-Цель: полноценный AIHope (OpenAI-compatible) как основной бэкенд для brain/memory/vision и dual-role: talk на OpenRouter (бесплатный Qwen с меньшей цензурой).
-
-### Объём
-
-- Пресет `aihope` → `https://aihope.fun/v1`; роли под `llm.talk_model` / `llm.brain_model` / … с полем `provider` (без `BACKEND` и без обёртки `openrouter:`).
-- Баланс AIHope + dual `/v1/llm/balance` (503 если нет ключей).
-- Ключи только из `.env` (`AIHOPE_API_KEY` / `OPENROUTER_API_KEY`); в yaml нет `api_key` / `context_window` / глобального `max_tokens`.
-- Example: talk=`qwen/qwen3.8-27b:free`@openrouter, brain=`gpt-6-luna`@aihope.
-- Offline `verify_stage_1d.py` + CI; backlog: секреты → системный env ОС.
-
-
-
-### Готово, когда
-
-- [x] Dual-backend: talk и brain могут ходить на разные провайдеры с разными ключами/base_url.
-- [x] AIHope chat/completions через LangChain; helpers для models/balance/images/responses/messages.
-- [x] `/v1/llm/balance` отдаёт usage для активных провайдеров (openrouter и/или aihope).
-- [x] `verify_stage_1d.py` и CI зелёные; локальный `llm.yaml` на dual-схеме.
-
-**Конфиг (без legacy):** канон только `llm.*` ролей + `llm.providers.*`. Top-level `BACKEND` / `openrouter:` / `vision:` и пути `openrouter.*` в `POST /v1/config` **не** поддерживаются (нет алиасов / dual-read) — клиенты пишут `llm.talk_model` / `llm.brain_model` / ….
-
-## 2. Единый Neyra API (core)
-
-Этап 2 делает HTTP/WS control plane частью ядра: пакет `[server/core/api/](../server/core/api/)`, конфиг `api:` в `[server/config/server.yaml](../server/config/server.example.yaml)`. Отдельного второго API и модуля `modules/internal_api/` нет.
-
-### Объём (Wave 1)
-
-- чат со streaming через **WebSocket** (`/v1/ws/chat`); SSE — backlog;
-- health, meta (`/v1/meta`), модели (`/v1/llm/models`), модули/плагины;
-- мягкий рестарт: `POST /v1/system/restart` (maint+);
-- токены `API_TOKEN` / `API_VIEWER_TOKEN` / `API_MAINT_TOKEN`; bind default localhost; `API_BIND_HOST` для LAN/Docker;
-- публичный URL: `api.public_base_url` + `api.public_path_prefix` (пример `https://neyra.owyx.site` + `/api`);
-- аудит изменяющих действий.
-
-Вторая очередь (Wave 2): GET/PUT конфигурации с schema validation, hot reload и rollback; промпты; логи; **start/stop/reload плагинов in-process** (в Wave 1 → HTTP 501, использовать `POST /v1/system/restart`).
-
-### Готово, когда
-
-- [x] API в `server/core/api` (не module); конфиг `api:` + public URL.
-- [x] Versioned contract: meta/models/health enrichment; docs sync.
-- [x] Streaming WebSocket: auth как REST; **чат = admin** (как `POST /v1/chat`); reconnect = новый сокет.
-- [x] Viewer не мутирует; soft restart без silent plugin stubs; fail-closed bind без токенов.
-- [x] localhost default; LAN через явный bind + tokens / proxy recipe.
-- [x] `verify_stage_2_api.py` + CI (`CI verify` / HTTP API & auth).
-- [x] Ручной смоук: `/docs`, `GET /v1/meta` (`public_url` / `dashboard_url`).
-- [x] `anon` на loopback без токенов — осознанная политика Wave 1 (документировано; non-loopback без токенов запрещён).
-
-
+- `server/core/` — ядро, API, память и общие сервисы; `server/modules/` — интеграции; `server/dashboard/` — серверная ops-панель.
+- `client/` — отдельное будущее приложение Windows/Linux со своим UI, пока scaffold; исходники dashboard в него не копируются. Клиент не оркестрирует агента и не хранит серверную память.
+- `devtools/mcp_server/` — только разработка, не runtime-поставка.
+- Вся бизнес-логика, память, LLM/STT/TTS, инструменты и Event Bus остаются на сервере. Изменение `core/` должно быть обосновано задачей, которую нельзя закрыть модулем или существующим API.
+- Конфигурация: `server/config.yaml` + тематические `server/config/*.yaml` и конфиги модулей; источники типов/defaults — tracked examples и schema. Роли моделей задаются через `llm.*_model` и `llm.providers.*`, без привязки к одной постоянной модели.
+- Секреты — `server/.env`; память — `server/data/` либо настроенный `paths.data_dir` / `NEYRA_DATA_DIR`. Конфиги, persona, память, модели и логи не включаются в коммит и не затираются при обновлении.
+- Control API — `server/core/api/`, не отдельный модуль. Loopback по умолчанию; внешний доступ требует auth/ролей. Модули взаимодействуют через API и Event Bus.
+- Общие инструкции: `docs/en/` и `docs/ru/`. Рабочие задачи — здесь, история поставок — в VERSION.
 
 ## 3. Веб + ядро, затем Windows-клиент
 
-Этап 3 делится на две части: сначала допиливаем **веб-панель и поведение Нейры**, потом отдельным подэтапом — полноценный Windows-клиент.
+Этап 3 делится на две части: сначала допиливаем **веб-панель и поведение Нейры**, потом отдельным подэтапом — полноценный клиент Windows/Linux.
 
 ### 3a. Веб-панель и ядро Нейры (сейчас)
 
-Контроль PR #27 подтвердил исправления потокового talk-контекста и retry,
-режимов диалога, model trace, redaction/retry, memory hub/SQLite dedupe,
-секретов PluginBuilder, MCP/web-search/GIF regressions и dashboard auth.
-Полное закрытие acceptance остаётся условным: нужен зелёный CI и отдельная
-live-приёмка провайдеров, Discord, WebSearch, webhook и контейнера; эти вызовы
-в рамках PR не выполнялись.
+Серверная реализация, dashboard и исправления pipeline установлены на MiniPC. Остаются live-приёмка моделей и интеграций, проверки багов ниже и отдельный будущий клиент. Исторические отчёты AR и промежуточные прогоны здесь больше не дублируются.
 
 `server/dashboard/` — ops/admin control plane (статус, модули, память, система, вебхуки, настройки, docs), пока нет десктоп-клиента. `client/` остаётся самостоятельным приложением со своим UI; исходники dashboard туда не копируются. Возможный общий пакет API-контрактов требует отдельного решения. UI сейчас на русском; полная ru/en-локализация открыта в §14.
 
@@ -206,6 +44,7 @@ live-приёмка провайдеров, Discord, WebSearch, webhook и ко�
 Модули в вебе: действия по `lifecycle` (resident → PATCH enabled **с авто soft-restart ядра**; on_demand → invoke; общий enable/config). В дашборде модуля: вкладки «Управление / Конфиги / Логи», загрузка `.zip` (`POST /v1/plugins/upload`), удаление (`discord` защищён), правка конфиг-файлов (`/v1/plugins/{id}/files`), хвост логов (`/v1/logs`). Scaffold/export модулей — полигон для 3b (shared UI → desktop Monaco): код-редактор — во второй очереди клиента.
 
 **Discord / ответ модели (закрывать в 3a):**
+
 - [x] Сохранять переносы строк в user-facing reply (не схлопывать `\s+` в одну строку).
 - [x] Brain-native vision: talk тоже видит картинку, если talk = VL-модель; иначе caption для talk.
 - [x] Нормализованный Discord-контекст в payload до LLM: `current_user`, `channel`, `guild`, `message`, `addressed_to_bot`, `response_target`. #27: типизированный объект до обработки текста, brain/talk/vision/retry, REST/WS; offline-проверки ID/DM/guild/reference.
@@ -213,6 +52,7 @@ live-приёмка провайдеров, Discord, WebSearch, webhook и ко�
 - [x] Честность о модели: #27 — отчёт по каждому ходу talk/brain/vision в REST/WS, SQLite metadata, Event Bus, логах и Status; `/model` для собственного последнего хода в канале. Настроенное и сообщённое провайдером разделены; отсутствие metadata не угадывается.
 
 **Бэклог идей из живого чата (после 3a-блокеров, лёгкие — раньше):**
+
 - Память без бардака: временный контекст / факты / устаревшее; confirm на sensitive; одна команда «забудь/поправь».
 - Персонализация и профили людей (предпочтения тона, кто любит троллинг).
 - Авто-выбор инструментов + краткий отчёт «что сделала».
@@ -221,45 +61,29 @@ live-приёмка провайдеров, Discord, WebSearch, webhook и ко�
 
 ### Веб-панель v2 и hardening API
 
-Чекбоксы — только по факту merge/приёмки. **#25** (T0–B5 + D0 foundations) смержен.
-Ops Console D0–D8 смержен в **#26**. Текущий follow-up: **#27** — auth hardening, режимы общения, нормализованный Discord-контекст и отчёт о моделях.
+Реализованы Ops Console, режимы общения, Discord-контекст и отчёты о моделях:
 
-- [x] **T0** — `server/tests/` + pytest, `requirements-dev.txt`, CI jobs pytest/dashboard/secrets, `typecheck`, README ключ ≥32 (#25)
-- [x] **B1** — ошибки без `str(e)`, `trace_id`, redaction, anon за прокси, security headers, docs gate (#25)
-- [x] **B2** — pydantic bodies (`extra=forbid`), timeouts, RPM/429, webhook dedup (#25)
-- [x] **B3** — атомарные миграции, транзакции, индексы, health live/ready/history (#25)
-- [x] **B4** — sqlite backup API, двухфазный restore, drill, тесты на реальной SQLite (#25)
-- [x] **B5** — роли viewer без PII, rotate/logout-all, PBKDF2 600k, матрица ролей (#25)
-- [x] **D0** — Tailwind/токены/шрифты/shadcn/react-query/api client/vitest/`/__ui` (#25 + хвосты в follow-up)
-- [x] **D1** — shell, ⌘K, theme, 404, robots, favicons, Playwright smoke (в follow-up PR)
-- [x] **D2** — Status: react-query, health history, audit recent, RestartProgress (в follow-up PR)
-- [x] **D3** — Modules + LogViewer v2 (virtual, level colors, filters) (в follow-up PR)
-- [x] **D4** — Memory: KPI, people search, merge side-by-side, wipe zone (в follow-up PR)
-- [x] **D5** — System: LogViewer v2, health checks, backups + RestartProgress on restore (в follow-up PR)
-- [x] **D6** — Webhooks: RHF+zod outbound form, Switch (в follow-up PR)
-- [x] **D7** — Settings/access/docs по DESIGN (в follow-up PR)
-- [x] **D8** — a11y/polish, react-doctor, чеклисты 5.1/5.2 (в follow-up PR)
+- [x] API: auth/роли, безопасные ошибки, schema validation, rate limits, аудит, SQLite backup/restore и миграции.
+- [x] Dashboard: статус, модули, память, система, webhooks, настройки, доступ и документация; обе темы, клавиатура и desktop/mobile.
+- [x] Локальные UI → API → ядро сценарии проверены на временных данных и заглушках. Текущий результат проверок указан в §5.
 
 ### Готово, когда (3a)
 
-**Локальная приёмка #27 (без настоящих LLM/Discord и без деплоя):**
-- [x] Rewrite prompt не содержит противоречивых требований краткости/Markdown.
-- [x] Режим общения выбирается и сохраняется в Settings; UI → API → следующий prompt проверены.
-- [x] Discord-контекст проходит brain/talk/vision и повторы; ID определяют область памяти.
-- [x] Отчёт по ходу доступен в REST/WS, metadata, Event Bus, Status и приватной `/model`; тесты отсутствующего model ID, ошибок, отмены, retries и параллельных ходов.
-- [x] Локальный backend с временными данными и заглушками покрыт desktop/mobile browser-тестами ops-сценариев (8 сценариев, обе темы). Исправлены читаемость светлой темы и независимость моделей от ошибки баланса.
-- [x] AR-7…AR-11: тесты/E2E игнорируют унаследованный `NEYRA_DATA_DIR`; Discord-метаданные без текста сообщения идут в human-role, упоминания ограничены 10 и блок убирается при overflow-retry; REST-отмена отмечена `cancelled`; ошибки config/update не раскрывают исключения; произвольные Discord-пинги запрещены. Целевые offline-регрессии пройдены.
-- [x] AR-12: описание #27 отделяет live-приёмку от Tasks и явно указывает добавление §10 относительно main (только план, без реализации Agent loop).
-- [x] Сохранена совместимость подготовки хода без необязательного Discord-поля; повторно пройдены все 10 отдельных offline-скриптов LLM/memory CI и 127 server-тестов.
+**Реализовано и проверено локально:**
 
-**Отдельная live-приёмка (не входит в локальную реализацию #27):**
+- [x] Непротиворечивые rewrite prompts и режимы Settings → API → следующий ход.
+- [x] Типизированный Discord-контекст, scope по ID, сохранение через vision/retries и защита от произвольных пингов.
+- [x] Отчёт моделей в REST/WS, metadata, Event Bus, Status и приватной `/model`; ошибки, отмена и параллельные ходы покрыты регрессиями.
+- [x] Ops-сценарии dashboard проверены браузером с настоящим временным backend; это не заменяет качество ответов моделей на стенде.
+
+**Оставшаяся live-приёмка:**
 - [ ] Настоящие модели соблюдают режимы общения и vision-инструкции.
 - [ ] Настоящий Discord подтверждает контекст, готовые ответы без черновика/редактирования, `/model` и lifecycle модулей на стенде.
 
 - [x] Веб-панель закрывает проверенные ops-сценарии без десктопа: локальная приёмка #27 — статус, module toggle, память, настройки, backup и запрос soft restart (остановка процесса на тестовом стенде заглушена). Подтверждение результата invoke/health модуля остаётся открытым в §4.
 - [ ] Discord: зрение + структурированные ответы стабильны на стенде.
 - [x] Нормализованный Discord-контекст в payload (не парсинг подписи), offline-приёмка #27.
-- [x] Discord отправляет только готовый финальный результат ядра: без символа `▌`, typing-запросов и промежуточных edit. Внутренний agent.chat_stream сохраняет first-token timeout и context retry; token chunks не публикуются, генератор закрывается явно. Длинный ответ/lyrics делится после генерации; автор/канал/vision и Event Bus сохранены. Старые stream_output_mode/stream_edit_interval игнорируются. 13 регрессий адаптера проверяют ожидание готовности, reply/send, длинные ответы/lyrics, исключение/error chunk/отсутствие done, отмену, ошибку отправки и настоящий offline-повтор ядра после overflow с одним Discord-ответом. AR-10 дополнительно закрывает утечку текста ошибок в ядре/Discord/WS: фиксированные фразы выбираются по коду, произвольный text и public-флаг не принимаются. Ещё шесть регрессий настоящего ядра/WS проверяют brain/talk/overflow retry и сохранение диагностики. Полный pytest 357, compileall, validator 72/3/3 и 14 stage/offline scripts прошли. Live-проверку выполняет пользователь после деплоя.
+- [x] Discord отправляет готовый финальный ответ без курсора, typing и промежуточных edit; длинные ответы делятся после генерации. Streaming, timeout/retry и безопасные ошибки остаются внутри ядра; поведение адаптера покрыто регрессиями.
 - [x] Модули: browser toggle проверен в #27; результат invoke/health не подтверждён и остаётся открытым в §4. Scaffold шаблона остаётся опциональным backlog.
 
 ### Открытые проверки багов на стенде
@@ -272,18 +96,29 @@ Ops Console D0–D8 смержен в **#26**. Текущий follow-up: **#27**
 - [ ] **BUG-04, streaming timeout:** проверить first-token/общий timeout, отмену и задержки провайдера; Discord должен получить безопасное сообщение об отказе. До публичного текста допустим ограниченный retry, после него replay запрещён.
 - [ ] **BUG-05, working_memory 502:** проверить сохранение предыдущего snapshot, восстановление обновлений и отсутствие блокировки чата длительным фоновым retry; сверить trace/usage без тела ответа провайдера. Внешняя причина 502 не исправляется локальными тестами.
 - [ ] **BUG-06, приватность WebSearch:** проверить redaction в фактических логах приложения, библиотек и reverse proxy; уточнить причину выбора поиска для разговорной реплики. Локально текст query/URL убран; тестировать только синтетическими данными.
-- [ ] **BUG-07/08, Discord GIF и готовые ответы:** проверить Tenor/Discord CDN, embed/attachment без play-намерения, неподдерживаемую ссылку до подключения voice и обычный YouTube. GIF-routing исправлен; бот отправляет финальный текст без курсора/typing/edit. Настоящий Discord ещё не проверен.
+- [ ] **BUG-07/08, Discord GIF ошибочно запускает музыку:** повтор на стенде 2026-10-19 в 19:10 — GIF вызвал музыкальный embed `join a voice channel first`. Локально подтверждены обходы прежнего GIF-фильтра и поздняя проверка ссылки; routing не считать исправленным. Финальная отправка обычных ответов без курсора/typing/edit — отдельная реализованная часть, не доказательство корректного GIF-routing. Причины и критерии исправления — ниже.
 - [ ] **BUG-09, пустой Luna Responses:** провайдеру выяснить два ответа 200/completed без текста и с output_tokens=0 (70.62/34.28 s); контрольные повторы прошли, устойчивое исправление не подтверждено. Runtime допускает одну восстановительную попытку до публикации, не продвигает ошибочный ID и записывает обе попытки в trace. Отдельно от GLM: при лимите 128 бюджет уходил в reasoning, при 512 текст появлялся.
 - [ ] **BUG-10, pipeline/vision:** подтвердить на настоящих моделях отсутствие private reasoning в ответе/памяти, сохранение фактов brain/vision при overflow и последнего tool result; проверить owner/channel scope image notes. Исправления и отсутствие лишнего brain-native caption-вызова покрыты offline. По старому логу нельзя доказать двойной вызов, потерю сообщений или точную задержку ответа.
 - [ ] **BUG-11, дубли людей:** проверить рабочую базу после смены ника, фоновой reflection и ручного merge/undo. Неизвестный ник/ID больше не создаёт карточку; account ID и существующий UUID/аватар сохраняются. Старые дубли автоматически не объединяются.
 - [ ] **BUG-12, Lavalink YouTube OAuth на MiniPC:** 2026-10-19 managed Lavalink падает при инициализации YouTube OAuth с `Network is unreachable`. Гипотеза: недоступен прямой сетевой маршрут; проверить HTTP-прокси для Lavalink и YouTube-плагина. Исправление Discord в PR #31 не устраняет этот сбой.
 
+- [ ] **BUG-13, факты человека загрязнены дневником Нейры:** на MiniPC 2026-10-21 подтверждены пять ошибочных записей `source=reflection` за две ночные обработки. Первое лицо дневника ошибочно привязывается к person_id собеседника. Нужны исходные сообщения с явными ролями/авторами, проверяемая ссылка на пользовательское свидетельство и запрет сохранять реплики ассистента как биографию человека. Исправление существующих карточек — отдельно после backup и проверки владельцем; данные автоматически не удалять.
+- [ ] **BUG-14, поиск общей истории ограничен автором:** сообщения за 2026-10-20 сохранены, но `recall_chat` принудительно фильтрует по текущему user_id и channel_id. Учитывать доверенный shared/private scope: общая история только текущего публичного канала, DM и личная память остаются закрытыми. Пустую/усечённую выборку не выдавать за доказательство отсутствия переписки. Нужны multi-user/private-channel регрессии и live-проверка.
+- [ ] **BUG-15, Discord mention не поднимает досье:** `get_all_names_map` содержит UUID/aliases/handles, но не Discord account IDs; `turn_prep` ищет людей по тексту, хотя Discord передаёт `<@ID>` и типизированные mentions. Разрешать такие упоминания по известному account ID, не создавать карточки по отображаемым именам; учитывать происхождение и доступность фактов в общей беседе. Отсутствие блока досье не означает отсутствие человека в базе.
 
-**Интеграционный прогон текущей рабочей копии (2026-10-15):** предыдущая локальная проверка зафиксировала проходящие `compileall`, Stage 1b/1c и offline memory checks; локальные Stage 1d/2 и pytest оставались ограничены отсутствующими зависимостями. PR CI run `38763988786` до mode fixes выявил `Pytest` (`13 failed, 124 passed`), один hard-fail в offline memory/security smokes и два одинаковых desktop/mobile E2E failure на сценарии сохранения настроек через следующий offline turn; Config layers, HTTP API & auth, Layout & tree и Secrets scan прошли. Mode fixes в рабочей копии исправляют подтверждённую передачу режима в brain/talk prompts и stub-ответ; после них требуется новый CI прогон. Эти результаты не закрывают live-критерии и не меняют открытые BUG/live пункты.
+#### BUG-07/08: локальное расследование GIF → музыка
 
-**Финализация после Kilo (2026-10-15):** на `9cb2bed` CI подтвердил 4 pytest failure и 6 зелёных jobs. Исправлены AR-14/15: Discord metadata только в human-role, единый английский маркер, блок удаляется при overflow-retry. AR-19: убран путь локального хоста из progress. AR-20: глобальный admin-only контракт удаления diary/journal явно описан и проверен; фильтры хранилища не являются пользовательской авторизацией API. Локально в проектном `.venv`: 142 pytest-теста и все 14 stage/offline-скриптов проходят. Актуальный CI проверяется после push отдельно.
+Проверено 2026-10-19 на синтетических строках и заглушках, без Discord/LLM/voice-вызовов. На скриншоте нет исходного URL/metadata, поэтому конкретный обход в сообщении друга пока не установлен.
 
-Остатки исходного задания реализованы в продолжении PR #27: coder следует конфигурации, scoped diary подключён к pipeline, три секции памяти и отдельный журнал доступны в dashboard, фоновые jobs имеют собственные отчёты. Контракты и ограничения приведены в §12–14. Live-приёмка остаётся открытой; голос, Agent loop, Windows и вынос текстов §14 сюда не входят.
+- **Любой HTTP(S) URL становится play-кандидатом:** `music_intent.py:candidate_music_intent` не требует музыкального намерения или поддерживаемого хоста; `plan_music_route` сразу выбирает `PLAY_MUSIC`, без классификатора. Воспроизведено для Tenor без отдельного `gif` в пути, Giphy `/gifs/`, Discord CDN `.mp4` и обычной ссылки на статью.
+- **GIF-фильтр неполный:** `plan_music_route` проверяет только отдельные слова `gif|гифк|мем`, без metadata/домена. «Гифка/гифку» не совпадают с `гифк`; наличие `gif` в URL защищает лишь часть ссылок. Контрольный Tenor `…-gif-123` без других сигналов остаётся `CHAT`.
+- **Слова внутри URL считаются командами:** `play` в slug включает play-verb и обходит GIF-защиту; `stop` в URL без GIF-маркера выбирает `music.stop`. Команды проверяются по всему тексту до отделения URL. Отдельно воспроизведены ложные play-намерения «не включай …» и «поставь реакцию на гифку».
+- **Классификатор может обойти фильтр:** после подавления hard candidate остаются soft hints. При подставленном `PLAY_MUSIC` строки «мем про музыку» и Tenor `…spotify-gif-123` проходят `soft_play_allowed` и запускают музыку. Это подтверждённый условный путь, не доказательство ответа настоящего классификатора в эпизоде друга.
+- **Медиа не участвуют в решении:** `bot.py:on_message` передаёт маршрутизатору только текст. `_collect_image_attachments` читает attachments, но не embed-медиа Tenor/Giphy; результат vision не блокирует ложное play-намерение. По коду чистый image/GIF attachment без ссылки идёт отдельным путём vision с первым кадром; сам по себе он не объясняет срабатывание URL-ветки.
+- **Проверка ссылки слишком поздняя:** `music.py:_handle_action_async` проверяет Lavalink/войс и может подключить player до `_normalize_play_query`. На заглушках для Giphy без войса получено точное `join a voice channel first`, нормализация ещё не вызывалась. Для пользователя в войсе код подключения также расположен раньше отказа «только YouTube».
+- **Пробел регрессий:** существующий GIF-тест проверяет лишь «покажи смешной gif» и «play gif song»; он и offline music-script проходят при воспроизводимых ошибках выше. Нужны случаи реальных форм URL, embed/attachment, русских словоформ, команд в slug, отрицаний и classifier soft-path; неподдерживаемое медиа не должно подключать voice или публиковать `MUSIC_*`. Сохранить положительные сценарии явных музыкальных команд и поддерживаемых YouTube-ссылок. Код пока не исправлялся; live-регрессию выполняет пользователь после будущего исправления.
+
+- [ ] Для BUG-07/08 проверять URL до подключения войса: автоматический play допускает только поддерживаемые музыкальные ссылки, сейчас YouTube. Tenor/Giphy/Imgur и Discord CDN не считать музыкой. Команды распознавать вне URL; classifier не должен обходить media guard. Проверить ссылки, вложения, отрицания и отсутствие voice/Lavalink-вызовов для неподдерживаемых медиа.
 
 ### 3b. Клиент для Windows и Linux — после серверной части
 
@@ -325,15 +160,11 @@ Ops Console D0–D8 смержен в **#26**. Текущий follow-up: **#27**
 - [ ] PR CI выполняет lint, typecheck и build; release CI создаёт `latest.json`.
 - [ ] Клиент берёт URL сервера из настроек (не hardcoded); корректно работает с опубликованным Control API (см. §4).
 
-
-
 ## 4. Серверная поставка и модульная эксплуатация
 
 - Docker Compose и systemd — поддерживаемые способы запуска; `run_neyra.bat` — Windows entrypoint.
 - Paths/volumes/healthchecks смотрят в `server/`; интеграции — modules через Event Bus и Control API.
 - **Публикация под доменом** (frp + edge) — этот этап, не клиентский §3. Детали ops: `docs/ru/ops/api-reverse-proxy.md`.
-
-
 
 ### Канон публикации
 
@@ -352,13 +183,13 @@ Ops Console D0–D8 смержен в **#26**. Текущий follow-up: **#27**
 
 ### Статус стенда
 
+2026-10-19: main `a947a82` установлен в `/opt/neyra`; API/dashboard, Discord Ready и Lavalink проверены. Настройки, persona и память сохранены; перед обновлением сделан backup и проверена миграция копии SQLite. Длительные пользовательские сценарии не считаются закрытыми этим smoke.
+
 - [x] `/opt/neyra` + systemd `neyra` на домашнем хосте (`127.0.0.1:8787`).
 - [x] frpc → frps (VPS сайта) → nginx `neyra.owyx.site` + LE; strip `/api`.
-- [x] DNS/Cloudflare; `api.public_base_url=https://neyra.owyx.site`.
+- [x] DNS/Cloudflare; публичный dashboard доступен на `https://neyra.owyx.site`. Public URL в конфиге проверяется отдельно от доступности reverse proxy.
 - [x] Dashboard gate (session Bearer), public setup-guard, RPM через `resolve_client_ip`.
 - [ ] WSS-smoke: `wss://neyra.owyx.site/api/v1/ws/chat`.
-
-
 
 ### Готово, когда
 
@@ -370,9 +201,7 @@ Ops Console D0–D8 смержен в **#26**. Текущий follow-up: **#27**
 - [x] Документированы установка и восстановление после backup: `docs/{en,ru}/setup/quickstart.md`, `docs/{en,ru}/ops/deployment-local.md`, `docs/{en,ru}/ops/deployment-production.md`, `docs/{en,ru}/ops/backup-restore.md`. Offline restore/drill покрыт отдельным скриптом; восстановление целевого хоста ещё не проверено.
 - [ ] WSS-smoke по публичному URL зелёный.
 - [x] Преддеплойная правка 2026-10-19: исторический wipe PR #22 отделён от обычного обновления. Данные, конфиги и persona сохраняются; перед обновлением обязательны backup и проба миграций на копии.
-- [x] `scripts/db_migrations.py` использует runtime loader и `.env`, учитывает настроенный SQLite path и открывает БД только read-only. `--data-dir` явно выбирает стандартную копию `memory/neyra_memory.db`, не загружая live-конфиг. Exit codes: 0 — миграции присутствуют, 1 — база отсутствует/не читается либо есть неприменённые миграции, 2 — ошибка конфигурации без проверки другой базы. Семь offline-регрессий пройдены. АР PR #30: используется общий `load_dotenv_file`, тесты изолируют `os.environ` и проверяют неизменность унаследованного окружения; актуальная поставка указана в VERSION.
-
-
+- [x] `scripts/db_migrations.py --status` проверяет настроенную БД read-only через runtime loader; `--data-dir` выбирает отдельную стандартную копию. Exit codes: 0 — схема полная, 1 — БД недоступна/миграции отсутствуют, 2 — ошибка конфига без fallback к другой базе. Есть offline-регрессии.
 
 ## 5. Проверки, безопасность и качество
 
@@ -382,17 +211,13 @@ Ops Console D0–D8 смержен в **#26**. Текущий follow-up: **#27**
 - Security boundary: localhost default, explicit LAN bind, token roles, audit и отсутствие секретов в логах.
 - Тестовая матрица: Windows client/server unavailable, incompatible API version, stream reconnect, module failure и rollback config.
 
-
-
 ### Готово, когда
 
-- [x] Обязательные серверные/dashboard проверки запускаются из актуальных каталогов: на кодовом срезе `06948c7` CI 7/7, 454 pytest, 46 unit, 18 E2E; локально также пройдены compileall, validator и 14 stage/offline scripts. Клиентские проверки относятся к §3b и пока не реализованы.
+- [x] Проверки main `a947a82` перед деплоем 2026-10-19: CI 7/7, 490 server tests, compileall; Node 22 — lint/typecheck, 46 unit, build и 18 desktop/mobile E2E с временным backend. У lint осталось прежнее предупреждение LogViewer. Клиентские проверки относятся к §3b.
 - [x] Secrets scan исходников в CI зелёный; `.env`, локальные конфиги, runtime data, логи и приватная persona не включены в коммит.
 - [ ] Проверить отсутствие приватных данных в фактических логах приложения/библиотек/reverse proxy на стенде (§3a, BUG-06); локальные redaction-регрессии этот критерий не закрывают.
 - [ ] Smoke-путь «server → Control API → client» воспроизводим.
-- [ ] На копии production-данных подтвердить сохранность memory, Chroma, SQLite Hub, ignored configs и Lavalink state при обновлении/восстановлении. Временные SQLite и offline backup/restore уже проверены; рабочие данные в этой реализации не изменялись.
-
-
+- [ ] На копии production-данных подтвердить сохранность memory, Chroma, SQLite Hub, ignored configs и Lavalink state при обновлении/восстановлении. Миграция копии рабочей SQLite и обновление MiniPC с сохранением данных проверены 2026-10-19; восстановление целевого хоста остаётся открытым.
 
 ## 6. Документация и демонстрация
 
@@ -400,27 +225,19 @@ Ops Console D0–D8 смержен в **#26**. Текущий follow-up: **#27**
 - Архитектурная схема показывает Control API, Event Bus, modules, memory и client.
 - Demo script покрывает запуск сервера, подключение клиента, streaming chat, status, module toggle и soft restart.
 - Отдельно описаны backlog: server installer, SmartScreen certificate, prompt/config editor и полноценный local voice loop.
-- [x] Чистка документации 2026-10-18: вне `en/`/`ru/` оставлены только PLAN и VERSION; отдельные аудиты, отчёты и ADR удалены. Открытые проверки BUG-01…11 перенесены в §3a, эксплуатационные границы — в §12. История поставок ведётся в [VERSION.md](VERSION.md), первая запись 0.1.0 пока в разработке.
-- [x] AR-18: с отдельного разрешения пользователя исправлены ровно 8 ссылок в `en/`/`ru/`: ключи ведут к examples и stdout-генератору, model trace — к телеметрии в §12. Остальные тексты и структура руководств сохранены; цели ссылок и генератор проверены локально.
-- [x] AR-17: регрессии slash-ошибок перенесены в `test_public_chat_errors.py`, скрытого streaming/retry — в `test_pipeline_edge_cases.py`. Сами функции и parametrization не изменены; полный pytest по-прежнему 454 passed, синтаксис и diff проверены.
-- [x] AR-19/20: подтверждённая проверка example сужена до enable/disable, invoke/health оставлены открытыми; пути ops-руководств указаны полностью от корня репозитория. Новых тестов или runtime-изменений эта правка не добавляет.
-- [x] AR-22: исторические пункты §3 согласованы с §4 — подтверждён только module toggle; invoke/health везде остаются открытыми. Все упоминания invoke в PLAN/VERSION перепроверены.
-
-
+- [x] В `docs/` вне `en/`/`ru/` остаются PLAN и VERSION. Рабочий план хранит актуальные задачи и открытые BUG, VERSION/Git — историю поставок и старых проверок.
 
 ### Готово, когда
 
-- [x] Пути серверного запуска, конфигов, документации и ресурсов сверены с `server/`, `client/`, `devtools/`; Stage 1b/1c и stdout-генератор прошли. Восемь ссылок EN/RU исправлены в AR-18; запуск целевого стенда остаётся отдельной приёмкой.
+- [x] Пути server/client/devtools и общие руководства согласованы с текущей структурой; старые ссылки на удалённые отчёты исправлены.
 - [ ] Demo script укладывается в сценарий защиты.
 - [x] Backlog отделён от ближайшего серверного MVP: приоритеты зафиксированы в §15, клиент §3b и Agent loop §10 позже, §9/§11 после ВКР либо при наличии времени. Минимум защиты в §0 сохранён.
-
-
 
 ## 7. Memory v2 — people / diary / journal
 
 Account-first модель людей без анкетных полей. Реализация в PR #22 вместе с фиксом music intent.
 
-**Исторический cutover PR #22:** переход старых анкет на Memory v2 предусматривал отдельный согласованный wipe. Это не инструкция для каждого обновления. При обычном деплое сохраняются people/diary/journal/LTM, конфиги и persona; сначала backup и проверка миграций на копии SQLite. Миграции 6/7 добавляют состояние/отношения и не требуют очистки памяти. Wipe допустим только как отдельное явно запрошенное действие, а не часть деплоя или rollback.
+При обычном обновлении сохраняются people/diary/journal/LTM, конфиги и persona; сначала backup и проверка миграций на копии SQLite. Исторический wipe при переходе на Memory v2 не повторяется. Любой wipe — отдельное явно запрошенное действие.
 
 ### Модель
 
@@ -442,11 +259,9 @@ Account-first модель людей без анкетных полей. Реа
 - [x] propose-only merge + atomic merge/undo (full fact_ids, staled proposals restored) + wipe confirm/backup + proposals UI.
 - [x] Offline tests mention/resolve/merge/wipe + music soft-path зелёные; исторический cutover отделён от обычного обновления без wipe.
 
-
-
 ## 7.5. Mood & Relations (серверный MVP реализован локально, live-приёмка открыта)
 
-Две оси, которые влияют друг на друга. Memory v2 уже смержен; §7.5 включён пользователем в ближайшие задачи 2026-10-16. Отдельный серверный этап после PR #28. Контракт, правила и проверки приведены ниже и в §12; diary/emotional_layer сами по себе не заменяют mood/relations.
+Текущий MVP сохраняет настроение Нейры и отношения по person_id. Пока это ограниченные правила по явным фразам, не полноценный анализ диалога; дальнейшее развитие запланировано ниже. Diary/emotional_layer не заменяют mood/relations.
 
 ### Mood (настроение Нейры) — глобальное + краткосрочное
 
@@ -456,10 +271,10 @@ neyra_mood:
   arousal:   0.0 … 1.0     # спокойствие → возбуждение
   label:     "спокойная" | "раздражённая" | "игривая" | …
   updated_at
-  decay_half_life_hours: 6–12
+  decay_half_life_hours: 8
 ```
 
-Как меняется: после хода (или раз в N) правила/LLM дают Δvalence/Δarousal; оскорбления/игнор → вниз, комплименты/тепло → вверх; decay к нейтрали; сильные события → diary («сегодня меня задели…»).
+В текущем MVP явные сигналы благодарности, извинения, оскорбления и признания лжи дают ограниченные изменения; обычная реплика сама по себе не меняет настроение. Полупериод возврата к нейтрали — 8 часов.
 
 Как влияет: ограниченный блок данных о состоянии для brain и talk, отдельно от нейтральных system-инструкций по §12. Persona остаётся сильнее mood и поступает только в talk; brain использует состояние для планирования, не задаёт стиль персонажа. Опциональные voice/reactions — позже. Это состояние Нейры, не привязанное к человеку.
 
@@ -471,12 +286,12 @@ person_relation:
   affinity:   -1.0 … +1.0
   trust:      0.0 … 1.0
   familiarity: 0.0 … 1.0
-  tone_bias:  "cold" | "neutral" | "warm" | "playful"
+  tone_bias:  "cold" | "neutral" | "warm"
   last_significant_event
   history[]   # короткие записи
 ```
 
-Таблица `person_relations` (или meta + лог) рядом с people card. Δ по событиям (грубость / ложь / помощь / молчание / извинение); rule-based + редкий LLM-summary раз в сутки. В people context speaker’а — 1–2 строки про affinity; низкий affinity → суше, без личных тем; высокий → больше тепла. Позже: `relation(person_a, person_b)`.
+Таблица `person_relations` в общей SQLite. Симпатия меняется по явным сигналам, доверие снижается только при явном признании лжи, знакомство растёт после успешного хода. Полупериод decay — 30 дней, доверие возвращается к 0.50. Контекстный анализ, суточные LLM-summary и person↔person ещё не реализованы.
 
 ### Стык с Memory v2
 
@@ -505,7 +320,14 @@ diary (чувства) + journal + emotional_layer после хода
 
 Потом: расширенная история событий и контекстные сигналы, voice/TTS bias, person↔person, явный ролевой «испортить отношения». MVP хранит последние 20 кодов сигналов без текста.
 
+### Дальнейшее развитие Mood & Relations
 
+Отложено после исправления серверных блокеров и начала клиента Windows/Linux; расширение текущего MVP не блокирует §3b.
+
+- [ ] Заменить примитивные реакции на ключевые фразы контекстным анализом: учитывать историю общения, автора и адресата, цитаты, шутки, ролевой диалог и тестирование. Обычное доброжелательное общение тоже должно учитываться; не трактовать отдельное слово как доказательство отношения или лжи.
+- [ ] Разделять краткосрочное настроение, симпатию, доверие и знакомство; учитывать повторяемость событий, их значимость и давность. Не делать устойчивые выводы по одной неоднозначной реплике.
+- [ ] Сохранить ограниченные изменения, persona выше состояния, привязку к person_id, независимые переключатели и backup/reset. Добавить понятную историю причин изменений; модель предлагает изменения, проверяемые сервером, вместо произвольной записи показателей.
+- [ ] Проверить длительные диалоги с несколькими людьми: позитивное/негативное общение, иронию, цитаты, восстановление отношений, параллельные ходы, рестарт и сброс. Ручное редактирование показателей в dashboard в эту запись не входит; сейчас доступны просмотр/reset и отдельная правка SQLite.
 
 ## 8. Постзащитное развитие
 
@@ -517,14 +339,10 @@ diary (чувства) + journal + emotional_layer после хода
 - **Обезличивание (AI Assist):** персона только из `assistant.*` + `prompts/persona.md`; ребренд репо/`neyra`-slug — отдельно после Stage 2, не блокер.
 - **Desktop / workspace модуль** — см. §9 (после ВКР; не в MVP защиты).
 
-
-
 ### Готово, когда
 
 - [ ] Каждая post-defense функция имеет отдельный issue/design и не блокирует MVP.
 - [ ] Backward compatibility и миграция данных определены до релиза.
-
-
 
 ## 9. Desktop / workspace модуль (после ВКР)
 
@@ -547,7 +365,7 @@ diary (чувства) + journal + emotional_layer после хода
 
 ### Не сейчас
 
-- Полный GUI десктопа в дашборде / клиенте на этапах 2–3b.
+- Полный GUI десктопа в дашборде / клиенте до завершения серверной части и §3b.
 - Игры и computer-use до стабилизации sandbox.
 - Перенос оркестрации на внешний agent runtime.
 
@@ -556,6 +374,7 @@ diary (чувства) + journal + emotional_layer после хода
 - [x] §9 записан в PLAN; реализация отложена до post-defense design.
 - [ ] Отдельный design/issue перед первым кодом модуля.
 - [ ] Phase A (sandbox files + shell) описан с границами безопасности до merge в `modules/`.
+
 ## 10. Agent loop: качество ответов и фоновая память (только план)
 
 Идея: вместо одного большого вызова модели Нейра для сложных задач работает в цикле: сама строит следующий шаг, проверяет результат и решает, готово ли. Цикл улучшает качество, а не скорость (каждая итерация это ещё один вызов модели), поэтому через него идёт не всё.
@@ -592,40 +411,21 @@ diary (чувства) + journal + emotional_layer после хода
 
 - [ ] Спайк: Нейра заходит в войс с DAVE и сохраняет полученный звук в WAV. Если приём не работает, остальные части не начинаем.
 - [ ] После успешного спайка: VAD/конец фразы → STT → текущий LLM → TTS → ответ в войс; музыка остаётся на втором боте.
-
 ## 12. Приоритет: аудит системных промптов и связей моделей
 
-**Приоритетный аудит реализован локально в PR #27.** Гипотеза о стилистическом влиянии конкретной runtime-модели остаётся для live-приёмки. Карта вызовов и границы приведены ниже.
+Реализованы границы brain/talk/vision/memory, опциональные Responses и диагностика задержек. Остаётся live-приёмка качества и устойчивости, а не повтор прежних аудитов.
 
-- [x] Инвентаризировать system prompts и реальные сообщения brain/talk/vision/memory/reflection/coder/classifier, включая retries/rewrite.
-- [x] Persona напрямую в talk; brain получает нейтральную политику и факты/инструменты. Legacy persona_in_brain и get_character_profile больше не передают persona в brain. После talk вызовов brain для переписывания нет.
-- [x] Английские нейтральные служебные инструкции; изменяемые persona и язык данных/ответа остаются отдельными. Подробность и структура сохраняются при talk rewrite/empty retry, полные lyrics не сокращаются из-за brief.
-- [x] Discord, память и результаты инструментов отделены от system-role; ограничены по размеру и удаляются при reduced-context retry. Offline-регрессии проверяют фактически отправленные сообщения.
-- [x] Повторная сверка brain/talk/memory/vision (2026-10-18): brain видит scoped публичную историю и тот же mood/relation, что talk; persona напрямую в talk на каждом запросе, включая rewrite и overflow. Brain-native vision не делает дополнительный caption-вызов тем же клиентом. 330 server tests, compileall, security/brain-failure scripts и validator 72/2/2 прошли; реальные модели не вызывались. Контракт pipeline приведён в этом разделе.
-- [x] Согласованы и реализованы опциональные Responses только для talk и startup-прогрев persona. Два persisted-переключателя в Settings → «Речь» по умолчанию выключены; есть готовность, ошибки и ручной платный прогрев. Chat Completions сохраняет отправку persona каждый раз.
-- [x] Persona/нейтральная политика — начальный system input item. Прогрев создаёт общую неизменную заготовку без пользовательских данных; беседы ответвляются независимо. Автор, время, mood/relations и факты brain передаются каждый ход; приватный контекст — ненаследуемые instructions. Brain не переписывает persona или ответ talk.
-- [x] Менеджер цепочек и scoped STM: Discord-сервер/групповая личка — общая история канала с ID авторов; личка — ветка владельца. Для будущего приложения заложен private owner/session scope; Telegram-адаптер ещё не реализован. Личная память/отношения остаются по ID человека. 200 цепочек, 12 ходов/48k символов/30 минут простоя; сериализация всей беседы между event loops. Fingerprint и reset/wipe/рестарт исключают продолжение устаревшей политики.
-- [x] Восстановление неизвестного parent ID/переполнения через persona и ограниченный публичный replay, без повторного brain/tools. Rewrite/empty retry не закрепляют отброшенные ответы; ошибка/отмена не продвигает цепочку. После публичного токена нет слепого повторения streaming.
-- [x] Новая runtime-реализация прошла синтетические платные пробы AIHope на GLM/Qwen/DeepSeek/Luna/Sol: прогрев, обычный ответ, streaming, общий канал разных авторов и ненаследование приватного маркера. 30 генераций; реальные persona, Discord и память не использовались. Контракт сессий и проверки приведены в этом разделе. Сокращение payload не считается доказательством снижения billing.
-- [x] Offline/интерфейс: 437 server tests, compileall, validator 75/3/3, все 14 stage/offline scripts; Node 22 lint/typecheck, 42 unit, build, 16 desktop/mobile E2E с настоящим API/SQLite, сохранением/ошибкой/отменой/перезагрузкой и прогревом. Проверены reset во время генерации, bounded overflow без повторного brain, исходный провайдер для cleanup; обе темы и скриншоты.
-- [x] Исправлены замечания АР к a6e45f2: warmup использует `affect_data=None`, без state policy/data в seed; состояние и его политика остаются только в текущем talk-вызове. Slash-ошибки Discord — фиксированный локализованный текст, детали только в логах. Закрыт прежний AR-13: повтор после скрытого reasoning/плана сбрасывает фильтры и допускается до первого публичного текста.
-- [x] AR-12: устаревший отдельный отчёт шлюза удалён по новому указанию пользователя от 2026-10-18; актуальные границы сессий сохранены в этом PLAN. Все удаления документации включены в PR.
-- [x] Повторная приёмка после fixes памяти/АР: 454 server tests, compileall server/MCP, validator 75/4/4 и все 14 stage/offline scripts; Node 22 lint/typecheck, 46 unit, build и 18 desktop/mobile E2E. У lint осталось только прежнее предупреждение LogViewer.
+- [x] Persona поступает прямо в talk; brain получает нейтральные инструкции, scoped историю, факты и состояние. Brain не переписывает persona или готовый ответ talk.
+- [x] Служебные system prompts вынесены в английские ресурсы; данные пользователя/Discord/tools отделены от system policy. Rewrite/empty/overflow сохраняют стиль и нужный контекст без раскрытия private reasoning.
+- [x] Brain-native vision не делает лишний caption-вызов тем же клиентом; факты brain/vision и scope изображений сохраняются через повторы.
+- [x] Responses только для talk: persona seed, отдельные ветки бесед, request-local instructions, ограниченные цепочки и восстановление parent/context без повторного brain/tools. Chat Completions остаётся отдельным режимом.
+- [x] PR #32: сохраняются failed/cancelled traces отдельно от диалога; различаются очередь, SDK/stream retries, HTTP/SSE, reasoning и видимый текст. Добавлены общий бюджет talk, обработка частичного ответа и ограничение видимого текста Responses. Качество и задержки на стенде проверяются отдельно.
 - [ ] Live-приёмка пользователем: настоящая persona/Discord, длительная работа, TTL/compaction/рестарты шлюза, межключевая изоляция и фактический billing. Синтетические пробы эти критерии не закрывают.
-- [x] Первый разрешённый технический live-спайк AIHope (2026-10-18, до исправлений шлюза; исторический результат): Chat Completions/streaming и cache hits работают на talk/brain-моделях; `/responses` генерирует на Luna/Sol, но продолжение по ID дало 400 либо 200 без восстановления маркера, retrieve/delete/Conversations — 404. Ручной replay работает. Сохранение сессии не подтверждено, persona остаётся в каждом запросе. Только синтетические данные; качества persona, Discord, production-памяти и billing эта проверка не закрывает.
-- [x] Промежуточный спайк v2 после исправления AIHope (исторический результат): `glm-5.3-flash`, `qwen3.8-flash`, `deepseek-v4.1-flash`, `gpt-6.1-sol`, `gpt-6-luna` восстанавливают контекст по previous_response_id (строка/массив input), сохраняют начальный system item; retrieve/delete, обычный chat/stream и ручной replay работают. Остались внешние дефекты: Responses stream возвращает JSON, top-level instructions не применяется, Conversation не подключает историю и items даёт 404. Кэш наблюдался на четырёх моделях; для DeepSeek три повтора без hit не доказывают отсутствие поддержки. Runtime не переводился на Responses; TTL, compaction, рестарты шлюза и межключевая изоляция не проверены.
-- [x] Предыдущий спайк v3 всех пяти моделей на `https://aihope.fun/v1` (исторический результат): три внешних дефекта снова воспроизвелись; работа previous_response_id, system item, retrieve/delete и Chat streaming подтверждена повторно. DeepSeek теперь дал cache hits; на GLM в этом прогоне hit не наблюдался, ранее был. Для Discord отдельно реализована финальная отправка, без изменения LLM-протокола. Приёмка production-сессий и смена API остаются отдельной задачей.
-- [x] Заключительный спайк v4 AIHope (2026-10-18): на всех пяти моделях подтверждены Chat/stream/usage, previous_response_id (строка/массив/stream), начальный system item и retrieve/delete. Три прежних дефекта исправлены: Responses отдаёт SSE, top-level instructions применяется в текущем запросе, Conversation восстанавливает историю и items отвечает 200. Top-level instructions не наследуется через previous_response_id — это штатный контракт; повторная передача проверена на Luna. На Luna два ответа 200/completed были пустыми с output_tokens=0 (70.62/34.28 s); контрольные повторы, включая Conversation/items, прошли, нестабильность остаётся открытой в BUG-09 (§3a). GLM с лимитом 128 потратил бюджет на reasoning; при 512 дал текст. Cache hits наблюдались на GLM/Qwen/DeepSeek/Luna; у Sol в трёх повторах поле cached_tokens отсутствовало, что не означает нулевой кэш. Все запросы синтетические; runtime остаётся на Chat Completions. Ранние выводы выше относятся к предыдущим состояниям шлюза; актуальный runtime-контракт описан ниже.
-- [x] AR-9 PR #29: убрать assistant-prefill из rewrite и фильтровать его ответ от micro-plan (tags/anchor/незакрытый хвост). Восемь регрессий chat/stream подтверждают отсутствие утечки в публичный текст, STM/chat_log и diary; полный pytest 338, compileall, validator 72/2/2 и 14 stage/offline-скриптов прошли.
-- [x] AR-10 PR #29: не пересылать сырые ошибки провайдера в Discord/WS. Обе ветки stream, включая неудачу после overflow, возвращают безопасный текст; адаптеры выбирают его по коду, сообщение о недоступном brain сохранено. Девять дополнительных регрессий; полный pytest 357, compileall, validator 72/3/3 и 14 offline-скриптов прошли.
-- [x] AR-11 PR #29: описание переписано под итоговый scope — mood/relations, переключатели, pipeline, финальная отправка Discord, безопасные ошибки и последний спайк шлюза. Актуальные результаты: 357 server tests, validator 72/3/3; старые промежуточные выводы не выдаются за текущие.
-- [x] Повторный аудит пользовательской схемы brain → talk → memory/vision: persona остаётся только в talk; brain получает ту же scoped историю и состояние, видит публичный ответ на следующем ходе. Исправлены REST-ошибки и их failed trace, empty retry (без prefill/private plan), ограниченные факты brain/vision после overflow, owner/channel-изоляция image notes и их reset/wipe; результаты последнего разрешённого инструмента не теряются при исчерпании бюджета. Явные reasoning-блоки brain не передаются talk, а потоковые reasoning-блоки talk фильтруются до WS-токенов, включая вложенные/незакрытые теги; после публичного токена генерация не повторяется слепо. 36 дополнительных регрессий; полный pytest 393, compileall, validator 72/3/3 и 14 stage/offline scripts прошли. На момент этого аудита Responses runtime и платный startup warmup ещё не были реализованы; последующая реализация описана выше.
 - [ ] Live: проверить стиль, смысл и соблюдение границ настоящими моделями, включая runtime persona и все выбранные режимы.
-
 
 ### Настройки и эксплуатационные границы
 
-- [x] Discord REST/gateway поддерживают необязательный HTTP(S) `discord.proxy_url` и приоритетный `DISCORD_PROXY_URL`; по умолчанию подключение прямое, credentials допускаются только в env и маскируются в URL логов. Неверный URL и credentials в YAML дают разные безопасные сообщения об ошибке (AR-5). На MiniPC 2026-10-19 прямой Discord недоступен; через существующий локальный прокси проверка токена возвращает HTTP 200 и тестовый клиент достигает gateway Ready с нужными intents. Полноценные диалоги и музыка остаются пользовательской live-приёмкой; сообщение в канал автоматически не отправлялось.
+- [x] Discord поддерживает HTTP(S) `discord.proxy_url` и приоритетный `DISCORD_PROXY_URL`; прямое подключение — default, credentials только в env и маскируются в логах. На стенде проверен gateway Ready; эксплуатационные сбои отслеживаются в §3a.
 
 - Источники конфигурации: tracked `*.example.yaml`, schema и общие руководства `docs/en/`/`docs/ru/`. Слои YAML сохраняются раздельно; секреты только в `.env`. `regen_config_keys_md.py` печатает справочник из examples в stdout.
 - Settings → «Поведение»: `memory.mood.enabled`, `memory.relations.enabled`, `memory.diary_after_turn` и `agent.de_repeat.enabled` по умолчанию true. `memory.working_memory.enabled`, `memory.pre_context.enabled`, `memory.emotional_layer.enabled`, `memory.emotional_layer.ltm_emotion_sync` по умолчанию false. Применяются к следующим ходам/заданиям; ltm_emotion_sync требует emotional_layer. Флаги строго boolean, null/строки/числа отвергаются; пустые необязательные YAML-блоки используют defaults.
@@ -637,13 +437,20 @@ diary (чувства) + journal + emotional_layer после хода
 - До 200 цепочек; новая после 12 ходов, 48 000 учтённых символов или 30 минут простоя при следующем обращении. Смена persona/model/provider/режима/флагов, сокращение STM, reset/wipe и рестарт инвалидируют цепочку. Весь ход одной беседы сериализован между event loops. Unknown parent/overflow восстанавливают persona и ограниченный публичный replay без повторного brain/tools; rewrite/empty retry не закрепляют отброшенные ответы. После публичного текста replay запрещён.
 - Provider chains не сохраняются на диск. Удаление response ID ограничено по времени/очереди и выполняется best effort исходным подключением; удаления provider backups это не гарантирует. Response ID не считается request ID. Меньший payload не доказывает меньший billing; TTL, compaction и межключевую изоляцию проверяет пользователь отдельно.
 
+### Dev MCP: диагностика MiniPC
+
+- [x] Отдельный stdio MCP через SSH, без публичного порта и запуска agent/Discord/LLM. Remote bootstrap читает `.env` и layered config на сервере; ключ не переносится в локальную конфигурацию Codex. Read-only требует viewer-токен либо явно заданный NEYRA_API_TOKEN; молчаливого перехода на admin больше нет. Автоматический выбор admin разрешён только с явным opt-in записи. По умолчанию запрещены API-запись, события и lifecycle; SQLite открывается только для чтения.
+- [x] Добавлены audit без диалогов/персональных ID, список scopes для адресной диагностики, история одного канала и происхождение фактов человека. Model traces не выдаются как переписка; выборки ограничены, логи/конфиг проходят redaction. Только devtools SDK закреплён на API 1.x (`mcp<2`); `server/requirements.txt` не меняется. Отдельный venv не меняет работающую Нейру.
+Исторический прогон 2026-10-21, **старый bootstrap с admin fallback**: на MiniPC проверены MCP handshake/list/call через SSH, health 200, статистика и блокировка lifecycle. Это не подтверждает запуск текущего bootstrap с viewer-токеном. Отдельно воспроизведена разница shared/owner-выборки за вчера: 2 против 0 сообщений; effective config загружается, API-токены скрыты. Offline: 25 MCP-тестов (включая fail-closed auth) прошли; предыдущий серверный прогон — 490 тестов. Локальная регистрация `neyra-minipc` выполнена; существующему сеансу Codex может понадобиться обновление списка инструментов. Рабочие факты/история не менялись.
+- [ ] **Live, текущий bootstrap:** когда MiniPC доступен, настроить API_VIEWER_TOKEN на хосте и повторить SSH initialize/list/call, health 200, audit и блокировку lifecycle; без viewer/явного токена проверить понятный отказ запуска. До этого совместимость зарегистрированного подключения с новым bootstrap не подтверждена; новый devtools на MiniPC не выкатывать автоматически.
+- [ ] Исправить BUG-13/14/15 и проверить retrieval/атрибуцию через изолированные сценарии; успешное подключение MCP не закрывает ошибки памяти. Реальные Discord-диалоги и качество LLM остаются отдельной live-приёмкой.
+
 ### Память: проверка работы и улучшения
 
 - [x] Повторная проверка Discord/ядра: запись факта не создаёт карточку по выдуманному ID/нику; известный Discord ID выбирает account owner, неоднозначные имена не выбирают человека. Cache/reflection не воскрешают удалённый merge source; account refresh сериализован с merge. Аватар и UUID сохраняются при смене ника. Старые дубли автоматически не склеиваются.
 - [x] Память → Люди → Объединения: отдельный подраздел предложений/истории с именами, временем, причинами, поиском, страницами и статусом отмены. Undo сохранён с подтверждением; история отдаёт только безопасные подписи, без snapshot фактов. Реальные apply/undo, ошибка API и клавиатура проверяются локальным браузером.
 
-
-Следующая часть приоритетного прогона: проверить память вместе с аудитом промптов, затем выбирать улучшения по найденным проблемам.
+Проверять память вместе с pipeline и выбирать улучшения по подтверждённым проблемам.
 
 - [x] Подключить owner/channel-scoped STM и diary к реальным ходам и pre-context; WM обновлять последовательно по владельцу. Семантические знания и consolidation сохраняют owner, ночная reflection не угадывает людей по никам.
 - [x] Проверить SQLite reopen и повторную миграцию старой временной схемы, dedupe diary по turn_id, удаление/очистку. Delayed jobs после wipe инвалидируются и не восстанавливают удалённое.
@@ -652,7 +459,7 @@ diary (чувства) + journal + emotional_layer после хода
 - [ ] Live: качество отбора/сжатия/retrieval, отсутствие выдуманных фактов и стилистического дрейфа; замеры задержек/токенов и сверка billing на реальных данных. Offline-контракты не доказывают качество генерации.
 - [ ] Live: миграция копии production SQLite, конкурентные jobs/рестарты и исправления противоречий на данных стенда по §7/§7.5.
 
-**Граница приёмки:** локальную реализацию продолжили после остановки Kilo. Runtime-модели не переключались; рабочий сервер, Discord и production-память не запускались. Отдельно разрешённые синтетические API-пробы шлюза отмечены выше; они не заменяют пользовательскую live-приёмку после отдельной команды на деплой.
+**Граница приёмки:** offline-тесты и синтетические API-пробы проверяют контракты; качество persona/памяти, длительную работу и фактический billing подтверждает пользователь на стенде. Сводка последнего деплоя — §4.
 
 ## 13. Переработка памяти и её интерфейса (после аудита §12)
 
@@ -665,10 +472,8 @@ diary (чувства) + journal + emotional_layer после хода
 Локально реализовано в PR #27: STM — ограниченные окна процесса по owner/channel; diary — SQLite с владельцем/каналом; долгая память — факты профилей с источником. Старые записи не переписываются и не приписываются произвольному пользователю. Семантический retrieval сохранён, просмотр фактов не является полным экспортом Chroma.
 
 - [x] **Журнал ядра:** System → «События памяти», только просмотр, обновление и admin delete/clear; без ручной формы.
-- [x] **Дневник:** ручная форма убрана; запись от первого лица автоматически после завершённой пары. Новые источники запрашивают первое лицо; исторические записи сохранены. Соблюдение инструкции моделью — live-критерий.
-- [x] AR-24: один канонический планировщик `memory.diary_after_turn`; прежние `llm.async_reflection.*` и diary-поля emotional_layer deprecated/ignored, мёртвые wrappers удалены. LTM tone metadata остаются отдельной действующей опцией.
-- [x] AR-22/23/25/26: смешанные ошибки consolidation не оставляют частичных digest; debug показывает scoped окна; удаление записи журнала требует `УДАЛИТЬ`; wipe инвалидирует записи только затронутой секции, включая вложенные jobs. Проверено offline и browser-регрессиями; новое AR проверяется после push.
-- [x] **Очистка и вайпы:** существующие API, роли, подтверждения и кнопки сохранены; регрессии прав/удаления и browser-сценарий удаления журнала.
+- [x] **Дневник:** ручная форма убрана; запись от первого лица автоматически после завершённой пары. Новые источники запрашивают первое лицо; исторические записи сохранены. Соблюдение инструкции моделью — live-критерий. Канонический планировщик — `memory.diary_after_turn`; устаревшие diary-настройки не создают второй поток записей.
+- [x] **Очистка и вайпы:** существующие API, роли, подтверждения и кнопки сохранены; отложенные jobs после wipe не восстанавливают удалённое; регрессии прав/удаления и browser-сценарий удаления журнала.
 - [x] **Поиск RAG:** техническая форма убрана; долгая память показывает факты/источник, исправления остаются в «Людях». Retrieval Нейры не отключён.
 - [x] **Локальная приёмка:** три секции, отдельный журнал, empty/error/retry, клавиатура, обе темы и desktop/mobile; браузер получает действительные данные временного backend, не только mocks HTTP.
 - [ ] **Live-приёмка пользователем:** реальные Discord-диалоги, качество дневника/долгой памяти, перезапуск на production-копии и жизненный цикл dashboard на работающем сервере.
@@ -681,25 +486,21 @@ diary (чувства) + journal + emotional_layer после хода
 - [x] **Основа локализации:** `server/resources/messages/{ru,en}.json`, сейчас по 4 подключённых сообщения brain/empty reply/generation failed/slash failed; русский по умолчанию, английский fallback для отсутствующего перевода/неподдерживаемой локали. Это ещё не локализация приложения целиком.
 - [ ] **Остальные тексты:** перенос пользовательских сообщений API/Discord/dashboard, tool descriptions и оставшихся data wrappers; выбор языка интерфейса и расширение переводов. Не менять язык system policy или пользовательского диалога вместе с UI locale.
 - [x] **Persona:** существующие `server/prompts/persona.md` и appearance остаются отдельными редактируемыми файлами; напрямую в talk, не в каталог переводов/brain. Обёртка appearance вынесена отдельно от содержимого persona.
-- [x] **Повтор пустого ответа (АР #28):** режим песни передаётся явно из состояния хода в chat/streaming, без поиска заголовков в редактируемых промптах или пользовательском тексте. Регрессии проверяют изменённый заголовок, brief, detailed/technical и обычный ответ.
+- [x] **Повтор пустого ответа:** режим песни передаётся явно из состояния хода в chat/streaming, без поиска заголовков в редактируемых промптах или пользовательском тексте. Регрессии проверяют изменённый заголовок, brief, detailed/technical и обычный ответ.
 - [x] **Границы первой поставки:** только статические шаблоны; пользовательские данные, память, ключи, API-коды, роли, лимиты и логика не выносятся. Роли сообщений и scope сохранены регрессиями pipeline.
 - [x] **Загрузка и проверки первой поставки:** фиксированные пути от server package, кеш до рестарта, строгие именованные параметры без attribute/index/format expressions, ошибки неизвестных ключей/дубликатов/битых каталогов, проверка соответствия переводов. Отдельный validator в CI, загрузка не зависит от cwd.
 
 ## 15. Порядок завершения серверной части перед клиентом
 
-Уточнение пользователя 2026-10-16: ближайшая очередь — **3a + баги, §7/§7.5, §12–15**. **§10 и §3b** — в конце. **§9 и §11** (включая второго бота) — после ВКР либо при наличии времени. Номера разделов сохранены для ссылок; положение в файле не задаёт приоритет.
+Ближайшая очередь: **3a + баги → память §7/§13 → pipeline/Responses §12 → начало клиента Windows/Linux §3b**. После устранения серверных блокеров постепенно подключать клиент к готовому API; не ждать расширенных отношений или полной локализации. Остальные тексты §14 — следующая очередь либо параллельно клиенту. Развитие настроения/отношений §7.5 отложено после начала клиента; текущий MVP сохраняется. Эксплуатация, качество и демонстрация — §4–6; Agent loop §10 — после стабилизации памяти, §8/§9/§11 — после ВКР либо при наличии времени.
+
+Номера разделов сохранены как идентификаторы для ссылок и расположены по возрастанию; очередь работ задаётся этим разделом. Подробности завершённых этапов 1/2 удалены из рабочего плана.
 
 Сначала готовый сервер, затем клиент для **Windows и Linux**. Контрольная точка «серверная половина» относится к работающему серверному контуру, а не к арифметике checkbox и не к готовности всей ВКР. Тема, объект, предмет и цель из §0 остаются без изменений. Минимум защиты всё ещё включает клиент.
 
-- [x] PR #27 смержен в main как `2f235d7`: АР LGTM, CI 7/7 зелёный. Deploy не выполнялся.
-- [x] PR #28 смержен в main как `d78dee7`: system resources и ru/en foundation; все три замечания АР закрыты, LGTM и CI 7/7. Перед merge повторно прошли 48 профильных тестов. Deploy не выполнялся.
-- [x] Начать отдельно согласованный серверный этап §12/14: system resources + ru/en foundation, без смены поведения моделей и без клиента. Полная локализация остаётся открытой в §14.
-- [x] Реализовать серверный MVP §7.5: сохраняемые Mood/Relations, ограниченные изменения/decay, scope по person_id, данные для brain/talk при persona только в talk, управление/reset и offline-регрессии. Сервер после повторного аудита brain/talk/memory/vision: 393 tests, compileall, validator 72/3/3 и все 14 stage/offline scripts. Ранее прошли 38 dashboard unit, 14 E2E и Node 22 lint/typecheck/build; dashboard в дополнительной сверке не менялся. Live-приёмка остаётся открытой в §7.5.
-- [x] AR-8 PR #29: сохранить совместимость пустых необязательных YAML-блоков с defaults; некорректные scalar/list-родители и null/строковые boolean-флаги отклонять. Проверены реальная загрузка YAML, значения defaults и строгая валидация; полный pytest (320), compileall и stage 1c прошли.
-- [x] Итоговый аудит реализации PR #29 перед merge: Mood/Relations, 17 переключателей, Responses/warmup, границы brain/talk/memory/vision, финальная отправка Discord, people dedupe и отдельный merge/undo UI завершены локально. На кодовом срезе `06948c7` все AR-1…18 закрыты (LGTM), CI 7/7; 454 server tests, 46 dashboard unit, 18 E2E. Последующая сверка меняет только PLAN/VERSION; деплой и релиз не выполнялись.
 - [ ] Подтвердить серверный сценарий: подключение/авторизация → чат/streaming → память → управление модулем → диагностика → backup/restore. Offline-проверки уже реализованы; live-приёмку на стенде выполняет пользователь.
 - [ ] Подтвердить проверки багов из §3a на Discord/browsermcp/провайдере; не выдавать внешнюю недоступность за исправленный код и не закрывать live-пункты автоматически.
-- [ ] После ближайших серверных этапов вернуться к §10 и самостоятельному клиенту §3b для обеих ОС. Не начинать их параллельно текущей очереди.
+- [ ] После устранения серверных блокеров начать самостоятельный клиент §3b для обеих ОС. Расширенные отношения §7.5 и Agent loop §10 не блокируют начало клиента; отдельный цикл агента — после стабилизации памяти.
 - [ ] После ВКР либо при наличии времени — §9/§11; двухботовый голос не блокирует серверный рубеж.
 
-Серверное ядро, API/auth, dashboard, память и backup/restore реализованы и проверены локально. Качество моделей, production-copy migration и интеграции требуют пользовательской live-приёмки. Windows/Linux клиент остаётся scaffold; полный путь server → client и поставка клиента пока не реализованы. Эта граница не позволяет объявить всю ВКР готовой по числу закрытых задач. История изменений — [VERSION.md](VERSION.md).
+Серверная реализация установлена на MiniPC; качество длительных диалогов и интеграций остаётся пользовательской live-приёмкой. Клиент Windows/Linux пока scaffold, поэтому готовность сервера не означает готовность всей ВКР.

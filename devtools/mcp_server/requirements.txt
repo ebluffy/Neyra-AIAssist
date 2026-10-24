@@ -1,5 +1,9 @@
 # Official Python MCP SDK (FastMCP + stdio transport)
-mcp>=1.2.0
+mcp>=1.2.0,<2
 
 # HTTP client for Internal API (127.0.0.1:8787)
 httpx>=0.27.0
+
+# Remote bootstrap reads the existing layered server configuration.
+PyYAML>=6.0
+python-dotenv>=1.0
