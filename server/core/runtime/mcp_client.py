@@ -223,6 +223,7 @@ class MCPClientManager:
             self._started = True
             return
         if not _HAS_MCP:
+            self._errors.update({name: "missing MCP SDK" for name in self._specs})
             logger.error("mcp_client.enabled, но пакет mcp не установлен. Установите: pip install mcp")
             self._started = True
             return
@@ -268,11 +269,11 @@ class MCPClientManager:
         while not self._shutdown.is_set():
             self._errors[name] = None
             try:
+                if not _HAS_MCP or (spec.transport == "sse" and sse_client is None):
+                    self._errors[name] = "missing MCP SDK"
+                    logger.warning("MCP server %s unavailable: MCP runtime is missing", name)
+                    break
                 if spec.transport == "stdio":
-                    if not _HAS_MCP:
-                        self._errors[name] = "missing MCP SDK"
-                        logger.warning("MCP server %s unavailable: MCP runtime is missing", name)
-                        break
                     await self._one_stdio_session(name, spec)
                 else:
                     await self._one_sse_session(name, spec)

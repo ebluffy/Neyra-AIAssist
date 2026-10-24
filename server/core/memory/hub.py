@@ -983,21 +983,23 @@ class MemoryHub:
 
     def get_all_names_map(self) -> dict[str, str]:
         """Map lowercased exact alias/handle → person_id (for mention scan)."""
-        result: dict[str, str] = {}
+        candidates: dict[str, set[str]] = {}
+        identifiers: dict[str, str] = {}
         for person in self.list_people():
             pid = str(person.get("id") or "").strip()
             if not pid:
                 continue
-            result[pid.casefold()] = pid
+            identifiers[pid.casefold()] = pid
             for name in person.get("names") or []:
                 key = str(name).strip().casefold()
                 if key:
-                    result[key] = pid
+                    candidates.setdefault(key, set()).add(pid)
             for acc in person.get("accounts") or []:
                 h = str(acc.get("handle") or "").strip().casefold()
                 if h:
-                    result[h] = pid
-        return result
+                    candidates.setdefault(h, set()).add(pid)
+        result = {key: next(iter(ids)) for key, ids in candidates.items() if len(ids) == 1}
+        return {**result, **identifiers}
 
     def get_person_summary(self, person_id: str, *, public_channel_id: Optional[str] = None, restrict_to_channel: bool = False) -> str:
         """Prompt dossier: accounts + free-form facts (no анкета)."""

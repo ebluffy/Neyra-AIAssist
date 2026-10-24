@@ -228,7 +228,7 @@
 
 ### Готово, когда
 
-- [x] Локальная серверная стабилизация 2026-10-24: 533 pytest, compileall, scripts verify_stage_1b/1c/1d/2_api, test_stage2_security_offline и test_discord_music_intent_offline; dev MCP — 25 тестов. Настоящие LLM/Discord/MiniPC не вызывались. CI/AR нового PR проверяются отдельно.
+- [x] Локальная серверная стабилизация 2026-10-24: 535 pytest, compileall, scripts verify_stage_1b/1c/1d/2_api, test_stage2_security_offline и test_discord_music_intent_offline; dev MCP — 25 тестов. Настоящие LLM/Discord/MiniPC не вызывались. CI/AR нового PR проверяются отдельно.
 - [x] Проверки main `a947a82` перед деплоем 2026-10-19: CI 7/7, 490 server tests, compileall; Node 22 — lint/typecheck, 46 unit, build и 18 desktop/mobile E2E с временным backend. У lint осталось прежнее предупреждение LogViewer. Клиентские проверки относятся к §3b.
 - [x] Secrets scan исходников в CI зелёный; `.env`, локальные конфиги, runtime data, логи и приватная persona не включены в коммит.
 - [ ] Проверить отсутствие приватных данных в фактических логах приложения/библиотек/reverse proxy на стенде (§3a, BUG-06); локальные redaction-регрессии этот критерий не закрывают.
@@ -463,7 +463,7 @@ diary (чувства) + journal + emotional_layer после хода
 
 ### Локальное завершение серверных блокеров перед клиентом
 
-- [x] BUG-13/14/15: регрессии источника факта/цитаты/автора, устаревшего или удалённого сообщения, shared/private истории, временного окна, параллельных scope, Discord mentions и защиты чужого private досье. Существующие карточки не чистятся автоматически; неоднозначность содержания цитаты всё ещё требует качества LLM и live-приёмки.
+- [x] BUG-13/14/15: регрессии источника факта/цитаты/автора, устаревшего или удалённого сообщения, shared/private истории, временного окна, параллельных scope, Discord mentions, неоднозначных aliases и защиты чужого private досье. Существующие карточки не чистятся автоматически; неоднозначность содержания цитаты всё ещё требует качества LLM и live-приёмки.
 - [x] BUG-07/08: Tenor/Giphy/Imgur/Discord CDN, GIF/MP4, команды в URL, отрицания, classifier bypass, вложения и поддерживаемые команды. Неподдерживаемая ссылка не обращается к Discord и не подключает Lavalink/voice.
 - [x] BUG-01: создание модуля целиком через stub HTTP шлюза и запись в temp modules; проверены отдельный coder и fallback brain, без обращения к OpenRouter.
 - [x] BUG-02: отсутствие MCP SDK и отсутствие executable различаются; постоянная ошибка прекращает reconnect и ожидание startup, есть offline-регрессии. Реальный browsermcp command/args на MiniPC ещё не проверен.

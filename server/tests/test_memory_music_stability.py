@@ -219,11 +219,14 @@ def test_person_tool_cannot_bypass_private_fact_filter(hub):
     assert 'Secret personal fact' in builtins.get_person_info.func(b['id'])
 
 
-def test_missing_mcp_sdk_is_not_reported_as_missing_executable(monkeypatch):
+@pytest.mark.parametrize('transport', ['stdio', 'sse'])
+def test_missing_mcp_sdk_is_not_reported_as_missing_executable(monkeypatch, transport):
     from core.runtime import mcp_client
     monkeypatch.setattr(mcp_client, '_HAS_MCP', False)
-    manager = mcp_client.MCPClientManager({'mcp_client': {'enabled': True, 'servers': {'browsermcp': {'transport': 'stdio', 'command': 'any'}}}})
+    manager = mcp_client.MCPClientManager({'mcp_client': {'enabled': True, 'servers': {'browsermcp': {'transport': transport, 'command': 'any', 'url': 'https://example.test/events'}}}})
     async def run():
+        await manager.start()
+        assert manager.last_errors()['browsermcp'] == 'missing MCP SDK'
         await manager._run_server_forever('browsermcp', manager._specs['browsermcp'])
         await asyncio.wait_for(manager._wait_for_sessions(10), timeout=.5)
     asyncio.run(run())
@@ -318,3 +321,13 @@ def test_shared_channel_history_excludes_private_app_rows_with_same_channel_id(h
     result = builtins.recall_chat.func()
     assert 'Real Discord public message' in result and 'Legacy Discord public message' in result
     assert 'Private app message' not in result
+
+
+def test_ambiguous_alias_does_not_override_account_or_explicit_uuid(hub):
+    from core.agent.people_context import detect_mentioned_names
+    a, b = person(hub), person(hub, '456')
+    names = hub.get_all_names_map()
+    assert 'same' not in names
+    assert detect_mentioned_names('same', names) == []
+    hub.upsert_person(b['id'], aliases=[a['id']])
+    assert hub.get_all_names_map()[a['id']] == a['id']
