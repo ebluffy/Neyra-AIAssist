@@ -45,6 +45,7 @@ async def finalize_successful_turn(
         "username": username or "unknown",
         "discord_id": discord_user_id or "",
         "user_id": internal_uid,
+        "visibility": "channel" if active_scope is not None and active_scope.kind == "shared" else "private",
     }
     if isinstance(extra_meta, dict) and extra_meta:
         metadata.update(extra_meta)

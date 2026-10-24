@@ -176,34 +176,20 @@ class ReflectionEngine:
             logger.info("Рефлексия за %s уже есть, пропускаю", date_str)
             return ""
 
-        diary_lines = self._get_diary_last_24h()
-        if not diary_lines:
-            logger.info("Дневник за 24ч пуст — рефлексию пропускаю")
-            return ""
-
         hub = self._memory_hub()
-        inputs = [(diary_lines, None)]
-        if hub is not None:
-            from core.runtime.timeutil import cutoff_hours, to_local
-            cutoff = to_local(cutoff_hours(24))
-            groups = {}
-            for entry in hub.list_diary_notes(limit=300, newest_first=True):
-                timestamp = self._parse_iso_ts(str(entry.get("ts") or ""))
-                if timestamp is None or to_local(timestamp) < cutoff:
-                    continue
-                owner = entry.get("owner_id")
-                lines, allowed = groups.setdefault(owner, ([], set()))
-                meta = entry.get("meta") if isinstance(entry.get("meta"), dict) else {}
-                person_id = meta.get("person_id") if owner else None
-                if person_id:
-                    allowed.add(str(person_id))
-                lines.append(json.dumps({"person_id": person_id, "text": entry.get("text", "")}, ensure_ascii=False))
-            inputs = [("\n".join(lines)[:12000], allowed) for lines, allowed in list(groups.values())[:20]]
+        inputs = self._durable_evidence_groups(hub) if hub is not None else []
+        if hub is None:
+            diary_lines = self._get_diary_last_24h()
+            if diary_lines:
+                inputs = [(diary_lines, {})]
+        if not inputs:
+            logger.info("Нет исходных сообщений за 24ч — рефлексию пропускаю")
+            return ""
         result = {"people_updates": [], "global_lore": [], "behavior_rules": []}
-        for evidence, allowed in inputs:
+        for evidence, sources in inputs:
             part = await self._analyze_diary_json(evidence, date_str)
             for update in part.get("people_updates", []):
-                if isinstance(update, dict) and (allowed is None or str(update.get("person_hint")) in allowed):
+                if isinstance(update, dict) and self._supported_person_update(update, sources):
                     result["people_updates"].append(update)
             result["global_lore"].extend(part.get("global_lore", []))
             result["behavior_rules"].extend(part.get("behavior_rules", [])[:2])
@@ -241,6 +227,51 @@ class ReflectionEngine:
                     logger.warning("LTM summarize после ночной рефлексии: %s", e)
 
         return summary
+
+    def _durable_evidence_groups(self, hub) -> list:
+        from core.runtime.timeutil import cutoff_hours, now_storage_iso, to_utc_iso
+        after, before = to_utc_iso(cutoff_hours(24)), now_storage_iso()
+        stats = hub.chat_window_stats(after=after, before=before)
+        groups = {}
+        for row in hub.list_chat(limit=500, newest_first=True, after=after, before=before):
+            if row.get("role") not in {"user", "assistant"}:
+                continue
+            key = (row.get("user_id"), row.get("channel_id"))
+            lines, sources, size = groups.setdefault(key, ([], {}, [0]))
+            person_id = self._source_person_id(hub, row) if row["role"] == "user" else None
+            line = json.dumps({"message_id": row["id"], "role": row["role"], "person_id": person_id, "text": row.get("text", "")}, ensure_ascii=False)
+            if size[0] + len(line) + 1 > 12000:
+                continue
+            lines.append(line)
+            size[0] += len(line) + 1
+            if person_id:
+                sources[str(row["id"])] = {**row, "person_id": person_id}
+        selected = [(lines, sources) for lines, sources, _ in list(groups.values())[:20] if lines]
+        selected_rows = sum(len(lines) for lines, _ in selected)
+        if stats["rows"] > selected_rows or stats["groups"] > len(selected):
+            logger.info("Nightly evidence bounded | selected_rows=%s skipped_rows=%s selected_groups=%s skipped_groups=%s",
+                        selected_rows, max(0, stats["rows"] - selected_rows), len(selected), max(0, stats["groups"] - len(selected)))
+        return [("\n".join(reversed(lines)), sources) for lines, sources in selected]
+
+    @staticmethod
+    def _source_person_id(hub, row) -> Optional[str]:
+        if row.get("role") != "user":
+            return None
+        from core.runtime.identity import UnifiedIdentityMapper
+        meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+        discord_id = str(meta.get("discord_id") or "")
+        if not discord_id or UnifiedIdentityMapper.resolve_from_discord(discord_id) != row.get("user_id"):
+            return None
+        person = hub.find_person("", discord_id=discord_id)
+        return str(person["id"]) if person else None
+
+    @staticmethod
+    def _supported_person_update(update, sources) -> bool:
+        source = sources.get(str(update.get("source_message_id")))
+        quote = str(update.get("evidence_quote") or "").strip()
+        return bool(source and source.get("role") == "user" and
+                    str(update.get("person_hint")) == source.get("person_id") and
+                    len(quote) >= 4 and quote in str(source.get("text") or ""))
 
     async def _auto_sync_external_backup(self) -> None:
         """Автосинхронизация бэкапа после большой рефлексии (если включено в конфиге)."""
@@ -311,28 +342,16 @@ class ReflectionEngine:
         """Большая рефлексия: запись устойчивых фактов в PeopleDB + дневник."""
         if not self.agent:
             return
-        people_db = getattr(self.agent, "people_db", None)
         hub = getattr(self.agent, "memory_hub", None)
-        if people_db is None and hub is None:
+        if hub is None:
             return
 
         updates = list(result.get("people_updates") or [])
-        existing_norm: dict[str, set[str]] = {}
-        if hub is not None:
-            for person in hub.list_people():
-                pid = str(person.get("id") or "").strip()
-                if not pid or pid in existing_norm:
-                    continue
-                norms: set[str] = set()
-                for row in hub.list_person_facts(pid, limit=80):
-                    norms.add(self._normalize_fact_text(str(row.get("fact") or "")))
-                existing_norm[pid] = norms
-        elif people_db is not None:
-            for pid, person in getattr(people_db, "_cache", {}).items():
-                norms = set()
-                for row in list(person.get("dynamic_facts") or []):
-                    norms.add(self._normalize_fact_text(str(row.get("fact") or "")))
-                existing_norm[pid] = norms
+        existing_norm = {
+            str(person["id"]): {self._normalize_fact_text(str(row.get("fact") or ""))
+                                for row in hub.list_person_facts(str(person["id"]), limit=80)}
+            for person in hub.list_people() if person.get("id")
+        }
 
         added: list[str] = []
         for item in updates:
@@ -342,12 +361,21 @@ class ReflectionEngine:
             fact = str(item.get("fact") or "").strip()
             if not hint or not fact or not self._is_high_signal_fact(fact):
                 continue
-            if hub is not None:
-                person = next((p for p in hub.list_people() if str(p.get("id")) == hint), None)
-                if person is None and hint.isdigit():
-                    person = hub.find_person("", discord_id=hint)
-            else:
-                person = people_db.find(hint) if people_db is not None else None
+            if hub is None:
+                continue
+            try:
+                message_id = int(item.get("source_message_id"))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(item.get("source_message_id"), bool) or not 0 < message_id < 2**63:
+                continue
+            source = hub.get_chat_message(message_id)
+            if source is None:
+                continue
+            source = {**source, "person_id": self._source_person_id(hub, source)}
+            if not self._supported_person_update(item, {str(message_id): source}):
+                continue
+            person = hub.find_person(hint)
             if not person:
                 continue
             pid = str(person.get("id") or "").strip()
@@ -358,22 +386,16 @@ class ReflectionEngine:
                 continue
             if norm in existing_norm.setdefault(pid, set()):
                 continue
-            ok = False
-            if hub is not None:
-                try:
-                    hub.add_person_fact(
-                        pid,
-                        fact,
-                        source="reflection",
-                        require_existing=True,
-                    )
-                    ok = True
-                except Exception:
-                    ok = False
-            elif people_db is not None:
-                if pid not in getattr(people_db, "_cache", {}):
-                    people_db._cache[pid] = dict(person)
-                ok = people_db.update_fact(pid, fact)
+            try:
+                hub.add_person_fact(
+                    pid, fact, source="reflection", require_existing=True,
+                    meta={"chat_message_id": message_id, "evidence_quote": item["evidence_quote"],
+                          "owner_id": source["user_id"], "channel_id": source.get("channel_id"),
+                          "visibility": (source.get("meta") or {}).get("visibility", "private")},
+                )
+                ok = True
+            except Exception:
+                ok = False
             if ok:
                 existing_norm[pid].add(norm)
                 added.append(f"{pid}: {fact}")

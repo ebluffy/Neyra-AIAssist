@@ -361,8 +361,10 @@ class LongTermMemory:
         n_results: Optional[int] = None,
         *,
         user_id: Optional[str] = None,
+        shared_only: bool = False,
+        channel_id: Optional[str] = None,
     ) -> list[str]:
-        """Semantic search. When ``user_id`` set — only that user's docs + shared knowledge."""
+        """Private recall uses owner + shared knowledge; shared recall uses channel + shared knowledge."""
         self._init()
         if self._collection is None or self._embedder is None:
             return []
@@ -375,7 +377,10 @@ class LongTermMemory:
 
             k = min(k, count)
             uid = str(user_id or "").strip()
-            fetch_k = min(count, max(k * 5, k) if uid else k)
+            cid = str(channel_id or "").strip()
+            if shared_only and not cid:
+                return []
+            fetch_k = min(count, max(k * 5, k) if uid or shared_only else k)
             embedding = self._embedder.encode(query, show_progress_bar=False).tolist()
             q_kwargs: dict[str, Any] = {
                 "query_embeddings": [embedding],
@@ -383,15 +388,18 @@ class LongTermMemory:
                 "include": ["documents", "metadatas"],
             }
             used_where = False
-            if uid:
+            if uid or shared_only:
                 try:
-                    # Shared = knowledge only. session_archive_digest is owner-scoped.
+                    # The result is checked again below, including providers without where support.
                     q_kwargs["where"] = {
                         "$or": [
                             {"user_id": uid},
                             {"type": "knowledge"},
                         ]
                     }
+                    if shared_only:
+                        q_kwargs["where"] = {"$or": [{"type": "knowledge"},
+                            {"$and": [{"visibility": "channel"}, {"channel_id": cid}]}]}
                     used_where = True
                     results = self._collection.query(**q_kwargs)
                 except Exception as where_e:
@@ -404,7 +412,7 @@ class LongTermMemory:
 
             docs = (results.get("documents") or [[]])[0] or []
             metas = (results.get("metadatas") or [[]])[0] or []
-            if not uid:
+            if not uid and not shared_only:
                 return list(docs[:k])
 
             out: list[str] = []
@@ -414,8 +422,11 @@ class LongTermMemory:
                 m = meta if isinstance(meta, dict) else {}
                 typ = str(m.get("type") or "").strip().lower()
                 owner = str(m.get("user_id") or "").strip()
-                # Shared knowledge only; digests/dialogs require matching owner.
-                if owner == uid or (typ == "knowledge" and not owner):
+                # Shared turns cannot use the speaker's private documents.
+                if shared_only:
+                    if (typ == "knowledge" and not owner) or (m.get("visibility") == "channel" and m.get("channel_id") == cid):
+                        out.append(doc)
+                elif owner == uid or (typ == "knowledge" and not owner):
                     out.append(doc)
                 elif not used_where and not owner and typ in ("", "dialog", "chat"):
                     # Ambiguous legacy dialog without user_id — skip when scoping
