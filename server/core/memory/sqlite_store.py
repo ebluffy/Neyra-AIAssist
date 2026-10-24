@@ -352,6 +352,14 @@ class SqliteStore:
             row = self._conn.execute("SELECT * FROM chat_log WHERE id=?", (message_id,)).fetchone()
             return self._row_to_dict(row) if row else None
 
+    def chat_window_stats(self, *, after: str, before: str) -> dict[str, int]:
+        where = "role IN ('user','assistant') AND ts >= ? AND ts < ?"
+        params = (to_utc_iso(after), to_utc_iso(before))
+        with self._lock:
+            rows = self._conn.execute(f"SELECT COUNT(*) FROM chat_log WHERE {where}", params).fetchone()[0]
+            groups = self._conn.execute(f"SELECT COUNT(*) FROM (SELECT user_id,channel_id FROM chat_log WHERE {where} GROUP BY user_id,channel_id)", params).fetchone()[0]
+        return {"rows": rows, "groups": groups}
+
     def count_table(self, table: str) -> int:
         allowed = {
             "chat_log",

@@ -67,8 +67,11 @@ def _music_blocked(text: str, *, has_media: bool = False) -> bool:
         media_link |= any(host == h or host.endswith("." + h) for h in ("tenor.com", "giphy.com", "giphy.net", "imgur.com")) or bool(re.search(r"\.(?:gif|gifv|mp4|webm|png|jpe?g|webp)(?:$|[?#])", match.group(), re.I))
     if media_link and not _youtube_link(text):
         return True
-    media_words = bool(re.search(r"\b(?:гифк\w*|gifs?|мем\w*|реакци\w*|картинк\w*|изображени\w*)\b", words, re.I))
-    if media_words and not re.search(r"\b(?:трек\w*|песн\w*|song|track)\b", words, re.I):
+    media_nouns = r"(?:гифк(?:а|у|и|ой|ами|ах)|gifs?|мем(?:а|у|ом|е|ы|ов|ами|ах|чик)?|реакци(?:я|ю|и|ей|ями|ях)|картинк(?:а|у|и|ой|ами|ах)|изображени(?:е|я|ю|ем|и))"
+    media_words = bool(re.search(r"\b" + media_nouns + r"\b", words, re.I))
+    explicit_media_action = bool(re.search(r"\b(?:поставь|покажи|отправь|пришли|включи)\s+" + media_nouns + r"\b", words, re.I))
+    music_noun = bool(re.search(r"\b(?:трек\w*|песн\w*|музык\w*|song|track|music)\b", words, re.I))
+    if media_words and (not has_play_verb(words) or (explicit_media_action and not music_noun)):
         return True
     control = bool(re.fullmatch(r"\s*(?:стоп|stop|пауза|pause|скип|skip|resume|продолжи|очередь|queue|(?:зайди|join)\s+(?:в\s+)?(?:войс|voice|vc))\s*[.!]?", words, re.I))
     return has_media and not has_play_verb(words) and not control and not _youtube_link(text)

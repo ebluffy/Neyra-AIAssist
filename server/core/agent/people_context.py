@@ -56,6 +56,9 @@ def split_people_context(
     username: Optional[str],
     discord_user_id: Optional[str],
     channel_id: Optional[str] = None,
+    *,
+    memory_owner_id: Optional[str] = None,
+    shared_context: bool = False,
 ) -> tuple[str, str]:
     """Active speaker dossier vs other mentioned people (no duplication)."""
     active_pid: Optional[str] = None
@@ -63,11 +66,13 @@ def split_people_context(
         ap = hub.find_person(username or "", discord_id=discord_user_id)
         if ap:
             active_pid = ap["id"]
-    active_block = (hub.get_person_summary(active_pid) or "").strip() if active_pid else ""
+    filters = dict(public_channel_id=channel_id, restrict_to_channel=True,
+                   private_owner_id=None if shared_context else memory_owner_id)
+    active_block = (hub.get_person_summary(active_pid, **filters) or "").strip() if active_pid else ""
     other_ids = [pid for pid in mentioned if not active_pid or pid != active_pid]
     if not other_ids:
         return active_block, ""
-    summaries = [hub.get_person_summary(pid, public_channel_id=channel_id, restrict_to_channel=True) for pid in other_ids]
+    summaries = [hub.get_person_summary(pid, **filters) for pid in other_ids]
     others = "\n\n".join(s for s in summaries if s)
     return active_block, others
 

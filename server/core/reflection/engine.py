@@ -229,12 +229,12 @@ class ReflectionEngine:
         return summary
 
     def _durable_evidence_groups(self, hub) -> list:
-        from core.runtime.timeutil import cutoff_hours, parse_ts
-        cutoff = cutoff_hours(24)
+        from core.runtime.timeutil import cutoff_hours, now_storage_iso, to_utc_iso
+        after, before = to_utc_iso(cutoff_hours(24)), now_storage_iso()
+        stats = hub.chat_window_stats(after=after, before=before)
         groups = {}
-        for row in hub.list_chat(limit=500, newest_first=True):
-            ts = parse_ts(row.get("ts"))
-            if ts is None or ts < cutoff or row.get("role") not in {"user", "assistant"}:
+        for row in hub.list_chat(limit=500, newest_first=True, after=after, before=before):
+            if row.get("role") not in {"user", "assistant"}:
                 continue
             key = (row.get("user_id"), row.get("channel_id"))
             lines, sources, size = groups.setdefault(key, ([], {}, [0]))
@@ -246,7 +246,12 @@ class ReflectionEngine:
             size[0] += len(line) + 1
             if person_id:
                 sources[str(row["id"])] = {**row, "person_id": person_id}
-        return [("\n".join(reversed(lines)), sources) for lines, sources, _ in list(groups.values())[:20] if lines]
+        selected = [(lines, sources) for lines, sources, _ in list(groups.values())[:20] if lines]
+        selected_rows = sum(len(lines) for lines, _ in selected)
+        if stats["rows"] > selected_rows or stats["groups"] > len(selected):
+            logger.info("Nightly evidence bounded | selected_rows=%s skipped_rows=%s selected_groups=%s skipped_groups=%s",
+                        selected_rows, max(0, stats["rows"] - selected_rows), len(selected), max(0, stats["groups"] - len(selected)))
+        return [("\n".join(reversed(lines)), sources) for lines, sources in selected]
 
     @staticmethod
     def _source_person_id(hub, row) -> Optional[str]:

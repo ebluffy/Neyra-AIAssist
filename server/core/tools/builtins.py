@@ -313,9 +313,11 @@ def search_memory(query: str, user_id: str = "") -> str:
             "(защита от чужих фрагментов памяти)."
         )
     if _memory_hub is not None:
-        results = _memory_hub.search_semantic(query, user_id=uid)
+        results = _memory_hub.search_semantic(query, user_id=uid,
+            **({"shared_only": True, "channel_id": _turn_memory_channel.get()} if _turn_history_shared.get() else {}))
     elif _long_memory is not None:
-        results = _long_memory.search(query, user_id=uid)
+        results = _long_memory.search(query, user_id=uid,
+            **({"shared_only": True, "channel_id": _turn_memory_channel.get()} if _turn_history_shared.get() else {}))
     else:
         return "Долгосрочная память не инициализирована."
 
@@ -411,6 +413,7 @@ def remember_knowledge(text: str, category: str = "general", affect_note: str = 
     if not scope["user_id"]:
         return "Cannot save memory without a trusted turn owner."
     meta.update(user_id=scope["user_id"], channel_id=scope["channel_id"], type="user_knowledge")
+    meta["visibility"] = "channel" if _turn_history_shared.get() else "private"
     aff = (affect_note or "").strip()
     if aff:
         meta["affect"] = aff[:500]
@@ -505,6 +508,8 @@ def get_person_info(name_or_id: str) -> str:
     """
     Retrieve a known person's dossier. Prefer a stable ID for name_or_id;
     do not assume that identical display names identify the same person.
+    Facts are filtered for the current channel/private owner; unavailable facts
+    do not imply that the known person has no profile or prior conversations.
     """
     if _people_db is None and _memory_hub is None:
         return "PeopleDB не инициализирована."
@@ -515,11 +520,9 @@ def get_person_info(name_or_id: str) -> str:
 
     pid = str(person.get("id") or "").strip()
     if _memory_hub is not None:
-        from core.runtime.identity import UnifiedIdentityMapper
         scope = get_turn_memory_scope()
-        owns = any(UnifiedIdentityMapper.resolve(a.get("platform"), a.get("platform_user_id")) == scope["user_id"]
-                   for a in _memory_hub.sqlite.list_accounts_for_person(pid))
-        summary = _memory_hub.get_person_summary(pid, public_channel_id=scope["channel_id"], restrict_to_channel=not owns)
+        summary = _memory_hub.get_person_summary(pid, public_channel_id=scope["channel_id"], restrict_to_channel=True,
+            private_owner_id=None if _turn_history_shared.get() else scope["user_id"])
     else:
         return "Scoped People memory is unavailable; private dossier facts were not read."
     return summary or f"Досье на {name_or_id} есть, но оно пустое."

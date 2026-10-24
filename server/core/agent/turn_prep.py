@@ -104,11 +104,11 @@ async def prepare_turn(
         trace.memory_owner_id = internal_uid
     await agent._ensure_mcp()
 
+    from core.agent.conversation_scope import conversation_scope
+    scope = conversation_scope(internal_uid, channel_id, discord_context)
     try:
         from core.tools.builtins import set_turn_memory_scope
 
-        from core.agent.conversation_scope import conversation_scope
-        scope = conversation_scope(internal_uid, channel_id, discord_context)
         set_turn_memory_scope(user_id=internal_uid, channel_id=channel_id or "", shared_channel=scope.kind == "shared")
     except Exception:
         pass
@@ -128,9 +128,11 @@ async def prepare_turn(
 
     # User-scoped RAG (shared knowledge types still included inside search)
     if getattr(agent, "memory_hub", None) is not None:
-        memories = agent.memory_hub.search_semantic(user_message, user_id=internal_uid)
+        memories = agent.memory_hub.search_semantic(user_message, user_id=internal_uid,
+            **({"shared_only": True, "channel_id": channel_id} if scope.kind == "shared" else {}))
     else:
-        memories = agent.long_memory.search(user_message, user_id=internal_uid)
+        memories = agent.long_memory.search(user_message, user_id=internal_uid,
+            **({"shared_only": True, "channel_id": channel_id} if scope.kind == "shared" else {}))
     mentioned = agent._detect_mentioned_names(user_message)
     if discord_context is not None and getattr(agent, "memory_hub", None) is not None:
         from core.agent.people_context import known_discord_mentions
@@ -144,13 +146,14 @@ async def prepare_turn(
 
     saved_facts = agent._handle_memory_trigger(user_message, mentioned, username)
     people_active, people_others = agent._split_people_context_for_prompt(
-        mentioned, username, discord_user_id, channel_id
+        mentioned, username, discord_user_id, channel_id,
+        memory_owner_id=internal_uid, shared_context=scope.kind == "shared",
     )
     diary_ctx = agent.memory_hub.diary_recent_text(limit=6, owner_id=internal_uid, channel_id=channel_id)
     web_ctx = agent._handle_websearch_trigger(user_message)
     tool_ctx = agent._collect_tool_context(user_message)
     speaker_label = agent._resolve_speaker_label(username, discord_user_id, author_display_name)
-    wm_snip = agent._read_working_memory_for_prompt(internal_uid)
+    wm_snip = "" if scope.kind == "shared" else agent._read_working_memory_for_prompt(internal_uid)
 
     has_vis = bool(vision_images)
     last_img_ctx = agent._last_image_context_for_prompt(channel_id, vision_images)
@@ -206,6 +209,7 @@ async def prepare_turn(
         internal_user_id=internal_uid,
         user_message=user_message,
         channel_id=channel_id,
+        shared_context=scope.kind == "shared",
     )
     if pre_context:
         logger.debug(

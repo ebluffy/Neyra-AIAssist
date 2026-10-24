@@ -273,16 +273,28 @@ class MemoryHub:
     def get_chat_message(self, message_id: int) -> Optional[dict[str, Any]]:
         return self.sqlite.get_chat_message(message_id)
 
+    def chat_window_stats(self, *, after: str, before: str) -> dict[str, int]:
+        return self.sqlite.chat_window_stats(after=after, before=before)
+
     def search_semantic(
         self,
         query: str,
         n_results: Optional[int] = None,
         *,
         user_id: Optional[str] = None,
+        shared_only: bool = False,
+        channel_id: Optional[str] = None,
     ) -> list[str]:
         if not getattr(self.semantic, "rag_enabled", True):
             return []
-        return self.semantic.search(query, n_results=n_results, user_id=user_id)
+        try:
+            return self.semantic.search(query, n_results=n_results, user_id=user_id,
+                                        **({"shared_only": True, "channel_id": channel_id} if shared_only else {}))
+        except TypeError:
+            if not shared_only:
+                raise
+            logger.warning("Semantic adapter cannot serve shared scope; unfiltered fallback disabled")
+            return []
 
     @guarded_write("ltm")
     def mutate_semantic(self, operation, *args, **kwargs):
@@ -1001,7 +1013,8 @@ class MemoryHub:
         result = {key: next(iter(ids)) for key, ids in candidates.items() if len(ids) == 1}
         return {**result, **identifiers}
 
-    def get_person_summary(self, person_id: str, *, public_channel_id: Optional[str] = None, restrict_to_channel: bool = False) -> str:
+    def get_person_summary(self, person_id: str, *, public_channel_id: Optional[str] = None,
+                           restrict_to_channel: bool = False, private_owner_id: Optional[str] = None) -> str:
         """Prompt dossier: accounts + free-form facts (no анкета)."""
         from core.memory.person_profile import known_name_from_facts, speaker_ref_from_account
 
@@ -1014,10 +1027,19 @@ class MemoryHub:
         accounts = self.sqlite.list_accounts_for_person(pid)
         facts = self.sqlite.list_person_facts(pid, limit=80 if restrict_to_channel else 12)
         if restrict_to_channel:
-            facts = [f for f in facts if isinstance(f.get("meta"), dict) and
-                     (f["meta"].get("visibility") == "shared" or
-                      (public_channel_id and f["meta"].get("visibility") == "channel" and
-                       f["meta"].get("channel_id") == public_channel_id))][:12]
+            from core.runtime.identity import UnifiedIdentityMapper
+            owns_profile = private_owner_id and any(
+                UnifiedIdentityMapper.resolve(a.get("platform"), a.get("platform_user_id")) == private_owner_id
+                for a in accounts
+            )
+            def visible(row):
+                meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+                visibility = meta.get("visibility")
+                return (visibility == "shared" or
+                        (visibility == "channel" and public_channel_id and meta.get("channel_id") == public_channel_id) or
+                        (visibility == "private" and private_owner_id and meta.get("owner_id") == private_owner_id) or
+                        (owns_profile and not meta.get("owner_id") and visibility in {None, "private"}))
+            facts = [f for f in facts if visible(f)][:12]
         known = known_name_from_facts(facts)
         handle = ""
         display = str(person.get("display_name") or "").strip()
