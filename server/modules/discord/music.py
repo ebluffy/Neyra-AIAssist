@@ -760,6 +760,12 @@ def _attach_track_end_listener(ctx) -> None:
 
 
 async def _handle_action_async(ctx, service: MusicService, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    query = ""
+    if action == MUSIC_PLAY and not payload.get("join_only"):
+        query, query_error = _normalize_play_query(str(payload.get("query") or "").strip())
+        if query_error:
+            return {"ok": False, "status": "failed", "error": "поддерживаются только ссылки на видео YouTube",
+                    "request_id": str(payload.get("request_id") or "")}
     bot = _resolve_bot(ctx)
     if bot is None:
         return {"ok": False, "status": "failed", "error": "discord client is unavailable"}
@@ -893,7 +899,6 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
 
             # PLAY / join-only
             join_only = bool(payload.get("join_only"))
-            query, query_err = _normalize_play_query(str(payload.get("query") or "").strip())
             if join_only:
                 ch_name = str(getattr(voice_channel, "name", "") or "voice")
                 return {
@@ -902,13 +907,6 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                     "track": "",
                     "author": "",
                     "channel": ch_name,
-                    "request_id": str(payload.get("request_id") or ""),
-                }
-            if query_err == ONLY_YOUTUBE_VIDEO_URLS:
-                return {
-                    "ok": False,
-                    "status": "failed",
-                    "error": "поддерживаются только ссылки на видео YouTube",
                     "request_id": str(payload.get("request_id") or ""),
                 }
             if not query:

@@ -256,7 +256,7 @@ class MCPClientManager:
         loop = asyncio.get_event_loop()
         deadline = loop.time() + max(1.0, timeout)
         while loop.time() < deadline:
-            if self._specs and all(n in self._sessions for n in self._specs):
+            if self._specs and all(n in self._sessions or self._errors.get(n) in {"missing executable", "missing MCP SDK"} for n in self._specs):
                 break
             await asyncio.sleep(0.05)
         missing = [n for n in self._specs if n not in self._sessions]
@@ -270,7 +270,7 @@ class MCPClientManager:
             try:
                 if spec.transport == "stdio":
                     if not _HAS_MCP:
-                        self._errors[name] = "missing executable"
+                        self._errors[name] = "missing MCP SDK"
                         logger.warning("MCP server %s unavailable: MCP runtime is missing", name)
                         break
                     await self._one_stdio_session(name, spec)

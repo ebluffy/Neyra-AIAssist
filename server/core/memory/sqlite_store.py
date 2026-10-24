@@ -309,6 +309,9 @@ class SqliteStore:
         limit: int = 20,
         offset: int = 0,
         newest_first: bool = True,
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        shared_only: bool = False,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 500))
         offset = max(0, int(offset))
@@ -321,6 +324,18 @@ class SqliteStore:
         if channel_id:
             clauses.append("channel_id = ?")
             params.append(channel_id)
+        if after:
+            clauses.append("ts >= ?")
+            params.append(to_utc_iso(after))
+        if before:
+            clauses.append("ts < ?")
+            params.append(to_utc_iso(before))
+        if shared_only:
+            metadata = "CASE WHEN json_valid(meta) THEN meta ELSE '{}' END"
+            visibility = f"json_extract({metadata}, '$.visibility')"
+            discord_id = f"json_extract({metadata}, '$.discord_id')"
+            # Legacy Discord rows lack visibility; their channel snowflake is globally unique.
+            clauses.append(f"({visibility} = 'channel' OR ({visibility} IS NULL AND COALESCE({discord_id}, '') != ''))")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         order = "DESC" if newest_first else "ASC"
         sql = (
@@ -331,6 +346,11 @@ class SqliteStore:
         with self._lock:
             cur = self._conn.execute(sql, params)
             return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def get_chat_message(self, message_id: int) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM chat_log WHERE id=?", (message_id,)).fetchone()
+            return self._row_to_dict(row) if row else None
 
     def count_table(self, table: str) -> int:
         allowed = {

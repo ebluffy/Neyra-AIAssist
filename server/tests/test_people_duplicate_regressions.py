@@ -120,7 +120,7 @@ def test_real_discord_turns_rename_and_reflection_keep_one_person(tmp_path, monk
         ctx = context_from_message(discord_message(uid='123', guild=guild), '999')
         await agent.chat('hello', discord_context=ctx, avatar_url='https://cdn.discordapp.com/avatar.png')
         renamed = ctx.model_copy(update={'current_user': ctx.current_user.model_copy(update={'handle': 'renamed', 'display_name': 'Renamed'})})
-        await agent.chat('hello again', discord_context=renamed)
+        await agent.chat('I study programming', discord_context=renamed)
         people = agent.memory_hub.list_people()
         assert len(people) == 1
         record = agent.memory_hub.sqlite.get_account('discord', '123')
@@ -128,7 +128,10 @@ def test_real_discord_turns_rename_and_reflection_keep_one_person(tmp_path, monk
         assert record['handle'] == 'renamed'
         engine = ReflectionEngine.__new__(ReflectionEngine); engine.agent = agent
         engine._is_high_signal_fact = lambda fact: True
-        engine._apply_reflection_result({'people_updates': [{'person_hint': people[0]['id'], 'fact': 'Studies programming'}, {'person_hint': 'renamed', 'fact': 'Cannot guess an ID'}]})
+        source = next(row for row in agent.memory_hub.list_chat() if row['role'] == 'user')
+        engine._apply_reflection_result({'people_updates': [{'person_hint': people[0]['id'], 'fact': 'Studies programming',
+            'source_message_id': source['id'], 'evidence_quote': 'I study programming'},
+            {'person_hint': 'renamed', 'fact': 'Cannot guess an ID', 'source_message_id': source['id'], 'evidence_quote': 'I study programming'}]})
         assert len(agent.memory_hub.list_people()) == 1
         assert len(agent.memory_hub.list_person_facts(people[0]['id'])) == 3
     asyncio.run(run())

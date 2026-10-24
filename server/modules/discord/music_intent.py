@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from core.runtime.event_bus import (
     MUSIC_CLEAR,
@@ -37,6 +38,40 @@ PLAY_VERB_STRIP_RE = re.compile(
     r"^(" + "|".join(_PLAY_VERBS) + r"|music|музыка)\s+",
     re.IGNORECASE,
 )
+_URL_RE = re.compile(r"(?:[a-z][a-z0-9+.-]*:)?//[^\s<>\"']+", re.IGNORECASE)
+
+
+def _routing_text(text: str) -> str:
+    return _URL_RE.sub(" ", text or "")
+
+
+def _youtube_link(text: str) -> bool:
+    from modules.discord.music import _canonical_youtube_url_from_text
+    return bool(_canonical_youtube_url_from_text(text))
+
+
+def _music_blocked(text: str, *, has_media: bool = False) -> bool:
+    text = text or ""
+    words = _routing_text(text)
+    if _URL_RE.search(text) and not _youtube_link(text) and not has_play_verb(words):
+        return True
+    if re.search(r"\b(?:не|don't|do\s+not)\s+(?:надо\s+|нужно\s+)?(?:" + "|".join(_PLAY_VERBS) + r"|стоп|stop|pause|skip|очищай|выключай)\b", words, re.I):
+        return True
+    media_link = False
+    for match in _URL_RE.finditer(text):
+        try:
+            url = urlsplit(match.group() if "://" in match.group() else "https:" + match.group())
+            host = (url.hostname or "").casefold()
+        except ValueError:
+            return True
+        media_link |= any(host == h or host.endswith("." + h) for h in ("tenor.com", "giphy.com", "giphy.net", "imgur.com")) or bool(re.search(r"\.(?:gif|gifv|mp4|webm|png|jpe?g|webp)(?:$|[?#])", match.group(), re.I))
+    if media_link and not _youtube_link(text):
+        return True
+    media_words = bool(re.search(r"\b(?:гифк\w*|gifs?|мем\w*|реакци\w*|картинк\w*|изображени\w*)\b", words, re.I))
+    if media_words and not re.search(r"\b(?:трек\w*|песн\w*|song|track)\b", words, re.I):
+        return True
+    control = bool(re.fullmatch(r"\s*(?:стоп|stop|пауза|pause|скип|skip|resume|продолжи|очередь|queue|(?:зайди|join)\s+(?:в\s+)?(?:войс|voice|vc))\s*[.!]?", words, re.I))
+    return has_media and not has_play_verb(words) and not control and not _youtube_link(text)
 
 
 def lyrics_request_hint(text: str) -> bool:
@@ -54,7 +89,7 @@ def lyrics_request_hint(text: str) -> bool:
 
 def soft_music_hint(text: str) -> bool:
     """Слабый признак «про музыку/войс» без жёсткого глагола."""
-    t = (text or "").lower()
+    t = _routing_text(text).lower()
     return bool(
         re.search(
             r"(музык|песн|трек|плейлист|саунд|soundcloud|spotify|youtu\.?be|"
@@ -66,7 +101,7 @@ def soft_music_hint(text: str) -> bool:
 
 
 def has_play_verb(text: str) -> bool:
-    return bool(PLAY_VERB_RE.search(text or ""))
+    return bool(PLAY_VERB_RE.search(_routing_text(text)))
 
 
 def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
@@ -83,9 +118,9 @@ def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
 def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
     """Hard music intent from regex (no LLM)."""
     raw = (text or "").strip()
-    if not raw:
+    if not raw or _music_blocked(raw):
         return None
-    lowered = raw.lower()
+    lowered = _routing_text(raw).lower()
     if re.search(r"\b(читы|чит|hack|hax|aimbot)\b", lowered):
         return None
     if lyrics_request_hint(raw) and not has_play_verb(raw):
@@ -121,8 +156,7 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
             lowered,
         )
     )
-    has_url = bool(re.search(r"https?://\S+", raw))
-    if not has_play_verb(raw) and not has_url and not wants_voice_play:
+    if not has_play_verb(raw) and not _youtube_link(raw) and not wants_voice_play:
         return None
     q = re.sub(r"^(эй\s+нейра|нейра|please|пожалуйста)[,:\s-]*", "", raw, flags=re.IGNORECASE).strip()
     q = PLAY_VERB_STRIP_RE.sub("", q).strip()
@@ -165,13 +199,14 @@ class MusicRoutePlan:
     play_verb: bool
     needs_classifier: bool
     tentative_route: str
+    blocked: bool = False
 
 
-def plan_music_route(content: str) -> MusicRoutePlan:
+def plan_music_route(content: str, *, has_media: bool = False) -> MusicRoutePlan:
     """Pure step 1: decide if classifier is needed (bot inserts LLM call between steps)."""
-    # GIF/media requests are not music unless the user explicitly asks to play it.
-    media_only = bool(re.search(r"\b(?:gif|гифк|мем)\b", content, re.IGNORECASE))
-    music_candidate = None if media_only and not has_play_verb(content) else candidate_music_intent(content)
+    if _music_blocked(content, has_media=has_media):
+        return MusicRoutePlan(content, None, False, False, False, False, "CHAT", blocked=True)
+    music_candidate = candidate_music_intent(content)
     lyrics_hint = lyrics_request_hint(content)
     soft_music = soft_music_hint(content)
     play_verb = has_play_verb(content)
@@ -233,6 +268,8 @@ def finalize_music_route(
     classifier_route: Optional[str] = None,
 ) -> tuple[str, bool, Optional[dict[str, str]]]:
     """Pure step 2: final route + use_music after optional classifier."""
+    if plan.blocked:
+        return "CHAT", False, None
     music_candidate = plan.music_candidate
     lyrics_hint = plan.lyrics_hint
     play_verb = plan.play_verb

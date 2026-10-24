@@ -255,6 +255,9 @@ class MemoryHub:
         limit: int = 20,
         offset: int = 0,
         newest_first: bool = True,
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        shared_only: bool = False,
     ) -> list[dict[str, Any]]:
         return self.sqlite.list_chat(
             user_id=user_id,
@@ -262,7 +265,13 @@ class MemoryHub:
             limit=limit,
             offset=offset,
             newest_first=newest_first,
+            after=after,
+            before=before,
+            shared_only=shared_only,
         )
+
+    def get_chat_message(self, message_id: int) -> Optional[dict[str, Any]]:
+        return self.sqlite.get_chat_message(message_id)
 
     def search_semantic(
         self,
@@ -990,7 +999,7 @@ class MemoryHub:
                     result[h] = pid
         return result
 
-    def get_person_summary(self, person_id: str) -> str:
+    def get_person_summary(self, person_id: str, *, public_channel_id: Optional[str] = None, restrict_to_channel: bool = False) -> str:
         """Prompt dossier: accounts + free-form facts (no анкета)."""
         from core.memory.person_profile import known_name_from_facts, speaker_ref_from_account
 
@@ -1001,7 +1010,12 @@ class MemoryHub:
         if not person:
             return ""
         accounts = self.sqlite.list_accounts_for_person(pid)
-        facts = self.sqlite.list_person_facts(pid, limit=12)
+        facts = self.sqlite.list_person_facts(pid, limit=80 if restrict_to_channel else 12)
+        if restrict_to_channel:
+            facts = [f for f in facts if isinstance(f.get("meta"), dict) and
+                     (f["meta"].get("visibility") == "shared" or
+                      (public_channel_id and f["meta"].get("visibility") == "channel" and
+                       f["meta"].get("channel_id") == public_channel_id))][:12]
         known = known_name_from_facts(facts)
         handle = ""
         display = str(person.get("display_name") or "").strip()

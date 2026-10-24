@@ -9,6 +9,20 @@ from typing import Any, Optional
 _CASE_SUFFIX = r"(?:а|у|е|ом|ой|ы|ам|ами|ах)?"
 
 
+def known_discord_mentions(hub: Any, context: Any) -> list[str]:
+    """Resolve supplied Discord metadata against existing accounts; never create people."""
+    users = list(context.message.mentions)
+    reference = context.message.reference
+    if reference is not None and reference.author is not None:
+        users.append(reference.author)
+    found = []
+    for user in users:
+        person = hub.find_person("", discord_id=user.id)
+        if person and person["id"] not in found:
+            found.append(person["id"])
+    return found
+
+
 def detect_mentioned_names(text: str, name_map: dict[str, str]) -> list[str]:
     """Find known people ids by exact / word-boundary alias match only.
 
@@ -41,6 +55,7 @@ def split_people_context(
     mentioned: list[str],
     username: Optional[str],
     discord_user_id: Optional[str],
+    channel_id: Optional[str] = None,
 ) -> tuple[str, str]:
     """Active speaker dossier vs other mentioned people (no duplication)."""
     active_pid: Optional[str] = None
@@ -52,7 +67,7 @@ def split_people_context(
     other_ids = [pid for pid in mentioned if not active_pid or pid != active_pid]
     if not other_ids:
         return active_block, ""
-    summaries = [hub.get_person_summary(pid) for pid in other_ids]
+    summaries = [hub.get_person_summary(pid, public_channel_id=channel_id, restrict_to_channel=True) for pid in other_ids]
     others = "\n\n".join(s for s in summaries if s)
     return active_block, others
 

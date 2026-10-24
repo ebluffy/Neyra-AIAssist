@@ -823,7 +823,7 @@ class NeyraDiscordBot(discord.Client):
         if vision_imgs and content == "*молчишь*":
             content = "Что на изображении? Коротко по-русски."
 
-        music_plan = plan_music_route(content)
+        music_plan = plan_music_route(content, has_media=bool(message.attachments or getattr(message, "embeds", None)))
         classifier_route = None
         if music_plan.needs_classifier:
             classifier_route = await self._classify_intent(content)

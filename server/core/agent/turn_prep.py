@@ -107,7 +107,9 @@ async def prepare_turn(
     try:
         from core.tools.builtins import set_turn_memory_scope
 
-        set_turn_memory_scope(user_id=internal_uid, channel_id=channel_id or "")
+        from core.agent.conversation_scope import conversation_scope
+        scope = conversation_scope(internal_uid, channel_id, discord_context)
+        set_turn_memory_scope(user_id=internal_uid, channel_id=channel_id or "", shared_channel=scope.kind == "shared")
     except Exception:
         pass
 
@@ -130,6 +132,11 @@ async def prepare_turn(
     else:
         memories = agent.long_memory.search(user_message, user_id=internal_uid)
     mentioned = agent._detect_mentioned_names(user_message)
+    if discord_context is not None and getattr(agent, "memory_hub", None) is not None:
+        from core.agent.people_context import known_discord_mentions
+        for person_id in known_discord_mentions(agent.memory_hub, discord_context):
+            if person_id not in mentioned:
+                mentioned.append(person_id)
     if username or discord_user_id:
         person = agent.memory_hub.find_person(username or "", discord_id=discord_user_id)
         if person and person["id"] not in mentioned:
@@ -137,7 +144,7 @@ async def prepare_turn(
 
     saved_facts = agent._handle_memory_trigger(user_message, mentioned, username)
     people_active, people_others = agent._split_people_context_for_prompt(
-        mentioned, username, discord_user_id
+        mentioned, username, discord_user_id, channel_id
     )
     diary_ctx = agent.memory_hub.diary_recent_text(limit=6, owner_id=internal_uid, channel_id=channel_id)
     web_ctx = agent._handle_websearch_trigger(user_message)

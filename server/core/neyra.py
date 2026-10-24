@@ -606,13 +606,14 @@ class NeyraAgent:
         mentioned: list[str],
         username: Optional[str],
         discord_user_id: Optional[str],
+        channel_id: Optional[str] = None,
     ) -> tuple[str, str]:
         """
         B2: досье текущего пользователя отдельно от прочих упомянутых (без дублирования).
         """
         from core.agent.people_context import split_people_context
 
-        return split_people_context(self.memory_hub, mentioned, username, discord_user_id)
+        return split_people_context(self.memory_hub, mentioned, username, discord_user_id, channel_id)
 
     @staticmethod
     def _shrink_people_sections(active: str, mentioned: str, max_chars: int) -> tuple[str, str]:
