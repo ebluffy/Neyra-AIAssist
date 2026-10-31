@@ -3,19 +3,24 @@
 // Usage (from client/): node scripts/check-versions.mjs [client-v0.1.0]
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 export function readVersions(root) {
-  const read = (file) => readFileSync(join(root, file), 'utf8');
+  const read = (file) => readFileSync(join(root, file), 'utf8').replace(/\r\n/g, '\n');
   const cargo = read('src-tauri/Cargo.toml').match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
-  const lock = read('src-tauri/Cargo.lock').match(/name = "neyra-client"\nversion = "([^"]+)"/);
+  const lock = read('src-tauri/Cargo.lock').match(/name = "neyra-client"\r?\nversion = "([^"]+)"/);
   return {
     'package.json': JSON.parse(read('package.json')).version,
     'tauri.conf.json': JSON.parse(read('src-tauri/tauri.conf.json')).version,
     'Cargo.toml': cargo?.[1],
     'Cargo.lock': lock?.[1],
   };
+}
+
+export function invokedDirectly(metaUrl, argv1) {
+  return metaUrl === pathToFileURL(argv1).href;
 }
 
 export function versionProblems(versions, tag) {
@@ -34,7 +39,7 @@ export function versionProblems(versions, tag) {
   return problems;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (invokedDirectly(import.meta.url, process.argv[1])) {
   const root = resolve(import.meta.dirname, '..');
   const problems = versionProblems(readVersions(root), process.argv[2]);
   if (problems.length) {

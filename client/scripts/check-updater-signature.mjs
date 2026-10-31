@@ -2,6 +2,7 @@
 // This reads the signed trusted comment only; the plugin does the crypto check.
 // Usage (from client/): node scripts/check-updater-signature.mjs <version> <file.sig>...
 import { readFileSync } from 'node:fs';
+import { invokedDirectly } from './check-versions.mjs';
 
 export function signedVersion(sigFileText) {
   let text;
@@ -19,7 +20,7 @@ export function signedVersion(sigFileText) {
     ?.slice('version:'.length);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (invokedDirectly(import.meta.url, process.argv[1])) {
   const [version, ...files] = process.argv.slice(2);
   if (!version || files.length === 0) {
     console.error('usage: check-updater-signature.mjs <version> <file.sig>...');

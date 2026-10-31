@@ -1,7 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { readVersions, versionProblems } from './check-versions.mjs';
+import { invokedDirectly, readVersions, versionProblems } from './check-versions.mjs';
 import { signedVersion } from './check-updater-signature.mjs';
 
 const root = join(import.meta.dirname, '..');
@@ -22,6 +24,29 @@ describe('version sync', () => {
   });
   it('accepts beta pre-release versions', () => {
     expect(versionProblems({ a: '0.1.0-beta.1' }, 'client-v0.1.0-beta.1')).toEqual([]);
+  });
+  it('reads Cargo.lock when the checkout uses CRLF', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'neyra-ver-'));
+    const tauri = join(dir, 'src-tauri');
+    mkdirSync(tauri);
+    const crlf = (text) => text.replace(/\n/g, '\r\n');
+    writeFileSync(join(dir, 'package.json'), '{"version":"0.1.0"}\n');
+    writeFileSync(join(tauri, 'tauri.conf.json'), '{"version":"0.1.0"}\n');
+    writeFileSync(join(tauri, 'Cargo.toml'), crlf('[package]\nname = "neyra-client"\nversion = "0.1.0"\n'));
+    writeFileSync(join(tauri, 'Cargo.lock'), crlf('[[package]]\nname = "neyra-client"\nversion = "0.1.0"\n'));
+    try {
+      expect(readVersions(dir)['Cargo.lock']).toBe('0.1.0');
+      expect(versionProblems(readVersions(dir))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('recognizes a direct run from the script path, not from file:// plus the raw text', () => {
+    const script = join(root, 'scripts/check-versions.mjs');
+    expect(invokedDirectly(pathToFileURL(script).href, script)).toBe(true);
+    expect(invokedDirectly(pathToFileURL(script).href, join(root, 'scripts/other.mjs'))).toBe(false);
+    const windowsArgv = 'D:\\a\\neyra\\client\\scripts\\check-versions.mjs';
+    expect(`file://${windowsArgv}`).not.toBe(pathToFileURL(windowsArgv).href);
   });
   it('keeps the beta channel and the release overlay wired', () => {
     const overlay = JSON.parse(readFileSync(join(root, 'src-tauri/tauri.release.conf.json'), 'utf8'));
