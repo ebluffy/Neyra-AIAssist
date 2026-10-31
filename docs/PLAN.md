@@ -293,11 +293,11 @@
 
 **Beta expansion (шаги 4–8, в работе; foundation 1–3 не регрессировать):**
 
-- [x] §3b.6 шаг 0 research: Desktop Mate EULA — ассеты **не** redistributable; таблица в `client/character/LICENSES.md`; рекомендуемый default после экспорта пользователем — VRoid β Ver AvatarSample_3 (CC0). Бинарный `.vrm` в сборку не кладётся.
-- [x] Updater scaffold: `@tauri-apps/plugin-updater` + pubkey в `tauri.conf.json`, verify не отключается; `createUpdaterArtifacts` выключен в PR CI до появления signing secrets; инструкция `client/docs/UPDATER.md`.
+- [x] §3b.6 шаг 0 research: Desktop Mate EULA — ассеты **не** redistributable; таблица в `client/character/LICENSES.md` (URL+даты источников); рекомендуемый default после экспорта пользователем — VRoid β Ver AvatarSample_3 (CC0). Бинарный `.vrm` в сборку не кладётся. Поле `character_enabled` (default false) в settings; runtime оверлея — трек ship.
+- [x] Updater **scaffold only** на PR-ветке: pubkey + plugin wire, `createUpdaterArtifacts=false`, AppImage в Desktop CI. UI/кнопка/release workflow/срез `updater:default` — трек `codex/desktop-beta-ship` (не дублировать).
 - [x] Desktop CI: Linux собирает `deb` + `AppImage` (артефакты вместе с NSIS).
-- [ ] Шаги 4–7 feature-код (commands / live+wake+conversion / contours 3–4 / character runtime) — feature-ветки `codex/desktop-beta-*`, merge интегратором.
-- [ ] Подписанный N→N+1 и release workflow с секретами — без публичного release без команды владельца.
+- [ ] Шаги 4–7 feature-код (commands / live+wake+conversion / contours 3–4 / character runtime) — in progress на `codex/desktop-beta-*`, merge интегратором.
+- [ ] Шаг 8 runtime: подписанный N→N+1, client-release, Updates UI — ship; без публичного release без команды владельца.
 
 
 #### Сборка и автообновление

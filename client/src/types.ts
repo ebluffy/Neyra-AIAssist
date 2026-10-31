@@ -1,6 +1,6 @@
 export interface Profile { id: string; name: string; url: string; session_id: string }
 export interface Permissions { enabled: boolean; apps: string[]; allow_web: boolean; web_domains: string[]; system: boolean }
-export interface Settings { schema_version: number; device_id: string; device_name: string; profiles: Profile[]; permissions: Permissions; theme: string; graphics_mode: string }
+export interface Settings { schema_version: number; device_id: string; device_name: string; profiles: Profile[]; permissions: Permissions; theme: string; graphics_mode: string; character_enabled?: boolean }
 export interface Device { device_id: string; name: string; tools: string[] }
 export interface Entry { role: 'user' | 'assistant'; content: string }
 export interface HostCall { call_id: string; tool: string; arguments: Record<string, unknown>; deadline_ms: number }

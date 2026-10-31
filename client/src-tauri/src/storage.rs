@@ -46,6 +46,9 @@ pub struct Settings {
     pub theme: String,
     #[serde(default = "default_graphics")]
     pub graphics_mode: String,
+    /// Optional 3D character overlay (§3b.6). Off by default; no 3D engine while false.
+    #[serde(default)]
+    pub character_enabled: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -57,6 +60,7 @@ impl Default for Settings {
             permissions: Permissions::default(),
             theme: "dark".into(),
             graphics_mode: default_graphics(),
+            character_enabled: false,
         }
     }
 }
@@ -92,7 +96,10 @@ pub fn initialize(root: &Path) -> Result<Settings, String> {
     ] {
         fs::create_dir_all(root.join(dir)).map_err(|_| "Не удалось создать папку Neyra")?;
     }
-    seed_character_docs(root)?;
+    // License research docs are best-effort; never block app start (OneDrive/permissions).
+    if let Err(err) = seed_character_docs(root) {
+        eprintln!("Neyra: character docs seed skipped: {err}");
+    }
     let path = root.join("settings/app.json");
     if path.exists() {
         let settings: Settings =
@@ -200,8 +207,39 @@ mod tests {
         initialize(&root).unwrap();
         let licenses = fs::read_to_string(root.join("character/LICENSES.md")).unwrap();
         assert!(licenses.contains("Desktop Mate"));
-        assert!(licenses.contains("не redistributable") || licenses.contains("Нет"));
+        assert!(licenses.contains("Нет"));
         assert!(root.join("wakeword").is_dir());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn old_settings_without_character_enabled_default_false() {
+        let json = r#"{"schema_version":1,"device_id":"00000000-0000-4000-8000-000000000001","device_name":"ПК","profiles":[],"permissions":{"enabled":false,"apps":[],"allow_web":true,"web_domains":[],"system":true},"theme":"dark","graphics_mode":"auto"}"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+        assert!(!settings.character_enabled);
+    }
+
+    #[test]
+    fn initialize_survives_readonly_character_dir() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(root.join("character")).unwrap();
+        // Pre-create a file, then make the directory read-only so seed cannot write missing docs.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(root.join("character")).unwrap().permissions();
+            perms.set_mode(0o555);
+            fs::set_permissions(root.join("character"), perms).unwrap();
+        }
+        let result = initialize(&root);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(root.join("character")).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(root.join("character"), perms).unwrap();
+        }
+        assert!(result.is_ok(), "seed failure must not abort initialize");
+        let _ = fs::remove_dir_all(&root);
     }
 }
