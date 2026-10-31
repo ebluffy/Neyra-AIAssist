@@ -1,10 +1,22 @@
 export interface Profile { id: string; name: string; url: string; session_id: string }
-export interface Permissions { enabled: boolean; apps: string[]; allow_web: boolean; web_domains: string[]; system: boolean }
+export interface Permissions { enabled: boolean; apps: string[]; allow_web: boolean; web_domains: string[]; system: boolean; shell: boolean; files: boolean; fs_roots: string[]; screen: boolean; screen_auto: boolean; input: boolean }
 export interface Settings { schema_version: number; device_id: string; device_name: string; profiles: Profile[]; permissions: Permissions; theme: string; graphics_mode: string; audit_days: number; character_enabled?: boolean }
 export interface Recovery { file: string; reason: string; quarantined: string | null; restored: string }
 export interface Device { device_id: string; name: string; tools: string[] }
 export interface Entry { role: 'user' | 'assistant'; content: string }
-export interface HostCall { call_id: string; tool: string; arguments: Record<string, unknown>; deadline_ms: number }
+export interface HostCall { call_id: string; tool: string; arguments: Record<string, unknown>; deadline_ms: number; preview?: string }
+export const toolTitles: Record<string, string> = {
+  'client.shell_exec': 'Выполнить команду',
+  'client.fs_write': 'Записать файл',
+  'client.fs_mkdir': 'Создать папку',
+  'client.fs_move': 'Переместить',
+  'client.screenshot': 'Сделать снимок экрана',
+  'client.input': 'Управлять мышью и клавиатурой',
+  'client.open_url': 'Открыть ссылку',
+  'client.open_app': 'Запустить программу',
+  'client.close_window': 'Закрыть окно',
+};
+export function absolutePath(value: string): boolean { return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value); }
 export interface AuditRow { time: number; tool: string; status: string; confirmed: boolean }
 export interface Plugin { id: string; name?: string; enabled: boolean; lifecycle?: string }
 export interface ServerEvent { type: string; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown }

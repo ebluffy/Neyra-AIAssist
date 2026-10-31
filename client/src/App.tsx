@@ -6,7 +6,7 @@ import { CommandsScreen } from './screens/CommandsScreen';
 import { DraftDialog } from './screens/DraftDialog';
 import { PermissionsScreen } from './screens/PermissionsScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
-import { type Device, type Entry, type HostCall, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, formatError, newProfile, tabs, validServerUrl } from './types';
+import { type Device, type Entry, type HostCall, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, formatError, newProfile, tabs, toolTitles, validServerUrl } from './types';
 
 export function App() {
   const [settings, setSettings] = useState<Settings>();
@@ -39,6 +39,7 @@ export function App() {
   const [draft, setDraft] = useState<DraftEvent>();
   const [runLine, setRunLine] = useState('');
   const [commandRunning, setCommandRunning] = useState(false);
+  const [backends, setBackends] = useState({ screen: false, input: false });
   const modal = useRef<HTMLDialogElement>(null);
   const profile = settings?.profiles.find(p => p.id === profileId);
   const run = useCallback(async (action: () => Promise<void>) => {
@@ -46,8 +47,9 @@ export function App() {
     try { await action(); } catch (e) { setError(formatError(e)); } finally { setBusy(false); }
   }, []);
   useEffect(() => {
-    void invoke<{ settings: Settings; data_root: string; global_shortcuts: boolean; pc_access_available: boolean; recoveries?: Recovery[] }>('load_settings').then(data => {
+    void invoke<{ settings: Settings; data_root: string; global_shortcuts: boolean; pc_access_available: boolean; recoveries?: Recovery[]; screen_backend?: boolean; input_backend?: boolean }>('load_settings').then(data => {
       setSettings(data.settings); setRoot(data.data_root); setShortcuts(data.global_shortcuts); setPcAvailable(data.pc_access_available); setProfileId(data.settings.profiles[0]?.id ?? ''); setRecoveries(data.recoveries ?? []);
+      setBackends({ screen: !!data.screen_backend, input: !!data.input_backend });
     }).catch(e => setError(formatError(e)));
     const timer = window.setInterval(() => setPartial(tokenBuffer.current), 60);
     return () => window.clearInterval(timer);
@@ -157,10 +159,10 @@ export function App() {
       {tab === 'Статус' && <section><h1>Статус сервера</h1><button disabled={busy || !profileId} onClick={() => run(async () => { const out = await request('/v1/health'); setStatus(out.data); })}>Обновить статус</button>{status ? <pre>{JSON.stringify(status, null, 2)}</pre> : <p>Выберите сервер и проверьте подключение.</p>}</section>}
       {tab === 'Модули' && <section><h1>Модули</h1><div className="actions"><button disabled={busy || !profileId} onClick={() => run(async () => { const out = await request('/v1/plugins'); setPlugins((out.data as { plugins: Plugin[] }).plugins); })}>Обновить модули</button><button disabled={busy || !profileId} onClick={() => { if (window.confirm('Перезапустить ядро сервера? Активные ходы прервутся.')) void run(async () => { await request('/v1/system/restart', 'POST'); setNotice('Запрошен мягкий рестарт'); }); }}>Мягкий рестарт</button></div>{plugins.length === 0 && <p>Загрузите список модулей.</p>}{plugins.map(p => <article key={p.id}><h2>{p.name ?? p.id}</h2><p>{p.lifecycle ?? 'Модуль'} · {p.enabled ? 'Включён' : 'Выключен'}</p><button disabled={busy} onClick={() => { if (window.confirm('Изменить состояние модуля? Для resident ядро будет перезапущено.')) void run(async () => { await invoke('set_module', { profileId, moduleId: p.id, enabled: !p.enabled }); setPlugins(list => list.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x)); }); }}>{p.enabled ? 'Выключить' : 'Включить'}</button></article>)}</section>}
       {tab === 'Команды' && <CommandsScreen busy={busy} run={run} notify={notify} runLine={runLine} running={commandRunning}/>}
-      {tab === 'Доступ к ПК' && settings && <PermissionsScreen settings={settings} setSettings={setSettings} save={save} pcAvailable={pcAvailable} busy={busy} run={run} notify={notify}/>}
+      {tab === 'Доступ к ПК' && settings && <PermissionsScreen settings={settings} setSettings={setSettings} save={save} pcAvailable={pcAvailable} busy={busy} run={run} notify={notify} backends={backends}/>}
       {tab === 'Настройки' && settings && <SettingsScreen settings={settings} setSettings={setSettings} save={save} root={root} recoveries={recoveries} connected={connected} busy={busy} run={run} notify={notify} applyImported={setSettings}/>}
     </main>
     <DraftDialog draft={draft} busy={busy} onSave={d => void decideDraft(true, d)} onReject={d => void decideDraft(false, d)}/>
-    <dialog aria-labelledby="confirm-title" ref={modal} onCancel={e => { e.preventDefault(); void approve(false); }}><h2 id="confirm-title">{hostCall?.tool === 'command.run' ? 'Запустить быструю команду?' : 'Разрешить действие на этом ПК?'}</h2><p>{hostCall?.tool === 'command.run' ? String(hostCall.arguments.name ?? '') : hostCall?.tool}</p><pre>{JSON.stringify(hostCall?.arguments, null, 2)}</pre><p>Подтверждение действует только для этого вызова, до 30 секунд.</p><div className="actions"><button autoFocus onClick={() => void approve(false)}>Отклонить</button><button onClick={() => void approve(true)}>Разрешить один раз</button></div></dialog>
+    <dialog aria-labelledby="confirm-title" ref={modal} onCancel={e => { e.preventDefault(); void approve(false); }}><h2 id="confirm-title">{hostCall?.tool === 'command.run' ? 'Запустить быструю команду?' : 'Разрешить действие на этом ПК?'}</h2><p><strong>{hostCall?.tool === 'command.run' ? String(hostCall.arguments.name ?? '') : (hostCall ? toolTitles[hostCall.tool] ?? hostCall.tool : '')}</strong></p><pre>{hostCall?.preview || JSON.stringify(hostCall?.arguments, null, 2)}</pre><p>Подтверждение действует только для этого вызова, до 30 секунд.</p><div className="actions"><button autoFocus onClick={() => void approve(false)}>Отклонить</button><button onClick={() => void approve(true)}>Разрешить один раз</button></div></dialog>
   </div>;
 }
