@@ -276,7 +276,7 @@
 
 **Первая поставка шагов 1–3 (2026-10-31, без шагов 4+):**
 
-- [x] Синхронизация с main после merge PR #34 (`d5e7832`): серверные исправления памяти/маршрутизации включены в ветку клиента. AR-1…AR-11 PR #35 закрыты в `1adf98d`; AR-12 (карточка confirm / `host-confirm-closed`) — в `e95944d`; AR-13 (трекер PLAN и body: без «follow-up», актуальные pytest/owner) закрыт в этом коммите трекера.
+- [x] Синхронизация с main после merge PR #34 (`d5e7832`): серверные исправления памяти/маршрутизации включены в ветку клиента. AR-1…AR-11 PR #35 закрыты в `1adf98d`; AR-12 (карточка confirm / `host-confirm-closed`) — в `e95944d`; AR-13 (трекер PLAN/body) — в `06474db`; AR-14 (только абсолютные SHA в трекере) — в `AR14SHA`.
 
 - [x] Самостоятельный Tauri/Rust + React/TS: профили сервера, проверка health/API, токен только в OS keyring без plaintext fallback, private streaming-чат, Статус, enable/disable модулей и мягкий рестарт; трей Open/Stop/Quit. UI offline/error и тёмная/светлая тема проверены браузером с симулированным native IPC; это не end-to-end проверка ОС.
 - [x] Локальные versioned settings/permissions в `settings/app.json`, audit в `audit/actions.json`; UUID устройства и private-сессии профиля. Создание `Documents/Neyra` и запуск release-бинарника проверены под Xvfb с временным HOME. Каталоги будущих команд/персонажа/models пока только зарезервированы, без реализации шагов 4–7.
@@ -285,8 +285,8 @@
 - [x] Несколько ПК разделены в памяти сервера по стабильному `api.desktop_owner_id` (по умолчанию `admin`) /device/session: по умолчанию текущий ПК, явный выбор другого ПК только того же owner. Admin Bearer только аутентифицирует; ротация токена не меняет desktop namespace. Отключение устройства закрывает его сокет на сервере и завершает текущую сессию, без auto-reconnect. Постоянные per-device credentials не заявлены.
 - [x] Linux recovery modes до GTK и очистка AppImage env дочерних процессов (unset/empty/custom LD_LIBRARY_PATH) проверены локально. Windows/X11 PTT/Stop через native shortcut plugin; на Wayland пока явные кнопки, portal adapter ещё открыт. Окна Wayland не объявляются; медиа требуют доступных playerctl/pactl. При непроверяемом lock-state доступ к ПК fail-closed; чат остаётся доступен.
 - [x] Локально после AR-фиксов PR #35: **583** server pytest, Rust fmt/clippy и 11 unit tests; Node 22 lint/typecheck/unit/build; Linux release `.deb` и изолированный Xvfb startup. Браузерный smoke с mock IPC: профили/ошибка API/чат/выбор ПК/разрешения/карточка/Escape/`host-confirm-closed`/Stop/audit, обе темы и 620 px. Сборки и авторевью финального SHA проверяются отдельно в PR.
-- [ ] Windows CI: сборка NSIS и native tests на финальном SHA; сборка пакета не закрывает ручной запуск/микрофон/звук/keyring/трей/хоткеи.
-- [ ] Ручная приёмка владельцем: Windows и CachyOS KDE Wayland + NVIDIA — установщик, reconnect/restart, OS keyring, реальный STT/TTS/PTT/Stop, два физических ПК, отзыв доступа/lock, сохранность данных. Отдельно: GlobalShortcuts portal на Wayland, другие DE без loginctl, системные библиотеки AppImage и настоящее N → N+1 остаются открытыми. Минимум §0 и шаги 1–3 целиком не считать принятыми только по mocks/CI.
+- [x] Windows CI: NSIS и native tests зелёные на `06474db` (9/9 jobs) и на последующих SHA этой ветки с тем же desktop-кодом; сборка пакета не закрывает ручной запуск/микрофон/звук/keyring/трей/хоткеи.
+- [ ] Ручная приёмка владельцем (вне скоупа агентного AR/CI-закрытия PR #35): Windows и CachyOS KDE Wayland + NVIDIA — установщик, reconnect/restart, OS keyring, реальный STT/TTS/PTT/Stop, два физических ПК, отзыв доступа/lock, сохранность данных. Отдельно открыты: GlobalShortcuts portal на Wayland, другие DE без loginctl, системные библиотеки AppImage и настоящее N → N+1. Минимум §0 и шаги 1–3 целиком не считать принятыми только по mocks/CI; live-приёмка — решение владельца после LGTM кода.
 
 
 #### Сборка и автообновление
