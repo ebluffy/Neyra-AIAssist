@@ -17,7 +17,7 @@ export interface ImportItem { name: string; status: 'new' | 'same' | 'conflict' 
 export interface ImportPreview {
   cancelled: boolean; items?: ImportItem[];
   settings?: { theme: string; graphics_mode: string; audit_days: number };
-  permissions?: { allow_web: boolean; system: boolean; web_domains: string[]; apps: string[] };
+  permissions?: { allow_web: boolean; system: boolean; web_domains: string[]; apps: string[]; blocked?: string[] };
 }
 
 export const TOOLS: Record<string, { label: string; keys: { name: string; label: string; hint: string }[]; closes?: boolean }> = {

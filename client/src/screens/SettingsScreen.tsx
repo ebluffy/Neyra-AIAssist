@@ -11,6 +11,11 @@ interface Props {
   connected: boolean; busy: boolean; run: Runner; notify: (text: string) => void; applyImported: (s: Settings) => void;
 }
 const STATUS: Record<string, string> = { new: 'Новая', same: 'Совпадает', conflict: 'Конфликт имён', invalid: 'Ошибка' };
+const BLOCKED: Record<string, string> = { allow_web: 'браузер', system: 'система', shell: 'консоль', files: 'файлы', screen: 'экран', screen_auto: 'снимки без подтверждения', input: 'ввод' };
+function blockedLabels(keys: string[] | undefined): string {
+  const names = (keys ?? []).map(key => BLOCKED[key]).filter(Boolean);
+  return names.length ? `Файл включает выключенное сейчас: ${names.join(', ')}. Это не включится.` : '';
+}
 
 export function SettingsScreen({ settings, setSettings, save, root, recoveries, connected, busy, run, notify, applyImported }: Props) {
   const [preview, setPreview] = useState<ImportPreview>();
@@ -98,7 +103,7 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
       <label>Если имя уже занято<select value={conflict} onChange={e => setConflict(e.target.value as 'skip' | 'overwrite' | 'rename')}><option value="rename">Сохранить под новым именем</option><option value="skip">Пропустить</option><option value="overwrite">Заменить существующую</option></select></label>
       <label className="check"><input type="checkbox" checked={withSettings} onChange={e => setWithSettings(e.target.checked)}/>Применить тему и графику из файла</label>
       <label className="check"><input type="checkbox" checked={withPermissions} onChange={e => setWithPermissions(e.target.checked)}/>Применить разрешения из файла (главный выключатель не включится)</label>
-      {withPermissions && preview.permissions && <p className="hint">Браузер: {preview.permissions.allow_web ? 'да' : 'нет'} · приложения и система: {preview.permissions.system ? 'да' : 'нет'}. Домены, которые останутся: {preview.permissions.web_domains.join(', ') || 'нет'}. Программы, которые останутся: {preview.permissions.apps.join(', ') || 'нет'}. Новые домены и программы из файла не добавляются. Выключенные сейчас браузер, система, консоль, файлы, экран и ввод не включатся.</p>}
+      {withPermissions && preview.permissions && <p className="hint">Браузер: {preview.permissions.allow_web ? 'да' : 'нет'} · приложения и система: {preview.permissions.system ? 'да' : 'нет'}. Домены, которые останутся: {preview.permissions.web_domains.join(', ') || 'нет'}. Программы, которые останутся: {preview.permissions.apps.join(', ') || 'нет'}. Новые домены и программы из файла не добавляются. {blockedLabels(preview.permissions.blocked)}</p>}
       <div className="actions"><button onClick={cancelImport} disabled={busy}>Отмена</button><button className="primary" disabled={busy || (usable === 0 && !withSettings && !withPermissions)} onClick={apply}>Применить импорт</button></div>
     </div>}
     <h2>Обновления</h2>

@@ -896,6 +896,7 @@ pub async fn import_pick(app: tauri::AppHandle) -> Result<Value, String> {
         .permissions
         .clone();
     let sanitized = sanitize_permissions(&current, &bundle.permissions);
+    let blocked = blocked_switches(&current, &bundle.permissions);
     let preview = json!({
         "cancelled": false,
         "items": items,
@@ -905,6 +906,7 @@ pub async fn import_pick(app: tauri::AppHandle) -> Result<Value, String> {
             "system": sanitized.system,
             "web_domains": sanitized.web_domains,
             "apps": sanitized.apps,
+            "blocked": blocked,
         },
     });
     *state.pending_import.lock().map_err(lock_error)? = Some(PendingImport {
@@ -932,8 +934,10 @@ fn already_allowed_domain(current: &[String], domain: &str) -> bool {
 }
 
 /// Imported web and system flags can only stay the same or become narrower (`current && imported`).
-/// The master switch is never turned on from a file. Contour 3–4 (shell, files, folders, screen, input)
-/// are not imported: they stay exactly as they are on this PC.
+/// A file that would turn them on is named by `blocked_switches` and is not applied: the import
+/// preview lists that refusal before the user confirms. The master switch is never turned on from a file.
+/// Contour 3–4 (shell, files, folders, screen, input) are not imported: they stay exactly as they are
+/// on this PC, and any switch the file would have turned on is named in the same preview list.
 /// `apps` and `web_domains` are the overlap (`current ∩ imported`). A program must also exist here
 /// and not be a secret; a domain must be a plain host. The import preview lists that overlap.
 pub fn sanitize_permissions(
@@ -979,6 +983,37 @@ pub fn sanitize_permissions(
         screen_auto: current.screen_auto,
         input: current.input,
     }
+}
+
+/// Switches the file would turn on, and which the import therefore leaves off.
+/// The preview must show these names; nothing in this list is written.
+pub fn blocked_switches(
+    current: &storage::Permissions,
+    imported: &storage::Permissions,
+) -> Vec<&'static str> {
+    let mut blocked = Vec::new();
+    if imported.allow_web && !current.allow_web {
+        blocked.push("allow_web");
+    }
+    if imported.system && !current.system {
+        blocked.push("system");
+    }
+    if imported.shell && !current.shell {
+        blocked.push("shell");
+    }
+    if imported.files && !current.files {
+        blocked.push("files");
+    }
+    if imported.screen && !current.screen {
+        blocked.push("screen");
+    }
+    if imported.screen_auto && !current.screen_auto {
+        blocked.push("screen_auto");
+    }
+    if imported.input && !current.input {
+        blocked.push("input");
+    }
+    blocked
 }
 
 #[tauri::command]
@@ -1182,6 +1217,26 @@ mod tests {
         assert!(!out.enabled && !out.allow_web && !out.system);
         assert!(!out.shell && !out.files && out.fs_roots.is_empty());
         assert!(!out.screen && !out.screen_auto && !out.input);
+        assert_eq!(
+            blocked_switches(&current, &imported),
+            vec![
+                "allow_web",
+                "system",
+                "shell",
+                "files",
+                "screen",
+                "screen_auto",
+                "input",
+            ]
+        );
+        let already_on = storage::Permissions {
+            allow_web: true,
+            system: true,
+            ..current.clone()
+        };
+        let blocked = blocked_switches(&already_on, &imported);
+        assert!(!blocked.contains(&"allow_web") && !blocked.contains(&"system"));
+        assert!(blocked.contains(&"shell"));
         let open = storage::Permissions {
             allow_web: true,
             system: true,
