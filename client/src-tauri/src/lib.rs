@@ -324,9 +324,9 @@ async fn connect(
                                                 if let Some(call)=pending.remove(call_id){
                                                     drop(pending);
                                                     reply(&handle,&call,json!({"status":"denied","code":"cancelled"}),false);
+                                                    let _=handle.emit("host-confirm-closed",json!({"call_id":call.call_id}));
                                                 }
                                             }
-                                            let _=handle.emit("desktop-event",json!({"type":"call_cancelled","call_id":call_id}));
                                         }
                                     },
                                                     Some("audio.chunk")=>{if let Some(data)=packet["data"].as_str(){if let Ok(bytes)=base64::engine::general_purpose::STANDARD.decode(data){if wav.len()+bytes.len()>8*1024*1024{break;}wav.extend(bytes);}}},
@@ -404,12 +404,14 @@ fn receive_call(app: tauri::AppHandle, call: ToolCall) {
                         let st = h.state::<Desktop>();
                         if let Ok(mut p) = st.pending.lock() {
                             if let Some(c) = p.remove(&call.call_id) {
+                                let call_id = c.call_id.clone();
                                 reply(
                                     &h,
                                     &c,
                                     json!({"status":"denied","code":"confirmation_expired"}),
                                     false,
                                 );
+                                let _ = h.emit("host-confirm-closed", json!({"call_id": call_id}));
                             }
                         };
                     });

@@ -69,6 +69,9 @@ export function App() {
         if (e.type === 'cancelled') { setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBuffer.current = ''; setPartial(''); setNotice('Остановлено'); }
       }),
       listen<HostCall>('host-confirm', ({ payload }) => setHostCall(payload)),
+      listen<{ call_id?: string }>('host-confirm-closed', ({ payload }) => {
+        setHostCall(current => (current && (!payload.call_id || current.call_id === payload.call_id) ? undefined : current));
+      }),
       listen<{ active: boolean }>('host-activity', ({ payload }) => setActive(payload.active)),
     ];
     return () => { for (const listener of listeners) void listener.then(unlisten => unlisten()); };

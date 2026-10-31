@@ -58,6 +58,10 @@ with sync_playwright() as p:
     expect(page.get_by_role('button',name='Отклонить',exact=True)).to_be_focused()
     page.keyboard.press('Escape')
     expect(page.get_by_role('dialog')).not_to_be_visible()
+    page.evaluate("window.emitNative('host-confirm',{call_id:'call-cancel',tool:'client.open_app',arguments:{path:'/opt/Other'},deadline_ms:Date.now()+30000})")
+    expect(page.get_by_role('dialog')).to_be_visible()
+    page.evaluate("window.emitNative('host-confirm-closed',{call_id:'call-cancel'})")
+    expect(page.get_by_role('dialog')).not_to_be_visible()
     page.get_by_role('button',name='Stop',exact=True).click()
     page.get_by_role('button',name='Сервер',exact=True).click()
     page.get_by_label('Тема').select_option('light')
@@ -69,4 +73,4 @@ with sync_playwright() as p:
     page.screenshot(path='/tmp/neyra-desktop-dark.png',full_page=True)
     assert not errors,errors
     browser.close()
-print('PASS: profiles, API failure, chat, device selector, local permissions, confirmation/Escape, Stop, audit, dark/light/narrow. Native boundary simulated.')
+print('PASS: profiles, API failure, chat, device selector, local permissions, confirmation/Escape/host-confirm-closed, Stop, audit, dark/light/narrow. Native boundary simulated.')
