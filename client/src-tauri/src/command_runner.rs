@@ -673,6 +673,7 @@ pub fn command_dry_run(
         &command,
         &params.unwrap_or_default(),
         &settings.permissions,
+        &state.root,
         &settings.device_id,
     )
 }
@@ -853,12 +854,12 @@ pub fn sanitize_permissions(
         allow_web: imported.allow_web,
         web_domains: domains,
         system: imported.system,
-        shell: imported.shell,
-        files: imported.files,
-        fs_roots: imported.fs_roots.clone(),
-        screen: imported.screen,
-        screen_auto: imported.screen_auto,
-        input: imported.input,
+        shell: current.shell,
+        files: current.files,
+        fs_roots: current.fs_roots.clone(),
+        screen: current.screen,
+        screen_auto: current.screen_auto,
+        input: current.input,
     }
 }
 

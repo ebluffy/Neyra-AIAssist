@@ -510,6 +510,7 @@ pub fn dry_run(
     command: &Command,
     given: &HashMap<String, String>,
     permissions: &Permissions,
+    data_root: &Path,
     device: &str,
 ) -> Result<Vec<Preview>, String> {
     let advertised = policy::capabilities(permissions);
@@ -538,7 +539,7 @@ pub fn dry_run(
             let (verdict, message) = match policy::validate(
                 &call,
                 permissions,
-                Path::new("."),
+                data_root,
                 device,
                 LOCAL_SESSION,
                 &mut HashMap::new(),
@@ -1350,15 +1351,15 @@ mod tests {
             ..Default::default()
         };
         let known = HashMap::from([("site".to_string(), "rust-lang.org".to_string())]);
-        assert_eq!(dry_run(&c, &known, &perms, "d").unwrap()[0].verdict, "safe");
+        assert_eq!(dry_run(&c, &known, &perms, Path::new("/tmp"), "d").unwrap()[0].verdict, "safe");
         let other = HashMap::from([("site".to_string(), "other.example".to_string())]);
         assert_eq!(
-            dry_run(&c, &other, &perms, "d").unwrap()[0].verdict,
+            dry_run(&c, &other, &perms, Path::new("/tmp"), "d").unwrap()[0].verdict,
             "confirm"
         );
         let bad = HashMap::from([("site".to_string(), "../../etc".to_string())]);
         assert_eq!(
-            dry_run(&c, &bad, &perms, "d").unwrap()[0].verdict,
+            dry_run(&c, &bad, &perms, Path::new("/tmp"), "d").unwrap()[0].verdict,
             "confirm"
         );
     }
@@ -1366,7 +1367,7 @@ mod tests {
     fn dry_run_respects_master_switch_and_unavailable_tools() {
         let c = game();
         let off = Permissions::default();
-        assert!(dry_run(&c, &HashMap::new(), &off, "d")
+        assert!(dry_run(&c, &HashMap::new(), &off, Path::new("/tmp"), "d")
             .unwrap()
             .iter()
             .all(|p| p.verdict == "denied"));
@@ -1375,7 +1376,7 @@ mod tests {
             system: false,
             ..Default::default()
         };
-        assert!(dry_run(&c, &HashMap::new(), &on, "d")
+        assert!(dry_run(&c, &HashMap::new(), &on, Path::new("/tmp"), "d")
             .unwrap()
             .iter()
             .all(|p| p.verdict == "unavailable"));
@@ -1392,7 +1393,7 @@ mod tests {
             arguments: json!({"path":"/home/me/.ssh/id_rsa"}),
         }];
         assert_eq!(
-            dry_run(&c, &HashMap::new(), &perms, "d").unwrap()[0].verdict,
+            dry_run(&c, &HashMap::new(), &perms, Path::new("/tmp"), "d").unwrap()[0].verdict,
             "denied"
         );
     }

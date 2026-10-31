@@ -34,15 +34,7 @@ pub fn tool_keys(tool: &str) -> Option<&'static [&'static str]> {
         "client.focus_window" | "client.close_window" => &["window"],
         "client.media" | "client.volume" => &["action"],
         "client.list_windows" | "client.list_apps" => &[],
-        "client.shell_exec" => &["program", "args", "cwd", "env", "timeout_ms"],
-        "client.fs_list" => &["path"],
-        "client.fs_read" => &["path", "offset", "max_bytes"],
-        "client.fs_search" => &["path", "name", "content"],
-        "client.fs_write" => &["path", "content", "mode"],
-        "client.fs_mkdir" => &["path"],
-        "client.fs_move" => &["from", "to"],
-        "client.screenshot" => &["window"],
-        "client.input" => &["steps", "screenshot_id"],
+        // Contour 3–4 tools are not quick-command tools. validate() allows them for the server loop only.
         _ => return None,
     })
 }
