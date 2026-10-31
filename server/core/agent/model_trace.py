@@ -33,6 +33,7 @@ class TurnTrace:
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     calls: list = field(default_factory=list)
     client_actions: list = field(default_factory=list)
+    agent_loop: dict | None = None
     failed: bool = False
     closed: bool = False
     conversation_mode: str = field(init=False)
@@ -58,6 +59,7 @@ class TurnTrace:
         return copy.deepcopy({
             "turn_id": self.id, "timestamp": self.started_at,
             "client_actions": self.client_actions,
+            "agent_loop": self.agent_loop,
             "status": status or ("failed" if self.failed else "completed"),
             "error_class": self.error_class,
             "queue_wait_ms": self.queue_wait_ms,
