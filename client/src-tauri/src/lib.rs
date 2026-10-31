@@ -316,7 +316,19 @@ async fn connect(
                                                     Some("client_tool_call")=>{let mut data=packet.clone();if let Some(o)=data.as_object_mut(){o.remove("type");o.remove("protocol");o.remove("source");}
                 if let Ok(call)=serde_json::from_value::<ToolCall>(data){receive_call(handle.clone(),call);}},
                                                     Some("revoked")=>{break;},
-                                    Some("cancel")=>{let state=handle.state::<Desktop>();let _=stop_inner(&state);let _=handle.emit("desktop-event",json!({"type":"cancelled"}));},
+                                    Some("cancel")=>{
+                                        // Per-call cancel must not become global Stop (AR-3).
+                                        let state=handle.state::<Desktop>();
+                                        if let Some(call_id)=packet["call_id"].as_str(){
+                                            if let Ok(mut pending)=state.pending.lock(){
+                                                if let Some(call)=pending.remove(call_id){
+                                                    drop(pending);
+                                                    reply(&handle,&call,json!({"status":"denied","code":"cancelled"}),false);
+                                                }
+                                            }
+                                            let _=handle.emit("desktop-event",json!({"type":"call_cancelled","call_id":call_id}));
+                                        }
+                                    },
                                                     Some("audio.chunk")=>{if let Some(data)=packet["data"].as_str(){if let Ok(bytes)=base64::engine::general_purpose::STANDARD.decode(data){if wav.len()+bytes.len()>8*1024*1024{break;}wav.extend(bytes);}}},
                                                     Some("audio.done")=>{let state=handle.state::<Desktop>();let output_handle=handle.clone();let _=audio::play(std::mem::take(&mut wav),state.generation.clone(),move|code|{let _=output_handle.emit("desktop-event",if code=="audio_finished"{json!({"type":"audio.finished"})}else{json!({"type":"error","code":code})});});let _=handle.emit("desktop-event",json!({"type":"speaking"}));},
                                                     Some("cancelled")=>{wav.clear();let _=handle.emit("desktop-event",packet);},
@@ -379,6 +391,12 @@ fn receive_call(app: tauri::AppHandle, call: ToolCall) {
             if let Ok(mut pending) = state.pending.lock() {
                 if pending.len() < 4 {
                     pending.insert(call.call_id.clone(), call.clone());
+                    // Window may be tray-hidden; surface the card (AR-4).
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
                     let _ = app.emit("host-confirm", &call);
                     let h = app.clone();
                     tauri::async_runtime::spawn(async move {
@@ -608,25 +626,36 @@ async fn record_stop(state: State<'_, Desktop>) -> Result<(), String> {
         .take()
         .ok_or("Нет записи")?;
     let request_id = start_turn(&state)?;
-    let pcm = tauri::async_runtime::spawn_blocking(move || recording.finish())
-        .await
-        .map_err(|_| "Ошибка записи")??;
-    let tx = state
-        .voice
-        .lock()
-        .map_err(lock_error)?
-        .clone()
-        .ok_or("Нет голосового подключения")?;
-    for chunk in pcm.chunks(32000) {
-        tx.send(Message::Binary(chunk.to_vec().into()))
-            .map_err(|_| "Подключение закрыто")?;
+    let result = async {
+        let pcm = tauri::async_runtime::spawn_blocking(move || recording.finish())
+            .await
+            .map_err(|_| "Ошибка записи".to_string())??;
+        let tx = state
+            .voice
+            .lock()
+            .map_err(lock_error)?
+            .clone()
+            .ok_or_else(|| "Нет голосового подключения".to_string())?;
+        for chunk in pcm.chunks(32000) {
+            tx.send(Message::Binary(chunk.to_vec().into()))
+                .map_err(|_| "Подключение закрыто".to_string())?;
+        }
+        tx.send(Message::Text(
+            json!({"type":"commit","request_id":request_id})
+                .to_string()
+                .into(),
+        ))
+        .map_err(|_| "Подключение закрыто".to_string())?;
+        Ok::<(), String>(())
     }
-    tx.send(Message::Text(
-        json!({"type":"commit","request_id":request_id})
-            .to_string()
-            .into(),
-    ))
-    .map_err(|_| "Подключение закрыто".into())
+    .await;
+    if result.is_err() {
+        // Clear sticky turn on any failure after start_turn (AR-8).
+        if let Ok(mut current) = state.current_turn.lock() {
+            *current = None;
+        }
+    }
+    result
 }
 #[tauri::command]
 fn audit_log(state: State<'_, Desktop>) -> Result<Vec<Value>, String> {

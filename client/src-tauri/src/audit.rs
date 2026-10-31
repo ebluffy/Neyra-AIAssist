@@ -22,7 +22,8 @@ pub fn recent(root: &Path) -> Result<Vec<Value>, String> {
 }
 pub fn append(root: &Path, tool: &str, status: &str, confirmed: bool) -> Result<(), String> {
     let mut rows = recent(root)?;
-    rows.push(json!({"time":now_ms(),"tool":tool,"status":status,"confirmed":confirmed}));
+    // Content-free provenance: when/what/decision only — no args, paths, tokens or output.
+    rows.push(json!({"time":now_ms(),"tool":tool,"status":status,"confirmed":confirmed,"origin":"host_bridge"}));
     if rows.len() > 2000 {
         rows.drain(..rows.len() - 2000);
     }

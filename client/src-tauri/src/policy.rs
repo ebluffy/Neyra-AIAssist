@@ -25,18 +25,45 @@ pub enum Decision {
 }
 
 pub fn secret_path(path: &Path) -> bool {
+    // Match profile/storage locations, not bare browser brand names (AR-5):
+    // /opt/google/chrome and chrome.exe stay allowed; User Data / .config profiles do not.
+    let normalized = path.to_string_lossy().replace('\\', "/").to_lowercase();
+    let markers = [
+        "/.ssh/",
+        "/.gnupg/",
+        "/.aws/",
+        "/.kube/",
+        "/.config/gcloud/",
+        "/keychains/",
+        "/keyrings/",
+        "/kwalletd/",
+        "/wallets/",
+        "/login data",
+        "/cookies",
+        "/.mozilla/",
+        "/appdata/roaming/mozilla/",
+        "/.config/google-chrome/",
+        "/.config/chromium/",
+        "/.config/microsoft-edge/",
+        "/appdata/local/google/chrome/user data",
+        "/appdata/local/microsoft/edge/user data",
+        "/appdata/local/chromium/user data",
+        "/appdata/roaming/google/chrome/",
+    ];
+    if markers.iter().any(|m| normalized.contains(m)) {
+        return true;
+    }
     path.components().any(|part| {
         let s = part.as_os_str().to_string_lossy().to_lowercase();
         s == ".ssh"
             || s == ".gnupg"
+            || s == ".aws"
+            || s == ".kube"
             || s == "keychains"
             || s == "keyrings"
             || s == "login data"
             || s == "cookies"
             || s == ".mozilla"
-            || s == "google"
-            || s == "chromium"
-            || s == "microsoftedge"
             || s == "wallets"
             || s == "kwalletd"
             || s == ".env"
@@ -336,8 +363,26 @@ mod tests {
             "/home/me/.ssh/id_rsa",
             "C:/Users/me/.env.local",
             "/home/me/.mozilla/firefox/cookies.sqlite",
+            "/home/me/.config/google-chrome/Default",
+            "/home/me/.aws/credentials",
+            "/home/me/.kube/config",
+            "/home/me/.gnupg/pubring.kbx",
+            "C:/Users/me/AppData/Local/Google/Chrome/User Data/Default",
+            "C:/Users/me/AppData/Roaming/Mozilla/Firefox/Profiles/x.default",
         ] {
-            assert!(secret_path(Path::new(p)));
+            assert!(secret_path(Path::new(p)), "{p}");
+        }
+    }
+
+    #[test]
+    fn browser_binaries_are_not_secret_paths() {
+        for p in [
+            "/opt/google/chrome/chrome",
+            "/usr/lib/chromium/chromium",
+            "C:/Program Files/Google/Chrome/Application/chrome.exe",
+            "C:/Program Files/Chromium/Application/chrome.exe",
+        ] {
+            assert!(!secret_path(Path::new(p)), "{p}");
         }
     }
     #[test]

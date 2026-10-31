@@ -28,7 +28,9 @@ class Connection:
     owner: str
     manifest: Manifest
     send: Callable[[dict], Awaitable[None]]
+    close: Callable[[], Awaitable[None]] | None = None
     pending: dict[str, asyncio.Future] = field(default_factory=dict)
+    revoked: bool = False
 
 
 class BridgeRegistry:
@@ -37,13 +39,13 @@ class BridgeRegistry:
     def __init__(self):
         self.connections: dict[tuple[str, str], Connection] = {}
 
-    def connect(self, owner, manifest, send):
+    def connect(self, owner, manifest, send, close=None):
         key = owner, str(manifest.device_id)
         if key in self.connections:
             raise ValueError('device_already_connected')
         if len(self.connections) >= 64:
             raise ValueError('device_limit')
-        connection = Connection(owner, manifest, send)
+        connection = Connection(owner, manifest, send, close=close)
         self.connections[key] = connection
         return connection
 
@@ -55,6 +57,20 @@ class BridgeRegistry:
             if not future.done():
                 future.set_exception(ConnectionError('device_disconnected'))
         connection.pending.clear()
+
+    async def revoke(self, connection):
+        """Remove from registry, notify, and close the socket so it cannot re-register."""
+        connection.revoked = True
+        self.disconnect(connection)
+        try:
+            await connection.send(dict(type='revoked'))
+        except Exception:
+            pass
+        if connection.close is not None:
+            try:
+                await connection.close()
+            except Exception:
+                pass
 
     def devices(self, owner):
         return [c.manifest.model_dump(mode='json') for c in self.connections.values() if c.owner == owner]

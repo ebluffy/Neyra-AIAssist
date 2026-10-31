@@ -11,14 +11,13 @@ class DesktopVoice:
     def __init__(self, config):
         self.config = config
         self._stt = None
-        self._busy = False
+        self._lock = asyncio.Lock()
+        self._inflight: asyncio.Future | None = None
 
     async def transcribe(self, pcm: bytes) -> str:
         if not pcm or len(pcm) % 2 or len(pcm) > 16000 * 2 * 30:
             raise ValueError('invalid_audio')
-        if self._busy:
-            raise ValueError('stt_busy')
-        self._busy = True
+
         def run():
             from core.voice.stt import STTEngine
             if self._stt is None:
@@ -30,12 +29,25 @@ class DesktopVoice:
                     wav.setframerate(16000)
                     wav.writeframes(pcm)
                 return self._stt.transcribe_bytes(buffer.getvalue(), suffix='.wav')
-        job = asyncio.get_running_loop().run_in_executor(None, run)
-        def released(_):
-            self._busy = False
-        job.add_done_callback(released)
-        # Cancelling the turn discards its result; a synchronous provider must finish before reuse.
-        return await asyncio.shield(job)
+
+        # Queue concurrent commits (multi-PC): wait for a cancelled-but-still-running
+        # provider job before starting the next, instead of a global busy reject.
+        async with self._lock:
+            if self._inflight is not None and not self._inflight.done():
+                try:
+                    await asyncio.shield(self._inflight)
+                except Exception:
+                    pass
+            job = asyncio.get_running_loop().run_in_executor(None, run)
+            self._inflight = job
+
+            def released(_):
+                if self._inflight is job:
+                    self._inflight = None
+
+            job.add_done_callback(released)
+            # Cancelling the turn discards its result; a synchronous provider must finish before reuse.
+            return await asyncio.shield(job)
 
     async def synthesize(self, text: str) -> bytes:
         from core.voice.yandex_tts import synthesize_from_config

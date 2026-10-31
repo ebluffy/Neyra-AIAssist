@@ -7,7 +7,7 @@ import json
 from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core.desktop.bridge import ACTIVE_DESKTOP, BridgeRegistry, Manifest
 from core.voice.desktop import DesktopVoice
@@ -24,11 +24,31 @@ class Packet(BaseModel):
     request_id: UUID | None = None
 
 
+def desktop_owner_id(config) -> str:
+    """Stable owner namespace: survives API token rotation (AR-10).
+
+    Prefer api.desktop_owner_id; default 'admin' for the personal-assistant deployment.
+    Never derive identity from the Bearer token value.
+    """
+    api = config.get('api') if isinstance(config, dict) and isinstance(config.get('api'), dict) else {}
+    owner = str(api.get('desktop_owner_id') or 'admin').strip() or 'admin'
+    return hashlib.sha256(('desktop-owner-id:' + owner).encode()).hexdigest()
+
+
+def _request_id(value) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError('bad_request_id')
+    return str(UUID(value))
+
+
 def router_for(agent, config, authenticate):
     router = APIRouter()
     registry = BridgeRegistry()
     voice_service = DesktopVoice(config)
     voice_connections = set()
+    owner = desktop_owner_id(config)
 
     async def authorize(ws):
         authorization = ws.headers.get('authorization', '')
@@ -40,36 +60,57 @@ def router_for(agent, config, authenticate):
         except Exception:
             await ws.close(code=1008, reason='unauthorized')
             return None
-        return hashlib.sha256(('desktop-owner:' + authorization[7:]).encode()).hexdigest()
+        return owner
 
     async def read_manifest(ws):
-        message = await asyncio.wait_for(ws.receive_text(), 10)
-        if len(message) > 8192:
+        message = await asyncio.wait_for(ws.receive(), 10)
+        if message.get('type') == 'websocket.disconnect':
+            raise WebSocketDisconnect()
+        if message.get('bytes') is not None:
+            raise ValueError('bad_packet')
+        raw = message.get('text')
+        if not isinstance(raw, str):
+            raise ValueError('bad_packet')
+        if len(raw) > 8192:
             raise ValueError('manifest_too_large')
-        return Manifest.model_validate_json(message)
+        return Manifest.model_validate_json(raw)
 
     @router.websocket('/v1/desktop/bridge')
     async def bridge(ws: WebSocket):
-        owner = await authorize(ws)
-        if owner is None:
+        session_owner = await authorize(ws)
+        if session_owner is None:
             return
         await ws.accept()
         connection = None
         task = None
         lock = asyncio.Lock()
+        closed = False
+
         async def send(packet):
             async with lock:
                 await ws.send_json(packet)
+
+        async def close_socket():
+            nonlocal closed
+            if closed:
+                return
+            closed = True
+            try:
+                await ws.close(code=1008, reason='revoked')
+            except Exception:
+                pass
+
         try:
             manifest = await read_manifest(ws)
-            connection = registry.connect(owner, manifest, send)
-            username = 'desktop:' + owner
+            connection = registry.connect(session_owner, manifest, send, close=close_socket)
+            username = 'desktop:' + session_owner
             channel = 'desktop:' + str(manifest.session_id)
             await send(dict(type='hello', protocol='neyra.desktop.v1', device_id=str(manifest.device_id)))
+
             async def turn(text, target, request_id):
                 async def turn_send(packet):
                     await send({**packet, "request_id": request_id})
-                token = ACTIVE_DESKTOP.set((registry, owner, str(target.manifest.session_id), str(target.manifest.device_id)))
+                token = ACTIVE_DESKTOP.set((registry, session_owner, str(target.manifest.session_id), str(target.manifest.device_id)))
                 try:
                     async for chunk in agent.chat_stream(text, username=username, channel_id=channel):
                         if chunk.get('type') == 'token':
@@ -85,10 +126,20 @@ def router_for(agent, config, authenticate):
                     await turn_send(dict(type='error', code='chat_failed'))
                 finally:
                     ACTIVE_DESKTOP.reset(token)
+
             while True:
-                raw = await asyncio.wait_for(ws.receive_text(), 300)
+                message = await asyncio.wait_for(ws.receive(), 300)
+                if message.get('type') == 'websocket.disconnect':
+                    break
+                if message.get('bytes') is not None:
+                    raise ValueError('bad_packet')
+                raw = message.get('text')
+                if not isinstance(raw, str):
+                    raise ValueError('bad_packet')
                 if len(raw) > 32768:
                     raise ValueError('packet_too_large')
+                if connection is None or connection.revoked:
+                    raise ValueError('revoked')
                 packet = Packet.model_validate_json(raw)
                 if packet.type == 'ping':
                     await send(dict(type='pong'))
@@ -98,14 +149,14 @@ def router_for(agent, config, authenticate):
                         raise ValueError('identity_changed')
                     registry.disconnect(connection)
                     manifest = updated
-                    connection = registry.connect(owner, manifest, send)
+                    connection = registry.connect(session_owner, manifest, send, close=close_socket)
                     if task:
                         task.cancel()
                     await send(dict(type='capabilities', tools=manifest.tools))
                 elif packet.type == 'client_tool_result':
                     if len(json.dumps(packet.result)) > 16000:
                         raise ValueError('result_too_large')
-                    registry.result(owner, connection, packet.call_id, packet.result)
+                    registry.result(session_owner, connection, packet.call_id, packet.result)
                 elif packet.type == 'stop':
                     if task:
                         task.cancel()
@@ -116,13 +167,12 @@ def router_for(agent, config, authenticate):
                         if not future.done():
                             future.cancel()
                 elif packet.type == 'disconnect_device' and packet.target_device_id:
-                    target = registry.connections.get((owner, str(packet.target_device_id)))
+                    target = registry.connections.get((session_owner, str(packet.target_device_id)))
                     if target is not None:
-                        registry.disconnect(target)
-                        await target.send(dict(type='revoked'))
-                    await send(dict(type='devices', devices=registry.devices(owner)))
+                        await registry.revoke(target)
+                    await send(dict(type='devices', devices=registry.devices(session_owner)))
                 elif packet.type == 'devices':
-                    await send(dict(type='devices', devices=registry.devices(owner)))
+                    await send(dict(type='devices', devices=registry.devices(session_owner)))
                 elif packet.type == 'history':
                     hub = getattr(agent, 'memory_hub', None)
                     rows = []
@@ -136,28 +186,31 @@ def router_for(agent, config, authenticate):
                         continue
                     target = connection
                     if packet.target_device_id:
-                        target = registry.connections.get((owner, str(packet.target_device_id)))
+                        target = registry.connections.get((session_owner, str(packet.target_device_id)))
                         if target is None:
                             await send(dict(type='error', code='device_unavailable'))
                             continue
                     task = asyncio.create_task(turn(packet.text, target, str(packet.request_id) if packet.request_id else None))
                 else:
                     await send(dict(type='error', code='bad_packet'))
-        except (ValueError, TimeoutError):
-            await ws.close(code=1008, reason='invalid_or_expired_session')
+        except (ValueError, TimeoutError, TypeError, AttributeError, KeyError, ValidationError, json.JSONDecodeError):
+            try:
+                await ws.close(code=1008, reason='invalid_or_expired_session')
+            except Exception:
+                pass
         except WebSocketDisconnect:
             pass
         finally:
             if task:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-            if connection:
+            if connection and not connection.revoked:
                 registry.disconnect(connection)
 
     @router.websocket('/v1/desktop/voice')
     async def voice(ws: WebSocket):
-        owner = await authorize(ws)
-        if owner is None:
+        session_owner = await authorize(ws)
+        if session_owner is None:
             return
         await ws.accept()
         work = None
@@ -166,18 +219,21 @@ def router_for(agent, config, authenticate):
         current_request = None
         audio = bytearray()
         send_lock = asyncio.Lock()
+
         async def send(packet):
             async with send_lock:
                 await ws.send_json(packet)
+
         try:
             manifest = await read_manifest(ws)
-            voice_key = (owner, str(manifest.device_id))
+            voice_key = (session_owner, str(manifest.device_id))
             if voice_key in voice_connections or len(voice_connections) >= 32:
                 raise ValueError('voice_session_limit')
             voice_connections.add(voice_key)
             voice_registered = True
             await send(dict(type='hello', protocol='neyra.voice.v1', format='pcm_s16le', sample_rate=16000,
                             channels=1, max_seconds=30, partial_transcripts=False))
+
             async def process(pcm, request_id):
                 async def turn_send(packet):
                     await send({**packet, "request_id": request_id})
@@ -189,13 +245,14 @@ def router_for(agent, config, authenticate):
                         return
                     channel = 'desktop:' + str(manifest.session_id)
                     response = ''
-                    connection = registry.connections.get((owner, str(manifest.device_id)))
+                    terminal = False
+                    connection = registry.connections.get((session_owner, str(manifest.device_id)))
                     scope = None
                     if connection and connection.manifest.session_id == manifest.session_id:
-                        scope = (registry, owner, str(manifest.session_id), str(manifest.device_id))
+                        scope = (registry, session_owner, str(manifest.session_id), str(manifest.device_id))
                     context_token = ACTIVE_DESKTOP.set(scope)
                     try:
-                        async for chunk in agent.chat_stream(text, username='desktop:' + owner, channel_id=channel):
+                        async for chunk in agent.chat_stream(text, username='desktop:' + session_owner, channel_id=channel):
                             if chunk.get('type') == 'token':
                                 await turn_send(dict(type='token', text=chunk.get('text', '')))
                             if chunk.get('type') == 'done':
@@ -203,9 +260,12 @@ def router_for(agent, config, authenticate):
                                 await turn_send(dict(type='done', text=response, model_trace=chunk.get('model_trace')))
                             if chunk.get('type') == 'error':
                                 await turn_send(dict(type='error', code='chat_failed'))
+                                terminal = True
                                 return
                     finally:
                         ACTIVE_DESKTOP.reset(context_token)
+                    if terminal:
+                        return
                     if response:
                         wav = await asyncio.wait_for(voice_service.synthesize(response), 60)
                         if wav:
@@ -215,10 +275,14 @@ def router_for(agent, config, authenticate):
                             await turn_send(dict(type='audio.done', mime='audio/wav'))
                         else:
                             await turn_send(dict(type='error', code='tts_unavailable'))
+                    else:
+                        # Explicit terminal so the client clears current_turn (AR-8).
+                        await turn_send(dict(type='error', code='empty_response'))
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     await turn_send(dict(type='error', code='voice_failed'))
+
             while True:
                 packet = await asyncio.wait_for(ws.receive(), 300)
                 if packet['type'] == 'websocket.disconnect':
@@ -231,7 +295,9 @@ def router_for(agent, config, authenticate):
                         raise ValueError('audio_too_large')
                     audio.extend(data)
                     continue
-                raw = packet.get('text') or ''
+                raw = packet.get('text')
+                if not isinstance(raw, str):
+                    raise ValueError('bad_packet')
                 if len(raw) > 1024:
                     raise ValueError('packet_too_large')
                 message = json.loads(raw)
@@ -243,7 +309,7 @@ def router_for(agent, config, authenticate):
                         continue
                     pcm = bytes(audio)
                     audio.clear()
-                    current_request = str(UUID(message["request_id"])) if message.get("request_id") else None
+                    current_request = _request_id(message.get('request_id'))
                     work = asyncio.create_task(process(pcm, current_request))
                 elif message.get('type') == 'stop':
                     audio.clear()
@@ -255,8 +321,11 @@ def router_for(agent, config, authenticate):
                     await send(dict(type='pong'))
                 else:
                     raise ValueError('bad_packet')
-        except (ValueError, TimeoutError):
-            await ws.close(code=1008, reason='invalid_or_expired_session')
+        except (ValueError, TimeoutError, TypeError, AttributeError, KeyError, ValidationError, json.JSONDecodeError):
+            try:
+                await ws.close(code=1008, reason='invalid_or_expired_session')
+            except Exception:
+                pass
         except WebSocketDisconnect:
             pass
         finally:

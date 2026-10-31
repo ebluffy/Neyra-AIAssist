@@ -76,8 +76,13 @@ async def run_brain_tool_phase(
     mcp_cfg = agent.config.get("mcp_client") if isinstance(agent.config.get("mcp_client"), dict) else {}
     from core.desktop.bridge import brain_tools
     desktop_tools = brain_tools()
-    turn_tools = {**agent.tools, **desktop_tools}
-    use_tool_loop = (bool(mcp_cfg.get("llm_tool_calls")) or bool(desktop_tools)) and bool(turn_tools)
+    # Desktop may only narrow rights (§3b.9): connecting a PC must not re-enable MCP/server tools
+    # when mcp_client.llm_tool_calls is false — bind client_* tools alone in that case.
+    if bool(mcp_cfg.get("llm_tool_calls")):
+        turn_tools = {**agent.tools, **desktop_tools}
+    else:
+        turn_tools = dict(desktop_tools)
+    use_tool_loop = bool(turn_tools)
     max_tool_steps = max(1, int(mcp_cfg.get("llm_tool_max_steps", 4)))
 
     brain_llm = agent.llm_brain
