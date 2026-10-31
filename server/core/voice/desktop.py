@@ -1,15 +1,26 @@
-"""Bounded push-to-talk service. No microphone capture or permanent audio on the server."""
+"""Bounded desktop voice service. No microphone capture or permanent audio on the server."""
 from __future__ import annotations
 
 import asyncio
 import io
-import re
 import wave
+from dataclasses import dataclass
+
+from core.voice.conversion import ConversionError, VoiceConversion
+from core.voice.sentences import plain_text
+
+
+@dataclass(frozen=True)
+class Speech:
+    """TTS result. ``conversion`` is off | applied | passthrough:<code> | stopped:<code>."""
+    audio: bytes
+    conversion: str = 'off'
 
 
 class DesktopVoice:
-    def __init__(self, config):
+    def __init__(self, config, conversion: VoiceConversion | None = None):
         self.config = config
+        self.conversion = conversion or VoiceConversion(config)
         self._stt = None
         self._lock = asyncio.Lock()
         self._inflight: asyncio.Future | None = None
@@ -51,12 +62,22 @@ class DesktopVoice:
 
     async def synthesize(self, text: str) -> bytes:
         from core.voice.yandex_tts import synthesize_from_config
-        plain = re.sub(r'```.*?```', ' ', text, flags=re.S)
-        plain = re.sub(r'\[([^]]+)\]\([^)]*\)', r'\1', plain)
-        plain = re.sub(r'[*_`#]+', '', plain).strip()
+        plain = plain_text(text)
         if not plain:
             return b''
         audio = await synthesize_from_config(plain[:1200], self.config)
         if len(audio) > 8 * 1024 * 1024:
             raise ValueError('audio_too_large')
         return audio
+
+    async def speak(self, text: str) -> Speech:
+        """TTS, then optional conversion with the configured error policy."""
+        audio = await self.synthesize(text)
+        if not audio or not self.conversion.settings.enabled:
+            return Speech(audio)
+        try:
+            return Speech(await self.conversion.convert(audio), 'applied')
+        except ConversionError as exc:
+            if self.conversion.settings.on_error == 'passthrough':
+                return Speech(audio, 'passthrough:' + exc.code)
+            return Speech(b'', 'stopped:' + exc.code)

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core.desktop.bridge import ACTIVE_DESKTOP, BridgeRegistry, Manifest
 from core.voice.desktop import DesktopVoice
+from core.voice.live import LIVE_PLAYBACK_WINDOW, LIVE_SLOW_SECONDS, LiveSpeech, announce_conversion
 
 
 class Packet(BaseModel):
@@ -219,12 +220,20 @@ def router_for(agent, config, authenticate):
         voice_key = None
         voice_registered = False
         current_request = None
+        listening = None
         audio = bytearray()
         send_lock = asyncio.Lock()
+        playback = dict(acked=-1)
+        acked = asyncio.Event()
 
         async def send(packet):
             async with send_lock:
                 await ws.send_json(packet)
+
+        async def cancel_work():
+            if work and not work.done():
+                work.cancel()
+                await asyncio.gather(work, return_exceptions=True)
 
         try:
             manifest = await read_manifest(ws)
@@ -233,21 +242,36 @@ def router_for(agent, config, authenticate):
                 raise ValueError('voice_session_limit')
             voice_connections.add(voice_key)
             voice_registered = True
-            await send(dict(type='hello', protocol='neyra.voice.v1', format='pcm_s16le', sample_rate=16000,
-                            channels=1, max_seconds=30, partial_transcripts=False))
+            await send(dict(type='hello', protocol='neyra.voice.v2', format='pcm_s16le', sample_rate=16000,
+                            channels=1, max_seconds=30, modes=['ptt', 'live'],
+                            # STT lanes take whole segments; no provider here streams partial hypotheses.
+                            partial_transcripts=False, streaming_stt=False, sentence_tts=True,
+                            playback_window=LIVE_PLAYBACK_WINDOW, conversion=voice_service.conversion.describe()))
 
-            async def process(pcm, request_id):
+            async def process(pcm, request_id, live=False):
                 async def turn_send(packet):
+                    # Late-chunk guard: a replaced or cancelled turn never reaches the client.
+                    if current_request != request_id:
+                        return
                     await send({**packet, "request_id": request_id})
+
+                speech = LiveSpeech(voice_service, turn_send, playback, acked) if live else None
+                slow = None
                 try:
                     text = await asyncio.wait_for(voice_service.transcribe(pcm), 60)
                     await turn_send(dict(type='transcript.final', text=text))
                     if not text.strip():
                         await turn_send(dict(type='error', code='no_speech'))
                         return
+                    if live:
+                        await turn_send(dict(type='status', state='thinking'))
+
+                        async def notify_slow():
+                            await asyncio.sleep(LIVE_SLOW_SECONDS)
+                            await turn_send(dict(type='status', state='slow'))
+                        slow = asyncio.create_task(notify_slow())
                     channel = 'desktop:' + str(manifest.session_id)
                     response = ''
-                    terminal = False
                     connection = registry.connections.get((session_owner, str(manifest.device_id)))
                     if connection and connection.manifest.session_id == manifest.session_id:
                         matched = connection.manifest.matching_command(text)
@@ -262,24 +286,33 @@ def router_for(agent, config, authenticate):
                     try:
                         async for chunk in agent.chat_stream(text, username='desktop:' + session_owner, channel_id=channel):
                             if chunk.get('type') == 'token':
+                                if slow:
+                                    slow.cancel()
                                 await turn_send(dict(type='token', text=chunk.get('text', '')))
+                                if speech:
+                                    await speech.feed(chunk.get('text', ''))
                             if chunk.get('type') == 'done':
                                 response = chunk.get('text', '')
                                 await turn_send(dict(type='done', text=response, model_trace=chunk.get('model_trace')))
                             if chunk.get('type') == 'error':
                                 await turn_send(dict(type='error', code='chat_failed'))
-                                terminal = True
                                 return
                     finally:
                         ACTIVE_DESKTOP.reset(context_token)
-                    if terminal:
+                    if speech:
+                        if not speech.started and response:
+                            await speech.feed(response)
+                        await speech.finish(bool(response))
                         return
                     if response:
-                        wav = await asyncio.wait_for(voice_service.synthesize(response), 60)
-                        if wav:
-                            # V1 is half-duplex PTT: bounded final WAV, live sentence streaming is step 5.
-                            for offset in range(0, len(wav), 48000):
-                                await turn_send(dict(type='audio.chunk', data=base64.b64encode(wav[offset:offset+48000]).decode()))
+                        spoken = await asyncio.wait_for(voice_service.speak(response), 60)
+                        await announce_conversion(turn_send, spoken.conversion)
+                        if spoken.conversion.startswith('stopped:'):
+                            await turn_send(dict(type='error', code='conversion_failed'))
+                        elif spoken.audio:
+                            # PTT keeps one bounded WAV; live mode streams per sentence.
+                            for offset in range(0, len(spoken.audio), 48000):
+                                await turn_send(dict(type='audio.chunk', data=base64.b64encode(spoken.audio[offset:offset+48000]).decode()))
                             await turn_send(dict(type='audio.done', mime='audio/wav'))
                         else:
                             await turn_send(dict(type='error', code='tts_unavailable'))
@@ -290,6 +323,11 @@ def router_for(agent, config, authenticate):
                     raise
                 except Exception:
                     await turn_send(dict(type='error', code='voice_failed'))
+                finally:
+                    if slow:
+                        slow.cancel()
+                    if speech:
+                        await speech.close()
 
             async def speak(text):
                 """Short fixed reply of a quick command; the same server TTS as normal answers."""
@@ -326,21 +364,50 @@ def router_for(agent, config, authenticate):
                 message = json.loads(raw)
                 if not isinstance(message, dict):
                     raise ValueError('bad_packet')
-                if message.get('type') == 'commit':
+                kind = message.get('type')
+                if kind == 'commit':
+                    live = message.get('mode') == 'live'
+                    request_id = _request_id(message.get('request_id'))
+                    if live and (listening is None or listening != request_id):
+                        raise ValueError('bad_packet')
                     if work and not work.done():
                         await send(dict(type='error', code='turn_busy'))
                         continue
                     pcm = bytes(audio)
                     audio.clear()
-                    current_request = _request_id(message.get('request_id'))
-                    work = asyncio.create_task(process(pcm, current_request))
-                elif message.get('type') == 'stop':
+                    listening = None
+                    current_request = request_id
+                    playback['acked'] = -1
+                    work = asyncio.create_task(process(pcm, current_request, live))
+                elif kind == 'listen.begin':
+                    request_id = _request_id(message.get('request_id'))
+                    if request_id is None:
+                        raise ValueError('bad_packet')
+                    if work and not work.done():
+                        # Barge-in: the user talks over Neyra; drop the old turn, keep the new phrase.
+                        old = current_request
+                        current_request = request_id
+                        await cancel_work()
+                        await send(dict(type='cancelled', request_id=old, reason='barge_in'))
                     audio.clear()
-                    if work:
-                        work.cancel()
-                        await asyncio.gather(work, return_exceptions=True)
+                    listening = current_request = request_id
+                elif kind == 'listen.cancel':
+                    if listening is not None and listening == _request_id(message.get('request_id')):
+                        audio.clear()
+                        listening = None
+                elif kind == 'audio.ack':
+                    seq = message.get('seq')
+                    if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+                        raise ValueError('bad_packet')
+                    if _request_id(message.get('request_id')) == current_request and seq > playback['acked']:
+                        playback['acked'] = seq
+                        acked.set()
+                elif kind == 'stop':
+                    audio.clear()
+                    listening = None
+                    await cancel_work()
                     await send(dict(type='cancelled', request_id=current_request))
-                elif message.get('type') == 'speak':
+                elif kind == 'speak':
                     text = message.get('text')
                     if not isinstance(text, str) or not text.strip() or len(text) > 300:
                         raise ValueError('bad_speak')
@@ -348,7 +415,7 @@ def router_for(agent, config, authenticate):
                         await send(dict(type='error', code='turn_busy'))
                         continue
                     work = asyncio.create_task(speak(text.strip()))
-                elif message.get('type') == 'ping':
+                elif kind == 'ping':
                     await send(dict(type='pong'))
                 else:
                     raise ValueError('bad_packet')
