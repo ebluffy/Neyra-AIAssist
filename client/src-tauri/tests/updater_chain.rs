@@ -87,8 +87,13 @@ struct Case {
 
 impl Case {
     fn new(require_signed_version: bool, pubkey: &str) -> Self {
+        Self::at_version("0.1.0", require_signed_version, pubkey)
+    }
+
+    fn at_version(current: &str, require_signed_version: bool, pubkey: &str) -> Self {
         let server = Server::start();
         let mut context = mock_context(noop_assets());
+        context.package_info_mut().version = current.parse().unwrap();
         context.config_mut().plugins.0.insert(
             "updater".into(),
             serde_json::json!({
@@ -257,4 +262,28 @@ fn shipped_pubkey() -> String {
         .as_str()
         .unwrap()
         .to_string()
+}
+
+/// Run by hand against a real signed build, for example:
+/// NEYRA_REAL_APPIMAGE=/path/Neyra_0.1.0_amd64.AppImage cargo test --test updater_chain -- --ignored
+/// The artifact must be signed with the committed TEST key (see docs/UPDATER.md).
+#[test]
+#[ignore = "needs NEYRA_REAL_APPIMAGE; see docs/UPDATER.md"]
+fn real_signed_appimage_installs_and_tampering_is_rejected() {
+    let path = std::env::var("NEYRA_REAL_APPIMAGE").expect("set NEYRA_REAL_APPIMAGE");
+    let artifact = std::fs::read(&path).unwrap();
+    let signature = std::fs::read_to_string(format!("{path}.sig")).unwrap();
+    let version = std::env::var("NEYRA_REAL_VERSION").unwrap_or_else(|_| "0.1.0".into());
+
+    let case = Case::at_version("0.0.9", true, TEST_PUBKEY);
+    case.release(&version, &signature, &artifact);
+    case.install().unwrap();
+    assert_eq!(case.installed(), artifact);
+
+    let mut tampered = artifact.clone();
+    let middle = tampered.len() / 2;
+    tampered[middle] ^= 0xff;
+    let rejected = Case::at_version("0.0.9", true, TEST_PUBKEY);
+    rejected.release(&version, &signature, &tampered);
+    rejected.assert_rejected_and_untouched();
 }

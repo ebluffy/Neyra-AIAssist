@@ -8,7 +8,7 @@ describe('character state from desktop events', () => {
     expect(stateFromEvent('speaking')).toBe('speaking');
   });
   it('returns to idle on stop, error and disconnect', () => {
-    for (const type of ['cancelled', 'error', 'disconnected']) expect(stateFromEvent(type)).toBe('idle');
+    for (const type of ['audio.finished', 'cancelled', 'error', 'disconnected']) expect(stateFromEvent(type)).toBe('idle');
   });
   it('ignores unrelated events', () => { expect(stateFromEvent('chat')).toBeUndefined(); });
 });

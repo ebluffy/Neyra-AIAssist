@@ -337,7 +337,7 @@ async fn connect(
                                         }
                                     },
                                                     Some("audio.chunk")=>{if let Some(data)=packet["data"].as_str(){if let Ok(bytes)=base64::engine::general_purpose::STANDARD.decode(data){if wav.len()+bytes.len()>8*1024*1024{break;}wav.extend(bytes);}}},
-                                                    Some("audio.done")=>{let state=handle.state::<Desktop>();let output_handle=handle.clone();let _=audio::play(std::mem::take(&mut wav),state.generation.clone(),move|code|{let _=output_handle.emit("desktop-event",if code=="audio_finished"{json!({"type":"audio.finished"})}else{json!({"type":"error","code":code})});});let _=handle.emit("desktop-event",json!({"type":"speaking"}));},
+                                                    Some("audio.done")=>{character::emit_mouth(&handle,&wav);let state=handle.state::<Desktop>();let output_handle=handle.clone();let _=audio::play(std::mem::take(&mut wav),state.generation.clone(),move|code|{let _=output_handle.emit("desktop-event",if code=="audio_finished"{json!({"type":"audio.finished"})}else{json!({"type":"error","code":code})});});let _=handle.emit("desktop-event",json!({"type":"speaking"}));},
                                                     Some("cancelled")=>{wav.clear();let _=handle.emit("desktop-event",packet);},
                                                     _=>{let _=handle.emit("desktop-event",packet);}
                                                 }
@@ -766,6 +766,8 @@ pub fn run() {
             character::character_state,
             character::character_save,
             character::character_overlay,
+            character::character_model_info,
+            character::character_model_load,
             updater::update_state,
             updater::update_save,
             updater::update_check,

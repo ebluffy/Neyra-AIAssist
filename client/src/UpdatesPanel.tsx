@@ -45,6 +45,7 @@ export function UpdatesPanel() {
   return <section aria-labelledby="updates-title">
     <h2 id="updates-title">Обновления</h2>
     <p>Версия {state.current_version}. Подпись обновления проверяется всегда; без неё файл не ставится. Установка не меняет разрешения для ПК и данные в папке Neyra.</p>
+    {state.install_kind === 'package' && <p role="note">Эта копия установлена как пакет (.deb). Обновление пакета запросит права администратора. Для CachyOS используйте AppImage.</p>}
     {!state.key_configured && <p role="alert" className="error">В этой сборке не задан публичный ключ подписи, автообновление отключено.</p>}
     {message && <p role="alert" className="error">{message}</p>}
     <label>Канал<select value={state.settings.channel} disabled={busy} onChange={e => void save({ ...state.settings, channel: e.target.value as UpdaterSettings['channel'] })}><option value="beta">Бета</option><option value="stable">Стабильный</option></select></label>

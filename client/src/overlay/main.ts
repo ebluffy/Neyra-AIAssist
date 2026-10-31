@@ -1,37 +1,50 @@
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { type MouthTrack, mouthAt, smoothMouth } from '../lipsync';
+import { drawFallback } from './fallback';
+import type { Rig } from './renderer';
 import { type CharacterState, stateFromEvent } from './state';
 
-// Placeholder renderer: no 3D engine is loaded yet. It proves the transparent
-// window, event wiring and state mapping; VRM drawing replaces draw().
+interface CharacterInfo { enabled: boolean; settings: { model: string | null; fps_limit: number } }
+
 const canvas = document.getElementById('stage') as HTMLCanvasElement;
-const context = canvas.getContext('2d');
 let state: CharacterState = 'idle';
+let track: MouthTrack | undefined;
+let mouth = 0;
+let rig: Rig | undefined;
 
 void listen<{ type: string }>('desktop-event', ({ payload }) => {
   const next = stateFromEvent(payload.type);
-  if (next) state = next;
+  if (next) { state = next; rig?.setState(next); }
 });
+void listen<{ frame_ms: number; levels: number[] }>('character-mouth', ({ payload }) => {
+  track = { startedAt: performance.now(), frameMs: payload.frame_ms, levels: payload.levels };
+});
+void listen<{ x: number; y: number }>('character-cursor', ({ payload }) => rig?.setLook(payload.x, payload.y));
 
-const colors: Record<CharacterState, string> = { idle: '#7a8aa0', listening: '#50d3e9', thinking: '#e9c350', speaking: '#7be99a' };
+// Mouth is smoothed here so the 3D and the flat renderer share one source.
+setInterval(() => {
+  mouth = smoothMouth(mouth, state === 'speaking' ? mouthAt(track, performance.now()) : 0);
+  rig?.setMouth(mouth);
+}, 33);
 
-function draw(time: number) {
+function runFallback() {
+  const context = canvas.getContext('2d');
   if (!context) return;
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  const bob = Math.sin(time / 600) * 4;
-  context.fillStyle = colors[state];
-  context.beginPath();
-  context.arc(160, 260 + bob, 90, 0, Math.PI * 2);
-  context.fill();
-  context.fillStyle = '#101722';
-  context.fillRect(130, 240 + bob, 14, 14);
-  context.fillRect(176, 240 + bob, 14, 14);
-  const open = state === 'speaking' ? 6 + Math.abs(Math.sin(time / 120)) * 16 : 4;
-  context.fillRect(140, 290 + bob, 40, open);
-}
-
-let last = 0;
-function frame(time: number) {
-  if (time - last >= 1000 / 30) { last = time; draw(time); }
+  const frame = (time: number) => { drawFallback(context, state, mouth, time); requestAnimationFrame(frame); };
   requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+
+async function start() {
+  const info = await invoke<CharacterInfo>('character_state');
+  if (!info.enabled || !info.settings.model) { runFallback(); return; }
+  try {
+    const bytes = await invoke<ArrayBuffer>('character_model_load', { name: info.settings.model });
+    const { startVrm } = await import('./renderer');
+    rig = await startVrm(canvas, bytes, info.settings.fps_limit);
+    rig.setState(state);
+  } catch {
+    runFallback();
+  }
+}
+void start();

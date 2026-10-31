@@ -5,7 +5,7 @@ export function stateFromEvent(type: string): CharacterState | undefined {
     case 'recording': return 'listening';
     case 'transcribing': return 'thinking';
     case 'speaking': return 'speaking';
-    case 'cancelled': case 'error': case 'disconnected': return 'idle';
+    case 'audio.finished': case 'cancelled': case 'error': case 'disconnected': return 'idle';
     default: return undefined;
   }
 }

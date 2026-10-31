@@ -22,6 +22,9 @@ if(cmd==='bridge_message'&&args.kind==='devices'){window.emitNative('desktop-eve
 if(cmd==='chat'){setTimeout(()=>{window.emitNative('desktop-event',{type:'token',text:'Привет'});window.emitNative('desktop-event',{type:'done',text:'Привет'});},20);return;}
 if(cmd==='stop'){window.emitNative('desktop-event',{type:'cancelled'});return;}
 if(cmd==='applications')return ['/usr/bin/firefox','/usr/bin/steam'];
+if(cmd==='update_state')return {settings:{schema_version:1,channel:'beta',auto_check:false},current_version:'0.1.0',endpoint:'https://example.invalid/latest.json',key_configured:true,install_kind:'appimage',pending_version:null};
+if(cmd==='update_check')return {available:true,version:'0.1.1',notes:'Тест',date:null};
+if(cmd==='character_state')return {enabled:false,settings:{schema_version:1,model:null,fps_limit:30,pause_fullscreen:true,pause_battery:true,always_on_top:true,click_through:true},capabilities:{transparent:'yes',always_on_top:'not_guaranteed',click_through:'yes',exclude_from_capture:'no',mechanism:'wayland-kde',notes:['Wayland не гарантирует always-on-top.']},models:[],overlay_open:false,renderer:'vrm',directory:'/tmp/Neyra/character'};
 if(cmd==='audit_log')return [{time:Date.now(),tool:'client.open_url',status:'ok',confirmed:false}];
 return;
 }};
@@ -35,6 +38,10 @@ with sync_playwright() as p:
     page.goto('http://127.0.0.1:1420')
     page.wait_for_load_state('networkidle')
     expect(page.get_by_role('heading',name='Сервер',exact=True)).to_be_visible()
+    expect(page.get_by_text('Персонаж выключен. Включите его в настройках выше и сохраните.')).to_be_visible()
+    expect(page.get_by_text('Wayland не гарантирует always-on-top.')).to_be_visible()
+    page.get_by_role('button',name='Проверить обновления').click()
+    expect(page.get_by_text('Доступна версия 0.1.1.')).to_be_visible()
     page.get_by_role('button',name='Проверить подключение').click()
     expect(page.get_by_text('Сервер доступен · API 1.1.0')).to_be_visible()
     page.evaluate('window.failApi=true')
