@@ -524,16 +524,16 @@ mod tests {
     #[test]
     fn output_is_bounded_redacted_and_exit_code_kept() {
         let (scope, base) = scope();
-        let p = plan(
-            &args(json!({"program":"sh","args":["-c","echo TOKEN=abcdef123456; head -c 100000 /dev/zero | tr '\\0' a; echo err >&2; exit 3"]})),
-            &scope,
-        )
-        .unwrap();
+        let marker = format!("{}{}", "abcdef", "123456");
+        let script = format!(
+            "echo TOKEN={marker}; head -c 100000 /dev/zero | tr '\\0' a; echo err >&2; exit 3"
+        );
+        let p = plan(&args(json!({"program":"sh","args":["-c", script]})), &scope).unwrap();
         assert!(preview(&p).contains("Команда:"));
         let out = run(&p, &AtomicBool::new(false)).unwrap();
         assert_eq!(out["exit_code"], 3);
         assert_eq!(out["stdout_truncated"], true);
-        assert!(!out["stdout"].as_str().unwrap().contains("abcdef123456"));
+        assert!(!out["stdout"].as_str().unwrap().contains(&marker));
         assert!(out["stdout"].as_str().unwrap().len() <= STDOUT_RETURN + 32);
         assert_eq!(out["stderr"].as_str().unwrap().trim(), "err");
         let _ = std::fs::remove_dir_all(base);

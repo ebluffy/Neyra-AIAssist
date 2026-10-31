@@ -55,6 +55,9 @@ def test_only_screenshots_may_carry_image_bytes_and_results_are_bounded():
     assert checked_result('client.fs_read', {'status': 'ok', 'data': 'QUJD'})['code'] == 'result_too_large'
     assert checked_result('client.shell_exec', {'status': 'ok', 'stdout': 'x' * 70000})['code'] == 'result_too_large'
     assert checked_result('client.shell_exec', ['not', 'a', 'dict'])['code'] == 'bad_result'
+    cyrillic = 'я' * 24_000
+    assert checked_result('client.shell_exec', {'status': 'ok', 'stdout': cyrillic})['status'] == 'ok'
+    assert checked_result('client.shell_exec', {'status': 'ok', 'stdout': 'я' * 40_000})['code'] == 'result_too_large'
 
 
 def test_large_non_result_packets_still_close_the_socket():

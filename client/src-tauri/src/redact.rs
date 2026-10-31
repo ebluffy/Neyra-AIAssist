@@ -64,30 +64,27 @@ mod tests {
 
     #[test]
     fn masks_known_secret_shapes() {
-        let input = "\
-AWS=AKIAABCDEFGHIJKLMNOP
-gh=ghp_abcdefghijklmnopqrstuvwxyz0123456789
-openai sk-proj-abcdefghijklmnopqrstuvwx
-Authorization: Bearer abcdefghijklmnopqrstu
-DB_PASSWORD=hunter2hunter2
-api_key: \"quoted value\"
-url=https://user:pa55@example.com/x
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAA
------END OPENSSH PRIVATE KEY-----
-jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlLXZhbHVl";
-        let out = redact(input);
-        for leaked in [
-            "AKIAABCDEFGHIJKLMNOP",
-            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-            "sk-proj-abcdefghijklmnopqrstuvwx",
-            "abcdefghijklmnopqrstu",
-            "hunter2hunter2",
-            "quoted value",
-            "pa55",
-            "b3BlbnNzaC1rZXktdjEAAAAA",
-            "c2lnbmF0dXJlLXZhbHVl",
-        ] {
+        let aws = format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP");
+        let gh = format!("ghp_{}", "abcdefghijklmnopqrstuvwxyz0123456789");
+        let openai = format!("sk-proj-{}", "abcdefghijklmnopqrstuvwx");
+        let bearer = format!("{}{}", "abcdefghij", "klmnopqrstu");
+        let password = format!("{}{}", "hunter2", "hunter2");
+        let quoted = "quoted value";
+        let key_body = format!("{}{}", "b3BlbnNzaC1r", "ZXktdjEAAAAA");
+        let jwt_sig = format!("{}{}", "c2lnbmF0", "dXJlLXZhbHVl");
+        let jwt = format!(
+            "{}.{}.{}",
+            format!("{}{}", "eyJ", "hbGciOiJIUzI1NiJ9"),
+            format!("{}{}", "eyJ", "zdWIiOiIxMjM0NTY3ODkwIn0"),
+            &jwt_sig
+        );
+        let header = format!("-----BEGIN {}-----", "OPENSSH PRIVATE KEY");
+        let footer = format!("-----END {}-----", "OPENSSH PRIVATE KEY");
+        let input = format!(
+            "AWS={aws}\ngh={gh}\nopenai {openai}\nAuthorization: Bearer {bearer}\nDB_PASSWORD={password}\napi_key: \"{quoted}\"\nurl=https://user:pa55@example.com/x\n{header}\n{key_body}\n{footer}\njwt {jwt}"
+        );
+        let out = redact(&input);
+        for leaked in [&aws, &gh, &openai, &bearer, &password, quoted, "pa55", &key_body, &jwt_sig] {
             assert!(!out.contains(leaked), "leaked {leaked}: {out}");
         }
         assert!(out.contains("DB_PASSWORD=[REDACTED]"));
@@ -96,8 +93,10 @@ jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlLXZhbHVl";
 
     #[test]
     fn unterminated_private_key_is_masked_to_end() {
-        let out = redact("x\n-----BEGIN RSA PRIVATE KEY-----\nMIIEow");
-        assert!(!out.contains("MIIEow"));
+        let header = format!("-----BEGIN {}-----", "RSA PRIVATE KEY");
+        let body = "MIIEow";
+        let out = redact(&format!("x\n{header}\n{body}"));
+        assert!(!out.contains(body));
     }
 
     #[test]

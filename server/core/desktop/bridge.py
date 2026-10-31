@@ -90,6 +90,10 @@ class Connection:
     revoked: bool = False
 
 
+def wire_len(value):
+    return len(json.dumps(value, ensure_ascii=False).encode())
+
+
 def checked_result(tool, result):
     """Bounded, typed result: only a screenshot may carry image bytes."""
     if not isinstance(result, dict):
@@ -100,10 +104,10 @@ def checked_result(tool, result):
                                              or result.get('mime') != 'image/jpeg'):
             return {'status': 'error', 'code': 'bad_screenshot'}
         rest = {k: v for k, v in result.items() if k != 'data'}
-        if len(json.dumps(rest)) > 4096:
+        if wire_len(rest) > 4096:
             return {'status': 'error', 'code': 'result_too_large'}
         return result
-    if 'data' in result or len(json.dumps(result)) > RESULT_LIMIT:
+    if 'data' in result or wire_len(result) > RESULT_LIMIT:
         return {'status': 'error', 'code': 'result_too_large'}
     return result
 

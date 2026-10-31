@@ -2,12 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { type DraftEvent, type RunEvent, describeRun } from './commands';
-import { CharacterPanel } from './CharacterPanel';
 import { CommandsScreen } from './screens/CommandsScreen';
 import { DraftDialog } from './screens/DraftDialog';
 import { PermissionsScreen } from './screens/PermissionsScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
-import { UpdatesPanel } from './UpdatesPanel';
 import { type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, conversionNotice, defaultVoice, formatError, liveLabel, meterLevel, newProfile, tabs, toolTitles, validServerUrl } from './types';
 
 export function App() {

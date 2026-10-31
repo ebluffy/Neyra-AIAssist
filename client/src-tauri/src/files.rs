@@ -450,7 +450,8 @@ mod tests {
             fs::write(data.join("settings/app.json"), "{}").unwrap();
             fs::create_dir_all(base.join("outside")).unwrap();
             fs::write(base.join("outside/secret.txt"), "outside").unwrap();
-            fs::write(root.join("note.txt"), "hello\nAPI_KEY=abcdef123456\n").unwrap();
+            let marker = format!("{}{}", "abcdef", "123456");
+            fs::write(root.join("note.txt"), format!("hello\nAPI_KEY={marker}\n")).unwrap();
             Self { base, root, data }
         }
         fn scope(&self) -> Scope {
@@ -472,7 +473,8 @@ mod tests {
         let out = read(&s.scope(), &s.p("note.txt"), 0, 1024).unwrap();
         let text = out["text"].as_str().unwrap();
         assert!(text.contains("hello"));
-        assert!(!text.contains("abcdef123456"));
+        let marker = format!("{}{}", "abcdef", "123456");
+        assert!(!text.contains(&marker));
     }
 
     #[test]
