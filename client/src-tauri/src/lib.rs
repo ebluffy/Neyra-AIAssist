@@ -1226,6 +1226,14 @@ fn audit_log(state: State<'_, Desktop>) -> Result<Vec<Value>, String> {
 async fn applications() -> Vec<String> {
     host::discover_apps()
 }
+#[tauri::command]
+fn load_chats(state: State<'_, Desktop>) -> Result<Vec<storage::SavedChat>, String> {
+    storage::load_chats(&state.root)
+}
+#[tauri::command]
+fn save_chats(state: State<'_, Desktop>, threads: Vec<storage::SavedChat>) -> Result<(), String> {
+    storage::save_chats(&state.root, &threads)
+}
 
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -1233,6 +1241,7 @@ pub fn run() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let root = storage::data_root().map_err(std::io::Error::other)?;
             let (settings, recoveries) =
@@ -1369,6 +1378,8 @@ pub fn run() {
             speak_text,
             audit_log,
             applications,
+            load_chats,
+            save_chats,
             command_runner::commands_list,
             command_runner::command_save,
             command_runner::command_save_yaml,

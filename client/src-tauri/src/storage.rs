@@ -13,7 +13,7 @@ pub const SETTINGS_VERSION: u32 = 2;
 pub const PERMISSIONS_VERSION: u32 = 1;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const KEPT_QUARANTINE: usize = 5;
-pub const DIRECTORIES: [&str; 9] = [
+pub const DIRECTORIES: [&str; 10] = [
     "settings",
     "commands",
     "permissions",
@@ -23,6 +23,7 @@ pub const DIRECTORIES: [&str; 9] = [
     "models",
     "cache",
     "wakeword",
+    "chats",
 ];
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -769,11 +770,150 @@ pub fn secret(profile: &str) -> Result<keyring::Entry, String> {
         .map_err(|_| "Системное хранилище секретов недоступно".into())
 }
 
+const CHAT_VERSION: u32 = 1;
+const MAX_CHAT_BYTES: u64 = 1024 * 1024;
+const MAX_CHAT_THREADS: usize = 30;
+const MAX_CHAT_MESSAGES: usize = 100;
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedChat {
+    pub id: String,
+    pub title: String,
+    pub session_id: String,
+    pub updated: u64,
+    pub messages: Vec<SavedMessage>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChatFile {
+    schema_version: u32,
+    threads: Vec<SavedChat>,
+}
+
+fn chats_path(root: &Path) -> PathBuf {
+    root.join("chats/threads.json")
+}
+
+pub fn load_chats(root: &Path) -> Result<Vec<SavedChat>, String> {
+    let path = chats_path(root);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = read_limited(&path, MAX_CHAT_BYTES)?;
+    let file: ChatFile = serde_json::from_slice(&data).map_err(|_| "История чатов повреждена")?;
+    validate_chats(&file.threads)?;
+    if file.schema_version != CHAT_VERSION {
+        return Err("История чатов повреждена".into());
+    }
+    Ok(file.threads)
+}
+
+pub fn save_chats(root: &Path, threads: &[SavedChat]) -> Result<(), String> {
+    validate_chats(threads)?;
+    fs::create_dir_all(root.join("chats")).map_err(|_| "Не удалось создать папку чатов")?;
+    let file = ChatFile {
+        schema_version: CHAT_VERSION,
+        threads: threads.to_vec(),
+    };
+    atomic_write(
+        &chats_path(root),
+        &serde_json::to_vec_pretty(&file).map_err(|_| "Не удалось записать историю чатов")?,
+    )
+}
+
+fn validate_chats(threads: &[SavedChat]) -> Result<(), String> {
+    if threads.len() > MAX_CHAT_THREADS {
+        return Err("Слишком много чатов".into());
+    }
+    for thread in threads {
+        if !plain_id(&thread.id)
+            || !plain_id(&thread.session_id)
+            || thread.title.chars().count() > 80
+        {
+            return Err("История чатов повреждена".into());
+        }
+        Uuid::parse_str(&thread.session_id).map_err(|_| "История чатов повреждена")?;
+        if thread.messages.len() > MAX_CHAT_MESSAGES {
+            return Err("Слишком длинный чат".into());
+        }
+        for message in &thread.messages {
+            if !plain_id(&message.id)
+                || !matches!(message.role.as_str(), "user" | "assistant")
+                || !matches!(message.kind.as_str(), "text" | "voice")
+                || message.content.chars().count() > 8000
+                || message.duration_ms.is_some_and(|ms| ms > 120_000)
+            {
+                return Err("История чатов повреждена".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn plain_id(value: &str) -> bool {
+    (1..=80).contains(&value.chars().count())
+        && !value.contains(['/', '\\'])
+        && !value.contains("..")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn temp() -> PathBuf {
         std::env::temp_dir().join(Uuid::new_v4().to_string())
+    }
+    #[test]
+    fn chats_round_trip_and_reject_a_bad_file() {
+        let root = temp();
+        create_directories(&root).unwrap();
+        assert!(load_chats(&root).unwrap().is_empty());
+        let thread = SavedChat {
+            id: "thread-1".into(),
+            title: "Привет".into(),
+            session_id: Uuid::new_v4().to_string(),
+            updated: 10,
+            messages: vec![SavedMessage {
+                id: "m1".into(),
+                role: "user".into(),
+                content: "секрет".into(),
+                kind: "text".into(),
+                duration_ms: None,
+            }],
+        };
+        save_chats(&root, &[thread]).unwrap();
+        let loaded = load_chats(&root).unwrap();
+        assert_eq!(loaded[0].messages[0].content, "секрет");
+        assert!(!root
+            .join("chats")
+            .read_dir()
+            .unwrap()
+            .any(|e| { e.unwrap().file_name().to_string_lossy().contains(".tmp") }));
+        fs::write(root.join("chats/threads.json"), br#"{"schema_version":1,"threads":[{"id":"x","title":"t","sessionId":"not-a-uuid","updated":1,"messages":[]}]}"#).unwrap();
+        assert!(load_chats(&root).is_err());
+        assert!(
+            root.join("chats/threads.json").exists(),
+            "a bad file is left in place"
+        );
+        fs::write(
+            root.join("chats/threads.json"),
+            br#"{"schema_version":1,"threads":[],"token":"secret"}"#,
+        )
+        .unwrap();
+        assert!(load_chats(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn settings_never_contain_token() {
