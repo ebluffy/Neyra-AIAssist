@@ -42,8 +42,12 @@ def test_plugin_builder_does_not_send_plugin_yaml_to_model(tmp_path, monkeypatch
     assert "plugin.yaml" not in captured["user"]
 
 
-def test_missing_mcp_executable_does_not_reconnect():
+def test_missing_mcp_executable_does_not_reconnect(monkeypatch):
+    from core.runtime import mcp_client
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(mcp_client, '_HAS_MCP', True)
     manager = MCPClientManager({"mcp_client": {"enabled": True, "servers": {"browsermcp": {"transport": "stdio", "command": "missing"}}}})
+    manager._one_stdio_session = AsyncMock(side_effect=FileNotFoundError())
 
     async def run():
         task = asyncio.create_task(manager._run_server_forever("browsermcp", manager._specs["browsermcp"]))
@@ -54,6 +58,7 @@ def test_missing_mcp_executable_does_not_reconnect():
 
     asyncio.run(run())
     assert manager._errors["browsermcp"] == "missing executable"
+    assert manager._one_stdio_session.call_count == 1
 
 
 def test_gif_does_not_trigger_music_but_explicit_play_is_preserved():

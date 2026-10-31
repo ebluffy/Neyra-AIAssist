@@ -309,6 +309,9 @@ class SqliteStore:
         limit: int = 20,
         offset: int = 0,
         newest_first: bool = True,
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        shared_only: bool = False,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 500))
         offset = max(0, int(offset))
@@ -321,6 +324,18 @@ class SqliteStore:
         if channel_id:
             clauses.append("channel_id = ?")
             params.append(channel_id)
+        if after:
+            clauses.append("ts >= ?")
+            params.append(to_utc_iso(after))
+        if before:
+            clauses.append("ts < ?")
+            params.append(to_utc_iso(before))
+        if shared_only:
+            metadata = "CASE WHEN json_valid(meta) THEN meta ELSE '{}' END"
+            visibility = f"json_extract({metadata}, '$.visibility')"
+            discord_id = f"json_extract({metadata}, '$.discord_id')"
+            # Legacy Discord rows lack visibility; their channel snowflake is globally unique.
+            clauses.append(f"({visibility} = 'channel' OR ({visibility} IS NULL AND COALESCE({discord_id}, '') != ''))")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         order = "DESC" if newest_first else "ASC"
         sql = (
@@ -331,6 +346,19 @@ class SqliteStore:
         with self._lock:
             cur = self._conn.execute(sql, params)
             return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def get_chat_message(self, message_id: int) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM chat_log WHERE id=?", (message_id,)).fetchone()
+            return self._row_to_dict(row) if row else None
+
+    def chat_window_stats(self, *, after: str, before: str) -> dict[str, int]:
+        where = "role IN ('user','assistant') AND ts >= ? AND ts < ?"
+        params = (to_utc_iso(after), to_utc_iso(before))
+        with self._lock:
+            rows = self._conn.execute(f"SELECT COUNT(*) FROM chat_log WHERE {where}", params).fetchone()[0]
+            groups = self._conn.execute(f"SELECT COUNT(*) FROM (SELECT user_id,channel_id FROM chat_log WHERE {where} GROUP BY user_id,channel_id)", params).fetchone()[0]
+        return {"rows": rows, "groups": groups}
 
     def count_table(self, table: str) -> int:
         allowed = {
@@ -499,6 +527,37 @@ class SqliteStore:
                 (person_id, limit),
             )
             return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def list_visible_person_facts(
+        self, person_id: str, *, public_channel_id: Optional[str] = None,
+        private_owner_id: Optional[str] = None, owns_profile: bool = False,
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        """Apply response scope before LIMIT so invisible facts cannot crowd out visible ones."""
+        metadata = "CASE WHEN json_valid(meta) THEN meta ELSE '{}' END"
+        visibility = f"json_extract({metadata}, '$.visibility')"
+        owner = f"json_extract({metadata}, '$.owner_id')"
+        channel = f"json_extract({metadata}, '$.channel_id')"
+        clauses = [f"{visibility} = 'shared'"]
+        params: list[Any] = [person_id]
+        if public_channel_id:
+            clauses.append(f"({visibility} = 'channel' AND {channel} = ?)")
+            params.append(public_channel_id)
+        if private_owner_id:
+            clauses.append(f"{owner} = ?")
+            params.append(private_owner_id)
+            if owns_profile:
+                clauses.append(
+                    f"(({owner} IS NULL OR {owner} = '') AND "
+                    f"({visibility} IS NULL OR {visibility} IN ('private', 'channel')))"
+                )
+        params.append(max(1, min(int(limit), 200)))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM person_facts WHERE person_id = ? AND ("
+                + " OR ".join(clauses) + ") ORDER BY id DESC LIMIT ?", params,
+            ).fetchall()
+            return [self._row_to_dict(row) for row in rows]
 
     def delete_person_fact(self, person_id: str, fact_id: int) -> bool:
         with self._lock:

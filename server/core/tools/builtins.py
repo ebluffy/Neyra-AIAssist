@@ -27,6 +27,7 @@ import subprocess
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from langchain_core.tools import tool
 
@@ -66,17 +67,22 @@ _turn_memory_uid: contextvars.ContextVar[str] = contextvars.ContextVar(
 _turn_memory_channel: contextvars.ContextVar[str] = contextvars.ContextVar(
     "neyra_turn_memory_channel", default=""
 )
+_turn_history_shared: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "neyra_turn_history_shared", default=False
+)
 
 
-def set_turn_memory_scope(*, user_id: str = "", channel_id: str = "") -> None:
+def set_turn_memory_scope(*, user_id: str = "", channel_id: str = "", shared_channel: bool = False) -> None:
     """Bind current turn user/channel for scoped semantic search."""
     _turn_memory_uid.set(str(user_id or "").strip())
     _turn_memory_channel.set(str(channel_id or "").strip())
+    _turn_history_shared.set(bool(shared_channel))
 
 
 def clear_turn_memory_scope() -> None:
     _turn_memory_uid.set("")
     _turn_memory_channel.set("")
+    _turn_history_shared.set(False)
 
 
 def get_turn_memory_scope() -> dict[str, str]:
@@ -208,7 +214,7 @@ def web_search(query: str) -> str:
                 _websearch_fail_count.get(eng, 0),
             ),
         )
-        last_error = "no engine tried"
+        had_success = False
         results = []
         used_engine = ""
 
@@ -226,6 +232,7 @@ def web_search(query: str) -> str:
                             backend=engine,
                         )
                     )
+                had_success = True
                 if batch:
                     used_engine = engine
                     results = batch
@@ -240,7 +247,6 @@ def web_search(query: str) -> str:
                 _websearch_cooldown_until[engine] = 0.0
                 break
             except Exception as e:
-                last_error = f"{engine}: {e}"
                 fails = int(_websearch_fail_count.get(engine, 0)) + 1
                 _websearch_fail_count[engine] = fails
                 cooldown_s = min(
@@ -257,15 +263,22 @@ def web_search(query: str) -> str:
                 continue
 
         if not results:
-            return "Ничего не нашла."
+            return "Ничего не нашла." if had_success else "Поиск временно недоступен."
         if used_engine:
-            logger.debug("WebSearch backend success | engine=%s", used_engine)
+            logger.debug("WebSearch results | requested_backend=%s reported_backend=unknown", used_engine)
 
         lines = []
         for i, r in enumerate(results, 1):
             title = r.get("title", "Без названия")
             body = r.get("body", "")[:300]
             lines.append(f"[{i}] {title}\n{body}")
+            href = str(r.get("href") or r.get("url") or "")
+            try:
+                parsed = urlsplit(href)
+                if parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username and not parsed.password:
+                    lines[-1] += f"\nSource: {href}"
+            except ValueError:
+                pass
 
         return "\n\n".join(lines)
 
@@ -300,9 +313,11 @@ def search_memory(query: str, user_id: str = "") -> str:
             "(защита от чужих фрагментов памяти)."
         )
     if _memory_hub is not None:
-        results = _memory_hub.search_semantic(query, user_id=uid)
+        results = _memory_hub.search_semantic(query, user_id=uid,
+            **({"shared_only": True, "channel_id": _turn_memory_channel.get()} if _turn_history_shared.get() else {}))
     elif _long_memory is not None:
-        results = _long_memory.search(query, user_id=uid)
+        results = _long_memory.search(query, user_id=uid,
+            **({"shared_only": True, "channel_id": _turn_memory_channel.get()} if _turn_history_shared.get() else {}))
     else:
         return "Долгосрочная память не инициализирована."
 
@@ -322,11 +337,16 @@ def recall_chat(
     offset: int = 0,
     user_id: str = "",
     channel_id: str = "",
+    after: str = "",
+    before: str = "",
 ) -> str:
     """
     Recall chronological chat history from SQLite, not semantic RAG.
-    limit is 1-100 messages; offset skips newest messages. The trusted turn owner
-    takes precedence over user_id. Unfiltered cross-user history is forbidden.
+    limit is 1-100 messages; offset skips newest messages. after/before are ISO
+    timestamps (inclusive/exclusive); dates and naive times use server timezone.
+    Shared turns can read all authors only in their trusted current channel.
+    Private turns read only their owner. Model arguments cannot widen scope.
+    An empty or limited excerpt never proves that no earlier conversation exists.
     """
     if _memory_hub is None:
         return "Memory Hub не инициализирован."
@@ -334,20 +354,27 @@ def recall_chat(
     scope_uid = (_turn_memory_uid.get() or "").strip()
     scope_cid = (_turn_memory_channel.get() or "").strip()
     arg_uid = (user_id or "").strip()
-    arg_cid = (channel_id or "").strip()
     if arg_uid and scope_uid and arg_uid != scope_uid:
         logger.warning(
             "recall_chat: tool user_id=%r ignored (turn scope=%r)",
             arg_uid[:64],
             scope_uid[:64],
         )
-    uid = scope_uid or None
-    cid = scope_cid or arg_cid or None
-    if not uid and not cid:
-        return (
-            "Нужен фильтр: укажи user_id и/или channel_id. "
-            "Без фильтра chat_log по всем пользователям не отдаётся."
-        )
+    if not scope_uid:
+        return "Trusted turn scope unavailable; chat history was not searched."
+    shared = _turn_history_shared.get() and bool(scope_cid)
+    uid = None if shared else scope_uid
+    cid = scope_cid or None
+    from core.runtime.timeutil import parse_ts, to_utc_iso
+    bounds = {}
+    for key, value in (("after", after), ("before", before)):
+        if value:
+            dt = parse_ts(value)
+            if dt is None:
+                return "Invalid history timestamp; use ISO dates or timestamps."
+            bounds[key] = to_utc_iso(dt)
+    if bounds.get("after") and bounds.get("before") and bounds["after"] >= bounds["before"]:
+        return "History after must precede before."
     lim = max(1, min(int(limit or 10), 100))
     off = max(0, int(offset or 0))
     rows = _memory_hub.list_chat(
@@ -356,17 +383,20 @@ def recall_chat(
         limit=lim,
         offset=off,
         newest_first=True,
+        shared_only=shared,
+        **bounds,
     )
     if not rows:
-        return "В chat log пока пусто по этим фильтрам."
+        return "No stored messages matched this scope/time/page. This does not establish that no conversation occurred."
     # newest_first from SQL — show oldest→newest for reading
     rows = list(reversed(rows))
-    lines = [f"Chat log (limit={lim}, offset={off}), oldest→newest:"]
+    lines = [f"Stored excerpt only (limit={lim}, offset={off}), oldest→newest; earlier messages may require another page/time range:"]
     for r in rows:
         ts = str(r.get("ts") or "")[:19]
         role = r.get("role") or "?"
         text = str(r.get("text") or "").replace("\n", " ")[:300]
-        lines.append(f"[{ts}] {role}: {text}")
+        author = str(r.get("display_name") or r.get("user_id") or "unknown").replace("\n", " ")[:120]
+        lines.append(f"[{ts}] {role} [{author}]: {text}")
     return "\n".join(lines)
 
 
@@ -383,6 +413,7 @@ def remember_knowledge(text: str, category: str = "general", affect_note: str = 
     if not scope["user_id"]:
         return "Cannot save memory without a trusted turn owner."
     meta.update(user_id=scope["user_id"], channel_id=scope["channel_id"], type="user_knowledge")
+    meta["visibility"] = "channel" if _turn_history_shared.get() else "private"
     aff = (affect_note or "").strip()
     if aff:
         meta["affect"] = aff[:500]
@@ -452,7 +483,10 @@ def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str
     pid = str(person.get("id") or "").strip()
     if _memory_hub is not None:
         try:
-            _memory_hub.add_person_fact(pid, fact.strip(), emotion_note=emo, source="tool", require_existing=True)
+            scope = get_turn_memory_scope()
+            _memory_hub.add_person_fact(pid, fact.strip(), emotion_note=emo, source="tool", require_existing=True,
+                meta={"owner_id": scope["user_id"], "channel_id": scope["channel_id"],
+                      "visibility": "channel" if _turn_history_shared.get() else "private"})
             return f"Записала факт про {pid}."
         except KeyError:
             return "Карточка удалена или объединена. Обнови person_id перед записью."
@@ -474,6 +508,8 @@ def get_person_info(name_or_id: str) -> str:
     """
     Retrieve a known person's dossier. Prefer a stable ID for name_or_id;
     do not assume that identical display names identify the same person.
+    Facts are filtered for the current channel/private owner; unavailable facts
+    do not imply that the known person has no profile or prior conversations.
     """
     if _people_db is None and _memory_hub is None:
         return "PeopleDB не инициализирована."
@@ -484,9 +520,11 @@ def get_person_info(name_or_id: str) -> str:
 
     pid = str(person.get("id") or "").strip()
     if _memory_hub is not None:
-        summary = _memory_hub.get_person_summary(pid)
+        scope = get_turn_memory_scope()
+        summary = _memory_hub.get_person_summary(pid, public_channel_id=scope["channel_id"], restrict_to_channel=True,
+            private_owner_id=None if _turn_history_shared.get() else scope["user_id"])
     else:
-        summary = _people_db.get_summary(pid) if _people_db is not None else ""
+        return "Scoped People memory is unavailable; private dossier facts were not read."
     return summary or f"Досье на {name_or_id} есть, но оно пустое."
 
 

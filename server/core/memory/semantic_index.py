@@ -17,6 +17,8 @@ class SemanticIndex(Protocol):
         n_results: Optional[int] = None,
         *,
         user_id: Optional[str] = None,
+        shared_only: bool = False,
+        channel_id: Optional[str] = None,
     ) -> list[str]:
         ...
 
@@ -45,9 +47,12 @@ class ChromaSemanticIndex:
         n_results: Optional[int] = None,
         *,
         user_id: Optional[str] = None,
+        shared_only: bool = False,
+        channel_id: Optional[str] = None,
     ) -> list[str]:
         return list(
-            self._ltm.search(query, n_results=n_results, user_id=user_id) or []
+            self._ltm.search(query, n_results=n_results, user_id=user_id,
+                             **({"shared_only": True, "channel_id": channel_id} if shared_only else {})) or []
         )
 
     def count(self) -> int:

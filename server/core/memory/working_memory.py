@@ -224,4 +224,4 @@ async def refresh_working_memory_async(
             except Exception as e:
                 logger.debug("working_memory event: %s", e)
     except Exception as e:
-        logger.warning("working_memory refresh: %s", e)
+        logger.warning("working_memory refresh failed | error_class=%s", type(e).__name__)
