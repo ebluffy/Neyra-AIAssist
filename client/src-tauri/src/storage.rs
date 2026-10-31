@@ -23,6 +23,16 @@ pub struct Permissions {
     pub allow_web: bool,
     pub web_domains: Vec<String>,
     pub system: bool,
+    /// Contour 3: console commands (every call needs a confirmation card).
+    pub shell: bool,
+    /// Contour 3: files inside `fs_roots` only.
+    pub files: bool,
+    pub fs_roots: Vec<String>,
+    /// Contour 4: screenshots; `screen_auto` skips the card for screenshots only.
+    pub screen: bool,
+    pub screen_auto: bool,
+    /// Contour 4: mouse and keyboard (every sequence needs a confirmation card).
+    pub input: bool,
 }
 impl Default for Permissions {
     fn default() -> Self {
@@ -32,6 +42,12 @@ impl Default for Permissions {
             allow_web: true,
             web_domains: vec![],
             system: true,
+            shell: false,
+            files: false,
+            fs_roots: vec![],
+            screen: false,
+            screen_auto: false,
+            input: false,
         }
     }
 }

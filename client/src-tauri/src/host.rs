@@ -1,8 +1,11 @@
+use crate::files::{self, Scope};
 #[cfg(not(windows))]
 use crate::policy::available_program;
 use crate::policy::{checked_file, child_environment, web_url, ToolCall};
+use crate::storage::Permissions;
 use serde_json::{json, Value};
 use std::{
+    path::Path,
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -53,7 +56,12 @@ fn bounded(mut command: Command, cancel: &AtomicBool) -> Result<String, String> 
     }
 }
 
-pub fn execute(call: &ToolCall, cancel: Arc<AtomicBool>) -> Result<Value, String> {
+pub fn execute(
+    call: &ToolCall,
+    cancel: Arc<AtomicBool>,
+    permissions: &Permissions,
+    data_root: &Path,
+) -> Result<Value, String> {
     if cancel.load(Ordering::SeqCst) {
         return Err("Действие остановлено".into());
     }
@@ -63,7 +71,33 @@ pub fn execute(call: &ToolCall, cancel: Arc<AtomicBool>) -> Result<Value, String
             .and_then(Value::as_str)
             .ok_or_else(|| "Неверный параметр".to_string())
     };
+    let opt = |key: &str| call.arguments.get(key).and_then(Value::as_str);
+    let scope = || Scope::new(&permissions.fs_roots, data_root);
     match call.tool.as_str() {
+        "client.shell_exec" => {
+            let args = call.arguments.as_object().ok_or("Неверные параметры")?;
+            let plan = crate::shell::plan(args, &scope())?;
+            crate::shell::run(&plan, &cancel)
+        }
+        "client.fs_list" => files::list(&scope(), arg("path")?),
+        "client.fs_read" => files::read(
+            &scope(),
+            arg("path")?,
+            call.arguments
+                .get("offset")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            call.arguments
+                .get("max_bytes")
+                .and_then(Value::as_u64)
+                .map_or(files::READ_LIMIT, |n| n as usize),
+        ),
+        "client.fs_search" => {
+            files::search(&scope(), arg("path")?, opt("name"), opt("content"), &cancel)
+        }
+        "client.fs_write" => files::write(&scope(), arg("path")?, arg("content")?, arg("mode")?),
+        "client.fs_mkdir" => files::make_dir(&scope(), arg("path")?),
+        "client.fs_move" => files::move_entry(&scope(), arg("from")?, arg("to")?),
         "client.open_url" | "client.search_web" => {
             let url = if call.tool == "client.search_web" {
                 let mut u = url::Url::parse("https://www.google.com/search")
