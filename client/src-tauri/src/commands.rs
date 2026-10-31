@@ -538,6 +538,7 @@ pub fn dry_run(
             let (verdict, message) = match policy::validate(
                 &call,
                 permissions,
+                Path::new("."),
                 device,
                 LOCAL_SESSION,
                 &mut HashMap::new(),

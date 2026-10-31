@@ -84,6 +84,9 @@ async def run_brain_tool_phase(
         turn_tools = dict(desktop_tools)
     use_tool_loop = bool(turn_tools)
     max_tool_steps = max(1, int(mcp_cfg.get("llm_tool_max_steps", 4)))
+    # Bounded agent loop (§10 / §3b.11 step 6): wall clock + optional cancel re-check.
+    wall_s = max(1, int(mcp_cfg.get("llm_tool_wall_seconds", 90)))
+    cancel_check = mcp_cfg.get("llm_tool_cancel_check")
 
     brain_llm = agent.llm_brain
     if lyrics_mode:
@@ -103,10 +106,28 @@ async def run_brain_tool_phase(
             )
             return extract_think_blocks(text)[0].strip()
 
+        import time as _time
+
         bound = brain_llm.bind_tools(list(turn_tools.values()))
         step = 0
         response = None
+        deadline = _time.monotonic() + wall_s
+        wall_exhausted = False
         while step < max_tool_steps:
+            if _time.monotonic() >= deadline:
+                wall_exhausted = True
+                break
+            if callable(cancel_check) and cancel_check():
+                return json.dumps({"tool_cancelled": True, "steps": step}, ensure_ascii=False)
+            # Refresh desktop tool binding each step — revoked/disconnected device must not keep stale tools.
+            desktop_tools = brain_tools()
+            if bool(mcp_cfg.get("llm_tool_calls")):
+                turn_tools = {**agent.tools, **desktop_tools}
+            else:
+                turn_tools = dict(desktop_tools)
+            if not turn_tools:
+                break
+            bound = brain_llm.bind_tools(list(turn_tools.values()))
             response = await invoke(agent, bound, messages, lane="brain", purpose="tools", images=bool(vision_images), invoker=agent._ainvoke_text_with_fallback)
             agent._log_model_route(agent._extract_model_name(response), lane="brain")
             tcalls = getattr(response, "tool_calls", None) if isinstance(response, LC_AIMessage) else None
@@ -134,6 +155,8 @@ async def run_brain_tool_phase(
                     out = await agent._execute_tool(tname, **args)
                 messages.append(ToolMessage(content=out, tool_call_id=tid, name=tname))
             step += 1
+        if wall_exhausted:
+            return json.dumps({"tool_wall_exhausted": True, "steps": step, "wall_seconds": wall_s}, ensure_ascii=False)
         if response is not None and getattr(response, "tool_calls", None) and step >= max_tool_steps:
             observed = [message for message in messages if isinstance(message, ToolMessage)]
             return json.dumps({

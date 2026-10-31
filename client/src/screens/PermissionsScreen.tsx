@@ -19,10 +19,19 @@ export function PermissionsScreen({ settings, setSettings, save, pcAvailable, bu
   return <section aria-labelledby="permissions-title">
     <h1 id="permissions-title">Доступ к ПК</h1>
     {!pcAvailable && <p role="status">Доступ приостановлен: сессия заблокирована или ОС не подтвердила её состояние. Чат доступен.</p>}
-    <p>Безопасное Нейра делает сама, неизвестная программа или домен требуют подтверждения. CLI, файлы, экран и ввод ещё недоступны.</p>
+    <p>Безопасное Нейра делает сама; неизвестная программа/домен и опасные действия — с карточкой. Контуры 3–4 по умолчанию выключены.</p>
     <label className="check"><input type="checkbox" checked={p.enabled} disabled={busy} onChange={e => patch({ enabled: e.target.checked })}/>Разрешить Нейре управлять этим ПК</label>
     <label className="check"><input type="checkbox" checked={p.allow_web} disabled={busy} onChange={e => patch({ allow_web: e.target.checked })}/>Браузер: ссылки и поиск</label>
     <label className="check"><input type="checkbox" checked={p.system} disabled={busy} onChange={e => patch({ system: e.target.checked })}/>Приложения и система: окна и медиа (если доступны)</label>
+    <h2>Контур 3 · CLI и файлы</h2>
+    <label className="check"><input type="checkbox" checked={!!p.shell} disabled={busy || !p.enabled} onChange={e => patch({ shell: e.target.checked })}/>Консоль (каждая команда с подтверждением)</label>
+    <label className="check"><input type="checkbox" checked={!!p.files} disabled={busy || !p.enabled} onChange={e => patch({ files: e.target.checked })}/>Файлы в разрешённых корнях</label>
+    <label>Корни файловой системы (по одному пути на строку)<textarea value={(p.fs_roots ?? []).join('\n')} rows={3} disabled={busy || !p.files} onChange={e => setSettings({ ...settings, permissions: { ...p, fs_roots: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) } })}/></label>
+    <button disabled={busy || !p.files} onClick={() => run(async () => { await save(settings); notify('Корни FS сохранены'); })}>Сохранить корни FS</button>
+    <h2>Контур 4 · Экран и ввод</h2>
+    <label className="check"><input type="checkbox" checked={!!p.screen} disabled={busy || !p.enabled} onChange={e => patch({ screen: e.target.checked })}/>Скриншоты</label>
+    <label className="check"><input type="checkbox" checked={!!p.screen_auto} disabled={busy || !p.screen} onChange={e => patch({ screen_auto: e.target.checked })}/>Скриншоты без карточки (только capture)</label>
+    <label className="check"><input type="checkbox" checked={!!p.input} disabled={busy || !p.enabled} onChange={e => patch({ input: e.target.checked })}/>Мышь и клавиатура (каждая последовательность с подтверждением)</label>
     <label>Домены без подтверждения (через запятую)<input value={p.web_domains.join(', ')} onChange={e => setSettings({ ...settings, permissions: { ...p, web_domains: e.target.value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean) } })}/></label>
     <button disabled={busy} onClick={() => run(async () => { await save(settings); notify('Список доменов сохранён'); })}>Сохранить домены</button>
     <p>Неизвестные домены требуют подтверждения. Поиск открывается в Google.</p>
