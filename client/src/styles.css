@@ -77,6 +77,7 @@ button.icon.plus:hover:enabled, button.icon.history-toggle:hover:enabled { backg
 .menu-meta { margin: 0; padding: 2px 10px 6px; color: var(--muted); font-size: 12px; line-height: 1.35 }
 
 .column { position: relative; z-index: 1; width: min(760px, calc(100% - 32px)); min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; padding: 56px 0 var(--s5) }
+.column:has(.live-stage) { padding-bottom: 0 }
 .column.is-empty { justify-content: center; padding-top: var(--s7) }
 .greet { text-align: center; margin-bottom: var(--s5); display: flex; flex-direction: column; align-items: center }
 .greet h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 var(--s2) }
@@ -125,9 +126,10 @@ button.icon.plus:hover:enabled, button.icon.history-toggle:hover:enabled { backg
 .wave span { width: 2px; flex: none; border-radius: 2px; background: var(--accent); animation: none }
 .timer { min-width: 44px }
 
-.live-stage { position: relative; flex: 1; min-height: 0; width: 100%; display: flex; flex-direction: column; align-items: center; gap: var(--s3) }
-.live-orb { margin-top: auto; width: 180px; height: 180px; flex: none; display: grid; place-items: center }
-.live-actions { margin-bottom: auto }
+.live-stage { position: relative; flex: 1; min-height: 0; width: 100%; display: grid; grid-template-rows: minmax(0, 1fr) auto }
+.live-visual { position: relative; min-width: 0; min-height: 0; container-type: size; overflow: hidden }
+.live-orb { position: absolute; top: 50%; left: 50%; width: min(180px, 55cqh, 60cqw); aspect-ratio: 1; margin: 0; transform: translate(-50%, -50%); display: grid; place-items: center }
+.live-dock { display: flex; flex-direction: column; align-items: center; gap: var(--s3); width: 100%; min-height: 0; padding-bottom: var(--s4) }
 .orb { --level: 0; width: 180px; height: 180px; flex: none; aspect-ratio: 1; border-radius: 50%; position: relative; isolation: isolate; background: radial-gradient(circle at 32% 28%, var(--orb-hi), transparent 36%), radial-gradient(circle at 70% 74%, var(--orb-lo), transparent 46%), radial-gradient(circle at 48% 46%, var(--orb-mid), var(--orb-lo) 72%); background-size: 170% 170%, 150% 150%, 100% 100%; animation: orb-drift 7s ease-in-out infinite alternate; transform: scale(calc(0.94 + var(--level) * 0.18)); transition: transform 140ms linear, filter var(--dur) var(--ease); box-shadow: inset 0 -18px 24px rgb(0 0 0 / 0.16), 0 18px 36px color-mix(in srgb, var(--orb-lo) 26%, transparent) }
 .orb::before { content: ""; position: absolute; inset: -22%; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--orb-mid) 40%, transparent), transparent 68%); animation: orb-breathe 3.4s ease-in-out infinite; z-index: -1 }
 .orb[data-state="off"] { filter: grayscale(0.7) brightness(0.72) }
@@ -140,14 +142,15 @@ button.icon.plus:hover:enabled, button.icon.history-toggle:hover:enabled { backg
 .orb.mini, .orb.mini::before, .orb.pip, .orb.pip::before { animation: none }
 .orb.pip { width: 22px; height: 22px; margin: 0; flex: none; aspect-ratio: 1; box-shadow: inset 0 -3px 5px rgb(0 0 0 / 0.2) }
 .orb.pip[data-state="thinking"], .orb.pip[data-state="thinking"]::before { animation: think 1.05s ease-in-out infinite }
-.live-state { order: 1; margin: 0; font-size: 15px; font-weight: 600; color: var(--text) }
-.live-actions { order: 3; display: flex; gap: var(--s3); margin: 0 }
+.live-orb .orb { width: 100%; height: 100% }
+.live-state { position: absolute; left: 50%; top: calc(50% + min(90px, 27.5cqh, 30cqw) + 10px); margin: 0; transform: translateX(-50%); font-size: 15px; font-weight: 600; color: var(--text); white-space: nowrap }
+.live-actions { display: flex; gap: var(--s3); margin: 0 }
 .live-actions button.icon { width: 48px; height: 48px; border-radius: 50%; background: var(--surface); border: 1px solid var(--line); color: var(--text) }
 .live-actions button.icon:hover:enabled { background: var(--hover); border-color: var(--line); color: var(--text) }
 .live-actions button.icon[aria-pressed="true"] { background: var(--surface-2); color: var(--accent); border-color: transparent }
 .live-actions button.icon.danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-color: transparent }
 .live-actions button.icon.danger:hover:enabled { background: color-mix(in srgb, var(--danger) 20%, var(--surface)); color: var(--danger); border-color: transparent }
-.live-log { position: absolute; left: 50%; bottom: 76px; width: min(420px, calc(100% - 16px)); max-height: min(180px, 28vh); transform: translateX(-50%); flex: none; background: var(--surface); border: 1px solid var(--control-border); border-radius: 16px; box-shadow: 0 12px 32px var(--shadow); padding: var(--s3) var(--s4); gap: var(--s3) }
+.live-log { position: static; width: min(420px, calc(100% - 16px)); max-height: min(180px, 28dvh); transform: none; flex: none; background: var(--surface); border: 1px solid var(--control-border); border-radius: 16px; box-shadow: 0 12px 32px var(--shadow); padding: var(--s3) var(--s4); gap: var(--s3) }
 .live-log[hidden] { display: none !important }
 .live-log.open { animation: panel var(--dur) var(--ease) }
 .live-log article { padding: var(--s2) 0; border-top: 1px solid var(--line) }
@@ -164,6 +167,7 @@ dialog.decision { position: fixed; inset: auto 0 var(--s6) 0; margin-inline: aut
 .sheet-nav button:hover:enabled { background: var(--hover); border-color: transparent }
 .sheet-nav button[aria-current="page"] { background: var(--surface-2); border-color: transparent; font-weight: 600 }
 .sheet-nav .sheet-close { align-self: flex-start; width: 36px; height: 36px; justify-content: center; padding: 0; margin-bottom: var(--s2) }
+.sheet-nav .sheet-stop { margin-top: auto; align-self: flex-start }
 .sheet-body { position: relative; overflow: auto; padding: 56px 48px var(--s8) }
 .sheet-body > section { max-width: 720px }
 
@@ -251,7 +255,7 @@ dialog.editor { width: min(760px, 94vw); padding: var(--s2) var(--s5) var(--s5) 
 
 @keyframes rise { from { opacity: 0; transform: translateY(-4px) } to { opacity: 1; transform: none } }
 @keyframes toast-in { from { opacity: 0 } to { opacity: 1 } }
-@keyframes panel { from { opacity: 0; transform: translateX(-50%) translateY(8px) } to { opacity: 1; transform: translateX(-50%) } }
+@keyframes panel { from { opacity: 0 } to { opacity: 1 } }
 @keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
 .arriving { animation: fade-in 160ms var(--ease) }
 @keyframes mist { from { opacity: 0.82 } to { opacity: 1 } }
@@ -267,6 +271,7 @@ dialog.editor { width: min(760px, 94vw); padding: var(--s2) var(--s5) var(--s5) 
   .sheet-nav { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: var(--s3) 96px var(--s3) var(--s3) }
   .sheet-nav button { flex: none }
   .sheet-nav .sheet-close { margin: 0 var(--s1) 0 0 }
+  .sheet-nav .sheet-stop { margin-top: 0; margin-left: auto }
   .sheet-body { padding: 48px var(--s4) var(--s6) }
   .offline { align-items: stretch; flex-direction: column }
   fieldset.theme-cards { grid-template-columns: 1fr }

@@ -22,7 +22,21 @@ export interface AuditRow { time: number; tool: string; status: string; confirme
 export interface Plugin { id: string; name?: string; enabled: boolean; lifecycle?: string }
 export interface WakeStatus { ready: boolean; dir: string; message?: string; model?: string; license?: string }
 export interface VoiceStatus { wake: WakeStatus; live: boolean; dropped_frames: number }
-export interface ServerEvent { type: string; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number }
+export interface ServerEvent { type: string; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number; run?: number }
+/** Server routes wrap the payload as `{ok, trace_id, data}`. Rust returns that JSON unchanged. */
+export function unwrapApi<T>(body: unknown): T {
+  if (body !== null && typeof body === 'object' && 'data' in body) {
+    const record = body as { ok?: unknown; trace_id?: unknown; data: T };
+    if (typeof record.ok === 'boolean' || typeof record.trace_id === 'string') return record.data;
+  }
+  return body as T;
+}
+/** A newer live run replaces events still in flight from the worker that just stopped. */
+export function acceptLiveRun(current: number, event: { type: string; run?: number }): { current: number; accept: boolean } {
+  if (typeof event.run !== 'number') return { current, accept: true };
+  if (event.type === 'live.started') return { current: event.run, accept: true };
+  return { current, accept: event.run === current };
+}
 export type LiveState = 'off' | 'idle' | 'armed' | 'listening' | 'thinking' | 'speaking';
 export const defaultVoice: VoiceSettings = { mode: 'ptt', vad_sensitivity: 0.5, end_silence_ms: 700, wake_threshold: 0.5, barge_in: 'off' };
 export function newProfile(): Profile { return { id: crypto.randomUUID(), name: 'Новый сервер', url: 'http://127.0.0.1:8787', session_id: crypto.randomUUID() }; }

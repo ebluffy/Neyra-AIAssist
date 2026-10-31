@@ -69,10 +69,26 @@ pub struct Desktop {
     player: audio::Player,
     segments: Mutex<voice::Segments>,
     live: Mutex<Option<Live>>,
+    live_run: AtomicU64,
 }
 struct Live {
     capture: audio::LiveCapture,
     stop: Arc<AtomicBool>,
+    run: u64,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+fn with_run(mut value: Value, run: u64) -> Value {
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("run".into(), json!(run));
+    }
+    value
+}
+fn release_live(mut live: Live) {
+    live.stop.store(true, Ordering::SeqCst);
+    drop(live.capture);
+    if let Some(worker) = live.worker.take() {
+        let _ = worker.join();
+    }
 }
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
     "Внутренняя ошибка состояния".into()
@@ -526,7 +542,7 @@ fn voice_status(state: State<'_, Desktop>) -> Value {
 }
 
 #[tauri::command]
-fn live_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
+fn live_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<u64, String> {
     let settings = state.settings.lock().map_err(lock_error)?.voice.clone();
     if settings.mode == "ptt" {
         return Err("Выберите режим «Нейра» или «Слушать всегда» в настройках голоса".into());
@@ -537,9 +553,11 @@ fn live_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), St
     if state.recording.lock().map_err(lock_error)?.is_some() {
         return Err("Сначала завершите запись".into());
     }
-    let mut live = state.live.lock().map_err(lock_error)?;
-    if live.is_some() {
-        return Ok(());
+    {
+        let live = state.live.lock().map_err(lock_error)?;
+        if let Some(existing) = live.as_ref() {
+            return Ok(existing.run);
+        }
     }
     let mut detector = if settings.mode == "wake" {
         Some(
@@ -553,14 +571,28 @@ fn live_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), St
     let capture = audio::LiveCapture::start(frames_tx)?;
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = stop.clone();
+    let run_id = state.live_run.fetch_add(1, Ordering::SeqCst) + 1;
+    {
+        let mut live = state.live.lock().map_err(lock_error)?;
+        if let Some(existing) = live.as_ref() {
+            drop(capture);
+            return Ok(existing.run);
+        }
+        *live = Some(Live {
+            capture,
+            stop,
+            run: run_id,
+            worker: None,
+        });
+    }
     let handle = app.clone();
-    std::thread::spawn(move || {
+    let worker = std::thread::spawn(move || {
         let mut gate = voice::Gate::new(&settings);
         let mut trigger = voice::WakeTrigger::new(settings.wake_threshold);
         let mut request: Option<String> = None;
         let mut level = 0usize;
         let emit = |value: Value| {
-            let _ = handle.emit("desktop-event", value);
+            let _ = handle.emit("desktop-event", with_run(value, run_id));
         };
         emit(json!({"type":"live.started","mode":settings.mode}));
         while !stopped.load(Ordering::SeqCst) {
@@ -651,14 +683,33 @@ fn live_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), St
             );
         }
         emit(json!({"type":"live.stopped"}));
+        // The worker owns the microphone until it leaves. Stop joins; this path only drops it.
+        if let Ok(mut slot) = handle.state::<Desktop>().live.lock() {
+            if slot.as_ref().is_some_and(|live| live.run == run_id) {
+                if let Some(live) = slot.take() {
+                    live.stop.store(true, Ordering::SeqCst);
+                    drop(live.capture);
+                    drop(live.worker);
+                }
+            }
+        }
     });
-    *live = Some(Live { capture, stop });
-    Ok(())
+    if let Ok(mut slot) = state.live.lock() {
+        if let Some(live) = slot.as_mut().filter(|live| live.run == run_id) {
+            live.worker = Some(worker);
+        } else {
+            drop(worker);
+        }
+    } else {
+        drop(worker);
+    }
+    Ok(run_id)
 }
 
 fn live_stop_inner(state: &Desktop) -> Result<(), String> {
-    if let Some(live) = state.live.lock().map_err(lock_error)?.take() {
-        live.stop.store(true, Ordering::SeqCst);
+    let taken = state.live.lock().map_err(lock_error)?.take();
+    if let Some(live) = taken {
+        release_live(live);
     }
     Ok(())
 }
@@ -1330,6 +1381,7 @@ pub fn run() {
                 player,
                 segments: Mutex::new(voice::Segments::default()),
                 live: Mutex::new(None),
+                live_run: AtomicU64::new(0),
             });
             monitor_session(app.handle().clone());
             setup_shortcuts(app.handle());
@@ -1578,6 +1630,12 @@ mod tests {
         let red = |px: &[u8; 4]| px[0] > 180 && px[1] < 80 && px[2] < 80 && px[3] > 200;
         assert!(active.rgba().as_chunks::<4>().0.iter().any(red));
         assert!(!idle.rgba().as_chunks::<4>().0.iter().any(red));
+    }
+    #[test]
+    fn live_events_carry_the_run_that_started_them() {
+        let stamped = with_run(json!({"type":"listening"}), 4);
+        assert_eq!(stamped["run"], 4);
+        assert_eq!(stamped["type"], "listening");
     }
     #[test]
     fn server_profile_retains_proxy_prefix_and_rejects_credentials() {

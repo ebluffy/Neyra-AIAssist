@@ -21,6 +21,9 @@ void listen<{ frame_ms: number; levels: number[] }>('character-mouth', ({ payloa
   track = { startedAt: performance.now(), frameMs: payload.frame_ms, levels: payload.levels };
 });
 void listen<{ x: number; y: number }>('character-cursor', ({ payload }) => rig?.setLook(payload.x, payload.y));
+void listen<{ fps_limit: number }>('character-settings', ({ payload }) => {
+  if (typeof payload.fps_limit === 'number') rig?.setFps(payload.fps_limit);
+});
 
 // Mouth is smoothed here so the 3D and the flat renderer share one source.
 setInterval(() => {

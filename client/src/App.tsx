@@ -64,7 +64,7 @@ export function App() {
         {app.lastTrace !== undefined && !app.liveOpen && <details><summary>Модели последнего ответа</summary><pre>{JSON.stringify(app.lastTrace, null, 2)}</pre></details>}
       </div>
     </div>
-    {app.sheet && app.settings && <SettingsSheet section={app.sheet} onSection={app.setSheet} onClose={app.closeSheet} alert={app.error}>
+    {app.sheet && app.settings && <SettingsSheet section={app.sheet} onSection={app.setSheet} onClose={app.closeSheet} onStop={() => void app.stop()} alert={app.error}>
       {app.sheet === 'server' && <ServerPanel settings={app.settings} profile={app.profile} profileId={app.profileId} token={app.token} connected={app.connected} busy={app.busy} devices={app.devices} target={app.target} onProfile={app.chooseProfile} onPatch={app.patchProfile} onAdd={app.addProfile} onToken={app.setToken} onTarget={app.setTarget} onCheck={() => void app.check()} onConnect={() => void app.connect()} onDisconnect={() => void app.disconnect()} onRefreshDevices={() => void app.refreshDevices()} onDisconnectDevice={() => void app.disconnectDevice()} />}
       {app.sheet === 'voice' && <VoicePanel voice={app.voice} root={app.root} busy={app.busy} shortcuts={app.shortcuts} voiceStatus={app.voiceStatus} onDraft={app.draftVoice} onSave={patch => void app.saveVoice(patch)} onRefresh={() => void app.refreshVoice()} />}
       {app.sheet === 'commands' && <CommandsScreen busy={app.busy} run={app.run} notify={app.notify} runLine={app.runLine} running={app.commandRunning} />}

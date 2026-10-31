@@ -52,8 +52,9 @@ export function CharacterPanel() {
     <label>Лимит FPS<input type="number" min={10} max={60} value={draft.fps_limit} onChange={e => setDraft({ ...draft, fps_limit: Number(e.target.value) })}/></label>
     <label className="check"><input type="checkbox" checked={draft.always_on_top} onChange={e => setDraft({ ...draft, always_on_top: e.target.checked })}/>Поверх окон</label>
     <label className="check"><input type="checkbox" checked={draft.click_through} onChange={e => setDraft({ ...draft, click_through: e.target.checked })}/>Клики проходят сквозь окно</label>
-    <label className="check"><input type="checkbox" checked={draft.pause_fullscreen} onChange={e => setDraft({ ...draft, pause_fullscreen: e.target.checked })}/>Пауза при полноэкранном приложении</label>
-    <label className="check"><input type="checkbox" checked={draft.pause_battery} onChange={e => setDraft({ ...draft, pause_battery: e.target.checked })}/>Пауза на батарее</label>
+    <label className="check"><input type="checkbox" checked={draft.pause_fullscreen} disabled />Пауза при полноэкранном приложении</label>
+    <label className="check"><input type="checkbox" checked={draft.pause_battery} disabled />Пауза на батарее</label>
+    <p className="hint">Пауза при полном экране и на батарее ещё не сделана, поэтому эти переключатели недоступны.</p>
     <h3>Возможности этой сессии ({caps.mechanism})</h3>
     <ul>
       <li>Прозрачность: {capabilityLabel(caps.transparent)}</li>

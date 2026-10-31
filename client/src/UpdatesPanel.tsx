@@ -7,8 +7,6 @@ interface UpdaterSettings { schema_version: number; channel: 'beta' | 'stable'; 
 interface UpdaterState { settings: UpdaterSettings; current_version: string; endpoint: string; key_configured: boolean; install_kind: string; pending_version: string | null }
 interface CheckResult { available: boolean; version?: string; notes?: string | null; date?: string | null }
 
-let startupChecked = false;
-
 export function UpdatesPanel() {
   const [state, setState] = useState<UpdaterState>();
   const [result, setResult] = useState<CheckResult>();
@@ -28,12 +26,11 @@ export function UpdatesPanel() {
         const next = await invoke<UpdaterState>('update_state');
         if (!mounted.current) return;
         setState(next);
-        if (next.settings.auto_check && next.key_configured && !startupChecked) { startupChecked = true; await check(); }
       } catch (error) { setMessage(formatError(error)); }
     })();
     const unlisten = listen<{ downloaded: number; total?: number }>('update-progress', ({ payload }) => setProgress(payload));
     return () => { mounted.current = false; void unlisten.then(off => off()); };
-  }, [check]);
+  }, []);
   const save = async (settings: UpdaterSettings) => {
     try { setState(await invoke<UpdaterState>('update_save', { settings })); setResult(undefined); setMessage(''); } catch (error) { setMessage(formatError(error)); }
   };

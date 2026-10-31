@@ -274,6 +274,26 @@ def test_audio_ack_must_be_a_segment_number(seq):
             ws.receive_json()
 
 
+def test_command_speak_stopped_conversion_is_an_error(monkeypatch):
+    async def speak(self, text):
+        return Speech(b'', 'stopped:timeout')
+    monkeypatch.setattr(DesktopVoice, 'speak', speak)
+    client, _ = make_client()
+    with client, client.websocket_connect('/v1/desktop/voice', headers=AUTH) as ws:
+        ws.send_json(manifest().model_dump(mode='json'))
+        ws.receive_json()
+        ws.send_json({'type': 'speak', 'text': 'Запускаю режим игры'})
+        packets = []
+        while True:
+            packet = ws.receive_json()
+            packets.append(packet)
+            if packet['type'] in ('error', 'audio.done'):
+                break
+    assert {'type': 'voice.conversion', 'status': 'stopped', 'code': 'timeout'} in packets
+    assert packets[-1]['code'] == 'conversion_failed'
+    assert 'audio.chunk' not in [packet['type'] for packet in packets]
+
+
 def test_live_conversion_stop_ends_speech_with_explicit_error(monkeypatch):
     async def speak(self, text):
         return Speech(b'', 'stopped:timeout')

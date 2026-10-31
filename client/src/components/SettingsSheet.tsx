@@ -18,11 +18,12 @@ interface Props {
   section: SheetId;
   onSection: (id: SheetId) => void;
   onClose: () => void;
+  onStop: () => void;
   alert?: string;
   children: ReactNode;
 }
 
-export function SettingsSheet({ section, onSection, onClose, alert, children }: Props) {
+export function SettingsSheet({ section, onSection, onClose, onStop, alert, children }: Props) {
   const panel = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   useEffect(() => { closeRef.current = onClose; });
@@ -53,6 +54,7 @@ export function SettingsSheet({ section, onSection, onClose, alert, children }: 
           const Icon = ICONS[item.id];
           return <button type="button" key={item.id} aria-current={item.id === section ? 'page' : undefined} onClick={() => onSection(item.id)}><Icon size={18} strokeWidth={1.75} aria-hidden="true" />{item.label}</button>;
         })}
+        <button type="button" className="stop sheet-stop" onClick={onStop}>Стоп</button>
       </nav>
       <div className="sheet-body">{alert && <div className="error" role="alert">{alert}</div>}{children}</div>
     </div>

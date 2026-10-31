@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clock, composerSlot, daypart, switchThread, threadTitle, type ChatThread } from './chat';
+import { clock, composerSlot, daypart, sessionOrNew, switchThread, threadTitle, type ChatThread } from './chat';
 import { themeId } from './theme';
 
 describe('chat composer', () => {
@@ -23,6 +23,16 @@ describe('chat composer', () => {
   it('formats a recording clock', () => {
     expect(clock(0)).toBe('0:00');
     expect(clock(9500)).toBe('0:10');
+  });
+});
+
+describe('chat session', () => {
+  it('does not store an empty session id', () => {
+    const fresh = sessionOrNew('', []);
+    expect(fresh).toMatch(/^[0-9a-f-]{36}$/);
+    const kept = '11111111-1111-4111-8111-111111111111';
+    expect(sessionOrNew(undefined, [{ sessionId: kept }])).toBe(kept);
+    expect(sessionOrNew(kept, [])).toBe(kept);
   });
 });
 

@@ -18,7 +18,7 @@ if(cmd==='plugin:event|listen'){if(!listeners.has(args.event))listeners.set(args
 if(cmd==='plugin:event|unlisten')return;
 if(cmd==='load_settings')return {settings,data_root:'/tmp/Neyra',platform:'linux',version:'0.1.0',recoveries:[{file:'settings/app.json',reason:'corrupt',quarantined:'app.json.corrupt-1',restored:'backup'}],screen_backend:true,input_backend:true};
 if(cmd==='save_settings'){const p=args.settings.permissions;if(p.files&&!p.fs_roots.length)throw 'Сначала включите снимки экрана / добавьте папку';if(p.fs_roots.some(r=>r.includes('.ssh')))throw 'Эту папку нельзя разрешить';settings=args.settings;return;}
-if(cmd==='api'){if(window.failApi)throw 'Сервер недоступен';if(args.path==='/openapi.json')return {info:{version:'1.1.0'}};if(args.path==='/v1/plugins')return {data:{plugins:[{id:'example',name:'Пример',enabled:false,lifecycle:'resident'}]}};return {data:{status:'ok',api_version:'1.1.0'}};}
+if(cmd==='api'){if(window.failApi)throw 'Сервер недоступен';if(args.path==='/openapi.json')return {info:{version:'1.1.0'}};if(args.path==='/v1/plugins')return {ok:true,trace_id:'t',data:{plugins:[{id:'example',name:'Пример',enabled:false,lifecycle:'resident'}]}};return {ok:true,trace_id:'t',data:{status:'ok',api_version:'1.1.0'}};}
 if(cmd==='connect'){setTimeout(()=>window.emitNative('desktop-event',{type:'hello'}),10);return;}
 if(cmd==='bridge_message'&&args.kind==='history'){window.emitNative('desktop-event',{type:'history',messages:[]});return;}
 if(cmd==='bridge_message'&&args.kind==='devices'){window.emitNative('desktop-event',{type:'devices',devices:[{device_id:'pc2',name:'Ноутбук',tools:['client.open_url']}]});return;}
@@ -79,6 +79,9 @@ with sync_playwright() as p:
     expect(page.get_by_text('Нет связи с сервером')).to_be_visible()
     menu(page, 'Персонаж')
     expect(page.get_by_text('Персонаж появится на шаге 7 (оверлей VRM). Пока он выключен и отсюда не включается.')).to_be_visible()
+    expect(page.get_by_role('dialog', name='Настройки').get_by_role('button', name='Стоп', exact=True)).to_be_enabled()
+    expect(page.get_by_label('Пауза при полноэкранном приложении')).to_be_disabled()
+    expect(page.get_by_label('Пауза на батарее')).to_be_disabled()
     expect(page.get_by_text('Wayland не гарантирует always-on-top.')).to_be_visible()
     page.get_by_role('navigation', name='Разделы настроек').get_by_role('button', name='Обновления', exact=True).click()
     page.get_by_role('button',name='Проверить обновления').click()
@@ -330,12 +333,63 @@ with sync_playwright() as p:
         page.evaluate("window.emitNative('desktop-event',{type:'listening'})")
         page.evaluate("window.emitNative('desktop-event',{type:'mic.level',db:-12})")
         expect(page.locator('.live-state')).to_have_text('Слышу вас')
+
+        def settle():
+            page.mouse.move(12, 12)
+            page.evaluate("document.activeElement instanceof HTMLElement && document.activeElement.blur()")
+            page.wait_for_timeout(80)
+
+        def live_layout():
+            box = page.evaluate("""() => {
+              const rect = (sel) => {
+                const node = document.querySelector(sel);
+                if (!node || node.hidden) return null;
+                const r = node.getBoundingClientRect();
+                return {left:r.left, top:r.top, right:r.right, bottom:r.bottom, width:r.width, height:r.height};
+              };
+              const hit = (a, b) => !!(a && b && a.right > b.left + 1 && a.left < b.right - 1 && a.bottom > b.top + 1 && a.top < b.bottom - 1);
+              const mid = (r) => (r.left + r.right) / 2;
+              const orb = rect('.live-orb');
+              const visual = rect('.live-visual');
+              const dock = rect('.live-dock');
+              const stage = rect('.live-stage');
+              const state = rect('.live-state');
+              return {
+                centered: Math.abs(mid(orb) - mid(visual)) < 3 && Math.abs((orb.top + orb.bottom) / 2 - (visual.top + visual.bottom) / 2) < 3,
+                pinned: Math.abs(dock.bottom - stage.bottom) < 2,
+                stateBelow: state.top + 1 >= orb.bottom,
+                logHitsOrb: hit(rect('.live-log'), orb),
+                actionsHitOrb: hit(rect('.live-actions'), orb),
+              };
+            }""")
+            assert box['centered'] and box['pinned'] and box['stateBelow'], box
+            assert not box['logHitsOrb'] and not box['actionsHitOrb'], box
+
+        page.set_viewport_size({'width': 1100, 'height': 820})
         page.wait_for_timeout(200)
+        settle()
+        live_layout()
         shoot(f'{theme}-live')
+        shoot(f'{theme}-live-h820')
         page.get_by_role('button', name='Текст разговора', exact=True).click()
         expect(page.locator('.live-log.open')).to_be_visible()
         page.wait_for_timeout(250)
+        settle()
+        live_layout()
         shoot(f'{theme}-live-chat')
+        shoot(f'{theme}-live-chat-h820')
+        page.set_viewport_size({'width': 1100, 'height': 480})
+        page.wait_for_timeout(200)
+        settle()
+        live_layout()
+        shoot(f'{theme}-live-chat-h480')
+        page.get_by_role('button', name='Текст разговора', exact=True).click()
+        expect(page.locator('.live-log.open')).to_have_count(0)
+        page.wait_for_timeout(120)
+        settle()
+        live_layout()
+        shoot(f'{theme}-live-h480')
+        page.set_viewport_size({'width': 1100, 'height': 820})
         page.get_by_role('button', name='Завершить', exact=True).click()
         page.wait_for_timeout(2400)
         page.mouse.move(480, 500)

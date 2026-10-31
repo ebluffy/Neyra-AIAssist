@@ -339,13 +339,16 @@ def router_for(agent, config, authenticate):
             async def speak(text):
                 """Short fixed reply of a quick command; the same server TTS as normal answers."""
                 try:
-                    wav = await asyncio.wait_for(voice_service.synthesize(text), 60)
-                    if not wav:
+                    spoken = await asyncio.wait_for(voice_service.speak(text), 60)
+                    await announce_conversion(send, spoken.conversion)
+                    if spoken.conversion.startswith('stopped:'):
+                        await send(dict(type='error', code='conversion_failed'))
+                    elif spoken.audio:
+                        for offset in range(0, len(spoken.audio), 48000):
+                            await send(dict(type='audio.chunk', data=base64.b64encode(spoken.audio[offset:offset+48000]).decode()))
+                        await send(dict(type='audio.done', mime='audio/wav'))
+                    else:
                         await send(dict(type='error', code='tts_unavailable'))
-                        return
-                    for offset in range(0, len(wav), 48000):
-                        await send(dict(type='audio.chunk', data=base64.b64encode(wav[offset:offset+48000]).decode()))
-                    await send(dict(type='audio.done', mime='audio/wav'))
                 except asyncio.CancelledError:
                     raise
                 except Exception:

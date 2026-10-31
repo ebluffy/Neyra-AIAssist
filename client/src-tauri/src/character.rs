@@ -453,6 +453,10 @@ pub fn character_save(app: tauri::AppHandle, settings: CharacterSettings) -> Res
         }
     }
     save(&root, &settings)?;
+    let _ = app.emit(
+        "character-settings",
+        json!({ "fps_limit": settings.fps_limit }),
+    );
     state_value(&root, &app)
 }
 

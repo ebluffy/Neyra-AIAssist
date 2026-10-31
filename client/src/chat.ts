@@ -20,6 +20,16 @@ export function nextId(): string {
   return crypto.randomUUID();
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export function isUuid(value: string | undefined): value is string {
+  return !!value && UUID_RE.test(value);
+}
+/** A chat row needs a real session id. An empty one makes storage reject the whole file. */
+export function sessionOrNew(profileSession: string | undefined, stored: { sessionId: string }[]): string {
+  if (isUuid(profileSession)) return profileSession;
+  return stored.find(item => isUuid(item.sessionId))?.sessionId ?? crypto.randomUUID();
+}
+
 export function composerSlot(text: string): 'send' | 'live' {
   return text.trim() ? 'send' : 'live';
 }

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { nextId, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
+import { isUuid, nextId, sessionOrNew, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
 import { type DraftEvent, type RunEvent, describeRun } from './commands';
 import { type SheetId, themeId } from './theme';
-import { conversionNotice, defaultVoice, formatError, meterLevel, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
+import { acceptLiveRun, conversionNotice, defaultVoice, formatError, meterLevel, unwrapApi, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
 
 export function useDesktop() {
   const [settings, setSettings] = useState<Settings>();
@@ -51,6 +51,7 @@ export function useDesktop() {
   const hydrated = useRef(false);
   const chatsReady = useRef(false);
   const muteHold = useRef(false);
+  const liveRun = useRef(0);
   const urls = useRef<string[]>([]);
   const profile = settings?.profiles.find(item => item.id === profileId);
   const voice: VoiceSettings = settings?.voice ?? defaultVoice;
@@ -76,7 +77,6 @@ export function useDesktop() {
       setBackends({ screen: !!data.screen_backend, input: !!data.input_backend });
       const first = data.settings.profiles[0]?.id ?? '';
       setProfileId(first);
-      const sessionId = data.settings.profiles[0]?.session_id ?? '';
       let stored: ChatThread[] = [];
       try {
         const rows = await invoke<ChatThread[] | { threads?: ChatThread[]; recovery?: Recovery }>('load_chats');
@@ -87,6 +87,7 @@ export function useDesktop() {
         }
         chatsReady.current = true;
       } catch (reason) { setError(formatError(reason)); }
+      const sessionId = sessionOrNew(data.settings.profiles[0]?.session_id, stored);
       const match = stored.find(item => item.sessionId === sessionId);
       const thread = match ?? { id: nextId(), title: 'Новый чат', sessionId, updated: Date.now(), messages: [] as ChatMessage[] };
       const list = match ? stored : [thread, ...stored].slice(0, 30);
@@ -97,6 +98,22 @@ export function useDesktop() {
     }).catch(reason => setError(formatError(reason)));
     const timer = window.setInterval(() => setPartial(tokenBuffer.current), 60);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const next = await invoke<{ settings: { auto_check: boolean }; key_configured: boolean }>('update_state');
+        if (!live || !next.settings.auto_check || !next.key_configured) return;
+        const result = await invoke<{ available: boolean; version?: string }>('update_check');
+        if (!live || !result.available) return;
+        setNotice(result.version ? `Доступна версия ${result.version}. Откройте раздел «Обновления».` : 'Доступно обновление. Откройте раздел «Обновления».');
+        setNoticeSticky(true);
+        setError('');
+      } catch { /* A failed startup check stays quiet; the updates section can retry. */ }
+    })();
+    return () => { live = false; };
   }, []);
 
   useEffect(() => {
@@ -122,6 +139,9 @@ export function useDesktop() {
   useEffect(() => {
     const listeners = [
       listen<ServerEvent>('desktop-event', ({ payload: event }) => {
+        const gate = acceptLiveRun(liveRun.current, event);
+        liveRun.current = gate.current;
+        if (!gate.accept) return;
         if (event.type === 'hello') setConnected(true);
         if (event.type === 'token') tokenBuffer.current += event.text ?? '';
         if (event.type === 'done') {
@@ -160,14 +180,14 @@ export function useDesktop() {
         if (event.type === 'live.stopped') { setLiveState('off'); setMicLevel(0); if (!muteHold.current) { setLiveOpen(false); setMuted(false); } }
         if (event.type === 'live.idle') setLiveState(state => state === 'off' ? state : 'idle');
         if (event.type === 'wake') setLiveState('armed');
-        if (event.type === 'listening') setLiveState('listening');
+        if (event.type === 'listening') { tokenBuffer.current = ''; setPartial(''); setLiveState('listening'); }
         if (event.type === 'mic.level') setMicLevel(meterLevel(event.db ?? -100));
         if (event.type === 'status' && event.state === 'thinking') setLiveState(state => state === 'off' ? state : 'thinking');
         if (event.type === 'status' && event.state === 'slow') postNotice('Провайдер отвечает медленно, я ещё думаю…');
         if (event.type === 'status' && event.state === 'truncated') postNotice('Ответ длинный: озвучено только начало, полный текст в чате.', true);
         if (event.type === 'voice.conversion') { const text = conversionNotice(event.status, event.code); if (text) postNotice(text, true); }
-        if (event.type === 'disconnected') { muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); setConnected(false); setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); postNotice('Соединение закрыто. Подключитесь повторно.', true); }
-        if (event.type === 'error') { setError(`Сервер: ${event.code ?? 'ошибка'}. Повторите попытку.`); setThinking(false); }
+        if (event.type === 'disconnected') { muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); setConnected(false); setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBuffer.current = ''; setPartial(''); postNotice('Соединение закрыто. Подключитесь повторно.', true); }
+        if (event.type === 'error') { setError(`Сервер: ${event.code ?? 'ошибка'}. Повторите попытку.`); setThinking(false); tokenBuffer.current = ''; setPartial(''); setLiveState(state => state === 'thinking' ? 'idle' : state); }
         if (event.type === 'cancelled') {
           setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBuffer.current = ''; setPartial(''); postNotice('Остановлено');
           if (event.reason !== 'barge_in') { muteHold.current = false; setLiveOpen(false); setMuted(false); }
@@ -203,14 +223,15 @@ export function useDesktop() {
 
   const save = async (next: Settings) => { await invoke('save_settings', { settings: next }); setSettings(next); };
   const patchProfile = (patch: Partial<Profile>) => { if (settings && profile) setSettings({ ...settings, profiles: settings.profiles.map(item => item.id === profileId ? { ...item, ...patch } : item) }); };
-  const request = async (path: string, method = 'GET') => invoke<{ data: unknown }>('api', { profileId, path, method });
+  const request = async <T,>(path: string, method = 'GET') => unwrapApi<T>(await invoke<unknown>('api', { profileId, path, method }));
+  const rememberLive = (runId: unknown) => { if (typeof runId === 'number') liveRun.current = runId; };
   const stop = () => run(async () => { await invoke('stop'); setHostCall(undefined); setActive(false); setThinking(false); setRecording(false); muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); });
   const saveVoice = (patch: Partial<VoiceSettings>) => run(async () => { if (!settings) return; await save({ ...settings, voice: { ...voice, ...patch } }); setLiveState('off'); });
   const draftVoice = (patch: Partial<VoiceSettings>) => { if (settings) setSettings({ ...settings, voice: { ...voice, ...patch } }); };
   const refreshVoice = () => run(async () => { setVoiceStatus(await invoke<VoiceStatus>('voice_status')); });
-  const startLive = () => run(async () => { muteHold.current = false; await invoke('live_start'); setLiveOpen(true); setMuted(false); setLiveState('idle'); });
+  const startLive = () => run(async () => { muteHold.current = false; rememberLive(await invoke<number>('live_start')); setLiveOpen(true); setMuted(false); setLiveState('idle'); });
   const toggleMute = () => run(async () => {
-    if (muted) { muteHold.current = false; await invoke('live_start'); setMuted(false); }
+    if (muted) { muteHold.current = false; rememberLive(await invoke<number>('live_start')); setMuted(false); }
     else { muteHold.current = true; await invoke('live_stop'); setMuted(true); setMicLevel(0); postNotice('Микрофон на паузе'); }
   });
   const endLive = () => run(async () => { muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
@@ -218,9 +239,9 @@ export function useDesktop() {
     if (!settings || !profile || !validServerUrl(profile.url)) throw 'Укажите HTTPS-адрес или HTTP localhost.';
     await save(settings);
     if (token) { await invoke('store_token', { profileId, token }); setToken(''); }
-    const [health, schema] = await Promise.all([request('/v1/health'), invoke<{ info: { version: string } }>('api', { profileId, path: '/openapi.json', method: 'GET' })]);
+    const [health, schema] = await Promise.all([request<unknown>('/v1/health'), invoke<{ info: { version: string } }>('api', { profileId, path: '/openapi.json', method: 'GET' })]);
     if (!schema.info.version.startsWith('1.')) throw 'Несовместимая версия API. Требуется 1.x.';
-    setStatus(health.data); postNotice(`Сервер доступен · API ${schema.info.version}`);
+    setStatus(health); postNotice(`Сервер доступен · API ${schema.info.version}`);
   });
   const connect = () => run(async () => {
     if (!settings || !profile || !validServerUrl(profile.url)) throw 'Сначала настройте сервер.';
@@ -297,7 +318,7 @@ export function useDesktop() {
     const switched = switchThread(threads, activeId, messages, id);
     if (!switched) { setHistoryOpen(false); return; }
     const target = switched.threads.find(item => item.id === switched.activeId);
-    await switchSession(target?.sessionId ?? '', target ? target.messages.length > 0 : true);
+    if (target && isUuid(target.sessionId)) await switchSession(target.sessionId, target.messages.length > 0);
     setThreads(switched.threads);
     setActiveId(switched.activeId);
     setMessages(switched.messages);
@@ -305,8 +326,8 @@ export function useDesktop() {
   });
   const addProfile = (created: Profile) => { if (!settings) return; setSettings({ ...settings, profiles: [...settings.profiles, created] }); setProfileId(created.id); };
   const chooseProfile = (id: string) => { setProfileId(id); setToken(''); setStatus(undefined); };
-  const refreshStatus = () => run(async () => { const out = await request('/v1/health'); setStatus(out.data); });
-  const refreshPlugins = () => run(async () => { const out = await request('/v1/plugins'); setPlugins((out.data as { plugins: Plugin[] }).plugins); });
+  const refreshStatus = () => run(async () => { const out = await request<unknown>('/v1/health'); setStatus(out); });
+  const refreshPlugins = () => run(async () => { const out = await request<{ plugins?: Plugin[] }>('/v1/plugins'); setPlugins(Array.isArray(out?.plugins) ? out.plugins : []); });
   const restartCore = () => { if (window.confirm('Перезапустить ядро сервера? Активные ходы прервутся.')) void run(async () => { await request('/v1/system/restart', 'POST'); postNotice('Запрошен мягкий рестарт', true); }); };
   const togglePlugin = (plugin: Plugin) => { if (window.confirm('Изменить состояние модуля? Для resident ядро будет перезапущено.')) void run(async () => { await invoke('set_module', { profileId, moduleId: plugin.id, enabled: !plugin.enabled }); setPlugins(list => list.map(item => item.id === plugin.id ? { ...item, enabled: !item.enabled } : item)); }); };
   const refreshDevices = () => run(async () => { await invoke('bridge_message', { kind: 'devices' }); });
