@@ -10,6 +10,8 @@ mod redact;
 mod screen;
 mod shell;
 mod storage;
+mod voice;
+mod wake;
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -56,6 +58,13 @@ pub struct Desktop {
     running: Mutex<Option<String>>,
     pending_import: Mutex<Option<command_runner::PendingImport>>,
     recoveries: Mutex<Vec<storage::Recovery>>,
+    player: audio::Player,
+    segments: Mutex<voice::Segments>,
+    live: Mutex<Option<Live>>,
+}
+struct Live {
+    capture: audio::LiveCapture,
+    stop: Arc<AtomicBool>,
 }
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
     "Внутренняя ошибка состояния".into()
@@ -144,6 +153,10 @@ fn apply_settings(state: &Desktop, settings: Settings) -> Result<(), String> {
         )
     {
         return Err("Неверные настройки".into());
+    }
+    settings.voice.validate()?;
+    if settings.voice != old.voice {
+        live_stop_inner(&state)?;
     }
     if settings.permissions.web_domains.len() > 50
         || settings.permissions.apps.len() > 200
@@ -342,7 +355,6 @@ async fn connect(
         let handle = app.clone();
         tauri::async_runtime::spawn(async move {
             let (mut writer, mut reader) = ws.split();
-            let mut wav = Vec::new();
             let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 if handle.state::<Desktop>().epoch.load(Ordering::SeqCst) != epoch {
@@ -388,9 +400,13 @@ async fn connect(
                                             }
                                         }
                                     },
-                                                    Some("audio.chunk")=>{if let Some(data)=packet["data"].as_str(){if let Ok(bytes)=base64::engine::general_purpose::STANDARD.decode(data){if wav.len()+bytes.len()>8*1024*1024{break;}wav.extend(bytes);}}},
-                                                    Some("audio.done")=>{let state=handle.state::<Desktop>();let output_handle=handle.clone();let _=audio::play(std::mem::take(&mut wav),state.generation.clone(),move|code|{let _=output_handle.emit("desktop-event",if code=="audio_finished"{json!({"type":"audio.finished"})}else{json!({"type":"error","code":code})});});let _=handle.emit("desktop-event",json!({"type":"speaking"}));},
-                                                    Some("cancelled")=>{wav.clear();let _=handle.emit("desktop-event",packet);},
+                                                    Some("audio.chunk"|"audio.segment"|"audio.done")=>{if !reply_audio(&handle,&packet){break;}},
+                                                    Some("voice.conversion")=>{
+                                        // Stop policy: stop speaking now; the turn ends with conversion_failed.
+                                        if packet["status"]=="stopped"{handle.state::<Desktop>().generation.fetch_add(1,Ordering::SeqCst);}
+                                        let _=handle.emit("desktop-event",packet);
+                                    },
+                                                    Some("cancelled")=>{if let Ok(mut s)=handle.state::<Desktop>().segments.lock(){s.reset(None);}let _=handle.emit("desktop-event",packet);},
                                                     _=>{let _=handle.emit("desktop-event",packet);}
                                                 }
                                             },Some(Ok(Message::Ping(bytes)))=>{if writer.send(Message::Pong(bytes)).await.is_err(){break;}},Some(Ok(Message::Close(_)))|None|Some(Err(_))=>break,_=>{}
@@ -406,6 +422,227 @@ async fn connect(
         });
     }
     Ok(())
+}
+
+/// Reply audio from the voice socket. Returns false on a protocol violation (close socket).
+fn reply_audio(app: &tauri::AppHandle, packet: &Value) -> bool {
+    let state = app.state::<Desktop>();
+    let request = packet["request_id"].as_str().unwrap_or_default();
+    let seq = packet["seq"].as_u64();
+    let generation = state.generation.load(Ordering::SeqCst);
+    let Ok(mut segments) = state.segments.lock() else {
+        return false;
+    };
+    let finished = match packet["type"].as_str() {
+        Some("audio.chunk") => {
+            let Some(bytes) = packet["data"]
+                .as_str()
+                .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
+            else {
+                return false;
+            };
+            // Out-of-order or oversized chunks are late packets of a replaced turn: drop them.
+            segments.chunk(request, seq, &bytes);
+            return true;
+        }
+        Some("audio.segment") => segments.finish(request, seq),
+        // PTT sends one WAV without numbers and closes it with audio.done.
+        _ => segments.finish(request, None),
+    };
+    drop(segments);
+    if let Some((number, bytes)) = finished {
+        if state.player.segment(generation, number, bytes).is_err() {
+            let _ = stop_inner(&state);
+            let _ = app.emit(
+                "desktop-event",
+                json!({"type":"error","code":"audio_backpressure"}),
+            );
+            return true;
+        }
+    }
+    if packet["type"] == "audio.done" {
+        state.player.done(generation);
+    }
+    true
+}
+
+fn wake_dir(state: &Desktop) -> PathBuf {
+    state.root.join("wakeword")
+}
+
+fn wake_status(state: &Desktop) -> Value {
+    let dir = wake_dir(state);
+    let missing: Vec<&str> = ["melspectrogram.onnx", "embedding_model.onnx"]
+        .into_iter()
+        .filter(|f| !dir.join(f).is_file())
+        .collect();
+    let result = wake::check_manifest(&dir).and_then(|m| {
+        if !missing.is_empty() {
+            Err(format!("Не хватает файлов: {}", missing.join(", ")))
+        } else if !dir.join(&m.model).is_file() {
+            Err(format!("Нет файла модели {}", m.model))
+        } else {
+            Ok(m)
+        }
+    });
+    match result {
+        Ok(m) => {
+            json!({"ready":true,"dir":dir,"model":m.model,"license":m.license,"source":m.source})
+        }
+        Err(message) => json!({"ready":false,"dir":dir,"message":message}),
+    }
+}
+
+#[tauri::command]
+fn voice_status(state: State<'_, Desktop>) -> Value {
+    let dropped = state.live.lock().ok().and_then(|l| {
+        l.as_ref()
+            .map(|l| l.capture.dropped.load(Ordering::Relaxed))
+    });
+    json!({"wake":wake_status(&state),"live":dropped.is_some(),"dropped_frames":dropped.unwrap_or(0)})
+}
+
+#[tauri::command]
+fn live_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
+    let settings = state.settings.lock().map_err(lock_error)?.voice.clone();
+    if settings.mode == "ptt" {
+        return Err("Выберите режим «Нейра» или «Слушать всегда» в настройках голоса".into());
+    }
+    if state.voice.lock().map_err(lock_error)?.is_none() {
+        return Err("Нет голосового подключения".into());
+    }
+    if state.recording.lock().map_err(lock_error)?.is_some() {
+        return Err("Сначала завершите запись".into());
+    }
+    let mut live = state.live.lock().map_err(lock_error)?;
+    if live.is_some() {
+        return Ok(());
+    }
+    let mut detector = if settings.mode == "wake" {
+        Some(
+            wake::Detector::open(&wake_dir(&state))
+                .map_err(|e| format!("Wake word недоступен: {e}"))?,
+        )
+    } else {
+        None
+    };
+    let (frames_tx, frames) = std::sync::mpsc::sync_channel::<Vec<i16>>(50);
+    let capture = audio::LiveCapture::start(frames_tx)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = stop.clone();
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let mut gate = voice::Gate::new(&settings);
+        let mut trigger = voice::WakeTrigger::new(settings.wake_threshold);
+        let mut request: Option<String> = None;
+        let mut level = 0usize;
+        let emit = |value: Value| {
+            let _ = handle.emit("desktop-event", value);
+        };
+        emit(json!({"type":"live.started","mode":settings.mode}));
+        while !stopped.load(Ordering::SeqCst) {
+            let Ok(frame) = frames.recv_timeout(std::time::Duration::from_millis(200)) else {
+                continue;
+            };
+            let state = handle.state::<Desktop>();
+            level += 1;
+            if level.is_multiple_of(5) {
+                emit(json!({"type":"mic.level","db":voice::Vad::level_db(&frame)}));
+            }
+            let mut woke = false;
+            if let Some(d) = detector.as_mut() {
+                match d.push(&frame) {
+                    Ok(scores) if gate.is_idle() => {
+                        woke = scores.into_iter().any(|s| trigger.push(s))
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        emit(json!({"type":"error","code":"wake_failed"}));
+                        break;
+                    }
+                }
+            }
+            let playing = state.player.playing.load(Ordering::SeqCst);
+            for action in gate.push(&frame, woke, playing) {
+                let sent = match action {
+                    voice::Action::Wake => {
+                        emit(json!({"type":"wake"}));
+                        Ok(())
+                    }
+                    voice::Action::WakeExpired => {
+                        emit(json!({"type":"live.idle"}));
+                        Ok(())
+                    }
+                    voice::Action::Begin => {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        // Barge-in: a new phrase replaces any running turn and its audio.
+                        state.generation.fetch_add(1, Ordering::SeqCst);
+                        if let Ok(mut s) = state.segments.lock() {
+                            s.reset(None);
+                        }
+                        if let Ok(mut t) = state.current_turn.lock() {
+                            *t = Some(id.clone());
+                        }
+                        request = Some(id.clone());
+                        emit(json!({"type":"listening"}));
+                        send(&state.voice, json!({"type":"listen.begin","request_id":id}))
+                    }
+                    voice::Action::Audio(bytes) => {
+                        state.voice.lock().map_err(lock_error).and_then(|v| {
+                            v.as_ref()
+                                .ok_or_else(|| "Нет подключения".to_string())?
+                                .send(Message::Binary(bytes.into()))
+                                .map_err(|_| "Подключение закрыто".to_string())
+                        })
+                    }
+                    voice::Action::Commit => {
+                        emit(json!({"type":"transcribing"}));
+                        send(
+                            &state.voice,
+                            json!({"type":"commit","mode":"live","request_id":request}),
+                        )
+                    }
+                    voice::Action::Cancel => {
+                        if let Ok(mut t) = state.current_turn.lock() {
+                            if t.is_some() && *t == request {
+                                *t = None;
+                            }
+                        }
+                        emit(json!({"type":"live.idle"}));
+                        send(
+                            &state.voice,
+                            json!({"type":"listen.cancel","request_id":request.take()}),
+                        )
+                    }
+                };
+                if sent.is_err() {
+                    stopped.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+        if gate.is_sending() {
+            let state = handle.state::<Desktop>();
+            let _ = send(
+                &state.voice,
+                json!({"type":"listen.cancel","request_id":request}),
+            );
+        }
+        emit(json!({"type":"live.stopped"}));
+    });
+    *live = Some(Live { capture, stop });
+    Ok(())
+}
+
+fn live_stop_inner(state: &Desktop) -> Result<(), String> {
+    if let Some(live) = state.live.lock().map_err(lock_error)?.take() {
+        live.stop.store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn live_stop(state: State<'_, Desktop>) -> Result<(), String> {
+    live_stop_inner(&state)
 }
 
 fn receive_call(app: tauri::AppHandle, call: ToolCall) {
@@ -766,7 +1003,10 @@ fn start_turn(state: &Desktop) -> Result<String, String> {
     Ok(id)
 }
 fn stop_inner(state: &Desktop) -> Result<(), String> {
+    // Stop also turns the live microphone off: nothing keeps listening after Stop.
+    live_stop_inner(state)?;
     state.generation.fetch_add(1, Ordering::SeqCst);
+    state.segments.lock().map_err(lock_error)?.reset(None);
     *state.current_turn.lock().map_err(lock_error)? = None;
     let mut cancel = state.cancelled.lock().map_err(lock_error)?;
     cancel.store(true, Ordering::SeqCst);
@@ -808,6 +1048,9 @@ async fn record_start(state: State<'_, Desktop>) -> Result<(), String> {
     }
     if state.voice.lock().map_err(lock_error)?.is_none() {
         return Err("Нет голосового подключения".into());
+    }
+    if state.live.lock().map_err(lock_error)?.is_some() {
+        return Err("Сначала остановите разговор голосом".into());
     }
     state.generation.fetch_add(1, Ordering::SeqCst);
     let mut recording = state.recording.lock().map_err(lock_error)?;
@@ -890,6 +1133,29 @@ pub fn run() {
                 );
             }
             audit::prune(&root, settings.audit_days).map_err(std::io::Error::other)?;
+            let generation = Arc::new(AtomicU64::new(0));
+            let events = app.handle().clone();
+            let player = audio::Player::start(generation.clone(), move |event| {
+                let state = events.state::<Desktop>();
+                match event {
+                    audio::PlayerEvent::Started => {
+                        let _ = events.emit("desktop-event", json!({"type":"speaking"}));
+                    }
+                    audio::PlayerEvent::Played(seq) => {
+                        let request = state.segments.lock().ok().and_then(|s| s.request());
+                        let _ = send(
+                            &state.voice,
+                            json!({"type":"audio.ack","request_id":request,"seq":seq}),
+                        );
+                    }
+                    audio::PlayerEvent::Finished => {
+                        let _ = events.emit("desktop-event", json!({"type":"audio.finished"}));
+                    }
+                    audio::PlayerEvent::Error(code) => {
+                        let _ = events.emit("desktop-event", json!({"type":"error","code":code}));
+                    }
+                }
+            });
             app.manage(Desktop {
                 root,
                 settings: Mutex::new(settings),
@@ -899,7 +1165,7 @@ pub fn run() {
                 seen: Mutex::new(HashMap::new()),
                 pending: Mutex::new(HashMap::new()),
                 cancelled: Mutex::new(Arc::new(AtomicBool::new(false))),
-                generation: Arc::new(AtomicU64::new(0)),
+                generation,
                 recording: Mutex::new(None),
                 epoch: AtomicU64::new(0),
                 audit_lock: Mutex::new(()),
@@ -914,6 +1180,9 @@ pub fn run() {
                 running: Mutex::new(None),
                 pending_import: Mutex::new(None),
                 recoveries: Mutex::new(recoveries),
+                player,
+                segments: Mutex::new(voice::Segments::default()),
+                live: Mutex::new(None),
             });
             monitor_session(app.handle().clone());
             setup_shortcuts(app.handle());
@@ -992,7 +1261,10 @@ pub fn run() {
             command_runner::import_pick,
             command_runner::import_apply,
             command_runner::import_cancel,
-            command_runner::choose_data_root
+            command_runner::choose_data_root,
+            voice_status,
+            live_start,
+            live_stop
         ])
         .run(tauri::generate_context!());
     if result.is_err() {

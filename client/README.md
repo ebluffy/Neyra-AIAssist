@@ -6,7 +6,8 @@ Implemented for PLAN §3b.11 steps 1–3:
 
 - Server profiles, TLS/loopback URL validation, health/API check, OS-keyring tokens, streaming private chat, status, module enable/disable and soft restart.
 - Tray open/Stop/quit; first-launch data directory; dark/light UI. No server is required to open settings.
-- Separate authenticated voice socket; 16 kHz mono PCM push-to-talk, server STT → normal chat pipeline → bounded WAV TTS, interruptible native playback. V1 is half-duplex and returns the final transcript; live sentence streaming, wake word, VAD/AEC/barge-in are later steps.
+- Separate authenticated voice socket; 16 kHz mono PCM push-to-talk, server STT → normal chat pipeline → bounded WAV TTS, interruptible native playback.
+- Live voice (step 5, **Голос** tab): modes push-to-talk, wake word «Нейра» + command, or always listening. See *Live voice* below.
 - Per-device capabilities, local default-off master switch, per-contour settings, app/domain allowlists. Unknown executables/domains and closing windows require a one-time, expiring local confirmation. Arbitrary CLI, file reading/writing and screen/input tools are not available.
 - UUID call IDs, deadlines, no automatic reconnect/replay; Stop, permission revocation, disconnect and OS-session lock cancel pending actions. Completed actions, including opened apps, are not undone. OS helper process groups are terminated on cancellation; opened applications are deliberately detached.
 - Local content-free action audit, 30-day retention and 2000-row limit. No command parameters, file contents or tokens in audit. Server model trace stores only client tool name/result status.
@@ -85,10 +86,27 @@ Not covered here: `server_event` actions (user commands are not written to the s
 
 Push-to-talk: button; Windows/X11 also Ctrl+Alt+Space while held and Ctrl+Alt+Escape for Stop, if registration succeeds. Microphone data is capped at 30 seconds and not stored on disk. STT adapters may use a short-lived server temp file and delete it after transcription. Configure server `config/voice.yaml` using `voice.example.yaml`; provider secrets stay in server `.env`. No provider keys are sent to the client.
 
+## Live voice
+
+- **Client = mic + playback + local wake word.** STT, TTS and voice conversion run on the server; no provider keys reach the client.
+- **Phrase detection:** an energy VAD with an adaptive noise floor (not a neural VAD) and a user sensitivity. A phrase opens after 60 ms of speech with 300 ms pre-roll and ends after the configured pause (0.5–1.5 s); bursts under 300 ms are dropped (`listen.cancel`); phrases are committed before the 30 s server limit.
+- **STT is per segment.** No STT lane here streams partial hypotheses, so the server says `partial_transcripts: false` and only a final transcript is shown.
+- **Reply audio:** the server speaks each finished sentence while the reply is still being written. Segments are numbered; the client plays them in order, drops late or duplicate ones, and acknowledges each played segment. The server keeps at most 3 unplayed segments on the client and its sentence queue holds 3, so slow playback slows TTS instead of filling memory.
+- **Barge-in:** a new phrase (or Stop) cancels the running turn and its audio; packets of the old turn are dropped on both sides.
+- **Echo: no AEC.** By default the microphone is muted while Neyra speaks (half-duplex); interrupt with Stop or Ctrl+Alt+Escape. Voice barge-in during playback is an explicit *headphones* option. Muting is not echo cancellation, and nothing claims otherwise.
+- **Stop and screen lock turn the live microphone off.**
+- **Wake word «Нейра»:** openWakeWord models run locally through `tract` (pure Rust, no onnxruntime, no network). Until the detector fires, no audio leaves the PC; audio before the wake word is never sent. The scoring path matches the Python openWakeWord reference (max score difference ~1e-5 on the same clip). A «Нейра» model is **not bundled**: train one on synthetic clips from `server/scripts/wakeword_synth_dataset.py` (server TTS, no owner recordings) with openWakeWord training, then put into `Documents/Neyra/wakeword/`:
+  - `melspectrogram.onnx`, `embedding_model.onnx` — openWakeWord feature models;
+  - your classifier, e.g. `neyra_v1.onnx`;
+  - `wakeword.json`: `{"schema_version":1,"phrase":"Нейра","language":"ru","model":"neyra_v1.onnx","license":"…","source":"…"}`.
+  Stock English models (`hey_jarvis`, `alexa`, …) are refused: they do not detect «Нейра».
+- **Licenses:** openWakeWord code is Apache-2.0. Its stock English wake models are CC BY-NC-SA 4.0 and are not used. Check the terms of the feature models from the openWakeWord release you download and record them in `wakeword.json`. A model you train yourself on synthetic TTS clips is yours, but check the TTS provider's terms for training data.
+- **Voice conversion (server):** optional stage TTS → conversion → client, configured in `voice.conversion` (`server/config/voice.example.yaml`). Models are read in place from `server/models/`. If conversion fails, `on_error: passthrough` plays the original TTS voice and the client shows a notice; `stop` stops speaking this turn with `conversion_failed`. The RVC backend needs the optional `rvc-python` package on the server.
+
 ## Protocols and tests
 
 - `/v1/desktop/bridge`: admin Authorization header, versioned manifest, private chat/history, capabilities updates, device list/disconnect, `client_tool_call` / `client_tool_result` / cancellation.
-- `/v1/desktop/voice`: separate admin Authorization header and same session identity, PCM frames ≤32 KB, ≤30 s; `commit`, `stop`, transcript, chat events, base64 WAV chunks. Tokens never appear in query strings.
+- `/v1/desktop/voice` (`neyra.voice.v2`): separate admin Authorization header and same session identity, PCM frames ≤32 KB, ≤30 s. PTT: `commit`, `stop`, transcript, chat events, base64 WAV chunks. Live: `listen.begin` / frames / `commit` with `mode: live` / `listen.cancel`, numbered `audio.chunk` + `audio.segment`, `audio.ack`, `status`, `voice.conversion`. Tokens never appear in query strings.
 - Internal model tool names use `client_…` for provider compatibility and map to wire `client.…`. Brain sees only the target device's enabled tools; other adapters have no desktop context.
 
 `server/tests/test_desktop_bridge.py` exercises real ASGI/WebSocket routing with fake providers. `tests/ui_smoke.py` uses Playwright with **simulated native IPC**, so it tests UI wiring, not OS keyring/audio or a real WebView. To run it, start `npm run dev` on port 1420, then `python tests/ui_smoke.py` with Playwright installed. Native hardware and two-machine tests remain manual acceptance; CI or Xvfb cannot prove CachyOS/NVIDIA or Windows audio.

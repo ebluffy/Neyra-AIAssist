@@ -87,6 +87,8 @@ pub struct Settings {
     /// Optional 3D character overlay (§3b.6). Off by default; no 3D engine while false.
     #[serde(default)]
     pub character_enabled: bool,
+    #[serde(default)]
+    pub voice: crate::voice::VoiceSettings,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -100,6 +102,7 @@ impl Default for Settings {
             graphics_mode: default_graphics(),
             audit_days: default_audit_days(),
             character_enabled: false,
+            voice: crate::voice::VoiceSettings::default(),
         }
     }
 }
@@ -118,6 +121,8 @@ struct SettingsFile {
     audit_days: u32,
     #[serde(default)]
     character_enabled: bool,
+    #[serde(default)]
+    voice: crate::voice::VoiceSettings,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -453,6 +458,7 @@ pub fn initialize(root: &Path) -> Result<(Settings, Vec<Recovery>), String> {
                     graphics_mode: fresh.graphics_mode,
                     audit_days: fresh.audit_days,
                     character_enabled: false,
+                    voice: fresh.voice.clone(),
                 },
                 None,
             )
@@ -515,6 +521,7 @@ pub fn initialize(root: &Path) -> Result<(Settings, Vec<Recovery>), String> {
         graphics_mode: file.graphics_mode,
         audit_days: file.audit_days,
         character_enabled: file.character_enabled,
+        voice: file.voice,
     };
     if was_legacy || !settings_path.exists() || !permissions_path.exists() {
         if was_legacy {
@@ -564,6 +571,7 @@ pub fn save(root: &Path, settings: &Settings) -> Result<(), String> {
         graphics_mode: settings.graphics_mode.clone(),
         audit_days: settings.audit_days,
         character_enabled: settings.character_enabled,
+        voice: settings.voice.clone(),
     };
     write_with_backup(
         &root.join("settings/app.json"),
@@ -638,6 +646,14 @@ mod tests {
     fn settings_never_contain_token() {
         let value = serde_json::to_string(&Settings::default()).unwrap();
         assert!(!value.contains("token"));
+    }
+    #[test]
+    fn settings_from_before_live_voice_still_load() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("voice");
+        let s: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(s.voice, crate::voice::VoiceSettings::default());
+        assert_eq!(s.voice.mode, "ptt");
     }
     #[test]
     fn initialize_creates_every_directory_and_keeps_identity() {
