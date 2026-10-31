@@ -11,9 +11,10 @@ def manifest(device=None, tools=None):
                     name='Test PC', platform='linux-wayland', tools=tools or ['client.open_url'])
 
 
-def test_manifest_rejects_future_tools():
+@pytest.mark.parametrize('tool', ['client.format_disk', 'client.cdp_eval', 'client.read_cookies', 'shell_exec'])
+def test_manifest_rejects_unknown_tools(tool):
     with pytest.raises(ValueError):
-        manifest(tools=['client.shell_exec'])
+        manifest(tools=[tool])
 
 
 def test_route_never_falls_back_to_other_owner_or_device():

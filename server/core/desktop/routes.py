@@ -9,8 +9,10 @@ from uuid import UUID
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from core.desktop.bridge import ACTIVE_DESKTOP, BridgeRegistry, Manifest
+from core.desktop.bridge import ACTIVE_DESKTOP, SCREENSHOT_LIMIT, BridgeRegistry, Manifest
 from core.voice.desktop import DesktopVoice
+
+RESULT_PACKET_LIMIT = SCREENSHOT_LIMIT + 8192
 
 
 class Packet(BaseModel):
@@ -136,11 +138,13 @@ def router_for(agent, config, authenticate):
                 raw = message.get('text')
                 if not isinstance(raw, str):
                     raise ValueError('bad_packet')
-                if len(raw) > 32768:
+                if len(raw) > RESULT_PACKET_LIMIT:
                     raise ValueError('packet_too_large')
                 if connection is None or connection.revoked:
                     raise ValueError('revoked')
                 packet = Packet.model_validate_json(raw)
+                if packet.type != 'client_tool_result' and len(raw) > 32768:
+                    raise ValueError('packet_too_large')
                 if packet.type == 'ping':
                     await send(dict(type='pong'))
                 elif packet.type == 'capabilities' and packet.manifest:
@@ -156,8 +160,7 @@ def router_for(agent, config, authenticate):
                         task.cancel()
                     await send(dict(type='capabilities', tools=manifest.tools))
                 elif packet.type == 'client_tool_result':
-                    if len(json.dumps(packet.result)) > 16000:
-                        raise ValueError('result_too_large')
+                    # Size and shape per tool are enforced in BridgeRegistry.result.
                     registry.result(session_owner, connection, packet.call_id, packet.result)
                 elif packet.type == 'stop':
                     if task:

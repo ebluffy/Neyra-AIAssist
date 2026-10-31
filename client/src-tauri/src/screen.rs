@@ -476,9 +476,19 @@ pub fn capture<B: Backend + ?Sized>(
     }
     let (w, h, rgb) = downscale(&frame);
     let mut jpeg = Vec::new();
-    jpeg_encoder::Encoder::new(&mut jpeg, 70)
-        .encode(&rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
-        .map_err(|_| "Не удалось сжать снимок")?;
+    // Stays under the server's 1.5 MB screenshot limit (base64 adds a third).
+    for quality in [70, 50, 35] {
+        jpeg.clear();
+        jpeg_encoder::Encoder::new(&mut jpeg, quality)
+            .encode(&rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
+            .map_err(|_| "Не удалось сжать снимок")?;
+        if jpeg.len() < 1_000_000 {
+            break;
+        }
+    }
+    if jpeg.len() >= 1_100_000 {
+        return Err("Снимок слишком большой".into());
+    }
     let id = uuid::Uuid::new_v4().to_string();
     remember(Shot {
         id: id.clone(),
