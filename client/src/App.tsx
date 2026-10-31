@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { CharacterPanel } from './CharacterPanel';
+import { UpdatesPanel } from './UpdatesPanel';
 import { type AuditRow, type Device, type Entry, type HostCall, type Plugin, type Profile, type ServerEvent, type Settings, formatError, newProfile, tabs, validServerUrl } from './types';
 
 export function App() {
@@ -133,6 +135,8 @@ export function App() {
         <label>Имя этого ПК<input value={settings.device_name} maxLength={80} disabled={connected} onChange={e => setSettings({ ...settings, device_name: e.target.value })}/></label><label>Тема<select value={settings.theme} onChange={e => setSettings({ ...settings, theme: e.target.value })}><option value="dark">Тёмная</option><option value="light">Светлая</option></select></label><label>Графика Linux (после перезапуска)<select value={settings.graphics_mode} onChange={e => setSettings({ ...settings, graphics_mode: e.target.value })}><option value="auto">Автоматически</option><option value="wayland">Wayland</option><option value="wayland-nvidia">Wayland · NVIDIA explicit sync workaround</option><option value="x11">X11</option><option value="compatibility">Совместимость (может замедлять UI)</option></select></label>
         <label className="check"><input type="checkbox" checked={!!settings.character_enabled} disabled title="Будет доступно после шага 7"/>Персонаж на рабочем столе — после шага 7 (оверлей VRM)</label>
         <button disabled={busy} onClick={() => run(async () => { await save(settings); setNotice('Настройки сохранены'); })}>Сохранить настройки</button><p className="path">Данные: {root}</p><p className="path">Устройство: {settings.device_id}</p>
+        <UpdatesPanel/>
+        <CharacterPanel/>
       </section>}
       {tab === 'Чат' && <section className="chat"><h1>Чат</h1><div ref={messagePanel} onScroll={e => { const el = e.currentTarget; followMessages.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }} className="messages" aria-label="История чата">{history.length === 0 && <p>Здесь появится разговор с Нейрой.</p>}{history.map((entry, i) => <article key={i}><strong>{entry.role === 'user' ? 'Вы' : 'Нейра'}</strong><p>{entry.content}</p></article>)}{partial && <article><strong>Нейра</strong><p>{partial}</p></article>}</div>
         {lastTrace !== undefined && <details><summary>Модели последнего ответа</summary><pre>{JSON.stringify(lastTrace, null, 2)}</pre></details>}<label>ПК для действий<select value={target} disabled={!connected} onChange={e => setTarget(e.target.value)}><option value="">Этот ПК</option>{devices.map(d => <option key={d.device_id} value={d.device_id}>{d.name} · {d.device_id.slice(0, 8)}</option>)}</select></label><button onClick={updateDevices} disabled={!connected || busy}>Обновить устройства</button><button disabled={!connected || busy || !target} onClick={() => { if (window.confirm('Отключить выбранный ПК? Действия будут отменены, повторное подключение выполняется на том ПК вручную.')) void run(async () => { await invoke('disconnect_device', { deviceId: target }); setTarget(''); }); }}>Отключить выбранный ПК</button>

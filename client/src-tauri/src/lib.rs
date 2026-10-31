@@ -1,8 +1,10 @@
 mod audio;
 mod audit;
+mod character;
 mod host;
 mod policy;
 mod storage;
+mod updater;
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -103,7 +105,11 @@ fn load_settings(state: State<'_, Desktop>) -> Result<Value, String> {
     )
 }
 #[tauri::command]
-async fn save_settings(state: State<'_, Desktop>, settings: Settings) -> Result<(), String> {
+async fn save_settings(
+    app: tauri::AppHandle,
+    state: State<'_, Desktop>,
+    settings: Settings,
+) -> Result<(), String> {
     let old = state.settings.lock().map_err(lock_error)?.clone();
     if settings.schema_version != 1
         || settings.device_id != old.device_id
@@ -134,6 +140,7 @@ async fn save_settings(state: State<'_, Desktop>, settings: Settings) -> Result<
     let changed = serde_json::to_value(&old.permissions).ok()
         != serde_json::to_value(&settings.permissions).ok();
     storage::save(&state.root, &settings)?;
+    character::on_settings_saved(&app, settings.character_enabled);
     *state.settings.lock().map_err(lock_error)? = settings;
     if changed {
         stop_inner(&state)?;
@@ -755,7 +762,15 @@ pub fn run() {
             record_start,
             record_stop,
             audit_log,
-            applications
+            applications,
+            character::character_state,
+            character::character_save,
+            character::character_overlay,
+            updater::update_state,
+            updater::update_save,
+            updater::update_check,
+            updater::update_install,
+            updater::update_restart
         ])
         .run(tauri::generate_context!());
     if result.is_err() {

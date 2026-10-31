@@ -2,7 +2,7 @@
 name = "neyra-client"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.90"
 
 [lib]
 name = "neyra_client"
@@ -34,3 +34,6 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["tray-icon", "test"] }
