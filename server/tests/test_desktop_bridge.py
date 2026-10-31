@@ -470,6 +470,34 @@ def test_voice_phrase_match_skips_llm_and_other_sessions_do_not_match(monkeypatc
     assert len(agent.turns) == 1
 
 
+def test_command_refresh_keeps_a_pending_tool_call():
+    """AR-27: editing quick commands must not drop a tool call that is already in flight."""
+    holder = {}
+
+    class ToolAgent(Agent):
+        async def chat_stream(self, text, **kwargs):
+            registry, owner, session, device = ACTIVE_DESKTOP.get()
+            holder['result'] = await registry.call(
+                owner, session, device, 'client.open_url', {'url': 'https://example.com'})
+            yield {'type': 'done', 'text': 'ok', 'model_trace': {'calls': []}}
+
+    client, _ = make_client(ToolAgent())
+    m = manifest()
+    with client, client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-a'}) as ws:
+        ws.send_json(m.model_dump(mode='json'))
+        assert ws.receive_json()['type'] == 'hello'
+        ws.send_json({'type': 'chat', 'text': 'go'})
+        call = ws.receive_json()
+        assert call['type'] == 'client_tool_call'
+        edited = m.model_dump(mode='json')
+        edited['commands'] = [{'name': 'Новая', 'triggers': [{'kind': 'phrase', 'value': 'привет'}], 'actions': ['client.open_url']}]
+        ws.send_json({'type': 'capabilities', 'manifest': edited})
+        assert ws.receive_json() == {'type': 'capabilities', 'tools': ['client.open_url']}
+        ws.send_json({'type': 'client_tool_result', 'call_id': call['call_id'], 'result': {'status': 'ok'}})
+        assert ws.receive_json()['type'] == 'done'
+    assert holder['result']['status'] == 'ok'
+
+
 def test_capability_refresh_for_commands_does_not_cancel_running_turn():
     client, _ = make_client()
     m = command_manifest()

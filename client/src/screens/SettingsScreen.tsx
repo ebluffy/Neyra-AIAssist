@@ -37,8 +37,10 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
   const cancelImport = () => run(async () => { await invoke('import_cancel'); setPreview(undefined); });
   const moveData = () => run(async () => {
     if (!window.confirm('Скопировать данные в выбранную папку и использовать её после перезапуска? Старая папка останется нетронутой.')) return;
-    const out = await invoke<{ cancelled: boolean; path?: string }>('choose_data_root');
-    if (!out.cancelled) notify(`Данные скопированы в ${out.path}. Перезапустите Neyra, чтобы использовать новую папку.`);
+    const out = await invoke<{ cancelled: boolean; path?: string; reused_existing?: boolean }>('choose_data_root');
+    if (!out.cancelled) notify(out.reused_existing
+      ? `В ${out.path} уже есть данные Neyra. Текущая папка не скопирована. Перезапустите Neyra — будут использованы данные из выбранной папки. До перезапуска сохранение отключено.`
+      : `Данные скопированы в ${out.path}. Перезапустите Neyra. До перезапуска сохранение отключено.`);
   });
 
   return <section aria-labelledby="settings-title">

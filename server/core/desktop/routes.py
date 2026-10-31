@@ -153,12 +153,16 @@ def router_for(agent, config, authenticate):
                     if updated.device_id != manifest.device_id or updated.session_id != manifest.session_id:
                         raise ValueError('identity_changed')
                     tools_changed = set(updated.tools) != set(manifest.tools)
-                    registry.disconnect(connection)
-                    manifest = updated
-                    connection = registry.connect(session_owner, manifest, send, close=close_socket)
-                    # Editing quick commands must not abort a running turn; only a narrower/wider tool set does.
-                    if task and tools_changed:
-                        task.cancel()
+                    if tools_changed:
+                        # A narrower or wider tool list drops in-flight calls; command-only edits must not.
+                        registry.disconnect(connection)
+                        manifest = updated
+                        connection = registry.connect(session_owner, manifest, send, close=close_socket)
+                        if task and not task.done():
+                            task.cancel()
+                    else:
+                        connection.manifest = updated
+                        manifest = updated
                     await send(dict(type='capabilities', tools=manifest.tools))
                 elif packet.type == 'client_tool_result':
                     # Size and shape per tool are enforced in BridgeRegistry.result.

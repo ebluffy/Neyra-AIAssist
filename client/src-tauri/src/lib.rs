@@ -60,6 +60,8 @@ pub struct Desktop {
     running: Mutex<Option<String>>,
     pending_import: Mutex<Option<command_runner::PendingImport>>,
     recoveries: Mutex<Vec<storage::Recovery>>,
+    /// Set after a data-folder move. Further writes stay on the old folder until restart, so they are refused.
+    relocated: AtomicBool,
     player: audio::Player,
     segments: Mutex<voice::Segments>,
     live: Mutex<Option<Live>>,
@@ -149,6 +151,9 @@ pub(crate) fn apply_settings(
     state: &Desktop,
     settings: Settings,
 ) -> Result<(), String> {
+    if state.relocated.load(Ordering::SeqCst) {
+        return Err("Папка данных сменится после перезапуска. До перезапуска сохранение отключено.".into());
+    }
     let old = state.settings.lock().map_err(lock_error)?.clone();
     if settings.schema_version != storage::SETTINGS_VERSION
         || settings.device_id != old.device_id
@@ -1192,6 +1197,7 @@ pub fn run() {
                 running: Mutex::new(None),
                 pending_import: Mutex::new(None),
                 recoveries: Mutex::new(recoveries),
+                relocated: AtomicBool::new(false),
                 player,
                 segments: Mutex::new(voice::Segments::default()),
                 live: Mutex::new(None),

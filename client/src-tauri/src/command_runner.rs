@@ -45,6 +45,15 @@ fn ensure_loaded(state: &Desktop) -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_writable(state: &Desktop) -> Result<(), String> {
+    if state.relocated.load(Ordering::SeqCst) {
+        return Err(
+            "Папка данных сменится после перезапуска. До перезапуска сохранение отключено.".into(),
+        );
+    }
+    Ok(())
+}
+
 fn registered_ids(state: &Desktop) -> Vec<u32> {
     state
         .hotkeys
@@ -304,14 +313,35 @@ async fn step(
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Value, String> {
     let call = commands::local_call(device, tool, arguments);
+    let call_id = call.call_id.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.state::<Desktop>()
         .waiters
         .lock()
         .map_err(lock_error)?
-        .insert(call.call_id.clone(), tx);
+        .insert(call_id.clone(), tx);
     dispatch(app, call);
-    wait_for(rx, cancel).await
+    let outcome = wait_for(rx, cancel).await;
+    if outcome.is_err() {
+        // The step is over: drop the waiter and the confirmation card so a late reply cannot land.
+        abandon_local_call(app, &call_id);
+    }
+    outcome
+}
+
+fn abandon_local_call(app: &tauri::AppHandle, call_id: &str) {
+    let state = app.state::<Desktop>();
+    if let Ok(mut waiters) = state.waiters.lock() {
+        waiters.remove(call_id);
+    }
+    if let Ok(mut pending) = state.pending.lock() {
+        pending.remove(call_id);
+    }
+    let _ = app.emit("host-confirm-closed", json!({"call_id": call_id}));
+}
+
+fn step_failed(message: &str) -> bool {
+    message.contains("истекло")
 }
 
 async fn run(
@@ -378,6 +408,7 @@ async fn run(
             waiters.insert(call.call_id.clone(), tx);
         }
         if !queue_confirm(app, call.clone()) {
+            abandon_local_call(app, &call.call_id);
             return finish(
                 app,
                 &run_id,
@@ -402,7 +433,16 @@ async fn run(
                 )
             }
             Err(message) => {
-                return finish(app, &run_id, command, "cancelled", &message, source, "")
+                abandon_local_call(app, &call.call_id);
+                return finish(
+                    app,
+                    &run_id,
+                    command,
+                    if step_failed(&message) { "failed" } else { "cancelled" },
+                    &message,
+                    source,
+                    "",
+                )
             }
         }
     }
@@ -433,7 +473,15 @@ async fn run(
                 }
             }
             Err(message) => {
-                return finish(app, &run_id, command, "cancelled", &message, source, "")
+                return finish(
+                    app,
+                    &run_id,
+                    command,
+                    if step_failed(&message) { "failed" } else { "cancelled" },
+                    &message,
+                    source,
+                    "",
+                )
             }
         }
     }
@@ -545,6 +593,7 @@ pub fn command_save(
     file: Option<String>,
     command: Command,
 ) -> Result<String, String> {
+    ensure_writable(&state)?;
     ensure_loaded(&state)?;
     let entries = state
         .commands
@@ -567,6 +616,7 @@ pub fn command_save_yaml(
     file: Option<String>,
     yaml: String,
 ) -> Result<Value, String> {
+    ensure_writable(&state)?;
     ensure_loaded(&state)?;
     if yaml.len() as u64 > commands::MAX_FILE_BYTES {
         return Ok(
@@ -618,6 +668,7 @@ pub fn command_delete(
     state: State<'_, Desktop>,
     file: String,
 ) -> Result<(), String> {
+    ensure_writable(&state)?;
     commands::delete_file(&dir(&state), &file)?;
     after_change(&app);
     Ok(())
@@ -630,6 +681,7 @@ pub fn command_set_enabled(
     file: String,
     enabled: bool,
 ) -> Result<(), String> {
+    ensure_writable(&state)?;
     ensure_loaded(&state)?;
     let entries = state
         .commands
@@ -707,6 +759,7 @@ pub fn draft_confirm(
     state: State<'_, Desktop>,
     draft_id: String,
 ) -> Result<String, String> {
+    ensure_writable(&state)?;
     let command = state
         .drafts
         .lock()
@@ -818,8 +871,9 @@ pub async fn import_pick(app: tauri::AppHandle) -> Result<Value, String> {
     Ok(preview)
 }
 
-/// Imported permissions may only be narrower or equal in kind: the master switch is never turned on from a file,
-/// and application paths must exist on this PC and not point at secrets.
+/// Imported web and system flags can only stay the same or become narrower (`current && imported`).
+/// The master switch is never turned on from a file. Contour 3–4 (shell, files, folders, screen, input)
+/// are not imported: they stay exactly as they are on this PC.
 pub fn sanitize_permissions(
     current: &storage::Permissions,
     imported: &storage::Permissions,
@@ -851,9 +905,9 @@ pub fn sanitize_permissions(
     storage::Permissions {
         enabled: current.enabled,
         apps,
-        allow_web: imported.allow_web,
+        allow_web: current.allow_web && imported.allow_web,
         web_domains: domains,
-        system: imported.system,
+        system: current.system && imported.system,
         shell: current.shell,
         files: current.files,
         fs_roots: current.fs_roots.clone(),
@@ -872,6 +926,7 @@ pub fn import_apply(
     include_permissions: bool,
     include_settings: bool,
 ) -> Result<Value, String> {
+    ensure_writable(&state)?;
     let pending = state
         .pending_import
         .lock()
@@ -954,9 +1009,14 @@ pub async fn choose_data_root(app: tauri::AppHandle) -> Result<Value, String> {
     let chosen = path.into_path().map_err(|_| "Неверный путь")?;
     let state = app.state::<Desktop>();
     let target = chosen.join("Neyra");
-    storage::move_data_root(&state.root, &target)?;
-    logs::log(&state.root, "info", "data folder changed; restart required");
-    Ok(json!({"cancelled":false,"path":target,"restart_required":true}))
+    let reused = storage::move_data_root(&state.root, &target)?;
+    state.relocated.store(true, Ordering::SeqCst);
+    logs::log(
+        &state.root,
+        "info",
+        "data folder changed; restart required; writes blocked",
+    );
+    Ok(json!({"cancelled":false,"path":target,"restart_required":true,"reused_existing":reused}))
 }
 
 #[cfg(test)]
@@ -975,6 +1035,49 @@ mod tests {
             ..Default::default()
         };
         assert!(sanitize_permissions(&on, &storage::Permissions::default()).enabled);
+    }
+    #[test]
+    fn imported_permissions_never_widen_web_system_or_contours() {
+        let current = storage::Permissions {
+            allow_web: false,
+            system: false,
+            shell: false,
+            files: false,
+            screen: false,
+            screen_auto: false,
+            input: false,
+            ..Default::default()
+        };
+        let imported = storage::Permissions {
+            enabled: true,
+            allow_web: true,
+            system: true,
+            shell: true,
+            files: true,
+            fs_roots: vec!["/tmp".into()],
+            screen: true,
+            screen_auto: true,
+            input: true,
+            ..Default::default()
+        };
+        let out = sanitize_permissions(&current, &imported);
+        assert!(!out.enabled && !out.allow_web && !out.system);
+        assert!(!out.shell && !out.files && out.fs_roots.is_empty());
+        assert!(!out.screen && !out.screen_auto && !out.input);
+        let open = storage::Permissions {
+            allow_web: true,
+            system: true,
+            ..Default::default()
+        };
+        let narrowed = sanitize_permissions(
+            &open,
+            &storage::Permissions {
+                allow_web: false,
+                system: false,
+                ..Default::default()
+            },
+        );
+        assert!(!narrowed.allow_web && !narrowed.system);
     }
     #[test]
     fn imported_apps_and_domains_are_filtered_for_this_pc() {
