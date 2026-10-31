@@ -10,7 +10,8 @@ import { SettingsSheet } from './components/SettingsSheet';
 import { StatusPanel } from './components/StatusPanel';
 import { VoicePanel } from './components/VoicePanel';
 import { VoiceRecorder } from './components/VoiceRecorder';
-import { Settings } from 'lucide-react';
+import { Plus, Settings } from 'lucide-react';
+import { daypart } from './chat';
 import { VoiceOrb } from './components/VoiceOrb';
 import { CharacterPanel } from './CharacterPanel';
 import { UpdatesPanel } from './UpdatesPanel';
@@ -27,6 +28,9 @@ export function App() {
   return <div className="shell" data-theme={app.theme}>
     <HistoryPanel open={app.historyOpen} threads={app.threads} activeId={app.activeId} onClose={() => app.setHistoryOpen(false)} onOpen={id => void app.openThread(id)} onNew={() => void app.newChat()} />
     <div className="stage">
+      <div className="plus-slot">
+        <button type="button" className="icon plus" aria-label="Новый чат" data-tip="Новый чат" onClick={() => void app.newChat()}><Plus size={18} strokeWidth={1.75} aria-hidden="true" /></button>
+      </div>
       <div className="chrome">
         <button type="button" className="stop" onClick={() => void app.stop()}>Стоп</button>
         <span className="dot" data-on={app.connected ? 'true' : 'false'} role="status" data-tip={app.connected ? 'Подключено' : 'Нет подключения'} aria-label={app.connected ? 'Подключено' : 'Нет подключения'} />
@@ -39,7 +43,7 @@ export function App() {
         {app.settings && !app.connected && <div className="offline" role="status"><p>Нет связи с сервером. Сообщения заработают после подключения.</p><button type="button" onClick={() => app.openSheet('server')}>Настройки сервера</button></div>}
         {app.error && <div className="error" id="form-error" role="alert">{app.error}</div>}
         {!app.settings && <section className="greet"><h1>Запуск Neyra</h1><p>Загружаю локальные настройки…</p></section>}
-        {app.settings && empty && !app.liveOpen && <div className="greet"><VoiceOrb state="idle" level={0.15} mini /><h1>Нейра</h1><p>Напишите сообщение или запишите голос.</p></div>}
+        {app.settings && empty && !app.liveOpen && <div className="greet"><VoiceOrb state="idle" level={0.15} mini /><h1>{daypart(new Date().getHours())}</h1><p>Напишите сообщение или запишите голос.</p></div>}
         {app.settings && !empty && !app.liveOpen && <ChatView messages={app.messages} partial={app.partial} onCopy={app.copyText} onSpeak={value => void app.speak(value)} onRepeat={value => void app.sendContent(value)} turnBusy={turnBusy || app.recording || app.liveOpen} voiceBusy={turnBusy || app.recording || app.liveOpen} />}
         {app.liveOpen && <LiveVoice state={app.liveState} mode={app.voice.mode} level={app.micLevel} muted={app.muted} busy={app.busy} messages={app.messages} partial={app.partial} onMute={() => void app.toggleMute()} onSettings={() => app.openSheet('voice')} onEnd={() => void app.endLive()} />}
         {app.hostCall && <PermissionCard key={app.hostCall.call_id} call={app.hostCall} onAllow={() => void app.approve(true)} onReject={() => void app.approve(false)} />}

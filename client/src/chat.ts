@@ -31,6 +31,13 @@ export function threadTitle(messages: { role: string; content: string }[]): stri
   return clean.length > 42 ? `${clean.slice(0, 42)}…` : clean;
 }
 
+export function daypart(hour: number): string {
+  if (hour < 5 || hour >= 23) return 'Доброй ночи';
+  if (hour < 12) return 'Доброе утро';
+  if (hour < 18) return 'Добрый день';
+  return 'Добрый вечер';
+}
+
 export function clock(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000));
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;

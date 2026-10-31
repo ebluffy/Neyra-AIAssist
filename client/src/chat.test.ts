@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clock, composerSlot, switchThread, threadTitle, type ChatThread } from './chat';
+import { clock, composerSlot, daypart, switchThread, threadTitle, type ChatThread } from './chat';
 import { themeId } from './theme';
 
 describe('chat composer', () => {
@@ -12,6 +12,13 @@ describe('chat composer', () => {
     expect(threadTitle([])).toBe('Новый чат');
     expect(threadTitle([{ role: 'user', content: '  коротко  ' }])).toBe('коротко');
     expect(threadTitle([{ role: 'user', content: 'а'.repeat(50) }])).toHaveLength(43);
+  });
+  it('greets by the time of day', () => {
+    expect(daypart(0)).toBe('Доброй ночи');
+    expect(daypart(9)).toBe('Доброе утро');
+    expect(daypart(14)).toBe('Добрый день');
+    expect(daypart(20)).toBe('Добрый вечер');
+    expect(daypart(23)).toBe('Доброй ночи');
   });
   it('formats a recording clock', () => {
     expect(clock(0)).toBe('0:00');
