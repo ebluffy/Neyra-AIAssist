@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright, expect
 INIT = r'''
 const callbacks = new Map(), listeners = new Map(); let next = 1;
 const profile = {id:'2eb0cd23-9508-44e1-b3ee-86ad429a5451',name:'Локальный стенд',url:'http://127.0.0.1:8787',session_id:'b3aef0b1-2ee1-4224-9888-1992bb964414'};
-let settings = {schema_version:2,audit_days:30,device_id:'c1554031-4193-4cf8-bfde-e64b858ee332',device_name:'Тестовый ПК',profiles:[profile],permissions:{enabled:false,allow_web:true,web_domains:[],system:true,apps:[]},theme:'dark',graphics_mode:'auto',character_enabled:false};
+let settings = {schema_version:2,audit_days:30,device_id:'c1554031-4193-4cf8-bfde-e64b858ee332',device_name:'Тестовый ПК',profiles:[profile],permissions:{enabled:false,allow_web:true,web_domains:[],system:true,apps:[],shell:false,files:false,fs_roots:[],screen:false,screen_auto:false,input:false},theme:'dark',graphics_mode:'auto',character_enabled:false};
 window.testCalls=[];let store=[];
 window.emitNative=(name,payload)=>{for(const id of listeners.get(name)??[])callbacks.get(id)?.({event:name,id,payload});};
 window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener:(event,id)=>listeners.get(event)?.delete(id)};
@@ -13,8 +13,8 @@ window.__TAURI_INTERNALS__={transformCallback:(cb)=>{let id=next++;callbacks.set
 window.testCalls.push({cmd,args});
 if(cmd==='plugin:event|listen'){if(!listeners.has(args.event))listeners.set(args.event,new Set());listeners.get(args.event).add(args.handler);return args.handler;}
 if(cmd==='plugin:event|unlisten')return;
-if(cmd==='load_settings')return {settings,data_root:'/tmp/Neyra',recoveries:[{file:'settings/app.json',reason:'corrupt',quarantined:'app.json.corrupt-1',restored:'backup'}]};
-if(cmd==='save_settings'){settings=args.settings;return;}
+if(cmd==='load_settings')return {settings,data_root:'/tmp/Neyra',recoveries:[{file:'settings/app.json',reason:'corrupt',quarantined:'app.json.corrupt-1',restored:'backup'}],screen_backend:true,input_backend:true};
+if(cmd==='save_settings'){const p=args.settings.permissions;if(p.files&&!p.fs_roots.length)throw 'Сначала включите снимки экрана / добавьте папку';if(p.fs_roots.some(r=>r.includes('.ssh')))throw 'Эту папку нельзя разрешить';settings=args.settings;return;}
 if(cmd==='api'){if(window.failApi)throw 'Сервер недоступен';if(args.path==='/openapi.json')return {info:{version:'1.1.0'}};if(args.path==='/v1/plugins')return {data:{plugins:[{id:'example',name:'Пример',enabled:false,lifecycle:'resident'}]}};return {data:{status:'ok',api_version:'1.1.0'}};}
 if(cmd==='connect'){setTimeout(()=>window.emitNative('desktop-event',{type:'hello'}),10);return;}
 if(cmd==='bridge_message'&&args.kind==='history'){window.emitNative('desktop-event',{type:'history',messages:[]});return;}
@@ -76,6 +76,31 @@ with sync_playwright() as p:
     expect(page.get_by_role('button',name='Отклонить',exact=True)).to_be_focused()
     page.keyboard.press('Escape')
     expect(page.get_by_role('dialog')).not_to_be_visible()
+    page.on('dialog', lambda d: d.accept())
+    page.get_by_label('Консоль (PowerShell, cmd, bash): каждая команда с подтверждением').check()
+    expect(page.get_by_label('Консоль (PowerShell, cmd, bash): каждая команда с подтверждением')).to_be_checked()
+    expect(page.get_by_label('Файлы в разрешённых папках', exact=False)).to_be_disabled()
+    page.get_by_label('Новая разрешённая папка').fill('relative/path')
+    page.get_by_role('button', name='Добавить папку').click()
+    expect(page.get_by_role('alert')).to_contain_text('полный путь')
+    page.get_by_label('Новая разрешённая папка').fill('/home/me/.ssh')
+    page.get_by_role('button', name='Добавить папку').click()
+    expect(page.get_by_role('alert')).to_contain_text('нельзя разрешить')
+    page.get_by_label('Новая разрешённая папка').fill('/home/me/Documents')
+    page.get_by_role('button', name='Добавить папку').click()
+    expect(page.locator('ul.roots')).to_contain_text('/home/me/Documents')
+    page.get_by_label('Файлы в разрешённых папках', exact=False).check()
+    expect(page.get_by_label('Снимки без подтверждения')).to_be_disabled()
+    page.get_by_label('Снимки экрана', exact=False).first.check()
+    page.get_by_label('Мышь и клавиатура', exact=False).check()
+    perms = page.evaluate('window.testCalls.filter(c=>c.cmd==="save_settings").at(-1).args.settings.permissions')
+    assert perms['shell'] and perms['files'] and perms['screen'] and perms['input'] and not perms['screen_auto'], perms
+    page.evaluate("window.emitNative('host-confirm',{call_id:'call-shell',tool:'client.shell_exec',arguments:{program:'git'},deadline_ms:Date.now()+30000,preview:'Команда: /usr/bin/git status\\nПапка: /home/me/Documents\\nТаймаут: 30 с'})")
+    expect(page.get_by_role('dialog')).to_contain_text('Выполнить команду')
+    expect(page.get_by_role('dialog')).to_contain_text('/usr/bin/git status')
+    page.get_by_role('button', name='Отклонить', exact=True).click()
+    expect(page.get_by_role('dialog')).not_to_be_visible()
+    assert page.evaluate('window.testCalls.some(c=>c.cmd==="approve"&&c.args.callId==="call-shell"&&c.args.allow===false)')
     page.evaluate("window.emitNative('host-confirm',{call_id:'call-cancel',tool:'client.open_app',arguments:{path:'/opt/Other'},deadline_ms:Date.now()+30000})")
     expect(page.get_by_role('dialog')).to_be_visible()
     page.evaluate("window.emitNative('host-confirm-closed',{call_id:'call-cancel'})")
@@ -165,4 +190,4 @@ with sync_playwright() as p:
     page.screenshot(path='/tmp/neyra-desktop-dark.png',full_page=True)
     assert not errors,errors
     browser.close()
-print('PASS: profiles, API failure, chat, device selector, local permissions, confirmation/Escape/host-confirm-closed, Stop, audit, quick commands (empty/error/create/edit/YAML error/run/draft/local text), settings recovery/export/import, dark/light/narrow. Native boundary simulated.')
+print('PASS: profiles, API failure, chat, device selector, local permissions, Contour 3-4 toggles/roots/preview card, confirmation/Escape/host-confirm-closed, Stop, audit, quick commands (empty/error/create/edit/YAML error/run/draft/local text), settings recovery/export/import, dark/light/narrow. Native boundary simulated.')
