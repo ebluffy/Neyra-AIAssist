@@ -46,7 +46,7 @@ if(cmd==='import_pick')return {cancelled:false,items:[{name:'Новая',status:
 if(cmd==='import_apply'){window.importArgs=args;return {report:{added:1,replaced:0,renamed:1,skipped:0},settings};}
 if(cmd==='import_cancel')return;
 if(cmd==='choose_data_root')return window.forceDataChoice?{cancelled:false,needs_choice:true,path:'/data/Neyra'}:{cancelled:false,path:'/data/Neyra',restart_required:true};
-if(cmd==='confirm_data_root'){window.dataChoice=args.choice;if(window.failDataConfirm)throw 'Выберите папку ещё раз';return {cancelled:args.choice==='cancel',path:'/data/Neyra',restart_required:args.choice!=='cancel'};}
+if(cmd==='confirm_data_root'){window.dataChoice=args.choice;if(window.failDataConfirm&&(args.choice==='use_existing'||args.choice==='overwrite'))throw 'Выберите папку ещё раз';return {cancelled:args.choice==='cancel',path:'/data/Neyra',restart_required:args.choice!=='cancel'};}
 return;
 }};
 '''
@@ -219,9 +219,10 @@ with sync_playwright() as p:
     page.evaluate('window.failDataConfirm=true')
     page.get_by_role('button',name='Сменить папку данных…').click()
     expect(page.get_by_role('dialog',name='В папке уже есть данные Neyra')).to_be_visible()
-    page.keyboard.press('Escape')
+    page.get_by_role('button',name='Использовать эти данные').click()
     expect(page.get_by_text('Выберите папку ещё раз')).to_be_visible()
     expect(page.get_by_role('dialog',name='В папке уже есть данные Neyra')).not_to_be_visible()
+    assert page.evaluate('window.dataChoice')=='use_existing'
     page.evaluate('window.failDataConfirm=false')
     page.get_by_role('button',name='Сменить папку данных…').click()
     page.get_by_role('button',name='Использовать эти данные').click()
