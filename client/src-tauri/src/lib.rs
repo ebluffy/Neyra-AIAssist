@@ -23,7 +23,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -62,6 +62,10 @@ pub struct Desktop {
     recoveries: Mutex<Vec<storage::Recovery>>,
     /// Set after a data-folder move. Further writes stay on the old folder until restart, so they are refused.
     relocated: AtomicBool,
+    pending_data_move: Mutex<Option<command_runner::PendingDataMove>>,
+    /// Local actions still running after a quick-command step stopped waiting.
+    local_inflight: AtomicUsize,
+    local_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
     player: audio::Player,
     segments: Mutex<voice::Segments>,
     live: Mutex<Option<Live>>,
@@ -837,8 +841,21 @@ fn execute_call(app: tauri::AppHandle, call: ToolCall, confirmed: bool) {
     if powerful {
         set_tray_activity(&app, true);
     }
+    let action_cancel = if is_local(&call) {
+        let flag = Arc::new(AtomicBool::new(false));
+        let state = app.state::<Desktop>();
+        if let Ok(mut flags) = state.local_cancels.lock() {
+            flags.insert(call.call_id.clone(), flag.clone());
+        }
+        state.local_inflight.fetch_add(1, Ordering::SeqCst);
+        flag
+    } else {
+        cancel
+    };
     tauri::async_runtime::spawn(async move {
         let c = call.clone();
+        let local = is_local(&call);
+        let call_id = call.call_id.clone();
         let handle = app.clone();
         let result = tauri::async_runtime::spawn_blocking(move || match c.tool.as_str() {
             "client.screenshot" | "client.input" => with_own_windows_hidden(&handle, || {
@@ -848,11 +865,11 @@ fn execute_call(app: tauri::AppHandle, call: ToolCall, confirmed: bool) {
                         screen::capture(backend, window, &c.session_id)
                     } else {
                         let args = c.arguments.as_object().ok_or("Неверные параметры")?;
-                        screen::run(backend, args, &c.session_id, &cancel)
+                        screen::run(backend, args, &c.session_id, &action_cancel)
                     }
                 })
             }),
-            _ => host::execute(&c, cancel, &permissions, &root),
+            _ => host::execute(&c, action_cancel, &permissions, &root),
         })
         .await;
         if powerful {
@@ -866,6 +883,13 @@ fn execute_call(app: tauri::AppHandle, call: ToolCall, confirmed: bool) {
             Err(_) => json!({"status":"error","code":"local_action_failed"}),
         };
         reply(&app, &call, value, confirmed);
+        if local {
+            let state = app.state::<Desktop>();
+            if let Ok(mut flags) = state.local_cancels.lock() {
+                flags.remove(&call_id);
+            }
+            state.local_inflight.fetch_sub(1, Ordering::SeqCst);
+        }
     });
 }
 
@@ -1047,6 +1071,11 @@ fn stop_inner(state: &Desktop) -> Result<(), String> {
     cancel.store(true, Ordering::SeqCst);
     *cancel = Arc::new(AtomicBool::new(false));
     state.pending.lock().map_err(lock_error)?.clear();
+    if let Ok(flags) = state.local_cancels.lock() {
+        for flag in flags.values() {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
     // Dropping the senders wakes any running quick command, which then reports "stopped".
     state.waiters.lock().map_err(lock_error)?.clear();
     if let Some(recording) = state.recording.lock().map_err(lock_error)?.take() {
@@ -1216,6 +1245,9 @@ pub fn run() {
                 pending_import: Mutex::new(None),
                 recoveries: Mutex::new(recoveries),
                 relocated: AtomicBool::new(false),
+                pending_data_move: Mutex::new(None),
+                local_inflight: AtomicUsize::new(0),
+                local_cancels: Mutex::new(HashMap::new()),
                 player,
                 segments: Mutex::new(voice::Segments::default()),
                 live: Mutex::new(None),
@@ -1300,6 +1332,7 @@ pub fn run() {
             command_runner::import_apply,
             command_runner::import_cancel,
             command_runner::choose_data_root,
+            command_runner::confirm_data_root,
             voice_status,
             live_start,
             live_stop,

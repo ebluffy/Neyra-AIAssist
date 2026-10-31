@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { CharacterPanel } from '../CharacterPanel';
 import { UpdatesPanel } from '../UpdatesPanel';
@@ -18,6 +18,16 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
   const [conflict, setConflict] = useState<'skip' | 'overwrite' | 'rename'>('rename');
   const [withSettings, setWithSettings] = useState(false);
   const [withPermissions, setWithPermissions] = useState(false);
+  const [folderChoice, setFolderChoice] = useState<string | null>(null);
+  const folderDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const node = folderDialog.current;
+    if (!node) return;
+    if (folderChoice) {
+      if (!node.open) node.showModal();
+      node.querySelector('button')?.focus();
+    } else if (node.open) node.close();
+  }, [folderChoice, busy]);
   const usable = preview?.items?.filter(i => i.status !== 'invalid').length ?? 0;
 
   const exportConfig = () => run(async () => {
@@ -36,11 +46,20 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
   });
   const cancelImport = () => run(async () => { await invoke('import_cancel'); setPreview(undefined); });
   const moveData = () => run(async () => {
-    if (!window.confirm('Скопировать данные в выбранную папку и использовать её после перезапуска? Старая папка останется нетронутой.')) return;
-    const out = await invoke<{ cancelled: boolean; path?: string; reused_existing?: boolean }>('choose_data_root');
-    if (!out.cancelled) notify(out.reused_existing
-      ? `В ${out.path} уже есть данные Neyra. Текущая папка не скопирована. Перезапустите Neyra — будут использованы данные из выбранной папки. До перезапуска сохранение отключено.`
-      : `Данные скопированы в ${out.path}. Перезапустите Neyra. До перезапуска сохранение отключено.`);
+    if (!window.confirm('Скопировать данные в выбранную папку? Старая папка останется на месте. Если там уже есть данные Neyra, вы сможете использовать их или заменить. До перезапуска сохранение будет отключено.')) return;
+    const out = await invoke<{ cancelled: boolean; path?: string; needs_choice?: boolean }>('choose_data_root');
+    if (out.cancelled) return;
+    if (out.needs_choice && out.path) { setFolderChoice(out.path); return; }
+    notify(`Данные скопированы в ${out.path}. Перезапустите Neyra. До перезапуска сохранение отключено.`);
+  });
+  const applyFolder = (choice: 'use_existing' | 'overwrite') => run(async () => {
+    const out = await invoke<{ cancelled: boolean; path?: string }>('confirm_data_root', { choice });
+    setFolderChoice(null);
+    if (!out.cancelled) notify(`Папка данных: ${out.path}. Перезапустите Neyra. До перезапуска сохранение отключено.`);
+  });
+  const cancelFolder = () => run(async () => {
+    await invoke('confirm_data_root', { choice: 'cancel' });
+    setFolderChoice(null);
   });
 
   return <section aria-labelledby="settings-title">
@@ -58,6 +77,17 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
     <p>Команды, разрешения, журнал и настройки лежат в папке ниже. Токены сервера в неё не попадают: они хранятся в системном хранилище секретов.</p>
     <p className="path">{root}</p><p className="path">Устройство: {settings.device_id}</p>
     <button disabled={busy} onClick={moveData}>Сменить папку данных…</button>
+    <dialog ref={folderDialog} className="editor" aria-labelledby="data-move-title" onCancel={event => { event.preventDefault(); cancelFolder(); }}>
+      {folderChoice && <>
+        <h2 id="data-move-title">В папке уже есть данные Neyra</h2>
+        <p>Папка <span className="path">{folderChoice}</span> уже содержит настройки. Можно открыть её как есть или заменить текущими данными. Прежняя папка этого запуска останется на месте. Заменяемые данные будут отложены рядом, в папку с суффиксом <span className="path">.previous</span>.</p>
+        <div className="actions">
+          <button autoFocus onClick={cancelFolder}>Отмена</button>
+          <button disabled={busy} onClick={() => applyFolder('use_existing')}>Использовать эти данные</button>
+          <button disabled={busy} onClick={() => applyFolder('overwrite')}>Заменить текущими</button>
+        </div>
+      </>}
+    </dialog>
     <h2>Перенос конфигурации</h2>
     <p>Файл содержит настройки, разрешения и быстрые команды. Без токенов, адресов серверов и журнала. Импортированные команды работают по тем же правилам безопасности этого ПК.</p>
     <div className="actions"><button disabled={busy} onClick={exportConfig}>Экспортировать…</button><button disabled={busy} onClick={pick}>Импортировать…</button></div>
@@ -68,7 +98,7 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
       <label>Если имя уже занято<select value={conflict} onChange={e => setConflict(e.target.value as 'skip' | 'overwrite' | 'rename')}><option value="rename">Сохранить под новым именем</option><option value="skip">Пропустить</option><option value="overwrite">Заменить существующую</option></select></label>
       <label className="check"><input type="checkbox" checked={withSettings} onChange={e => setWithSettings(e.target.checked)}/>Применить тему и графику из файла</label>
       <label className="check"><input type="checkbox" checked={withPermissions} onChange={e => setWithPermissions(e.target.checked)}/>Применить разрешения из файла (главный выключатель не включится)</label>
-      {withPermissions && preview.permissions && <p className="hint">Браузер: {preview.permissions.allow_web ? 'да' : 'нет'} · приложения и система: {preview.permissions.system ? 'да' : 'нет'}. Домены из файла: {preview.permissions.web_domains.join(', ') || 'нет'}. Программы из файла: {preview.permissions.apps.join(', ') || 'нет'}. Эти списки могут добавить новые домены и программы. Программы, которых нет на этом ПК, будут пропущены.</p>}
+      {withPermissions && preview.permissions && <p className="hint">Браузер: {preview.permissions.allow_web ? 'да' : 'нет'} · приложения и система: {preview.permissions.system ? 'да' : 'нет'}. Домены из файла: {preview.permissions.web_domains.join(', ') || 'нет'}. Программы из файла: {preview.permissions.apps.join(', ') || 'нет'}. Эти списки могут добавить новые домены и программы. Программы, которых нет на этом ПК, будут пропущены. Выключенные сейчас браузер, система, консоль, файлы, экран и ввод не включатся.</p>}
       <div className="actions"><button onClick={cancelImport} disabled={busy}>Отмена</button><button className="primary" disabled={busy || (usable === 0 && !withSettings && !withPermissions)} onClick={apply}>Применить импорт</button></div>
     </div>}
     <h2>Обновления</h2>

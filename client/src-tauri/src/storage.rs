@@ -184,7 +184,7 @@ fn read_pointer(path: &Path) -> Option<PathBuf> {
 /// Copies the current data folder to `target` (never deletes the old one) and remembers the new location.
 /// `Ok(true)` means `target` already held Neyra settings, so nothing was copied over them.
 pub fn move_data_root(current: &Path, target: &Path) -> Result<bool, String> {
-    let (target, reused) = stage_data_root(current, target)?;
+    let (target, reused) = stage_data_root(current, target, false)?;
     let pointer = pointer_path().ok_or("Нет папки настроек ОС")?;
     fs::create_dir_all(pointer.parent().ok_or("Нет папки настроек ОС")?)
         .map_err(|_| "Не удалось сохранить расположение")?;
@@ -196,8 +196,63 @@ pub fn move_data_root(current: &Path, target: &Path) -> Result<bool, String> {
     Ok(reused)
 }
 
+/// Replaces an existing Neyra folder with a copy of `current` (the previous tree is renamed beside it) and remembers the location.
+pub fn overwrite_data_root(current: &Path, target: &Path) -> Result<(), String> {
+    let (target, reused) = stage_data_root(current, target, true)?;
+    if reused {
+        return Err("Не удалось заменить папку данных".into());
+    }
+    let pointer = pointer_path().ok_or("Нет папки настроек ОС")?;
+    fs::create_dir_all(pointer.parent().ok_or("Нет папки настроек ОС")?)
+        .map_err(|_| "Не удалось сохранить расположение")?;
+    atomic_write(
+        &pointer,
+        &serde_json::to_vec_pretty(&json!({"schema_version":1,"data_root":target}))
+            .map_err(|_| "Не удалось сохранить расположение")?,
+    )?;
+    Ok(())
+}
+
+/// Whether `target` already contains Neyra settings. Does not copy and does not write the pointer.
+pub fn peek_data_move(current: &Path, target: &Path) -> Result<bool, String> {
+    if !target.is_absolute() {
+        return Err("Нужен абсолютный путь".into());
+    }
+    let current = fs::canonicalize(current).map_err(|_| "Текущая папка данных недоступна")?;
+    if !target.exists() {
+        let parent = target
+            .parent()
+            .filter(|path| path.exists())
+            .ok_or("Выбранная папка недоступна")?;
+        let parent = fs::canonicalize(parent).map_err(|_| "Выбранная папка недоступна")?;
+        let name = target.file_name().ok_or("Выбранная папка недоступна")?;
+        let hypothetical = parent.join(name);
+        if hypothetical == current
+            || hypothetical.starts_with(&current)
+            || current.starts_with(&hypothetical)
+        {
+            return Err(
+                "Папка не должна быть вложена в текущую папку данных или содержать её".into(),
+            );
+        }
+        return Ok(false);
+    }
+    let target = fs::canonicalize(target).map_err(|_| "Выбранная папка недоступна")?;
+    if target == current {
+        return Err("Это уже текущая папка данных".into());
+    }
+    if target.starts_with(&current) || current.starts_with(&target) {
+        return Err("Папка не должна быть вложена в текущую папку данных или содержать её".into());
+    }
+    Ok(target.join("settings/app.json").is_file())
+}
+
 /// Prepares `target` without touching the OS pointer. Returns whether an existing Neyra folder was kept as-is.
-fn stage_data_root(current: &Path, target: &Path) -> Result<(PathBuf, bool), String> {
+fn stage_data_root(
+    current: &Path,
+    target: &Path,
+    overwrite: bool,
+) -> Result<(PathBuf, bool), String> {
     if !target.is_absolute() {
         return Err("Нужен абсолютный путь".into());
     }
@@ -211,13 +266,24 @@ fn stage_data_root(current: &Path, target: &Path) -> Result<(PathBuf, bool), Str
         return Err("Папка не должна быть вложена в текущую папку данных или содержать её".into());
     }
     let reused = target.join("settings/app.json").exists();
-    if !reused {
+    if reused && overwrite {
+        let parent = target
+            .parent()
+            .ok_or("Не удалось отложить прежнюю папку Neyra")?;
+        let name = target
+            .file_name()
+            .ok_or("Не удалось отложить прежнюю папку Neyra")?;
+        let backup = parent.join(format!("{}.previous-{}", name.to_string_lossy(), now_ms()));
+        fs::rename(&target, &backup).map_err(|_| "Не удалось отложить прежнюю папку Neyra")?;
+        fs::create_dir_all(&target).map_err(|_| "Не удалось создать выбранную папку")?;
+        copy_tree(&current, &target, 0)?;
+    } else if !reused {
         copy_tree(&current, &target, 0)?;
     }
     for dir in DIRECTORIES {
         fs::create_dir_all(target.join(dir)).map_err(|_| "Не удалось подготовить папку Neyra")?;
     }
-    Ok((target, reused))
+    Ok((target, reused && !overwrite))
 }
 
 fn copy_tree(from: &Path, to: &Path, depth: usize) -> Result<(), String> {
@@ -852,17 +918,43 @@ mod tests {
         let to = temp();
         initialize(&to).unwrap();
         fs::write(to.join("commands/old.yaml"), "old").unwrap();
-        let (_, reused) = stage_data_root(&from, &to).unwrap();
+        let (_, reused) = stage_data_root(&from, &to, false).unwrap();
         assert!(reused);
         assert_eq!(fs::read(to.join("commands/old.yaml")).unwrap(), b"old");
         assert!(!to.join("commands/new.yaml").exists());
         let empty = temp();
-        let (_, reused) = stage_data_root(&from, &empty).unwrap();
+        let (_, reused) = stage_data_root(&from, &empty, false).unwrap();
         assert!(!reused);
         assert_eq!(fs::read(empty.join("commands/new.yaml")).unwrap(), b"new");
         fs::remove_dir_all(from).unwrap();
         fs::remove_dir_all(to).unwrap();
         fs::remove_dir_all(empty).unwrap();
+    }
+    #[test]
+    fn overwrite_parks_the_existing_folder_and_copies_the_current_one() {
+        let from = temp();
+        initialize(&from).unwrap();
+        fs::write(from.join("commands/new.yaml"), "new").unwrap();
+        let parent = temp();
+        let to = parent.join("Neyra");
+        initialize(&to).unwrap();
+        fs::write(to.join("commands/old.yaml"), "old").unwrap();
+        assert!(peek_data_move(&from, &to).unwrap());
+        let (_, reused) = stage_data_root(&from, &to, true).unwrap();
+        assert!(!reused);
+        assert_eq!(fs::read(to.join("commands/new.yaml")).unwrap(), b"new");
+        assert!(!to.join("commands/old.yaml").exists());
+        assert!(from.join("commands/new.yaml").exists());
+        let parked = fs::read_dir(&parent).unwrap().flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("Neyra.previous-")
+                && entry.path().join("commands/old.yaml").is_file()
+        });
+        assert!(parked);
+        fs::remove_dir_all(from).unwrap();
+        fs::remove_dir_all(parent).unwrap();
     }
     #[test]
     fn pointer_must_be_an_existing_absolute_directory() {

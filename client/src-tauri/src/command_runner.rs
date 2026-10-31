@@ -20,10 +20,17 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 pub const CONFIRM_TOOL: &str = "command.run";
 const STEP_TIMEOUT: Duration = Duration::from_secs(45);
 const IMPORT_TTL: Duration = Duration::from_secs(600);
+const DATA_MOVE_TTL: Duration = Duration::from_secs(120);
+const STEP_UNANSWERED: &str = "Шаг не ответил, результат неизвестен";
 
 pub struct PendingImport {
     bundle: commands::Bundle,
     commands: Vec<Command>,
+    created: Instant,
+}
+
+pub struct PendingDataMove {
+    target: PathBuf,
     created: Instant,
 }
 
@@ -208,7 +215,7 @@ fn start_run(
     let state = app.state::<Desktop>();
     {
         let mut running = state.running.lock().map_err(lock_error)?;
-        if running.is_some() {
+        if running.is_some() || state.local_inflight.load(Ordering::SeqCst) > 0 {
             return Err("Другая команда ещё выполняется. Дождитесь или нажмите Stop.".into());
         }
         *running = Some(command.name.clone());
@@ -258,7 +265,8 @@ enum StepError {
 impl StepError {
     fn message(&self) -> &'static str {
         match self {
-            Self::Timeout => "Время ожидания шага истекло",
+            // The action may still be finishing; do not claim it failed or succeeded.
+            Self::Timeout => STEP_UNANSWERED,
             Self::Cancelled => "Остановлено",
         }
     }
@@ -351,6 +359,11 @@ fn abandon_local_call(app: &tauri::AppHandle, call_id: &str) {
     }
     if let Ok(mut pending) = state.pending.lock() {
         pending.remove(call_id);
+    }
+    if let Ok(flags) = state.local_cancels.lock() {
+        if let Some(flag) = flags.get(call_id) {
+            flag.store(true, Ordering::SeqCst);
+        }
     }
     let _ = app.emit("host-confirm-closed", json!({"call_id": call_id}));
 }
@@ -1042,15 +1055,69 @@ pub async fn choose_data_root(app: tauri::AppHandle) -> Result<Value, String> {
     };
     let chosen = path.into_path().map_err(|_| "Неверный путь")?;
     let state = app.state::<Desktop>();
+    if state.relocated.load(Ordering::SeqCst) {
+        return Err(
+            "Папка данных сменится после перезапуска. До перезапуска сохранение отключено.".into(),
+        );
+    }
     let target = chosen.join("Neyra");
-    let reused = storage::move_data_root(&state.root, &target)?;
-    state.relocated.store(true, Ordering::SeqCst);
+    if storage::peek_data_move(&state.root, &target)? {
+        *state.pending_data_move.lock().map_err(lock_error)? = Some(PendingDataMove {
+            target: target.clone(),
+            created: Instant::now(),
+        });
+        return Ok(json!({"cancelled":false,"needs_choice":true,"path":target}));
+    }
+    storage::move_data_root(&state.root, &target)?;
+    finish_data_move(&state, &target)
+}
+
+#[tauri::command]
+pub fn confirm_data_root(app: tauri::AppHandle, choice: String) -> Result<Value, String> {
+    let state = app.state::<Desktop>();
+    if state.relocated.load(Ordering::SeqCst) {
+        return Err(
+            "Папка данных сменится после перезапуска. До перезапуска сохранение отключено.".into(),
+        );
+    }
+    let mode = match choice.as_str() {
+        "cancel" => None,
+        "use_existing" => Some(false),
+        "overwrite" => Some(true),
+        _ => return Err("Неизвестный выбор".into()),
+    };
+    let pending = state
+        .pending_data_move
+        .lock()
+        .map_err(lock_error)?
+        .take()
+        .filter(|item| item.created.elapsed() < DATA_MOVE_TTL)
+        .ok_or("Выберите папку ещё раз")?;
+    let Some(overwrite) = mode else {
+        return Ok(json!({"cancelled":true}));
+    };
+    let moved = if overwrite {
+        storage::overwrite_data_root(&state.root, &pending.target)
+    } else {
+        storage::move_data_root(&state.root, &pending.target).map(|_| ())
+    };
+    if let Err(err) = moved {
+        *state.pending_data_move.lock().map_err(lock_error)? = Some(pending);
+        return Err(err);
+    }
+    finish_data_move(&state, &pending.target)
+}
+
+fn finish_data_move(state: &Desktop, target: &std::path::Path) -> Result<Value, String> {
     logs::log(
         &state.root,
         "info",
         "data folder changed; restart required; writes blocked",
     );
-    Ok(json!({"cancelled":false,"path":target,"restart_required":true,"reused_existing":reused}))
+    state.relocated.store(true, Ordering::SeqCst);
+    Ok(
+        json!({"cancelled":false,"needs_choice":false,"path":target,"restart_required":true,"reused_existing":false}),
+    )
 }
 
 #[cfg(test)]
@@ -1152,7 +1219,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, StepError::Timeout));
-        assert_eq!(err.message(), "Время ожидания шага истекло");
+        assert_eq!(err.message(), STEP_UNANSWERED);
         drop(tx);
         let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
         let cancel = std::sync::atomic::AtomicBool::new(true);

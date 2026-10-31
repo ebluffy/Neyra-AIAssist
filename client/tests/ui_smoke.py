@@ -45,7 +45,8 @@ if(cmd==='config_export')return {cancelled:false,commands:store.length,file:'ney
 if(cmd==='import_pick')return {cancelled:false,items:[{name:'Новая',status:'new',error:null},{name:'Мой сайт',status:'conflict',error:null},{name:'Плохая',status:'invalid',error:'Инструмент «client.shell_exec» недоступен'}],settings:{theme:'light',graphics_mode:'auto',audit_days:30},permissions:{allow_web:true,system:true,web_domains:['example.com'],apps:['/usr/bin/firefox']}};
 if(cmd==='import_apply'){window.importArgs=args;return {report:{added:1,replaced:0,renamed:1,skipped:0},settings};}
 if(cmd==='import_cancel')return;
-if(cmd==='choose_data_root')return {cancelled:false,path:'/data/Neyra',restart_required:true};
+if(cmd==='choose_data_root')return window.forceDataChoice?{cancelled:false,needs_choice:true,path:'/data/Neyra'}:{cancelled:false,path:'/data/Neyra',restart_required:true};
+if(cmd==='confirm_data_root'){window.dataChoice=args.choice;return {cancelled:args.choice==='cancel',path:'/data/Neyra',restart_required:args.choice!=='cancel'};}
 return;
 }};
 '''
@@ -59,10 +60,12 @@ with sync_playwright() as p:
     page.goto('http://127.0.0.1:1420')
     page.wait_for_load_state('networkidle')
     expect(page.get_by_role('heading',name='Сервер',exact=True)).to_be_visible()
+    page.get_by_role('button',name='Настройки',exact=True).click()
     expect(page.get_by_text('Персонаж выключен. Включите его в настройках выше и сохраните.')).to_be_visible()
     expect(page.get_by_text('Wayland не гарантирует always-on-top.')).to_be_visible()
     page.get_by_role('button',name='Проверить обновления').click()
     expect(page.get_by_text('Доступна версия 0.1.1.')).to_be_visible()
+    page.get_by_role('button',name='Сервер',exact=True).click()
     page.get_by_role('button',name='Проверить подключение').click()
     expect(page.get_by_text('Сервер доступен · API 1.1.0')).to_be_visible()
     page.evaluate('window.failApi=true')
@@ -117,7 +120,7 @@ with sync_playwright() as p:
     page.get_by_label('Файлы в разрешённых папках', exact=False).check()
     expect(page.get_by_label('Снимки без подтверждения')).to_be_disabled()
     page.get_by_label('Снимки экрана', exact=False).first.check()
-    page.get_by_label('Мышь и клавиатура', exact=False).check()
+    page.get_by_label('Мышь и клавиатура', exact=False).first.check()
     perms = page.evaluate('window.testCalls.filter(c=>c.cmd==="save_settings").at(-1).args.settings.permissions')
     assert perms['shell'] and perms['files'] and perms['screen'] and perms['input'] and not perms['screen_auto'], perms
     page.evaluate("window.emitNative('host-confirm',{call_id:'call-shell',tool:'client.shell_exec',arguments:{program:'git'},deadline_ms:Date.now()+30000,preview:'Команда: /usr/bin/git status\\nПапка: /home/me/Documents\\nТаймаут: 30 с'})")
@@ -205,6 +208,18 @@ with sync_playwright() as p:
     page.get_by_role('button',name='Применить импорт').click()
     expect(page.get_by_text('Импорт завершён: новых 1, заменено 0, переименовано 1, пропущено 0.')).to_be_visible()
     assert page.evaluate('window.importArgs.conflict')=='rename' and page.evaluate('window.importArgs.includePermissions') is True
+    page.evaluate('window.forceDataChoice=true')
+    page.get_by_role('button',name='Сменить папку данных…').click()
+    expect(page.get_by_role('dialog',name='В папке уже есть данные Neyra')).to_be_visible()
+    expect(page.get_by_role('button',name='Отмена',exact=True)).to_be_focused()
+    page.keyboard.press('Escape')
+    assert page.evaluate('window.dataChoice')=='cancel'
+    expect(page.get_by_role('dialog',name='В папке уже есть данные Neyra')).not_to_be_visible()
+    page.get_by_role('button',name='Сменить папку данных…').click()
+    page.get_by_role('button',name='Использовать эти данные').click()
+    assert page.evaluate('window.dataChoice')=='use_existing'
+    expect(page.get_by_role('dialog',name='В папке уже есть данные Neyra')).not_to_be_visible()
+    page.evaluate('window.forceDataChoice=false')
     page.get_by_role('button',name='Сменить папку данных…').click()
     page.get_by_label('Тема').select_option('light')
     page.screenshot(path='/tmp/neyra-desktop-light.png',full_page=True)
