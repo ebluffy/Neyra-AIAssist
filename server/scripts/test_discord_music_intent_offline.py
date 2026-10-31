@@ -215,6 +215,35 @@ def main() -> int:
 
     asyncio.run(_run_search_cases())
 
+    # AR-1: Multiple URLs in one query must not call Playable.search at all.
+    async def _run_ar1_tests() -> None:
+        calls.clear()
+        out = await music_mod._search_tracks_youtube(fake_wl, "https://soundcloud.com/x icy://127.0.0.1/", node)
+        assert out == [] and calls == [], f"Multiple URLs should return [] without search calls: {calls}"
+
+        calls.clear()
+        out = await music_mod._search_tracks_youtube(fake_wl, "https://youtu.be/abc icy://127.0.0.1/", node)
+        assert out == [] and calls == [], f"YouTube + malicious URL should return [] without search calls: {calls}"
+
+        calls.clear()
+        out = await music_mod._search_tracks_youtube(fake_wl, "https://soundcloud.com/x#t=1", node)
+        assert out and calls, f"Single SoundCloud URL with fragment should work: {calls}"
+        assert "soundcloud.com/x" in calls[0]["raw"], f"Fragment should be stripped: {calls[0]['raw']}"
+        assert "#t=1" not in calls[0]["raw"], f"Fragment should not be in normalized URL: {calls[0]['raw']}"
+
+    asyncio.run(_run_ar1_tests())
+
+    # AR-2: Test all hostname normalization variants.
+    assert music_mod._normalize_allowed_music_url("https://www.soundcloud.com/artist") == "https://soundcloud.com/artist"
+    assert music_mod._normalize_allowed_music_url("https://m.soundcloud.com/artist") == "https://soundcloud.com/artist"
+    assert music_mod._normalize_allowed_music_url("https://on.soundcloud.com/abc") == "https://on.soundcloud.com/abc"
+    assert music_mod._normalize_allowed_music_url("https://www.vimeo.com/123") == "https://vimeo.com/123"
+    assert music_mod._normalize_allowed_music_url("https://player.vimeo.com/video/123?h=abc") == "https://vimeo.com/123?h=abc"
+    assert music_mod._normalize_allowed_music_url("https://www.twitch.tv/channel") == "https://www.twitch.tv/channel"
+    assert music_mod._normalize_allowed_music_url("https://m.twitch.tv/channel") == "https://www.twitch.tv/channel"
+    assert music_mod._normalize_allowed_music_url("https://clips.twitch.tv/ClipSlug") == "https://clips.twitch.tv/ClipSlug"
+    assert music_mod._normalize_allowed_music_url("https://artist.bandcamp.com/track") == "https://artist.bandcamp.com/track"
+
     print("OK test_discord_music_intent_offline")
     return 0
 
