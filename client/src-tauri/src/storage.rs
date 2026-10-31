@@ -357,6 +357,7 @@ fn seed_character_docs(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 pub fn graphics_mode(root: &Path) -> String {
     read_limited(&root.join("settings/app.json"), MAX_CONFIG_BYTES)
         .ok()
