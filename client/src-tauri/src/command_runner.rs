@@ -269,6 +269,7 @@ fn dispatch(app: &tauri::AppHandle, call: policy::ToolCall) {
         policy::validate(
             &call,
             &settings.permissions,
+            &state.root,
             &settings.device_id,
             commands::LOCAL_SESSION,
             &mut HashMap::new(),
@@ -672,6 +673,7 @@ pub fn command_dry_run(
         &command,
         &params.unwrap_or_default(),
         &settings.permissions,
+        &state.root,
         &settings.device_id,
     )
 }
@@ -852,6 +854,12 @@ pub fn sanitize_permissions(
         allow_web: imported.allow_web,
         web_domains: domains,
         system: imported.system,
+        shell: current.shell,
+        files: current.files,
+        fs_roots: current.fs_roots.clone(),
+        screen: current.screen,
+        screen_auto: current.screen_auto,
+        input: current.input,
     }
 }
 
@@ -989,6 +997,7 @@ mod tests {
                 "host.com:8080".into(),
             ],
             system: false,
+            ..Default::default()
         };
         let out = sanitize_permissions(&storage::Permissions::default(), &imported);
         assert_eq!(out.apps, vec![real]);

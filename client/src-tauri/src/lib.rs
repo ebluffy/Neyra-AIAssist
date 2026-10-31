@@ -2,9 +2,13 @@ mod audio;
 mod audit;
 mod command_runner;
 mod commands;
+mod files;
 mod host;
 mod logs;
 mod policy;
+mod redact;
+mod screen;
+mod shell;
 mod storage;
 
 use base64::Engine;
@@ -141,8 +145,19 @@ fn apply_settings(state: &Desktop, settings: Settings) -> Result<(), String> {
     {
         return Err("Неверные настройки".into());
     }
-    if settings.permissions.web_domains.len() > 50 || settings.permissions.apps.len() > 200 {
+    if settings.permissions.web_domains.len() > 50
+        || settings.permissions.apps.len() > 200
+        || settings.permissions.fs_roots.len() > 20
+    {
         return Err("Слишком большой allowlist".into());
+    }
+    for root in &settings.permissions.fs_roots {
+        files::validate_root(root, &state.root)?;
+    }
+    if (settings.permissions.screen_auto && !settings.permissions.screen)
+        || (settings.permissions.files && settings.permissions.fs_roots.is_empty())
+    {
+        return Err("Сначала включите снимки экрана / добавьте папку".into());
     }
     for domain in &settings.permissions.web_domains {
         let url = policy::web_url(&format!("https://{domain}"))?;
@@ -157,10 +172,15 @@ fn apply_settings(state: &Desktop, settings: Settings) -> Result<(), String> {
     }
     let changed = serde_json::to_value(&old.permissions).ok()
         != serde_json::to_value(&settings.permissions).ok();
+    let screen_changed = (old.permissions.screen, old.permissions.input)
+        != (settings.permissions.screen, settings.permissions.input);
     storage::save(&state.root, &settings)?;
     *state.settings.lock().map_err(lock_error)? = settings;
     if changed {
         stop_inner(state)?;
+        if screen_changed {
+            screen::reset();
+        }
         send_capabilities(state);
     }
     Ok(())
@@ -420,6 +440,7 @@ fn receive_call(app: tauri::AppHandle, call: ToolCall) {
         policy::validate(
             &call,
             &settings.permissions,
+            &state.root,
             &settings.device_id,
             &p.session_id,
             &mut seen,
@@ -453,7 +474,14 @@ fn queue_confirm(app: &tauri::AppHandle, call: ToolCall) -> bool {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
-    let _ = app.emit("host-confirm", &call);
+    let preview = state
+        .settings
+        .lock()
+        .map(|s| policy::preview(&call, &s.permissions, &state.root))
+        .unwrap_or_default();
+    let mut card = serde_json::to_value(&call).unwrap_or_default();
+    card["preview"] = json!(preview);
+    let _ = app.emit("host-confirm", card);
     let h = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -530,6 +558,7 @@ fn execute_call(app: tauri::AppHandle, call: ToolCall, confirmed: bool) {
         policy::validate(
             &call,
             &settings.permissions,
+            &state.root,
             &settings.device_id,
             &session,
             &mut HashMap::new(),
@@ -539,13 +568,46 @@ fn execute_call(app: tauri::AppHandle, call: ToolCall, confirmed: bool) {
         reply(&app, &call, json!({"status":"denied"}), confirmed);
         return;
     }
+    let (permissions, root) = {
+        let state = app.state::<Desktop>();
+        let permissions = match state.settings.lock() {
+            Ok(s) => s.permissions.clone(),
+            Err(_) => return,
+        };
+        (permissions, state.root.clone())
+    };
     let _ = app.emit("host-activity", json!({"active":true,"tool":call.tool}));
+    let powerful = POWERFUL.contains(&call.tool.as_str());
+    if powerful {
+        set_tray_activity(&app, true);
+    }
     tauri::async_runtime::spawn(async move {
         let c = call.clone();
-        let result = tauri::async_runtime::spawn_blocking(move || host::execute(&c, cancel)).await;
+        let handle = app.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || match c.tool.as_str() {
+            "client.screenshot" | "client.input" => with_own_windows_hidden(&handle, || {
+                screen::with_backend(|backend| {
+                    if c.tool == "client.screenshot" {
+                        let window = c.arguments.get("window").and_then(Value::as_str);
+                        screen::capture(backend, window, &c.session_id)
+                    } else {
+                        let args = c.arguments.as_object().ok_or("Неверные параметры")?;
+                        screen::run(backend, args, &c.session_id, &cancel)
+                    }
+                })
+            }),
+            _ => host::execute(&c, cancel, &permissions, &root),
+        })
+        .await;
+        if powerful {
+            set_tray_activity(&app, false);
+        }
         let value = match result {
             Ok(Ok(v)) => v,
-            _ => json!({"status":"error","code":"local_action_failed"}),
+            Ok(Err(message)) => {
+                json!({"status":"error","code":"local_action_failed","message":message})
+            }
+            Err(_) => json!({"status":"error","code":"local_action_failed"}),
         };
         reply(&app, &call, value, confirmed);
     });
@@ -572,6 +634,50 @@ fn expected_session(
         .find(|p| p.id == id)
         .map(|p| p.session_id.clone())
         .ok_or_else(|| "Нет профиля".into())
+}
+
+/// Contours 3–4: the tray shows that Neyra is controlling the PC while they run (§3b.9).
+const POWERFUL: &[&str] = &[
+    "client.shell_exec",
+    "client.fs_write",
+    "client.fs_mkdir",
+    "client.fs_move",
+    "client.screenshot",
+    "client.input",
+];
+
+fn set_tray_activity(app: &tauri::AppHandle, active: bool) {
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(if active {
+            "Neyra управляет ПК — Stop в меню"
+        } else {
+            "Neyra"
+        }));
+    }
+}
+
+/// Own windows are hidden while the screen is captured or driven, so the model neither
+/// sees nor clicks Neyra itself; they come back afterwards, even on error.
+fn with_own_windows_hidden<R>(
+    app: &tauri::AppHandle,
+    action: impl FnOnce() -> Result<R, String>,
+) -> Result<R, String> {
+    let hidden: Vec<_> = app
+        .webview_windows()
+        .into_values()
+        .filter(|w| w.is_visible().unwrap_or(false))
+        .collect();
+    for w in &hidden {
+        let _ = w.hide();
+    }
+    if !hidden.is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let result = action();
+    for w in &hidden {
+        let _ = w.show();
+    }
+    result
 }
 #[tauri::command]
 fn approve(
@@ -600,6 +706,7 @@ fn approve(
     policy::validate(
         &call,
         &settings.permissions,
+        &state.root,
         &settings.device_id,
         &session,
         &mut HashMap::new(),
@@ -811,12 +918,13 @@ pub fn run() {
             monitor_session(app.handle().clone());
             setup_shortcuts(app.handle());
             command_runner::start_watcher(app.handle().clone());
+            screen::start_probe();
             let open =
                 tauri::menu::MenuItem::with_id(app, "open", "Открыть Neyra", true, None::<&str>)?;
             let stop = tauri::menu::MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
             let quit = tauri::menu::MenuItem::with_id(app, "quit", "Выйти", true, None::<&str>)?;
             let menu = tauri::menu::Menu::with_items(app, &[&open, &stop, &quit])?;
-            tauri::tray::TrayIconBuilder::new()
+            tauri::tray::TrayIconBuilder::with_id("main")
                 .icon(
                     app.default_window_icon()
                         .cloned()

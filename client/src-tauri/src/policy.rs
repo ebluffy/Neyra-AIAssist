@@ -95,7 +95,7 @@ pub fn checked_file(path: &str) -> Result<PathBuf, String> {
 }
 
 pub fn web_url(value: &str) -> Result<url::Url, String> {
-    if value.len() > 2048 {
+    if value.len() > 2048 || value.chars().any(char::is_control) {
         return Err("Ссылка слишком длинная".into());
     }
     let url = url::Url::parse(value).map_err(|_| "Неверная ссылка")?;
@@ -109,6 +109,31 @@ pub fn web_url(value: &str) -> Result<url::Url, String> {
     Ok(url)
 }
 
+/// Loopback, private-network and IP-literal hosts never skip the card, even if allowlisted:
+/// a page on the LAN (router, NAS, dev server) is a different trust zone than the web.
+pub fn local_host(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_)) => true,
+        Some(url::Host::Domain(d)) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            d == "localhost"
+                || !d.contains('.')
+                || [
+                    ".localhost",
+                    ".local",
+                    ".lan",
+                    ".home",
+                    ".internal",
+                    ".intranet",
+                    ".corp",
+                ]
+                .iter()
+                .any(|s| d.ends_with(s))
+        }
+        None => true,
+    }
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -119,6 +144,7 @@ pub fn now_ms() -> u64 {
 pub fn validate(
     call: &ToolCall,
     permissions: &Permissions,
+    data_root: &Path,
     device: &str,
     session: &str,
     seen: &mut HashMap<String, u64>,
@@ -143,21 +169,113 @@ pub fn validate(
         return Err("Доступ к ПК выключен".into());
     }
     let args = call.arguments.as_object().ok_or("Неверные параметры")?;
-    let keys = tool_keys(&call.tool).ok_or("Инструмент недоступен")?;
-    if args.keys().any(|k| !keys.contains(&k.as_str())) || args.len() != keys.len() {
+    let (required, optional): (&[&str], &[&str]) = match call.tool.as_str() {
+        "client.open_url" => (&["url"], &[] as &[&str]),
+        "client.search_web" => (&["query"], &[] as &[&str]),
+        "client.open_app" => (&["path"], &[] as &[&str]),
+        "client.focus_window" | "client.close_window" => (&["window"], &[] as &[&str]),
+        "client.media" | "client.volume" => (&["action"], &[] as &[&str]),
+        "client.list_windows" | "client.list_apps" => (&[] as &[&str], &[] as &[&str]),
+        "client.shell_exec" => (&["program"], &["args", "cwd", "env", "timeout_ms"]),
+        "client.fs_list" => (&["path"], &[] as &[&str]),
+        "client.fs_read" => (&["path"], &["offset", "max_bytes"]),
+        "client.fs_search" => (&["path"], &["name", "content"]),
+        "client.fs_write" => (&["path", "content", "mode"], &[] as &[&str]),
+        "client.fs_mkdir" => (&["path"], &[] as &[&str]),
+        "client.fs_move" => (&["from", "to"], &[] as &[&str]),
+        "client.screenshot" => (&[] as &[&str], &["window"]),
+        "client.input" => (&["steps"], &["screenshot_id"]),
+        other => {
+            let keys = tool_keys(other).ok_or("Инструмент недоступен")?;
+            (keys, &[] as &[&str])
+        }
+    };
+    if args
+        .keys()
+        .any(|k| !required.contains(&k.as_str()) && !optional.contains(&k.as_str()))
+        || required.iter().any(|k| !args.contains_key(*k))
+    {
         return Err("Неверные параметры инструмента".into());
     }
+    let text = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Неверный параметр".to_string())
+    };
+    let scope = || crate::files::Scope::new(&permissions.fs_roots, data_root);
     match call.tool.as_str() {
+        "client.shell_exec" if permissions.shell => {
+            // Arbitrary CLI is never "safe" by deny-list alone (§3b.9).
+            crate::shell::plan(args, &scope())?;
+            Ok(Decision::Confirm)
+        }
+        "client.fs_list" | "client.fs_read" | "client.fs_search" if permissions.files => {
+            scope().existing(text("path")?)?;
+            for key in ["offset", "max_bytes"] {
+                if args.get(key).is_some_and(|v| v.as_u64().is_none()) {
+                    return Err("Неверный параметр".into());
+                }
+            }
+            for key in ["name", "content"] {
+                if args
+                    .get(key)
+                    .is_some_and(|v| v.as_str().is_none_or(|s| s.len() > 200))
+                {
+                    return Err("Неверный параметр поиска".into());
+                }
+            }
+            Ok(Decision::Safe)
+        }
+        "client.fs_write" if permissions.files => {
+            let scope = scope();
+            if text("content")?.len() > crate::files::WRITE_LIMIT {
+                return Err("Слишком большой текст для записи".into());
+            }
+            match text("mode")? {
+                "create" => scope.fresh(text("path")?)?,
+                "overwrite" | "append" => scope.entry(text("path")?)?,
+                _ => return Err("Неизвестный режим записи".into()),
+            };
+            Ok(Decision::Confirm)
+        }
+        "client.fs_mkdir" if permissions.files => {
+            scope().fresh(text("path")?)?;
+            Ok(Decision::Confirm)
+        }
+        "client.fs_move" if permissions.files => {
+            let scope = scope();
+            scope.entry(text("from")?)?;
+            scope.fresh(text("to")?)?;
+            Ok(Decision::Confirm)
+        }
+        "client.screenshot" if permissions.screen => {
+            if args
+                .get("window")
+                .is_some_and(|w| w.as_str().is_none_or(|s| s.len() > 24))
+            {
+                return Err("Неверное окно".into());
+            }
+            Ok(if permissions.screen_auto {
+                Decision::Safe
+            } else {
+                Decision::Confirm
+            })
+        }
+        "client.input" if permissions.input => {
+            crate::screen::parse(args)?;
+            Ok(Decision::Confirm)
+        }
         "client.open_url" if permissions.allow_web => {
             let url = web_url(
                 args.get("url")
                     .and_then(Value::as_str)
                     .ok_or("Неверная ссылка")?,
             )?;
-            if permissions
-                .web_domains
-                .iter()
-                .any(|domain| Some(domain.as_str()) == url.host_str())
+            if !local_host(&url)
+                && permissions
+                    .web_domains
+                    .iter()
+                    .any(|domain| Some(domain.as_str()) == url.host_str())
             {
                 Ok(Decision::Safe)
             } else {
@@ -319,7 +437,90 @@ pub fn capabilities(p: &Permissions) -> Vec<String> {
             tools.push("client.volume".into());
         }
     }
+    if p.shell {
+        tools.push("client.shell_exec".into());
+    }
+    if p.files && !p.fs_roots.is_empty() {
+        tools.extend(
+            [
+                "client.fs_list",
+                "client.fs_read",
+                "client.fs_search",
+                "client.fs_write",
+                "client.fs_mkdir",
+                "client.fs_move",
+            ]
+            .map(String::from),
+        );
+    }
+    // Only real backends are declared: no backend or no portal means no tool (§3b.7).
+    if p.screen && crate::screen::screen_available() {
+        tools.push("client.screenshot".into());
+    }
+    if p.input && crate::screen::input_available() {
+        tools.push("client.input".into());
+    }
     tools
+}
+
+/// Human-readable, exact description shown on the confirmation card.
+pub fn preview(call: &ToolCall, permissions: &Permissions, data_root: &Path) -> String {
+    let args = call.arguments.as_object();
+    let get = |k: &str| {
+        args.and_then(|a| a.get(k))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    match call.tool.as_str() {
+        "client.shell_exec" => args
+            .and_then(|a| {
+                crate::shell::plan(
+                    a,
+                    &crate::files::Scope::new(&permissions.fs_roots, data_root),
+                )
+                .ok()
+            })
+            .map(|p| crate::shell::preview(&p))
+            .unwrap_or_else(|| "Команда не прошла проверку".into()),
+        "client.fs_write" => {
+            let content = get("content");
+            let head: String = content.chars().take(600).collect();
+            let more = if content.chars().count() > 600 {
+                "\n…"
+            } else {
+                ""
+            };
+            let mode = match get("mode").as_str() {
+                "create" => "создать файл",
+                "append" => "дописать в конец",
+                _ => "перезаписать файл",
+            };
+            format!(
+                "Запись: {mode}\nФайл: {}\nРазмер: {} байт\n---\n{head}{more}",
+                get("path"),
+                content.len()
+            )
+        }
+        "client.fs_mkdir" => format!("Создать папку: {}", get("path")),
+        "client.fs_move" => format!("Переместить:\n{}\n→ {}", get("from"), get("to")),
+        "client.screenshot" => {
+            let w = get("window");
+            if w.is_empty() {
+                "Снимок всего экрана (окна Neyra на время снимка скрываются)".into()
+            } else {
+                format!("Снимок окна {w}")
+            }
+        }
+        "client.input" => args
+            .and_then(|a| crate::screen::parse(a).ok())
+            .map(|(_, steps)| crate::screen::preview(&steps))
+            .unwrap_or_else(|| "Действия не прошли проверку".into()),
+        "client.open_url" => format!("Открыть ссылку: {}", get("url")),
+        "client.open_app" => format!("Запустить программу: {}", get("path")),
+        "client.close_window" => format!("Закрыть окно {}", get("window")),
+        _ => serde_json::to_string_pretty(&call.arguments).unwrap_or_default(),
+    }
 }
 
 #[cfg(test)]
@@ -410,10 +611,187 @@ mod tests {
             deadline_ms: now_ms() + 10000,
         };
         let mut seen = HashMap::new();
+        let root = Path::new("/nonexistent-neyra");
         assert_eq!(
-            validate(&call, &p, "d", "s", &mut seen).unwrap(),
+            validate(&call, &p, root, "d", "s", &mut seen).unwrap(),
             Decision::Safe
         );
-        assert!(validate(&call, &p, "d", "s", &mut seen).is_err());
+        assert!(validate(&call, &p, root, "d", "s", &mut seen).is_err());
+    }
+
+    fn call(tool: &str, arguments: Value) -> ToolCall {
+        ToolCall {
+            call_id: uuid::Uuid::new_v4().to_string(),
+            device_id: "d".into(),
+            session_id: "s".into(),
+            tool: tool.into(),
+            arguments,
+            deadline_ms: now_ms() + 10000,
+        }
+    }
+    fn check(p: &Permissions, root: &Path, c: &ToolCall) -> Result<Decision, String> {
+        validate(c, p, root, "d", "s", &mut HashMap::new())
+    }
+
+    #[test]
+    fn powerful_contours_are_off_by_default_and_not_declared() {
+        let p = Permissions {
+            enabled: true,
+            ..Default::default()
+        };
+        let caps = capabilities(&p);
+        for tool in [
+            "client.shell_exec",
+            "client.fs_read",
+            "client.fs_write",
+            "client.screenshot",
+            "client.input",
+        ] {
+            assert!(
+                !caps.iter().any(|t| t == tool),
+                "{tool} declared by default"
+            );
+        }
+        let root = Path::new("/nonexistent-neyra");
+        for c in [
+            call("client.shell_exec", serde_json::json!({"program":"sh"})),
+            call("client.fs_read", serde_json::json!({"path":"/tmp/x"})),
+            call("client.screenshot", serde_json::json!({})),
+            call(
+                "client.input",
+                serde_json::json!({"steps":[{"op":"key","keys":"enter"}]}),
+            ),
+        ] {
+            assert!(check(&p, root, &c).is_err(), "{} allowed while off", c.tool);
+        }
+    }
+
+    #[test]
+    fn files_without_roots_are_not_declared() {
+        let p = Permissions {
+            enabled: true,
+            files: true,
+            ..Default::default()
+        };
+        assert!(!capabilities(&p).iter().any(|t| t.starts_with("client.fs_")));
+    }
+
+    #[test]
+    fn dangerous_actions_always_need_a_card() {
+        let base = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("neyra-pol-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(base.join("work")).unwrap();
+        std::fs::write(base.join("work/a.txt"), "a").unwrap();
+        let p = Permissions {
+            enabled: true,
+            shell: true,
+            files: true,
+            screen: true,
+            input: true,
+            fs_roots: vec![base.join("work").to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let data = base.join("data");
+        let w = |r: &str| base.join("work").join(r).to_string_lossy().into_owned();
+        let confirm = [
+            call(
+                "client.shell_exec",
+                serde_json::json!({"program":"sh","args":["-c","true"]}),
+            ),
+            call(
+                "client.fs_write",
+                serde_json::json!({"path":w("b.txt"),"content":"x","mode":"create"}),
+            ),
+            call("client.fs_mkdir", serde_json::json!({"path":w("d")})),
+            call(
+                "client.fs_move",
+                serde_json::json!({"from":w("a.txt"),"to":w("c.txt")}),
+            ),
+            call("client.screenshot", serde_json::json!({})),
+            call(
+                "client.input",
+                serde_json::json!({"steps":[{"op":"key","keys":"ctrl+s"}]}),
+            ),
+        ];
+        for c in confirm {
+            assert_eq!(check(&p, &data, &c), Ok(Decision::Confirm), "{}", c.tool);
+        }
+        assert_eq!(
+            check(
+                &p,
+                &data,
+                &call("client.fs_read", serde_json::json!({"path":w("a.txt")}))
+            ),
+            Ok(Decision::Safe)
+        );
+        let auto = Permissions {
+            screen_auto: true,
+            ..p.clone()
+        };
+        assert_eq!(
+            check(
+                &auto,
+                &data,
+                &call("client.screenshot", serde_json::json!({}))
+            ),
+            Ok(Decision::Safe)
+        );
+        // Unknown extra arguments are refused: the server cannot smuggle options.
+        assert!(check(
+            &p,
+            &data,
+            &call(
+                "client.fs_read",
+                serde_json::json!({"path":w("a.txt"),"follow":true})
+            )
+        )
+        .is_err());
+        assert!(check(
+            &p,
+            &data,
+            &call("client.fs_read", serde_json::json!({"path":"/etc/passwd"}))
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn browser_rejects_unsafe_schemes_and_cards_local_hosts() {
+        for u in [
+            "data:text/html,<script>alert(1)</script>",
+            "chrome://settings",
+            "about:blank",
+            "vbscript:msgbox",
+            "ftp://example.com",
+            "https://example.com/\nheader",
+        ] {
+            assert!(web_url(u).is_err(), "{u}");
+        }
+        let p = Permissions {
+            enabled: true,
+            allow_web: true,
+            web_domains: vec![
+                "localhost".into(),
+                "router.lan".into(),
+                "example.com".into(),
+            ],
+            ..Default::default()
+        };
+        let root = Path::new("/nonexistent-neyra");
+        for u in [
+            "http://localhost:8080/",
+            "http://router.lan/",
+            "http://192.168.1.1/",
+            "http://[::1]/",
+        ] {
+            let c = call("client.open_url", serde_json::json!({"url":u}));
+            assert_eq!(check(&p, root, &c), Ok(Decision::Confirm), "{u}");
+        }
+        let c = call(
+            "client.open_url",
+            serde_json::json!({"url":"https://example.com/a"}),
+        );
+        assert_eq!(check(&p, root, &c), Ok(Decision::Safe));
     }
 }
