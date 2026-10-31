@@ -16,6 +16,11 @@ TOOLS = Literal['client.list_apps', 'client.open_url', 'client.open_app', 'clien
                 'client.shell_exec', 'client.fs_list', 'client.fs_read', 'client.fs_search', 'client.fs_write',
                 'client.fs_mkdir', 'client.fs_move', 'client.screenshot', 'client.input']
 
+# Quick commands (and server-side drafts) never expose Contour 3–4 tools.
+QUICK_COMMAND_TOOLS = Literal['client.list_apps', 'client.open_url', 'client.open_app', 'client.search_web',
+                                'client.list_windows', 'client.focus_window', 'client.close_window', 'client.media',
+                                'client.volume']
+
 # Read-only tools may still run after an action with an unknown outcome; everything else may not.
 READ_ONLY = frozenset({'client.list_apps', 'client.list_windows', 'client.fs_list', 'client.fs_read',
                        'client.fs_search', 'client.screenshot'})
@@ -60,6 +65,7 @@ class Manifest(BaseModel):
     device_id: UUID
     session_id: UUID
     name: str = Field(min_length=1, max_length=90)
+    platform: Literal['windows', 'linux-wayland', 'linux-x11']
     tools: list[TOOLS] = Field(default_factory=list, max_length=24)
     commands: list[CommandInfo] = Field(default_factory=list, max_length=32)
     features: list[FEATURES] = Field(default_factory=list, max_length=2)
@@ -301,7 +307,7 @@ def brain_tools():
 
 class DraftAction(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    tool: TOOLS
+    tool: QUICK_COMMAND_TOOLS
     arguments: dict = Field(default_factory=dict)
 
 
