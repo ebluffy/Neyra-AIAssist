@@ -46,7 +46,7 @@ button, .timer, .live-state, time { font-variant-numeric: tabular-nums }
 .history time { color: var(--muted); font-size: 13px }
 
 .stage { flex: 1; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; align-items: center }
-.chrome { position: absolute; top: var(--s3); right: var(--s3); z-index: 20; display: flex; align-items: center; gap: var(--s2) }
+.chrome { position: absolute; top: var(--s3); right: var(--s3); z-index: 60; display: flex; align-items: center; gap: var(--s2) }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); box-shadow: inset 0 0 0 1px var(--border) }
 .dot[data-on] { background: var(--accent) }
 .menu { position: absolute; top: calc(100% + var(--s2)); right: 0; width: 260px; max-height: min(70dvh, 560px); overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 16px 40px var(--shadow); padding: var(--s2); display: flex; flex-direction: column; gap: var(--s1); transform-origin: top right; animation: rise var(--dur) var(--ease) }
@@ -107,8 +107,7 @@ button, .timer, .live-state, time { font-variant-numeric: tabular-nums }
 .live-log strong { display: block; font-size: 13px; color: var(--muted); font-weight: 600 }
 .live-stage .actions { justify-content: center }
 
-.decisions { position: fixed; z-index: 40; left: 50%; bottom: var(--s6); transform: translateX(-50%); width: min(760px, calc(100% - 32px)) }
-.decision { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: var(--s4); box-shadow: 0 12px 28px var(--shadow) }
+dialog.decision { position: fixed; inset: auto 0 var(--s6) 0; margin-inline: auto; width: min(760px, calc(100% - 32px)); max-height: min(70dvh, 520px); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: var(--s4); box-shadow: 0 12px 28px var(--shadow) }
 .decision h2 { font-size: 18px; margin: 0 0 var(--s2) }
 
 .backdrop { position: fixed; inset: 0; z-index: 30; background: oklch(0.12 0.01 200 / 0.46); display: flex; justify-content: flex-end }

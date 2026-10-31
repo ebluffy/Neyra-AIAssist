@@ -2,5 +2,5 @@
   "identifier": "main",
   "description": "Neyra local window only; all I/O is validated by Rust commands.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "opener:default"]
 }

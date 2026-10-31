@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 export type Inline =
   | { k: 'text'; v: string }
@@ -82,7 +83,7 @@ function inlineNodes(inlines: Inline[], key: string): ReactNode[] {
     if (part.k === 'code') return <code key={id}>{part.v}</code>;
     if (part.k === 'strong') return <strong key={id}>{part.v}</strong>;
     if (part.k === 'em') return <em key={id}>{part.v}</em>;
-    if (part.k === 'link') return <a key={id} href={part.href} target="_blank" rel="noreferrer">{part.v}</a>;
+    if (part.k === 'link') return <a key={id} href={part.href} onClick={event => { event.preventDefault(); if (SAFE_LINK.test(part.href)) void openUrl(part.href).catch(() => undefined); }}>{part.v}</a>;
     return <span key={id}>{part.v}</span>;
   });
 }

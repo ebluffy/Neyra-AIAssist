@@ -8,9 +8,11 @@ interface Props {
   onCopy: (value: string) => void;
   onSpeak: (value: string) => void;
   onRepeat: (value: string) => void;
+  turnBusy: boolean;
+  voiceBusy: boolean;
 }
 
-export function ChatView({ messages, partial, onCopy, onSpeak, onRepeat }: Props) {
+export function ChatView({ messages, partial, onCopy, onSpeak, onRepeat, turnBusy, voiceBusy }: Props) {
   const panel = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   useEffect(() => {
@@ -26,8 +28,8 @@ export function ChatView({ messages, partial, onCopy, onSpeak, onRepeat }: Props
         {message.role === 'user' && message.pending && !message.content ? <p className="hint">Распознаю речь…</p> : message.role === 'user' ? <p className="plain">{message.content}</p> : <Markdown text={message.content} onCopy={onCopy} />}
         {message.role === 'assistant' && message.content && <div className="msg-actions">
           <button type="button" onClick={() => onCopy(message.content)}>Копировать</button>
-          <button type="button" onClick={() => onSpeak(message.content)}>Озвучить</button>
-          <button type="button" disabled={!previousUser} onClick={() => previousUser && onRepeat(previousUser.content)}>Повторить</button>
+          <button type="button" disabled={voiceBusy} onClick={() => onSpeak(message.content)}>Озвучить</button>
+          <button type="button" disabled={!previousUser || turnBusy} onClick={() => previousUser && onRepeat(previousUser.content)}>Повторить</button>
         </div>}
       </article>;
     })}

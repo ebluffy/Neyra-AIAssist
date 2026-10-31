@@ -1,4 +1,6 @@
 """UI smoke with a simulated native IPC boundary; real WS contracts are pytest tests."""
+import os
+import tempfile
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
@@ -26,6 +28,8 @@ if(cmd==='update_state')return {settings:{schema_version:1,channel:'beta',auto_c
 if(cmd==='update_check')return {available:true,version:'0.1.1',notes:'Тест',date:null};
 if(cmd==='character_state')return {enabled:false,settings:{schema_version:1,model:null,fps_limit:30,pause_fullscreen:true,pause_battery:true,always_on_top:true,click_through:true},capabilities:{transparent:'yes',always_on_top:'not_guaranteed',click_through:'yes',exclude_from_capture:'no',mechanism:'wayland-kde',notes:['Wayland не гарантирует always-on-top.']},models:[],overlay_open:false,renderer:'vrm',directory:'/tmp/Neyra/character'};
 if(cmd==='audit_log')return [{time:Date.now(),tool:'client.open_url',status:'ok',confirmed:false}];
+if(cmd==='load_chats')return [];
+if(cmd==='save_chats')return;
 if(cmd==='voice_status')return {wake:{ready:false,dir:'/tmp/Neyra/wakeword',message:'Нет wakeword.json в папке wakeword'},live:false,dropped_frames:0};
 if(cmd==='live_start'){if(settings.voice?.mode!=='wake')throw 'mode';setTimeout(()=>window.emitNative('desktop-event',{type:'live.started',mode:'wake'}),10);return;}
 if(cmd==='live_stop'){window.emitNative('desktop-event',{type:'live.stopped'});return;}
@@ -55,7 +59,9 @@ def menu(page, name):
     page.locator('#gear-menu').get_by_role('button', name=name, exact=True).click()
 
 def close_sheet(page):
-    page.get_by_role('button', name='Закрыть', exact=True).click()
+    button = page.get_by_role('button', name='Закрыть', exact=True)
+    if button.count():
+        button.click()
 
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
@@ -120,6 +126,7 @@ with sync_playwright() as p:
     expect(page.get_by_role('button',name='Отклонить',exact=True)).to_be_focused()
     page.keyboard.press('Escape')
     expect(confirm).not_to_be_visible()
+    menu(page, 'Доступ к ПК')
     page.get_by_label('Консоль (PowerShell, cmd, bash): каждая команда с подтверждением').check()
     expect(page.get_by_label('Консоль (PowerShell, cmd, bash): каждая команда с подтверждением')).to_be_checked()
     expect(page.get_by_label('Файлы в разрешённых папках', exact=False)).to_be_disabled()
@@ -253,7 +260,7 @@ with sync_playwright() as p:
     page.set_viewport_size({'width': 620, 'height': 760})
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'horizontal overflow'
     page.set_viewport_size({'width': 1100, 'height': 820})
-    shots = Path('/opt/cursor/artifacts/screenshots')
+    shots = Path(os.environ['NEYRA_UI_SHOTS']) if os.environ.get('NEYRA_UI_SHOTS') else Path(tempfile.gettempdir()) / 'neyra-ui-shots'
     shots.mkdir(parents=True, exist_ok=True)
     labels = {'neyra': 'Нейра', 'dark': 'Тёмная', 'light': 'Светлая'}
 

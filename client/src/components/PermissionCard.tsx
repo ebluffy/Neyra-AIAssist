@@ -2,16 +2,18 @@ import { useEffect, useRef } from 'react';
 import { toolTitles, type HostCall } from '../types';
 
 export function PermissionCard({ call, onAllow, onReject }: { call: HostCall; onAllow: () => void; onReject: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
   const reject = useRef<HTMLButtonElement>(null);
-  useEffect(() => { reject.current?.focus(); }, []);
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); onReject(); } };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onReject]);
+    const node = dialog.current;
+    if (!node) return;
+    if (!node.open) node.showModal();
+    reject.current?.focus();
+    return () => { if (node.open) node.close(); };
+  }, [call.call_id]);
   const title = call.tool === 'command.run' ? 'Запустить быструю команду?' : 'Разрешить действие на этом ПК?';
   const name = call.tool === 'command.run' ? String(call.arguments.name ?? '') : (toolTitles[call.tool] ?? call.tool);
-  return <article className="decision" role="dialog" aria-labelledby="confirm-title">
+  return <dialog ref={dialog} className="decision" aria-labelledby="confirm-title" onCancel={event => { event.preventDefault(); event.stopPropagation(); onReject(); }}>
     <h2 id="confirm-title">{title}</h2>
     <p><strong>{name}</strong></p>
     <pre>{call.preview || JSON.stringify(call.arguments, null, 2)}</pre>
@@ -20,5 +22,5 @@ export function PermissionCard({ call, onAllow, onReject }: { call: HostCall; on
       <button type="button" ref={reject} autoFocus onClick={onReject}>Отклонить</button>
       <button type="button" className="primary" onClick={onAllow}>Разрешить один раз</button>
     </div>
-  </article>;
+  </dialog>;
 }

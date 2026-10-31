@@ -36,10 +36,10 @@ export function SettingsSheet({ section, onSection, onClose, children }: Props) 
     <button type="button" className="backdrop-dismiss" aria-label="Закрыть панель" onClick={onClose} />
     <div className="sheet" ref={panel} role="dialog" aria-modal="true" aria-label={SHEETS.find(item => item.id === section)?.label ?? 'Настройки'}>
       <nav className="sheet-nav" aria-label="Разделы настроек">
+        <button type="button" className="icon" aria-label="Закрыть" onClick={onClose}><CloseIcon /></button>
         {SHEETS.map(item => <button type="button" key={item.id} aria-current={item.id === section ? 'page' : undefined} onClick={() => onSection(item.id)}>{item.label}</button>)}
       </nav>
       <div className="sheet-body">
-        <button type="button" className="icon sheet-close" aria-label="Закрыть" onClick={onClose}><CloseIcon /></button>
         {children}
       </div>
     </div>

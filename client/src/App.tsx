@@ -27,6 +27,7 @@ export function App() {
     <HistoryPanel open={app.historyOpen} threads={app.threads} activeId={app.activeId} onClose={() => app.setHistoryOpen(false)} onOpen={id => void app.openThread(id)} onNew={() => void app.newChat()} />
     <div className="stage">
       <div className="chrome">
+        <button type="button" className="stop" onClick={() => void app.stop()}>Стоп</button>
         <span className="dot" data-on={app.connected ? 'true' : undefined} role="status" aria-label={app.connected ? 'Подключено' : 'Нет подключения'} />
         <button type="button" className="icon" id="gear" aria-label="Меню" aria-haspopup="true" aria-expanded={app.menuOpen} aria-controls={app.menuOpen ? 'gear-menu' : undefined} onClick={() => app.setMenuOpen(open => !open)}><GearIcon /></button>
         <GearMenu open={app.menuOpen} theme={app.theme} onClose={app.closeMenu} onNewChat={() => void app.newChat()} onHistory={() => { app.setMenuOpen(false); app.setHistoryOpen(true); }} onSheet={app.openSheet} onTheme={id => void app.setTheme(id)} onStop={() => { app.setMenuOpen(false); void app.stop(); }} />
@@ -37,12 +38,10 @@ export function App() {
         {app.notice && <p className="notice" role="status">{app.notice}</p>}
         {!app.settings && <section className="greet"><h1>Запуск Neyra</h1><p>Загружаю локальные настройки…</p></section>}
         {app.settings && empty && !app.liveOpen && <div className="greet"><h1>Нейра</h1><p>Напишите сообщение или запишите голос.</p></div>}
-        {app.settings && !empty && !app.liveOpen && <ChatView messages={app.messages} partial={app.partial} onCopy={app.copyText} onSpeak={value => void app.speak(value)} onRepeat={value => void app.sendContent(value)} />}
+        {app.settings && !empty && !app.liveOpen && <ChatView messages={app.messages} partial={app.partial} onCopy={app.copyText} onSpeak={value => void app.speak(value)} onRepeat={value => void app.sendContent(value)} turnBusy={turnBusy || app.recording || app.liveOpen} voiceBusy={turnBusy || app.recording || app.liveOpen} />}
         {app.liveOpen && <LiveVoice state={app.liveState} mode={app.voice.mode} level={app.micLevel} muted={app.muted} busy={app.busy} showStop={turnBusy} messages={app.messages} partial={app.partial} onMute={() => void app.toggleMute()} onSettings={() => app.openSheet('voice')} onEnd={() => void app.endLive()} onStop={() => void app.stop()} />}
-        {(app.hostCall || app.draft) && <div className="decisions">
-          {app.hostCall && <PermissionCard call={app.hostCall} onAllow={() => void app.approve(true)} onReject={() => void app.approve(false)} />}
-          <DraftDialog draft={app.draft} busy={app.busy} onSave={item => void app.decideDraft(true, item)} onReject={item => void app.decideDraft(false, item)} />
-        </div>}
+        {app.hostCall && <PermissionCard key={app.hostCall.call_id} call={app.hostCall} onAllow={() => void app.approve(true)} onReject={() => void app.approve(false)} />}
+        {app.draft && <DraftDialog key={app.draft.draft_id} draft={app.draft} busy={app.busy} onSave={item => void app.decideDraft(true, item)} onReject={item => void app.decideDraft(false, item)} />}
         {!app.liveOpen && (app.recording
           ? <VoiceRecorder busy={app.busy} onCancel={() => void app.cancelRecording()} onDone={() => void app.finishRecording()} />
           : <Composer text={app.text} connected={app.connected} busy={app.busy} turnBusy={turnBusy} liveBlocked={app.voice.mode === 'ptt'} onText={app.setText} onSend={() => void app.sendContent(app.text)} onRecord={() => void app.beginRecording()} onLive={() => void app.startLive()} onStop={() => void app.stop()} />)}

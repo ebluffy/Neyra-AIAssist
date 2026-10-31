@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { loadThreads, nextId, saveThreads, stripAudio, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
+import { nextId, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
 import { type DraftEvent, type RunEvent, describeRun } from './commands';
 import { type SheetId, themeId } from './theme';
 import { conversionNotice, defaultVoice, formatError, meterLevel, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
@@ -46,6 +46,7 @@ export function useDesktop() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const hydrated = useRef(false);
+  const chatsReady = useRef(false);
   const muteHold = useRef(false);
   const urls = useRef<string[]>([]);
   const profile = settings?.profiles.find(item => item.id === profileId);
@@ -60,13 +61,18 @@ export function useDesktop() {
   const closeMenu = useCallback(() => setMenuOpen(false), []);
 
   useEffect(() => {
-    void invoke<{ settings: Settings; data_root: string; global_shortcuts: boolean; pc_access_available: boolean; recoveries?: Recovery[]; screen_backend?: boolean; input_backend?: boolean }>('load_settings').then(data => {
+    void invoke<{ settings: Settings; data_root: string; global_shortcuts: boolean; pc_access_available: boolean; recoveries?: Recovery[]; screen_backend?: boolean; input_backend?: boolean }>('load_settings').then(async data => {
       setSettings(data.settings); setRoot(data.data_root); setShortcuts(data.global_shortcuts); setPcAvailable(data.pc_access_available); setRecoveries(data.recoveries ?? []);
       setBackends({ screen: !!data.screen_backend, input: !!data.input_backend });
       const first = data.settings.profiles[0]?.id ?? '';
       setProfileId(first);
       const sessionId = data.settings.profiles[0]?.session_id ?? '';
-      const stored = loadThreads();
+      let stored: ChatThread[] = [];
+      try {
+        const rows = await invoke<ChatThread[]>('load_chats');
+        stored = Array.isArray(rows) ? rows : [];
+        chatsReady.current = true;
+      } catch (reason) { setError(formatError(reason)); }
       const match = stored.find(item => item.sessionId === sessionId);
       const thread = match ?? { id: nextId(), title: 'Новый чат', sessionId, updated: Date.now(), messages: [] as ChatMessage[] };
       const list = match ? stored : [thread, ...stored].slice(0, 30);
@@ -74,7 +80,6 @@ export function useDesktop() {
       setThreads(list);
       setActiveId(thread.id);
       setMessages(thread.messages);
-      saveThreads(list);
     }).catch(reason => setError(formatError(reason)));
     const timer = window.setInterval(() => setPartial(tokenBuffer.current), 60);
     return () => window.clearInterval(timer);
@@ -88,8 +93,8 @@ export function useDesktop() {
     });
   }, [messages, activeId]);
   useEffect(() => {
-    if (!hydrated.current) return;
-    saveThreads(threads);
+    if (!chatsReady.current) return;
+    void invoke('save_chats', { threads: storedThreads(threads) }).catch(reason => setError(formatError(reason)));
   }, [threads]);
   useEffect(() => {
     const live = new Set(messages.flatMap(item => item.audioUrl ? [item.audioUrl] : []));
@@ -154,7 +159,7 @@ export function useDesktop() {
           if (event.reason !== 'barge_in') { muteHold.current = false; setLiveOpen(false); setMuted(false); }
         }
       }),
-      listen<HostCall>('host-confirm', ({ payload }) => { setHostCall(payload); setMenuOpen(false); }),
+      listen<HostCall>('host-confirm', ({ payload }) => { setHostCall(payload); setMenuOpen(false); setSheet(null); setHistoryOpen(false); }),
       listen<{ call_id?: string }>('host-confirm-closed', ({ payload }) => {
         setHostCall(current => (current && (!payload.call_id || current.call_id === payload.call_id) ? undefined : current));
       }),
@@ -163,7 +168,7 @@ export function useDesktop() {
         setRunLine(describeRun(payload)); setCommandRunning(payload.state === 'started' || payload.state === 'step'); setThinking(false);
         if (payload.state === 'failed') setError(describeRun(payload)); else setNotice(describeRun(payload));
       }),
-      listen<DraftEvent>('command-draft', ({ payload }) => { setDraft(payload); setMenuOpen(false); }),
+      listen<DraftEvent>('command-draft', ({ payload }) => { setDraft(payload); setMenuOpen(false); setSheet(null); setHistoryOpen(false); }),
       listen<{ reason: string }>('command-draft-invalid', ({ payload }) => setError(`Черновик команды отклонён: ${payload.reason}`)),
     ];
     return () => { for (const listener of listeners) void listener.then(unlisten => unlisten()); };
@@ -235,33 +240,52 @@ export function useDesktop() {
   });
   const approve = (allow: boolean) => run(async () => { if (hostCall) { const id = hostCall.call_id; setHostCall(undefined); await invoke('approve', { callId: id, allow }); } });
   const setTheme = (nextTheme: string) => run(async () => { if (!settings) return; await save({ ...settings, theme: nextTheme }); });
-  const rememberCurrent = (): ChatThread[] => threads.map(item => item.id === activeId ? { ...item, messages: messages.map(stripAudio), title: threadTitle(messages), updated: Date.now() } : item);
+  const blockSwitch = () => {
+    if (thinking || partial || recording || liveOpen || active || hostCall || draft) throw 'Сначала остановите текущий ход кнопкой «Стоп»';
+  };
   const switchSession = async (sessionId: string, keepLocal: boolean) => {
     if (!settings || !profile || profile.session_id === sessionId) return;
-    const next = { ...settings, profiles: settings.profiles.map(item => item.id === profile.id ? { ...item, session_id: sessionId } : item) };
-    await save(next);
+    const previousId = profile.session_id;
+    const withSession = (id: string): Settings => ({ ...settings, profiles: settings.profiles.map(item => item.id === profile.id ? { ...item, session_id: id } : item) });
+    await save(withSession(sessionId));
     if (!connected) return;
-    await invoke('disconnect');
-    setConnected(false);
-    await invoke('connect', { profileId: profile.id });
-    setConnected(true);
-    await invoke('bridge_message', { kind: 'devices' });
-    if (!keepLocal) await invoke('bridge_message', { kind: 'history' });
+    try {
+      await invoke('disconnect');
+      setConnected(false);
+      await invoke('connect', { profileId: profile.id });
+      setConnected(true);
+      await invoke('bridge_message', { kind: 'devices' });
+      if (!keepLocal) await invoke('bridge_message', { kind: 'history' });
+    } catch (reason) {
+      try {
+        await save(withSession(previousId));
+        await invoke('connect', { profileId: profile.id });
+        setConnected(true);
+        await invoke('bridge_message', { kind: 'devices' });
+      } catch { setConnected(false); }
+      throw reason;
+    }
   };
   const newChat = () => run(async () => {
+    blockSwitch();
     const sessionId = crypto.randomUUID();
     const fresh: ChatThread = { id: nextId(), title: 'Новый чат', sessionId, updated: Date.now(), messages: [] };
-    const next = [fresh, ...rememberCurrent()].slice(0, 30);
+    const saved = threads.map(item => item.id === activeId ? { ...item, messages: messages.map(stripAudio), title: threadTitle(messages), updated: Date.now() } : item);
     await switchSession(sessionId, true);
-    setThreads(next); saveThreads(next); setActiveId(fresh.id); setMessages([]); setPartial(''); tokenBuffer.current = ''; setHistoryOpen(false); setMenuOpen(false);
+    setThreads([fresh, ...saved].slice(0, 30));
+    setActiveId(fresh.id);
+    setMessages([]);
+    setPartial(''); tokenBuffer.current = ''; setHistoryOpen(false); setMenuOpen(false);
   });
   const openThread = (id: string) => run(async () => {
-    const thread = threads.find(item => item.id === id);
-    if (!thread || thread.id === activeId) { setHistoryOpen(false); return; }
-    const next = rememberCurrent();
-    await switchSession(thread.sessionId, thread.messages.length > 0);
-    setThreads(next); saveThreads(next); setActiveId(thread.id);
-    if (thread.messages.length > 0) setMessages(thread.messages.map(item => ({ ...item })));
+    blockSwitch();
+    const switched = switchThread(threads, activeId, messages, id);
+    if (!switched) { setHistoryOpen(false); return; }
+    const target = switched.threads.find(item => item.id === switched.activeId);
+    await switchSession(target?.sessionId ?? '', target ? target.messages.length > 0 : true);
+    setThreads(switched.threads);
+    setActiveId(switched.activeId);
+    setMessages(switched.messages);
     setPartial(''); tokenBuffer.current = ''; setHistoryOpen(false);
   });
   const addProfile = (created: Profile) => { if (!settings) return; setSettings({ ...settings, profiles: [...settings.profiles, created] }); setProfileId(created.id); };

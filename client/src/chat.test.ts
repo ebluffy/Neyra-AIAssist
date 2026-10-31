@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clock, composerSlot, threadTitle } from './chat';
+import { clock, composerSlot, switchThread, threadTitle, type ChatThread } from './chat';
 import { themeId } from './theme';
 
 describe('chat composer', () => {
@@ -16,6 +16,18 @@ describe('chat composer', () => {
   it('formats a recording clock', () => {
     expect(clock(0)).toBe('0:00');
     expect(clock(9500)).toBe('0:10');
+  });
+});
+
+describe('thread switch', () => {
+  it('keeps an empty thread empty', () => {
+    const filled: ChatThread = { id: 'a', title: 'A', sessionId: '11111111-1111-4111-8111-111111111111', updated: 1, messages: [{ id: 'm', role: 'user', content: 'секрет', kind: 'text' }] };
+    const empty: ChatThread = { id: 'b', title: 'Новый чат', sessionId: '22222222-2222-4222-8222-222222222222', updated: 2, messages: [] };
+    const next = switchThread([filled, empty], 'a', filled.messages, 'b');
+    expect(next?.activeId).toBe('b');
+    expect(next?.messages).toEqual([]);
+    expect(next?.threads.find(thread => thread.id === 'b')?.messages).toEqual([]);
+    expect(next?.threads.find(thread => thread.id === 'a')?.messages.map(message => message.content)).toEqual(['секрет']);
   });
 });
 

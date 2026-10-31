@@ -16,8 +16,6 @@ export interface ChatThread {
   messages: ChatMessage[];
 }
 
-export const CHAT_STORAGE_KEY = 'neyra.desktop.chats';
-
 export function nextId(): string {
   return crypto.randomUUID();
 }
@@ -51,32 +49,26 @@ export function wavBlob(base64: string): Blob {
   return new Blob([bytes], { type: 'audio/wav' });
 }
 
-function isMessage(value: unknown): value is ChatMessage {
-  if (!value || typeof value !== 'object') return false;
-  const message = value as ChatMessage;
-  return (message.role === 'user' || message.role === 'assistant') && typeof message.content === 'string' && (message.kind === 'text' || message.kind === 'voice');
+export function switchThread(threads: ChatThread[], activeId: string, messages: ChatMessage[], nextId: string): { threads: ChatThread[]; activeId: string; messages: ChatMessage[] } | null {
+  if (nextId === activeId) return null;
+  const saved = threads.map(thread => thread.id === activeId ? { ...thread, messages: messages.map(stripAudio), title: threadTitle(messages), updated: Date.now() } : thread);
+  const target = saved.find(thread => thread.id === nextId);
+  if (!target) return null;
+  return { threads: saved, activeId: nextId, messages: target.messages.map(message => ({ ...message })) };
 }
 
-export function loadThreads(): ChatThread[] {
-  try {
-    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is ChatThread => {
-      if (!item || typeof item !== 'object') return false;
-      const thread = item as ChatThread;
-      return typeof thread.id === 'string' && typeof thread.sessionId === 'string' && Array.isArray(thread.messages) && thread.messages.every(isMessage);
-    }).slice(0, 30);
-  } catch {
-    return [];
-  }
-}
-
-export function saveThreads(threads: ChatThread[]) {
-  try {
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(threads.slice(0, 30).map(thread => ({ ...thread, messages: thread.messages.map(stripAudio) }))));
-  } catch {
-    /* The chat list is a convenience. A full disk must not block the conversation. */
-  }
+export function storedThreads(threads: ChatThread[]) {
+  return threads.slice(0, 30).map(thread => ({
+    id: thread.id,
+    title: thread.title.slice(0, 80),
+    sessionId: thread.sessionId,
+    updated: thread.updated,
+    messages: thread.messages.slice(-100).map(message => ({
+      id: message.id,
+      role: message.role,
+      content: message.content.slice(0, 8000),
+      kind: message.kind,
+      ...(message.durationMs !== undefined ? { durationMs: message.durationMs } : {}),
+    })),
+  }));
 }
