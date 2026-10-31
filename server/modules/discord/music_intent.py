@@ -45,15 +45,15 @@ def _routing_text(text: str) -> str:
     return _URL_RE.sub(" ", text or "")
 
 
-def _youtube_link(text: str) -> bool:
-    from modules.discord.music import _canonical_youtube_url_from_text
-    return bool(_canonical_youtube_url_from_text(text))
+def _supported_music_link(text: str) -> bool:
+    from modules.discord.music import _canonical_youtube_url_from_text, _normalize_allowed_music_url
+    return bool(_canonical_youtube_url_from_text(text) or _normalize_allowed_music_url(text))
 
 
 def _music_blocked(text: str, *, has_media: bool = False) -> bool:
     text = text or ""
     words = _routing_text(text)
-    if _URL_RE.search(text) and not _youtube_link(text) and not has_play_verb(words):
+    if _URL_RE.search(text) and not _supported_music_link(text) and not has_play_verb(words):
         return True
     if re.search(r"\b(?:не|don't|do\s+not)\s+(?:надо\s+|нужно\s+)?(?:" + "|".join(_PLAY_VERBS) + r"|стоп|stop|pause|skip|очищай|выключай)\b", words, re.I):
         return True
@@ -65,7 +65,7 @@ def _music_blocked(text: str, *, has_media: bool = False) -> bool:
         except ValueError:
             return True
         media_link |= any(host == h or host.endswith("." + h) for h in ("tenor.com", "giphy.com", "giphy.net", "imgur.com")) or bool(re.search(r"\.(?:gif|gifv|mp4|webm|png|jpe?g|webp)(?:$|[?#])", match.group(), re.I))
-    if media_link and not _youtube_link(text):
+    if media_link and not _supported_music_link(text):
         return True
     media_nouns = r"(?:гифк(?:а|у|и|ой|ами|ах)|gifs?|мем(?:а|у|ом|е|ы|ов|ами|ах|чик)?|реакци(?:я|ю|и|ей|ями|ях)|картинк(?:а|у|и|ой|ами|ах)|изображени(?:е|я|ю|ем|и))"
     media_words = bool(re.search(r"\b" + media_nouns + r"\b", words, re.I))
@@ -74,7 +74,7 @@ def _music_blocked(text: str, *, has_media: bool = False) -> bool:
     if media_words and (not has_play_verb(words) or (explicit_media_action and not music_noun)):
         return True
     control = bool(re.fullmatch(r"\s*(?:стоп|stop|пауза|pause|скип|skip|resume|продолжи|очередь|queue|(?:зайди|join)\s+(?:в\s+)?(?:войс|voice|vc))\s*[.!]?", words, re.I))
-    return has_media and not has_play_verb(words) and not control and not _youtube_link(text)
+    return has_media and not has_play_verb(words) and not control and not _supported_music_link(text)
 
 
 def lyrics_request_hint(text: str) -> bool:
@@ -159,7 +159,7 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
             lowered,
         )
     )
-    if not has_play_verb(raw) and not _youtube_link(raw) and not wants_voice_play:
+    if not has_play_verb(raw) and not _supported_music_link(raw) and not wants_voice_play:
         return None
     q = re.sub(r"^(эй\s+нейра|нейра|please|пожалуйста)[,:\s-]*", "", raw, flags=re.IGNORECASE).strip()
     q = PLAY_VERB_STRIP_RE.sub("", q).strip()

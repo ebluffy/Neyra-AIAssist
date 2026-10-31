@@ -59,12 +59,17 @@ describe('SettingsScreen useBlocker', () => {
     vi.restoreAllMocks()
   })
 
+  async function findLoadedTalkModelInput() {
+    await waitFor(() => expect((screen.getByLabelText(/Модель речи/i) as HTMLInputElement).value).toBe('test-model'))
+    return screen.getByLabelText(/Модель речи/i) as HTMLInputElement
+  }
+
   it('asks before leave, cancel keeps dirty value, leave proceeds once', async () => {
     const user = userEvent.setup()
     const router = renderApp()
     await screen.findByRole('heading', { name: 'Настройки' })
 
-    const input = screen.getByLabelText(/Модель речи/i)
+    const input = await findLoadedTalkModelInput()
     await user.clear(input)
     await user.type(input, 'dirty-model')
 
@@ -84,7 +89,7 @@ describe('SettingsScreen useBlocker', () => {
 
     await router.navigate('/settings')
     await screen.findByRole('heading', { name: 'Настройки' })
-    const input2 = screen.getByLabelText(/Модель речи/i)
+    const input2 = await findLoadedTalkModelInput()
     await user.clear(input2)
     await user.type(input2, 'again-dirty')
     await router.navigate('/status')
@@ -99,7 +104,7 @@ describe('SettingsScreen useBlocker', () => {
     const router = renderApp({ initialEntries: ['/status', '/settings'], initialIndex: 1 })
     await screen.findByRole('heading', { name: 'Настройки' })
 
-    const input = screen.getByLabelText(/Модель речи/i)
+    const input = await findLoadedTalkModelInput()
     await user.clear(input)
     await user.type(input, 'pop-dirty')
 
