@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from typing import Any, Optional
 
 from core.agent.model_trace import invoke
@@ -74,18 +76,23 @@ async def run_brain_tool_phase(
     messages.append(human_msg)
 
     mcp_cfg = agent.config.get("mcp_client") if isinstance(agent.config.get("mcp_client"), dict) else {}
-    from core.desktop.bridge import brain_tools
-    desktop_tools = brain_tools()
-    # Desktop may only narrow rights (§3b.9): connecting a PC must not re-enable MCP/server tools
-    # when mcp_client.llm_tool_calls is false — bind client_* tools alone in that case.
-    if bool(mcp_cfg.get("llm_tool_calls")):
-        turn_tools = {**agent.tools, **desktop_tools}
-    else:
-        turn_tools = dict(desktop_tools)
+    from core.desktop.bridge import DESKTOP_TURN, DesktopTurn, brain_tools
+    server_tools_on = bool(mcp_cfg.get("llm_tool_calls"))
+
+    def current_tools():
+        # Desktop may only narrow rights (§3b.9): connecting a PC must not re-enable MCP/server tools
+        # when mcp_client.llm_tool_calls is false — bind client_* tools alone in that case.
+        desktop = brain_tools()
+        return desktop, ({**agent.tools, **desktop} if server_tools_on else dict(desktop))
+
+    desktop_tools, turn_tools = current_tools()
     use_tool_loop = bool(turn_tools)
     max_tool_steps = max(1, int(mcp_cfg.get("llm_tool_max_steps", 4)))
-    # Bounded agent loop (§10 / §3b.11 step 6): wall clock + optional cancel re-check.
-    wall_s = max(1, int(mcp_cfg.get("llm_tool_wall_seconds", 90)))
+    loop_limits = desktop_loop_limits(agent.config) if desktop_tools else None
+    if loop_limits:
+        max_tool_steps = loop_limits["max_steps"]
+    desktop_turn = DesktopTurn(max_actions=loop_limits["max_actions"]) if loop_limits else None
+    turn_token = DESKTOP_TURN.set(desktop_turn)
     cancel_check = mcp_cfg.get("llm_tool_cancel_check")
 
     brain_llm = agent.llm_brain
@@ -106,28 +113,28 @@ async def run_brain_tool_phase(
             )
             return extract_think_blocks(text)[0].strip()
 
-        import time as _time
-
+        bound_names = set(turn_tools)
         bound = brain_llm.bind_tools(list(turn_tools.values()))
         step = 0
         response = None
-        deadline = _time.monotonic() + wall_s
-        wall_exhausted = False
+        stop_reason = None
+        started = time.monotonic()
         while step < max_tool_steps:
-            if _time.monotonic() >= deadline:
-                wall_exhausted = True
-                break
             if callable(cancel_check) and cancel_check():
                 return json.dumps({"tool_cancelled": True, "steps": step}, ensure_ascii=False)
-            # Refresh desktop tool binding each step — revoked/disconnected device must not keep stale tools.
-            desktop_tools = brain_tools()
-            if bool(mcp_cfg.get("llm_tool_calls")):
-                turn_tools = {**agent.tools, **desktop_tools}
-            else:
-                turn_tools = dict(desktop_tools)
-            if not turn_tools:
+            if loop_limits and time.monotonic() - started > loop_limits["max_seconds"]:
+                stop_reason = "wall_clock_budget"
                 break
-            bound = brain_llm.bind_tools(list(turn_tools.values()))
+            if desktop_tools or loop_limits:
+                # Permissions are re-read every step: a contour switched off or a revoked PC
+                # disappears from the bound tools instead of being called from a stale list.
+                desktop_tools, turn_tools = current_tools()
+                if set(turn_tools) != bound_names:
+                    bound_names = set(turn_tools)
+                    if not turn_tools:
+                        stop_reason = "tools_revoked"
+                        break
+                    bound = brain_llm.bind_tools(list(turn_tools.values()))
             response = await invoke(agent, bound, messages, lane="brain", purpose="tools", images=bool(vision_images), invoker=agent._ainvoke_text_with_fallback)
             agent._log_model_route(agent._extract_model_name(response), lane="brain")
             tcalls = getattr(response, "tool_calls", None) if isinstance(response, LC_AIMessage) else None
@@ -148,19 +155,34 @@ async def run_brain_tool_phase(
                 if not tname:
                     continue
                 if tname in desktop_tools:
-                    out = await desktop_tools[tname].ainvoke(args)
+                    if loop_limits:
+                        remaining = loop_limits["max_seconds"] - (time.monotonic() - started)
+                        try:
+                            # Expiry cancels the pending call on the PC (registry sends `cancel`).
+                            out = await asyncio.wait_for(desktop_tools[tname].ainvoke(args), max(1.0, remaining))
+                        except TimeoutError:
+                            desktop_turn.outcome_unknown = True
+                            out = json.dumps({"status": "unknown", "code": "wall_clock_budget", "retry": False})
+                    else:
+                        out = await desktop_tools[tname].ainvoke(args)
                 elif tname.startswith(("client.", "client_")):
+                    out = '{"status":"unavailable"}'
+                elif not server_tools_on:
                     out = '{"status":"unavailable"}'
                 else:
                     out = await agent._execute_tool(tname, **args)
                 messages.append(ToolMessage(content=out, tool_call_id=tid, name=tname))
+            if desktop_turn is not None and desktop_turn.images:
+                messages.append(await _screenshot_message(agent, desktop_turn))
             step += 1
-        if wall_exhausted:
-            return json.dumps({"tool_wall_exhausted": True, "steps": step, "wall_seconds": wall_s}, ensure_ascii=False)
-        if response is not None and getattr(response, "tool_calls", None) and step >= max_tool_steps:
+        if loop_limits:
+            _record_loop(step, started, stop_reason or ("step_budget" if step >= max_tool_steps else "done"),
+                         desktop_turn)
+        if stop_reason or (response is not None and getattr(response, "tool_calls", None) and step >= max_tool_steps):
             observed = [message for message in messages if isinstance(message, ToolMessage)]
             return json.dumps({
                 "tool_budget_exhausted": True,
+                "stop_reason": stop_reason or "step_budget",
                 "omitted_results": max(0, len(observed) - 4),
                 "results": [
                     {"tool": str(message.name or "")[:200], "result": str(message.content)[:1200],
@@ -181,3 +203,55 @@ async def run_brain_tool_phase(
         # Brain is required: do not silently continue with talk-only (GLM without Luna).
         logger.error("Brain phase failed (talk will not run): %s", e)
         raise
+    finally:
+        DESKTOP_TURN.reset(turn_token)
+
+
+def desktop_loop_limits(config) -> dict:
+    """Bounded PC agent loop (§10): step, wall-clock and action budgets with hard caps."""
+    cfg = config.get("desktop_agent") if isinstance(config.get("desktop_agent"), dict) else {}
+
+    def bounded(key, default, low, high):
+        try:
+            return min(high, max(low, int(cfg.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "max_steps": bounded("max_steps", 8, 1, 16),
+        "max_seconds": bounded("max_seconds", 180, 10, 600),
+        "max_actions": bounded("max_actions", 24, 1, 64),
+    }
+
+
+async def _screenshot_message(agent, turn):
+    """Screenshots reach the brain only as an image message (or a vision caption), never as tool text."""
+    from langchain_core.messages import HumanMessage
+
+    images, turn.images = turn.images, []
+    label = "[PC SCREENSHOT] Latest screenshot from the user's PC; coordinates for client_input are pixels of this image."
+    try:
+        if agent._uses_brain_native_vision():
+            return agent._make_human_turn(label, images[-1:])
+        if getattr(agent, "llm_vision", None) is not None:
+            caption = await agent._caption_vision_images(label, images[-1:])
+            return HumanMessage(content=label + "\n[VISION SUMMARY]\n" + str(caption or "")[:4000])
+    except Exception as exc:
+        logger.warning("Desktop screenshot not delivered to brain: %s", type(exc).__name__)
+    return HumanMessage(content=label + "\n(The brain model cannot see images in this configuration; "
+                                        "do not guess coordinates.)")
+
+
+def _record_loop(steps, started, reason, turn):
+    from core.agent.model_trace import ACTIVE_TRACE
+
+    trace = ACTIVE_TRACE.get()
+    if trace is None:
+        return
+    trace.agent_loop = {
+        "steps": steps,
+        "elapsed_ms": round((time.monotonic() - started) * 1000),
+        "stop_reason": reason,
+        "actions": turn.actions if turn else 0,
+        "outcome_unknown": bool(turn and turn.outcome_unknown),
+    }

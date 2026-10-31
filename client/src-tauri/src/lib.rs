@@ -121,7 +121,7 @@ fn load_settings(state: State<'_, Desktop>) -> Result<Value, String> {
     let s = state.settings.lock().map_err(lock_error)?;
     let recoveries = state.recoveries.lock().map_err(lock_error)?.clone();
     Ok(
-        json!({"settings":*s,"data_root":state.root,"platform":std::env::consts::OS,"global_shortcuts":state.shortcuts.load(Ordering::SeqCst),"hotkeys_available":state.hotkey_backend.load(Ordering::SeqCst),"pc_access_available":!state.screen_locked.load(Ordering::SeqCst),"recoveries":recoveries}),
+        json!({"settings":*s,"data_root":state.root,"platform":std::env::consts::OS,"global_shortcuts":state.shortcuts.load(Ordering::SeqCst),"hotkeys_available":state.hotkey_backend.load(Ordering::SeqCst),"pc_access_available":!state.screen_locked.load(Ordering::SeqCst),"recoveries":recoveries,"screen_backend":screen::screen_available(),"input_backend":screen::input_available()}),
     )
 }
 #[tauri::command]

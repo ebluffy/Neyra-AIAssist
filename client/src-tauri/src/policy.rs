@@ -180,23 +180,25 @@ pub fn validate(
     }
     let args = call.arguments.as_object().ok_or("Неверные параметры")?;
     let (required, optional): (&[&str], &[&str]) = match call.tool.as_str() {
-        "client.open_url" => (&["url"], &[]),
-        "client.search_web" => (&["query"], &[]),
-        "client.open_app" => (&["path"], &[]),
-        "client.focus_window" | "client.close_window" => (&["window"], &[]),
-        "client.media" => (&["action"], &[]),
-        "client.volume" => (&["action"], &[]),
-        "client.list_windows" | "client.list_apps" => (&[], &[]),
+        "client.open_url" => (&["url"], &[] as &[&str]),
+        "client.search_web" => (&["query"], &[] as &[&str]),
+        "client.open_app" => (&["path"], &[] as &[&str]),
+        "client.focus_window" | "client.close_window" => (&["window"], &[] as &[&str]),
+        "client.media" | "client.volume" => (&["action"], &[] as &[&str]),
+        "client.list_windows" | "client.list_apps" => (&[] as &[&str], &[] as &[&str]),
         "client.shell_exec" => (&["program"], &["args", "cwd", "env", "timeout_ms"]),
-        "client.fs_list" => (&["path"], &[]),
+        "client.fs_list" => (&["path"], &[] as &[&str]),
         "client.fs_read" => (&["path"], &["offset", "max_bytes"]),
         "client.fs_search" => (&["path"], &["name", "content"]),
-        "client.fs_write" => (&["path", "content", "mode"], &[]),
-        "client.fs_mkdir" => (&["path"], &[]),
-        "client.fs_move" => (&["from", "to"], &[]),
-        "client.screenshot" => (&[], &["window"]),
+        "client.fs_write" => (&["path", "content", "mode"], &[] as &[&str]),
+        "client.fs_mkdir" => (&["path"], &[] as &[&str]),
+        "client.fs_move" => (&["from", "to"], &[] as &[&str]),
+        "client.screenshot" => (&[] as &[&str], &["window"]),
         "client.input" => (&["steps"], &["screenshot_id"]),
-        _ => return Err("Инструмент недоступен".into()),
+        other => {
+            let keys = tool_keys(other).ok_or("Инструмент недоступен")?;
+            (keys, &[] as &[&str])
+        }
     };
     if args
         .keys()
