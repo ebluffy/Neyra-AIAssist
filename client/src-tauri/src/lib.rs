@@ -926,8 +926,33 @@ const POWERFUL: &[&str] = &[
     "client.input",
 ];
 
+const TRAY_ICON: &[u8] = include_bytes!("../icons/icon.png");
+const TRAY_ICON_ACTIVE: &[u8] = include_bytes!("../icons/tray-active.png");
+
+fn tray_icon(active: bool) -> Result<tauri::image::Image<'static>, String> {
+    let bytes = if active { TRAY_ICON_ACTIVE } else { TRAY_ICON };
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().map_err(|_| "Неверный значок")?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buffer)
+        .map_err(|_| "Неверный значок")?;
+    if info.bit_depth != png::BitDepth::Eight || info.color_type != png::ColorType::Rgba {
+        return Err("Значок трея должен быть PNG RGBA".into());
+    }
+    buffer.truncate(info.buffer_size());
+    Ok(tauri::image::Image::new_owned(
+        buffer,
+        info.width,
+        info.height,
+    ))
+}
+
 fn set_tray_activity(app: &tauri::AppHandle, active: bool) {
     if let Some(tray) = app.tray_by_id("main") {
+        if let Ok(icon) = tray_icon(active) {
+            let _ = tray.set_icon(Some(icon));
+        }
         let label = if active {
             "Нейра управляет ПК"
         } else {
@@ -1485,6 +1510,17 @@ fn monitor_session(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn active_tray_icon_carries_a_red_mark() {
+        assert_ne!(TRAY_ICON, TRAY_ICON_ACTIVE);
+        let idle = tray_icon(false).unwrap();
+        let active = tray_icon(true).unwrap();
+        assert_eq!(idle.width(), active.width());
+        assert_eq!(idle.height(), active.height());
+        let red = |px: &[u8; 4]| px[0] > 180 && px[1] < 80 && px[2] < 80 && px[3] > 200;
+        assert!(active.rgba().as_chunks::<4>().0.iter().any(red));
+        assert!(!idle.rgba().as_chunks::<4>().0.iter().any(red));
+    }
     #[test]
     fn server_profile_retains_proxy_prefix_and_rejects_credentials() {
         let mut p = Profile {
