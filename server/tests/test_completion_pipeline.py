@@ -191,15 +191,19 @@ def test_memory_layer_routes_require_maint_and_show_actual_scoped_data(tmp_path)
 def test_reflection_does_not_resolve_ambiguous_display_names(tmp_path):
     from core.reflection.engine import ReflectionEngine
     agent = offline_agent(tmp_path)
-    asyncio.run(agent.chat("first", username="same", discord_user_id="123"))
-    asyncio.run(agent.chat("second", username="same", discord_user_id="456"))
+    statement = "Я работаю разработчиком и изучаю Python."
+    asyncio.run(agent.chat(statement, username="same", discord_user_id="123"))
+    asyncio.run(agent.chat(statement, username="same", discord_user_id="456"))
     engine = ReflectionEngine.__new__(ReflectionEngine)
     engine.agent = agent
     people = agent.memory_hub.list_people()
     assert len(people) == 2
     engine._apply_reflection_result({"people_updates": [{"person_hint": "same", "fact": "Пользователь работает разработчиком и изучает Python."}]})
     assert not any(agent.memory_hub.list_person_facts(p["id"]) for p in people)
-    engine._apply_reflection_result({"people_updates": [{"person_hint": people[0]["id"], "fact": "Пользователь работает разработчиком и изучает Python."}]})
+    source = next(row for row in agent.memory_hub.list_chat() if row['role'] == 'user' and
+        agent.memory_hub.find_person('', discord_id=row['meta']['discord_id'])['id'] == people[0]['id'])
+    engine._apply_reflection_result({"people_updates": [{"person_hint": people[0]["id"], "fact": "Пользователь работает разработчиком и изучает Python.",
+        "source_message_id": source['id'], "evidence_quote": statement}]})
     assert len(agent.memory_hub.list_person_facts(people[0]["id"])) == 1
     assert agent.memory_hub.list_person_facts(people[1]["id"]) == []
     assert agent.memory_hub.list_diary_notes() == []

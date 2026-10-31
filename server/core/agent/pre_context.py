@@ -49,6 +49,7 @@ def build_pre_context(
     internal_user_id: str,
     user_message: str = "",
     channel_id: str | None = None,
+    shared_context: bool = False,
 ) -> str:
     """
     Build marked PRE-CONTEXT block or empty string if disabled / nothing to say.
@@ -87,7 +88,7 @@ def build_pre_context(
                 if diary:
                     parts.append("diary:\n" + _clip(diary, per))
 
-        if "wm" in sources:
+        if "wm" in sources and not shared_context:
             # MUST stay user-scoped
             wm = str(agent._read_working_memory_for_prompt(uid) or "").strip()
             if wm:
