@@ -9,6 +9,8 @@ INIT = r'''
 const callbacks = new Map(), listeners = new Map(); let next = 1;
 const profile = {id:'2eb0cd23-9508-44e1-b3ee-86ad429a5451',name:'Локальный стенд',url:'http://127.0.0.1:8787',session_id:'b3aef0b1-2ee1-4224-9888-1992bb964414'};
 let settings = {schema_version:2,audit_days:30,device_id:'c1554031-4193-4cf8-bfde-e64b858ee332',device_name:'Тестовый ПК',profiles:[profile],permissions:{enabled:false,allow_web:true,web_domains:[],system:true,apps:[],shell:false,files:false,fs_roots:[],screen:false,screen_auto:false,input:false},theme:'dark',graphics_mode:'auto',character_enabled:false,voice:{mode:'ptt',vad_sensitivity:0.5,end_silence_ms:700,wake_threshold:0.5,barge_in:'off'}};
+if(window.noProfile) settings.profiles=[];
+if(window.badSession) settings.profiles=[{...profile,session_id:'broken'}];
 window.testCalls=[];let store=[];
 window.emitNative=(name,payload)=>{for(const id of listeners.get(name)??[])callbacks.get(id)?.({event:name,id,payload});};
 window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener:(event,id)=>listeners.get(event)?.delete(id)};
@@ -412,5 +414,40 @@ with sync_playwright() as p:
         shoot(f'{theme}-settings')
         close_sheet(page)
     assert not errors, errors
+    fresh = browser.new_page(viewport={'width': 1100, 'height': 820})
+    fresh.add_init_script('window.noProfile=true;\n' + INIT)
+    fresh.goto('http://127.0.0.1:1420')
+    fresh.wait_for_load_state('networkidle')
+    expect(fresh.get_by_role('heading', name=re.compile(r'^Добр'))).to_be_visible()
+    fresh.wait_for_function("() => window.testCalls.some(c => c.cmd==='save_chats')")
+    menu(fresh, 'Сервер и устройства')
+    fresh.get_by_role('button', name='Добавить профиль', exact=True).click()
+    fresh.get_by_role('button', name='Проверить подключение', exact=True).click()
+    expect(fresh.get_by_text('Сервер доступен · API 1.1.0')).to_be_visible()
+    paired = fresh.evaluate("""() => {
+      const thread = window.testCalls.filter(c => c.cmd==='save_chats').at(-1).args.threads[0].sessionId;
+      const saved = window.testCalls.filter(c => c.cmd==='save_settings').at(-1).args.settings.profiles[0].session_id;
+      return {thread, saved};
+    }""")
+    assert paired['thread'] == paired['saved'], paired
+    fresh.close()
+    broken = browser.new_page(viewport={'width': 1100, 'height': 820})
+    broken.add_init_script('window.badSession=true;\n' + INIT)
+    broken.goto('http://127.0.0.1:1420')
+    broken.wait_for_load_state('networkidle')
+    expect(broken.get_by_role('heading', name=re.compile(r'^Добр'))).to_be_visible()
+    broken.wait_for_function("() => window.testCalls.some(c => c.cmd==='save_settings')")
+    menu(broken, 'Сервер и устройства')
+    broken.get_by_role('button', name='Подключить', exact=True).click()
+    expect(broken.get_by_role('button', name='Начать разговор')).to_be_disabled()
+    repaired = broken.evaluate("""() => {
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      const saves = window.testCalls.filter(c => c.cmd==='save_settings');
+      const thread = window.testCalls.filter(c => c.cmd==='save_chats').at(-1).args.threads[0].sessionId;
+      const session = saves.at(-1).args.settings.profiles[0].session_id;
+      return {thread, session, uuid: uuid.test(session), connected: window.testCalls.some(c => c.cmd==='connect'), broken: saves.some(c => c.args.settings.profiles.some(p => p.session_id==='broken'))};
+    }""")
+    assert repaired['uuid'] and repaired['thread'] == repaired['session'] and repaired['connected'] and not repaired['broken'], repaired
+    broken.close()
     browser.close()
 print('PASS: chat-first shell, gear sections, voice, permissions, commands, settings, three themes. Native boundary simulated.')

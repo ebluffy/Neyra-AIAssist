@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { isUuid, nextId, sessionOrNew, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
+import { ensureSessionId, firstServerSession, isUuid, nextId, profileSessionRepair, sessionOrNew, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
 import { type DraftEvent, type RunEvent, describeRun } from './commands';
 import { type SheetId, themeId } from './theme';
 import { acceptLiveRun, conversionNotice, defaultVoice, formatError, meterLevel, unwrapApi, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
@@ -73,10 +73,8 @@ export function useDesktop() {
 
   useEffect(() => {
     void invoke<{ settings: Settings; data_root: string; platform?: string; version?: string; global_shortcuts: boolean; pc_access_available: boolean; recoveries?: Recovery[]; screen_backend?: boolean; input_backend?: boolean }>('load_settings').then(async data => {
-      setSettings(data.settings); setRoot(data.data_root); setPlatform(data.platform ?? ''); setAppVersion(data.version || '0.1.0'); setShortcuts(data.global_shortcuts); setPcAvailable(data.pc_access_available); setRecoveries(data.recoveries ?? []);
+      setRoot(data.data_root); setPlatform(data.platform ?? ''); setAppVersion(data.version || '0.1.0'); setShortcuts(data.global_shortcuts); setPcAvailable(data.pc_access_available); setRecoveries(data.recoveries ?? []);
       setBackends({ screen: !!data.screen_backend, input: !!data.input_backend });
-      const first = data.settings.profiles[0]?.id ?? '';
-      setProfileId(first);
       let stored: ChatThread[] = [];
       try {
         const rows = await invoke<ChatThread[] | { threads?: ChatThread[]; recovery?: Recovery }>('load_chats');
@@ -87,7 +85,18 @@ export function useDesktop() {
         }
         chatsReady.current = true;
       } catch (reason) { setError(formatError(reason)); }
-      const sessionId = sessionOrNew(data.settings.profiles[0]?.session_id, stored);
+      const selected = data.settings.profiles[0];
+      const sessionId = sessionOrNew(selected?.session_id, stored);
+      const repaired = profileSessionRepair(selected?.session_id, sessionId);
+      const nextSettings = repaired && selected
+        ? { ...data.settings, profiles: data.settings.profiles.map(item => item.id === selected.id ? { ...item, session_id: repaired } : item) }
+        : data.settings;
+      if (repaired) {
+        try { await invoke('save_settings', { settings: nextSettings }); }
+        catch (reason) { setError(formatError(reason)); }
+      }
+      setSettings(nextSettings);
+      setProfileId(selected?.id ?? '');
       const match = stored.find(item => item.sessionId === sessionId);
       const thread = match ?? { id: nextId(), title: 'Новый чат', sessionId, updated: Date.now(), messages: [] as ChatMessage[] };
       const list = match ? stored : [thread, ...stored].slice(0, 30);
@@ -235,9 +244,16 @@ export function useDesktop() {
     else { muteHold.current = true; await invoke('live_stop'); setMuted(true); setMicLevel(0); postNotice('Микрофон на паузе'); }
   });
   const endLive = () => run(async () => { muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
+  const settingsForServer = (current: Settings): Settings => {
+    if (!profile || isUuid(profile.session_id)) return current;
+    const active = threads.find(item => item.id === activeId);
+    const sessionId = ensureSessionId(active?.sessionId);
+    if (active && active.sessionId !== sessionId) setThreads(list => list.map(item => item.id === active.id ? { ...item, sessionId } : item));
+    return { ...current, profiles: current.profiles.map(item => item.id === profile.id ? { ...item, session_id: sessionId } : item) };
+  };
   const check = () => run(async () => {
     if (!settings || !profile || !validServerUrl(profile.url)) throw 'Укажите HTTPS-адрес или HTTP localhost.';
-    await save(settings);
+    await save(settingsForServer(settings));
     if (token) { await invoke('store_token', { profileId, token }); setToken(''); }
     const [health, schema] = await Promise.all([request<unknown>('/v1/health'), invoke<{ info: { version: string } }>('api', { profileId, path: '/openapi.json', method: 'GET' })]);
     if (!schema.info.version.startsWith('1.')) throw 'Несовместимая версия API. Требуется 1.x.';
@@ -245,7 +261,7 @@ export function useDesktop() {
   });
   const connect = () => run(async () => {
     if (!settings || !profile || !validServerUrl(profile.url)) throw 'Сначала настройте сервер.';
-    await save(settings);
+    await save(settingsForServer(settings));
     if (token) { await invoke('store_token', { profileId, token }); setToken(''); }
     await invoke('connect', { profileId }); setConnected(true); setMessages([]);
     await invoke('bridge_message', { kind: 'history' }); await invoke('bridge_message', { kind: 'devices' });
@@ -318,13 +334,22 @@ export function useDesktop() {
     const switched = switchThread(threads, activeId, messages, id);
     if (!switched) { setHistoryOpen(false); return; }
     const target = switched.threads.find(item => item.id === switched.activeId);
-    if (target && isUuid(target.sessionId)) await switchSession(target.sessionId, target.messages.length > 0);
-    setThreads(switched.threads);
+    const sessionId = ensureSessionId(target?.sessionId);
+    const nextThreads = target && target.sessionId !== sessionId ? switched.threads.map(item => item.id === target.id ? { ...item, sessionId } : item) : switched.threads;
+    await switchSession(sessionId, target ? target.messages.length > 0 : true);
+    setThreads(nextThreads);
     setActiveId(switched.activeId);
     setMessages(switched.messages);
     setPartial(''); tokenBuffer.current = ''; setHistoryOpen(false);
   });
-  const addProfile = (created: Profile) => { if (!settings) return; setSettings({ ...settings, profiles: [...settings.profiles, created] }); setProfileId(created.id); };
+  const addProfile = (created: Profile) => {
+    if (!settings) return;
+    const active = threads.find(item => item.id === activeId);
+    const sessionId = firstServerSession(settings.profiles.length > 0, created.session_id, active?.sessionId);
+    if (settings.profiles.length === 0 && active && active.sessionId !== sessionId) setThreads(list => list.map(item => item.id === active.id ? { ...item, sessionId } : item));
+    setSettings({ ...settings, profiles: [...settings.profiles, { ...created, session_id: sessionId }] });
+    setProfileId(created.id);
+  };
   const chooseProfile = (id: string) => { setProfileId(id); setToken(''); setStatus(undefined); };
   const refreshStatus = () => run(async () => { const out = await request<unknown>('/v1/health'); setStatus(out); });
   const refreshPlugins = () => run(async () => { const out = await request<{ plugins?: Plugin[] }>('/v1/plugins'); setPlugins(Array.isArray(out?.plugins) ? out.plugins : []); });

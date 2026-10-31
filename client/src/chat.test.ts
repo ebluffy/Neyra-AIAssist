@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clock, composerSlot, daypart, sessionOrNew, switchThread, threadTitle, type ChatThread } from './chat';
+import { clock, composerSlot, daypart, ensureSessionId, firstServerSession, profileSessionRepair, sessionOrNew, switchThread, threadTitle, type ChatThread } from './chat';
 import { themeId } from './theme';
 
 describe('chat composer', () => {
@@ -33,6 +33,23 @@ describe('chat session', () => {
     const kept = '11111111-1111-4111-8111-111111111111';
     expect(sessionOrNew(undefined, [{ sessionId: kept }])).toBe(kept);
     expect(sessionOrNew(kept, [])).toBe(kept);
+  });
+  it('нет профиля → добавили сервер → id треда == profile.session_id', () => {
+    const threadSession = '11111111-1111-4111-8111-111111111111';
+    const created = '22222222-2222-4222-8222-222222222222';
+    expect(firstServerSession(false, created, threadSession)).toBe(threadSession);
+    expect(firstServerSession(true, created, threadSession)).toBe(created);
+    const fresh = firstServerSession(false, created, '');
+    expect(fresh).not.toBe(created);
+    expect(ensureSessionId(fresh)).toBe(fresh);
+  });
+  it('replaces a broken profile session with the chat session', () => {
+    const chosen = '11111111-1111-4111-8111-111111111111';
+    expect(profileSessionRepair('broken', chosen)).toBe(chosen);
+    expect(profileSessionRepair('', chosen)).toBe(chosen);
+    expect(profileSessionRepair(chosen, '22222222-2222-4222-8222-222222222222')).toBeNull();
+    expect(profileSessionRepair(undefined, chosen)).toBeNull();
+    expect(ensureSessionId('broken')).not.toBe('broken');
   });
 });
 

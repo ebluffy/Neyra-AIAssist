@@ -30,6 +30,22 @@ export function sessionOrNew(profileSession: string | undefined, stored: { sessi
   return stored.find(item => isUuid(item.sessionId))?.sessionId ?? crypto.randomUUID();
 }
 
+export function ensureSessionId(value: string | undefined): string {
+  return isUuid(value) ? value : crypto.randomUUID();
+}
+
+/** A profile with a broken session id must take the id the chat already uses. `null` means leave it. */
+export function profileSessionRepair(profileSession: string | undefined, chosen: string): string | null {
+  if (profileSession === undefined || isUuid(profileSession)) return null;
+  return chosen;
+}
+
+/** The first server joins the open thread. Later servers keep the id they were created with. */
+export function firstServerSession(hasProfiles: boolean, createdSession: string, activeSession: string | undefined): string {
+  if (hasProfiles) return createdSession;
+  return ensureSessionId(activeSession);
+}
+
 export function composerSlot(text: string): 'send' | 'live' {
   return text.trim() ? 'send' : 'live';
 }
