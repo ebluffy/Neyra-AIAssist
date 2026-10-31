@@ -528,6 +528,37 @@ class SqliteStore:
             )
             return [self._row_to_dict(r) for r in cur.fetchall()]
 
+    def list_visible_person_facts(
+        self, person_id: str, *, public_channel_id: Optional[str] = None,
+        private_owner_id: Optional[str] = None, owns_profile: bool = False,
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        """Apply response scope before LIMIT so invisible facts cannot crowd out visible ones."""
+        metadata = "CASE WHEN json_valid(meta) THEN meta ELSE '{}' END"
+        visibility = f"json_extract({metadata}, '$.visibility')"
+        owner = f"json_extract({metadata}, '$.owner_id')"
+        channel = f"json_extract({metadata}, '$.channel_id')"
+        clauses = [f"{visibility} = 'shared'"]
+        params: list[Any] = [person_id]
+        if public_channel_id:
+            clauses.append(f"({visibility} = 'channel' AND {channel} = ?)")
+            params.append(public_channel_id)
+        if private_owner_id:
+            clauses.append(f"{owner} = ?")
+            params.append(private_owner_id)
+            if owns_profile:
+                clauses.append(
+                    f"(({owner} IS NULL OR {owner} = '') AND "
+                    f"({visibility} IS NULL OR {visibility} IN ('private', 'channel')))"
+                )
+        params.append(max(1, min(int(limit), 200)))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM person_facts WHERE person_id = ? AND ("
+                + " OR ".join(clauses) + ") ORDER BY id DESC LIMIT ?", params,
+            ).fetchall()
+            return [self._row_to_dict(row) for row in rows]
+
     def delete_person_fact(self, person_id: str, fact_id: int) -> bool:
         with self._lock:
             cur = self._conn.execute(

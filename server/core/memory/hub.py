@@ -1025,21 +1025,18 @@ class MemoryHub:
         if not person:
             return ""
         accounts = self.sqlite.list_accounts_for_person(pid)
-        facts = self.sqlite.list_person_facts(pid, limit=80 if restrict_to_channel else 12)
         if restrict_to_channel:
             from core.runtime.identity import UnifiedIdentityMapper
             owns_profile = private_owner_id and any(
                 UnifiedIdentityMapper.resolve(a.get("platform"), a.get("platform_user_id")) == private_owner_id
                 for a in accounts
             )
-            def visible(row):
-                meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
-                visibility = meta.get("visibility")
-                return (visibility == "shared" or
-                        (visibility == "channel" and public_channel_id and meta.get("channel_id") == public_channel_id) or
-                        (private_owner_id and meta.get("owner_id") == private_owner_id) or
-                        (owns_profile and not meta.get("owner_id") and visibility in {None, "private", "channel"}))
-            facts = [f for f in facts if visible(f)][:12]
+            facts = self.sqlite.list_visible_person_facts(
+                pid, public_channel_id=public_channel_id, private_owner_id=private_owner_id,
+                owns_profile=bool(owns_profile), limit=12,
+            )
+        else:
+            facts = self.sqlite.list_person_facts(pid, limit=12)
         known = known_name_from_facts(facts)
         handle = ""
         display = str(person.get("display_name") or "").strip()

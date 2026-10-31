@@ -487,3 +487,53 @@ def test_legacy_channel_fact_visible_only_to_own_profile_in_private(hub):
         result = hub.get_person_summary(a['id'], restrict_to_channel=True,
             public_channel_id='dm', private_owner_id=owner)
         assert ('Legacy channel self fact sentinel' in result) is expected
+
+
+@pytest.mark.parametrize('scope', ['private', 'channel'])
+@pytest.mark.parametrize('reader', ['summary', 'tool', 'prompt'])
+def test_dossier_visibility_precedes_limit_with_many_foreign_facts(hub, scope, reader):
+    a, b = person(hub), person(hub, '456')
+    owner = UnifiedIdentityMapper.resolve_from_discord('123')
+    other = UnifiedIdentityMapper.resolve_from_discord('456')
+    hub.add_person_fact(a['id'], 'Older own channel X fact sentinel',
+        meta={'owner_id': owner, 'channel_id': 'channel-x', 'visibility': 'channel'})
+    for i in range(81):
+        hub.add_person_fact(a['id'], f'Foreign channel Y fact {i}',
+            meta={'owner_id': other, 'channel_id': 'channel-y', 'visibility': 'channel'})
+    channel = 'dm' if scope == 'private' else 'channel-x'
+    shared = scope == 'channel'
+    if reader == 'summary':
+        result = hub.get_person_summary(a['id'], restrict_to_channel=True,
+            public_channel_id=channel, private_owner_id=None if shared else owner)
+    elif reader == 'tool':
+        builtins.set_turn_memory_scope(user_id=owner, channel_id=channel, shared_channel=shared)
+        result = builtins.get_person_info.func(a['id'])
+    else:
+        result = split_people_context(hub, [], 'same', '123', channel,
+            memory_owner_id=owner, shared_context=shared)[0]
+    assert 'Older own channel X fact sentinel' in result
+    assert 'Foreign channel Y fact' not in result
+
+
+def test_visible_fact_query_keeps_limit_order_and_parameterized_scope(hub):
+    a, b = person(hub), person(hub, '456')
+    owner = UnifiedIdentityMapper.resolve_from_discord('123')
+    for i in range(15):
+        hub.add_person_fact(a['id'], f'Visible own note {i}',
+            meta={'owner_id': owner, 'visibility': 'private'})
+    hub.add_person_fact(b['id'], 'Different person sentinel', meta={'visibility': 'shared'})
+    rows = hub.sqlite.list_visible_person_facts(a['id'], private_owner_id=owner, owns_profile=True)
+    assert [row['fact'] for row in rows] == [f'Visible own note {i}' for i in range(14, 2, -1)]
+    assert hub.sqlite.list_visible_person_facts(a['id'], public_channel_id="x' OR 1=1 --") == []
+    assert hub.sqlite.list_visible_person_facts("x' OR 1=1 --", private_owner_id=owner) == []
+
+
+def test_visible_fact_query_handles_malformed_legacy_metadata_without_shared_leak(hub):
+    a = person(hub)
+    owner = UnifiedIdentityMapper.resolve_from_discord('123')
+    fact_id = hub.add_person_fact(a['id'], 'Legacy malformed metadata sentinel')
+    with hub.sqlite._lock:
+        hub.sqlite._conn.execute('UPDATE person_facts SET meta = ? WHERE id = ?', ('broken json', fact_id))
+    assert not hub.sqlite.list_visible_person_facts(a['id'], public_channel_id='shared')
+    rows = hub.sqlite.list_visible_person_facts(a['id'], private_owner_id=owner, owns_profile=True)
+    assert rows[0]['fact'] == 'Legacy malformed metadata sentinel'
