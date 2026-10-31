@@ -42,7 +42,7 @@ if(cmd==='command_run_phrase')return args.text==='привет'?{handled:false}:
 if(cmd==='draft_confirm'){store.push({file:'draft.yaml',command:{schema_version:1,name:'Режим игры',enabled:true,triggers:[{phrase:'режим игры'}],actions:[{tool:'client.open_app',arguments:{path:'/usr/bin/steam'}}],on_error:'stop',confirm:false,risk:'safe',speak:false}});return 'draft.yaml';}
 if(cmd==='draft_reject')return;
 if(cmd==='config_export')return {cancelled:false,commands:store.length,file:'neyra-config.json'};
-if(cmd==='import_pick')return {cancelled:false,items:[{name:'Новая',status:'new',error:null},{name:'Мой сайт',status:'conflict',error:null},{name:'Плохая',status:'invalid',error:'Инструмент «client.shell_exec» недоступен'}],settings:{theme:'light',graphics_mode:'auto',audit_days:30},permissions:{allow_web:true,system:true,web_domains:['example.com'],apps:2}};
+if(cmd==='import_pick')return {cancelled:false,items:[{name:'Новая',status:'new',error:null},{name:'Мой сайт',status:'conflict',error:null},{name:'Плохая',status:'invalid',error:'Инструмент «client.shell_exec» недоступен'}],settings:{theme:'light',graphics_mode:'auto',audit_days:30},permissions:{allow_web:true,system:true,web_domains:['example.com'],apps:['/usr/bin/firefox']}};
 if(cmd==='import_apply'){window.importArgs=args;return {report:{added:1,replaced:0,renamed:1,skipped:0},settings};}
 if(cmd==='import_cancel')return;
 if(cmd==='choose_data_root')return {cancelled:false,path:'/data/Neyra',restart_required:true};
@@ -200,6 +200,8 @@ with sync_playwright() as p:
     expect(page.get_by_role('group',name='Предпросмотр импорта')).to_contain_text('Конфликт имён')
     expect(page.get_by_role('group',name='Предпросмотр импорта')).to_contain_text('client.shell_exec')
     page.get_by_label('Применить разрешения из файла (главный выключатель не включится)').check()
+    expect(page.get_by_role('group',name='Предпросмотр импорта')).to_contain_text('example.com')
+    expect(page.get_by_role('group',name='Предпросмотр импорта')).to_contain_text('/usr/bin/firefox')
     page.get_by_role('button',name='Применить импорт').click()
     expect(page.get_by_text('Импорт завершён: новых 1, заменено 0, переименовано 1, пропущено 0.')).to_be_visible()
     assert page.evaluate('window.importArgs.conflict')=='rename' and page.evaluate('window.importArgs.includePermissions') is True

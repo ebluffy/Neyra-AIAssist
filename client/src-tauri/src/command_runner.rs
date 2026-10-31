@@ -250,21 +250,36 @@ fn describe(result: &Value) -> String {
     }
 }
 
+enum StepError {
+    Timeout,
+    Cancelled,
+}
+
+impl StepError {
+    fn message(&self) -> &'static str {
+        match self {
+            Self::Timeout => "Время ожидания шага истекло",
+            Self::Cancelled => "Остановлено",
+        }
+    }
+}
+
 async fn wait_for(
     rx: tokio::sync::oneshot::Receiver<Value>,
     cancel: &std::sync::atomic::AtomicBool,
-) -> Result<Value, String> {
+    timeout: Duration,
+) -> Result<Value, StepError> {
     let mut rx = rx;
     let started = Instant::now();
     loop {
         tokio::select! {
-            result = &mut rx => return result.map_err(|_| "Остановлено".to_string()),
+            result = &mut rx => return result.map_err(|_| StepError::Cancelled),
             _ = tokio::time::sleep(Duration::from_millis(100)) => {
                 if cancel.load(Ordering::SeqCst) {
-                    return Err("Остановлено".into());
+                    return Err(StepError::Cancelled);
                 }
-                if started.elapsed() > STEP_TIMEOUT {
-                    return Err("Время ожидания шага истекло".into());
+                if started.elapsed() > timeout {
+                    return Err(StepError::Timeout);
                 }
             }
         }
@@ -311,17 +326,17 @@ async fn step(
     tool: &str,
     arguments: Value,
     cancel: &std::sync::atomic::AtomicBool,
-) -> Result<Value, String> {
+) -> Result<Value, StepError> {
     let call = commands::local_call(device, tool, arguments);
     let call_id = call.call_id.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.state::<Desktop>()
         .waiters
         .lock()
-        .map_err(lock_error)?
+        .map_err(|_| StepError::Cancelled)?
         .insert(call_id.clone(), tx);
     dispatch(app, call);
-    let outcome = wait_for(rx, cancel).await;
+    let outcome = wait_for(rx, cancel, STEP_TIMEOUT).await;
     if outcome.is_err() {
         // The step is over: drop the waiter and the confirmation card so a late reply cannot land.
         abandon_local_call(app, &call_id);
@@ -338,10 +353,6 @@ fn abandon_local_call(app: &tauri::AppHandle, call_id: &str) {
         pending.remove(call_id);
     }
     let _ = app.emit("host-confirm-closed", json!({"call_id": call_id}));
-}
-
-fn step_failed(message: &str) -> bool {
-    message.contains("истекло")
 }
 
 async fn run(
@@ -419,7 +430,7 @@ async fn run(
                 "",
             );
         }
-        match wait_for(rx, &cancel).await {
+        match wait_for(rx, &cancel, STEP_TIMEOUT).await {
             Ok(result) if result["status"] == "ok" => {}
             Ok(result) => {
                 return finish(
@@ -432,17 +443,21 @@ async fn run(
                     "",
                 )
             }
-            Err(message) => {
+            Err(error) => {
                 abandon_local_call(app, &call.call_id);
                 return finish(
                     app,
                     &run_id,
                     command,
-                    if step_failed(&message) { "failed" } else { "cancelled" },
-                    &message,
+                    if matches!(error, StepError::Timeout) {
+                        "failed"
+                    } else {
+                        "cancelled"
+                    },
+                    error.message(),
                     source,
                     "",
-                )
+                );
             }
         }
     }
@@ -472,13 +487,17 @@ async fn run(
                     return finish(app, &run_id, command, "failed", &message, source, "");
                 }
             }
-            Err(message) => {
+            Err(error) => {
                 return finish(
                     app,
                     &run_id,
                     command,
-                    if step_failed(&message) { "failed" } else { "cancelled" },
-                    &message,
+                    if matches!(error, StepError::Timeout) {
+                        "failed"
+                    } else {
+                        "cancelled"
+                    },
+                    error.message(),
                     source,
                     "",
                 )
@@ -857,11 +876,23 @@ pub async fn import_pick(app: tauri::AppHandle) -> Result<Value, String> {
         .entries()
         .to_vec();
     let (items, valid) = commands::plan_import(&bundle, &entries);
+    let current = state
+        .settings
+        .lock()
+        .map_err(lock_error)?
+        .permissions
+        .clone();
+    let sanitized = sanitize_permissions(&current, &bundle.permissions);
     let preview = json!({
         "cancelled": false,
         "items": items,
         "settings": bundle.settings,
-        "permissions": {"allow_web":bundle.permissions.allow_web,"system":bundle.permissions.system,"web_domains":bundle.permissions.web_domains,"apps":bundle.permissions.apps.len()},
+        "permissions": {
+            "allow_web": sanitized.allow_web,
+            "system": sanitized.system,
+            "web_domains": sanitized.web_domains,
+            "apps": sanitized.apps,
+        },
     });
     *state.pending_import.lock().map_err(lock_error)? = Some(PendingImport {
         bundle,
@@ -874,6 +905,9 @@ pub async fn import_pick(app: tauri::AppHandle) -> Result<Value, String> {
 /// Imported web and system flags can only stay the same or become narrower (`current && imported`).
 /// The master switch is never turned on from a file. Contour 3–4 (shell, files, folders, screen, input)
 /// are not imported: they stay exactly as they are on this PC.
+/// `apps` and `web_domains` come from the file and can grow: a program is kept only when it exists
+/// here and is not a secret, and a domain is kept only when it is a plain host. The import preview
+/// lists those paths and domains so the user sees exactly what will be added.
 pub fn sanitize_permissions(
     current: &storage::Permissions,
     imported: &storage::Permissions,
@@ -1102,10 +1136,32 @@ mod tests {
             system: false,
             ..Default::default()
         };
-        let out = sanitize_permissions(&storage::Permissions::default(), &imported);
+        let current = storage::Permissions::default();
+        assert!(current.apps.is_empty() && current.web_domains.is_empty());
+        let out = sanitize_permissions(&current, &imported);
+        // These two fields may grow beyond what this PC already allows.
         assert_eq!(out.apps, vec![real]);
         assert_eq!(out.web_domains, vec!["example.com".to_string()]);
         assert!(!out.allow_web && !out.system);
+    }
+    #[tokio::test]
+    async fn step_timeout_is_its_own_error() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let err = wait_for(rx, &cancel, Duration::from_millis(150))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StepError::Timeout));
+        assert_eq!(err.message(), "Время ожидания шага истекло");
+        drop(tx);
+        let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        let err = wait_for(rx, &cancel, Duration::from_secs(30))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StepError::Cancelled));
+        assert_eq!(err.message(), "Остановлено");
+        drop(tx);
     }
     #[test]
     fn failure_messages_are_specific() {

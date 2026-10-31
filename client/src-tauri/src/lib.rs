@@ -1,8 +1,8 @@
 mod audio;
 mod audit;
+mod character;
 mod command_runner;
 mod commands;
-mod character;
 mod files;
 mod host;
 mod logs;
@@ -11,9 +11,9 @@ mod redact;
 mod screen;
 mod shell;
 mod storage;
+mod updater;
 mod voice;
 mod wake;
-mod updater;
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -152,7 +152,9 @@ pub(crate) fn apply_settings(
     settings: Settings,
 ) -> Result<(), String> {
     if state.relocated.load(Ordering::SeqCst) {
-        return Err("Папка данных сменится после перезапуска. До перезапуска сохранение отключено.".into());
+        return Err(
+            "Папка данных сменится после перезапуска. До перезапуска сохранение отключено.".into(),
+        );
     }
     let old = state.settings.lock().map_err(lock_error)?.clone();
     if settings.schema_version != storage::SETTINGS_VERSION
@@ -171,7 +173,7 @@ pub(crate) fn apply_settings(
     }
     settings.voice.validate()?;
     if settings.voice != old.voice {
-        live_stop_inner(&state)?;
+        live_stop_inner(state)?;
     }
     if settings.permissions.web_domains.len() > 50
         || settings.permissions.apps.len() > 200
@@ -203,14 +205,14 @@ pub(crate) fn apply_settings(
     let screen_changed = (old.permissions.screen, old.permissions.input)
         != (settings.permissions.screen, settings.permissions.input);
     storage::save(&state.root, &settings)?;
-    character::on_settings_saved(&app, settings.character_enabled);
+    character::on_settings_saved(app, settings.character_enabled);
     *state.settings.lock().map_err(lock_error)? = settings;
     if changed {
-        stop_inner(&state)?;
+        stop_inner(state)?;
         if screen_changed {
             screen::reset();
         }
-        send_capabilities(&state);
+        send_capabilities(state);
     }
     Ok(())
 }
@@ -902,11 +904,27 @@ const POWERFUL: &[&str] = &[
 
 fn set_tray_activity(app: &tauri::AppHandle, active: bool) {
     if let Some(tray) = app.tray_by_id("main") {
+        let label = if active {
+            "Нейра управляет ПК"
+        } else {
+            "Neyra"
+        };
         let _ = tray.set_tooltip(Some(if active {
-            "Neyra управляет ПК — Stop в меню"
+            "Нейра управляет ПК — Stop в меню"
         } else {
             "Neyra"
         }));
+        // Title sits next to the icon. The menu row stays visible when the window is hidden.
+        let _ = tray.set_title(Some(if active { label } else { "" }));
+        let status = tauri::menu::MenuItem::with_id(app, "activity", label, false, None::<&str>);
+        let open = tauri::menu::MenuItem::with_id(app, "open", "Открыть Neyra", true, None::<&str>);
+        let stop = tauri::menu::MenuItem::with_id(app, "stop", "Stop", true, None::<&str>);
+        let quit = tauri::menu::MenuItem::with_id(app, "quit", "Выйти", true, None::<&str>);
+        if let (Ok(status), Ok(open), Ok(stop), Ok(quit)) = (status, open, stop, quit) {
+            if let Ok(menu) = tauri::menu::Menu::with_items(app, &[&status, &open, &stop, &quit]) {
+                let _ = tray.set_menu(Some(menu));
+            }
+        }
     }
 }
 
@@ -1206,11 +1224,13 @@ pub fn run() {
             setup_shortcuts(app.handle());
             command_runner::start_watcher(app.handle().clone());
             screen::start_probe();
+            let activity =
+                tauri::menu::MenuItem::with_id(app, "activity", "Neyra", false, None::<&str>)?;
             let open =
                 tauri::menu::MenuItem::with_id(app, "open", "Открыть Neyra", true, None::<&str>)?;
             let stop = tauri::menu::MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
             let quit = tauri::menu::MenuItem::with_id(app, "quit", "Выйти", true, None::<&str>)?;
-            let menu = tauri::menu::Menu::with_items(app, &[&open, &stop, &quit])?;
+            let menu = tauri::menu::Menu::with_items(app, &[&activity, &open, &stop, &quit])?;
             tauri::tray::TrayIconBuilder::with_id("main")
                 .icon(
                     app.default_window_icon()

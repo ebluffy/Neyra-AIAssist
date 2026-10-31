@@ -1217,7 +1217,9 @@ mod x11 {
                 return Err("X11: неподдерживаемый формат экрана".into());
             }
             let rgb = image.data[..w * h * 4]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .flat_map(|p| [p[2], p[1], p[0]])
                 .collect();
             Ok(Frame {

@@ -72,19 +72,18 @@ mod tests {
         let quoted = "quoted value";
         let key_body = format!("{}{}", "b3BlbnNzaC1r", "ZXktdjEAAAAA");
         let jwt_sig = format!("{}{}", "c2lnbmF0", "dXJlLXZhbHVl");
-        let jwt = format!(
-            "{}.{}.{}",
-            format!("{}{}", "eyJ", "hbGciOiJIUzI1NiJ9"),
-            format!("{}{}", "eyJ", "zdWIiOiIxMjM0NTY3ODkwIn0"),
-            &jwt_sig
-        );
+        let jwt_header = format!("{}{}", "eyJ", "hbGciOiJIUzI1NiJ9");
+        let jwt_payload = format!("{}{}", "eyJ", "zdWIiOiIxMjM0NTY3ODkwIn0");
+        let jwt = format!("{jwt_header}.{jwt_payload}.{jwt_sig}");
         let header = format!("-----BEGIN {}-----", "OPENSSH PRIVATE KEY");
         let footer = format!("-----END {}-----", "OPENSSH PRIVATE KEY");
         let input = format!(
             "AWS={aws}\ngh={gh}\nopenai {openai}\nAuthorization: Bearer {bearer}\nDB_PASSWORD={password}\napi_key: \"{quoted}\"\nurl=https://user:pa55@example.com/x\n{header}\n{key_body}\n{footer}\njwt {jwt}"
         );
         let out = redact(&input);
-        for leaked in [&aws, &gh, &openai, &bearer, &password, quoted, "pa55", &key_body, &jwt_sig] {
+        for leaked in [
+            &aws, &gh, &openai, &bearer, &password, quoted, "pa55", &key_body, &jwt_sig,
+        ] {
             assert!(!out.contains(leaked), "leaked {leaked}: {out}");
         }
         assert!(out.contains("DB_PASSWORD=[REDACTED]"));

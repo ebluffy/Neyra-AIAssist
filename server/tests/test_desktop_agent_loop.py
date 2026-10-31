@@ -204,6 +204,35 @@ def test_step_budget_stops_an_endless_tool_loop():
     assert sum(p['type'] == 'client_tool_call' for p in client.packets) == 3
 
 
+def test_slow_model_invoke_is_cut_by_the_wall_clock(monkeypatch):
+    recorded = []
+
+    async def expire(awaitable, timeout):
+        recorded.append(timeout)
+        awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(brain_phase.asyncio, 'wait_for', expire)
+    registry, client, m = connect()
+
+    class Hung(ScriptedBrain):
+        def bind_tools(self, tools):
+            self.bindings.append({t.name for t in tools})
+
+            class Bound:
+                async def ainvoke(self, messages, **kwargs):
+                    await asyncio.sleep(60)
+                    return AIMessage(content='late')
+
+            return Bound()
+
+    agent = FakeAgent(Hung([]), {'mcp_client': {'llm_tool_calls': False}, 'desktop_agent': {'max_seconds': 30, 'max_steps': 4}})
+    out = json.loads(run_turn(agent, registry, m))
+    assert out['stop_reason'] == 'wall_clock_budget'
+    assert recorded and recorded[0] >= 1
+    assert not any(p.get('type') == 'client_tool_call' for p in client.packets)
+
+
 def test_wall_clock_budget_stops_the_loop(monkeypatch):
     registry, client, m = connect()
     clock = [1000.0]

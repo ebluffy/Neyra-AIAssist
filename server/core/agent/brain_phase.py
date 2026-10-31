@@ -93,7 +93,6 @@ async def run_brain_tool_phase(
         max_tool_steps = loop_limits["max_steps"]
     desktop_turn = DesktopTurn(max_actions=loop_limits["max_actions"]) if loop_limits else None
     turn_token = DESKTOP_TURN.set(desktop_turn)
-    cancel_check = mcp_cfg.get("llm_tool_cancel_check")
 
     brain_llm = agent.llm_brain
     if lyrics_mode:
@@ -120,8 +119,6 @@ async def run_brain_tool_phase(
         stop_reason = None
         started = time.monotonic()
         while step < max_tool_steps:
-            if callable(cancel_check) and cancel_check():
-                return json.dumps({"tool_cancelled": True, "steps": step}, ensure_ascii=False)
             if loop_limits and time.monotonic() - started > loop_limits["max_seconds"]:
                 stop_reason = "wall_clock_budget"
                 break
@@ -135,7 +132,18 @@ async def run_brain_tool_phase(
                         stop_reason = "tools_revoked"
                         break
                     bound = brain_llm.bind_tools(list(turn_tools.values()))
-            response = await invoke(agent, bound, messages, lane="brain", purpose="tools", images=bool(vision_images), invoker=agent._ainvoke_text_with_fallback)
+            try:
+                if loop_limits:
+                    remaining = loop_limits["max_seconds"] - (time.monotonic() - started)
+                    response = await asyncio.wait_for(
+                        invoke(agent, bound, messages, lane="brain", purpose="tools", images=bool(vision_images), invoker=agent._ainvoke_text_with_fallback),
+                        max(1.0, remaining),
+                    )
+                else:
+                    response = await invoke(agent, bound, messages, lane="brain", purpose="tools", images=bool(vision_images), invoker=agent._ainvoke_text_with_fallback)
+            except TimeoutError:
+                stop_reason = "wall_clock_budget"
+                break
             agent._log_model_route(agent._extract_model_name(response), lane="brain")
             tcalls = getattr(response, "tool_calls", None) if isinstance(response, LC_AIMessage) else None
             if not tcalls:

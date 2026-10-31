@@ -81,6 +81,8 @@ const ENV_DENY: &[&str] = &[
 
 pub struct Plan {
     pub program: PathBuf,
+    /// Name the caller asked for. Multicall binaries (busybox) read this, not the canonical path.
+    pub argv0: String,
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
@@ -135,6 +137,14 @@ fn resolve_program(raw: &str) -> Result<PathBuf, String> {
         return Err("Программа недоступна".into());
     }
     Ok(real)
+}
+
+fn requested_name(raw: &str) -> String {
+    raw.rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(raw)
+        .to_string()
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -253,6 +263,7 @@ pub fn plan(args: &Map<String, Value>, scope: &Scope) -> Result<Plan, String> {
     };
     Ok(Plan {
         program,
+        argv0: requested_name(program_raw),
         args: argv,
         cwd,
         env,
@@ -297,8 +308,21 @@ fn reader<R: Read + Send + 'static>(stream: R) -> std::thread::JoinHandle<(Vec<u
     })
 }
 
+fn set_argv0(command: &mut Command, argv0: &str) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.arg0(argv0);
+    }
+    // Windows CreateProcess has no separate argv0; multicall applets are a Unix problem.
+    #[cfg(not(unix))]
+    let _ = (command, argv0);
+}
+
 pub fn run(plan: &Plan, cancel: &AtomicBool) -> Result<Value, String> {
     let mut command = Command::new(&plan.program);
+    // Exec the real file, but keep the name the user typed so busybox-style applets still work.
+    set_argv0(&mut command, &plan.argv0);
     child_environment(&mut command);
     command
         .args(&plan.args)
@@ -536,6 +560,22 @@ mod tests {
         assert!(!out["stdout"].as_str().unwrap().contains(&marker));
         assert!(out["stdout"].as_str().unwrap().len() <= STDOUT_RETURN + 32);
         assert_eq!(out["stderr"].as_str().unwrap().trim(), "err");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn argv0_is_the_requested_name_not_the_canonical_path() {
+        let (scope, base) = scope();
+        let p = plan(
+            &args(json!({"program":"sh","args":["-c","printf %s \"$0\""]})),
+            &scope,
+        )
+        .unwrap();
+        assert_eq!(p.argv0, "sh");
+        assert_ne!(p.program.as_os_str(), "sh");
+        let out = run(&p, &AtomicBool::new(false)).unwrap();
+        assert_eq!(out["stdout"].as_str().unwrap(), "sh");
         let _ = std::fs::remove_dir_all(base);
     }
 
