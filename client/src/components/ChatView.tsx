@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Copy, RotateCcw, Volume2 } from 'lucide-react';
 import { clock, type ChatMessage } from '../chat';
 import { Markdown } from '../markdown';
@@ -7,6 +7,7 @@ import { VoiceOrb } from './VoiceOrb';
 interface Props {
   messages: ChatMessage[];
   partial: string;
+  thinking: boolean;
   onCopy: (value: string) => void;
   onSpeak: (value: string) => void;
   onRepeat: (value: string) => void;
@@ -14,31 +15,36 @@ interface Props {
   voiceBusy: boolean;
 }
 
-function Arriving({ text, children }: { text: string; children: ReactNode }) {
-  const node = useRef<HTMLDivElement>(null);
+function StreamingBody({ text }: { text: string }) {
+  const [settled, setSettled] = useState('');
+  const prefix = text.startsWith(settled);
+  const head = prefix ? settled : text;
+  const added = prefix ? text.slice(settled.length) : '';
   useEffect(() => {
-    const box = node.current;
-    if (!box || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    box.getAnimations().forEach(item => item.cancel());
-    box.animate([{ opacity: 0.55 }, { opacity: 1 }], { duration: 180, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
-  }, [text]);
-  return <div ref={node}>{children}</div>;
+    const delay = window.matchMedia('(prefers-reduced-motion: reduce)').matches || !text.startsWith(settled) ? 0 : 160;
+    if (settled === text) return;
+    const timer = window.setTimeout(() => setSettled(text), delay);
+    return () => window.clearTimeout(timer);
+  }, [text, settled]);
+  const plain = added.length > 0 && !/[`*#|[\]>]/.test(added);
+  if (!plain) return <Markdown text={text} />;
+  return <>{head && <Markdown text={head} />}<span className="arriving">{added}</span></>;
 }
 
-export function ChatView({ messages, partial, onCopy, onSpeak, onRepeat, turnBusy, voiceBusy }: Props) {
+export function ChatView({ messages, partial, thinking, onCopy, onSpeak, onRepeat, turnBusy, voiceBusy }: Props) {
   const lastAssistant = [...messages].reverse().find(item => item.role === 'assistant' && item.content)?.id;
   const panel = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   useEffect(() => {
     const box = panel.current;
     if (box && follow.current) box.scrollTop = box.scrollHeight;
-  }, [messages, partial]);
+  }, [messages, partial, thinking]);
   return <div className="feed" ref={panel} aria-label="История чата" onScroll={event => { const box = event.currentTarget; follow.current = box.scrollHeight - box.scrollTop - box.clientHeight < 60; }}>
     {messages.map((message, index) => {
       const previousUser = message.role === 'assistant' ? [...messages.slice(0, index)].reverse().find(item => item.role === 'user' && item.content.trim()) : undefined;
       const continued = index > 0 && messages[index - 1].role === message.role;
       return <article key={message.id} className={`msg ${message.role}${message.kind === 'voice' ? ' voice' : ''}${continued ? ' cont' : ''}${message.id === lastAssistant ? ' is-last' : ''}`}>
-        {message.role === 'assistant' && <span className="avatar"><VoiceOrb state="idle" level={0.22} pip /></span>}
+        {message.role === 'assistant' && <span className="avatar">{!continued && <VoiceOrb state="idle" level={0} pip />}</span>}
         <div className="msg-body">
           {message.role === 'user' && message.kind === 'voice' && message.audioUrl && <audio controls preload="none" src={message.audioUrl} aria-label="Голосовое сообщение" />}
           {message.role === 'user' && message.kind === 'voice' && message.durationMs !== undefined && <span className="timer">{clock(message.durationMs)}</span>}
@@ -51,10 +57,14 @@ export function ChatView({ messages, partial, onCopy, onSpeak, onRepeat, turnBus
         </div>
       </article>;
     })}
-    {partial && <article className="msg assistant is-streaming" aria-live="polite">
-      <span className="avatar"><VoiceOrb state="thinking" level={0.55} pip /></span>
+    {thinking && !partial && <article className="msg assistant is-streaming" aria-live="polite">
+      <span className="avatar"><VoiceOrb state="thinking" level={0} pip /></span>
+      <div className="msg-body"><p className="hint">Нейра думает</p></div>
+    </article>}
+    {partial && <article className={`msg assistant is-streaming${messages.at(-1)?.role === 'assistant' ? ' cont' : ''}`} aria-live="polite">
+      <span className="avatar">{messages.at(-1)?.role !== 'assistant' && <VoiceOrb state="thinking" level={0.35} pip />}</span>
       <div className="msg-body">
-        <Arriving text={partial}><Markdown text={partial} /></Arriving>
+        <StreamingBody text={partial} />
         <p className="hint">Нейра печатает</p>
       </div>
     </article>}

@@ -13,7 +13,7 @@ export function VoiceRecorder({ level, busy, onCancel, onDone }: { level: number
   useEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     let frame = 0;
-    const tick = () => { setPhase(value => value + 0.28); frame = window.requestAnimationFrame(tick); };
+    const tick = (now: number) => { setPhase(now / 180); frame = window.requestAnimationFrame(tick); };
     frame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frame);
   }, []);

@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { THEMES } from '../theme';
 import { invoke } from '@tauri-apps/api/core';
-import { CharacterPanel } from '../CharacterPanel';
-import { UpdatesPanel } from '../UpdatesPanel';
 import { type ImportPreview, recoveryText } from '../commands';
 import { type Recovery, type Settings } from '../types';
 
@@ -83,7 +81,7 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
     {connected && <p className="hint" id="name-locked">Имя можно менять, когда клиент отключён от сервера.</p>}
     <fieldset className="theme-cards"><legend>Тема</legend>{THEMES.map(item => <label className="theme-card" key={item.id}><input type="radio" name="theme-choice" value={item.id} checked={settings.theme === item.id} onChange={() => setSettings({ ...settings, theme: item.id })} /><span className={`swatch ${item.id}`} aria-hidden="true" />{item.label}</label>)}</fieldset>
     <label>Графика Linux (после перезапуска)<select value={settings.graphics_mode} onChange={e => setSettings({ ...settings, graphics_mode: e.target.value })}><option value="auto">Автоматически</option><option value="wayland">Wayland</option><option value="wayland-nvidia">Wayland · NVIDIA explicit sync workaround</option><option value="x11">X11</option><option value="compatibility">Совместимость (может замедлять UI)</option></select></label>
-    <label className="check"><input type="checkbox" checked={!!settings.character_enabled} disabled title="Будет доступно после шага 7"/>Персонаж на рабочем столе — после шага 7 (оверлей VRM)</label>
+    <div className="planned"><p className="hint">Персонаж на рабочем столе — в разработке, после шага 7. Отсюда он не включается.</p></div>
     <label>Хранить журнал действий, дней<input type="number" min={1} max={365} value={settings.audit_days} onChange={e => setSettings({ ...settings, audit_days: Math.min(365, Math.max(1, Number(e.target.value) || 30)) })}/></label>
     <button disabled={busy} onClick={() => run(async () => { await save(settings); notify('Настройки сохранены'); })}>Сохранить настройки</button>
     </div>
@@ -119,9 +117,5 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
       <div className="actions"><button onClick={cancelImport} disabled={busy}>Отмена</button><button className="primary" disabled={busy || (usable === 0 && !withSettings && !withPermissions)} onClick={apply}>Применить импорт</button></div>
     </div>}
     </div>
-    <h2>Обновления</h2>
-    <UpdatesPanel />
-    <h2>Персонаж</h2>
-    <CharacterPanel />
   </section>;
 }

@@ -16,7 +16,7 @@ window.__TAURI_INTERNALS__={transformCallback:(cb)=>{let id=next++;callbacks.set
 window.testCalls.push({cmd,args});
 if(cmd==='plugin:event|listen'){if(!listeners.has(args.event))listeners.set(args.event,new Set());listeners.get(args.event).add(args.handler);return args.handler;}
 if(cmd==='plugin:event|unlisten')return;
-if(cmd==='load_settings')return {settings,data_root:'/tmp/Neyra',recoveries:[{file:'settings/app.json',reason:'corrupt',quarantined:'app.json.corrupt-1',restored:'backup'}],screen_backend:true,input_backend:true};
+if(cmd==='load_settings')return {settings,data_root:'/tmp/Neyra',platform:'linux',version:'0.1.0',recoveries:[{file:'settings/app.json',reason:'corrupt',quarantined:'app.json.corrupt-1',restored:'backup'}],screen_backend:true,input_backend:true};
 if(cmd==='save_settings'){const p=args.settings.permissions;if(p.files&&!p.fs_roots.length)throw 'Сначала включите снимки экрана / добавьте папку';if(p.fs_roots.some(r=>r.includes('.ssh')))throw 'Эту папку нельзя разрешить';settings=args.settings;return;}
 if(cmd==='api'){if(window.failApi)throw 'Сервер недоступен';if(args.path==='/openapi.json')return {info:{version:'1.1.0'}};if(args.path==='/v1/plugins')return {data:{plugins:[{id:'example',name:'Пример',enabled:false,lifecycle:'resident'}]}};return {data:{status:'ok',api_version:'1.1.0'}};}
 if(cmd==='connect'){setTimeout(()=>window.emitNative('desktop-event',{type:'hello'}),10);return;}
@@ -77,9 +77,10 @@ with sync_playwright() as p:
     page.wait_for_load_state('networkidle')
     expect(page.get_by_role('heading', name=re.compile(r'^Добр(ой ночи|ое утро|ый день|ый вечер)$'))).to_be_visible()
     expect(page.get_by_text('Нет связи с сервером')).to_be_visible()
-    menu(page, 'Настройки')
+    menu(page, 'Персонаж')
     expect(page.get_by_text('Персонаж выключен. Включите его в настройках выше и сохраните.')).to_be_visible()
     expect(page.get_by_text('Wayland не гарантирует always-on-top.')).to_be_visible()
+    page.get_by_role('navigation', name='Разделы настроек').get_by_role('button', name='Обновления', exact=True).click()
     page.get_by_role('button',name='Проверить обновления').click()
     expect(page.get_by_text('Доступна версия 0.1.1.')).to_be_visible()
     close_sheet(page)
@@ -261,6 +262,10 @@ with sync_playwright() as p:
     close_sheet(page)
     page.set_viewport_size({'width': 620, 'height': 760})
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'horizontal overflow'
+    menu(page, 'Настройки')
+    page.get_by_role('navigation', name='Разделы настроек').get_by_role('button', name='О программе', exact=True).click()
+    expect(page.get_by_role('heading', name='О программе', exact=True)).to_be_visible()
+    close_sheet(page)
     page.set_viewport_size({'width': 1100, 'height': 820})
     shots = Path(os.environ['NEYRA_UI_SHOTS']) if os.environ.get('NEYRA_UI_SHOTS') else Path(tempfile.gettempdir()) / 'neyra-ui-shots'
     shots.mkdir(parents=True, exist_ok=True)
@@ -277,7 +282,7 @@ with sync_playwright() as p:
 
     for theme in ('neyra', 'dark', 'light'):
         pick(theme)
-        page.locator('.plus-slot').get_by_role('button', name='Новый чат', exact=True).click()
+        page.locator('.lead').get_by_role('button', name='Новый чат', exact=True).click()
         page.mouse.move(540, 420)
         expect(page.get_by_label('Сообщение')).to_be_enabled()
         expect(page.get_by_text('Напишите сообщение или запишите голос.')).to_be_visible()
@@ -288,6 +293,7 @@ with sync_playwright() as p:
         page.evaluate("""text => window.emitNative('desktop-event',{type:'done',text})""", "Вот так можно разложить ответ.\n\n- сначала короткий вывод\n- потом шаги, которые можно сделать сразу\n- и что лучше не трогать\n\n```\nprint(1)\n```")
         expect(page.locator('article').last).to_contain_text('print(1)')
         expect(page.locator('article').last).to_contain_text('сначала короткий вывод')
+        expect(page.locator('article.assistant .orb.pip')).to_have_count(1)
         page.wait_for_timeout(2400)
         shoot(f'{theme}-chat')
         page.locator('article.is-last').get_by_role('button', name='Копировать', exact=True).hover()
@@ -327,13 +333,15 @@ with sync_playwright() as p:
         page.wait_for_timeout(250)
         shoot(f'{theme}-menu')
         page.keyboard.press('Escape')
-        page.get_by_role('button', name='Меню', exact=True).click()
-        page.locator('#gear-menu').get_by_role('button', name='История', exact=True).click()
+        page.get_by_role('button', name='Развернуть', exact=True).click()
         page.mouse.move(520, 460)
         expect(page.get_by_role('complementary', name='История чатов')).to_be_visible()
         page.wait_for_timeout(280)
         shoot(f'{theme}-history')
-        page.get_by_role('button', name='Закрыть историю', exact=True).click()
+        page.get_by_role('button', name='Свернуть', exact=True).click()
+        expect(page.get_by_role('button', name='Развернуть', exact=True)).to_be_visible()
+        page.wait_for_timeout(220)
+        shoot(f'{theme}-history-closed')
         menu(page, 'Настройки')
         expect(page.get_by_role('heading', name='Настройки', exact=True)).to_be_visible()
         shoot(f'{theme}-settings')

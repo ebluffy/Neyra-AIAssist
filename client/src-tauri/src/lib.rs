@@ -138,7 +138,7 @@ fn load_settings(state: State<'_, Desktop>) -> Result<Value, String> {
     let s = state.settings.lock().map_err(lock_error)?;
     let recoveries = state.recoveries.lock().map_err(lock_error)?.clone();
     Ok(
-        json!({"settings":*s,"data_root":state.root,"platform":std::env::consts::OS,"global_shortcuts":state.shortcuts.load(Ordering::SeqCst),"hotkeys_available":state.hotkey_backend.load(Ordering::SeqCst),"pc_access_available":!state.screen_locked.load(Ordering::SeqCst),"recoveries":recoveries,"screen_backend":screen::screen_available(),"input_backend":screen::input_available()}),
+        json!({"settings":*s,"data_root":state.root,"platform":std::env::consts::OS,"version":env!("CARGO_PKG_VERSION"),"global_shortcuts":state.shortcuts.load(Ordering::SeqCst),"hotkeys_available":state.hotkey_backend.load(Ordering::SeqCst),"pc_access_available":!state.screen_locked.load(Ordering::SeqCst),"recoveries":recoveries,"screen_backend":screen::screen_available(),"input_backend":screen::input_available()}),
     )
 }
 #[tauri::command]
@@ -1238,8 +1238,16 @@ async fn applications() -> Vec<String> {
     host::discover_apps()
 }
 #[tauri::command]
-fn load_chats(state: State<'_, Desktop>) -> Result<Vec<storage::SavedChat>, String> {
-    storage::load_chats(&state.root)
+fn load_chats(state: State<'_, Desktop>) -> Result<storage::ChatLoad, String> {
+    let loaded = storage::load_chats(&state.root)?;
+    if let Some(recovery) = &loaded.recovery {
+        state
+            .recoveries
+            .lock()
+            .map_err(lock_error)?
+            .push(recovery.clone());
+    }
+    Ok(loaded)
 }
 #[tauri::command]
 fn save_chats(state: State<'_, Desktop>, threads: Vec<storage::SavedChat>) -> Result<(), String> {

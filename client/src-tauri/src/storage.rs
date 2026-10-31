@@ -807,31 +807,108 @@ fn chats_path(root: &Path) -> PathBuf {
     root.join("chats/threads.json")
 }
 
-pub fn load_chats(root: &Path) -> Result<Vec<SavedChat>, String> {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLoad {
+    pub threads: Vec<SavedChat>,
+    pub recovery: Option<Recovery>,
+}
+
+pub fn load_chats(root: &Path) -> Result<ChatLoad, String> {
     let path = chats_path(root);
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(ChatLoad {
+            threads: Vec::new(),
+            recovery: None,
+        });
     }
-    let data = read_limited(&path, MAX_CHAT_BYTES)?;
-    let file: ChatFile = serde_json::from_slice(&data).map_err(|_| "История чатов повреждена")?;
-    validate_chats(&file.threads)?;
-    if file.schema_version != CHAT_VERSION {
-        return Err("История чатов повреждена".into());
+    let data = match read_limited(&path, MAX_CHAT_BYTES) {
+        Ok(data) => data,
+        Err(reason) if reason == "Файл слишком большой" => {
+            return Ok(quarantine_chats(&path))
+        }
+        Err(reason) => return Err(reason),
+    };
+    let parsed = serde_json::from_slice::<ChatFile>(&data)
+        .ok()
+        .and_then(|file| {
+            if file.schema_version != CHAT_VERSION {
+                return None;
+            }
+            validate_chats(&file.threads).ok()?;
+            Some(file.threads)
+        });
+    match parsed {
+        Some(threads) => Ok(ChatLoad {
+            threads,
+            recovery: None,
+        }),
+        None => Ok(quarantine_chats(&path)),
     }
-    Ok(file.threads)
+}
+
+fn quarantine_chats(path: &Path) -> ChatLoad {
+    let quarantined = quarantine(path, "corrupt");
+    ChatLoad {
+        threads: Vec::new(),
+        recovery: Some(Recovery {
+            file: "chats/threads.json".into(),
+            reason: "corrupt".into(),
+            quarantined,
+            restored: "empty".into(),
+        }),
+    }
 }
 
 pub fn save_chats(root: &Path, threads: &[SavedChat]) -> Result<(), String> {
     validate_chats(threads)?;
+    let threads = fit_chat_bytes(threads);
     fs::create_dir_all(root.join("chats")).map_err(|_| "Не удалось создать папку чатов")?;
     let file = ChatFile {
         schema_version: CHAT_VERSION,
-        threads: threads.to_vec(),
+        threads,
     };
     atomic_write(
         &chats_path(root),
         &serde_json::to_vec_pretty(&file).map_err(|_| "Не удалось записать историю чатов")?,
     )
+}
+
+fn fit_chat_bytes(threads: &[SavedChat]) -> Vec<SavedChat> {
+    let mut kept = threads.to_vec();
+    loop {
+        let bytes = serde_json::to_vec_pretty(&ChatFile {
+            schema_version: CHAT_VERSION,
+            threads: kept.clone(),
+        })
+        .unwrap_or_default();
+        if (bytes.len() as u64) <= MAX_CHAT_BYTES || kept.is_empty() {
+            return kept;
+        }
+        if kept.len() > 1 {
+            kept.pop();
+            continue;
+        }
+        if kept[0].messages.len() > 1 {
+            let drop_n = (kept[0].messages.len() / 2).max(1);
+            kept[0].messages.drain(0..drop_n);
+            continue;
+        }
+        if kept[0].messages.is_empty() {
+            kept.clear();
+            continue;
+        }
+        let chars = kept[0].messages[0].content.chars().count();
+        if chars > 200 {
+            kept[0].messages[0].content = kept[0].messages[0]
+                .content
+                .chars()
+                .take(chars / 2)
+                .collect();
+        } else {
+            kept.clear();
+        }
+    }
 }
 
 fn validate_chats(threads: &[SavedChat]) -> Result<(), String> {
@@ -879,7 +956,7 @@ mod tests {
     fn chats_round_trip_and_reject_a_bad_file() {
         let root = temp();
         create_directories(&root).unwrap();
-        assert!(load_chats(&root).unwrap().is_empty());
+        assert!(load_chats(&root).unwrap().threads.is_empty());
         let thread = SavedChat {
             id: "thread-1".into(),
             title: "Привет".into(),
@@ -895,24 +972,65 @@ mod tests {
         };
         save_chats(&root, &[thread]).unwrap();
         let loaded = load_chats(&root).unwrap();
-        assert_eq!(loaded[0].messages[0].content, "секрет");
+        assert!(loaded.recovery.is_none());
+        assert_eq!(loaded.threads[0].messages[0].content, "секрет");
         assert!(!root
             .join("chats")
             .read_dir()
             .unwrap()
             .any(|e| { e.unwrap().file_name().to_string_lossy().contains(".tmp") }));
         fs::write(root.join("chats/threads.json"), br#"{"schema_version":1,"threads":[{"id":"x","title":"t","sessionId":"not-a-uuid","updated":1,"messages":[]}]}"#).unwrap();
-        assert!(load_chats(&root).is_err());
+        let broken = load_chats(&root).unwrap();
+        assert!(broken.threads.is_empty());
+        assert_eq!(broken.recovery.unwrap().file, "chats/threads.json");
         assert!(
-            root.join("chats/threads.json").exists(),
-            "a bad file is left in place"
+            !root.join("chats/threads.json").exists(),
+            "a bad file is quarantined"
         );
+        save_chats(&root, &[]).unwrap();
+        assert!(load_chats(&root).unwrap().recovery.is_none());
         fs::write(
             root.join("chats/threads.json"),
             br#"{"schema_version":1,"threads":[],"token":"secret"}"#,
         )
         .unwrap();
-        assert!(load_chats(&root).is_err());
+        assert!(load_chats(&root).unwrap().recovery.is_some());
+        assert!(!root.join("chats/threads.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn save_trims_cyrillic_history_to_the_read_limit() {
+        let root = temp();
+        create_directories(&root).unwrap();
+        let session = Uuid::new_v4().to_string();
+        let mut threads = Vec::new();
+        for index in 0..8 {
+            let messages = (0..20)
+                .map(|message| SavedMessage {
+                    id: format!("m-{index}-{message}"),
+                    role: "user".into(),
+                    content: "я".repeat(4000),
+                    kind: "text".into(),
+                    duration_ms: None,
+                })
+                .collect();
+            threads.push(SavedChat {
+                id: format!("t-{index}"),
+                title: "Чат".into(),
+                session_id: session.clone(),
+                updated: index,
+                messages,
+            });
+        }
+        save_chats(&root, &threads).unwrap();
+        let bytes = fs::metadata(chats_path(&root)).unwrap().len();
+        assert!(bytes <= MAX_CHAT_BYTES, "{bytes}");
+        let loaded = load_chats(&root).unwrap();
+        assert!(loaded.threads.len() < threads.len());
+        assert!(loaded.threads.iter().any(|thread| thread
+            .messages
+            .iter()
+            .any(|message| message.content.contains('я'))));
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

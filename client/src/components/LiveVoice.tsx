@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MessageSquare, Mic, MicOff, PhoneOff, SlidersHorizontal } from 'lucide-react';
 import type { ChatMessage } from '../chat';
 import { Markdown } from '../markdown';
@@ -20,10 +20,16 @@ interface Props {
 
 export function LiveVoice({ state, mode, level, muted, busy, messages, partial, onMute, onSettings, onEnd }: Props) {
   const [transcript, setTranscript] = useState(false);
+  const log = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
   const shown = muted ? 'off' : state;
   const recent = messages.slice(-8);
+  useEffect(() => {
+    const node = log.current;
+    if (node && follow.current) node.scrollTop = node.scrollHeight;
+  }, [messages, partial, transcript]);
   return <div className="live-stage">
-    <VoiceOrb state={shown} level={muted ? 0 : level} />
+    <div className="live-orb"><VoiceOrb state={shown} level={muted ? 0 : level} /></div>
     <p className="live-state" role="status">{liveLabel(shown, mode)}</p>
     <meter className="sr-only" aria-label="Уровень микрофона" min={0} max={1} value={muted ? 0 : level} />
     <div className="live-actions">
@@ -32,7 +38,7 @@ export function LiveVoice({ state, mode, level, muted, busy, messages, partial, 
       <button type="button" className="icon" aria-label="Настройки голоса" data-tip="Настройки голоса" disabled={busy} onClick={onSettings}><SlidersHorizontal size={18} strokeWidth={1.75} aria-hidden="true" /></button>
       <button type="button" className="icon danger" aria-label="Завершить" data-tip="Завершить" disabled={busy} onClick={onEnd}><PhoneOff size={18} strokeWidth={1.75} aria-hidden="true" /></button>
     </div>
-    <div className={transcript ? 'live-log open' : 'live-log'} aria-label="Текст разговора" hidden={!transcript}>
+    <div className={transcript ? 'live-log open' : 'live-log'} ref={log} aria-label="Текст разговора" hidden={!transcript} onScroll={event => { const node = event.currentTarget; follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 60; }}>
       {recent.length === 0 && !partial && <p className="hint">Реплики появятся здесь и останутся в этом чате.</p>}
       {recent.map(message => <article key={message.id} className={message.role}>
         <strong>{message.role === 'user' ? 'Вы' : 'Нейра'}</strong>

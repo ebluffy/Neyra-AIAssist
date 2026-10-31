@@ -16,6 +16,9 @@ export function useDesktop() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [noticeSticky, setNoticeSticky] = useState(false);
+  const [appVersion, setAppVersion] = useState('0.1.0');
+  const [platform, setPlatform] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [partial, setPartial] = useState('');
   const [lastTrace, setLastTrace] = useState<unknown>();
@@ -52,30 +55,36 @@ export function useDesktop() {
   const profile = settings?.profiles.find(item => item.id === profileId);
   const voice: VoiceSettings = settings?.voice ?? defaultVoice;
   const run = useCallback(async (action: () => Promise<void>) => {
-    setBusy(true); setError(''); setNotice('');
+    setBusy(true); setError(''); setNotice(''); setNoticeSticky(false);
     try { await action(); } catch (reason) { setError(formatError(reason)); } finally { setBusy(false); }
   }, []);
-  const notify = useCallback((message: string) => { setNotice(message); setError(''); }, []);
+  const postNotice = (message: string, sticky = false) => { setNotice(message); setNoticeSticky(sticky); setError(''); };
+  const notify = useCallback((message: string) => { setNotice(message); setNoticeSticky(false); setError(''); }, []);
+  const dismissNotice = useCallback(() => { setNotice(''); setNoticeSticky(false); }, []);
   const openSheet = useCallback((id: SheetId) => { setMenuOpen(false); setSheet(id); }, []);
   const closeSheet = useCallback(() => setSheet(null), []);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   useEffect(() => {
-    if (!notice) return;
+    if (!notice || noticeSticky) return;
     const timer = window.setTimeout(() => setNotice(''), 2200);
     return () => window.clearTimeout(timer);
-  }, [notice]);
+  }, [notice, noticeSticky]);
 
   useEffect(() => {
-    void invoke<{ settings: Settings; data_root: string; global_shortcuts: boolean; pc_access_available: boolean; recoveries?: Recovery[]; screen_backend?: boolean; input_backend?: boolean }>('load_settings').then(async data => {
-      setSettings(data.settings); setRoot(data.data_root); setShortcuts(data.global_shortcuts); setPcAvailable(data.pc_access_available); setRecoveries(data.recoveries ?? []);
+    void invoke<{ settings: Settings; data_root: string; platform?: string; version?: string; global_shortcuts: boolean; pc_access_available: boolean; recoveries?: Recovery[]; screen_backend?: boolean; input_backend?: boolean }>('load_settings').then(async data => {
+      setSettings(data.settings); setRoot(data.data_root); setPlatform(data.platform ?? ''); setAppVersion(data.version || '0.1.0'); setShortcuts(data.global_shortcuts); setPcAvailable(data.pc_access_available); setRecoveries(data.recoveries ?? []);
       setBackends({ screen: !!data.screen_backend, input: !!data.input_backend });
       const first = data.settings.profiles[0]?.id ?? '';
       setProfileId(first);
       const sessionId = data.settings.profiles[0]?.session_id ?? '';
       let stored: ChatThread[] = [];
       try {
-        const rows = await invoke<ChatThread[]>('load_chats');
-        stored = Array.isArray(rows) ? rows : [];
+        const rows = await invoke<ChatThread[] | { threads?: ChatThread[]; recovery?: Recovery }>('load_chats');
+        if (Array.isArray(rows)) stored = rows;
+        else {
+          stored = Array.isArray(rows?.threads) ? rows.threads : [];
+          if (rows?.recovery) setRecoveries(list => [...list, rows.recovery as Recovery]);
+        }
         chatsReady.current = true;
       } catch (reason) { setError(formatError(reason)); }
       const match = stored.find(item => item.sessionId === sessionId);
@@ -118,7 +127,7 @@ export function useDesktop() {
         if (event.type === 'done') {
           setLastTrace(event.model_trace);
           setMessages(list => [...list.slice(-99), { id: nextId(), role: 'assistant', content: event.text ?? '', kind: 'text' }]);
-          tokenBuffer.current = ''; setPartial(''); setThinking(event.source === 'voice'); setNotice(event.source === 'voice' ? 'Готовлю озвучку…' : 'Ответ готов');
+          tokenBuffer.current = ''; setPartial(''); setThinking(event.source === 'voice'); postNotice(event.source === 'voice' ? 'Готовлю озвучку…' : 'Ответ готов');
         }
         if (event.type === 'history') {
           const incoming = (event.messages ?? []).map((entry: Entry) => ({ id: nextId(), role: entry.role, content: entry.content, kind: 'text' as const }));
@@ -140,13 +149,13 @@ export function useDesktop() {
             const real = list.length - 1 - index;
             return list.map((item, itemIndex) => itemIndex === real ? { ...item, content: spoken, pending: false } : item);
           });
-          setNotice('Речь распознана');
+          postNotice('Речь распознана');
         }
         if (event.type === 'pc_access') setPcAvailable(event.available ?? false);
-        if (event.type === 'audio.finished') { setNotice('Озвучка завершена'); setLiveState(state => state === 'off' ? state : 'idle'); }
+        if (event.type === 'audio.finished') { postNotice('Озвучка завершена'); setLiveState(state => state === 'off' ? state : 'idle'); }
         if (event.type === 'recording') { setRecording(true); setThinking(false); }
         if (event.type === 'transcribing') { setRecording(false); setThinking(true); setLiveState(state => state === 'off' ? state : 'thinking'); }
-        if (event.type === 'speaking') { setThinking(false); setLiveState(state => state === 'off' ? state : 'speaking'); setNotice('Нейра говорит. Стоп прервёт озвучку.'); }
+        if (event.type === 'speaking') { setThinking(false); setLiveState(state => state === 'off' ? state : 'speaking'); postNotice('Нейра говорит. Стоп прервёт озвучку.'); }
         if (event.type === 'live.started') { setLiveOpen(true); setMuted(false); setLiveState('idle'); }
         if (event.type === 'live.stopped') { setLiveState('off'); setMicLevel(0); if (!muteHold.current) { setLiveOpen(false); setMuted(false); } }
         if (event.type === 'live.idle') setLiveState(state => state === 'off' ? state : 'idle');
@@ -154,13 +163,13 @@ export function useDesktop() {
         if (event.type === 'listening') setLiveState('listening');
         if (event.type === 'mic.level') setMicLevel(meterLevel(event.db ?? -100));
         if (event.type === 'status' && event.state === 'thinking') setLiveState(state => state === 'off' ? state : 'thinking');
-        if (event.type === 'status' && event.state === 'slow') setNotice('Провайдер отвечает медленно, я ещё думаю…');
-        if (event.type === 'status' && event.state === 'truncated') setNotice('Ответ длинный: озвучено только начало, полный текст в чате.');
-        if (event.type === 'voice.conversion') setNotice(conversionNotice(event.status, event.code));
-        if (event.type === 'disconnected') { muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); setConnected(false); setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); setNotice('Соединение закрыто. Подключитесь повторно.'); }
+        if (event.type === 'status' && event.state === 'slow') postNotice('Провайдер отвечает медленно, я ещё думаю…');
+        if (event.type === 'status' && event.state === 'truncated') postNotice('Ответ длинный: озвучено только начало, полный текст в чате.', true);
+        if (event.type === 'voice.conversion') { const text = conversionNotice(event.status, event.code); if (text) postNotice(text, true); }
+        if (event.type === 'disconnected') { muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); setConnected(false); setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); postNotice('Соединение закрыто. Подключитесь повторно.', true); }
         if (event.type === 'error') { setError(`Сервер: ${event.code ?? 'ошибка'}. Повторите попытку.`); setThinking(false); }
         if (event.type === 'cancelled') {
-          setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBuffer.current = ''; setPartial(''); setNotice('Остановлено');
+          setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBuffer.current = ''; setPartial(''); postNotice('Остановлено');
           if (event.reason !== 'barge_in') { muteHold.current = false; setLiveOpen(false); setMuted(false); }
         }
       }),
@@ -171,7 +180,7 @@ export function useDesktop() {
       listen<{ active: boolean }>('host-activity', ({ payload }) => setActive(payload.active)),
       listen<RunEvent>('command-run', ({ payload }) => {
         setRunLine(describeRun(payload)); setCommandRunning(payload.state === 'started' || payload.state === 'step'); setThinking(false);
-        if (payload.state === 'failed') setError(describeRun(payload)); else setNotice(describeRun(payload));
+        if (payload.state === 'failed') setError(describeRun(payload)); else postNotice(describeRun(payload), payload.state === 'finished' || payload.state === 'cancelled');
       }),
       listen<DraftEvent>('command-draft', ({ payload }) => { setDraft(payload); setMenuOpen(false); setSheet(null); setHistoryOpen(false); }),
       listen<{ reason: string }>('command-draft-invalid', ({ payload }) => setError(`Черновик команды отклонён: ${payload.reason}`)),
@@ -187,7 +196,7 @@ export function useDesktop() {
   useEffect(() => {
     if (!recording) return;
     const timer = window.setTimeout(() => {
-      void invoke('record_stop').then(() => { setRecording(false); setThinking(true); setNotice('Запись завершена: лимит 30 секунд.'); }).catch(reason => { setRecording(false); setError(formatError(reason)); });
+      void invoke('record_stop').then(() => { setRecording(false); setThinking(true); postNotice('Запись завершена: лимит 30 секунд.', true); }).catch(reason => { setRecording(false); setError(formatError(reason)); });
     }, 30000);
     return () => window.clearTimeout(timer);
   }, [recording]);
@@ -202,16 +211,16 @@ export function useDesktop() {
   const startLive = () => run(async () => { muteHold.current = false; await invoke('live_start'); setLiveOpen(true); setMuted(false); setLiveState('idle'); });
   const toggleMute = () => run(async () => {
     if (muted) { muteHold.current = false; await invoke('live_start'); setMuted(false); }
-    else { muteHold.current = true; await invoke('live_stop'); setMuted(true); setMicLevel(0); setNotice('Микрофон на паузе'); }
+    else { muteHold.current = true; await invoke('live_stop'); setMuted(true); setMicLevel(0); postNotice('Микрофон на паузе'); }
   });
-  const endLive = () => run(async () => { muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); setNotice('Разговор завершён'); });
+  const endLive = () => run(async () => { muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
   const check = () => run(async () => {
     if (!settings || !profile || !validServerUrl(profile.url)) throw 'Укажите HTTPS-адрес или HTTP localhost.';
     await save(settings);
     if (token) { await invoke('store_token', { profileId, token }); setToken(''); }
     const [health, schema] = await Promise.all([request('/v1/health'), invoke<{ info: { version: string } }>('api', { profileId, path: '/openapi.json', method: 'GET' })]);
     if (!schema.info.version.startsWith('1.')) throw 'Несовместимая версия API. Требуется 1.x.';
-    setStatus(health.data); setNotice(`Сервер доступен · API ${schema.info.version}`);
+    setStatus(health.data); postNotice(`Сервер доступен · API ${schema.info.version}`);
   });
   const connect = () => run(async () => {
     if (!settings || !profile || !validServerUrl(profile.url)) throw 'Сначала настройте сервер.';
@@ -232,16 +241,16 @@ export function useDesktop() {
     if (!result?.handled) setThinking(true);
     setText('');
   });
-  const decideDraft = (accepted: boolean, item: DraftEvent) => run(async () => { setDraft(undefined); if (accepted) { await invoke('draft_confirm', { draftId: item.draft_id }); setNotice('Команда сохранена на этом ПК'); } else await invoke('draft_reject', { draftId: item.draft_id }); });
+  const decideDraft = (accepted: boolean, item: DraftEvent) => run(async () => { setDraft(undefined); if (accepted) { await invoke('draft_confirm', { draftId: item.draft_id }); postNotice('Команда сохранена на этом ПК', true); } else await invoke('draft_reject', { draftId: item.draft_id }); });
   const beginRecording = () => run(async () => { await invoke('record_start'); setRecording(true); });
-  const finishRecording = () => run(async () => { await invoke('record_stop'); setRecording(false); setThinking(true); setNotice('Распознаю речь…'); });
-  const cancelRecording = () => run(async () => { await invoke('record_cancel'); setRecording(false); setNotice('Запись отменена'); });
-  const copyText = (value: string) => { void navigator.clipboard.writeText(value).then(() => { setNotice('Скопировано'); setError(''); }).catch(() => setError('Не удалось скопировать')); };
+  const finishRecording = () => run(async () => { await invoke('record_stop'); setRecording(false); setThinking(true); postNotice('Распознаю речь…'); });
+  const cancelRecording = () => run(async () => { await invoke('record_cancel'); setRecording(false); postNotice('Запись отменена'); });
+  const copyText = (value: string) => { void navigator.clipboard.writeText(value).then(() => { postNotice('Скопировано'); }).catch(() => setError('Не удалось скопировать')); };
   const speak = (value: string) => run(async () => {
     const spoken = [...value.trim()].slice(0, 300).join('');
     if (!spoken) return;
     await invoke('speak_text', { text: spoken });
-    setNotice(spoken.length < value.trim().length ? 'Озвучено начало ответа: голос принимает до 300 символов.' : 'Озвучиваю ответ');
+    postNotice(spoken.length < value.trim().length ? 'Озвучено начало ответа: голос принимает до 300 символов.' : 'Озвучиваю ответ', spoken.length < value.trim().length);
   });
   const approve = (allow: boolean) => run(async () => { if (hostCall) { const id = hostCall.call_id; setHostCall(undefined); await invoke('approve', { callId: id, allow }); } });
   const setTheme = (nextTheme: string) => run(async () => { if (!settings) return; await save({ ...settings, theme: nextTheme }); });
@@ -264,6 +273,7 @@ export function useDesktop() {
     } catch (reason) {
       try {
         await save(withSession(previousId));
+        await invoke('disconnect');
         await invoke('connect', { profileId: profile.id });
         setConnected(true);
         await invoke('bridge_message', { kind: 'devices' });
@@ -297,13 +307,13 @@ export function useDesktop() {
   const chooseProfile = (id: string) => { setProfileId(id); setToken(''); setStatus(undefined); };
   const refreshStatus = () => run(async () => { const out = await request('/v1/health'); setStatus(out.data); });
   const refreshPlugins = () => run(async () => { const out = await request('/v1/plugins'); setPlugins((out.data as { plugins: Plugin[] }).plugins); });
-  const restartCore = () => { if (window.confirm('Перезапустить ядро сервера? Активные ходы прервутся.')) void run(async () => { await request('/v1/system/restart', 'POST'); setNotice('Запрошен мягкий рестарт'); }); };
+  const restartCore = () => { if (window.confirm('Перезапустить ядро сервера? Активные ходы прервутся.')) void run(async () => { await request('/v1/system/restart', 'POST'); postNotice('Запрошен мягкий рестарт', true); }); };
   const togglePlugin = (plugin: Plugin) => { if (window.confirm('Изменить состояние модуля? Для resident ядро будет перезапущено.')) void run(async () => { await invoke('set_module', { profileId, moduleId: plugin.id, enabled: !plugin.enabled }); setPlugins(list => list.map(item => item.id === plugin.id ? { ...item, enabled: !item.enabled } : item)); }); };
   const refreshDevices = () => run(async () => { await invoke('bridge_message', { kind: 'devices' }); });
   const disconnectDevice = () => { if (window.confirm('Отключить выбранный ПК? Действия будут отменены, повторное подключение выполняется на том ПК вручную.')) void run(async () => { await invoke('disconnect_device', { deviceId: target }); setTarget(''); }); };
 
   return {
-    settings, setSettings, root, shortcuts, pcAvailable, profileId, profile, connected, busy, error, notice, messages, partial, lastTrace, text, setText, thinking, recording, active, hostCall, devices, target, setTarget, status, plugins, token, setToken, recoveries, draft, runLine, commandRunning, backends, liveState, micLevel, voiceStatus, voice, liveOpen, muted, threads, activeId, sheet, menuOpen, historyOpen, theme: themeId(settings?.theme),
-    run, notify, save, patchProfile, openSheet, closeSheet, closeMenu, setMenuOpen, setHistoryOpen, stop, saveVoice, draftVoice, refreshVoice, startLive, toggleMute, endLive, check, connect, disconnect, sendContent, decideDraft, beginRecording, finishRecording, cancelRecording, copyText, speak, approve, setTheme, newChat, openThread, addProfile, chooseProfile, refreshStatus, refreshPlugins, refreshDevices, restartCore, togglePlugin, disconnectDevice, setSheet,
+    settings, setSettings, root, shortcuts, pcAvailable, profileId, profile, connected, busy, error, notice, noticeSticky, appVersion, platform, messages, partial, lastTrace, text, setText, thinking, recording, active, hostCall, devices, target, setTarget, status, plugins, token, setToken, recoveries, draft, runLine, commandRunning, backends, liveState, micLevel, voiceStatus, voice, liveOpen, muted, threads, activeId, sheet, menuOpen, historyOpen, theme: themeId(settings?.theme),
+    run, notify, dismissNotice, save, patchProfile, openSheet, closeSheet, closeMenu, setMenuOpen, setHistoryOpen, stop, saveVoice, draftVoice, refreshVoice, startLive, toggleMute, endLive, check, connect, disconnect, sendContent, decideDraft, beginRecording, finishRecording, cancelRecording, copyText, speak, approve, setTheme, newChat, openThread, addProfile, chooseProfile, refreshStatus, refreshPlugins, refreshDevices, restartCore, togglePlugin, disconnectDevice, setSheet,
   };
 }
