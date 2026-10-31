@@ -1,7 +1,7 @@
 export interface Profile { id: string; name: string; url: string; session_id: string }
 export interface Permissions { enabled: boolean; apps: string[]; allow_web: boolean; web_domains: string[]; system: boolean; shell: boolean; files: boolean; fs_roots: string[]; screen: boolean; screen_auto: boolean; input: boolean }
 export interface VoiceSettings { mode: 'ptt' | 'wake' | 'always'; vad_sensitivity: number; end_silence_ms: number; wake_threshold: number; barge_in: 'off' | 'headphones' }
-export interface Settings { schema_version: number; device_id: string; device_name: string; profiles: Profile[]; permissions: Permissions; theme: string; graphics_mode: string; audit_days: number; character_enabled?: boolean; voice?: VoiceSettings }
+export interface Settings { schema_version: number; device_id: string; device_name: string; profiles: Profile[]; permissions: Permissions; theme: string; graphics_mode: string; audit_days: number; character_enabled?: boolean; voice?: VoiceSettings; active_profile?: string }
 export interface Recovery { file: string; reason: string; quarantined: string | null; restored: string }
 export interface Device { device_id: string; name: string; tools: string[] }
 export interface Entry { role: 'user' | 'assistant'; content: string }

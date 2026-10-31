@@ -220,6 +220,14 @@ pub(crate) fn apply_settings(
         uuid::Uuid::parse_str(&p.session_id).map_err(|_| "Неверная сессия")?;
         server_url(p, "/v1/health")?;
     }
+    if !settings.active_profile.is_empty()
+        && !settings
+            .profiles
+            .iter()
+            .any(|p| p.id == settings.active_profile)
+    {
+        return Err("Неверный профиль".into());
+    }
     let changed = serde_json::to_value(&old.permissions).ok()
         != serde_json::to_value(&settings.permissions).ok();
     let screen_changed = (old.permissions.screen, old.permissions.input)

@@ -53,6 +53,7 @@ export function useDesktop() {
   const muteHold = useRef(false);
   const liveRun = useRef(0);
   const keepLocal = useRef(false);
+  const historyStamp = useRef(0);
   const urls = useRef<string[]>([]);
   const profile = settings?.profiles.find(item => item.id === profileId);
   const voice: VoiceSettings = settings?.voice ?? defaultVoice;
@@ -86,8 +87,7 @@ export function useDesktop() {
         }
         chatsReady.current = true;
       } catch (reason) { setError(formatError(reason)); }
-      const remembered = (() => { try { return localStorage.getItem('neyra.profile') ?? ''; } catch { return ''; } })();
-      const selected = selectedProfile(data.settings.profiles, remembered);
+      const selected = selectedProfile(data.settings.profiles, data.settings.active_profile);
       const sessionId = sessionOrNew(selected?.session_id, stored);
       const repaired = profileSessionRepair(selected?.session_id, sessionId);
       const nextSettings = repaired && selected
@@ -162,6 +162,7 @@ export function useDesktop() {
         }
         if (event.type === 'history') {
           if (keepLocal.current) return;
+          historyStamp.current += 1;
           const incoming = (event.messages ?? []).map((entry: Entry) => ({ id: nextId(), role: entry.role, content: entry.content, kind: 'text' as const }));
           setMessages(incoming);
         }
@@ -252,7 +253,7 @@ export function useDesktop() {
     const active = threads.find(item => item.id === activeId);
     const sessionId = ensureSessionId(active?.sessionId);
     if (active && active.sessionId !== sessionId) setThreads(list => list.map(item => item.id === active.id ? { ...item, sessionId } : item));
-    return { ...current, profiles: bindProfileSession(current.profiles, profile.id, sessionId) };
+    return { ...current, active_profile: profile.id, profiles: bindProfileSession(current.profiles, profile.id, sessionId) };
   };
   const check = () => run(async () => {
     if (!settings || !profile || !validServerUrl(profile.url)) throw 'Укажите HTTPS-адрес или HTTP localhost.';
@@ -274,7 +275,7 @@ export function useDesktop() {
     if (!preserve) await invoke('bridge_message', { kind: 'history' });
     await invoke('bridge_message', { kind: 'devices' });
   });
-  const disconnect = () => run(async () => { await invoke('disconnect'); setConnected(false); setDevices([]); setTarget(''); });
+  const disconnect = () => run(async () => { keepLocal.current = false; await invoke('disconnect'); setConnected(false); setDevices([]); setTarget(''); });
   const sendContent = (value: string) => run(async () => {
     const trimmed = value.trim();
     if (!trimmed) return;
@@ -302,7 +303,7 @@ export function useDesktop() {
   const blockSwitch = () => {
     if (thinking || partial || recording || liveOpen || active || hostCall || draft) throw 'Сначала остановите текущий ход кнопкой «Стоп»';
   };
-  const switchSession = async (sessionId: string, keepLocal: boolean) => {
+  const switchSession = async (sessionId: string, preserveMessages: boolean) => {
     if (!settings || !profile || profile.session_id === sessionId) return;
     const previousId = profile.session_id;
     const withSession = (id: string): Settings => ({ ...settings, profiles: settings.profiles.map(item => item.id === profile.id ? { ...item, session_id: id } : item) });
@@ -314,9 +315,11 @@ export function useDesktop() {
       await invoke('connect', { profileId: profile.id });
       setConnected(true);
       await invoke('bridge_message', { kind: 'devices' });
-      if (!keepLocal) await invoke('bridge_message', { kind: 'history' });
+      keepLocal.current = preserveMessages;
+      if (!preserveMessages) await invoke('bridge_message', { kind: 'history' });
     } catch (reason) {
       try {
+        keepLocal.current = true;
         await save(withSession(previousId));
         await invoke('disconnect');
         await invoke('connect', { profileId: profile.id });
@@ -344,10 +347,13 @@ export function useDesktop() {
     const target = switched.threads.find(item => item.id === switched.activeId);
     const sessionId = ensureSessionId(target?.sessionId);
     const nextThreads = target && target.sessionId !== sessionId ? switched.threads.map(item => item.id === target.id ? { ...item, sessionId } : item) : switched.threads;
-    await switchSession(sessionId, target ? target.messages.length > 0 : true);
+    const hadMessages = !!(target && target.messages.length > 0);
+    const beforeHistory = historyStamp.current;
+    await switchSession(sessionId, hadMessages);
     setThreads(nextThreads);
     setActiveId(switched.activeId);
-    setMessages(switched.messages);
+    if (hadMessages) setMessages(switched.messages);
+    else if (historyStamp.current === beforeHistory) setMessages([]);
     setPartial(''); tokenBuffer.current = ''; setHistoryOpen(false);
   });
   const addProfile = (created: Profile) => {
@@ -355,21 +361,21 @@ export function useDesktop() {
     const active = threads.find(item => item.id === activeId);
     const sessionId = firstServerSession(settings.profiles.length > 0, created.session_id, active?.sessionId);
     if (settings.profiles.length === 0 && active && active.sessionId !== sessionId) setThreads(list => list.map(item => item.id === active.id ? { ...item, sessionId } : item));
-    setSettings({ ...settings, profiles: [...settings.profiles, { ...created, session_id: sessionId }] });
+    const next = { ...settings, active_profile: created.id, profiles: [...settings.profiles, { ...created, session_id: sessionId }] };
+    setSettings(next);
     setProfileId(created.id);
-    try { localStorage.setItem('neyra.profile', created.id); } catch { /* storage can be blocked */ }
+    void save(next).catch(reason => setError(formatError(reason)));
   };
   const chooseProfile = (id: string) => {
     setProfileId(id);
     setToken('');
     setStatus(undefined);
-    try { localStorage.setItem('neyra.profile', id); } catch { /* storage can be blocked */ }
-    if (!settings || !id) return;
+    if (!settings) return;
     const active = threads.find(item => item.id === activeId);
-    if (!active || !isUuid(active.sessionId)) return;
-    const current = settings.profiles.find(item => item.id === id);
-    if (!current || current.session_id === active.sessionId) return;
-    void save({ ...settings, profiles: bindProfileSession(settings.profiles, id, active.sessionId) }).catch(reason => setError(formatError(reason)));
+    const profiles = active && isUuid(active.sessionId) ? bindProfileSession(settings.profiles, id, active.sessionId) : settings.profiles;
+    const next = { ...settings, profiles, active_profile: id };
+    setSettings(next);
+    void save(next).catch(reason => setError(formatError(reason)));
   };
   const refreshStatus = () => run(async () => { const out = await request<unknown>('/v1/health'); setStatus(out); });
   const refreshPlugins = () => run(async () => { const out = await request<{ plugins?: Plugin[] }>('/v1/plugins'); setPlugins(Array.isArray(out?.plugins) ? out.plugins : []); });

@@ -90,6 +90,9 @@ pub struct Settings {
     pub character_enabled: bool,
     #[serde(default)]
     pub voice: crate::voice::VoiceSettings,
+    /// Last chosen server. Empty means the first profile, including files saved before this field existed.
+    #[serde(default)]
+    pub active_profile: String,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -104,6 +107,7 @@ impl Default for Settings {
             audit_days: default_audit_days(),
             character_enabled: false,
             voice: crate::voice::VoiceSettings::default(),
+            active_profile: String::new(),
         }
     }
 }
@@ -124,6 +128,8 @@ struct SettingsFile {
     character_enabled: bool,
     #[serde(default)]
     voice: crate::voice::VoiceSettings,
+    #[serde(default)]
+    active_profile: String,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -589,6 +595,7 @@ pub fn initialize(root: &Path) -> Result<(Settings, Vec<Recovery>), String> {
                     audit_days: fresh.audit_days,
                     character_enabled: false,
                     voice: fresh.voice.clone(),
+                    active_profile: String::new(),
                 },
                 None,
             )
@@ -652,6 +659,7 @@ pub fn initialize(root: &Path) -> Result<(Settings, Vec<Recovery>), String> {
         audit_days: file.audit_days,
         character_enabled: file.character_enabled,
         voice: file.voice,
+        active_profile: file.active_profile,
     };
     if was_legacy || !settings_path.exists() || !permissions_path.exists() {
         if was_legacy {
@@ -706,6 +714,7 @@ pub fn save(root: &Path, settings: &Settings) -> Result<(), String> {
         audit_days: settings.audit_days,
         character_enabled: settings.character_enabled,
         voice: settings.voice.clone(),
+        active_profile: settings.active_profile.clone(),
     };
     write_with_backup(
         &root.join("settings/app.json"),
@@ -1387,6 +1396,23 @@ mod tests {
         s.character_enabled = true;
         save(&root, &s).unwrap();
         assert!(initialize(&root).unwrap().0.character_enabled);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_active_profile_stays_empty_and_a_saved_choice_reloads() {
+        let json = r#"{"schema_version":2,"device_id":"00000000-0000-4000-8000-000000000001","device_name":"ПК","profiles":[],"theme":"dark","graphics_mode":"auto","audit_days":30}"#;
+        let root = temp();
+        create_directories(&root).unwrap();
+        fs::write(root.join("settings/app.json"), json).unwrap();
+        let (mut loaded, recovered) = initialize(&root).unwrap();
+        assert!(recovered.is_empty() && loaded.active_profile.is_empty());
+        loaded.active_profile = "11111111-1111-4111-8111-111111111111".into();
+        save(&root, &loaded).unwrap();
+        assert_eq!(
+            initialize(&root).unwrap().0.active_profile,
+            "11111111-1111-4111-8111-111111111111"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

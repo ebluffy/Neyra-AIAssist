@@ -22,7 +22,7 @@ if(cmd==='load_settings')return {settings,data_root:'/tmp/Neyra',platform:'linux
 if(cmd==='save_settings'){const p=args.settings.permissions;if(p.files&&!p.fs_roots.length)throw 'Сначала включите снимки экрана / добавьте папку';if(p.fs_roots.some(r=>r.includes('.ssh')))throw 'Эту папку нельзя разрешить';settings=args.settings;return;}
 if(cmd==='api'){if(window.failApi)throw 'Сервер недоступен';if(args.path==='/openapi.json')return {info:{version:'1.1.0'}};if(args.path==='/v1/plugins')return {ok:true,trace_id:'t',data:{plugins:[{id:'example',name:'Пример',enabled:false,lifecycle:'resident'}]}};return {ok:true,trace_id:'t',data:{status:'ok',api_version:'1.1.0'}};}
 if(cmd==='connect'){setTimeout(()=>window.emitNative('desktop-event',{type:'hello'}),10);return;}
-if(cmd==='bridge_message'&&args.kind==='history'){window.emitNative('desktop-event',{type:'history',messages:[]});return;}
+if(cmd==='bridge_message'&&args.kind==='history'){window.emitNative('desktop-event',{type:'history',messages:window.historyReply||[]});return;}
 if(cmd==='bridge_message'&&args.kind==='devices'){window.emitNative('desktop-event',{type:'devices',devices:[{device_id:'pc2',name:'Ноутбук',tools:['client.open_url']}]});return;}
 if(cmd==='chat'){if(args.text==='мой сайт')return {handled:true,command:'Мой сайт'};setTimeout(()=>{window.emitNative('desktop-event',{type:'token',text:'Привет'});window.emitNative('desktop-event',{type:'done',text:'Привет'});},20);return {handled:false};}
 if(cmd==='stop'){window.emitNative('desktop-event',{type:'cancelled'});return;}
@@ -426,10 +426,10 @@ with sync_playwright() as p:
     expect(fresh.get_by_text('Сервер доступен · API 1.1.0')).to_be_visible()
     paired = fresh.evaluate("""() => {
       const thread = window.testCalls.filter(c => c.cmd==='save_chats').at(-1).args.threads[0].sessionId;
-      const saved = window.testCalls.filter(c => c.cmd==='save_settings').at(-1).args.settings.profiles[0].session_id;
-      return {thread, saved};
+      const row = window.testCalls.filter(c => c.cmd==='save_settings').at(-1).args.settings;
+      return {thread, saved: row.profiles[0].session_id, active: row.active_profile, id: row.profiles[0].id};
     }""")
-    assert paired['thread'] == paired['saved'], paired
+    assert paired['thread'] == paired['saved'] and paired['active'] == paired['id'], paired
     fresh.close()
     broken = browser.new_page(viewport={'width': 1100, 'height': 820})
     broken.add_init_script('window.badSession=true;\n' + INIT)
@@ -475,9 +475,35 @@ with sync_playwright() as p:
       const thread = saved.args.threads.find(item => JSON.stringify(item.messages).includes('Секретная переписка'));
       const settings = window.testCalls.filter(c => c.cmd==='save_settings').at(-1).args.settings;
       const second = settings.profiles.find(item => item.name === 'Новый сервер');
-      return {thread: thread && thread.sessionId, profile: second && second.session_id, kept: !!(thread && JSON.stringify(thread.messages).includes('Секретная переписка'))};
+      return {thread: thread && thread.sessionId, profile: second && second.session_id, active: settings.active_profile, id: second && second.id, kept: !!(thread && JSON.stringify(thread.messages).includes('Секретная переписка'))};
     }""")
-    assert paired_servers['kept'] and paired_servers['thread'] == paired_servers['profile'], paired_servers
+    assert paired_servers['kept'] and paired_servers['thread'] == paired_servers['profile'] and paired_servers['active'] == paired_servers['id'], paired_servers
     two.close()
+    remembered = browser.new_page(viewport={'width': 1100, 'height': 820})
+    remembered.add_init_script(INIT)
+    remembered.goto('http://127.0.0.1:1420')
+    remembered.wait_for_load_state('networkidle')
+    expect(remembered.get_by_role('heading', name=re.compile(r'^Добр'))).to_be_visible()
+    menu(remembered, 'Сервер и устройства')
+    remembered.get_by_role('button', name='Подключить', exact=True).click()
+    close_sheet(remembered)
+    remembered.get_by_label('Сообщение', exact=True).fill('Секретная переписка')
+    remembered.get_by_role('button', name='Отправить', exact=True).click()
+    expect(remembered.locator('article').filter(has_text='Секретная переписка')).to_be_visible()
+    expect(remembered.locator('article').filter(has_text='Привет')).to_be_visible()
+    remembered.locator('.lead').get_by_role('button', name='Новый чат', exact=True).click()
+    expect(remembered.get_by_text('Напишите сообщение или запишите голос.')).to_be_visible()
+    remembered.get_by_role('button', name='Развернуть', exact=True).click()
+    remembered.get_by_role('complementary', name='История чатов').locator('li').get_by_role('button', name=re.compile('Секретная переписка')).click()
+    expect(remembered.locator('article').filter(has_text='Секретная переписка')).to_be_visible()
+    menu(remembered, 'Сервер и устройства')
+    remembered.get_by_role('button', name='Отключить', exact=True).click()
+    remembered.get_by_role('button', name='Подключить', exact=True).click()
+    close_sheet(remembered)
+    remembered.evaluate("""() => { window.historyReply = [{role:'assistant', content:'История с сервера'}]; }""")
+    remembered.get_by_role('button', name='Развернуть', exact=True).click()
+    remembered.get_by_role('complementary', name='История чатов').locator('li').get_by_role('button', name=re.compile(r'^Новый чат')).click()
+    expect(remembered.get_by_text('История с сервера')).to_be_visible()
+    remembered.close()
     browser.close()
 print('PASS: chat-first shell, gear sections, voice, permissions, commands, settings, three themes. Native boundary simulated.')
