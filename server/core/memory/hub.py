@@ -1037,8 +1037,8 @@ class MemoryHub:
                 visibility = meta.get("visibility")
                 return (visibility == "shared" or
                         (visibility == "channel" and public_channel_id and meta.get("channel_id") == public_channel_id) or
-                        (visibility == "private" and private_owner_id and meta.get("owner_id") == private_owner_id) or
-                        (owns_profile and not meta.get("owner_id") and visibility in {None, "private"}))
+                        (private_owner_id and meta.get("owner_id") == private_owner_id) or
+                        (owns_profile and not meta.get("owner_id") and visibility in {None, "private", "channel"}))
             facts = [f for f in facts if visible(f)][:12]
         known = known_name_from_facts(facts)
         handle = ""

@@ -435,3 +435,55 @@ def test_shared_search_tool_uses_channel_filter_and_tags_new_knowledge(hub, monk
 def test_legacy_semantic_adapter_does_not_fallback_to_private_results(hub):
     hub.semantic = NS(rag_enabled=True, search=lambda query, n_results=None, user_id=None: ['private sentinel'])
     assert hub.search_semantic('test', user_id='owner', shared_only=True, channel_id='public') == []
+
+
+@pytest.mark.parametrize('reader', ['summary', 'tool', 'prompt'])
+def test_own_channel_facts_survive_private_recall_without_cross_channel_leaks(hub, reader):
+    a = person(hub)
+    owner = UnifiedIdentityMapper.resolve_from_discord('123')
+    hub.add_person_fact(a['id'], 'Own channel fact sentinel',
+        meta={'owner_id': owner, 'channel_id': 'channel-x', 'visibility': 'channel'})
+
+    def read(channel, shared):
+        if reader == 'summary':
+            return hub.get_person_summary(a['id'], restrict_to_channel=True,
+                public_channel_id=channel, private_owner_id=None if shared else owner)
+        if reader == 'tool':
+            builtins.set_turn_memory_scope(user_id=owner, channel_id=channel, shared_channel=shared)
+            return builtins.get_person_info.func(a['id'])
+        return split_people_context(hub, [], 'same', '123', channel,
+            memory_owner_id=owner, shared_context=shared)[0]
+
+    assert 'Own channel fact sentinel' in read('dm', False)
+    assert 'Own channel fact sentinel' in read('channel-x', True)
+    assert 'Own channel fact sentinel' not in read('channel-y', True)
+
+
+def test_channel_note_about_someone_else_follows_note_owner_in_private(hub):
+    a, b = person(hub), person(hub, '456')
+    owner_a = UnifiedIdentityMapper.resolve_from_discord('123')
+    owner_b = UnifiedIdentityMapper.resolve_from_discord('456')
+    hub.add_person_fact(b['id'], 'A channel note about B sentinel',
+        meta={'owner_id': owner_a, 'channel_id': 'channel-x', 'visibility': 'channel'})
+    for owner, channel, shared, expected in [
+        (owner_a, 'dm-a', False, True),
+        (owner_b, 'dm-b', False, False),
+        (owner_a, 'channel-x', True, True),
+        (owner_b, 'channel-x', True, True),
+        (owner_a, 'channel-y', True, False),
+        (owner_b, 'channel-y', True, False),
+    ]:
+        builtins.set_turn_memory_scope(user_id=owner, channel_id=channel, shared_channel=shared)
+        assert ('A channel note about B sentinel' in builtins.get_person_info.func(b['id'])) is expected
+
+
+def test_legacy_channel_fact_visible_only_to_own_profile_in_private(hub):
+    a, b = person(hub), person(hub, '456')
+    owner_a = UnifiedIdentityMapper.resolve_from_discord('123')
+    owner_b = UnifiedIdentityMapper.resolve_from_discord('456')
+    hub.add_person_fact(a['id'], 'Legacy channel self fact sentinel',
+        meta={'channel_id': 'channel-x', 'visibility': 'channel'})
+    for owner, expected in [(owner_a, True), (owner_b, False)]:
+        result = hub.get_person_summary(a['id'], restrict_to_channel=True,
+            public_channel_id='dm', private_owner_id=owner)
+        assert ('Legacy channel self fact sentinel' in result) is expected
