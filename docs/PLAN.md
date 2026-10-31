@@ -253,7 +253,7 @@
 
 - **Windows:** Known Folder `FOLDERID_Documents` (`SHGetKnownFolderPath`; учитывает перенос «Документов» и OneDrive), т.е. `…\Documents\Neyra`.
 - **Linux:** `XDG_DOCUMENTS_DIR` через `xdg-user-dir DOCUMENTS` / `~/.config/user-dirs.dirs`; если не задан — `~/Documents`, если его нет — `~/.local/share/neyra` (`$XDG_DATA_HOME/neyra`). Выбранный путь показывается в настройках, его можно сменить.
-- **Структура:** `settings/` (настройки приложения, голос, хоткеи, тема, окна/оверлей/персонаж), `commands/` (быстрые команды), `permissions/` (разрешения ПК, allowlist/deny-list), `logs/` (локальные логи клиента с ротацией), `audit/` (журнал действий на ПК, 30 дней по умолчанию), `character/` (выбранные `.vrm`, анимации, файл лицензий), `models/` (модель wake word), `cache/` (кэш статуса). Формат — YAML/JSON со `schema_version` и миграциями; обновление клиента не затирает папку.
+- **Структура:** `settings/` (настройки приложения, голос, хоткеи, тема, окна/оверлей/персонаж), `commands/` (быстрые команды), `permissions/` (разрешения ПК, allowlist/deny-list), `logs/` (локальные логи клиента с ротацией), `audit/` (журнал действий на ПК, 30 дней по умолчанию), `character/` (выбранные `.vrm`, анимации, файл лицензий), `models/` (зарезервировано), `wakeword/` (локальная модель wake word «Нейра» и `wakeword.json` с источником и лицензией), `cache/` (кэш статуса). Формат — YAML/JSON со `schema_version` и миграциями; обновление клиента не затирает папку.
 - **OneDrive/облачная синхронизация «Документов»** допустима, особой обработки нет; запись атомарная (временный файл + rename) с повтором при временной блокировке файла синхронизатором.
 - **Не в папке:** токен — только в системном хранилище секретов (Credential Manager / Secret Service / KWallet), не в «Документах». В логах и audit — без секретов.
 
@@ -287,9 +287,23 @@
 - [x] Локально после AR-фиксов PR #35: **583** server pytest, Rust fmt/clippy и 11 unit tests; Node 22 lint/typecheck/unit/build; Linux release `.deb` и изолированный Xvfb startup. Браузерный smoke с mock IPC: профили/ошибка API/чат/выбор ПК/разрешения/карточка/Escape/`host-confirm-closed`/Stop/audit, обе темы и 620 px. Сборки и авторевью финального SHA проверяются отдельно в PR.
 - [x] Windows CI: NSIS и native tests зелёные на `06474db` (9/9 jobs) и на последующих SHA этой ветки с тем же desktop-кодом; сборка пакета не закрывает ручной запуск/микрофон/звук/keyring/трей/хоткеи.
 
+**Шаг 5 — live voice, wake word, voice conversion (трек V, ветка `codex/desktop-beta-voice`):**
+
+- [x] Протокол `neyra.voice.v2` поверх `/v1/desktop/voice`: `listen.begin` / кадры / `commit` с `mode: live` / `listen.cancel`, нумерованные `audio.chunk` + `audio.segment`, `audio.ack`, `status`, `voice.conversion`. PTT-путь v1 сохранён (тот же `commit`, `turn_busy`, терминальные `error`/`audio.done`/`cancelled`).
+- [x] Клиентский VAD (энергетический, адаптивный порог шума, не нейросетевой) режет фразы: pre-roll 300 мс, конец фразы по настраиваемой паузе 0,5–1,5 с, ложные старты < 300 мс отменяются, фраза закрывается до лимита 30 с.
+- [x] STT по сегментам через существующие lanes `voice.stt`; потоковых partial-гипотез у подключённых провайдеров нет, сервер честно объявляет `partial_transcripts: false`, `streaming_stt: false`.
+- [x] TTS по предложениям: первая фраза звучит до конца генерации; код/Markdown не озвучиваются; очередь предложений 3, окно непроигранных сегментов на клиенте 3 с ack, таймаут проигрывания → `playback_stalled`; лимит озвучки 4000 символов (`status: truncated`).
+- [x] Barge-in: новая фраза или Stop отменяет текущий ход и его аудио; поздние пакеты старого хода отбрасываются на сервере и клиенте (номер сегмента + request_id). Stop и блокировка экрана выключают live-микрофон.
+- [ ] AEC не реализован. По умолчанию честный half-duplex: микрофон молчит, пока Нейра говорит (это не эхоподавление); голосовое перебивание во время речи — явная опция «в наушниках». Реальный AEC-путь открыт.
+- [x] Wake word «Нейра»: openWakeWord-пайплайн в Rust через `tract` (без onnxruntime и сети), совпадение с Python-эталоном openWakeWord ~1e-5 по оценке; до срабатывания звук не уходит с ПК (тест шлюза); модели только из `Documents/Neyra/wakeword/` с `wakeword.json` (фраза, язык, источник, лицензия); английские стоковые модели отклоняются. Синтетические +/– клипы для обучения: `server/scripts/wakeword_synth_dataset.py` (серверный TTS, без записи голоса владельца).
+- [ ] Модель «Нейра» не обучена и не поставляется: обучение openWakeWord на синтетике, замер ложных срабатываний и бюджета CPU/RAM на ноутбуках владельца открыты. Замер на VM CI-класса: ≤ ~2,3 мс на шаг 80 мс (≤ ~3% ядра) с загрузкой моделей.
+- [x] Voice conversion на сервере: TTS → conversion → клиент, `voice.conversion` (enabled/model/index/on_error/timeout), модели читаются на месте из `server/models/` (без переименования). `on_error: passthrough` — исходный голос + явное `voice.conversion` уведомление; `stop` — озвучка останавливается с `conversion_failed`; неизвестная политика = stop. Тесты на stubs.
+- [ ] Реальный RVC-прогон (`rvc-python` на MiniPC, качество/задержка на предложение) не проверен — нужен стенд.
+- [x] Локально: server pytest 613, Rust fmt/clippy и 26 unit tests (+ gated тест на реальных openWakeWord-графах), Node lint/typecheck/unit/build, UI smoke вкладки «Голос» с mock IPC.
+
 **После merge: ручная приёмка владельцем (не задача PR #35 / не закрывается CI):**
 
-- [ ] Windows и CachyOS KDE Wayland + NVIDIA: установщик, reconnect/restart, OS keyring, mic/TTS/PTT/Stop, трей/хоткеи, два ПК, revoke/lock, сохранность данных. Отдельно открыты: GlobalShortcuts portal на Wayland, другие DE без loginctl, системные библиотеки AppImage и настоящее N → N+1. Минимум §0 и шаги 1–3 целиком не считать принятыми только по mocks/CI.
+- [ ] Windows и CachyOS KDE Wayland + NVIDIA: установщик, reconnect/restart, OS keyring, mic/TTS/PTT/Stop, трей/хоткеи, два ПК, revoke/lock, сохранность данных. Отдельно открыты: GlobalShortcuts portal на Wayland, другие DE без loginctl, системные библиотеки AppImage и настоящее N → N+1. Голос шага 5: wake «Нейра» на обученной модели, live-диалог и half-duplex через колонки, barge-in в наушниках, конверсия голоса на MiniPC. Минимум §0 и шаги 1–3, 5 целиком не считать принятыми только по mocks/CI.
 
 **Beta expansion (шаги 4–8, в работе; foundation 1–3 не регрессировать):**
 

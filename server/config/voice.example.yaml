@@ -74,3 +74,18 @@ voice:
       pitch_shift_hz: 50.0
       timeout_seconds: 60.0
 
+  # Optional voice conversion after TTS (desktop voice). Runs on the server only.
+  # Models are read in place from server/models/ (plain file names, no paths).
+  # Backend "rvc" needs the optional package: pip install rvc-python (not in requirements.txt).
+  conversion:
+    enabled: false
+    backend: rvc
+    model: "whisper_girl_e257_s3598.pth"
+    index: "whisper_girl.index"
+    # passthrough = send the original TTS voice and tell the client;
+    # stop = stop speaking this turn with conversion_failed. Unknown value = stop.
+    on_error: passthrough
+    pitch: 0
+    device: "cpu"
+    timeout_seconds: 20.0
+

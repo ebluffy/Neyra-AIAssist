@@ -2,7 +2,7 @@
 name = "neyra-client"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.91"
 
 [lib]
 name = "neyra_client"
@@ -26,6 +26,7 @@ url = "2"
 base64 = "0.22"
 cpal = "0.15"
 rodio = { version = "0.20", default-features = false, features = ["wav"] }
+tract-onnx = "0.23"
 
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-updater = "2"

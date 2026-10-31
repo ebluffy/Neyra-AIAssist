@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright, expect
 INIT = r'''
 const callbacks = new Map(), listeners = new Map(); let next = 1;
 const profile = {id:'2eb0cd23-9508-44e1-b3ee-86ad429a5451',name:'Локальный стенд',url:'http://127.0.0.1:8787',session_id:'b3aef0b1-2ee1-4224-9888-1992bb964414'};
-let settings = {schema_version:2,audit_days:30,device_id:'c1554031-4193-4cf8-bfde-e64b858ee332',device_name:'Тестовый ПК',profiles:[profile],permissions:{enabled:false,allow_web:true,web_domains:[],system:true,apps:[],shell:false,files:false,fs_roots:[],screen:false,screen_auto:false,input:false},theme:'dark',graphics_mode:'auto',character_enabled:false};
+let settings = {schema_version:2,audit_days:30,device_id:'c1554031-4193-4cf8-bfde-e64b858ee332',device_name:'Тестовый ПК',profiles:[profile],permissions:{enabled:false,allow_web:true,web_domains:[],system:true,apps:[],shell:false,files:false,fs_roots:[],screen:false,screen_auto:false,input:false},theme:'dark',graphics_mode:'auto',character_enabled:false,voice:{mode:'ptt',vad_sensitivity:0.5,end_silence_ms:700,wake_threshold:0.5,barge_in:'off'}};
 window.testCalls=[];let store=[];
 window.emitNative=(name,payload)=>{for(const id of listeners.get(name)??[])callbacks.get(id)?.({event:name,id,payload});};
 window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener:(event,id)=>listeners.get(event)?.delete(id)};
@@ -23,6 +23,9 @@ if(cmd==='chat'){if(args.text==='мой сайт')return {handled:true,command:'
 if(cmd==='stop'){window.emitNative('desktop-event',{type:'cancelled'});return;}
 if(cmd==='applications')return ['/usr/bin/firefox','/usr/bin/steam'];
 if(cmd==='audit_log')return [{time:Date.now(),tool:'client.open_url',status:'ok',confirmed:false}];
+if(cmd==='voice_status')return {wake:{ready:false,dir:'/tmp/Neyra/wakeword',message:'Нет wakeword.json в папке wakeword'},live:false,dropped_frames:0};
+if(cmd==='live_start'){if(settings.voice?.mode!=='wake')throw 'mode';setTimeout(()=>window.emitNative('desktop-event',{type:'live.started',mode:'wake'}),10);return;}
+if(cmd==='live_stop'){window.emitNative('desktop-event',{type:'live.stopped'});return;}
 const view=()=>({commands:store.map(c=>({file:c.file,command:c.command,hotkeys:[]})),errors:window.loadErrors??[],hotkeys_available:false,folder:'/tmp/Neyra/commands',max_commands:200});
 if(cmd==='commands_list'){if(window.failCommands)throw 'Папка команд недоступна';return view();}
 if(cmd==='command_save'){const file=args.file??('cmd-'+(store.length+1)+'.yaml');store=store.filter(c=>c.file!==file);store.push({file,command:args.command});return file;}
@@ -64,6 +67,21 @@ with sync_playwright() as p:
     page.get_by_role('button',name='Отправить',exact=True).click()
     expect(page.locator('article').last).to_contain_text('Привет')
     page.get_by_label('ПК для действий').select_option('pc2')
+    page.get_by_role('button',name='Голос',exact=True).click()
+    expect(page.get_by_role('button',name='Начать разговор')).to_be_disabled()
+    page.get_by_label('Как начинать разговор').select_option('wake')
+    page.get_by_role('button',name='Проверить модель').click()
+    expect(page.get_by_text('Модель не готова: Нет wakeword.json')).to_be_visible()
+    expect(page.get_by_text('Эхоподавления нет')).to_be_visible()
+    page.get_by_role('button',name='Начать разговор').click()
+    expect(page.locator('.live-state')).to_have_text('Жду слово «Нейра»')
+    page.evaluate("window.emitNative('desktop-event',{type:'wake'})")
+    expect(page.locator('.live-state')).to_have_text('Слушаю команду')
+    page.evaluate("window.emitNative('desktop-event',{type:'voice.conversion',status:'passthrough',code:'timeout'})")
+    expect(page.get_by_text('звучит исходный голос TTS')).to_be_visible()
+    page.get_by_role('button',name='Пауза микрофона').click()
+    expect(page.locator('.live-state')).to_have_text('Микрофон выключен')
+    assert any(c['cmd']=='save_settings' and c['args']['settings'].get('voice',{}).get('mode')=='wake' for c in page.evaluate('window.testCalls'))
     page.get_by_role('button',name='Доступ к ПК',exact=True).click()
     page.get_by_label('Разрешить Нейре управлять этим ПК').check()
     page.get_by_role('button',name='Найти установленные приложения').click()
@@ -190,4 +208,4 @@ with sync_playwright() as p:
     page.screenshot(path='/tmp/neyra-desktop-dark.png',full_page=True)
     assert not errors,errors
     browser.close()
-print('PASS: profiles, API failure, chat, device selector, local permissions, Contour 3-4 toggles/roots/preview card, confirmation/Escape/host-confirm-closed, Stop, audit, quick commands (empty/error/create/edit/YAML error/run/draft/local text), settings recovery/export/import, dark/light/narrow. Native boundary simulated.')
+print('PASS: profiles, API failure, chat, device selector, voice tab (wake mode, model status, live start/pause, conversion notice), local permissions, Contour 3-4 toggles/roots/preview card, confirmation/Escape/host-confirm-closed, Stop, audit, quick commands (empty/error/create/edit/YAML error/run/draft/local text), settings recovery/export/import, dark/light/narrow. Native boundary simulated.')
