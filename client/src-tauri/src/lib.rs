@@ -1,6 +1,9 @@
 mod audio;
 mod audit;
+mod command_runner;
+mod commands;
 mod host;
+mod logs;
 mod policy;
 mod storage;
 
@@ -41,6 +44,14 @@ pub struct Desktop {
     shortcuts: AtomicBool,
     screen_locked: AtomicBool,
     current_turn: Mutex<Option<String>>,
+    commands: Mutex<commands::Store>,
+    waiters: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>,
+    drafts: Mutex<HashMap<String, commands::Command>>,
+    hotkeys: Mutex<HashMap<u32, (String, tauri_plugin_global_shortcut::Shortcut)>>,
+    hotkey_backend: AtomicBool,
+    running: Mutex<Option<String>>,
+    pending_import: Mutex<Option<command_runner::PendingImport>>,
+    recoveries: Mutex<Vec<storage::Recovery>>,
 }
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
     "Внутренняя ошибка состояния".into()
@@ -90,26 +101,39 @@ fn manifest(state: &Desktop, p: &Profile) -> Result<Value, String> {
     } else {
         "linux-x11"
     };
+    // Runtime-only: names, trigger texts and tool names. Never arguments, paths or regexes.
+    let command_info = state
+        .commands
+        .lock()
+        .map(|c| commands::manifest_info(c.entries()))
+        .unwrap_or_default();
     Ok(
-        json!({"protocol":"neyra.desktop.v1","device_id":s.device_id,"session_id":p.session_id,"name":s.device_name,"platform":platform,"tools":if state.screen_locked.load(Ordering::SeqCst){vec![]}else{policy::capabilities(&s.permissions)}}),
+        json!({"protocol":"neyra.desktop.v1","device_id":s.device_id,"session_id":p.session_id,"name":s.device_name,"platform":platform,"tools":if state.screen_locked.load(Ordering::SeqCst){vec![]}else{policy::capabilities(&s.permissions)},"commands":command_info,"features":["command_drafts"]}),
     )
 }
 
 #[tauri::command]
 fn load_settings(state: State<'_, Desktop>) -> Result<Value, String> {
     let s = state.settings.lock().map_err(lock_error)?;
+    let recoveries = state.recoveries.lock().map_err(lock_error)?.clone();
     Ok(
-        json!({"settings":*s,"data_root":state.root,"platform":std::env::consts::OS,"global_shortcuts":state.shortcuts.load(Ordering::SeqCst),"pc_access_available":!state.screen_locked.load(Ordering::SeqCst)}),
+        json!({"settings":*s,"data_root":state.root,"platform":std::env::consts::OS,"global_shortcuts":state.shortcuts.load(Ordering::SeqCst),"hotkeys_available":state.hotkey_backend.load(Ordering::SeqCst),"pc_access_available":!state.screen_locked.load(Ordering::SeqCst),"recoveries":recoveries}),
     )
 }
 #[tauri::command]
 async fn save_settings(state: State<'_, Desktop>, settings: Settings) -> Result<(), String> {
+    apply_settings(&state, settings)
+}
+
+fn apply_settings(state: &Desktop, settings: Settings) -> Result<(), String> {
     let old = state.settings.lock().map_err(lock_error)?.clone();
-    if settings.schema_version != 1
+    if settings.schema_version != storage::SETTINGS_VERSION
         || settings.device_id != old.device_id
         || settings.profiles.len() > 12
         || settings.device_name.len() > 80
         || settings.device_name.trim().is_empty()
+        || !matches!(settings.theme.as_str(), "dark" | "light")
+        || !(1..=365).contains(&settings.audit_days)
         || !matches!(
             settings.graphics_mode.as_str(),
             "auto" | "wayland" | "wayland-nvidia" | "x11" | "compatibility"
@@ -136,16 +160,25 @@ async fn save_settings(state: State<'_, Desktop>, settings: Settings) -> Result<
     storage::save(&state.root, &settings)?;
     *state.settings.lock().map_err(lock_error)? = settings;
     if changed {
-        stop_inner(&state)?;
-        if let Some(id) = state.active_profile.lock().map_err(lock_error)?.clone() {
-            let p = profile(&state, &id)?;
-            send(
-                &state.bridge,
-                json!({"type":"capabilities","manifest":manifest(&state,&p)?}),
-            )?;
-        }
+        stop_inner(state)?;
+        send_capabilities(state);
     }
     Ok(())
+}
+
+/// Refreshes the server's runtime view (tools and quick-command names) when a bridge is connected.
+fn send_capabilities(state: &Desktop) {
+    let Ok(Some(id)) = state.active_profile.lock().map(|p| p.clone()) else {
+        return;
+    };
+    if let Ok(p) = profile(state, &id) {
+        if let Ok(manifest) = manifest(state, &p) {
+            let _ = send(
+                &state.bridge,
+                json!({"type":"capabilities","manifest":manifest}),
+            );
+        }
+    }
 }
 #[tauri::command]
 fn store_token(state: State<'_, Desktop>, profile_id: String, token: String) -> Result<(), String> {
@@ -310,12 +343,18 @@ async fn connect(
                                     let state=handle.state::<Desktop>();
                                     let current=state.current_turn.lock().ok().and_then(|t|t.clone());
                                     if current.as_deref()!=Some(request_id){continue;}
-                                    if packet["type"]=="error" || packet["type"]=="cancelled" || packet["type"]=="audio.done" || (kind=="bridge"&&packet["type"]=="done") {if let Ok(mut t)=state.current_turn.lock(){*t=None;}}
+                                    if packet["type"]=="error" || packet["type"]=="cancelled" || packet["type"]=="audio.done" || packet["type"]=="command_match" || (kind=="bridge"&&packet["type"]=="done") {if let Ok(mut t)=state.current_turn.lock(){*t=None;}}
                                 }
                                 match packet["type"].as_str(){
                                                     Some("client_tool_call")=>{let mut data=packet.clone();if let Some(o)=data.as_object_mut(){o.remove("type");o.remove("protocol");o.remove("source");}
                 if let Ok(call)=serde_json::from_value::<ToolCall>(data){receive_call(handle.clone(),call);}},
                                                     Some("revoked")=>{break;},
+                                                    Some("command_draft")=>{if kind=="bridge"{command_runner::receive_draft(&handle,&packet);}},
+                                                    Some("command_match")=>{
+                                                        // Only the authenticated voice socket may ask for a local command; the name is looked up locally.
+                                                        if kind=="voice"{if let Some(name)=packet["name"].as_str(){command_runner::run_by_name(handle.clone(),name.to_string(),"voice");}}
+                                                        let _=handle.emit("desktop-event",packet);
+                                                    },
                                     Some("cancel")=>{
                                         // Per-call cancel must not become global Stop (AR-3).
                                         let state=handle.state::<Desktop>();
@@ -360,6 +399,7 @@ fn receive_call(app: tauri::AppHandle, call: ToolCall) {
         );
         return;
     }
+    // Server calls are only ever checked against the connected profile's session, never the local one.
     let decision = (|| {
         if state.screen_locked.load(Ordering::SeqCst) {
             return Err("Сессия заблокирована".into());
@@ -388,55 +428,87 @@ fn receive_call(app: tauri::AppHandle, call: ToolCall) {
     match decision {
         Ok(Decision::Safe) => execute_call(app.clone(), call, false),
         Ok(Decision::Confirm) => {
-            if let Ok(mut pending) = state.pending.lock() {
-                if pending.len() < 4 {
-                    pending.insert(call.call_id.clone(), call.clone());
-                    // Window may be tray-hidden; surface the card (AR-4).
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.unminimize();
-                        let _ = window.set_focus();
-                    }
-                    let _ = app.emit("host-confirm", &call);
-                    let h = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                        let st = h.state::<Desktop>();
-                        if let Ok(mut p) = st.pending.lock() {
-                            if let Some(c) = p.remove(&call.call_id) {
-                                let call_id = c.call_id.clone();
-                                reply(
-                                    &h,
-                                    &c,
-                                    json!({"status":"denied","code":"confirmation_expired"}),
-                                    false,
-                                );
-                                let _ = h.emit("host-confirm-closed", json!({"call_id": call_id}));
-                            }
-                        };
-                    });
-                    return;
-                }
+            if !queue_confirm(&app, call.clone()) {
+                reply(&app, &call, json!({"status":"denied"}), false);
             }
-            reply(&app, &call, json!({"status":"denied"}), false);
         }
         Err(_) => reply(&app, &call, json!({"status":"denied"}), false),
     }
 }
+
+/// Shows a one-time confirmation card (up to 30 s). Returns false when too many cards are open.
+fn queue_confirm(app: &tauri::AppHandle, call: ToolCall) -> bool {
+    let state = app.state::<Desktop>();
+    let Ok(mut pending) = state.pending.lock() else {
+        return false;
+    };
+    if pending.len() >= 4 {
+        return false;
+    }
+    pending.insert(call.call_id.clone(), call.clone());
+    drop(pending);
+    // Window may be tray-hidden; surface the card (AR-4).
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    let _ = app.emit("host-confirm", &call);
+    let h = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        let st = h.state::<Desktop>();
+        let expired = st
+            .pending
+            .lock()
+            .ok()
+            .and_then(|mut p| p.remove(&call.call_id));
+        if let Some(c) = expired {
+            let call_id = c.call_id.clone();
+            reply(
+                &h,
+                &c,
+                json!({"status":"denied","code":"confirmation_expired"}),
+                false,
+            );
+            let _ = h.emit("host-confirm-closed", json!({"call_id": call_id}));
+        }
+    });
+    true
+}
+
+fn is_local(call: &ToolCall) -> bool {
+    call.session_id == commands::LOCAL_SESSION
+}
+
 fn reply(app: &tauri::AppHandle, call: &ToolCall, result: Value, confirmed: bool) {
     let state = app.state::<Desktop>();
+    let days = state.settings.lock().map(|s| s.audit_days).unwrap_or(30);
     if let Ok(_guard) = state.audit_lock.lock() {
         let _ = audit::append(
             &state.root,
             &call.tool,
             result["status"].as_str().unwrap_or("error"),
             confirmed,
+            days,
         );
     }
-    let _ = send(
-        &state.bridge,
-        json!({"type":"client_tool_result","call_id":call.call_id,"result":result}),
-    );
+    if is_local(call) {
+        // Quick commands report to their own runner, never to the server.
+        let waiter = state
+            .waiters
+            .lock()
+            .ok()
+            .and_then(|mut w| w.remove(&call.call_id));
+        if let Some(waiter) = waiter {
+            let _ = waiter.send(result);
+        }
+    } else {
+        let _ = send(
+            &state.bridge,
+            json!({"type":"client_tool_result","call_id":call.call_id,"result":result}),
+        );
+    }
     let _ = app.emit("host-activity", json!({"active":false}));
 }
 fn execute_call(app: tauri::AppHandle, call: ToolCall, confirmed: bool) {
@@ -454,22 +526,12 @@ fn execute_call(app: tauri::AppHandle, call: ToolCall, confirmed: bool) {
             return Err("Сессия заблокирована".into());
         }
         let settings = state.settings.lock().map_err(lock_error)?;
-        let id = state
-            .active_profile
-            .lock()
-            .map_err(lock_error)?
-            .clone()
-            .ok_or("Нет сессии")?;
-        let p = settings
-            .profiles
-            .iter()
-            .find(|p| p.id == id)
-            .ok_or("Нет профиля")?;
+        let session = expected_session(&state, &settings, &call)?;
         policy::validate(
             &call,
             &settings.permissions,
             &settings.device_id,
-            &p.session_id,
+            &session,
             &mut HashMap::new(),
         )
     })();
@@ -488,6 +550,29 @@ fn execute_call(app: tauri::AppHandle, call: ToolCall, confirmed: bool) {
         reply(&app, &call, value, confirmed);
     });
 }
+
+/// Local quick-command calls were validated against the local session when queued; server calls against the profile.
+fn expected_session(
+    state: &Desktop,
+    settings: &Settings,
+    call: &ToolCall,
+) -> Result<String, String> {
+    if is_local(call) {
+        return Ok(commands::LOCAL_SESSION.into());
+    }
+    let id = state
+        .active_profile
+        .lock()
+        .map_err(lock_error)?
+        .clone()
+        .ok_or("Нет сессии")?;
+    settings
+        .profiles
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.session_id.clone())
+        .ok_or_else(|| "Нет профиля".into())
+}
 #[tauri::command]
 fn approve(
     app: tauri::AppHandle,
@@ -505,19 +590,18 @@ fn approve(
         reply(&app, &call, json!({"status":"denied"}), false);
         return Ok(());
     }
+    if call.tool == command_runner::CONFIRM_TOOL && is_local(&call) {
+        // Command-level consent only; every action is still checked by the PC policy on its own.
+        reply(&app, &call, json!({"status":"ok"}), true);
+        return Ok(());
+    }
     let settings = state.settings.lock().map_err(lock_error)?.clone();
-    let id = state
-        .active_profile
-        .lock()
-        .map_err(lock_error)?
-        .clone()
-        .ok_or("Нет сессии")?;
-    let p = profile(&state, &id)?;
+    let session = expected_session(&state, &settings, &call)?;
     policy::validate(
         &call,
         &settings.permissions,
         &settings.device_id,
-        &p.session_id,
+        &session,
         &mut HashMap::new(),
     )?;
     execute_call(app, call, true);
@@ -525,12 +609,17 @@ fn approve(
 }
 #[tauri::command]
 fn chat(
+    app: tauri::AppHandle,
     state: State<'_, Desktop>,
     text: String,
     target_device_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<Value, String> {
     if text.trim().is_empty() || text.len() > 6000 {
         return Err("Сообщение должно содержать 1–6000 символов".into());
+    }
+    // An exact quick-command phrase runs locally without a model turn; anything else goes to the server.
+    if let Some(handled) = command_runner::try_phrase(&app, &state, &text)? {
+        return Ok(handled);
     }
     if state.recording.lock().map_err(lock_error)?.is_some() {
         return Err("Сначала завершите запись".into());
@@ -543,7 +632,7 @@ fn chat(
     if result.is_err() {
         *state.current_turn.lock().map_err(lock_error)? = None;
     }
-    result
+    result.map(|_| json!({"handled":false}))
 }
 #[tauri::command]
 fn disconnect_device(state: State<'_, Desktop>, device_id: String) -> Result<(), String> {
@@ -576,6 +665,8 @@ fn stop_inner(state: &Desktop) -> Result<(), String> {
     cancel.store(true, Ordering::SeqCst);
     *cancel = Arc::new(AtomicBool::new(false));
     state.pending.lock().map_err(lock_error)?.clear();
+    // Dropping the senders wakes any running quick command, which then reports "stopped".
+    state.waiters.lock().map_err(lock_error)?.clear();
     if let Some(recording) = state.recording.lock().map_err(lock_error)?.take() {
         std::thread::spawn(move || {
             let _ = recording.finish();
@@ -662,8 +753,9 @@ async fn record_stop(state: State<'_, Desktop>) -> Result<(), String> {
 #[tauri::command]
 fn audit_log(state: State<'_, Desktop>) -> Result<Vec<Value>, String> {
     let _guard = state.audit_lock.lock().map_err(lock_error)?;
-    audit::prune(&state.root)?;
-    audit::recent(&state.root)
+    let days = state.settings.lock().map_err(lock_error)?.audit_days;
+    audit::prune(&state.root, days)?;
+    audit::recent(&state.root, days)
 }
 #[tauri::command]
 async fn applications() -> Vec<String> {
@@ -675,10 +767,22 @@ pub fn run() {
     apply_graphics();
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let root = storage::data_root().map_err(std::io::Error::other)?;
-            let settings = storage::initialize(&root).map_err(std::io::Error::other)?;
-            audit::prune(&root).map_err(std::io::Error::other)?;
+            let (settings, recoveries) =
+                storage::initialize(&root).map_err(std::io::Error::other)?;
+            for r in &recoveries {
+                logs::log(
+                    &root,
+                    "warn",
+                    &format!(
+                        "recovered {} reason={} restored={}",
+                        r.file, r.reason, r.restored
+                    ),
+                );
+            }
+            audit::prune(&root, settings.audit_days).map_err(std::io::Error::other)?;
             app.manage(Desktop {
                 root,
                 settings: Mutex::new(settings),
@@ -695,9 +799,18 @@ pub fn run() {
                 shortcuts: AtomicBool::new(false),
                 screen_locked: AtomicBool::new(true),
                 current_turn: Mutex::new(None),
+                commands: Mutex::new(commands::Store::default()),
+                waiters: Mutex::new(HashMap::new()),
+                drafts: Mutex::new(HashMap::new()),
+                hotkeys: Mutex::new(HashMap::new()),
+                hotkey_backend: AtomicBool::new(false),
+                running: Mutex::new(None),
+                pending_import: Mutex::new(None),
+                recoveries: Mutex::new(recoveries),
             });
             monitor_session(app.handle().clone());
             setup_shortcuts(app.handle());
+            command_runner::start_watcher(app.handle().clone());
             let open =
                 tauri::menu::MenuItem::with_id(app, "open", "Открыть Neyra", true, None::<&str>)?;
             let stop = tauri::menu::MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
@@ -755,7 +868,23 @@ pub fn run() {
             record_start,
             record_stop,
             audit_log,
-            applications
+            applications,
+            command_runner::commands_list,
+            command_runner::command_save,
+            command_runner::command_save_yaml,
+            command_runner::command_get_yaml,
+            command_runner::command_delete,
+            command_runner::command_set_enabled,
+            command_runner::command_dry_run,
+            command_runner::command_run,
+            command_runner::command_run_phrase,
+            command_runner::draft_confirm,
+            command_runner::draft_reject,
+            command_runner::config_export,
+            command_runner::import_pick,
+            command_runner::import_apply,
+            command_runner::import_cancel,
+            command_runner::choose_data_root
         ])
         .run(tauri::generate_context!());
     if result.is_err() {
@@ -768,9 +897,7 @@ fn apply_graphics() {
     // Called before Tauri/GTK starts threads. Only explicit recovery modes alter graphics.
     let mode = storage::data_root()
         .ok()
-        .and_then(|root| std::fs::read(root.join("settings/app.json")).ok())
-        .and_then(|b| serde_json::from_slice::<Settings>(&b).ok())
-        .map(|s| s.graphics_mode)
+        .map(|root| storage::graphics_mode(&root))
         .unwrap_or_else(|| "auto".into());
     if mode == "auto" {
         return;
@@ -808,6 +935,17 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
     }
     let plugin = tauri_plugin_global_shortcut::Builder::new()
         .with_handler(|app, shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                if let Some(name) = command_runner::hotkey_command(app, shortcut.id()) {
+                    command_runner::run_by_name(app.clone(), name, "hotkey");
+                    return;
+                }
+            }
+            if event.state == ShortcutState::Released
+                && command_runner::hotkey_command(app, shortcut.id()).is_some()
+            {
+                return;
+            }
             if shortcut.key == Code::Escape && event.state == ShortcutState::Pressed {
                 let state = app.state::<Desktop>();
                 let _ = stop_inner(&state);
@@ -843,6 +981,9 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
     if app.plugin(plugin).is_err() {
         return;
     }
+    app.state::<Desktop>()
+        .hotkey_backend
+        .store(true, Ordering::SeqCst);
     let stop = app.global_shortcut().register("Ctrl+Alt+Escape");
     let ptt = app.global_shortcut().register("Ctrl+Alt+Space");
     app.state::<Desktop>()

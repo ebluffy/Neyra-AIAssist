@@ -2,7 +2,7 @@ use crate::{policy::now_ms, storage::atomic_write};
 use serde_json::{json, Value};
 use std::path::Path;
 
-pub fn recent(root: &Path) -> Result<Vec<Value>, String> {
+pub fn recent(root: &Path, days: u32) -> Result<Vec<Value>, String> {
     let path = root.join("audit/actions.json");
     if !path.exists() {
         return Ok(vec![]);
@@ -14,14 +14,20 @@ pub fn recent(root: &Path) -> Result<Vec<Value>, String> {
     let rows: Vec<Value> =
         serde_json::from_slice(&std::fs::read(path).map_err(|_| "Журнал недоступен")?)
             .map_err(|_| "Журнал повреждён")?;
-    let cutoff = now_ms().saturating_sub(30 * 24 * 60 * 60 * 1000);
+    let cutoff = now_ms().saturating_sub(u64::from(days.clamp(1, 365)) * 24 * 60 * 60 * 1000);
     Ok(rows
         .into_iter()
         .filter(|r| r["time"].as_u64().unwrap_or_default() >= cutoff)
         .collect())
 }
-pub fn append(root: &Path, tool: &str, status: &str, confirmed: bool) -> Result<(), String> {
-    let mut rows = recent(root)?;
+pub fn append(
+    root: &Path,
+    tool: &str,
+    status: &str,
+    confirmed: bool,
+    days: u32,
+) -> Result<(), String> {
+    let mut rows = recent(root, days)?;
     // Content-free provenance: when/what/decision only — no args, paths, tokens or output.
     rows.push(json!({"time":now_ms(),"tool":tool,"status":status,"confirmed":confirmed,"origin":"host_bridge"}));
     if rows.len() > 2000 {
@@ -32,10 +38,10 @@ pub fn append(root: &Path, tool: &str, status: &str, confirmed: bool) -> Result<
         &serde_json::to_vec(&rows).map_err(|_| "Журнал недоступен")?,
     )
 }
-pub fn prune(root: &Path) -> Result<(), String> {
+pub fn prune(root: &Path, days: u32) -> Result<(), String> {
     atomic_write(
         &root.join("audit/actions.json"),
-        &serde_json::to_vec(&recent(root)?).map_err(|_| "Журнал недоступен")?,
+        &serde_json::to_vec(&recent(root, days)?).map_err(|_| "Журнал недоступен")?,
     )
 }
 #[cfg(test)]
@@ -50,8 +56,8 @@ mod tests {
             br#"[{"time":1,"tool":"old"}]"#,
         )
         .unwrap();
-        append(&root, "client.open_url", "ok", false).unwrap();
-        let r = recent(&root).unwrap();
+        append(&root, "client.open_url", "ok", false, 30).unwrap();
+        let r = recent(&root, 30).unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0]["tool"], "client.open_url");
         std::fs::remove_dir_all(root).unwrap();
