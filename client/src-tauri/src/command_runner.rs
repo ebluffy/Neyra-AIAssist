@@ -260,6 +260,7 @@ fn describe(result: &Value) -> String {
 enum StepError {
     Timeout,
     Cancelled,
+    Internal(&'static str),
 }
 
 impl StepError {
@@ -268,6 +269,14 @@ impl StepError {
             // The action may still be finishing; do not claim it failed or succeeded.
             Self::Timeout => STEP_UNANSWERED,
             Self::Cancelled => "Остановлено",
+            Self::Internal(message) => message,
+        }
+    }
+
+    fn journal_state(&self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Timeout | Self::Internal(_) => "failed",
         }
     }
 }
@@ -341,7 +350,7 @@ async fn step(
     app.state::<Desktop>()
         .waiters
         .lock()
-        .map_err(|_| StepError::Cancelled)?
+        .map_err(|_| StepError::Internal("Не удалось записать ожидание шага"))?
         .insert(call_id.clone(), tx);
     dispatch(app, call);
     let outcome = wait_for(rx, cancel, STEP_TIMEOUT).await;
@@ -462,11 +471,7 @@ async fn run(
                     app,
                     &run_id,
                     command,
-                    if matches!(error, StepError::Timeout) {
-                        "failed"
-                    } else {
-                        "cancelled"
-                    },
+                    error.journal_state(),
                     error.message(),
                     source,
                     "",
@@ -505,11 +510,7 @@ async fn run(
                     app,
                     &run_id,
                     command,
-                    if matches!(error, StepError::Timeout) {
-                        "failed"
-                    } else {
-                        "cancelled"
-                    },
+                    error.journal_state(),
                     error.message(),
                     source,
                     "",
@@ -1305,7 +1306,12 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, StepError::Cancelled));
         assert_eq!(err.message(), "Остановлено");
+        assert_eq!(err.journal_state(), "cancelled");
         drop(tx);
+        let broken = StepError::Internal("Не удалось записать ожидание шага");
+        assert_eq!(broken.message(), "Не удалось записать ожидание шага");
+        assert_eq!(broken.journal_state(), "failed");
+        assert_eq!(StepError::Timeout.journal_state(), "failed");
     }
     #[test]
     fn failure_messages_are_specific() {

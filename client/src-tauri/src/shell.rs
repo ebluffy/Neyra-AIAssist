@@ -272,13 +272,25 @@ pub fn plan(args: &Map<String, Value>, scope: &Scope) -> Result<Plan, String> {
 }
 
 pub fn preview(plan: &Plan) -> String {
-    let quoted: Vec<String> = std::iter::once(plan.program.to_string_lossy().into_owned())
+    let quoted: Vec<String> = std::iter::once(plan.argv0.clone())
         .chain(plan.args.iter().cloned())
         .map(|a| shlex::try_quote(&a).map(|q| q.into_owned()).unwrap_or(a))
         .collect();
+    let program = plan.program.to_string_lossy();
+    let file_name = plan
+        .program
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let mut command = quoted.join(" ");
+    if plan.argv0 != file_name {
+        let shown = shlex::try_quote(program.as_ref())
+            .map(|quoted| quoted.into_owned())
+            .unwrap_or_else(|_| program.to_string());
+        command.push_str(&format!(" (→ {shown})"));
+    }
     let mut text = format!(
-        "Команда: {}\nПапка: {}\nТаймаут: {} с",
-        quoted.join(" "),
+        "Команда: {command}\nФайл: {program}\nПапка: {}\nТаймаут: {} с",
         plan.cwd.to_string_lossy(),
         plan.timeout.as_secs()
     );
@@ -512,6 +524,22 @@ mod tests {
     }
 
     #[test]
+    fn preview_leads_with_argv0_and_names_the_file() {
+        let plan = Plan {
+            program: PathBuf::from("/usr/bin/busybox"),
+            argv0: "sh".into(),
+            args: vec!["-c".into(), "true".into()],
+            cwd: PathBuf::from("/tmp"),
+            env: Vec::new(),
+            timeout: Duration::from_secs(30),
+        };
+        let card = preview(&plan);
+        assert!(card.starts_with("Команда: sh "));
+        assert!(card.contains("(→ /usr/bin/busybox)"));
+        assert!(card.contains("Файл: /usr/bin/busybox"));
+    }
+
+    #[test]
     fn elevation_is_rejected_directly_and_inside_shell_strings() {
         let (scope, base) = scope();
         for bad in [
@@ -574,6 +602,15 @@ mod tests {
         .unwrap();
         assert_eq!(p.argv0, "sh");
         assert_ne!(p.program.as_os_str(), "sh");
+        let card = preview(&p);
+        assert!(
+            card.starts_with("Команда: sh "),
+            "confirm card must lead with argv0, got {card}"
+        );
+        assert!(
+            card.contains(&*p.program.to_string_lossy()),
+            "confirm card must name the canonical file, got {card}"
+        );
         let out = run(&p, &AtomicBool::new(false)).unwrap();
         assert_eq!(out["stdout"].as_str().unwrap(), "sh");
         let _ = std::fs::remove_dir_all(base);

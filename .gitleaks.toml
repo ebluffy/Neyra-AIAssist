@@ -1,16 +1,7 @@
 title = "Neyra gitleaks"
 
 # Extend default rules — bare config without this disables all rules (AR-57).
-# Historical fake token from 640c57e is ignored via .gitleaksignore fingerprint (AR-71).
+# Fake fixtures in old commits are listed in .gitleaksignore. A path allowlist
+# would hide every future secret in those files, so it is not used here.
 [extend]
 useDefault = true
-
-# AR-38: desktop tests build fake tokens from pieces. Older commits still contain
-# the joined fixtures. Allow only these three files so a later rebase does not
-# depend on commit SHAs. Do not put real credentials in them.
-[allowlist]
-paths = [
-  '''client/src-tauri/src/redact\.rs''',
-  '''client/src-tauri/src/files\.rs''',
-  '''client/src-tauri/src/shell\.rs''',
-]
