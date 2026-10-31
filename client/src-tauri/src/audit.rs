@@ -62,4 +62,28 @@ mod tests {
         assert_eq!(r[0]["tool"], "client.open_url");
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn retention_days_are_configurable_and_clamped() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(root.join("audit")).unwrap();
+        let three_days_ago = now_ms() - 3 * 24 * 60 * 60 * 1000;
+        atomic_write(
+            &root.join("audit/actions.json"),
+            format!(r#"[{{"time":{three_days_ago},"tool":"client.open_url"}}]"#).as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(recent(&root, 7).unwrap().len(), 1);
+        assert_eq!(recent(&root, 2).unwrap().len(), 0);
+        assert_eq!(
+            recent(&root, 0).unwrap().len(),
+            0,
+            "0 is clamped to 1 day, never keeps forever"
+        );
+        assert_eq!(
+            recent(&root, u32::MAX).unwrap().len(),
+            1,
+            "huge values clamp to 365 days"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

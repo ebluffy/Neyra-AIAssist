@@ -45,12 +45,15 @@ fn ensure_loaded(state: &Desktop) -> Result<(), String> {
     Ok(())
 }
 
-fn hotkey_view(state: &Desktop, command: &Command) -> Vec<Value> {
-    let registered: Vec<u32> = state
+fn registered_ids(state: &Desktop) -> Vec<u32> {
+    state
         .hotkeys
         .lock()
         .map(|m| m.keys().copied().collect())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+fn hotkey_view(registered: &[u32], command: &Command) -> Vec<Value> {
     command
         .triggers
         .iter()
@@ -66,11 +69,13 @@ fn hotkey_view(state: &Desktop, command: &Command) -> Vec<Value> {
 }
 
 fn view(state: &Desktop) -> Result<Value, String> {
+    // Never hold the hotkey lock while taking the commands lock (and vice versa): sync_hotkeys does the reverse.
+    let registered = registered_ids(state);
     let store = state.commands.lock().map_err(lock_error)?;
     let items: Vec<Value> = store
         .entries()
         .iter()
-        .map(|e| json!({"file": e.file, "command": e.command, "hotkeys": hotkey_view(state, &e.command)}))
+        .map(|e| json!({"file": e.file, "command": e.command, "hotkeys": hotkey_view(&registered, &e.command)}))
         .collect();
     Ok(json!({
         "commands": items,
