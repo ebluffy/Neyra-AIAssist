@@ -24,6 +24,19 @@ pub enum Decision {
     Confirm,
 }
 
+/// Exact argument names of every tool a command or the server may call.
+pub fn tool_keys(tool: &str) -> Option<&'static [&'static str]> {
+    Some(match tool {
+        "client.open_url" => &["url"],
+        "client.search_web" => &["query"],
+        "client.open_app" => &["path"],
+        "client.focus_window" | "client.close_window" => &["window"],
+        "client.media" | "client.volume" => &["action"],
+        "client.list_windows" | "client.list_apps" => &[],
+        _ => return None,
+    })
+}
+
 pub fn secret_path(path: &Path) -> bool {
     // Match profile/storage locations, not bare browser brand names (AR-5):
     // /opt/google/chrome and chrome.exe stay allowed; User Data / .config profiles do not.
@@ -130,16 +143,7 @@ pub fn validate(
         return Err("Доступ к ПК выключен".into());
     }
     let args = call.arguments.as_object().ok_or("Неверные параметры")?;
-    let keys: Vec<&str> = match call.tool.as_str() {
-        "client.open_url" => vec!["url"],
-        "client.search_web" => vec!["query"],
-        "client.open_app" => vec!["path"],
-        "client.focus_window" | "client.close_window" => vec!["window"],
-        "client.media" => vec!["action"],
-        "client.volume" => vec!["action"],
-        "client.list_windows" | "client.list_apps" => vec![],
-        _ => return Err("Инструмент недоступен".into()),
-    };
+    let keys = tool_keys(&call.tool).ok_or("Инструмент недоступен")?;
     if args.keys().any(|k| !keys.contains(&k.as_str())) || args.len() != keys.len() {
         return Err("Неверные параметры инструмента".into());
     }

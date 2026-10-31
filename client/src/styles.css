@@ -1,3 +1,27 @@
 :root{font-family:system-ui,sans-serif;color-scheme:dark;font-synthesis:none}*{box-sizing:border-box}body{margin:0}.shell{--bg:#101722;--surface:#1a2433;--text:#edf2f7;--muted:#b5c4d5;--border:#73859b;--accent:#50d3e9;background:var(--bg);color:var(--text);min-height:100vh}.shell[data-theme=light]{--bg:#f1f5f9;--surface:#fff;--text:#17243b;--muted:#42556c;--border:#64748b;--accent:#07697b;color-scheme:light}header{display:flex;align-items:center;gap:20px;padding:14px 24px;border-bottom:1px solid var(--border)}header strong{font-size:24px;letter-spacing:.02em}.connection{color:var(--muted)}.activity{margin-left:auto;font-weight:600}.stop{border-color:#ec9898;color:var(--text)}nav{display:flex;gap:8px;flex-wrap:wrap;padding:12px 24px;border-bottom:1px solid var(--border)}nav [aria-current=page]{color:var(--accent);border-color:var(--accent)}button,input,select,textarea{font:inherit;color:inherit;background:var(--surface);border:1px solid var(--border);border-radius:6px}button{padding:10px 15px;min-height:42px;cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed}button:hover:enabled{border-color:var(--accent)}:focus-visible{outline:3px solid var(--accent);outline-offset:3px}main{max-width:1000px;padding:24px;margin:auto}h1{font-size:26px;margin:0 0 16px}h2{font-size:18px;margin:22px 0 12px}p{line-height:1.6}section>p{color:var(--muted)}label{display:flex;flex-direction:column;gap:8px;margin:16px 0;max-width:700px}input,select,textarea{padding:10px;min-height:42px}textarea{min-height:90px;resize:vertical}.actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}.error{border:1px solid #ec9898;padding:16px;margin-bottom:20px;border-radius:6px}.path,pre{font-family:ui-monospace,monospace;overflow-wrap:anywhere}pre{white-space:pre-wrap;max-height:380px;overflow:auto;padding:16px;background:var(--surface)}.messages{min-height:180px;max-height:45vh;overflow-y:auto;scrollbar-gutter:stable}.messages article{padding:12px 0;border-bottom:1px solid var(--border);content-visibility:auto;contain-intrinsic-size:auto 90px}.messages p{white-space:pre-wrap;margin:6px 0}.check{flex-direction:row;align-items:center;max-width:100%}.check input{flex-shrink:0;width:20px;height:20px;min-height:20px}.app-list{max-height:280px;overflow:auto}li{line-height:1.8}dialog{color:var(--text);background:var(--surface);border:2px solid var(--accent);border-radius:8px;width:min(600px,90vw);max-height:85vh;overflow:auto}dialog::backdrop{background:#0009}@media(max-width:700px){header{padding:12px;gap:10px;flex-wrap:wrap}.activity{font-size:14px}nav{padding:12px}nav button{flex:1}main{padding:18px 12px}.connection{font-size:14px}.messages{max-height:40vh}}
 
 h1,h2{text-wrap:balance}.connection,.activity,li{font-variant-numeric:tabular-nums}button:active:enabled{border-color:var(--accent)}
+
+.primary{border-color:var(--accent);color:var(--accent);font-weight:600}
+button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+.hint,.meta{color:var(--muted);margin:6px 0}
+.meta{font-size:15px}
+.runline{min-height:1.6em;font-weight:600}
+.phrase{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}.phrase label{flex:1 1 280px;margin:12px 0}.phrase button{margin-bottom:12px}
+.cards{list-style:none;padding:0;margin:16px 0;display:grid;gap:14px}
+.cards li{border:1px solid var(--border);border-radius:8px;padding:6px 18px 14px;background:var(--surface);line-height:1.5}
+.cards li.off{opacity:.75}.cards h2{margin:12px 0 6px}
+.cards .check{margin:8px 0}
+.empty{border:1px dashed var(--border);border-radius:8px;padding:6px 18px}
+.preview{margin:8px 0 0;padding-left:22px}
+fieldset{border:1px solid var(--border);border-radius:8px;margin:16px 0;padding:6px 16px 16px;max-width:760px}
+legend{padding:0 8px;font-weight:600}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}.row label{flex:1 1 200px;margin:10px 0}.row button{margin-bottom:10px}
+.step{border-top:1px solid var(--border);padding-top:8px}.step:first-of-type{border-top:0}
+details{margin:12px 0}summary{cursor:pointer;min-height:32px}
+dialog.editor{width:min(760px,94vw);padding:6px 22px 20px}
+.yaml{font-family:ui-monospace,monospace;min-height:300px;max-width:100%}
+.import{border:1px solid var(--border);border-radius:8px;padding:6px 18px 12px;margin-top:12px;max-width:760px}
+h3{font-size:16px;margin:14px 0 8px}
+@media(max-width:700px){.row label{flex-basis:100%}dialog.editor{padding:4px 12px 16px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}

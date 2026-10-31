@@ -71,7 +71,7 @@ def router_for(agent, config, authenticate):
         raw = message.get('text')
         if not isinstance(raw, str):
             raise ValueError('bad_packet')
-        if len(raw) > 8192:
+        if len(raw) > 24576:
             raise ValueError('manifest_too_large')
         return Manifest.model_validate_json(raw)
 
@@ -147,10 +147,12 @@ def router_for(agent, config, authenticate):
                     updated = packet.manifest
                     if updated.device_id != manifest.device_id or updated.session_id != manifest.session_id:
                         raise ValueError('identity_changed')
+                    tools_changed = set(updated.tools) != set(manifest.tools)
                     registry.disconnect(connection)
                     manifest = updated
                     connection = registry.connect(session_owner, manifest, send, close=close_socket)
-                    if task:
+                    # Editing quick commands must not abort a running turn; only a narrower/wider tool set does.
+                    if task and tools_changed:
                         task.cancel()
                     await send(dict(type='capabilities', tools=manifest.tools))
                 elif packet.type == 'client_tool_result':
@@ -247,6 +249,12 @@ def router_for(agent, config, authenticate):
                     response = ''
                     terminal = False
                     connection = registry.connections.get((session_owner, str(manifest.device_id)))
+                    if connection and connection.manifest.session_id == manifest.session_id:
+                        matched = connection.manifest.matching_command(text)
+                        if matched:
+                            # The command list lives only in this session's RAM; the client runs it locally under its own policy.
+                            await turn_send(dict(type='command_match', name=matched))
+                            return
                     scope = None
                     if connection and connection.manifest.session_id == manifest.session_id:
                         scope = (registry, session_owner, str(manifest.session_id), str(manifest.device_id))
@@ -283,6 +291,21 @@ def router_for(agent, config, authenticate):
                 except Exception:
                     await turn_send(dict(type='error', code='voice_failed'))
 
+            async def speak(text):
+                """Short fixed reply of a quick command; the same server TTS as normal answers."""
+                try:
+                    wav = await asyncio.wait_for(voice_service.synthesize(text), 60)
+                    if not wav:
+                        await send(dict(type='error', code='tts_unavailable'))
+                        return
+                    for offset in range(0, len(wav), 48000):
+                        await send(dict(type='audio.chunk', data=base64.b64encode(wav[offset:offset+48000]).decode()))
+                    await send(dict(type='audio.done', mime='audio/wav'))
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    await send(dict(type='error', code='voice_failed'))
+
             while True:
                 packet = await asyncio.wait_for(ws.receive(), 300)
                 if packet['type'] == 'websocket.disconnect':
@@ -298,7 +321,7 @@ def router_for(agent, config, authenticate):
                 raw = packet.get('text')
                 if not isinstance(raw, str):
                     raise ValueError('bad_packet')
-                if len(raw) > 1024:
+                if len(raw) > 4096:
                     raise ValueError('packet_too_large')
                 message = json.loads(raw)
                 if not isinstance(message, dict):
@@ -317,6 +340,14 @@ def router_for(agent, config, authenticate):
                         work.cancel()
                         await asyncio.gather(work, return_exceptions=True)
                     await send(dict(type='cancelled', request_id=current_request))
+                elif message.get('type') == 'speak':
+                    text = message.get('text')
+                    if not isinstance(text, str) or not text.strip() or len(text) > 300:
+                        raise ValueError('bad_speak')
+                    if work and not work.done():
+                        await send(dict(type='error', code='turn_busy'))
+                        continue
+                    work = asyncio.create_task(speak(text.strip()))
                 elif message.get('type') == 'ping':
                     await send(dict(type='pong'))
                 else:

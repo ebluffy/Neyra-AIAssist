@@ -398,3 +398,135 @@ def test_desktop_routes_reuse_real_api_roles(client, auth_headers):
     with client.websocket_connect('/v1/desktop/bridge', headers=auth_headers['admin']) as ws:
         ws.send_json(manifest().model_dump(mode='json'))
         assert ws.receive_json()['type'] == 'hello'
+
+
+def command_manifest(**extra):
+    base = manifest(tools=['client.open_url'])
+    data = base.model_dump(mode='json')
+    data['commands'] = [
+        {'name': 'Режим игры', 'triggers': [{'kind': 'phrase', 'value': 'Режим игры!'}], 'actions': ['client.open_app']},
+        {'name': 'Музыка', 'triggers': [{'kind': 'phrase', 'value': 'включи музыку'}, {'kind': 'hotkey', 'value': 'Ctrl+Alt+M'}], 'actions': ['client.media']},
+    ]
+    data.update(extra)
+    return Manifest.model_validate(data)
+
+
+def test_manifest_commands_are_runtime_only_and_hidden_from_other_devices():
+    client, _ = make_client()
+    m = command_manifest()
+    with client, client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-a'}) as ws:
+        ws.send_json(m.model_dump(mode='json')); ws.receive_json()
+        ws.send_json({'type': 'devices'})
+        device = ws.receive_json()['devices'][0]
+        assert 'commands' not in device and 'features' not in device
+    assert brain_tools() == {}
+
+
+def test_manifest_rejects_secrets_shaped_command_payloads():
+    data = command_manifest().model_dump(mode='json')
+    data['commands'][0]['arguments'] = {'path': '/opt/steam'}
+    with pytest.raises(ValueError):
+        Manifest.model_validate(data)
+    data = command_manifest().model_dump(mode='json')
+    data['commands'] = data['commands'] * 17
+    with pytest.raises(ValueError):
+        Manifest.model_validate(data)
+
+
+def test_phrase_match_is_exact_normalized_and_never_ambiguous():
+    m = command_manifest()
+    assert m.matching_command('Нейра, режим игры') == 'Режим игры'
+    assert m.matching_command('РЕЖИМ  игры.') == 'Режим игры'
+    assert m.matching_command('режим игры сейчас') is None
+    assert m.matching_command('') is None
+    twin = command_manifest()
+    twin.commands.append(twin.commands[0].model_copy(update={'name': 'Другая'}))
+    assert twin.matching_command('режим игры') is None
+
+
+def test_voice_phrase_match_skips_llm_and_other_sessions_do_not_match(monkeypatch):
+    async def transcribe(self, pcm):
+        return 'Нейра, режим игры'
+    monkeypatch.setattr(DesktopVoice, 'transcribe', transcribe)
+    client, agent = make_client()
+    m = command_manifest()
+    with client, client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-a'}) as bridge:
+        bridge.send_json(m.model_dump(mode='json')); bridge.receive_json()
+        with client.websocket_connect('/v1/desktop/voice', headers={'Authorization': 'Bearer owner-a'}) as ws:
+            ws.send_json(m.model_dump(mode='json')); ws.receive_json()
+            ws.send_bytes(b'\0\0'); ws.send_json({'type': 'commit'})
+            assert ws.receive_json()['type'] == 'transcript.final'
+            matched = ws.receive_json()
+            assert matched == {'type': 'command_match', 'name': 'Режим игры', 'request_id': None}
+        assert not agent.turns
+    other = command_manifest()
+    other.session_id = uuid.uuid4()
+    with client, client.websocket_connect('/v1/desktop/voice', headers={'Authorization': 'Bearer owner-a'}) as ws:
+        ws.send_json(other.model_dump(mode='json')); ws.receive_json()
+        ws.send_bytes(b'\0\0'); ws.send_json({'type': 'commit'})
+        assert ws.receive_json()['type'] == 'transcript.final'
+        assert ws.receive_json()['type'] == 'token'
+    assert len(agent.turns) == 1
+
+
+def test_capability_refresh_for_commands_does_not_cancel_running_turn():
+    client, _ = make_client()
+    m = command_manifest()
+    with client, client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-a'}) as ws:
+        ws.send_json(m.model_dump(mode='json')); ws.receive_json()
+        edited = m.model_dump(mode='json')
+        edited['commands'] = edited['commands'][:1]
+        ws.send_json({'type': 'capabilities', 'manifest': edited})
+        assert ws.receive_json() == {'type': 'capabilities', 'tools': ['client.open_url']}
+        ws.send_json({'type': 'chat', 'text': 'hello'})
+        assert ws.receive_json()['type'] == 'token'
+
+
+def test_command_draft_tool_only_for_declared_feature_and_sends_to_that_device_only():
+    async def scenario():
+        registry = BridgeRegistry()
+        sent = []
+        async def send(packet): sent.append(packet)
+        plain = command_manifest()
+        registry.connect('owner', plain, send)
+        token = ACTIVE_DESKTOP.set((registry, 'owner', str(plain.session_id), str(plain.device_id)))
+        try:
+            assert 'desktop_command_draft' not in brain_tools()
+        finally:
+            ACTIVE_DESKTOP.reset(token)
+        registry.disconnect(registry.connections[('owner', str(plain.device_id))])
+        featured = command_manifest(features=['command_drafts'])
+        registry.connect('owner', featured, send)
+        token = ACTIVE_DESKTOP.set((registry, 'owner', str(featured.session_id), str(featured.device_id)))
+        try:
+            tool = brain_tools()['desktop_command_draft']
+            ok = await tool.ainvoke({'name': 'Игра', 'phrases': ['режим игры'], 'actions': [{'tool': 'client.open_app', 'arguments': {'path': '/usr/bin/steam'}}]})
+            assert 'draft_sent' in ok
+            assert sent[-1]['type'] == 'command_draft' and sent[-1]['draft']['actions'][0]['tool'] == 'client.open_app'
+            before = len(sent)
+            try:
+                bad = await tool.ainvoke({'name': 'x', 'phrases': ['a'], 'actions': [{'tool': 'client.shell_exec', 'arguments': {}}]})
+            except Exception:
+                bad = 'rejected'
+            assert 'draft_sent' not in bad and len(sent) == before
+        finally:
+            ACTIVE_DESKTOP.reset(token)
+    asyncio.run(scenario())
+
+
+def test_voice_speak_synthesizes_short_text_and_rejects_long_text(monkeypatch):
+    spoken = []
+    async def synthesize(self, text):
+        spoken.append(text)
+        return b'WAV'
+    monkeypatch.setattr(DesktopVoice, 'synthesize', synthesize)
+    client, agent = make_client()
+    with client, client.websocket_connect('/v1/desktop/voice', headers={'Authorization': 'Bearer owner-a'}) as ws:
+        ws.send_json(manifest().model_dump(mode='json')); ws.receive_json()
+        ws.send_json({'type': 'speak', 'text': 'Запускаю режим игры'})
+        assert ws.receive_json()['type'] == 'audio.chunk'
+        assert ws.receive_json()['type'] == 'audio.done'
+        ws.send_json({'type': 'speak', 'text': 'я' * 301})
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()
+    assert spoken == ['Запускаю режим игры'] and not agent.turns

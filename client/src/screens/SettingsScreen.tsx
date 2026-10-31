@@ -1,0 +1,71 @@
+import { useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { type ImportPreview, recoveryText } from '../commands';
+import { type Recovery, type Settings } from '../types';
+
+type Runner = (action: () => Promise<void>) => Promise<void>;
+interface Props {
+  settings: Settings; setSettings: (s: Settings) => void; save: (s: Settings) => Promise<void>; root: string; recoveries: Recovery[];
+  connected: boolean; busy: boolean; run: Runner; notify: (text: string) => void; applyImported: (s: Settings) => void;
+}
+const STATUS: Record<string, string> = { new: 'Новая', same: 'Совпадает', conflict: 'Конфликт имён', invalid: 'Ошибка' };
+
+export function SettingsScreen({ settings, setSettings, save, root, recoveries, connected, busy, run, notify, applyImported }: Props) {
+  const [preview, setPreview] = useState<ImportPreview>();
+  const [mode, setMode] = useState<'merge' | 'replace'>('merge');
+  const [conflict, setConflict] = useState<'skip' | 'overwrite' | 'rename'>('rename');
+  const [withSettings, setWithSettings] = useState(false);
+  const [withPermissions, setWithPermissions] = useState(false);
+  const usable = preview?.items?.filter(i => i.status !== 'invalid').length ?? 0;
+
+  const exportConfig = () => run(async () => {
+    const out = await invoke<{ cancelled: boolean; commands?: number; file?: string }>('config_export');
+    if (!out.cancelled) notify(`Сохранено: ${out.file ?? 'файл'} · команд: ${out.commands ?? 0}. Токены и журнал не включены.`);
+  });
+  const pick = () => run(async () => {
+    const out = await invoke<ImportPreview>('import_pick');
+    if (!out.cancelled) { setPreview(out); setWithSettings(false); setWithPermissions(false); }
+  });
+  const apply = () => run(async () => {
+    if (mode === 'replace' && !window.confirm('Заменить все текущие команды? Старые файлы будут перенесены в резервную папку cache.')) return;
+    const out = await invoke<{ report: { added: number; replaced: number; renamed: number; skipped: number }; settings: Settings }>('import_apply', { mode, conflict, includePermissions: withPermissions, includeSettings: withSettings });
+    applyImported(out.settings); setPreview(undefined);
+    const r = out.report; notify(`Импорт завершён: новых ${r.added}, заменено ${r.replaced}, переименовано ${r.renamed}, пропущено ${r.skipped}.`);
+  });
+  const cancelImport = () => run(async () => { await invoke('import_cancel'); setPreview(undefined); });
+  const moveData = () => run(async () => {
+    if (!window.confirm('Скопировать данные в выбранную папку и использовать её после перезапуска? Старая папка останется нетронутой.')) return;
+    const out = await invoke<{ cancelled: boolean; path?: string }>('choose_data_root');
+    if (!out.cancelled) notify(`Данные скопированы в ${out.path}. Перезапустите Neyra, чтобы использовать новую папку.`);
+  });
+
+  return <section aria-labelledby="settings-title">
+    <h1 id="settings-title">Настройки</h1>
+    {recoveries.length > 0 && <div className="error" role="alert"><strong>Часть файлов настроек была восстановлена</strong><ul>{recoveries.map((r, i) => <li key={i}>{recoveryText(r)}</li>)}</ul></div>}
+    <h2>Этот ПК</h2>
+    <label>Имя этого ПК<input value={settings.device_name} maxLength={80} disabled={connected} aria-describedby={connected ? 'name-locked' : undefined} onChange={e => setSettings({ ...settings, device_name: e.target.value })}/></label>
+    {connected && <p className="hint" id="name-locked">Имя можно менять, когда клиент отключён от сервера.</p>}
+    <label>Тема<select value={settings.theme} onChange={e => setSettings({ ...settings, theme: e.target.value })}><option value="dark">Тёмная</option><option value="light">Светлая</option></select></label>
+    <label>Графика Linux (после перезапуска)<select value={settings.graphics_mode} onChange={e => setSettings({ ...settings, graphics_mode: e.target.value })}><option value="auto">Автоматически</option><option value="wayland">Wayland</option><option value="wayland-nvidia">Wayland · NVIDIA explicit sync workaround</option><option value="x11">X11</option><option value="compatibility">Совместимость (может замедлять UI)</option></select></label>
+    <label className="check"><input type="checkbox" checked={!!settings.character_enabled} disabled title="Будет доступно после шага 7"/>Персонаж на рабочем столе — после шага 7 (оверлей VRM)</label>
+    <label>Хранить журнал действий, дней<input type="number" min={1} max={365} value={settings.audit_days} onChange={e => setSettings({ ...settings, audit_days: Math.min(365, Math.max(1, Number(e.target.value) || 30)) })}/></label>
+    <button disabled={busy} onClick={() => run(async () => { await save(settings); notify('Настройки сохранены'); })}>Сохранить настройки</button>
+    <h2>Данные на этом ПК</h2>
+    <p>Команды, разрешения, журнал и настройки лежат в папке ниже. Токены сервера в неё не попадают: они хранятся в системном хранилище секретов.</p>
+    <p className="path">{root}</p><p className="path">Устройство: {settings.device_id}</p>
+    <button disabled={busy} onClick={moveData}>Сменить папку данных…</button>
+    <h2>Перенос конфигурации</h2>
+    <p>Файл содержит настройки, разрешения и быстрые команды. Без токенов, адресов серверов и журнала. Импортированные команды работают по тем же правилам безопасности этого ПК.</p>
+    <div className="actions"><button disabled={busy} onClick={exportConfig}>Экспортировать…</button><button disabled={busy} onClick={pick}>Импортировать…</button></div>
+    {preview?.items && <div className="import" role="group" aria-label="Предпросмотр импорта">
+      <h3>Предпросмотр импорта</h3>
+      {preview.items.length === 0 ? <p>В файле нет команд.</p> : <ul>{preview.items.map((item, i) => <li key={i}><strong>{item.name}</strong> · {STATUS[item.status]}{item.error ? ` · ${item.error}` : ''}</li>)}</ul>}
+      <label>Режим<select value={mode} onChange={e => setMode(e.target.value as 'merge' | 'replace')}><option value="merge">Добавить к текущим</option><option value="replace">Заменить текущие (с резервной копией)</option></select></label>
+      <label>Если имя уже занято<select value={conflict} onChange={e => setConflict(e.target.value as 'skip' | 'overwrite' | 'rename')}><option value="rename">Сохранить под новым именем</option><option value="skip">Пропустить</option><option value="overwrite">Заменить существующую</option></select></label>
+      <label className="check"><input type="checkbox" checked={withSettings} onChange={e => setWithSettings(e.target.checked)}/>Применить тему и графику из файла</label>
+      <label className="check"><input type="checkbox" checked={withPermissions} onChange={e => setWithPermissions(e.target.checked)}/>Применить разрешения из файла (главный выключатель не включится)</label>
+      {withPermissions && preview.permissions && <p className="hint">Браузер: {preview.permissions.allow_web ? 'да' : 'нет'} · приложения и система: {preview.permissions.system ? 'да' : 'нет'} · доменов: {preview.permissions.web_domains.length} · программ: {preview.permissions.apps}. Программы, которых нет на этом ПК, будут пропущены.</p>}
+      <div className="actions"><button onClick={cancelImport} disabled={busy}>Отмена</button><button className="primary" disabled={busy || (usable === 0 && !withSettings && !withPermissions)} onClick={apply}>Применить импорт</button></div>
+    </div>}
+  </section>;
+}
