@@ -54,6 +54,7 @@ export function useDesktop() {
   const liveRun = useRef(0);
   const keepLocal = useRef(false);
   const historyStamp = useRef(0);
+  const savedSettings = useRef<Settings | undefined>(undefined);
   const urls = useRef<string[]>([]);
   const profile = settings?.profiles.find(item => item.id === profileId);
   const voice: VoiceSettings = settings?.voice ?? defaultVoice;
@@ -97,6 +98,7 @@ export function useDesktop() {
         try { await invoke('save_settings', { settings: nextSettings }); }
         catch (reason) { setError(formatError(reason)); }
       }
+      savedSettings.current = nextSettings;
       setSettings(nextSettings);
       setProfileId(selected?.id ?? '');
       const match = stored.find(item => item.sessionId === sessionId);
@@ -234,7 +236,16 @@ export function useDesktop() {
     return () => window.clearTimeout(timer);
   }, [recording]);
 
-  const save = async (next: Settings) => { await invoke('save_settings', { settings: next }); setSettings(next); };
+  const persistSaved = async (next: Settings) => {
+    const previous = savedSettings.current;
+    savedSettings.current = next;
+    try { await invoke('save_settings', { settings: next }); }
+    catch (reason) {
+      if (savedSettings.current === next) savedSettings.current = previous;
+      throw reason;
+    }
+  };
+  const save = async (next: Settings) => { await persistSaved(next); setSettings(next); };
   const patchProfile = (patch: Partial<Profile>) => { if (settings && profile) setSettings({ ...settings, profiles: settings.profiles.map(item => item.id === profileId ? { ...item, ...patch } : item) }); };
   const request = async <T,>(path: string, method = 'GET') => unwrapApi<T>(await invoke<unknown>('api', { profileId, path, method }));
   const rememberLive = (runId: unknown) => { if (typeof runId === 'number') liveRun.current = runId; };
@@ -357,25 +368,27 @@ export function useDesktop() {
     setPartial(''); tokenBuffer.current = ''; setHistoryOpen(false);
   });
   const addProfile = (created: Profile) => {
-    if (!settings) return;
+    const disk = savedSettings.current;
+    if (!settings || !disk) return;
     const active = threads.find(item => item.id === activeId);
-    const sessionId = firstServerSession(settings.profiles.length > 0, created.session_id, active?.sessionId);
-    if (settings.profiles.length === 0 && active && active.sessionId !== sessionId) setThreads(list => list.map(item => item.id === active.id ? { ...item, sessionId } : item));
-    const next = { ...settings, active_profile: created.id, profiles: [...settings.profiles, { ...created, session_id: sessionId }] };
-    setSettings(next);
+    const sessionId = firstServerSession(disk.profiles.length > 0, created.session_id, active?.sessionId);
+    if (disk.profiles.length === 0 && active && active.sessionId !== sessionId) setThreads(list => list.map(item => item.id === active.id ? { ...item, sessionId } : item));
+    const profile = { ...created, session_id: sessionId };
+    const saved = { ...disk, active_profile: created.id, profiles: [...disk.profiles, profile] };
+    setSettings({ ...settings, active_profile: created.id, profiles: [...settings.profiles, profile] });
     setProfileId(created.id);
-    void save(next).catch(reason => setError(formatError(reason)));
+    void persistSaved(saved).catch(reason => setError(formatError(reason)));
   };
   const chooseProfile = (id: string) => {
     setProfileId(id);
     setToken('');
     setStatus(undefined);
-    if (!settings) return;
+    const disk = savedSettings.current;
+    if (!settings || !disk) return;
     const active = threads.find(item => item.id === activeId);
-    const profiles = active && isUuid(active.sessionId) ? bindProfileSession(settings.profiles, id, active.sessionId) : settings.profiles;
-    const next = { ...settings, profiles, active_profile: id };
-    setSettings(next);
-    void save(next).catch(reason => setError(formatError(reason)));
+    const bind = (list: Settings['profiles']) => active && isUuid(active.sessionId) ? bindProfileSession(list, id, active.sessionId) : list;
+    setSettings({ ...settings, active_profile: id, profiles: bind(settings.profiles) });
+    void persistSaved({ ...disk, active_profile: id, profiles: bind(disk.profiles) }).catch(reason => setError(formatError(reason)));
   };
   const refreshStatus = () => run(async () => { const out = await request<unknown>('/v1/health'); setStatus(out); });
   const refreshPlugins = () => run(async () => { const out = await request<{ plugins?: Plugin[] }>('/v1/plugins'); setPlugins(Array.isArray(out?.plugins) ? out.plugins : []); });

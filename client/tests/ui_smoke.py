@@ -505,5 +505,30 @@ with sync_playwright() as p:
     remembered.get_by_role('complementary', name='История чатов').locator('li').get_by_role('button', name=re.compile(r'^Новый чат')).click()
     expect(remembered.get_by_text('История с сервера')).to_be_visible()
     remembered.close()
+    draft = browser.new_page(viewport={'width': 1100, 'height': 820})
+    draft.add_init_script(INIT)
+    draft.goto('http://127.0.0.1:1420')
+    draft.wait_for_load_state('networkidle')
+    expect(draft.get_by_role('heading', name=re.compile(r'^Добр'))).to_be_visible()
+    menu(draft, 'Сервер и устройства')
+    draft.get_by_label('Адрес сервера').fill('http://192.168.1.5:8787')
+    draft.get_by_role('button', name='Добавить профиль', exact=True).click()
+    expect(draft.get_by_text('Удалённый сервер требует HTTPS')).to_have_count(0)
+    added = draft.evaluate("""() => {
+      const row = window.testCalls.filter(c => c.cmd==='save_settings').at(-1).args.settings;
+      const first = row.profiles.find(item => item.name === 'Локальный стенд');
+      const second = row.profiles.find(item => item.name === 'Новый сервер');
+      return {url: first && first.url, active: row.active_profile, id: second && second.id, leaked: JSON.stringify(row).includes('192.168.1.5')};
+    }""")
+    assert added['url'] == 'http://127.0.0.1:8787' and added['active'] == added['id'] and not added['leaked'], added
+    draft.get_by_label('Профиль').select_option(label='Локальный стенд')
+    expect(draft.get_by_label('Адрес сервера')).to_have_value('http://192.168.1.5:8787')
+    chosen = draft.evaluate("""() => {
+      const row = window.testCalls.filter(c => c.cmd==='save_settings').at(-1).args.settings;
+      const first = row.profiles.find(item => item.name === 'Локальный стенд');
+      return {url: first && first.url, active: row.active_profile, id: first && first.id, leaked: JSON.stringify(row).includes('192.168.1.5')};
+    }""")
+    assert chosen['url'] == 'http://127.0.0.1:8787' and chosen['active'] == chosen['id'] and not chosen['leaked'], chosen
+    draft.close()
     browser.close()
 print('PASS: chat-first shell, gear sections, voice, permissions, commands, settings, three themes. Native boundary simulated.')
