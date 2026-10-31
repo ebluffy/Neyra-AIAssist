@@ -74,16 +74,12 @@ def main() -> int:
 
     from modules.discord.music import (
         ONLY_ALLOWED_MUSIC_URLS,
-        ONLY_YOUTUBE_VIDEO_URLS,
         _canonical_youtube_url_from_text,
         _looks_like_url,
         _normalize_allowed_music_url,
         _normalize_play_query,
         _youtube_video_id,
     )
-
-    # Backward compat alias check.
-    assert ONLY_YOUTUBE_VIDEO_URLS == ONLY_ALLOWED_MUSIC_URLS
 
     assert _normalize_play_query("включи <https://youtu.be/abc123XYZ>") == (
         "https://www.youtube.com/watch?v=abc123XYZ",
@@ -177,14 +173,14 @@ def main() -> int:
 
     async def _run_search_cases() -> None:
         calls.clear()
-        out = await music_mod._search_tracks_youtube(fake_wl, "Playboi Carti", node)
+        out = await music_mod._search_tracks(fake_wl, "Playboi Carti", node)
         assert out and calls, calls
         assert calls[0]["raw"] == "Playboi Carti", calls
         assert calls[0]["source"] is _FakeTrackSource.YouTube, calls
         assert "ytsearch:" not in str(calls[0]["raw"])
 
         calls.clear()
-        out = await music_mod._search_tracks_youtube(
+        out = await music_mod._search_tracks(
             fake_wl, "https://www.youtube.com/watch?v=LLhpBVfH2Zg", node
         )
         assert out and calls, calls
@@ -192,24 +188,24 @@ def main() -> int:
         assert calls[0].get("source") is None, calls
 
         calls.clear()
-        out = await music_mod._search_tracks_youtube(fake_wl, "icy://127.0.0.1/", node)
+        out = await music_mod._search_tracks(fake_wl, "icy://127.0.0.1/", node)
         assert out == [] and calls == [], calls
 
         calls.clear()
-        out = await music_mod._search_tracks_youtube(fake_wl, "ytsearch:foo bar", node)
+        out = await music_mod._search_tracks(fake_wl, "ytsearch:foo bar", node)
         assert out and calls, calls
         assert calls[0].get("fetch") == "ytsearch:foo bar" or calls[0].get("raw") == "ytsearch:foo bar", calls
 
         # Test SoundCloud URL passthrough.
         calls.clear()
-        out = await music_mod._search_tracks_youtube(fake_wl, "https://soundcloud.com/artist/track", node)
+        out = await music_mod._search_tracks(fake_wl, "https://soundcloud.com/artist/track", node)
         assert out and calls, calls
         assert calls[0]["raw"].startswith("https://soundcloud.com/"), calls
         assert calls[0].get("source") is None, calls
 
         # Test scsearch: prefix.
         calls.clear()
-        out = await music_mod._search_tracks_youtube(fake_wl, "scsearch:artist track", node)
+        out = await music_mod._search_tracks(fake_wl, "scsearch:artist track", node)
         assert out and calls, calls
         assert calls[0].get("fetch") == "scsearch:artist track" or calls[0].get("raw") == "scsearch:artist track", calls
 
@@ -218,15 +214,15 @@ def main() -> int:
     # AR-1: Multiple URLs in one query must not call Playable.search at all.
     async def _run_ar1_tests() -> None:
         calls.clear()
-        out = await music_mod._search_tracks_youtube(fake_wl, "https://soundcloud.com/x icy://127.0.0.1/", node)
+        out = await music_mod._search_tracks(fake_wl, "https://soundcloud.com/x icy://127.0.0.1/", node)
         assert out == [] and calls == [], f"Multiple URLs should return [] without search calls: {calls}"
 
         calls.clear()
-        out = await music_mod._search_tracks_youtube(fake_wl, "https://youtu.be/abc icy://127.0.0.1/", node)
+        out = await music_mod._search_tracks(fake_wl, "https://youtu.be/abc icy://127.0.0.1/", node)
         assert out == [] and calls == [], f"YouTube + malicious URL should return [] without search calls: {calls}"
 
         calls.clear()
-        out = await music_mod._search_tracks_youtube(fake_wl, "https://soundcloud.com/x#t=1", node)
+        out = await music_mod._search_tracks(fake_wl, "https://soundcloud.com/x#t=1", node)
         assert out and calls, f"Single SoundCloud URL with fragment should work: {calls}"
         assert "soundcloud.com/x" in calls[0]["raw"], f"Fragment should be stripped: {calls[0]['raw']}"
         assert "#t=1" not in calls[0]["raw"], f"Fragment should not be in normalized URL: {calls[0]['raw']}"
@@ -243,6 +239,16 @@ def main() -> int:
     assert music_mod._normalize_allowed_music_url("https://m.twitch.tv/channel") == "https://www.twitch.tv/channel"
     assert music_mod._normalize_allowed_music_url("https://clips.twitch.tv/ClipSlug") == "https://clips.twitch.tv/ClipSlug"
     assert music_mod._normalize_allowed_music_url("https://artist.bandcamp.com/track") == "https://artist.bandcamp.com/track"
+
+    # AR-5: player.vimeo.com strict validation
+    assert music_mod._normalize_allowed_music_url("https://player.vimeo.com/foo") == ""
+    assert music_mod._normalize_allowed_music_url("https://player.vimeo.com/") == ""
+    assert music_mod._normalize_allowed_music_url("https://player.vimeo.com/video/") == ""
+    assert music_mod._normalize_allowed_music_url("https://player.vimeo.com/video/abc") == ""
+    assert music_mod._normalize_allowed_music_url("https://player.vimeo.com/video/123") == "https://vimeo.com/123"
+    assert music_mod._normalize_allowed_music_url("https://player.vimeo.com/video/123/") == "https://vimeo.com/123"
+    # AR-5: twitch.tv bare host normalization
+    assert music_mod._normalize_allowed_music_url("https://twitch.tv/somechannel") == "https://www.twitch.tv/somechannel"
 
     print("OK test_discord_music_intent_offline")
     return 0
