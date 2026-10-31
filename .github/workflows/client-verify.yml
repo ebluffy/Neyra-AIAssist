@@ -38,7 +38,8 @@ jobs:
       - run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
         working-directory: client/src-tauri
       - name: Release installer
-        run: npm run tauri build -- --bundles ${{ runner.os == 'Windows' && 'nsis' || 'deb' }}
+        # Linux: deb + AppImage. Updater signature artifacts stay off in tauri.conf until secrets exist.
+        run: npm run tauri build -- --bundles ${{ runner.os == 'Windows' && 'nsis' || 'deb,appimage' }}
         working-directory: client
       - uses: actions/upload-artifact@v4
         with:
@@ -46,4 +47,5 @@ jobs:
           path: |
             client/src-tauri/target/release/bundle/nsis/*.exe
             client/src-tauri/target/release/bundle/deb/*.deb
+            client/src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error

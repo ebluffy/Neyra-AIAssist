@@ -30,7 +30,7 @@ npm run tauri build -- --bundles deb   # Linux
 npm run tauri build -- --bundles nsis  # Windows
 ```
 
-Dependency lifecycle scripts are disabled for installation; Vite/esbuild and the Tauri CLI use their platform packages. CI produces unsigned test installers as artifacts, not an updater release. Production signing and N→N+1 testing remain step 8.
+Dependency lifecycle scripts are disabled for installation; Vite/esbuild and the Tauri CLI use their platform packages. CI produces unsigned test installers (`nsis` / `deb` / `AppImage`) as artifacts, not a signed updater release. Updater plugin + pubkey are wired; `createUpdaterArtifacts` stays off until signing secrets exist — see `docs/UPDATER.md`. Character step-0 license research lives in `character/LICENSES.md` (Desktop Mate assets are not redistributable).
 
 ## Local data and credentials
 

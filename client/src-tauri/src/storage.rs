@@ -88,9 +88,11 @@ pub fn initialize(root: &Path) -> Result<Settings, String> {
         "character",
         "models",
         "cache",
+        "wakeword",
     ] {
         fs::create_dir_all(root.join(dir)).map_err(|_| "Не удалось создать папку Neyra")?;
     }
+    seed_character_docs(root)?;
     let path = root.join("settings/app.json");
     if path.exists() {
         let settings: Settings =
@@ -105,6 +107,25 @@ pub fn initialize(root: &Path) -> Result<Settings, String> {
         save(root, &settings)?;
         Ok(settings)
     }
+}
+
+fn seed_character_docs(root: &Path) -> Result<(), String> {
+    // Step-0 license research only; no binary .vrm bundled (ship/owner may deepen).
+    let licenses = root.join("character/LICENSES.md");
+    if !licenses.exists() {
+        atomic_write(
+            &licenses,
+            include_str!("../../character/LICENSES.md").as_bytes(),
+        )?;
+    }
+    let readme = root.join("character/README.txt");
+    if !readme.exists() {
+        atomic_write(
+            &readme,
+            include_str!("../../character/README.txt").as_bytes(),
+        )?;
+    }
+    Ok(())
 }
 
 pub fn save(root: &Path, settings: &Settings) -> Result<(), String> {
@@ -171,6 +192,16 @@ mod tests {
         let s = initialize(&root).unwrap();
         save(&root, &s).unwrap();
         assert_eq!(initialize(&root).unwrap().device_id, s.device_id);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn initialize_seeds_character_license_research() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        initialize(&root).unwrap();
+        let licenses = fs::read_to_string(root.join("character/LICENSES.md")).unwrap();
+        assert!(licenses.contains("Desktop Mate"));
+        assert!(licenses.contains("не redistributable") || licenses.contains("Нет"));
+        assert!(root.join("wakeword").is_dir());
         fs::remove_dir_all(root).unwrap();
     }
 }

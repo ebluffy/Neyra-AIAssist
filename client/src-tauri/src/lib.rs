@@ -674,6 +674,7 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     apply_graphics();
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let root = storage::data_root().map_err(std::io::Error::other)?;
             let settings = storage::initialize(&root).map_err(std::io::Error::other)?;
