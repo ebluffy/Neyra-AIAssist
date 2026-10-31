@@ -276,7 +276,7 @@
 
 **Первая поставка шагов 1–3 (2026-10-31, без шагов 4+):**
 
-- [x] Синхронизация с main после merge PR #34 (`d5e7832`): серверные исправления памяти/маршрутизации включены в ветку клиента. AR-1…AR-11 PR #35 закрыты в `1adf98d`; последующие замечания АР (карточка confirm, трекер) правятся в follow-up коммитах того же PR.
+- [x] Синхронизация с main после merge PR #34 (`d5e7832`): серверные исправления памяти/маршрутизации включены в ветку клиента. AR-1…AR-11 PR #35 закрыты в `1adf98d`; AR-12 (карточка confirm / `host-confirm-closed`) — в `e95944d`; AR-13 (трекер PLAN и body: без «follow-up», актуальные pytest/owner) закрыт в этом коммите трекера.
 
 - [x] Самостоятельный Tauri/Rust + React/TS: профили сервера, проверка health/API, токен только в OS keyring без plaintext fallback, private streaming-чат, Статус, enable/disable модулей и мягкий рестарт; трей Open/Stop/Quit. UI offline/error и тёмная/светлая тема проверены браузером с симулированным native IPC; это не end-to-end проверка ОС.
 - [x] Локальные versioned settings/permissions в `settings/app.json`, audit в `audit/actions.json`; UUID устройства и private-сессии профиля. Создание `Documents/Neyra` и запуск release-бинарника проверены под Xvfb с временным HOME. Каталоги будущих команд/персонажа/models пока только зарезервированы, без реализации шагов 4–7.
