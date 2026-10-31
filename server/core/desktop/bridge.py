@@ -277,6 +277,9 @@ def brain_tools():
     }
     result = {}
     for name in connection.manifest.tools:
+        description = descriptions.get(name)
+        if description is None:
+            continue
         async def run(arguments: dict, _tool=name):
             out = await _desktop_action(registry, owner, session, device, _tool, arguments)
             if not isinstance(out, dict):
@@ -298,7 +301,7 @@ def brain_tools():
             return json.dumps(out, ensure_ascii=False)
         wire_name = name.replace(".", "_")
         result[wire_name] = StructuredTool.from_function(
-            name=wire_name, description=descriptions[name],
+            name=wire_name, description=description,
             coroutine=run, args_schema=Arguments)
     if 'command_drafts' in connection.manifest.features:
         result['desktop_command_draft'] = _draft_tool(connection)
