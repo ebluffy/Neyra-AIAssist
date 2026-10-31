@@ -1,0 +1,1 @@
+{"identifier":"character","description":"Character overlay page (local bundle only). Receives app events.","windows":["character"],"permissions":["core:event:default"]}

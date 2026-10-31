@@ -1,0 +1,129 @@
+name: Desktop release (draft)
+# Builds signed installers and updater metadata into a DRAFT GitHub release.
+# It never publishes: the owner reviews the draft and publishes it by hand.
+# Fails before building when signing secrets or the production public key are missing.
+on:
+  push:
+    tags:
+      - 'client-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, for example client-v0.1.0-beta.1'
+        required: true
+permissions:
+  contents: write
+concurrency:
+  group: client-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: tag
+        run: |
+          tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#client-v}" >> "$GITHUB_OUTPUT"
+          case "$tag" in *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT";; *) echo "prerelease=false" >> "$GITHUB_OUTPUT";; esac
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+      - name: Versions match the tag
+        run: node scripts/check-versions.mjs "$TAG"
+        working-directory: client
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+      - name: Signing secret and public key are present
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Secret TAURI_SIGNING_PRIVATE_KEY is not set. Nothing was built or published. See client/docs/UPDATER.md."
+            exit 1
+          fi
+          node -e '
+            const c = JSON.parse(require("fs").readFileSync("src-tauri/tauri.conf.json", "utf8")).plugins.updater;
+            const test = require("fs").readFileSync("src-tauri/updater-test/test.key.pub", "utf8").trim();
+            if (!c.pubkey || c.pubkey === "REPLACE_WITH_PRODUCTION_PUBKEY") throw new Error("plugins.updater.pubkey is a placeholder");
+            if (c.pubkey.trim() === test) throw new Error("plugins.updater.pubkey is the committed TEST key");
+            for (const flag of ["dangerousInsecureTransportProtocol", "dangerousAcceptInvalidCerts", "dangerousAcceptInvalidHostnames", "allowDowngrades"]) if (flag in c) throw new Error(flag + " must stay unset");
+            if (c.requireSignedVersion !== true) throw new Error("requireSignedVersion must be true");
+          '
+        working-directory: client
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            bundles: nsis
+          - name: Linux
+            os: ubuntu-22.04
+            bundles: appimage,deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libdbus-1-dev
+      - run: npm ci --ignore-scripts
+        working-directory: client
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: client
+          tagName: ${{ needs.preflight.outputs.tag }}
+          releaseName: Neyra desktop ${{ needs.preflight.outputs.version }}
+          releaseBody: Draft. Unsigned code (no Authenticode/SmartScreen certificate). Review before publishing.
+          releaseDraft: true
+          prerelease: ${{ needs.preflight.outputs.prerelease == 'true' }}
+          includeUpdaterJson: true
+          args: --config src-tauri/tauri.release.conf.json --bundles ${{ matrix.bundles }}
+      - name: Signatures are bound to this version
+        shell: bash
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          mapfile -t sigs < <(find src-tauri/target -path '*bundle*' -name '*.sig')
+          if [ "${#sigs[@]}" -eq 0 ]; then echo "::error::No updater signatures were produced"; exit 1; fi
+          node scripts/check-updater-signature.mjs "$VERSION" "${sigs[@]}"
+        working-directory: client
+      - name: Next steps
+        if: matrix.os == 'ubuntu-22.04'
+        env:
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          {
+            echo "### Draft release $TAG"
+            echo "Nothing was published. Review the draft, test N to N+1 (client/docs/UPDATER.md), then publish by hand."
+            echo "Beta channel: copy latest.json to the rolling prerelease client-beta after publishing."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -12,6 +12,10 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.json text eol=lf
+*.lock text eol=lf
+*.toml text eol=lf
+*.rs text eol=lf
+*.mjs text eol=lf
 
 # Windows launcher: UTF-8 (BOM preferred). Boot script is ASCII-only fallback.
 server/scripts/neyra_win_launcher.ps1 text working-tree-encoding=UTF-8

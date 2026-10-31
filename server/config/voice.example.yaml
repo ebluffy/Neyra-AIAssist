@@ -2,6 +2,8 @@
 # EN/RU: see docs/PLAN.md section 1c; docs/en/setup/config-reference.md; docs/ru/setup/config-reference.md
 #
 voice:
+  # Desktop PTT /v1/desktop/voice reuses these server-side lanes.
+  # Client capture: PCM s16le, mono 16 kHz, at most 30 seconds; audio is not retained.
   # EN: Default language (ISO-639-1).
   # RU: Язык по умолчанию (ISO-639-1).
   language: "ru"
@@ -71,4 +73,19 @@ voice:
       speed: 1.1
       pitch_shift_hz: 50.0
       timeout_seconds: 60.0
+
+  # Optional voice conversion after TTS (desktop voice). Runs on the server only.
+  # Models are read in place from server/models/ (plain file names, no paths).
+  # Backend "rvc" needs the optional package: pip install rvc-python (not in requirements.txt).
+  conversion:
+    enabled: false
+    backend: rvc
+    model: "whisper_girl_e257_s3598.pth"
+    index: "whisper_girl.index"
+    # passthrough = send the original TTS voice and tell the client;
+    # stop = stop speaking this turn with conversion_failed. Unknown value = stop.
+    on_error: passthrough
+    pitch: 0
+    device: "cpu"
+    timeout_seconds: 20.0
 
