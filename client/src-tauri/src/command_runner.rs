@@ -1121,22 +1121,27 @@ pub async fn choose_data_root(app: tauri::AppHandle) -> Result<Value, String> {
         });
         return Ok(json!({"cancelled":false,"needs_choice":true,"path":target}));
     }
-    storage::move_data_root(&state.root, &target)?;
-    finish_data_move(&state, &target)
+    let reused = storage::move_data_root(&state.root, &target)?;
+    finish_data_move(&state, &target, reused)
 }
 
 #[tauri::command]
 pub fn confirm_data_root(app: tauri::AppHandle, choice: String) -> Result<Value, String> {
     let state = app.state::<Desktop>();
+    if choice == "cancel" {
+        if let Ok(mut pending) = state.pending_data_move.lock() {
+            *pending = None;
+        }
+        return Ok(json!({"cancelled": true}));
+    }
     if state.relocated.load(Ordering::SeqCst) {
         return Err(
             "Папка данных сменится после перезапуска. До перезапуска сохранение отключено.".into(),
         );
     }
-    let mode = match choice.as_str() {
-        "cancel" => None,
-        "use_existing" => Some(false),
-        "overwrite" => Some(true),
+    let overwrite = match choice.as_str() {
+        "use_existing" => false,
+        "overwrite" => true,
         _ => return Err("Неизвестный выбор".into()),
     };
     let pending = state
@@ -1146,31 +1151,37 @@ pub fn confirm_data_root(app: tauri::AppHandle, choice: String) -> Result<Value,
         .take()
         .filter(|item| item.created.elapsed() < DATA_MOVE_TTL)
         .ok_or("Выберите папку ещё раз")?;
-    let Some(overwrite) = mode else {
-        return Ok(json!({"cancelled":true}));
-    };
-    let moved = if overwrite {
-        storage::overwrite_data_root(&state.root, &pending.target)
+    let reused = if overwrite {
+        storage::overwrite_data_root(&state.root, &pending.target).map(|()| false)
     } else {
-        storage::move_data_root(&state.root, &pending.target).map(|_| ())
+        storage::move_data_root(&state.root, &pending.target)
     };
-    if let Err(err) = moved {
-        *state.pending_data_move.lock().map_err(lock_error)? = Some(pending);
-        return Err(err);
-    }
-    finish_data_move(&state, &pending.target)
+    let reused = match reused {
+        Ok(flag) => flag,
+        Err(err) => {
+            *state.pending_data_move.lock().map_err(lock_error)? = Some(pending);
+            return Err(err);
+        }
+    };
+    finish_data_move(&state, &pending.target, reused)
 }
 
-fn finish_data_move(state: &Desktop, target: &std::path::Path) -> Result<Value, String> {
+fn data_move_done(target: &std::path::Path, reused_existing: bool) -> Value {
+    json!({"cancelled":false,"needs_choice":false,"path":target,"restart_required":true,"reused_existing":reused_existing})
+}
+
+fn finish_data_move(
+    state: &Desktop,
+    target: &std::path::Path,
+    reused_existing: bool,
+) -> Result<Value, String> {
     logs::log(
         &state.root,
         "info",
         "data folder changed; restart required; writes blocked",
     );
     state.relocated.store(true, Ordering::SeqCst);
-    Ok(
-        json!({"cancelled":false,"needs_choice":false,"path":target,"restart_required":true,"reused_existing":false}),
-    )
+    Ok(data_move_done(target, reused_existing))
 }
 
 #[cfg(test)]
@@ -1312,6 +1323,16 @@ mod tests {
         assert_eq!(broken.message(), "Не удалось записать ожидание шага");
         assert_eq!(broken.journal_state(), "failed");
         assert_eq!(StepError::Timeout.journal_state(), "failed");
+    }
+    #[test]
+    fn reused_existing_is_true_only_when_the_folder_was_kept() {
+        let path = std::path::Path::new("/data/Neyra");
+        let kept = data_move_done(path, true);
+        let copied = data_move_done(path, false);
+        assert_eq!(kept["reused_existing"], true);
+        assert_eq!(copied["reused_existing"], false);
+        assert_eq!(kept["restart_required"], true);
+        assert_eq!(copied["path"], "/data/Neyra");
     }
     #[test]
     fn failure_messages_are_specific() {

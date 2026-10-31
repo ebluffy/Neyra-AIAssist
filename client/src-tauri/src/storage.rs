@@ -267,16 +267,7 @@ fn stage_data_root(
     }
     let reused = target.join("settings/app.json").exists();
     if reused && overwrite {
-        let parent = target
-            .parent()
-            .ok_or("Не удалось отложить прежнюю папку Neyra")?;
-        let name = target
-            .file_name()
-            .ok_or("Не удалось отложить прежнюю папку Neyra")?;
-        let backup = parent.join(format!("{}.previous-{}", name.to_string_lossy(), now_ms()));
-        fs::rename(&target, &backup).map_err(|_| "Не удалось отложить прежнюю папку Neyra")?;
-        fs::create_dir_all(&target).map_err(|_| "Не удалось создать выбранную папку")?;
-        copy_tree(&current, &target, 0)?;
+        replace_with_incoming(&current, &target)?;
     } else if !reused {
         copy_tree(&current, &target, 0)?;
     }
@@ -284,6 +275,70 @@ fn stage_data_root(
         fs::create_dir_all(target.join(dir)).map_err(|_| "Не удалось подготовить папку Neyra")?;
     }
     Ok((target, reused && !overwrite))
+}
+
+/// Copies `current` beside `target`, then swaps the finished copy into place.
+/// A failed copy never moves `target`. If the final rename fails, `target` is put back.
+fn replace_with_incoming(current: &Path, target: &Path) -> Result<(), String> {
+    let parent = target
+        .parent()
+        .ok_or("Не удалось отложить прежнюю папку Neyra")?;
+    let name = target
+        .file_name()
+        .ok_or("Не удалось отложить прежнюю папку Neyra")?;
+    let stamp = now_ms();
+    let label = name.to_string_lossy();
+    let incoming = parent.join(format!("{label}.incoming-{stamp}"));
+    let previous = parent.join(format!("{label}.previous-{stamp}"));
+    if let Err(err) = copy_aside(current, &incoming) {
+        let _ = fs::remove_dir_all(&incoming);
+        return Err(err);
+    }
+    if let Err(err) = replace_with_incoming_swap(target, &incoming, &previous) {
+        let _ = fs::remove_dir_all(&incoming);
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn replace_with_incoming_swap(
+    target: &Path,
+    incoming: &Path,
+    previous: &Path,
+) -> Result<(), String> {
+    if fs::rename(target, previous).is_err() {
+        return Err("Не удалось отложить прежнюю папку Neyra".into());
+    }
+    if fs::rename(incoming, target).is_err() {
+        return match put_previous_back(target, previous) {
+            Ok(()) => Err("Не удалось заменить папку данных".into()),
+            Err(left) => Err(format!("Не удалось заменить папку данных. {left}")),
+        };
+    }
+    Ok(())
+}
+
+fn copy_aside(current: &Path, incoming: &Path) -> Result<(), String> {
+    if incoming.exists() {
+        fs::remove_dir_all(incoming).map_err(|_| "Не удалось скопировать данные")?;
+    }
+    fs::create_dir_all(incoming).map_err(|_| "Не удалось скопировать данные")?;
+    copy_tree(current, incoming, 0)?;
+    for dir in DIRECTORIES {
+        fs::create_dir_all(incoming.join(dir)).map_err(|_| "Не удалось подготовить папку Neyra")?;
+    }
+    Ok(())
+}
+
+fn put_previous_back(target: &Path, previous: &Path) -> Result<(), String> {
+    if !previous.exists() {
+        return Ok(());
+    }
+    if target.exists() {
+        return Err(format!("Прежние данные остались в {}.", previous.display()));
+    }
+    fs::rename(previous, target)
+        .map_err(|_| format!("Прежние данные остались в {}.", previous.display()))
 }
 
 fn copy_tree(from: &Path, to: &Path, depth: usize) -> Result<(), String> {
@@ -954,7 +1009,72 @@ mod tests {
                 && entry.path().join("commands/old.yaml").is_file()
         });
         assert!(parked);
+        let leftover = fs::read_dir(&parent)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().contains(".incoming-"));
+        assert!(!leftover);
         fs::remove_dir_all(from).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+    #[test]
+    fn overwrite_of_a_too_deep_tree_leaves_the_old_folder() {
+        let from = temp();
+        initialize(&from).unwrap();
+        let mut deep = from.join("commands");
+        for name in ["l1", "l2", "l3", "l4", "l5", "l6"] {
+            deep = deep.join(name);
+        }
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("too-deep.txt"), "x").unwrap();
+        let parent = temp();
+        let to = parent.join("Neyra");
+        initialize(&to).unwrap();
+        fs::write(to.join("commands/old.yaml"), "old").unwrap();
+        let err = stage_data_root(&from, &to, true).unwrap_err();
+        assert!(err.contains("глубокая"));
+        assert_eq!(fs::read(to.join("commands/old.yaml")).unwrap(), b"old");
+        assert!(!fs::read_dir(&parent).unwrap().flatten().any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.contains(".incoming-") || name.contains(".previous-")
+        }));
+        fs::remove_dir_all(from).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+    #[test]
+    fn failed_swap_puts_the_previous_folder_back() {
+        let parent = temp();
+        let target = parent.join("Neyra");
+        fs::create_dir_all(target.join("commands")).unwrap();
+        fs::write(target.join("commands/old.yaml"), "old").unwrap();
+        let incoming = parent.join("Neyra.incoming-missing");
+        let previous = parent.join("Neyra.previous-test");
+        let err = replace_with_incoming_swap(&target, &incoming, &previous).unwrap_err();
+        assert_eq!(err, "Не удалось заменить папку данных");
+        assert_eq!(fs::read(target.join("commands/old.yaml")).unwrap(), b"old");
+        assert!(!previous.exists());
+        fs::remove_dir_all(parent).unwrap();
+    }
+    #[test]
+    fn stuck_previous_folder_is_named_in_the_error() {
+        let parent = temp();
+        let target = parent.join("Neyra");
+        fs::create_dir_all(target.join("commands")).unwrap();
+        fs::write(target.join("commands/kept.yaml"), "kept").unwrap();
+        let previous = parent.join("Neyra.previous-stuck");
+        fs::create_dir_all(previous.join("commands")).unwrap();
+        fs::write(previous.join("commands/old.yaml"), "old").unwrap();
+        let err = put_previous_back(&target, &previous).unwrap_err();
+        assert!(err.contains(&previous.display().to_string()));
+        assert_eq!(
+            fs::read(previous.join("commands/old.yaml")).unwrap(),
+            b"old"
+        );
+        assert_eq!(
+            fs::read(target.join("commands/kept.yaml")).unwrap(),
+            b"kept"
+        );
         fs::remove_dir_all(parent).unwrap();
     }
     #[test]

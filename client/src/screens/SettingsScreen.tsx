@@ -58,13 +58,19 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
     notify(`Данные скопированы в ${out.path}. Перезапустите Neyra. До перезапуска сохранение отключено.`);
   });
   const applyFolder = (choice: 'use_existing' | 'overwrite') => run(async () => {
-    const out = await invoke<{ cancelled: boolean; path?: string }>('confirm_data_root', { choice });
-    setFolderChoice(null);
-    if (!out.cancelled) notify(`Папка данных: ${out.path}. Перезапустите Neyra. До перезапуска сохранение отключено.`);
+    try {
+      const out = await invoke<{ cancelled: boolean; path?: string }>('confirm_data_root', { choice });
+      if (!out.cancelled) notify(`Папка данных: ${out.path}. Перезапустите Neyra. До перезапуска сохранение отключено.`);
+    } finally {
+      setFolderChoice(null);
+    }
   });
   const cancelFolder = () => run(async () => {
-    await invoke('confirm_data_root', { choice: 'cancel' });
-    setFolderChoice(null);
+    try {
+      await invoke('confirm_data_root', { choice: 'cancel' });
+    } finally {
+      setFolderChoice(null);
+    }
   });
 
   return <section aria-labelledby="settings-title">
