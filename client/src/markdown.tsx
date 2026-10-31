@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Copy } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 export type Inline =
@@ -92,7 +93,7 @@ export function Markdown({ text, onCopy }: { text: string; onCopy?: (value: stri
   const blocks = parseMarkdown(text);
   if (blocks.length === 0 && text) return <p className="plain">{text}</p>;
   return <div className="md">{blocks.map((block, index) => {
-    if (block.k === 'pre') return <div className="codeblock" key={index}><pre><code>{block.code}</code></pre>{onCopy && <button type="button" onClick={() => onCopy(block.code)}>Копировать код</button>}</div>;
+    if (block.k === 'pre') return <div className="codeblock" key={index}><pre><code>{block.code}</code></pre>{onCopy && <button type="button" aria-label="Копировать код" data-tip="Копировать код" onClick={() => onCopy(block.code)}><Copy size={15} strokeWidth={1.75} aria-hidden="true" /></button>}</div>;
     if (block.k === 'ul') return <ul key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{inlineNodes(item, `${index}-${itemIndex}`)}</li>)}</ul>;
     if (block.k === 'h') { const Tag = block.level === 2 ? 'h2' : 'h3'; return <Tag key={index}>{inlineNodes(block.inlines, String(index))}</Tag>; }
     return <p key={index}>{inlineNodes(block.inlines, String(index))}</p>;

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { THEMES } from '../theme';
 import { invoke } from '@tauri-apps/api/core';
 import { CharacterPanel } from '../CharacterPanel';
 import { UpdatesPanel } from '../UpdatesPanel';
@@ -76,18 +77,22 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
   return <section aria-labelledby="settings-title">
     <h1 id="settings-title">Настройки</h1>
     {recoveries.length > 0 && <div className="error" role="alert"><strong>Часть файлов настроек была восстановлена</strong><ul>{recoveries.map((r, i) => <li key={i}>{recoveryText(r)}</li>)}</ul></div>}
+    <div className="group">
     <h2>Этот ПК</h2>
     <label>Имя этого ПК<input value={settings.device_name} maxLength={80} disabled={connected} aria-describedby={connected ? 'name-locked' : undefined} onChange={e => setSettings({ ...settings, device_name: e.target.value })}/></label>
     {connected && <p className="hint" id="name-locked">Имя можно менять, когда клиент отключён от сервера.</p>}
-    <label>Тема<select value={settings.theme} onChange={e => setSettings({ ...settings, theme: e.target.value })}><option value="neyra">Нейра</option><option value="dark">Тёмная</option><option value="light">Светлая</option></select></label>
+    <fieldset className="theme-cards"><legend>Тема</legend>{THEMES.map(item => <label className="theme-card" key={item.id}><input type="radio" name="theme-choice" value={item.id} checked={settings.theme === item.id} onChange={() => setSettings({ ...settings, theme: item.id })} /><span className={`swatch ${item.id}`} aria-hidden="true" />{item.label}</label>)}</fieldset>
     <label>Графика Linux (после перезапуска)<select value={settings.graphics_mode} onChange={e => setSettings({ ...settings, graphics_mode: e.target.value })}><option value="auto">Автоматически</option><option value="wayland">Wayland</option><option value="wayland-nvidia">Wayland · NVIDIA explicit sync workaround</option><option value="x11">X11</option><option value="compatibility">Совместимость (может замедлять UI)</option></select></label>
     <label className="check"><input type="checkbox" checked={!!settings.character_enabled} disabled title="Будет доступно после шага 7"/>Персонаж на рабочем столе — после шага 7 (оверлей VRM)</label>
     <label>Хранить журнал действий, дней<input type="number" min={1} max={365} value={settings.audit_days} onChange={e => setSettings({ ...settings, audit_days: Math.min(365, Math.max(1, Number(e.target.value) || 30)) })}/></label>
     <button disabled={busy} onClick={() => run(async () => { await save(settings); notify('Настройки сохранены'); })}>Сохранить настройки</button>
+    </div>
+    <div className="group">
     <h2>Данные на этом ПК</h2>
     <p>Команды, разрешения, журнал и настройки лежат в папке ниже. Токены сервера в неё не попадают: они хранятся в системном хранилище секретов.</p>
     <p className="path">{root}</p><p className="path">Устройство: {settings.device_id}</p>
     <button disabled={busy} onClick={moveData}>Сменить папку данных…</button>
+    </div>
     <dialog ref={folderDialog} className="editor" aria-labelledby="data-move-title" onCancel={event => { event.preventDefault(); cancelFolder(); }}>
       {folderChoice && <>
         <h2 id="data-move-title">В папке уже есть данные Neyra</h2>
@@ -99,6 +104,7 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
         </div>
       </>}
     </dialog>
+    <div className="group">
     <h2>Перенос конфигурации</h2>
     <p>Файл содержит настройки, разрешения и быстрые команды. Без токенов, адресов серверов и журнала. Импортированные команды работают по тем же правилам безопасности этого ПК.</p>
     <div className="actions"><button disabled={busy} onClick={exportConfig}>Экспортировать…</button><button disabled={busy} onClick={pick}>Импортировать…</button></div>
@@ -112,6 +118,7 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
       {withPermissions && preview.permissions && <p className="hint">Браузер: {preview.permissions.allow_web ? 'да' : 'нет'} · приложения и система: {preview.permissions.system ? 'да' : 'нет'}. Домены, которые останутся: {preview.permissions.web_domains.join(', ') || 'нет'}. Программы, которые останутся: {preview.permissions.apps.join(', ') || 'нет'}. Новые домены и программы из файла не добавляются. {blockedLabels(preview.permissions.blocked)}</p>}
       <div className="actions"><button onClick={cancelImport} disabled={busy}>Отмена</button><button className="primary" disabled={busy || (usable === 0 && !withSettings && !withPermissions)} onClick={apply}>Применить импорт</button></div>
     </div>}
+    </div>
     <h2>Обновления</h2>
     <UpdatesPanel />
     <h2>Персонаж</h2>

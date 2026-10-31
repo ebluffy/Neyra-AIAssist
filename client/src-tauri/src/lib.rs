@@ -1131,7 +1131,7 @@ fn disconnect(state: State<'_, Desktop>) -> Result<(), String> {
     disconnect_inner(&state)
 }
 #[tauri::command]
-async fn record_start(state: State<'_, Desktop>) -> Result<(), String> {
+async fn record_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
     if state.current_turn.lock().map_err(lock_error)?.is_some() {
         return Err("Дождитесь ответа или нажмите Stop".into());
     }
@@ -1146,7 +1146,18 @@ async fn record_start(state: State<'_, Desktop>) -> Result<(), String> {
     if recording.is_some() {
         return Err("Запись уже идёт".into());
     }
-    *recording = Some(audio::Recording::start()?);
+    let started = audio::Recording::start()?;
+    let level = started.level.clone();
+    let meter_stop = started.meter_stop.clone();
+    *recording = Some(started);
+    drop(recording);
+    std::thread::spawn(move || {
+        while !meter_stop.load(Ordering::Relaxed) {
+            let db = level.load(Ordering::Relaxed) as f32 / 10.0;
+            let _ = app.emit("desktop-event", json!({"type":"mic.level","db":db}));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    });
     Ok(())
 }
 #[tauri::command]
@@ -1481,7 +1492,7 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                 tauri::async_runtime::spawn(async move {
                     let state = handle.state::<Desktop>();
                     let result = if pressed {
-                        record_start(state).await
+                        record_start(handle.clone(), state).await
                     } else {
                         record_stop(handle.clone(), state).await
                     };

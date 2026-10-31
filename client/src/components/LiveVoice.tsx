@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { MessageSquare, Mic, MicOff, PhoneOff, SlidersHorizontal } from 'lucide-react';
 import type { ChatMessage } from '../chat';
 import { Markdown } from '../markdown';
 import { liveLabel, type LiveState, type VoiceSettings } from '../types';
@@ -9,35 +11,34 @@ interface Props {
   level: number;
   muted: boolean;
   busy: boolean;
-  showStop: boolean;
   messages: ChatMessage[];
   partial: string;
   onMute: () => void;
   onSettings: () => void;
   onEnd: () => void;
-  onStop: () => void;
 }
 
-export function LiveVoice({ state, mode, level, muted, busy, showStop, messages, partial, onMute, onSettings, onEnd, onStop }: Props) {
+export function LiveVoice({ state, mode, level, muted, busy, messages, partial, onMute, onSettings, onEnd }: Props) {
+  const [transcript, setTranscript] = useState(false);
   const shown = muted ? 'off' : state;
-  const recent = messages.slice(-6);
+  const recent = messages.slice(-8);
   return <div className="live-stage">
     <VoiceOrb state={shown} level={muted ? 0 : level} />
     <p className="live-state" role="status">{liveLabel(shown, mode)}</p>
-    <meter aria-label="Уровень микрофона" min={0} max={1} value={muted ? 0 : level} />
-    <div className="live-log" aria-label="Текст разговора">
+    <meter className="sr-only" aria-label="Уровень микрофона" min={0} max={1} value={muted ? 0 : level} />
+    <div className="live-actions">
+      <button type="button" className="icon" aria-pressed={muted} aria-label={muted ? 'Включить микрофон' : 'Выключить микрофон'} data-tip={muted ? 'Включить микрофон' : 'Выключить микрофон'} disabled={busy} onClick={onMute}>{muted ? <MicOff size={18} strokeWidth={1.75} aria-hidden="true" /> : <Mic size={18} strokeWidth={1.75} aria-hidden="true" />}</button>
+      <button type="button" className="icon" aria-pressed={transcript} aria-expanded={transcript} aria-label="Текст разговора" data-tip="Текст разговора" onClick={() => setTranscript(open => !open)}><MessageSquare size={18} strokeWidth={1.75} aria-hidden="true" /></button>
+      <button type="button" className="icon" aria-label="Настройки голоса" data-tip="Настройки голоса" disabled={busy} onClick={onSettings}><SlidersHorizontal size={18} strokeWidth={1.75} aria-hidden="true" /></button>
+      <button type="button" className="icon danger" aria-label="Завершить" data-tip="Завершить" disabled={busy} onClick={onEnd}><PhoneOff size={18} strokeWidth={1.75} aria-hidden="true" /></button>
+    </div>
+    <div className={transcript ? 'live-log open' : 'live-log'} aria-label="Текст разговора" hidden={!transcript}>
       {recent.length === 0 && !partial && <p className="hint">Реплики появятся здесь и останутся в этом чате.</p>}
       {recent.map(message => <article key={message.id} className={message.role}>
         <strong>{message.role === 'user' ? 'Вы' : 'Нейра'}</strong>
         {message.role === 'assistant' ? <Markdown text={message.content || '…'} /> : <p>{message.content || (message.pending ? '…' : '')}</p>}
       </article>)}
       {partial && <article className="assistant"><strong>Нейра</strong><Markdown text={partial} /></article>}
-    </div>
-    <div className="actions">
-      <button type="button" aria-pressed={muted} disabled={busy} onClick={onMute}>{muted ? 'Включить микрофон' : 'Выключить микрофон'}</button>
-      <button type="button" disabled={busy} onClick={onSettings}>Настройки голоса</button>
-      {showStop && <button type="button" className="stop" onClick={onStop}>Стоп</button>}
-      <button type="button" disabled={busy} onClick={onEnd}>Завершить</button>
     </div>
   </div>;
 }

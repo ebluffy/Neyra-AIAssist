@@ -16,7 +16,7 @@ export function VoicePanel({ voice, root, busy, shortcuts, voiceStatus, onDraft,
     <h1 id="voice-title">Голос</h1>
     <p>STT и TTS работают на сервере. На этом ПК только микрофон, воспроизведение и детектор слова «Нейра». Аудио не сохраняется.</p>
     <p>Голосовое сообщение — кнопка микрофона у поля ввода. Разговор голосом включается только кнопкой волны рядом с ним.</p>
-    <p>{shortcuts ? 'Push-to-talk: удерживайте Ctrl+Alt+Space. Стоп: Ctrl+Alt+Escape или пункт «Стоп» в меню.' : 'Глобальные хоткеи недоступны: используйте кнопки записи и Стоп.'}</p>
+    <p>{shortcuts ? 'Push-to-talk: удерживайте Ctrl+Alt+Space. Стоп: Ctrl+Alt+Escape или кнопка «Стоп» справа сверху.' : 'Глобальные хоткеи недоступны: используйте кнопки записи и Стоп.'}</p>
     <h2>Режим</h2>
     <label>Как начинать разговор<select value={voice.mode} disabled={busy} onChange={event => onSave({ mode: event.target.value as VoiceSettings['mode'] })}><option value="ptt">Push-to-talk: кнопка или хоткей</option><option value="wake">Слово «Нейра» и команда</option><option value="always">Слушать всегда</option></select></label>
     <label>Чувствительность к речи: {Math.round(voice.vad_sensitivity * 100)}%<input type="range" min={0} max={1} step={0.05} value={voice.vad_sensitivity} disabled={busy} onChange={event => onDraft({ vad_sensitivity: Number(event.target.value) })} onPointerUp={() => onSave({})} onKeyUp={() => onSave({})} /></label>

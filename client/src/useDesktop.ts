@@ -59,6 +59,11 @@ export function useDesktop() {
   const openSheet = useCallback((id: SheetId) => { setMenuOpen(false); setSheet(id); }, []);
   const closeSheet = useCallback(() => setSheet(null), []);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(''), 2200);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     void invoke<{ settings: Settings; data_root: string; global_shortcuts: boolean; pc_access_available: boolean; recoveries?: Recovery[]; screen_backend?: boolean; input_backend?: boolean }>('load_settings').then(async data => {
@@ -142,7 +147,7 @@ export function useDesktop() {
         if (event.type === 'recording') { setRecording(true); setThinking(false); }
         if (event.type === 'transcribing') { setRecording(false); setThinking(true); setLiveState(state => state === 'off' ? state : 'thinking'); }
         if (event.type === 'speaking') { setThinking(false); setLiveState(state => state === 'off' ? state : 'speaking'); setNotice('Нейра говорит. Стоп прервёт озвучку.'); }
-        if (event.type === 'live.started') { setLiveOpen(true); setMuted(false); setLiveState('idle'); setNotice(event.mode === 'wake' ? 'Скажите «Нейра» и команду. До слова «Нейра» звук не покидает ПК.' : 'Микрофон включён: говорите, Нейра ответит после паузы.'); }
+        if (event.type === 'live.started') { setLiveOpen(true); setMuted(false); setLiveState('idle'); }
         if (event.type === 'live.stopped') { setLiveState('off'); setMicLevel(0); if (!muteHold.current) { setLiveOpen(false); setMuted(false); } }
         if (event.type === 'live.idle') setLiveState(state => state === 'off' ? state : 'idle');
         if (event.type === 'wake') setLiveState('armed');
@@ -228,7 +233,7 @@ export function useDesktop() {
     setText('');
   });
   const decideDraft = (accepted: boolean, item: DraftEvent) => run(async () => { setDraft(undefined); if (accepted) { await invoke('draft_confirm', { draftId: item.draft_id }); setNotice('Команда сохранена на этом ПК'); } else await invoke('draft_reject', { draftId: item.draft_id }); });
-  const beginRecording = () => run(async () => { await invoke('record_start'); setRecording(true); setNotice('Идёт запись. До 30 секунд.'); });
+  const beginRecording = () => run(async () => { await invoke('record_start'); setRecording(true); });
   const finishRecording = () => run(async () => { await invoke('record_stop'); setRecording(false); setThinking(true); setNotice('Распознаю речь…'); });
   const cancelRecording = () => run(async () => { await invoke('record_cancel'); setRecording(false); setNotice('Запись отменена'); });
   const copyText = (value: string) => { void navigator.clipboard.writeText(value).then(() => { setNotice('Скопировано'); setError(''); }).catch(() => setError('Не удалось скопировать')); };

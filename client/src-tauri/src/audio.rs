@@ -1,17 +1,32 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
     mpsc, Arc, Mutex,
 };
 
 pub struct Recording {
     stop: mpsc::Sender<()>,
     join: std::thread::JoinHandle<Result<Vec<u8>, String>>,
+    /// Latest input level, dBFS × 10, for the recording waveform.
+    pub level: Arc<AtomicI32>,
+    pub meter_stop: Arc<AtomicBool>,
+}
+
+fn note_level(level: &AtomicI32, data: &[f32]) {
+    if data.is_empty() {
+        return;
+    }
+    let energy = data.iter().map(|sample| sample * sample).sum::<f32>() / data.len() as f32;
+    let db = 10.0 * energy.max(1e-10).log10();
+    level.store((db * 10.0) as i32, Ordering::Relaxed);
 }
 impl Recording {
     pub fn start() -> Result<Self, String> {
         let (stop, rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let level = Arc::new(AtomicI32::new(-1000));
+        let meter_stop = Arc::new(AtomicBool::new(false));
+        let level_thread = level.clone();
         let join = std::thread::spawn(move || {
             let device = cpal::default_host()
                 .default_input_device()
@@ -23,8 +38,9 @@ impl Recording {
             let rate = config.sample_rate().0;
             let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
             let max = rate as usize * channels * 30;
-            let build = |samples: Arc<Mutex<Vec<f32>>>| {
+            let build = |samples: Arc<Mutex<Vec<f32>>>, level: Arc<AtomicI32>| {
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    note_level(&level, data);
                     if let Ok(mut out) = samples.lock() {
                         let left = max.saturating_sub(out.len());
                         out.extend(data.iter().take(left));
@@ -34,18 +50,22 @@ impl Recording {
             let stream = match config.sample_format() {
                 cpal::SampleFormat::F32 => device.build_input_stream(
                     &config.clone().into(),
-                    build(samples.clone()),
+                    build(samples.clone(), level_thread.clone()),
                     |_| {},
                     None,
                 ),
                 cpal::SampleFormat::I16 => {
                     let s = samples.clone();
+                    let level = level_thread.clone();
                     device.build_input_stream(
                         &config.clone().into(),
                         move |data: &[i16], _| {
+                            let floats: Vec<f32> =
+                                data.iter().map(|v| *v as f32 / 32768.0).collect();
+                            note_level(&level, &floats);
                             if let Ok(mut out) = s.lock() {
                                 let left = max.saturating_sub(out.len());
-                                out.extend(data.iter().take(left).map(|v| *v as f32 / 32768.0));
+                                out.extend(floats.into_iter().take(left));
                             }
                         },
                         |_| {},
@@ -54,16 +74,18 @@ impl Recording {
                 }
                 cpal::SampleFormat::U16 => {
                     let s = samples.clone();
+                    let level = level_thread.clone();
                     device.build_input_stream(
                         &config.clone().into(),
                         move |data: &[u16], _| {
+                            let floats: Vec<f32> = data
+                                .iter()
+                                .map(|v| (*v as f32 - 32768.0) / 32768.0)
+                                .collect();
+                            note_level(&level, &floats);
                             if let Ok(mut out) = s.lock() {
                                 let left = max.saturating_sub(out.len());
-                                out.extend(
-                                    data.iter()
-                                        .take(left)
-                                        .map(|v| (*v as f32 - 32768.0) / 32768.0),
-                                );
+                                out.extend(floats.into_iter().take(left));
                             }
                         },
                         |_| {},
@@ -87,9 +109,15 @@ impl Recording {
             let _ = stop.send(());
             return Err("Микрофон недоступен: проверьте разрешение ОС".into());
         }
-        Ok(Self { stop, join })
+        Ok(Self {
+            stop,
+            join,
+            level,
+            meter_stop,
+        })
     }
     pub fn finish(self) -> Result<Vec<u8>, String> {
+        self.meter_stop.store(true, Ordering::Relaxed);
         let _ = self.stop.send(());
         self.join.join().map_err(|_| "Ошибка записи")?
     }

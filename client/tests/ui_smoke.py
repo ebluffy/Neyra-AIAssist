@@ -56,7 +56,9 @@ return;
 '''
 def menu(page, name):
     page.get_by_role('button', name='Меню', exact=True).click()
-    page.locator('#gear-menu').get_by_role('button', name=name, exact=True).click()
+    page.locator('#gear-menu').get_by_role('button', name='Настройки', exact=True).click()
+    if name != 'Настройки':
+        page.get_by_role('navigation', name='Разделы настроек').get_by_role('button', name=name, exact=True).click()
 
 def close_sheet(page):
     button = page.get_by_role('button', name='Закрыть', exact=True)
@@ -157,8 +159,7 @@ with sync_playwright() as p:
     page.evaluate("window.emitNative('host-confirm-closed',{call_id:'call-cancel'})")
     expect(page.get_by_role('dialog', name='Разрешить действие на этом ПК?')).not_to_be_visible()
     close_sheet(page)
-    page.get_by_role('button', name='Меню', exact=True).click()
-    page.locator('#gear-menu').get_by_role('button', name='Стоп', exact=True).click()
+    page.locator('.chrome').get_by_role('button', name='Стоп', exact=True).click()
     # --- quick commands ---
     menu(page, 'Быстрые команды')
     expect(page.get_by_text('Команд пока нет')).to_be_visible()
@@ -166,7 +167,7 @@ with sync_playwright() as p:
     page.get_by_role('button',name='Обновить',exact=True).click()
     expect(page.get_by_role('alert').first).to_contain_text('Папка команд недоступна')
     page.evaluate('window.failCommands=false')
-    page.get_by_role('dialog', name='Быстрые команды').get_by_role('button', name='Повторить').click()
+    page.get_by_role('dialog', name='Настройки').get_by_role('button', name='Повторить').click()
     expect(page.get_by_text('Команд пока нет')).to_be_visible()
     page.get_by_role('button',name='Создать команду').click()
     expect(page.get_by_role('dialog',name='Новая команда')).to_be_visible()
@@ -254,7 +255,7 @@ with sync_playwright() as p:
     assert page.evaluate('window.dataChoice')=='use_existing'
     expect(page.get_by_role('dialog',name='В папке уже есть данные Neyra')).not_to_be_visible()
     page.evaluate('window.forceDataChoice=false')
-    page.get_by_label('Тема').select_option('light')
+    page.get_by_role('radio', name='Светлая', exact=True).check()
     expect(page.locator('.shell')).to_have_attribute('data-theme', 'light')
     close_sheet(page)
     page.set_viewport_size({'width': 620, 'height': 760})
@@ -265,10 +266,10 @@ with sync_playwright() as p:
     labels = {'neyra': 'Нейра', 'dark': 'Тёмная', 'light': 'Светлая'}
 
     def pick(theme):
-        page.get_by_role('button', name='Меню', exact=True).click()
-        page.locator('#gear-menu').get_by_role('radio', name=labels[theme]).check()
+        menu(page, 'Настройки')
+        page.get_by_role('dialog', name='Настройки').get_by_role('radio', name=labels[theme], exact=True).check()
         expect(page.locator('.shell')).to_have_attribute('data-theme', theme)
-        page.keyboard.press('Escape')
+        close_sheet(page)
 
     def shoot(name):
         page.screenshot(path=str(shots / f'{name}.png'))
@@ -285,19 +286,31 @@ with sync_playwright() as p:
         expect(page.locator('article').last).to_contain_text('Привет')
         page.evaluate("""window.emitNative('desktop-event',{type:'done',text:'Вот так:\\n\\n```\\nprint(1)\\n```'})""")
         expect(page.locator('article').last).to_contain_text('print(1)')
+        page.wait_for_timeout(2400)
         shoot(f'{theme}-chat')
+        page.locator('article.is-last').get_by_role('button', name='Копировать', exact=True).hover()
+        page.wait_for_timeout(200)
+        shoot(f'{theme}-actions')
         page.get_by_role('button', name='Записать голосовое').click()
         expect(page.get_by_role('group', name='Запись голосового')).to_be_visible()
+        page.evaluate("window.emitNative('desktop-event',{type:'mic.level',db:-12})")
+        page.wait_for_timeout(120)
         shoot(f'{theme}-record')
         page.get_by_role('button', name='Отмена', exact=True).click()
         page.get_by_role('button', name='Начать разговор').click()
         expect(page.locator('.live-state')).to_have_text('Жду слово «Нейра»')
         page.wait_for_timeout(80)
         page.evaluate("window.emitNative('desktop-event',{type:'listening'})")
-        page.evaluate("window.emitNative('desktop-event',{type:'mic.level',db:-18})")
+        page.evaluate("window.emitNative('desktop-event',{type:'mic.level',db:-12})")
         expect(page.locator('.live-state')).to_have_text('Слышу вас')
+        page.wait_for_timeout(200)
         shoot(f'{theme}-live')
+        page.get_by_role('button', name='Текст разговора', exact=True).click()
+        expect(page.locator('.live-log.open')).to_be_visible()
+        page.wait_for_timeout(250)
+        shoot(f'{theme}-live-chat')
         page.get_by_role('button', name='Завершить', exact=True).click()
+        page.wait_for_timeout(2400)
         page.get_by_role('button', name='Меню', exact=True).click()
         expect(page.locator('#gear-menu')).to_be_visible()
         page.wait_for_timeout(250)

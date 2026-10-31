@@ -1,6 +1,18 @@
 import { useEffect, useRef, type ReactNode } from 'react';
+import { Activity, AudioLines, Info, RefreshCw, Server, Shield, SlidersHorizontal, SquareTerminal, UserRound, X } from 'lucide-react';
 import { SHEETS, type SheetId } from '../theme';
-import { CloseIcon } from '../icons';
+
+const ICONS: Record<SheetId, typeof AudioLines> = {
+  voice: AudioLines,
+  commands: SquareTerminal,
+  permissions: Shield,
+  server: Server,
+  character: UserRound,
+  settings: SlidersHorizontal,
+  status: Activity,
+  updates: RefreshCw,
+  about: Info,
+};
 
 interface Props {
   section: SheetId;
@@ -16,7 +28,7 @@ export function SettingsSheet({ section, onSection, onClose, children }: Props) 
   useEffect(() => {
     const root = panel.current;
     const previous = document.activeElement as HTMLElement | null;
-    const focusable = () => [...(root?.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ?? [])].filter(node => !node.hasAttribute('disabled') && !node.closest('dialog') && !node.classList.contains('backdrop-dismiss'));
+    const focusable = () => [...(root?.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ?? [])].filter(node => !node.hasAttribute('disabled') && !node.closest('dialog'));
     focusable()[0]?.focus();
     const onKey = (event: KeyboardEvent) => {
       if ((event.target as HTMLElement | null)?.closest('dialog')) return;
@@ -33,15 +45,15 @@ export function SettingsSheet({ section, onSection, onClose, children }: Props) 
     return () => { root?.removeEventListener('keydown', onKey); previous?.focus(); };
   }, [section]);
   return <div className="backdrop">
-    <button type="button" className="backdrop-dismiss" aria-label="Закрыть панель" onClick={onClose} />
-    <div className="sheet" ref={panel} role="dialog" aria-modal="true" aria-label={SHEETS.find(item => item.id === section)?.label ?? 'Настройки'}>
+    <div className="sheet" ref={panel} role="dialog" aria-modal="true" aria-label="Настройки">
       <nav className="sheet-nav" aria-label="Разделы настроек">
-        <button type="button" className="icon" aria-label="Закрыть" onClick={onClose}><CloseIcon /></button>
-        {SHEETS.map(item => <button type="button" key={item.id} aria-current={item.id === section ? 'page' : undefined} onClick={() => onSection(item.id)}>{item.label}</button>)}
+        <button type="button" className="icon sheet-close" aria-label="Закрыть" onClick={onClose}><X size={18} strokeWidth={1.75} aria-hidden="true" /></button>
+        {SHEETS.map(item => {
+          const Icon = ICONS[item.id];
+          return <button type="button" key={item.id} aria-current={item.id === section ? 'page' : undefined} onClick={() => onSection(item.id)}><Icon size={18} strokeWidth={1.75} aria-hidden="true" />{item.label}</button>;
+        })}
       </nav>
-      <div className="sheet-body">
-        {children}
-      </div>
+      <div className="sheet-body">{children}</div>
     </div>
   </div>;
 }
