@@ -46,8 +46,8 @@ def _routing_text(text: str) -> str:
 
 
 def _youtube_link(text: str) -> bool:
-    from modules.discord.music import _canonical_youtube_url_from_text
-    return bool(_canonical_youtube_url_from_text(text))
+    from modules.discord.music import _canonical_youtube_url_from_text, _normalize_allowed_music_url
+    return bool(_canonical_youtube_url_from_text(text) or _normalize_allowed_music_url(text))
 
 
 def _music_blocked(text: str, *, has_media: bool = False) -> bool:

@@ -65,8 +65,25 @@ _YOUTUBE_HOSTS = frozenset(
     }
 )
 
-# Returned as normalize error when a URL was present but not an allowed YouTube video.
-ONLY_YOUTUBE_VIDEO_URLS = "only_youtube_video_urls"
+# Allowed music source hosts (beyond YouTube).
+_ALLOWED_MUSIC_HOSTS = frozenset(
+    {
+        "soundcloud.com",
+        "www.soundcloud.com",
+        "m.soundcloud.com",
+        "on.soundcloud.com",
+        "bandcamp.com",
+        "vimeo.com",
+        "twitch.tv",
+        "www.twitch.tv",
+        "m.twitch.tv",
+    }
+)
+
+# Returned as normalize error when a URL was present but not an allowed music source.
+ONLY_ALLOWED_MUSIC_URLS = "only_allowed_music_urls"
+# Backward compat alias.
+ONLY_YOUTUBE_VIDEO_URLS = ONLY_ALLOWED_MUSIC_URLS
 
 
 def _extract_any_url(text: str) -> str:
@@ -98,6 +115,17 @@ def _url_for_parse(url: str) -> str:
     return u
 
 
+def _is_allowed_music_host(hostname: str) -> bool:
+    """Check if hostname is an allowed music source (soundcloud, bandcamp, vimeo, twitch)."""
+    h = (hostname or "").lower().split(":")[0].strip(".")
+    if h in _ALLOWED_MUSIC_HOSTS:
+        return True
+    # Bandcamp uses *.bandcamp.com subdomains.
+    if h.endswith(".bandcamp.com"):
+        return True
+    return False
+
+
 def _youtube_video_id(url: str) -> str:
     try:
         parsed = urlparse(_url_for_parse(url))
@@ -120,6 +148,39 @@ def _youtube_video_id(url: str) -> str:
     return ""
 
 
+def _normalize_allowed_music_url(text: str) -> str:
+    """Extract and normalize URL from allowed music sources (SoundCloud, Bandcamp, Vimeo, Twitch)."""
+    url = _extract_any_url(text)
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(_url_for_parse(url))
+    except Exception:
+        return ""
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return ""
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return ""
+    # Security: strict host allowlist (no IPs/LAN possible), no userinfo, no custom ports.
+    if parsed.username is not None or parsed.password is not None:
+        return ""
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    if port not in (None, 80, 443):
+        return ""
+    if not _is_allowed_music_host(hostname):
+        return ""
+    # Drop fragment and port; keep path/query (Discord <> and trailing punctuation already stripped).
+    clean_url = f"https://{hostname}{parsed.path or '/'}"
+    if parsed.query:
+        clean_url += f"?{parsed.query}"
+    return clean_url
+
+
 def _canonical_youtube_url_from_text(text: str) -> str:
     """Only real YouTube hosts; returns watch URL or '' (never LAN/loopback/http abuse)."""
     url = _extract_any_url(text)
@@ -137,20 +198,24 @@ def _looks_like_url(text: str) -> bool:
 
 
 def _normalize_play_query(raw: str) -> tuple[str, str | None]:
-    """Return (query, error). error is set when a URL was rejected (not a YouTube video)."""
+    """Return (query, error). error is set when a URL was rejected (not an allowed music source)."""
     q = (raw or "").strip()
     if not q:
         return "", None
     yt = _canonical_youtube_url_from_text(q)
     if yt:
         return yt, None
+    # Check for other allowed music sources.
+    allowed_url = _normalize_allowed_music_url(q)
+    if allowed_url:
+        return allowed_url, None
     had_url = bool(_extract_any_url(q))
     # Drop every URL-like token so Lavalink never sees icy://, //lan, ftp://, etc.
     q = _ANY_URL_RE.sub("", q)
     q = re.sub(r"[<>]", "", q).strip()
     if had_url:
-        # Link present but not an allowed YouTube video — caller must not invent a default track.
-        return "", ONLY_YOUTUBE_VIDEO_URLS
+        # Link present but not an allowed source — caller must not invent a default track.
+        return "", ONLY_ALLOWED_MUSIC_URLS
     # Remove command noise so Lavalink search gets a clean artist/title query.
     # Word-boundary only: `\s*` would eat "Playboi" → "boi".
     noise_patterns = (
@@ -226,12 +291,14 @@ async def _connect_voice_player(
 
 
 async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> list[Any]:
-    """Resolve playables. YouTube watch URLs load directly; text uses TrackSource.YouTube (bare q)."""
+    """Resolve playables. YouTube watch URLs load directly; text uses TrackSource.YouTube (bare q).
+    Also supports other allowed music sources (SoundCloud, Bandcamp, Vimeo, Twitch) via direct URL load."""
     q = (query or "").strip()
     if not q:
         return []
     is_yt_url = bool(_youtube_video_id(q))
-    timeout = 20.0 if is_yt_url else 12.0
+    is_allowed_url = bool(_normalize_allowed_music_url(q)) if not is_yt_url else False
+    timeout = 20.0 if (is_yt_url or is_allowed_url) else 12.0
 
     async def _search(raw: str, *, source: Any = None) -> list[Any]:
         kwargs: dict[str, Any] = {"node": node}
@@ -244,7 +311,7 @@ async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> li
         return list(tracks or [])
 
     try:
-        if is_yt_url:
+        if is_yt_url or is_allowed_url:
             tracks = await _search(q)
             if tracks:
                 return tracks
@@ -258,7 +325,7 @@ async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> li
 
         # User already typed a Lavalink search prefix — send as-is (no second prefix).
         low = q.lower()
-        if low.startswith(("ytsearch:", "ytmsearch:")):
+        if low.startswith(("ytsearch:", "ytmsearch:", "scsearch:")):
             fetch = getattr(getattr(wavelink_mod, "Pool", None), "fetch_tracks", None)
             if callable(fetch):
                 tracks = await asyncio.wait_for(fetch(q, node=node), timeout=timeout)
@@ -764,7 +831,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
     if action == MUSIC_PLAY and not payload.get("join_only"):
         query, query_error = _normalize_play_query(str(payload.get("query") or "").strip())
         if query_error:
-            return {"ok": False, "status": "failed", "error": "поддерживаются только ссылки на видео YouTube",
+            return {"ok": False, "status": "failed", "error": "поддерживаются только YouTube, SoundCloud, Bandcamp, Vimeo и Twitch",
                     "request_id": str(payload.get("request_id") or "")}
     bot = _resolve_bot(ctx)
     if bot is None:

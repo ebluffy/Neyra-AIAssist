@@ -19,12 +19,12 @@ lavalink:
     password: "youshallnotpass"
     sources:
       youtube: false
-      bandcamp: false
+      bandcamp: true
       soundcloud: true
-      twitch: false
-      vimeo: false
+      twitch: true
+      vimeo: true
       nico: false
-      # Off: Discord play only allows YouTube watch URLs / ytsearch text (no icy:// / LAN SSRF).
+      # Off: Discord play only allows allowlisted hosts (YouTube, SoundCloud, Bandcamp, Vimeo, Twitch) — no icy:// / LAN SSRF.
       http: false
       local: false
     filters:

@@ -73,12 +73,17 @@ def main() -> int:
     assert route3 == "PLAY_MUSIC" and use3 is True, (route3, use3)
 
     from modules.discord.music import (
+        ONLY_ALLOWED_MUSIC_URLS,
         ONLY_YOUTUBE_VIDEO_URLS,
         _canonical_youtube_url_from_text,
         _looks_like_url,
+        _normalize_allowed_music_url,
         _normalize_play_query,
         _youtube_video_id,
     )
+
+    # Backward compat alias check.
+    assert ONLY_YOUTUBE_VIDEO_URLS == ONLY_ALLOWED_MUSIC_URLS
 
     assert _normalize_play_query("включи <https://youtu.be/abc123XYZ>") == (
         "https://www.youtube.com/watch?v=abc123XYZ",
@@ -88,15 +93,46 @@ def main() -> int:
     assert _youtube_video_id("https://www.youtube.com/shorts/AbCdEf12GhI") == "AbCdEf12GhI"
     assert _canonical_youtube_url_from_text("https://youtube.com.evil.example/watch?v=x") == ""
     assert _canonical_youtube_url_from_text("http://127.0.0.1/admin") == ""
-    assert _normalize_play_query("включи http://192.168.1.1/") == ("", ONLY_YOUTUBE_VIDEO_URLS)
-    assert _normalize_play_query("включи icy://127.0.0.1:8000/stream") == ("", ONLY_YOUTUBE_VIDEO_URLS)
-    assert _normalize_play_query("включи //192.168.1.1/x") == ("", ONLY_YOUTUBE_VIDEO_URLS)
-    assert _normalize_play_query("включи ftp://10.0.0.1/") == ("", ONLY_YOUTUBE_VIDEO_URLS)
-    assert _normalize_play_query("включи <http://127.0.0.1>") == ("", ONLY_YOUTUBE_VIDEO_URLS)
-    assert _normalize_play_query("включи https://soundcloud.com/artist/track") == (
-        "",
-        ONLY_YOUTUBE_VIDEO_URLS,
-    )
+
+    # Security: SSRF protection.
+    assert _normalize_play_query("включи http://192.168.1.1/") == ("", ONLY_ALLOWED_MUSIC_URLS)
+    assert _normalize_play_query("включи icy://127.0.0.1:8000/stream") == ("", ONLY_ALLOWED_MUSIC_URLS)
+    assert _normalize_play_query("включи //192.168.1.1/x") == ("", ONLY_ALLOWED_MUSIC_URLS)
+    assert _normalize_play_query("включи ftp://10.0.0.1/") == ("", ONLY_ALLOWED_MUSIC_URLS)
+    assert _normalize_play_query("включи <http://127.0.0.1>") == ("", ONLY_ALLOWED_MUSIC_URLS)
+    assert _normalize_play_query("включи http://user@soundcloud.com.evil.com/x") == ("", ONLY_ALLOWED_MUSIC_URLS)
+
+    # Allowed music sources.
+    sc_url, sc_err = _normalize_play_query("включи https://soundcloud.com/artist/track")
+    assert sc_err is None and "soundcloud.com" in sc_url, (sc_url, sc_err)
+
+    short_sc = _normalize_allowed_music_url("https://on.soundcloud.com/abc123")
+    assert short_sc and "on.soundcloud.com" in short_sc, short_sc
+
+    bc_url, bc_err = _normalize_play_query("вруби https://artist.bandcamp.com/track/song")
+    assert bc_err is None and "bandcamp.com" in bc_url, (bc_url, bc_err)
+
+    # Reject spoofed hostnames.
+    assert _normalize_allowed_music_url("http://soundcloud.com.evil.com/x") == ""
+    assert _normalize_allowed_music_url("http://user@soundcloud.com/x") == ""
+    assert _normalize_allowed_music_url("http://127.0.0.1/") == ""
+
+    # Bare "включи <link>" extraction.
+    wrapped_url, _ = _normalize_play_query("включи <https://soundcloud.com/artist/track>")
+    assert "soundcloud.com" in wrapped_url, wrapped_url
+
+    # Dmitry's Discord case: «вруби <soundcloud link>» must route to music and keep the link.
+    sc_cmd = "вруби https://soundcloud.com/mouse-trap-bee/track?si=abc#t=10"
+    r_sc, u_sc = resolve_music_route(sc_cmd, classifier_route=None)
+    assert r_sc == "PLAY_MUSIC" and u_sc is True, (r_sc, u_sc)
+    assert _normalize_play_query(sc_cmd) == ("https://soundcloud.com/mouse-trap-bee/track?si=abc", None)
+    # Custom ports / non-standard forms are rejected; http is upgraded to https.
+    assert _normalize_allowed_music_url("https://soundcloud.com:8080/x") == ""
+    assert _normalize_allowed_music_url("http://vimeo.com/123") == "https://vimeo.com/123"
+    assert _normalize_allowed_music_url("https://evilbandcamp.com/x") == ""
+
+    # Still reject old non-allowed URLs.
+    assert _normalize_play_query("включи https://example.com/music.mp3") == ("", ONLY_ALLOWED_MUSIC_URLS)
     assert _normalize_play_query("Playboi Carti") == ("Playboi Carti", None)
     assert _normalize_play_query("включи") == ("", None)
     assert _normalize_play_query("включи трамбалон колю в очко") == ("трамбалон колю в очко", None)
@@ -163,6 +199,19 @@ def main() -> int:
         out = await music_mod._search_tracks_youtube(fake_wl, "ytsearch:foo bar", node)
         assert out and calls, calls
         assert calls[0].get("fetch") == "ytsearch:foo bar" or calls[0].get("raw") == "ytsearch:foo bar", calls
+
+        # Test SoundCloud URL passthrough.
+        calls.clear()
+        out = await music_mod._search_tracks_youtube(fake_wl, "https://soundcloud.com/artist/track", node)
+        assert out and calls, calls
+        assert calls[0]["raw"].startswith("https://soundcloud.com/"), calls
+        assert calls[0].get("source") is None, calls
+
+        # Test scsearch: prefix.
+        calls.clear()
+        out = await music_mod._search_tracks_youtube(fake_wl, "scsearch:artist track", node)
+        assert out and calls, calls
+        assert calls[0].get("fetch") == "scsearch:artist track" or calls[0].get("raw") == "scsearch:artist track", calls
 
     asyncio.run(_run_search_cases())
 
