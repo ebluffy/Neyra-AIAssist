@@ -44,3 +44,6 @@ png = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["tray-icon", "test"] }

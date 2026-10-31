@@ -2,6 +2,7 @@ mod audio;
 mod audit;
 mod command_runner;
 mod commands;
+mod character;
 mod files;
 mod host;
 mod logs;
@@ -12,6 +13,7 @@ mod shell;
 mod storage;
 mod voice;
 mod wake;
+mod updater;
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -134,11 +136,19 @@ fn load_settings(state: State<'_, Desktop>) -> Result<Value, String> {
     )
 }
 #[tauri::command]
-async fn save_settings(state: State<'_, Desktop>, settings: Settings) -> Result<(), String> {
-    apply_settings(&state, settings)
+async fn save_settings(
+    app: tauri::AppHandle,
+    state: State<'_, Desktop>,
+    settings: Settings,
+) -> Result<(), String> {
+    apply_settings(&app, &state, settings)
 }
 
-fn apply_settings(state: &Desktop, settings: Settings) -> Result<(), String> {
+pub(crate) fn apply_settings(
+    app: &tauri::AppHandle,
+    state: &Desktop,
+    settings: Settings,
+) -> Result<(), String> {
     let old = state.settings.lock().map_err(lock_error)?.clone();
     if settings.schema_version != storage::SETTINGS_VERSION
         || settings.device_id != old.device_id
@@ -188,13 +198,14 @@ fn apply_settings(state: &Desktop, settings: Settings) -> Result<(), String> {
     let screen_changed = (old.permissions.screen, old.permissions.input)
         != (settings.permissions.screen, settings.permissions.input);
     storage::save(&state.root, &settings)?;
+    character::on_settings_saved(&app, settings.character_enabled);
     *state.settings.lock().map_err(lock_error)? = settings;
     if changed {
-        stop_inner(state)?;
+        stop_inner(&state)?;
         if screen_changed {
             screen::reset();
         }
-        send_capabilities(state);
+        send_capabilities(&state);
     }
     Ok(())
 }
@@ -451,6 +462,7 @@ fn reply_audio(app: &tauri::AppHandle, packet: &Value) -> bool {
     };
     drop(segments);
     if let Some((number, bytes)) = finished {
+        character::emit_mouth(app, &bytes);
         if state.player.segment(generation, number, bytes).is_err() {
             let _ = stop_inner(&state);
             let _ = app.emit(
@@ -1264,7 +1276,17 @@ pub fn run() {
             command_runner::choose_data_root,
             voice_status,
             live_start,
-            live_stop
+            live_stop,
+            character::character_state,
+            character::character_save,
+            character::character_overlay,
+            character::character_model_info,
+            character::character_model_load,
+            updater::update_state,
+            updater::update_save,
+            updater::update_check,
+            updater::update_install,
+            updater::update_restart
         ])
         .run(tauri::generate_context!());
     if result.is_err() {

@@ -919,7 +919,7 @@ pub fn import_apply(
             next.graphics_mode = pending.bundle.settings.graphics_mode.clone();
             next.audit_days = pending.bundle.settings.audit_days;
         }
-        apply_settings(&state, next)?;
+        apply_settings(&app, &state, next)?;
     }
     after_change(&app);
     logs::log(

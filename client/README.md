@@ -12,6 +12,12 @@ Implemented for PLAN §3b.11 steps 1–3:
 - UUID call IDs, deadlines, no automatic reconnect/replay; Stop, permission revocation, disconnect and OS-session lock cancel pending actions. Completed actions, including opened apps, are not undone. OS helper process groups are terminated on cancellation; opened applications are deliberately detached.
 - Local content-free action audit, 30-day retention and 2000-row limit. No command parameters, file contents or tokens in audit. Server model trace stores only client tool name/result status.
 
+## Updater and character (beta ship track)
+
+- Updater: Rust-only commands, beta/stable channel, signature and signed-version checks always on, draft-only release workflow, N to N+1 tests against a local server. See `docs/UPDATER.md`.
+- Linux packages and CachyOS notes: `docs/PACKAGING.md`.
+- Optional desktop character (off by default): `docs/CHARACTER.md`, licences in `character/LICENSES.md`.
+
 ## Build and checks
 
 Use Node **22**, stable Rust, and [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). On Linux install WebKitGTK 4.1, GTK 3, ALSA development headers, appindicator and D-Bus development files.

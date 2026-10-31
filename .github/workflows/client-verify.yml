@@ -33,7 +33,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libdbus-1-dev
       - run: npm ci --ignore-scripts
         working-directory: client
-      - run: npm run lint && npm run typecheck && npm test && npm run build
+      - run: npm run check:versions && npm run lint && npm run typecheck && npm test && npm run build
         working-directory: client
       - run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
         working-directory: client/src-tauri

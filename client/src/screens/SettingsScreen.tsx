@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { CharacterPanel } from '../CharacterPanel';
+import { UpdatesPanel } from '../UpdatesPanel';
 import { type ImportPreview, recoveryText } from '../commands';
 import { type Recovery, type Settings } from '../types';
 
@@ -67,5 +69,9 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
       {withPermissions && preview.permissions && <p className="hint">Браузер: {preview.permissions.allow_web ? 'да' : 'нет'} · приложения и система: {preview.permissions.system ? 'да' : 'нет'} · доменов: {preview.permissions.web_domains.length} · программ: {preview.permissions.apps}. Программы, которых нет на этом ПК, будут пропущены.</p>}
       <div className="actions"><button onClick={cancelImport} disabled={busy}>Отмена</button><button className="primary" disabled={busy || (usable === 0 && !withSettings && !withPermissions)} onClick={apply}>Применить импорт</button></div>
     </div>}
+    <h2>Обновления</h2>
+    <UpdatesPanel />
+    <h2>Персонаж</h2>
+    <CharacterPanel />
   </section>;
 }
