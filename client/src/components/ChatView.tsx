@@ -30,7 +30,9 @@ function useSettledStream(text: string): string {
     const delay = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 160;
     timer.current = window.setTimeout(() => { timer.current = null; setSettled(latest.current); }, delay);
   }, [text, settled]);
-  useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current); }, []);
+  useEffect(() => () => {
+    if (timer.current !== null) { window.clearTimeout(timer.current); timer.current = null; }
+  }, []);
   return text.startsWith(settled) ? settled : '';
 }
 

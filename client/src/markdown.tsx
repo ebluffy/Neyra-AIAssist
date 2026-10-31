@@ -107,8 +107,7 @@ export function Markdown({ text, fresh = '', onCopy }: { text: string; fresh?: s
   const head = fresh && text.endsWith(fresh) ? text.slice(0, text.length - fresh.length) : text;
   const headBlocks = fresh ? parseMarkdown(head) : blocks;
   const sameShape = Boolean(fresh) && headBlocks.length === blocks.length && headBlocks.every((block, index) => block.k === blocks[index].k);
-  const older = sameShape || !fresh ? blocks : headBlocks;
-  const newer = !fresh || sameShape ? [] : blocks.slice(headBlocks.length);
+  const shown = blocks;
   const blockNode = (block: Block, index: number, tail: string) => {
     if (block.k === 'pre') {
       const kept = tail && block.code.endsWith(tail) ? block.code.slice(0, -tail.length) : block.code;
@@ -135,8 +134,5 @@ export function Markdown({ text, fresh = '', onCopy }: { text: string; fresh?: s
     return <p key={index}>{inlineNodes(stripped.rest ? block.inlines : stripped.inlines, String(index))}{arriving && <span className="arriving">{arriving}</span>}</p>;
   };
   if (blocks.length === 0 && text) return <p className="plain">{text}</p>;
-  return <div className="md">
-    {older.map((block, index) => blockNode(block, index, sameShape && index === older.length - 1 ? fresh : ''))}
-    {newer.map((block, index) => blockNode(block, headBlocks.length + index, ''))}
-  </div>;
+  return <div className="md">{shown.map((block, index) => blockNode(block, index, sameShape && index === shown.length - 1 ? fresh : ''))}</div>;
 }

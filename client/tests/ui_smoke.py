@@ -303,10 +303,15 @@ with sync_playwright() as p:
         page.evaluate("""text => window.emitNative('desktop-event',{type:'token',text})""", "Собираю пункты")
         page.wait_for_timeout(220)
         page.evaluate("""text => window.emitNative('desktop-event',{type:'token',text})""", " ещё")
+        page.wait_for_function("""() => {
+          const tails = document.querySelectorAll('article.is-streaming .md > p .arriving');
+          return tails.length === 1 && (tails[0].textContent || '').includes('ещё');
+        }""", timeout=3000)
+        page.wait_for_timeout(220)
         streaming = page.locator('article.is-streaming')
+        expect(streaming.locator('.arriving')).to_have_count(0)
         expect(streaming.locator('.md > p')).to_have_count(1)
         expect(streaming.locator('.md > p')).to_contain_text('Собираю пункты ещё')
-        expect(streaming.locator('.md > .arriving, .msg-body > .arriving')).to_have_count(0)
         expect(page.get_by_text('Нейра печатает')).to_be_visible()
         page.wait_for_timeout(220)
         shoot(f'{theme}-streaming')

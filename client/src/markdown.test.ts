@@ -29,6 +29,12 @@ describe('markdown', () => {
     expect(html).toContain('Собираю пункты');
     expect(html).toContain('ещё');
   });
+  it('keeps a reshaped list instead of the stale draft', () => {
+    const html = renderToStaticMarkup(Markdown({ text: '- a\n- b', fresh: ' b' }));
+    expect(html).toContain('b');
+    expect(html).not.toContain('<p>-</p>');
+    expect(html).not.toContain('<p>');
+  });
   it('groups list items', () => {
     expect(parseMarkdown('- один\n- два')).toEqual([{ k: 'ul', items: [[{ k: 'text', v: 'один' }], [{ k: 'text', v: 'два' }]] }]);
   });
