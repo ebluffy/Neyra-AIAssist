@@ -15,20 +15,29 @@ interface Props {
   voiceBusy: boolean;
 }
 
-function StreamingBody({ text }: { text: string }) {
+function useSettledStream(text: string): string {
   const [settled, setSettled] = useState('');
-  const prefix = text.startsWith(settled);
-  const head = prefix ? settled : text;
-  const added = prefix ? text.slice(settled.length) : '';
+  const latest = useRef(text);
+  const timer = useRef<number | null>(null);
   useEffect(() => {
-    const delay = window.matchMedia('(prefers-reduced-motion: reduce)').matches || !text.startsWith(settled) ? 0 : 160;
-    if (settled === text) return;
-    const timer = window.setTimeout(() => setSettled(text), delay);
-    return () => window.clearTimeout(timer);
+    latest.current = text;
+    if (text === settled) return;
+    if (!text.startsWith(settled)) {
+      const reset = window.setTimeout(() => setSettled(text), 0);
+      return () => window.clearTimeout(reset);
+    }
+    if (timer.current !== null) return;
+    const delay = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 160;
+    timer.current = window.setTimeout(() => { timer.current = null; setSettled(latest.current); }, delay);
   }, [text, settled]);
-  const plain = added.length > 0 && !/[`*#|[\]>]/.test(added);
-  if (!plain) return <Markdown text={text} />;
-  return <>{head && <Markdown text={head} />}<span className="arriving">{added}</span></>;
+  useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current); }, []);
+  return text.startsWith(settled) ? settled : '';
+}
+
+function StreamingBody({ text }: { text: string }) {
+  const settled = useSettledStream(text);
+  const fresh = text.startsWith(settled) ? text.slice(settled.length) : '';
+  return <Markdown text={text} fresh={fresh} />;
 }
 
 export function ChatView({ messages, partial, thinking, onCopy, onSpeak, onRepeat, turnBusy, voiceBusy }: Props) {

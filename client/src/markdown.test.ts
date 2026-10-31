@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseInlines, parseMarkdown } from './markdown';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { Markdown, parseInlines, parseMarkdown } from './markdown';
 
 describe('markdown', () => {
   it('keeps prose, emphasis and inline code as text nodes', () => {
@@ -19,6 +20,14 @@ describe('markdown', () => {
     const blocks = parseMarkdown('привет\n```ts\nconst n = 1');
     expect(blocks[0]).toMatchObject({ k: 'p' });
     expect(blocks[1]).toEqual({ k: 'pre', lang: 'ts', code: 'const n = 1' });
+  });
+  it('keeps a fresh tail inside the last paragraph', () => {
+    const html = renderToStaticMarkup(Markdown({ text: 'Собираю пункты ещё', fresh: ' ещё' }));
+    expect(html.match(/<p>/g)).toHaveLength(1);
+    expect(html.indexOf('<span class="arriving">')).toBeGreaterThan(html.indexOf('<p>'));
+    expect(html.indexOf('arriving')).toBeLessThan(html.indexOf('</p>'));
+    expect(html).toContain('Собираю пункты');
+    expect(html).toContain('ещё');
   });
   it('groups list items', () => {
     expect(parseMarkdown('- один\n- два')).toEqual([{ k: 'ul', items: [[{ k: 'text', v: 'один' }], [{ k: 'text', v: 'два' }]] }]);

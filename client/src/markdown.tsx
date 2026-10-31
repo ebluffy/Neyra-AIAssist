@@ -89,13 +89,54 @@ function inlineNodes(inlines: Inline[], key: string): ReactNode[] {
   });
 }
 
-export function Markdown({ text, onCopy }: { text: string; onCopy?: (value: string) => void }) {
+function stripSuffix(inlines: Inline[], fresh: string): { inlines: Inline[]; rest: string } {
+  const copy = inlines.map(item => ({ ...item }));
+  let rest = fresh;
+  for (let index = copy.length - 1; index >= 0 && rest; index -= 1) {
+    const item = copy[index];
+    if (item.k === 'link') break;
+    if (rest.endsWith(item.v) && item.v.length > 0) { rest = rest.slice(0, rest.length - item.v.length); copy.splice(index, 1); continue; }
+    if (item.v.endsWith(rest)) { item.v = item.v.slice(0, item.v.length - rest.length); rest = ''; }
+    else break;
+  }
+  return { inlines: copy.filter(item => item.k === 'link' || item.v.length > 0), rest };
+}
+
+export function Markdown({ text, fresh = '', onCopy }: { text: string; fresh?: string; onCopy?: (value: string) => void }) {
   const blocks = parseMarkdown(text);
+  const head = fresh && text.endsWith(fresh) ? text.slice(0, text.length - fresh.length) : text;
+  const headBlocks = fresh ? parseMarkdown(head) : blocks;
+  const sameShape = Boolean(fresh) && headBlocks.length === blocks.length && headBlocks.every((block, index) => block.k === blocks[index].k);
+  const older = sameShape || !fresh ? blocks : headBlocks;
+  const newer = !fresh || sameShape ? [] : blocks.slice(headBlocks.length);
+  const blockNode = (block: Block, index: number, tail: string) => {
+    if (block.k === 'pre') {
+      const kept = tail && block.code.endsWith(tail) ? block.code.slice(0, -tail.length) : block.code;
+      const arriving = tail && block.code.endsWith(tail) ? tail : '';
+      return <div className="codeblock" key={index}><pre><code>{kept}{arriving && <span className="arriving">{arriving}</span>}</code></pre>{onCopy && <button type="button" aria-label="Копировать код" data-tip="Копировать код" onClick={() => onCopy(block.code)}><Copy size={15} strokeWidth={1.75} aria-hidden="true" /></button>}</div>;
+    }
+    if (block.k === 'ul') {
+      const items = block.items.map(item => [...item]);
+      let arriving = '';
+      if (tail && items.length > 0) {
+        const stripped = stripSuffix(items[items.length - 1], tail);
+        if (!stripped.rest) { items[items.length - 1] = stripped.inlines; arriving = tail; }
+      }
+      return <ul key={index}>{items.map((item, itemIndex) => <li key={itemIndex}>{inlineNodes(item, `${index}-${itemIndex}`)}{arriving && itemIndex === items.length - 1 && <span className="arriving">{arriving}</span>}</li>)}</ul>;
+    }
+    if (block.k === 'h') {
+      const Tag = block.level === 2 ? 'h2' : 'h3';
+      const stripped = tail ? stripSuffix(block.inlines, tail) : { inlines: block.inlines, rest: tail };
+      const arriving = tail && !stripped.rest ? tail : '';
+      return <Tag key={index}>{inlineNodes(stripped.rest ? block.inlines : stripped.inlines, String(index))}{arriving && <span className="arriving">{arriving}</span>}</Tag>;
+    }
+    const stripped = tail ? stripSuffix(block.inlines, tail) : { inlines: block.inlines, rest: tail };
+    const arriving = tail && !stripped.rest ? tail : '';
+    return <p key={index}>{inlineNodes(stripped.rest ? block.inlines : stripped.inlines, String(index))}{arriving && <span className="arriving">{arriving}</span>}</p>;
+  };
   if (blocks.length === 0 && text) return <p className="plain">{text}</p>;
-  return <div className="md">{blocks.map((block, index) => {
-    if (block.k === 'pre') return <div className="codeblock" key={index}><pre><code>{block.code}</code></pre>{onCopy && <button type="button" aria-label="Копировать код" data-tip="Копировать код" onClick={() => onCopy(block.code)}><Copy size={15} strokeWidth={1.75} aria-hidden="true" /></button>}</div>;
-    if (block.k === 'ul') return <ul key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{inlineNodes(item, `${index}-${itemIndex}`)}</li>)}</ul>;
-    if (block.k === 'h') { const Tag = block.level === 2 ? 'h2' : 'h3'; return <Tag key={index}>{inlineNodes(block.inlines, String(index))}</Tag>; }
-    return <p key={index}>{inlineNodes(block.inlines, String(index))}</p>;
-  })}</div>;
+  return <div className="md">
+    {older.map((block, index) => blockNode(block, index, sameShape && index === older.length - 1 ? fresh : ''))}
+    {newer.map((block, index) => blockNode(block, headBlocks.length + index, ''))}
+  </div>;
 }
