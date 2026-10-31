@@ -915,12 +915,27 @@ pub async fn import_pick(app: tauri::AppHandle) -> Result<Value, String> {
     Ok(preview)
 }
 
+fn already_allowed_app(current: &[String], path: &str) -> bool {
+    if current.iter().any(|have| have == path) {
+        return true;
+    }
+    let Ok(real) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    current
+        .iter()
+        .any(|have| std::fs::canonicalize(have).ok().as_ref() == Some(&real))
+}
+
+fn already_allowed_domain(current: &[String], domain: &str) -> bool {
+    current.iter().any(|have| have.eq_ignore_ascii_case(domain))
+}
+
 /// Imported web and system flags can only stay the same or become narrower (`current && imported`).
 /// The master switch is never turned on from a file. Contour 3–4 (shell, files, folders, screen, input)
 /// are not imported: they stay exactly as they are on this PC.
-/// `apps` and `web_domains` come from the file and can grow: a program is kept only when it exists
-/// here and is not a secret, and a domain is kept only when it is a plain host. The import preview
-/// lists those paths and domains so the user sees exactly what will be added.
+/// `apps` and `web_domains` are the overlap (`current ∩ imported`). A program must also exist here
+/// and not be a secret; a domain must be a plain host. The import preview lists that overlap.
 pub fn sanitize_permissions(
     current: &storage::Permissions,
     imported: &storage::Permissions,
@@ -929,9 +944,10 @@ pub fn sanitize_permissions(
         .apps
         .iter()
         .filter(|p| {
-            std::fs::canonicalize(p)
-                .ok()
-                .is_some_and(|c| c.is_file() && !policy::secret_path(&c))
+            already_allowed_app(&current.apps, p)
+                && std::fs::canonicalize(p)
+                    .ok()
+                    .is_some_and(|c| c.is_file() && !policy::secret_path(&c))
         })
         .take(200)
         .cloned()
@@ -940,11 +956,12 @@ pub fn sanitize_permissions(
         .web_domains
         .iter()
         .filter(|d| {
-            policy::web_url(&format!("https://{d}"))
-                .ok()
-                .is_some_and(|u| {
-                    u.host_str() == Some(d.as_str()) && u.path() == "/" && u.port().is_none()
-                })
+            already_allowed_domain(&current.web_domains, d)
+                && policy::web_url(&format!("https://{d}"))
+                    .ok()
+                    .is_some_and(|u| {
+                        u.host_str() == Some(d.as_str()) && u.path() == "/" && u.port().is_none()
+                    })
         })
         .take(50)
         .cloned()
@@ -1203,10 +1220,15 @@ mod tests {
             system: false,
             ..Default::default()
         };
-        let current = storage::Permissions::default();
-        assert!(current.apps.is_empty() && current.web_domains.is_empty());
+        let empty = storage::Permissions::default();
+        let blocked = sanitize_permissions(&empty, &imported);
+        assert!(blocked.apps.is_empty() && blocked.web_domains.is_empty());
+        let current = storage::Permissions {
+            apps: vec![real.clone(), "/not/in/the/file".into()],
+            web_domains: vec!["example.com".into(), "kept.example".into()],
+            ..Default::default()
+        };
         let out = sanitize_permissions(&current, &imported);
-        // These two fields may grow beyond what this PC already allows.
         assert_eq!(out.apps, vec![real]);
         assert_eq!(out.web_domains, vec!["example.com".to_string()]);
         assert!(!out.allow_web && !out.system);
