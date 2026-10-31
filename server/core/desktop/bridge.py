@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from time import time
@@ -13,6 +14,35 @@ TOOLS = Literal['client.list_apps', 'client.open_url', 'client.open_app', 'clien
                 'client.focus_window', 'client.close_window', 'client.media', 'client.volume']
 
 
+FEATURES = Literal['command_drafts']
+_PUNCTUATION = re.compile(r'[^\w\s]', re.UNICODE)
+_WAKE_PREFIXES = ('нейра ', 'neyra ')
+
+
+def normalize_phrase(text: str) -> str:
+    """Same rules as the desktop client: lowercase, ё→е, no punctuation, single spaces, no leading wake name."""
+    value = _PUNCTUATION.sub(' ', text.lower().replace('ё', 'е'))
+    value = ' '.join(value.split())
+    for prefix in _WAKE_PREFIXES:
+        if value.startswith(prefix):
+            return value[len(prefix):]
+    return value
+
+
+class CommandTrigger(BaseModel):
+    """Runtime-only description of a user's local quick command. Never contains action arguments or secrets."""
+    model_config = ConfigDict(extra='forbid')
+    kind: Literal['phrase', 'regex', 'hotkey']
+    value: str = Field(min_length=1, max_length=120)
+
+
+class CommandInfo(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1, max_length=60)
+    triggers: list[CommandTrigger] = Field(default_factory=list, max_length=8)
+    actions: list[str] = Field(default_factory=list, max_length=10)
+
+
 class Manifest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     protocol: Literal['neyra.desktop.v1'] = 'neyra.desktop.v1'
@@ -21,6 +51,16 @@ class Manifest(BaseModel):
     name: str = Field(min_length=1, max_length=90)
     platform: Literal['windows', 'linux-wayland', 'linux-x11']
     tools: list[TOOLS] = Field(default_factory=list, max_length=9)
+    commands: list[CommandInfo] = Field(default_factory=list, max_length=32)
+    features: list[FEATURES] = Field(default_factory=list, max_length=2)
+
+    def matching_command(self, text: str) -> str | None:
+        """Exact phrase match only; ambiguity returns None so the normal LLM turn runs."""
+        wanted = normalize_phrase(text)
+        if not wanted:
+            return None
+        names = {c.name for c in self.commands for t in c.triggers if t.kind == 'phrase' and normalize_phrase(t.value) == wanted}
+        return next(iter(names)) if len(names) == 1 else None
 
 
 @dataclass(eq=False)
@@ -73,7 +113,8 @@ class BridgeRegistry:
                 pass
 
     def devices(self, owner):
-        return [c.manifest.model_dump(mode='json') for c in self.connections.values() if c.owner == owner]
+        # Quick commands belong to the client's own session; other devices never see them.
+        return [c.manifest.model_dump(mode='json', exclude={'commands', 'features'}) for c in self.connections.values() if c.owner == owner]
 
     def result(self, owner, connection, call_id, result):
         if owner != connection.owner:
@@ -153,4 +194,40 @@ def brain_tools():
         result[wire_name] = StructuredTool.from_function(
             name=wire_name, description=descriptions[name],
             coroutine=run, args_schema=Arguments)
+    if 'command_drafts' in connection.manifest.features:
+        result['desktop_command_draft'] = _draft_tool(connection)
     return result
+
+
+class DraftAction(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    tool: TOOLS
+    arguments: dict = Field(default_factory=dict)
+
+
+class CommandDraft(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1, max_length=60, description='Short command name, e.g. "Game mode".')
+    phrases: list[str] = Field(min_length=1, max_length=4, description='Exact phrases the user will say or type.')
+    actions: list[DraftAction] = Field(min_length=1, max_length=10, description='Fixed local actions run in order.')
+    reply: str = Field(default='', max_length=200, description='Optional short confirmation text.')
+
+
+def _draft_tool(connection):
+    """The server only parses a request into a draft. The desktop shows a card and saves it locally after confirmation."""
+    from langchain_core.tools import StructuredTool
+
+    async def run(**kwargs):
+        import json
+        try:
+            draft = CommandDraft(**kwargs)
+        except ValueError:
+            return '{"status":"invalid_draft"}'
+        await connection.send(dict(type='command_draft', draft_id=str(uuid4()), draft=draft.model_dump(mode='json')))
+        return json.dumps({'status': 'draft_sent', 'note': 'The user must confirm the draft in the desktop app; it is not saved on the server.'})
+
+    return StructuredTool.from_function(
+        name='desktop_command_draft',
+        description='Use only when the user asks to remember a quick command for this PC ("когда я говорю X, сделай Y"). '
+                    'Sends a draft to the desktop app for local confirmation. Never claim the command is saved before the user confirms.',
+        coroutine=run, args_schema=CommandDraft)
