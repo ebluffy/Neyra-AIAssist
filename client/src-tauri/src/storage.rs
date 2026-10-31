@@ -98,7 +98,7 @@ impl Default for Settings {
             device_name: "Мой ПК".into(),
             profiles: vec![],
             permissions: Permissions::default(),
-            theme: "dark".into(),
+            theme: "neyra".into(),
             graphics_mode: default_graphics(),
             audit_days: default_audit_days(),
             character_enabled: false,
@@ -661,12 +661,16 @@ pub fn initialize(root: &Path) -> Result<(Settings, Vec<Recovery>), String> {
     Ok((settings, recoveries))
 }
 
+pub fn valid_theme(theme: &str) -> bool {
+    matches!(theme, "neyra" | "dark" | "light")
+}
+
 fn validate_settings_file(file: &SettingsFile) -> Result<(), String> {
     Uuid::parse_str(&file.device_id).map_err(|_| "bad device")?;
     if file.profiles.len() > 12
         || file.device_name.trim().is_empty()
         || file.device_name.len() > 80
-        || !matches!(file.theme.as_str(), "dark" | "light")
+        || !valid_theme(&file.theme)
         || !(1..=365).contains(&file.audit_days)
     {
         return Err("bad settings".into());

@@ -166,7 +166,7 @@ pub(crate) fn apply_settings(
         || settings.profiles.len() > 12
         || settings.device_name.len() > 80
         || settings.device_name.trim().is_empty()
-        || !matches!(settings.theme.as_str(), "dark" | "light")
+        || !storage::valid_theme(&settings.theme)
         || !(1..=365).contains(&settings.audit_days)
         || !matches!(
             settings.graphics_mode.as_str(),
@@ -1150,7 +1150,7 @@ async fn record_start(state: State<'_, Desktop>) -> Result<(), String> {
     Ok(())
 }
 #[tauri::command]
-async fn record_stop(state: State<'_, Desktop>) -> Result<(), String> {
+async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
     let recording = state
         .recording
         .lock()
@@ -1162,6 +1162,14 @@ async fn record_stop(state: State<'_, Desktop>) -> Result<(), String> {
         let pcm = tauri::async_runtime::spawn_blocking(move || recording.finish())
             .await
             .map_err(|_| "Ошибка записи".to_string())??;
+        if !pcm.is_empty() {
+            let duration_ms = (pcm.len() as u64).saturating_mul(1000) / 32_000;
+            let clip = base64::engine::general_purpose::STANDARD.encode(audio::wav_s16le_16k(&pcm));
+            let _ = app.emit(
+                "desktop-event",
+                json!({"type":"voice.clip","audio":clip,"duration_ms":duration_ms}),
+            );
+        }
         let tx = state
             .voice
             .lock()
@@ -1188,6 +1196,24 @@ async fn record_stop(state: State<'_, Desktop>) -> Result<(), String> {
         }
     }
     result
+}
+#[tauri::command]
+async fn record_cancel(state: State<'_, Desktop>) -> Result<(), String> {
+    let recording = state.recording.lock().map_err(lock_error)?.take();
+    if let Some(recording) = recording {
+        tauri::async_runtime::spawn_blocking(move || {
+            let _ = recording.finish();
+        });
+    }
+    Ok(())
+}
+#[tauri::command]
+fn speak_text(state: State<'_, Desktop>, text: String) -> Result<(), String> {
+    let spoken: String = text.trim().chars().take(300).collect();
+    if spoken.is_empty() {
+        return Err("Нечего озвучивать".into());
+    }
+    send(&state.voice, json!({"type":"speak","text":spoken}))
 }
 #[tauri::command]
 fn audit_log(state: State<'_, Desktop>) -> Result<Vec<Value>, String> {
@@ -1339,6 +1365,8 @@ pub fn run() {
             stop,
             record_start,
             record_stop,
+            record_cancel,
+            speak_text,
             audit_log,
             applications,
             command_runner::commands_list,
@@ -1444,7 +1472,7 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                     let result = if pressed {
                         record_start(state).await
                     } else {
-                        record_stop(state).await
+                        record_stop(handle.clone(), state).await
                     };
                     match result {
                         Ok(()) => {

@@ -120,6 +120,26 @@ pub fn resample(samples: &[f32], channels: usize, rate: u32) -> Vec<u8> {
     out
 }
 
+/// 16 kHz mono PCM s16le wrapped so the chat can play the same clip that was sent.
+pub fn wav_s16le_16k(pcm: &[u8]) -> Vec<u8> {
+    let data_len = u32::try_from(pcm.len()).unwrap_or(u32::MAX);
+    let mut wav = Vec::with_capacity(44 + pcm.len());
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&36u32.saturating_add(data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16_000u32.to_le_bytes());
+    wav.extend_from_slice(&32_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.extend_from_slice(pcm);
+    wav
+}
+
 /// Continuous microphone for live mode: 20 ms frames at 16 kHz mono over a bounded channel.
 /// Frames are dropped (and counted) when the consumer falls behind; capture never blocks.
 pub struct LiveCapture {
@@ -333,5 +353,14 @@ mod tests {
         let result = resample(&audio, 2, 48000);
         assert_eq!(result.len(), 32000);
         assert_eq!(i16::from_le_bytes([result[0], result[1]]), 16383);
+    }
+    #[test]
+    fn wav_header_names_16k_mono() {
+        let wav = wav_s16le_16k(&[1, 2, 3, 4]);
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
+        assert_eq!(wav.len(), 48);
+        assert_eq!(&wav[44..], &[1, 2, 3, 4]);
     }
 }

@@ -1,0 +1,26 @@
+import { describe, expect, it } from 'vitest';
+import { parseInlines, parseMarkdown } from './markdown';
+
+describe('markdown', () => {
+  it('keeps prose, emphasis and inline code as text nodes', () => {
+    expect(parseInlines('см. **код** и `a`')).toEqual([
+      { k: 'text', v: 'см. ' },
+      { k: 'strong', v: 'код' },
+      { k: 'text', v: ' и ' },
+      { k: 'code', v: 'a' },
+    ]);
+  });
+  it('allows only http links', () => {
+    const parts = parseInlines('[сайт](https://example.com) [x](javascript:alert(1))');
+    expect(parts[0]).toEqual({ k: 'link', v: 'сайт', href: 'https://example.com' });
+    expect(parts.some(part => part.k === 'link' && part.href.startsWith('javascript:'))).toBe(false);
+  });
+  it('closes an unfinished fence as code', () => {
+    const blocks = parseMarkdown('привет\n```ts\nconst n = 1');
+    expect(blocks[0]).toMatchObject({ k: 'p' });
+    expect(blocks[1]).toEqual({ k: 'pre', lang: 'ts', code: 'const n = 1' });
+  });
+  it('groups list items', () => {
+    expect(parseMarkdown('- один\n- два')).toEqual([{ k: 'ul', items: [[{ k: 'text', v: 'один' }], [{ k: 'text', v: 'два' }]] }]);
+  });
+});

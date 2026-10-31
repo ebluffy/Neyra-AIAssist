@@ -22,9 +22,8 @@ export interface AuditRow { time: number; tool: string; status: string; confirme
 export interface Plugin { id: string; name?: string; enabled: boolean; lifecycle?: string }
 export interface WakeStatus { ready: boolean; dir: string; message?: string; model?: string; license?: string }
 export interface VoiceStatus { wake: WakeStatus; live: boolean; dropped_frames: number }
-export interface ServerEvent { type: string; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string }
+export interface ServerEvent { type: string; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number }
 export type LiveState = 'off' | 'idle' | 'armed' | 'listening' | 'thinking' | 'speaking';
-export const tabs = ['Чат', 'Голос', 'Команды', 'Статус', 'Модули', 'Доступ к ПК', 'Настройки', 'Сервер'] as const;
 export const defaultVoice: VoiceSettings = { mode: 'ptt', vad_sensitivity: 0.5, end_silence_ms: 700, wake_threshold: 0.5, barge_in: 'off' };
 export function newProfile(): Profile { return { id: crypto.randomUUID(), name: 'Новый сервер', url: 'http://127.0.0.1:8787', session_id: crypto.randomUUID() }; }
 export function formatError(error: unknown): string { return typeof error === 'string' ? error : 'Действие не выполнено. Повторите попытку.'; }
