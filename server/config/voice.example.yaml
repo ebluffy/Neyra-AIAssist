@@ -2,6 +2,8 @@
 # EN/RU: see docs/PLAN.md section 1c; docs/en/setup/config-reference.md; docs/ru/setup/config-reference.md
 #
 voice:
+  # Desktop PTT /v1/desktop/voice reuses these server-side lanes.
+  # Client capture: PCM s16le, mono 16 kHz, at most 30 seconds; audio is not retained.
   # EN: Default language (ISO-639-1).
   # RU: Язык по умолчанию (ISO-639-1).
   language: "ru"

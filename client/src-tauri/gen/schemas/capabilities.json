@@ -1,0 +1,1 @@
+{"main":{"identifier":"main","description":"Neyra local window only; all I/O is validated by Rust commands.","local":true,"windows":["main"],"permissions":["core:default"]}}

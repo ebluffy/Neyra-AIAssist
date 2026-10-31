@@ -74,7 +74,10 @@ async def run_brain_tool_phase(
     messages.append(human_msg)
 
     mcp_cfg = agent.config.get("mcp_client") if isinstance(agent.config.get("mcp_client"), dict) else {}
-    use_tool_loop = bool(mcp_cfg.get("llm_tool_calls")) and bool(agent.tools)
+    from core.desktop.bridge import brain_tools
+    desktop_tools = brain_tools()
+    turn_tools = {**agent.tools, **desktop_tools}
+    use_tool_loop = (bool(mcp_cfg.get("llm_tool_calls")) or bool(desktop_tools)) and bool(turn_tools)
     max_tool_steps = max(1, int(mcp_cfg.get("llm_tool_max_steps", 4)))
 
     brain_llm = agent.llm_brain
@@ -95,7 +98,7 @@ async def run_brain_tool_phase(
             )
             return extract_think_blocks(text)[0].strip()
 
-        bound = brain_llm.bind_tools(list(agent.tools.values()))
+        bound = brain_llm.bind_tools(list(turn_tools.values()))
         step = 0
         response = None
         while step < max_tool_steps:
@@ -118,7 +121,12 @@ async def run_brain_tool_phase(
                         args = {}
                 if not tname:
                     continue
-                out = await agent._execute_tool(tname, **args)
+                if tname in desktop_tools:
+                    out = await desktop_tools[tname].ainvoke(args)
+                elif tname.startswith(("client.", "client_")):
+                    out = '{"status":"unavailable"}'
+                else:
+                    out = await agent._execute_tool(tname, **args)
                 messages.append(ToolMessage(content=out, tool_call_id=tid, name=tname))
             step += 1
         if response is not None and getattr(response, "tool_calls", None) and step >= max_tool_steps:
