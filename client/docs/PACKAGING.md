@@ -59,6 +59,19 @@ updater or character code changes this.
   false`.
 - Not checked: CachyOS, KDE Wayland, NVIDIA, system-library mode, Windows.
 
+## Manual acceptance
+
+From the repo root, on the owner machine:
+
+```sh
+bash client/scripts/acceptance-linux.sh
+```
+
+The script prints the pacman line for anything missing, builds the AppImage,
+starts it and writes a step 5–8 checklist (wake word files, current monitor
+scale, Wayland session, overlay, local updater test). Steps stay open until
+the owner actually runs them. Russian write-up: `ACCEPTANCE-LINUX.md`.
+
 ## Windows
 
 NSIS `setup.exe`, per-user install, passive updater install. No code-signing
