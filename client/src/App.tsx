@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { type AuditRow, type Device, type Entry, type HostCall, type Plugin, type Profile, type ServerEvent, type Settings, formatError, newProfile, tabs, validServerUrl } from './types';
+import { type DraftEvent, type RunEvent, describeRun } from './commands';
+import { CommandsScreen } from './screens/CommandsScreen';
+import { DraftDialog } from './screens/DraftDialog';
+import { PermissionsScreen } from './screens/PermissionsScreen';
+import { SettingsScreen } from './screens/SettingsScreen';
+import { type Device, type Entry, type HostCall, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, formatError, newProfile, tabs, validServerUrl } from './types';
 
 export function App() {
   const [settings, setSettings] = useState<Settings>();
@@ -29,10 +34,11 @@ export function App() {
   const [target, setTarget] = useState('');
   const [status, setStatus] = useState<unknown>();
   const [plugins, setPlugins] = useState<Plugin[]>([]);
-  const [audit, setAudit] = useState<AuditRow[]>([]);
   const [token, setToken] = useState('');
-  const [applications, setApplications] = useState<string[]>([]);
-  const [appFilter, setAppFilter] = useState('');
+  const [recoveries, setRecoveries] = useState<Recovery[]>([]);
+  const [draft, setDraft] = useState<DraftEvent>();
+  const [runLine, setRunLine] = useState('');
+  const [commandRunning, setCommandRunning] = useState(false);
   const modal = useRef<HTMLDialogElement>(null);
   const profile = settings?.profiles.find(p => p.id === profileId);
   const run = useCallback(async (action: () => Promise<void>) => {
@@ -40,8 +46,8 @@ export function App() {
     try { await action(); } catch (e) { setError(formatError(e)); } finally { setBusy(false); }
   }, []);
   useEffect(() => {
-    void invoke<{ settings: Settings; data_root: string; global_shortcuts: boolean; pc_access_available: boolean }>('load_settings').then(data => {
-      setSettings(data.settings); setRoot(data.data_root); setShortcuts(data.global_shortcuts); setPcAvailable(data.pc_access_available); setProfileId(data.settings.profiles[0]?.id ?? '');
+    void invoke<{ settings: Settings; data_root: string; global_shortcuts: boolean; pc_access_available: boolean; recoveries?: Recovery[] }>('load_settings').then(data => {
+      setSettings(data.settings); setRoot(data.data_root); setShortcuts(data.global_shortcuts); setPcAvailable(data.pc_access_available); setProfileId(data.settings.profiles[0]?.id ?? ''); setRecoveries(data.recoveries ?? []);
     }).catch(e => setError(formatError(e)));
     const timer = window.setInterval(() => setPartial(tokenBuffer.current), 60);
     return () => window.clearInterval(timer);
@@ -73,6 +79,12 @@ export function App() {
         setHostCall(current => (current && (!payload.call_id || current.call_id === payload.call_id) ? undefined : current));
       }),
       listen<{ active: boolean }>('host-activity', ({ payload }) => setActive(payload.active)),
+      listen<RunEvent>('command-run', ({ payload }) => {
+        setRunLine(describeRun(payload)); setCommandRunning(payload.state === 'started' || payload.state === 'step'); setThinking(false);
+        if (payload.state === 'failed') setError(describeRun(payload)); else setNotice(describeRun(payload));
+      }),
+      listen<DraftEvent>('command-draft', ({ payload }) => setDraft(payload)),
+      listen<{ reason: string }>('command-draft-invalid', ({ payload }) => setError(`Черновик команды отклонён: ${payload.reason}`)),
     ];
     return () => { for (const listener of listeners) void listener.then(unlisten => unlisten()); };
   }, []);
@@ -113,7 +125,14 @@ export function App() {
     await invoke('bridge_message', { kind: 'history' }); await invoke('bridge_message', { kind: 'devices' });
   });
   const updateDevices = () => run(async () => { await invoke('bridge_message', { kind: 'devices' }); });
-  const sendText = () => run(async () => { await invoke('chat', { text, targetDeviceId: target || null }); setHistory(h => [...h.slice(-99), { role: 'user', content: text }]); setText(''); setThinking(true); });
+  const sendText = () => run(async () => {
+    const result = await invoke<{ handled: boolean; command?: string }>('chat', { text, targetDeviceId: target || null });
+    setHistory(h => [...h.slice(-99), { role: 'user', content: text }]);
+    if (result?.handled) setHistory(h => [...h.slice(-99), { role: 'assistant', content: `Команда «${result.command}» запущена на этом ПК.` }]); else setThinking(true);
+    setText('');
+  });
+  const notify = useCallback((message: string) => { setNotice(message); setError(''); }, []);
+  const decideDraft = (accepted: boolean, d: DraftEvent) => run(async () => { setDraft(undefined); if (accepted) { await invoke('draft_confirm', { draftId: d.draft_id }); setNotice('Команда сохранена на этом ПК'); } else await invoke('draft_reject', { draftId: d.draft_id }); });
   const record = () => run(async () => {
     if (recording) { await invoke('record_stop'); setRecording(false); setThinking(true); setNotice('Распознаю речь…'); }
     else { await invoke('record_start'); setRecording(true); setNotice('Микрофон включён. До 30 секунд; нажмите ещё раз для отправки.'); }
@@ -130,21 +149,18 @@ export function App() {
         <label>Профиль<select value={profileId} disabled={busy || connected} onChange={e => { setProfileId(e.target.value); setToken(''); setStatus(undefined); }}><option value="">Выберите сервер</option>{settings.profiles.map(p => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
         <button disabled={busy || connected || settings.profiles.length >= 12} onClick={() => { const p = newProfile(); setSettings({ ...settings, profiles: [...settings.profiles, p] }); setProfileId(p.id); }}>Добавить профиль</button>
         {profile && <><label>Название<input value={profile.name} maxLength={80} disabled={connected} onChange={e => patchProfile({ name: e.target.value })}/></label><label>Адрес сервера<input type="url" aria-describedby={error ? 'form-error' : undefined} aria-invalid={!validServerUrl(profile.url)} value={profile.url} disabled={connected} onChange={e => patchProfile({ url: e.target.value })}/></label><label>Токен<input type="password" value={token} autoComplete="off" disabled={connected} onChange={e => setToken(e.target.value)} placeholder="Оставьте пустым, чтобы использовать сохранённый"/></label><div className="actions"><button disabled={busy || connected} onClick={check}>Проверить подключение</button><button disabled={busy || connected} onClick={connect}>Подключить</button><button disabled={busy || !connected} onClick={() => run(async () => { await invoke('disconnect'); setConnected(false); setDevices([]); setTarget(''); })}>Отключить</button></div></>}
-        <label>Имя этого ПК<input value={settings.device_name} maxLength={80} disabled={connected} onChange={e => setSettings({ ...settings, device_name: e.target.value })}/></label><label>Тема<select value={settings.theme} onChange={e => setSettings({ ...settings, theme: e.target.value })}><option value="dark">Тёмная</option><option value="light">Светлая</option></select></label><label>Графика Linux (после перезапуска)<select value={settings.graphics_mode} onChange={e => setSettings({ ...settings, graphics_mode: e.target.value })}><option value="auto">Автоматически</option><option value="wayland">Wayland</option><option value="wayland-nvidia">Wayland · NVIDIA explicit sync workaround</option><option value="x11">X11</option><option value="compatibility">Совместимость (может замедлять UI)</option></select></label>
-        <label className="check"><input type="checkbox" checked={!!settings.character_enabled} disabled title="Будет доступно после шага 7"/>Персонаж на рабочем столе — после шага 7 (оверлей VRM)</label>
-        <button disabled={busy} onClick={() => run(async () => { await save(settings); setNotice('Настройки сохранены'); })}>Сохранить настройки</button><p className="path">Данные: {root}</p><p className="path">Устройство: {settings.device_id}</p>
-      </section>}
+            </section>}
       {tab === 'Чат' && <section className="chat"><h1>Чат</h1><div ref={messagePanel} onScroll={e => { const el = e.currentTarget; followMessages.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }} className="messages" aria-label="История чата">{history.length === 0 && <p>Здесь появится разговор с Нейрой.</p>}{history.map((entry, i) => <article key={i}><strong>{entry.role === 'user' ? 'Вы' : 'Нейра'}</strong><p>{entry.content}</p></article>)}{partial && <article><strong>Нейра</strong><p>{partial}</p></article>}</div>
         {lastTrace !== undefined && <details><summary>Модели последнего ответа</summary><pre>{JSON.stringify(lastTrace, null, 2)}</pre></details>}<label>ПК для действий<select value={target} disabled={!connected} onChange={e => setTarget(e.target.value)}><option value="">Этот ПК</option>{devices.map(d => <option key={d.device_id} value={d.device_id}>{d.name} · {d.device_id.slice(0, 8)}</option>)}</select></label><button onClick={updateDevices} disabled={!connected || busy}>Обновить устройства</button><button disabled={!connected || busy || !target} onClick={() => { if (window.confirm('Отключить выбранный ПК? Действия будут отменены, повторное подключение выполняется на том ПК вручную.')) void run(async () => { await invoke('disconnect_device', { deviceId: target }); setTarget(''); }); }}>Отключить выбранный ПК</button>
         <form onSubmit={e => { e.preventDefault(); void sendText(); }}><label>Сообщение<textarea value={text} onChange={e => setText(e.target.value)} maxLength={6000} disabled={!connected}/></label><div className="actions"><button disabled={busy || !connected || thinking || !text.trim()}>Отправить</button><button type="button" aria-pressed={recording} onClick={record} disabled={busy || !connected || (thinking && !recording)}>{recording ? 'Завершить и отправить' : 'Записать голос'}</button></div></form><p>{shortcuts ? 'Push-to-talk: удерживайте Ctrl+Alt+Space; Stop: Ctrl+Alt+Escape. Также доступны кнопки.' : 'Глобальные хоткеи недоступны: используйте кнопки записи и Stop.'} Аудио не сохраняется.</p>
       </section>}
       {tab === 'Статус' && <section><h1>Статус сервера</h1><button disabled={busy || !profileId} onClick={() => run(async () => { const out = await request('/v1/health'); setStatus(out.data); })}>Обновить статус</button>{status ? <pre>{JSON.stringify(status, null, 2)}</pre> : <p>Выберите сервер и проверьте подключение.</p>}</section>}
       {tab === 'Модули' && <section><h1>Модули</h1><div className="actions"><button disabled={busy || !profileId} onClick={() => run(async () => { const out = await request('/v1/plugins'); setPlugins((out.data as { plugins: Plugin[] }).plugins); })}>Обновить модули</button><button disabled={busy || !profileId} onClick={() => { if (window.confirm('Перезапустить ядро сервера? Активные ходы прервутся.')) void run(async () => { await request('/v1/system/restart', 'POST'); setNotice('Запрошен мягкий рестарт'); }); }}>Мягкий рестарт</button></div>{plugins.length === 0 && <p>Загрузите список модулей.</p>}{plugins.map(p => <article key={p.id}><h2>{p.name ?? p.id}</h2><p>{p.lifecycle ?? 'Модуль'} · {p.enabled ? 'Включён' : 'Выключен'}</p><button disabled={busy} onClick={() => { if (window.confirm('Изменить состояние модуля? Для resident ядро будет перезапущено.')) void run(async () => { await invoke('set_module', { profileId, moduleId: p.id, enabled: !p.enabled }); setPlugins(list => list.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x)); }); }}>{p.enabled ? 'Выключить' : 'Включить'}</button></article>)}</section>}
-      {tab === 'Доступ к ПК' && settings && <section><h1>Доступ к ПК</h1>{!pcAvailable && <p role="status">Доступ приостановлен: сессия заблокирована или ОС не подтвердила её состояние. Чат доступен.</p>}<p>Безопасное — сама, неизвестная программа или домен — с подтверждением. CLI, файлы, экран и ввод ещё недоступны.</p><label className="check"><input type="checkbox" checked={settings.permissions.enabled} onChange={e => void run(async () => { await save({ ...settings, permissions: { ...settings.permissions, enabled: e.target.checked } }); })}/>Разрешить Нейре управлять этим ПК</label><label className="check"><input type="checkbox" checked={settings.permissions.allow_web} onChange={e => void run(async () => { await save({ ...settings, permissions: { ...settings.permissions, allow_web: e.target.checked } }); })}/>Браузер: ссылки и поиск</label><label className="check"><input type="checkbox" checked={settings.permissions.system} onChange={e => void run(async () => { await save({ ...settings, permissions: { ...settings.permissions, system: e.target.checked } }); })}/>Приложения и система: окна и медиа (если доступны)</label>
-        <label>Домены без подтверждения (через запятую)<input value={settings.permissions.web_domains.join(', ')} onChange={e => setSettings({ ...settings, permissions: { ...settings.permissions, web_domains: e.target.value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean) } })}/></label><button disabled={busy} onClick={() => run(async () => { await save(settings); setNotice('Список доменов сохранён'); })}>Сохранить домены</button><p>Неизвестные домены требуют подтверждения. Поиск открывается в Google.</p><h2>Разрешённые приложения</h2><button disabled={busy} onClick={() => run(async () => { setApplications(await invoke<string[]>('applications')); })}>Найти установленные приложения</button><label>Фильтр приложений<input value={appFilter} onChange={e => setAppFilter(e.target.value)}/></label><div className="app-list">{applications.filter(p => p.toLowerCase().includes(appFilter.toLowerCase())).slice(0, 40).map(path => <label className="check" key={path}><input type="checkbox" checked={settings.permissions.apps.includes(path)} onChange={e => void run(async () => { const apps = e.target.checked ? [...settings.permissions.apps, path] : settings.permissions.apps.filter(a => a !== path); await save({ ...settings, permissions: { ...settings.permissions, apps } }); })}/><span className="path">{path}</span></label>)}</div>
-        <h2>Журнал действий</h2><p>30 дней, до 2000 записей. Без параметров команд и содержимого файлов.</p><button disabled={busy} onClick={() => run(async () => setAudit(await invoke<AuditRow[]>('audit_log')))}>Обновить журнал</button>{audit.length === 0 ? <p>Журнал пуст.</p> : <ol>{audit.slice(-50).reverse().map((r, i) => <li key={i}>{new Date(r.time).toLocaleString('ru-RU')} · {r.tool} · {r.status}{r.confirmed ? ' · подтверждено' : ''}</li>)}</ol>}
-      </section>}
+      {tab === 'Команды' && <CommandsScreen busy={busy} run={run} notify={notify} runLine={runLine} running={commandRunning}/>}
+      {tab === 'Доступ к ПК' && settings && <PermissionsScreen settings={settings} setSettings={setSettings} save={save} pcAvailable={pcAvailable} busy={busy} run={run} notify={notify}/>}
+      {tab === 'Настройки' && settings && <SettingsScreen settings={settings} setSettings={setSettings} save={save} root={root} recoveries={recoveries} connected={connected} busy={busy} run={run} notify={notify} applyImported={setSettings}/>}
     </main>
-    <dialog aria-labelledby="confirm-title" ref={modal} onCancel={e => { e.preventDefault(); void approve(false); }}><h2 id="confirm-title">Разрешить действие на этом ПК?</h2><p>{hostCall?.tool}</p><pre>{JSON.stringify(hostCall?.arguments, null, 2)}</pre><p>Подтверждение действует только для этого вызова, до 30 секунд.</p><div className="actions"><button autoFocus onClick={() => void approve(false)}>Отклонить</button><button onClick={() => void approve(true)}>Разрешить один раз</button></div></dialog>
+    <DraftDialog draft={draft} busy={busy} onSave={d => void decideDraft(true, d)} onReject={d => void decideDraft(false, d)}/>
+    <dialog aria-labelledby="confirm-title" ref={modal} onCancel={e => { e.preventDefault(); void approve(false); }}><h2 id="confirm-title">{hostCall?.tool === 'command.run' ? 'Запустить быструю команду?' : 'Разрешить действие на этом ПК?'}</h2><p>{hostCall?.tool === 'command.run' ? String(hostCall.arguments.name ?? '') : hostCall?.tool}</p><pre>{JSON.stringify(hostCall?.arguments, null, 2)}</pre><p>Подтверждение действует только для этого вызова, до 30 секунд.</p><div className="actions"><button autoFocus onClick={() => void approve(false)}>Отклонить</button><button onClick={() => void approve(true)}>Разрешить один раз</button></div></dialog>
   </div>;
 }
