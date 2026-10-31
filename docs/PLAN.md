@@ -286,7 +286,10 @@
 - [x] Linux recovery modes до GTK и очистка AppImage env дочерних процессов (unset/empty/custom LD_LIBRARY_PATH) проверены локально. Windows/X11 PTT/Stop через native shortcut plugin; на Wayland пока явные кнопки, portal adapter ещё открыт. Окна Wayland не объявляются; медиа требуют доступных playerctl/pactl. При непроверяемом lock-state доступ к ПК fail-closed; чат остаётся доступен.
 - [x] Локально после AR-фиксов PR #35: **583** server pytest, Rust fmt/clippy и 11 unit tests; Node 22 lint/typecheck/unit/build; Linux release `.deb` и изолированный Xvfb startup. Браузерный smoke с mock IPC: профили/ошибка API/чат/выбор ПК/разрешения/карточка/Escape/`host-confirm-closed`/Stop/audit, обе темы и 620 px. Сборки и авторевью финального SHA проверяются отдельно в PR.
 - [x] Windows CI: NSIS и native tests зелёные на `06474db` (9/9 jobs) и на последующих SHA этой ветки с тем же desktop-кодом; сборка пакета не закрывает ручной запуск/микрофон/звук/keyring/трей/хоткеи.
-- [ ] Ручная приёмка Windows/CachyOS — у владельца, не закрывается CI и не входит в агентный скоуп AR/CI-закрытия PR #35: установщик, reconnect/restart, OS keyring, реальный STT/TTS/PTT/Stop, два физических ПК, отзыв доступа/lock, сохранность данных. Отдельно открыты: GlobalShortcuts portal на Wayland, другие DE без loginctl, системные библиотеки AppImage и настоящее N → N+1. Минимум §0 и шаги 1–3 целиком не считать принятыми только по mocks/CI.
+
+**После merge: ручная приёмка владельцем (не задача PR #35 / не закрывается CI):**
+
+- [ ] Windows и CachyOS KDE Wayland + NVIDIA: установщик, reconnect/restart, OS keyring, mic/TTS/PTT/Stop, трей/хоткеи, два ПК, revoke/lock, сохранность данных. Отдельно открыты: GlobalShortcuts portal на Wayland, другие DE без loginctl, системные библиотеки AppImage и настоящее N → N+1. Минимум §0 и шаги 1–3 целиком не считать принятыми только по mocks/CI.
 
 
 #### Сборка и автообновление
