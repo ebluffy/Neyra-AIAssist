@@ -449,5 +449,35 @@ with sync_playwright() as p:
     }""")
     assert repaired['uuid'] and repaired['thread'] == repaired['session'] and repaired['connected'] and not repaired['broken'], repaired
     broken.close()
+    two = browser.new_page(viewport={'width': 1100, 'height': 820})
+    two.add_init_script(INIT)
+    two.goto('http://127.0.0.1:1420')
+    two.wait_for_load_state('networkidle')
+    expect(two.get_by_role('heading', name=re.compile(r'^Добр'))).to_be_visible()
+    menu(two, 'Сервер и устройства')
+    two.get_by_role('button', name='Подключить', exact=True).click()
+    close_sheet(two)
+    two.get_by_label('Сообщение', exact=True).fill('Секретная переписка')
+    two.get_by_role('button', name='Отправить', exact=True).click()
+    expect(two.locator('article').filter(has_text='Секретная переписка')).to_be_visible()
+    two.wait_for_function("""() => {
+      const saved = window.testCalls.filter(c => c.cmd==='save_chats').at(-1);
+      return saved && JSON.stringify(saved.args.threads).includes('Секретная переписка');
+    }""")
+    menu(two, 'Сервер и устройства')
+    two.get_by_role('button', name='Отключить', exact=True).click()
+    two.get_by_role('button', name='Добавить профиль', exact=True).click()
+    two.get_by_label('Профиль').select_option(label='Новый сервер')
+    two.get_by_role('button', name='Подключить', exact=True).click()
+    expect(two.locator('article').filter(has_text='Секретная переписка')).to_be_visible()
+    paired_servers = two.evaluate("""() => {
+      const saved = window.testCalls.filter(c => c.cmd==='save_chats').at(-1);
+      const thread = saved.args.threads.find(item => JSON.stringify(item.messages).includes('Секретная переписка'));
+      const settings = window.testCalls.filter(c => c.cmd==='save_settings').at(-1).args.settings;
+      const second = settings.profiles.find(item => item.name === 'Новый сервер');
+      return {thread: thread && thread.sessionId, profile: second && second.session_id, kept: !!(thread && JSON.stringify(thread.messages).includes('Секретная переписка'))};
+    }""")
+    assert paired_servers['kept'] and paired_servers['thread'] == paired_servers['profile'], paired_servers
+    two.close()
     browser.close()
 print('PASS: chat-first shell, gear sections, voice, permissions, commands, settings, three themes. Native boundary simulated.')

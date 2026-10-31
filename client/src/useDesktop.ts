@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { ensureSessionId, firstServerSession, isUuid, nextId, profileSessionRepair, sessionOrNew, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
+import { bindProfileSession, ensureSessionId, firstServerSession, isUuid, nextId, profileSessionRepair, selectedProfile, sessionOrNew, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
 import { type DraftEvent, type RunEvent, describeRun } from './commands';
 import { type SheetId, themeId } from './theme';
 import { acceptLiveRun, conversionNotice, defaultVoice, formatError, meterLevel, unwrapApi, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
@@ -52,6 +52,7 @@ export function useDesktop() {
   const chatsReady = useRef(false);
   const muteHold = useRef(false);
   const liveRun = useRef(0);
+  const keepLocal = useRef(false);
   const urls = useRef<string[]>([]);
   const profile = settings?.profiles.find(item => item.id === profileId);
   const voice: VoiceSettings = settings?.voice ?? defaultVoice;
@@ -85,7 +86,8 @@ export function useDesktop() {
         }
         chatsReady.current = true;
       } catch (reason) { setError(formatError(reason)); }
-      const selected = data.settings.profiles[0];
+      const remembered = (() => { try { return localStorage.getItem('neyra.profile') ?? ''; } catch { return ''; } })();
+      const selected = selectedProfile(data.settings.profiles, remembered);
       const sessionId = sessionOrNew(selected?.session_id, stored);
       const repaired = profileSessionRepair(selected?.session_id, sessionId);
       const nextSettings = repaired && selected
@@ -159,6 +161,7 @@ export function useDesktop() {
           tokenBuffer.current = ''; setPartial(''); setThinking(event.source === 'voice'); postNotice(event.source === 'voice' ? 'Готовлю озвучку…' : 'Ответ готов');
         }
         if (event.type === 'history') {
+          if (keepLocal.current) return;
           const incoming = (event.messages ?? []).map((entry: Entry) => ({ id: nextId(), role: entry.role, content: entry.content, kind: 'text' as const }));
           setMessages(incoming);
         }
@@ -245,11 +248,11 @@ export function useDesktop() {
   });
   const endLive = () => run(async () => { muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
   const settingsForServer = (current: Settings): Settings => {
-    if (!profile || isUuid(profile.session_id)) return current;
+    if (!profile) return current;
     const active = threads.find(item => item.id === activeId);
     const sessionId = ensureSessionId(active?.sessionId);
     if (active && active.sessionId !== sessionId) setThreads(list => list.map(item => item.id === active.id ? { ...item, sessionId } : item));
-    return { ...current, profiles: current.profiles.map(item => item.id === profile.id ? { ...item, session_id: sessionId } : item) };
+    return { ...current, profiles: bindProfileSession(current.profiles, profile.id, sessionId) };
   };
   const check = () => run(async () => {
     if (!settings || !profile || !validServerUrl(profile.url)) throw 'Укажите HTTPS-адрес или HTTP localhost.';
@@ -263,8 +266,13 @@ export function useDesktop() {
     if (!settings || !profile || !validServerUrl(profile.url)) throw 'Сначала настройте сервер.';
     await save(settingsForServer(settings));
     if (token) { await invoke('store_token', { profileId, token }); setToken(''); }
-    await invoke('connect', { profileId }); setConnected(true); setMessages([]);
-    await invoke('bridge_message', { kind: 'history' }); await invoke('bridge_message', { kind: 'devices' });
+    const active = threads.find(item => item.id === activeId);
+    const preserve = messages.length > 0 || (active?.messages.length ?? 0) > 0;
+    keepLocal.current = preserve;
+    await invoke('connect', { profileId }); setConnected(true);
+    if (!preserve) setMessages([]);
+    if (!preserve) await invoke('bridge_message', { kind: 'history' });
+    await invoke('bridge_message', { kind: 'devices' });
   });
   const disconnect = () => run(async () => { await invoke('disconnect'); setConnected(false); setDevices([]); setTarget(''); });
   const sendContent = (value: string) => run(async () => {
@@ -349,8 +357,20 @@ export function useDesktop() {
     if (settings.profiles.length === 0 && active && active.sessionId !== sessionId) setThreads(list => list.map(item => item.id === active.id ? { ...item, sessionId } : item));
     setSettings({ ...settings, profiles: [...settings.profiles, { ...created, session_id: sessionId }] });
     setProfileId(created.id);
+    try { localStorage.setItem('neyra.profile', created.id); } catch { /* storage can be blocked */ }
   };
-  const chooseProfile = (id: string) => { setProfileId(id); setToken(''); setStatus(undefined); };
+  const chooseProfile = (id: string) => {
+    setProfileId(id);
+    setToken('');
+    setStatus(undefined);
+    try { localStorage.setItem('neyra.profile', id); } catch { /* storage can be blocked */ }
+    if (!settings || !id) return;
+    const active = threads.find(item => item.id === activeId);
+    if (!active || !isUuid(active.sessionId)) return;
+    const current = settings.profiles.find(item => item.id === id);
+    if (!current || current.session_id === active.sessionId) return;
+    void save({ ...settings, profiles: bindProfileSession(settings.profiles, id, active.sessionId) }).catch(reason => setError(formatError(reason)));
+  };
   const refreshStatus = () => run(async () => { const out = await request<unknown>('/v1/health'); setStatus(out); });
   const refreshPlugins = () => run(async () => { const out = await request<{ plugins?: Plugin[] }>('/v1/plugins'); setPlugins(Array.isArray(out?.plugins) ? out.plugins : []); });
   const restartCore = () => { if (window.confirm('Перезапустить ядро сервера? Активные ходы прервутся.')) void run(async () => { await request('/v1/system/restart', 'POST'); postNotice('Запрошен мягкий рестарт', true); }); };

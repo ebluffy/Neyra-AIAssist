@@ -40,10 +40,23 @@ export function profileSessionRepair(profileSession: string | undefined, chosen:
   return chosen;
 }
 
-/** The first server joins the open thread. Later servers keep the id they were created with. */
+/** A new server joins the open thread. Without one it keeps the id it was created with. */
 export function firstServerSession(hasProfiles: boolean, createdSession: string, activeSession: string | undefined): string {
-  if (hasProfiles) return createdSession;
-  return ensureSessionId(activeSession);
+  if (isUuid(activeSession)) return activeSession;
+  return hasProfiles ? createdSession : ensureSessionId(activeSession);
+}
+
+export function selectedProfile<T extends { id: string }>(profiles: T[], rememberedId: string | undefined): T | undefined {
+  if (rememberedId) {
+    const found = profiles.find(item => item.id === rememberedId);
+    if (found) return found;
+  }
+  return profiles[0];
+}
+
+export function bindProfileSession<T extends { id: string; session_id: string }>(profiles: T[], profileId: string, threadSession: string): T[] {
+  if (!isUuid(threadSession)) return profiles;
+  return profiles.map(item => item.id === profileId && item.session_id !== threadSession ? { ...item, session_id: threadSession } : item);
 }
 
 export function composerSlot(text: string): 'send' | 'live' {

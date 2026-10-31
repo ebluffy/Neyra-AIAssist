@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clock, composerSlot, daypart, ensureSessionId, firstServerSession, profileSessionRepair, sessionOrNew, switchThread, threadTitle, type ChatThread } from './chat';
+import { bindProfileSession, clock, composerSlot, daypart, ensureSessionId, firstServerSession, profileSessionRepair, selectedProfile, sessionOrNew, switchThread, threadTitle, type ChatThread } from './chat';
 import { themeId } from './theme';
 
 describe('chat composer', () => {
@@ -38,7 +38,8 @@ describe('chat session', () => {
     const threadSession = '11111111-1111-4111-8111-111111111111';
     const created = '22222222-2222-4222-8222-222222222222';
     expect(firstServerSession(false, created, threadSession)).toBe(threadSession);
-    expect(firstServerSession(true, created, threadSession)).toBe(created);
+    expect(firstServerSession(true, created, threadSession)).toBe(threadSession);
+    expect(firstServerSession(true, created, '')).toBe(created);
     const fresh = firstServerSession(false, created, '');
     expect(fresh).not.toBe(created);
     expect(ensureSessionId(fresh)).toBe(fresh);
@@ -50,6 +51,18 @@ describe('chat session', () => {
     expect(profileSessionRepair(chosen, '22222222-2222-4222-8222-222222222222')).toBeNull();
     expect(profileSessionRepair(undefined, chosen)).toBeNull();
     expect(ensureSessionId('broken')).not.toBe('broken');
+  });
+  it('binds the chosen server to the open thread and restores that server', () => {
+    const threadSession = '11111111-1111-4111-8111-111111111111';
+    const profiles = [
+      { id: 'a', session_id: threadSession },
+      { id: 'b', session_id: '22222222-2222-4222-8222-222222222222' },
+    ];
+    expect(selectedProfile(profiles, 'b')?.id).toBe('b');
+    expect(selectedProfile(profiles, 'missing')?.id).toBe('a');
+    const bound = bindProfileSession(profiles, 'b', threadSession);
+    expect(bound.find(item => item.id === 'b')?.session_id).toBe(threadSession);
+    expect(bound[0].session_id).toBe(threadSession);
   });
 });
 
