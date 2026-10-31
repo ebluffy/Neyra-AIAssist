@@ -34,13 +34,46 @@ Dependency lifecycle scripts are disabled for installation; Vite/esbuild and the
 
 ## Local data and credentials
 
-The directory is created on first launch with `settings/`, `permissions/`, `commands/`, `logs/`, `audit/`, `character/`, `models/`, `cache/`. Current settings/permissions live in versioned `settings/app.json`, audit in `audit/actions.json`; later-step directories are empty reservations, not implemented features.
+The directory is created on first launch with `settings/`, `permissions/`, `commands/`, `logs/`, `audit/`, `character/`, `models/`, `cache/`, `wakeword/`. Settings live in versioned `settings/app.json`, permissions in `permissions/permissions.json`, audit in `audit/actions.json`; `character/`, `models/` and `wakeword/` are empty reservations for later steps.
 
-Windows: Known Folder Documents (including redirected/OneDrive Documents). Linux: XDG Documents, existing `~/Documents`, otherwise `$XDG_DATA_HOME/neyra` (`~/.local/share/neyra`). The exact path is shown under Server. Writes use an atomic replacement and retry transient locks; broken/unknown-version settings are preserved and reported rather than overwritten.
+Windows: Known Folder Documents (including redirected/OneDrive Documents). Linux: XDG Documents, existing `~/Documents`, otherwise `$XDG_DATA_HOME/neyra` (`~/.local/share/neyra`). The exact path is shown under Server. Writes use an atomic replacement and retry transient locks; broken/unknown-version settings are quarantined, restored from the last good copy where possible, and reported.
 
 Tokens are stored only by `keyring`: Windows Credential Manager or Linux Secret Service (KWallet must expose Secret Service). A locked/unavailable keyring produces an error; there is no plaintext fallback. Each local server profile has a separate keyring entry and private session UUID. User settings, executable paths, audit and assets are never uploaded as server configuration.
 
 The current Control API has token roles, not personal user accounts. Desktop requires an **admin** Bearer (the same bar as existing chat). Owner scope is the stable server `api.desktop_owner_id` (default `admin`), never a hash of the token value and never a client-supplied username. Admin Bearer only authenticates; rotating the API token keeps the same desktop history/memory namespace. Separate owners need distinct `desktop_owner_id` values in server config. Device/session manifests exist only in server RAM. Disconnecting a selected device closes its server socket and ends the current session; it must reconnect manually on that PC. Permanent per-device credentials/pairing are not claimed.
+
+## Quick commands and local data (PLAN §3b.5, §3b.10)
+
+User quick commands live only on this PC, one YAML file per command in `Documents/Neyra/commands/`. They are never written to server config or memory, work without a server connection, and are unavailable from Discord, Telegram and the dashboard (the server only sees names, phrase/hotkey texts and tool names of the current session in RAM; no arguments, paths or regexes).
+
+```yaml
+schema_version: 1          # optional, defaults to 1; a newer version is rejected, not guessed
+name: Режим игры
+triggers:                  # 1-4; each has exactly one of phrase / regex / hotkey
+  - phrase: режим игры
+  - regex: открой сайт (?P<site>[a-z.-]+)   # named groups fill params
+  - hotkey: Ctrl+Alt+G     # Windows/X11 only; needs Ctrl, Alt or Super
+params:
+  - {name: site, default: example.com}
+actions:                   # 1-10 fixed client.* calls, run in order
+  - tool: client.open_url
+    arguments: {url: "https://{site}/"}
+on_error: stop             # or continue
+confirm: false             # ask once before the whole command
+risk: safe                 # must be confirm if a step closes windows
+reply: Готово
+speak: false               # speaks `reply` with the server TTS when connected
+```
+
+- **Matching:** exact phrase after normalization (lowercase, ё→е, no punctuation, optional leading "Нейра"), or a full-match regex. More than one command matching means no local run and the normal LLM turn. Typed chat text is matched on the client; voice phrases are matched by the server against the session's runtime phrase list and answered with `command_match`, then run locally.
+- **Safety:** every step goes through the normal PC policy (master switch, allowlists, secret-path deny list, confirmation cards, 30 s expiry, Stop, audit). A command cannot widen permissions, call tools that are not advertised, or run while the session is locked. Regexes use the linear-time `regex` crate with a size limit.
+- **Hot reload:** the folder is polled every 1.5 s. A broken file reports file, line and reason in the UI and keeps its last valid version; other commands keep working. Duplicate names/hotkeys, files over 64 KB and symlinks are reported and skipped.
+- **Drafts:** "Нейра, запомни команду…" makes the server call `desktop_command_draft`; the client validates the draft, shows a card and saves locally only after confirmation. Nothing is stored on the server.
+- **Import/export:** native Save/Open dialogs (Rust side, no JS file access). One JSON file with `settings` (theme, graphics, audit days), `permissions` and `commands`: no device id, server profiles, tokens or audit. Import is limited to 1 MB / 200 commands, shows a preview (new / same / conflict / invalid), supports skip/overwrite/rename and merge/replace (replace first moves old files into `cache/commands-backup-*`). Permissions are imported only on request, never turn the master switch on, and drop application paths that do not exist here or point at secrets. File names are derived from command names (letters, digits, `-`), so a name cannot escape the folder.
+
+`Documents/Neyra/` contains `settings/`, `commands/`, `permissions/`, `logs/`, `audit/`, `character/`, `models/`, `cache/` and `wakeword/`. `settings/app.json` (schema 2) and `permissions/permissions.json` (schema 1) are written atomically (fsync, rename, retry on locked files) after saving the previous valid file as `.bak`. A corrupt, oversized or newer-version file is moved aside (`*.corrupt-*` / `*.unsupported-*`, five kept), the `.bak` is restored if valid, otherwise defaults are used with the device id salvaged and permissions left **off**; Settings shows what happened. Schema 1 settings migrate automatically (the old file is kept as `app.json.v1.bak`). `logs/client.log` rotates at 256 KB and never contains tokens, arguments or output. The folder can be changed under Settings; data is copied, the old folder is left untouched, and the new location is remembered in a small pointer file in the OS config directory (restart required). Audit retention is configurable (default 30 days).
+
+Not covered here: `server_event` actions (user commands are not written to the server's `fast_path`), global hotkeys on Wayland (use the phrase box or buttons), and Windows hardware checks.
 
 ## Platforms
 
