@@ -4,11 +4,11 @@ import { type AuditRow, type Permissions, type Settings, absolutePath } from '..
 
 type Runner = (action: () => Promise<void>) => Promise<void>;
 interface Props {
-  settings: Settings; setSettings: (s: Settings) => void; save: (s: Settings) => Promise<void>; pcAvailable: boolean; busy: boolean;
+  settings: Settings; setSettings: (s: Settings) => void; saveSection: (patch: Partial<Settings>) => Promise<void>; pcAvailable: boolean; busy: boolean;
   run: Runner; notify: (text: string) => void; backends: { screen: boolean; input: boolean };
 }
 
-export function PermissionsScreen({ settings, setSettings, save, pcAvailable, busy, run, notify, backends }: Props) {
+export function PermissionsScreen({ settings, setSettings, saveSection, pcAvailable, busy, run, notify, backends }: Props) {
   const [applications, setApplications] = useState<string[]>();
   const [appFilter, setAppFilter] = useState('');
   const [audit, setAudit] = useState<AuditRow[]>();
@@ -16,13 +16,13 @@ export function PermissionsScreen({ settings, setSettings, save, pcAvailable, bu
   const p = settings.permissions;
   const patch = (permissions: Partial<Permissions>, warning?: string) => run(async () => {
     if (warning && !window.confirm(warning)) return;
-    await save({ ...settings, permissions: { ...p, ...permissions } });
+    await saveSection({ permissions: { ...p, ...permissions } });
   });
   const addRoot = () => run(async () => {
     const path = newRoot.trim();
     if (!absolutePath(path)) throw 'Укажите полный путь к папке, например /home/имя/Documents или C:\\Users\\имя\\Documents.';
     if (p.fs_roots.includes(path)) return;
-    await save({ ...settings, permissions: { ...p, fs_roots: [...p.fs_roots, path] } });
+    await saveSection({ permissions: { ...p, fs_roots: [...p.fs_roots, path] } });
     setNewRoot(''); notify('Папка разрешена');
   });
   const shown = (applications ?? []).filter(path => path.toLowerCase().includes(appFilter.toLowerCase()));
@@ -38,13 +38,13 @@ export function PermissionsScreen({ settings, setSettings, save, pcAvailable, bu
     <label className="check"><input type="checkbox" checked={!!p.shell} disabled={busy || !p.enabled} onChange={e => patch({ shell: e.target.checked })}/>Консоль (каждая команда с подтверждением)</label>
     <label className="check"><input type="checkbox" checked={!!p.files} disabled={busy || !p.enabled} onChange={e => patch({ files: e.target.checked })}/>Файлы в разрешённых корнях</label>
     <label>Корни файловой системы (по одному пути на строку)<textarea value={(p.fs_roots ?? []).join('\n')} rows={3} disabled={busy || !p.files} onChange={e => setSettings({ ...settings, permissions: { ...p, fs_roots: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) } })}/></label>
-    <button disabled={busy || !p.files} onClick={() => run(async () => { await save(settings); notify('Корни FS сохранены'); })}>Сохранить корни FS</button>
+    <button disabled={busy || !p.files} onClick={() => run(async () => { await saveSection({ permissions: settings.permissions }); notify('Корни FS сохранены'); })}>Сохранить корни FS</button>
     <h2>Контур 4 · Экран и ввод</h2>
     <label className="check"><input type="checkbox" checked={!!p.screen} disabled={busy || !p.enabled} onChange={e => patch({ screen: e.target.checked })}/>Скриншоты</label>
     <label className="check"><input type="checkbox" checked={!!p.screen_auto} disabled={busy || !p.screen} onChange={e => patch({ screen_auto: e.target.checked })}/>Скриншоты без карточки (только capture)</label>
     <label className="check"><input type="checkbox" checked={!!p.input} disabled={busy || !p.enabled} onChange={e => patch({ input: e.target.checked })}/>Мышь и клавиатура (каждая последовательность с подтверждением)</label>
     <label>Домены без подтверждения (через запятую)<input value={p.web_domains.join(', ')} onChange={e => setSettings({ ...settings, permissions: { ...p, web_domains: e.target.value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean) } })}/></label>
-    <button disabled={busy} onClick={() => run(async () => { await save(settings); notify('Список доменов сохранён'); })}>Сохранить домены</button>
+    <button disabled={busy} onClick={() => run(async () => { await saveSection({ permissions: settings.permissions }); notify('Список доменов сохранён'); })}>Сохранить домены</button>
     <p>Неизвестные домены требуют подтверждения. Поиск открывается в Google.</p>
     <h2>Разрешённые приложения</h2>
     <button disabled={busy} onClick={() => run(async () => { setApplications(await invoke<string[]>('applications')); })}>Найти установленные приложения</button>

@@ -246,6 +246,13 @@ export function useDesktop() {
     }
   };
   const save = async (next: Settings) => { await persistSaved(next); setSettings(next); };
+  const saveSection = async (patch: Partial<Settings>) => {
+    const disk = savedSettings.current;
+    if (!settings || !disk) return;
+    setSettings({ ...settings, ...patch });
+    try { await persistSaved({ ...disk, ...patch }); }
+    catch (reason) { setSettings(settings); throw reason; }
+  };
   const patchProfile = (patch: Partial<Profile>) => { if (settings && profile) setSettings({ ...settings, profiles: settings.profiles.map(item => item.id === profileId ? { ...item, ...patch } : item) }); };
   const request = async <T,>(path: string, method = 'GET') => unwrapApi<T>(await invoke<unknown>('api', { profileId, path, method }));
   const rememberLive = (runId: unknown) => { if (typeof runId === 'number') liveRun.current = runId; };
@@ -419,6 +426,6 @@ export function useDesktop() {
 
   return {
     settings, setSettings, root, shortcuts, pcAvailable, profileId, profile, connected, busy, error, notice, noticeSticky, appVersion, platform, messages, partial, lastTrace, text, setText, thinking, recording, active, hostCall, devices, target, setTarget, status, plugins, token, setToken, recoveries, draft, runLine, commandRunning, backends, liveState, micLevel, voiceStatus, voice, liveOpen, muted, threads, activeId, sheet, menuOpen, historyOpen, theme: themeId(settings?.theme),
-    run, notify, dismissNotice, save, patchProfile, openSheet, closeSheet, closeMenu, setMenuOpen, setHistoryOpen, stop, saveVoice, draftVoice, refreshVoice, startLive, toggleMute, endLive, check, connect, disconnect, sendContent, decideDraft, beginRecording, finishRecording, cancelRecording, copyText, speak, approve, setTheme, newChat, openThread, addProfile, chooseProfile, refreshStatus, refreshPlugins, refreshDevices, restartCore, togglePlugin, disconnectDevice, setSheet,
+    run, notify, dismissNotice, save, saveSection, patchProfile, openSheet, closeSheet, closeMenu, setMenuOpen, setHistoryOpen, stop, saveVoice, draftVoice, refreshVoice, startLive, toggleMute, endLive, check, connect, disconnect, sendContent, decideDraft, beginRecording, finishRecording, cancelRecording, copyText, speak, approve, setTheme, newChat, openThread, addProfile, chooseProfile, refreshStatus, refreshPlugins, refreshDevices, restartCore, togglePlugin, disconnectDevice, setSheet,
   };
 }

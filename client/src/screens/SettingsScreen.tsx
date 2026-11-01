@@ -6,7 +6,7 @@ import { type Recovery, type Settings } from '../types';
 
 type Runner = (action: () => Promise<void>) => Promise<void>;
 interface Props {
-  settings: Settings; setSettings: (s: Settings) => void; save: (s: Settings) => Promise<void>; root: string; recoveries: Recovery[];
+  settings: Settings; setSettings: (s: Settings) => void; saveSection: (patch: Partial<Settings>) => Promise<void>; root: string; recoveries: Recovery[];
   connected: boolean; busy: boolean; run: Runner; notify: (text: string) => void; applyImported: (s: Settings) => void;
   onTheme: (theme: string) => void;
 }
@@ -17,7 +17,7 @@ function blockedLabels(keys: string[] | undefined): string {
   return names.length ? `Файл включает выключенное сейчас: ${names.join(', ')}. Это не включится.` : '';
 }
 
-export function SettingsScreen({ settings, setSettings, save, root, recoveries, connected, busy, run, notify, applyImported, onTheme }: Props) {
+export function SettingsScreen({ settings, setSettings, saveSection, root, recoveries, connected, busy, run, notify, applyImported, onTheme }: Props) {
   const [preview, setPreview] = useState<ImportPreview>();
   const [mode, setMode] = useState<'merge' | 'replace'>('merge');
   const [conflict, setConflict] = useState<'skip' | 'overwrite' | 'rename'>('rename');
@@ -84,7 +84,7 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
     <label>Графика Linux (после перезапуска)<select value={settings.graphics_mode} onChange={e => setSettings({ ...settings, graphics_mode: e.target.value })}><option value="auto">Автоматически</option><option value="wayland">Wayland</option><option value="wayland-nvidia">Wayland · NVIDIA explicit sync workaround</option><option value="x11">X11</option><option value="compatibility">Совместимость (может замедлять UI)</option></select></label>
     <div className="planned"><p className="hint">Персонаж на рабочем столе — в разработке, после шага 7. Отсюда он не включается.</p></div>
     <label>Хранить журнал действий, дней<input type="number" min={1} max={365} value={settings.audit_days} onChange={e => setSettings({ ...settings, audit_days: Math.min(365, Math.max(1, Number(e.target.value) || 30)) })}/></label>
-    <button disabled={busy} onClick={() => run(async () => { await save(settings); notify('Настройки сохранены'); })}>Сохранить настройки</button>
+    <button disabled={busy} onClick={() => run(async () => { await saveSection({ device_name: settings.device_name, theme: settings.theme, graphics_mode: settings.graphics_mode, audit_days: settings.audit_days }); notify('Настройки сохранены'); })}>Сохранить настройки</button>
     </div>
     <div className="group">
     <h2>Данные на этом ПК</h2>
