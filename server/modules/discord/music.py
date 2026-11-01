@@ -65,8 +65,26 @@ _YOUTUBE_HOSTS = frozenset(
     }
 )
 
-# Returned as normalize error when a URL was present but not an allowed YouTube video.
-ONLY_YOUTUBE_VIDEO_URLS = "only_youtube_video_urls"
+# Allowed music source hosts (beyond YouTube).
+_ALLOWED_MUSIC_HOSTS = frozenset(
+    {
+        "soundcloud.com",
+        "www.soundcloud.com",
+        "m.soundcloud.com",
+        "on.soundcloud.com",
+        "bandcamp.com",
+        "vimeo.com",
+        "www.vimeo.com",
+        "player.vimeo.com",
+        "twitch.tv",
+        "www.twitch.tv",
+        "m.twitch.tv",
+        "clips.twitch.tv",
+    }
+)
+
+# Returned as normalize error when a URL was present but not an allowed music source.
+ONLY_ALLOWED_MUSIC_URLS = "only_allowed_music_urls"
 
 
 def _extract_any_url(text: str) -> str:
@@ -98,6 +116,17 @@ def _url_for_parse(url: str) -> str:
     return u
 
 
+def _is_allowed_music_host(hostname: str) -> bool:
+    """Check if hostname is an allowed music source (soundcloud, bandcamp, vimeo, twitch)."""
+    h = (hostname or "").lower().split(":")[0].strip(".")
+    if h in _ALLOWED_MUSIC_HOSTS:
+        return True
+    # Bandcamp uses *.bandcamp.com subdomains.
+    if h.endswith(".bandcamp.com"):
+        return True
+    return False
+
+
 def _youtube_video_id(url: str) -> str:
     try:
         parsed = urlparse(_url_for_parse(url))
@@ -120,6 +149,61 @@ def _youtube_video_id(url: str) -> str:
     return ""
 
 
+def _normalize_allowed_music_url(text: str) -> str:
+    """Extract and normalize URL from allowed music sources (SoundCloud, Bandcamp, Vimeo, Twitch)."""
+    url = _extract_any_url(text)
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(_url_for_parse(url))
+    except Exception:
+        return ""
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return ""
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return ""
+    # Security: strict host allowlist (no IPs/LAN possible), no userinfo, no custom ports.
+    if parsed.username is not None or parsed.password is not None:
+        return ""
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    if port not in (None, 80, 443):
+        return ""
+    if not _is_allowed_music_host(hostname):
+        return ""
+
+    # Normalize hostname variants.
+    if hostname in ("www.soundcloud.com", "m.soundcloud.com"):
+        hostname = "soundcloud.com"
+    elif hostname == "www.vimeo.com":
+        hostname = "vimeo.com"
+    elif hostname in ("twitch.tv", "www.twitch.tv", "m.twitch.tv"):
+        hostname = "www.twitch.tv"
+
+    # Special case: player.vimeo.com/video/<id> -> vimeo.com/<id>
+    path = parsed.path or "/"
+    if hostname == "player.vimeo.com":
+        if path.startswith("/video/"):
+            video_id = path[7:].rstrip("/").split("?")[0]
+            if video_id and re.fullmatch(r"\d+", video_id):
+                hostname = "vimeo.com"
+                path = f"/{video_id}"
+            else:
+                return ""
+        else:
+            return ""
+
+    # Drop fragment and port; keep path/query (Discord <> and trailing punctuation already stripped).
+    clean_url = f"https://{hostname}{path}"
+    if parsed.query:
+        clean_url += f"?{parsed.query}"
+    return clean_url
+
+
 def _canonical_youtube_url_from_text(text: str) -> str:
     """Only real YouTube hosts; returns watch URL or '' (never LAN/loopback/http abuse)."""
     url = _extract_any_url(text)
@@ -137,20 +221,24 @@ def _looks_like_url(text: str) -> bool:
 
 
 def _normalize_play_query(raw: str) -> tuple[str, str | None]:
-    """Return (query, error). error is set when a URL was rejected (not a YouTube video)."""
+    """Return (query, error). error is set when a URL was rejected (not an allowed music source)."""
     q = (raw or "").strip()
     if not q:
         return "", None
     yt = _canonical_youtube_url_from_text(q)
     if yt:
         return yt, None
+    # Check for other allowed music sources.
+    allowed_url = _normalize_allowed_music_url(q)
+    if allowed_url:
+        return allowed_url, None
     had_url = bool(_extract_any_url(q))
     # Drop every URL-like token so Lavalink never sees icy://, //lan, ftp://, etc.
     q = _ANY_URL_RE.sub("", q)
     q = re.sub(r"[<>]", "", q).strip()
     if had_url:
-        # Link present but not an allowed YouTube video — caller must not invent a default track.
-        return "", ONLY_YOUTUBE_VIDEO_URLS
+        # Link present but not an allowed source — caller must not invent a default track.
+        return "", ONLY_ALLOWED_MUSIC_URLS
     # Remove command noise so Lavalink search gets a clean artist/title query.
     # Word-boundary only: `\s*` would eat "Playboi" → "boi".
     noise_patterns = (
@@ -225,13 +313,38 @@ async def _connect_voice_player(
     raise last_ex
 
 
-async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> list[Any]:
-    """Resolve playables. YouTube watch URLs load directly; text uses TrackSource.YouTube (bare q)."""
+async def _search_tracks(wavelink_mod: Any, query: str, node: Any) -> list[Any]:
+    """Resolve playables. YouTube watch URLs load directly; text uses TrackSource.YouTube (bare q).
+    Also supports other allowed music sources (SoundCloud, Bandcamp, Vimeo, Twitch) via direct URL load."""
     q = (query or "").strip()
     if not q:
         return []
-    is_yt_url = bool(_youtube_video_id(q))
-    timeout = 20.0 if is_yt_url else 12.0
+
+    # AR-1: Check if q is a single URL token (no whitespace) that normalizes successfully.
+    has_whitespace = bool(re.search(r"\s", q))
+    extracted_url = _extract_any_url(q)
+    is_single_url = bool(extracted_url) and not has_whitespace and q == extracted_url
+
+    # Check YouTube URL: must be single token and produce valid video ID.
+    is_yt_url = False
+    yt_canonical = ""
+    if is_single_url:
+        yt_canonical = _canonical_youtube_url_from_text(q)
+        is_yt_url = bool(yt_canonical)
+
+    # Check other allowed music sources: must be single token and normalize successfully.
+    is_allowed_url = False
+    allowed_normalized = ""
+    if is_single_url and not is_yt_url:
+        allowed_normalized = _normalize_allowed_music_url(q)
+        is_allowed_url = bool(allowed_normalized)
+
+    # If q has whitespace AND contains URL-like text, reject (multiple URLs or URL + text).
+    if has_whitespace and extracted_url:
+        # Multiple tokens with URL - never send to Lavalink.
+        return []
+
+    timeout = 20.0 if (is_yt_url or is_allowed_url) else 12.0
 
     async def _search(raw: str, *, source: Any = None) -> list[Any]:
         kwargs: dict[str, Any] = {"node": node}
@@ -244,8 +357,16 @@ async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> li
         return list(tracks or [])
 
     try:
+        # Send normalized URL (not raw q) for allowed sources.
         if is_yt_url:
-            tracks = await _search(q)
+            tracks = await _search(yt_canonical)
+            if tracks:
+                return tracks
+            logger.warning("discord.music url resolve empty | query=%s", q)
+            return []
+
+        if is_allowed_url:
+            tracks = await _search(allowed_normalized)
             if tracks:
                 return tracks
             logger.warning("discord.music url resolve empty | query=%s", q)
@@ -253,12 +374,12 @@ async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> li
 
         # Never pass bare text that yarl would treat as a URL (icy://, //lan, ftp://…).
         if _looks_like_url(q):
-            logger.warning("discord.music refuse non-youtube url-shaped query | query=%s", q)
+            logger.warning("discord.music refuse non-allowlisted url-shaped query | query=%s", q)
             return []
 
         # User already typed a Lavalink search prefix — send as-is (no second prefix).
         low = q.lower()
-        if low.startswith(("ytsearch:", "ytmsearch:")):
+        if low.startswith(("ytsearch:", "ytmsearch:", "scsearch:")):
             fetch = getattr(getattr(wavelink_mod, "Pool", None), "fetch_tracks", None)
             if callable(fetch):
                 tracks = await asyncio.wait_for(fetch(q, node=node), timeout=timeout)
@@ -275,7 +396,7 @@ async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> li
             return list(tracks or [])
         return await _search(f"ytsearch:{q}")
     except Exception as ex:  # pragma: no cover
-        logger.warning("discord.music youtube search failed | query=%s error=%s", q, ex)
+        logger.warning("discord.music search failed | query=%s error=%s", q, ex)
         return []
 
 
@@ -764,7 +885,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
     if action == MUSIC_PLAY and not payload.get("join_only"):
         query, query_error = _normalize_play_query(str(payload.get("query") or "").strip())
         if query_error:
-            return {"ok": False, "status": "failed", "error": "поддерживаются только ссылки на видео YouTube",
+            return {"ok": False, "status": "failed", "error": "поддерживаются только YouTube, SoundCloud, Bandcamp, Vimeo и Twitch",
                     "request_id": str(payload.get("request_id") or "")}
     bot = _resolve_bot(ctx)
     if bot is None:
@@ -914,7 +1035,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                 query = "upbeat happy music"
             local_result = service.handle(action, {**payload, "query": query})
             _ = local_result
-            tracks = await _search_tracks_youtube(wavelink, query, node)
+            tracks = await _search_tracks(wavelink, query, node)
             if not tracks:
                 last_error = f"nothing found for '{query}'"
                 continue
