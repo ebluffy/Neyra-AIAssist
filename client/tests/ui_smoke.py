@@ -530,5 +530,34 @@ with sync_playwright() as p:
     }""")
     assert chosen['url'] == 'http://127.0.0.1:8787' and chosen['active'] == chosen['id'] and not chosen['leaked'], chosen
     draft.close()
+    themed = browser.new_page(viewport={'width': 1100, 'height': 820})
+    themed.add_init_script(INIT)
+    themed.goto('http://127.0.0.1:1420')
+    themed.wait_for_load_state('networkidle')
+    expect(themed.get_by_role('heading', name=re.compile(r'^Добр'))).to_be_visible()
+    menu(themed, 'Сервер и устройства')
+    themed.get_by_label('Адрес сервера').fill('http://192.168.1.5:8787')
+    themed.get_by_role('navigation', name='Разделы настроек').get_by_role('button', name='Настройки', exact=True).click()
+    themed.get_by_role('radio', name='Светлая', exact=True).check()
+    expect(themed.locator('.shell')).to_have_attribute('data-theme', 'light')
+    themed.wait_for_function("""() => {
+      const row = window.testCalls.filter(c => c.cmd==='save_settings').at(-1);
+      return row && row.args.settings.theme === 'light';
+    }""")
+    close_sheet(themed)
+    themed.locator('.lead').get_by_role('button', name='Новый чат', exact=True).click()
+    themed.wait_for_function("""() => {
+      const row = window.testCalls.filter(c => c.cmd==='save_settings').at(-1);
+      return row && row.args.settings.theme === 'light' && row.args.settings.profiles[0].session_id !== 'b3aef0b1-2ee1-4224-9888-1992bb964414';
+    }""")
+    expect(themed.get_by_text('Удалённый сервер требует HTTPS')).to_have_count(0)
+    switched = themed.evaluate("""() => {
+      const row = window.testCalls.filter(c => c.cmd==='save_settings').at(-1).args.settings;
+      return {url: row.profiles[0].url, theme: row.theme, session: row.profiles[0].session_id, leaked: JSON.stringify(row).includes('192.168.1.5')};
+    }""")
+    assert switched['url'] == 'http://127.0.0.1:8787' and switched['theme'] == 'light' and switched['session'] != 'b3aef0b1-2ee1-4224-9888-1992bb964414' and not switched['leaked'], switched
+    menu(themed, 'Сервер и устройства')
+    expect(themed.get_by_label('Адрес сервера')).to_have_value('http://192.168.1.5:8787')
+    themed.close()
     browser.close()
 print('PASS: chat-first shell, gear sections, voice, permissions, commands, settings, three themes. Native boundary simulated.')

@@ -250,7 +250,15 @@ export function useDesktop() {
   const request = async <T,>(path: string, method = 'GET') => unwrapApi<T>(await invoke<unknown>('api', { profileId, path, method }));
   const rememberLive = (runId: unknown) => { if (typeof runId === 'number') liveRun.current = runId; };
   const stop = () => run(async () => { await invoke('stop'); setHostCall(undefined); setActive(false); setThinking(false); setRecording(false); muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); });
-  const saveVoice = (patch: Partial<VoiceSettings>) => run(async () => { if (!settings) return; await save({ ...settings, voice: { ...voice, ...patch } }); setLiveState('off'); });
+  const saveVoice = (patch: Partial<VoiceSettings>) => run(async () => {
+    const disk = savedSettings.current;
+    if (!settings || !disk) return;
+    const nextVoice = { ...(settings.voice ?? disk.voice ?? defaultVoice), ...patch };
+    setSettings({ ...settings, voice: nextVoice });
+    try { await persistSaved({ ...disk, voice: nextVoice }); }
+    catch (reason) { setSettings(settings); throw reason; }
+    setLiveState('off');
+  });
   const draftVoice = (patch: Partial<VoiceSettings>) => { if (settings) setSettings({ ...settings, voice: { ...voice, ...patch } }); };
   const refreshVoice = () => run(async () => { setVoiceStatus(await invoke<VoiceStatus>('voice_status')); });
   const startLive = () => run(async () => { muteHold.current = false; rememberLive(await invoke<number>('live_start')); setLiveOpen(true); setMuted(false); setLiveState('idle'); });
@@ -310,15 +318,26 @@ export function useDesktop() {
     postNotice(spoken.length < value.trim().length ? 'Озвучено начало ответа: голос принимает до 300 символов.' : 'Озвучиваю ответ', spoken.length < value.trim().length);
   });
   const approve = (allow: boolean) => run(async () => { if (hostCall) { const id = hostCall.call_id; setHostCall(undefined); await invoke('approve', { callId: id, allow }); } });
-  const setTheme = (nextTheme: string) => run(async () => { if (!settings) return; await save({ ...settings, theme: nextTheme }); });
+  const setTheme = (nextTheme: string) => run(async () => {
+    const disk = savedSettings.current;
+    if (!settings || !disk) return;
+    setSettings({ ...settings, theme: nextTheme });
+    try { await persistSaved({ ...disk, theme: nextTheme }); }
+    catch (reason) { setSettings(settings); throw reason; }
+  });
   const blockSwitch = () => {
     if (thinking || partial || recording || liveOpen || active || hostCall || draft) throw 'Сначала остановите текущий ход кнопкой «Стоп»';
   };
   const switchSession = async (sessionId: string, preserveMessages: boolean) => {
-    if (!settings || !profile || profile.session_id === sessionId) return;
-    const previousId = profile.session_id;
-    const withSession = (id: string): Settings => ({ ...settings, profiles: settings.profiles.map(item => item.id === profile.id ? { ...item, session_id: id } : item) });
-    await save(withSession(sessionId));
+    const disk = savedSettings.current;
+    if (!settings || !disk || !profile) return;
+    const diskProfile = disk.profiles.find(item => item.id === profile.id);
+    if (!diskProfile || diskProfile.session_id === sessionId) return;
+    const previousId = diskProfile.session_id;
+    const withSession = (base: Settings, id: string): Settings => ({ ...base, profiles: base.profiles.map(item => item.id === profile.id ? { ...item, session_id: id } : item) });
+    setSettings(withSession(settings, sessionId));
+    try { await persistSaved(withSession(disk, sessionId)); }
+    catch (reason) { setSettings(settings); throw reason; }
     if (!connected) return;
     try {
       await invoke('disconnect');
@@ -331,7 +350,8 @@ export function useDesktop() {
     } catch (reason) {
       try {
         keepLocal.current = true;
-        await save(withSession(previousId));
+        setSettings(withSession(settings, previousId));
+        await persistSaved(withSession(disk, previousId));
         await invoke('disconnect');
         await invoke('connect', { profileId: profile.id });
         setConnected(true);

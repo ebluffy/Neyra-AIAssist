@@ -8,6 +8,7 @@ type Runner = (action: () => Promise<void>) => Promise<void>;
 interface Props {
   settings: Settings; setSettings: (s: Settings) => void; save: (s: Settings) => Promise<void>; root: string; recoveries: Recovery[];
   connected: boolean; busy: boolean; run: Runner; notify: (text: string) => void; applyImported: (s: Settings) => void;
+  onTheme: (theme: string) => void;
 }
 const STATUS: Record<string, string> = { new: 'Новая', same: 'Совпадает', conflict: 'Конфликт имён', invalid: 'Ошибка' };
 const BLOCKED: Record<string, string> = { allow_web: 'браузер', system: 'система', shell: 'консоль', files: 'файлы', screen: 'экран', screen_auto: 'снимки без подтверждения', input: 'ввод' };
@@ -16,7 +17,7 @@ function blockedLabels(keys: string[] | undefined): string {
   return names.length ? `Файл включает выключенное сейчас: ${names.join(', ')}. Это не включится.` : '';
 }
 
-export function SettingsScreen({ settings, setSettings, save, root, recoveries, connected, busy, run, notify, applyImported }: Props) {
+export function SettingsScreen({ settings, setSettings, save, root, recoveries, connected, busy, run, notify, applyImported, onTheme }: Props) {
   const [preview, setPreview] = useState<ImportPreview>();
   const [mode, setMode] = useState<'merge' | 'replace'>('merge');
   const [conflict, setConflict] = useState<'skip' | 'overwrite' | 'rename'>('rename');
@@ -79,7 +80,7 @@ export function SettingsScreen({ settings, setSettings, save, root, recoveries, 
     <h2>Этот ПК</h2>
     <label>Имя этого ПК<input value={settings.device_name} maxLength={80} disabled={connected} aria-describedby={connected ? 'name-locked' : undefined} onChange={e => setSettings({ ...settings, device_name: e.target.value })}/></label>
     {connected && <p className="hint" id="name-locked">Имя можно менять, когда клиент отключён от сервера.</p>}
-    <fieldset className="theme-cards"><legend>Тема</legend>{THEMES.map(item => <label className="theme-card" key={item.id}><input type="radio" name="theme-choice" value={item.id} checked={settings.theme === item.id} onChange={() => setSettings({ ...settings, theme: item.id })} /><span className={`swatch ${item.id}`} aria-hidden="true" />{item.label}</label>)}</fieldset>
+    <fieldset className="theme-cards"><legend>Тема</legend>{THEMES.map(item => <label className="theme-card" key={item.id}><input type="radio" name="theme-choice" value={item.id} checked={settings.theme === item.id} onChange={() => onTheme(item.id)} /><span className={`swatch ${item.id}`} aria-hidden="true" />{item.label}</label>)}</fieldset>
     <label>Графика Linux (после перезапуска)<select value={settings.graphics_mode} onChange={e => setSettings({ ...settings, graphics_mode: e.target.value })}><option value="auto">Автоматически</option><option value="wayland">Wayland</option><option value="wayland-nvidia">Wayland · NVIDIA explicit sync workaround</option><option value="x11">X11</option><option value="compatibility">Совместимость (может замедлять UI)</option></select></label>
     <div className="planned"><p className="hint">Персонаж на рабочем столе — в разработке, после шага 7. Отсюда он не включается.</p></div>
     <label>Хранить журнал действий, дней<input type="number" min={1} max={365} value={settings.audit_days} onChange={e => setSettings({ ...settings, audit_days: Math.min(365, Math.max(1, Number(e.target.value) || 30)) })}/></label>

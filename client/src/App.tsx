@@ -70,7 +70,7 @@ export function App() {
       {app.sheet === 'commands' && <CommandsScreen busy={app.busy} run={app.run} notify={app.notify} runLine={app.runLine} running={app.commandRunning} />}
       {app.sheet === 'permissions' && <PermissionsScreen settings={app.settings} setSettings={app.setSettings} save={app.save} pcAvailable={app.pcAvailable} busy={app.busy} run={app.run} notify={app.notify} backends={app.backends} />}
       {app.sheet === 'character' && <CharacterPanel />}
-      {app.sheet === 'settings' && <SettingsScreen settings={app.settings} setSettings={app.setSettings} save={app.save} root={app.root} recoveries={app.recoveries} connected={app.connected} busy={app.busy} run={app.run} notify={app.notify} applyImported={app.setSettings} />}
+      {app.sheet === 'settings' && <SettingsScreen settings={app.settings} setSettings={app.setSettings} save={app.save} root={app.root} recoveries={app.recoveries} connected={app.connected} busy={app.busy} run={app.run} notify={app.notify} applyImported={app.setSettings} onTheme={theme => void app.setTheme(theme)} />}
       {app.sheet === 'status' && <StatusPanel busy={app.busy} profileId={app.profileId} status={app.status} plugins={app.plugins} onStatus={() => void app.refreshStatus()} onPlugins={() => void app.refreshPlugins()} onRestart={() => void app.restartCore()} onToggle={plugin => void app.togglePlugin(plugin)} />}
       {app.sheet === 'updates' && <UpdatesPanel />}
       {app.sheet === 'about' && <AboutPanel />}
