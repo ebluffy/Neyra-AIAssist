@@ -1,7 +1,15 @@
 use crate::{policy::now_ms, storage::atomic_write};
 use serde_json::{json, Value};
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tauri::Manager;
+
+const MAX_AUDIT_BYTES: u64 = 2 * 1024 * 1024;
+const CORRUPT_MAX_FILES: usize = 8;
+const CORRUPT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const CORRUPT_MAX_AGE_DAYS: u32 = 30;
 
 pub fn start_pruning(
     app: tauri::AppHandle,
@@ -17,27 +25,26 @@ pub fn start_pruning(
     }
     std::thread::Builder::new()
         .name("audit-prune".into())
-        .spawn(move || pruning_loop(app, root, initial_days, Duration::from_secs(24 * 60 * 60)))?;
+        .spawn(move || {
+            pruning_loop(&root, Duration::from_secs(24 * 60 * 60), None, || {
+                prune_tick(&app, &root, initial_days);
+            })
+        })?;
     Ok(())
 }
 
-fn pruning_loop(
-    app: tauri::AppHandle,
-    root: std::path::PathBuf,
-    initial_days: u32,
-    period: Duration,
-) {
+fn pruning_loop<F>(_root: &Path, period: Duration, ticks: Option<usize>, mut tick: F)
+where
+    F: FnMut(),
+{
+    let mut completed = 0;
     loop {
         std::thread::sleep(period);
-        prune_tick(&app, &root, initial_days);
-    }
-}
-
-#[cfg(test)]
-fn run_pruning_ticks(root: &Path, days: u32, period: Duration, ticks: usize) {
-    for _ in 0..ticks {
-        std::thread::sleep(period);
-        prune_tick_for_root(root, days);
+        tick();
+        completed += 1;
+        if ticks.is_some_and(|limit| completed >= limit) {
+            return;
+        }
     }
 }
 
@@ -85,9 +92,48 @@ fn preserve_corrupt(path: &Path, root: &Path, reason: &str) -> Result<(), String
     crate::logs::log(
         root,
         "warn",
-        &format!("corrupt audit journal moved aside: {reason}"),
+        &format!("corrupt audit journal moved aside: category={reason}"),
     );
     Ok(())
+}
+
+fn cleanup_corrupt(root: &Path, days: u32) {
+    let audit_dir = root.join("audit");
+    let now = now_ms();
+    let max_age = u64::from(days.clamp(1, 365).min(CORRUPT_MAX_AGE_DAYS)) * 24 * 60 * 60 * 1000;
+    let mut files: Vec<(PathBuf, u64, u64)> = std::fs::read_dir(&audit_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            if !(name == "actions.json.corrupt"
+                || (name.starts_with("actions.json.") && name.ends_with(".corrupt")))
+            {
+                return None;
+            }
+            let metadata = entry.metadata().ok()?;
+            let modified = metadata
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_millis() as u64;
+            Some((path, modified, metadata.len()))
+        })
+        .collect();
+    files.sort_by_key(|(_, modified, _)| *modified);
+    let mut total = files.iter().map(|(_, _, size)| *size).sum::<u64>();
+    for (index, (path, modified, size)) in files.iter().enumerate() {
+        let expired = now.saturating_sub(*modified) > max_age;
+        let over_count = files.len().saturating_sub(index) > CORRUPT_MAX_FILES;
+        let over_size = total > CORRUPT_MAX_BYTES;
+        if (expired || over_count || over_size) && std::fs::remove_file(path).is_ok() {
+            total = total.saturating_sub(*size);
+        }
+    }
 }
 
 fn prune_tick_for_root(root: &Path, days: u32) {
@@ -111,15 +157,15 @@ pub fn recent(root: &Path, days: u32) -> Result<Vec<Value>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
         Err(error) => return Err(format!("Журнал недоступен: {error}")),
     };
-    if metadata.len() > 2 * 1024 * 1024 {
-        preserve_corrupt(&path, root, "journal exceeds 2 MiB")?;
+    if metadata.len() > MAX_AUDIT_BYTES {
+        preserve_corrupt(&path, root, "oversized")?;
         return Ok(vec![]);
     }
     let data = std::fs::read(&path).map_err(|e| format!("Журнал недоступен: {e}"))?;
     let rows: Vec<Value> = match serde_json::from_slice(&data) {
         Ok(rows) => rows,
-        Err(error) => {
-            preserve_corrupt(&path, root, &error.to_string())?;
+        Err(_) => {
+            preserve_corrupt(&path, root, "invalid_json")?;
             return Ok(vec![]);
         }
     };
@@ -148,21 +194,22 @@ pub fn append(
     )
 }
 pub fn prune(root: &Path, days: u32) -> Result<(), String> {
+    cleanup_corrupt(root, days);
     let path = root.join("audit/actions.json");
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(format!("Журнал недоступен: {error}")),
     };
-    if metadata.len() > 2 * 1024 * 1024 {
-        preserve_corrupt(&path, root, "journal exceeds 2 MiB")?;
+    if metadata.len() > MAX_AUDIT_BYTES {
+        preserve_corrupt(&path, root, "oversized")?;
         return Ok(());
     }
     let data = std::fs::read(&path).map_err(|e| format!("Журнал недоступен: {e}"))?;
     let current: Vec<Value> = match serde_json::from_slice(&data) {
         Ok(rows) => rows,
-        Err(error) => {
-            preserve_corrupt(&path, root, &error.to_string())?;
+        Err(_) => {
+            preserve_corrupt(&path, root, "invalid_json")?;
             return Ok(());
         }
     };
@@ -244,6 +291,44 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn corrupt_cleanup_applies_age_and_size_limits() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let audit = root.join("audit");
+        std::fs::create_dir_all(&audit).unwrap();
+        for index in 0..(CORRUPT_MAX_FILES + 2) {
+            std::fs::write(
+                audit.join(format!("actions.json.{index}.corrupt")),
+                vec![b'x'; 1024 * 1024],
+            )
+            .unwrap();
+        }
+        prune(&root, 30).unwrap();
+        let remaining = std::fs::read_dir(&audit)
+            .unwrap()
+            .filter_map(Result::ok)
+            .count();
+        assert!(remaining <= CORRUPT_MAX_FILES);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_json_marker_is_not_written_to_client_log() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(root.join("audit")).unwrap();
+        let marker = ["fleet", "test", "49"].join("-");
+        std::fs::write(
+            root.join("audit/actions.json"),
+            format!("\"{marker}\"").as_bytes(),
+        )
+        .unwrap();
+        let _ = recent(&root, 30);
+        let _ = prune(&root, 30);
+        let log = std::fs::read_to_string(root.join("logs/client.log")).unwrap_or_default();
+        assert!(!log.contains(&marker));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn unreadable_journal_is_not_treated_as_empty() {
@@ -316,12 +401,19 @@ mod tests {
     fn periodic_tick_prunes_expired_rows() {
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(root.join("audit")).unwrap();
+        let current_days = 2;
         std::fs::write(
             root.join("audit/actions.json"),
-            br#"[{"time":1,"tool":"old"}]"#,
+            serde_json::to_vec(&vec![json!({
+                "time": now_ms() - 3 * 24 * 60 * 60 * 1000,
+                "tool": "old"
+            })])
+            .unwrap(),
         )
         .unwrap();
-        run_pruning_ticks(&root, 30, Duration::from_millis(1), 1);
+        pruning_loop(&root, Duration::from_millis(1), Some(1), || {
+            prune_tick_for_root(&root, current_days)
+        });
         assert!(serde_json::from_slice::<Vec<Value>>(
             &std::fs::read(root.join("audit/actions.json")).unwrap()
         )

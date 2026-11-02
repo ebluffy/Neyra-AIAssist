@@ -241,8 +241,13 @@ pub(crate) fn apply_settings(
     }
     *state.settings.lock().map_err(lock_error)? = settings;
     if retention_changed {
-        if let Ok(_guard) = state.audit_lock.lock() {
-            prune_after_settings_save(&state.root, audit_days);
+        match state.audit_lock.lock() {
+            Ok(_guard) => prune_after_settings_save(&state.root, audit_days),
+            Err(_) => logs::log(
+                &state.root,
+                "warn",
+                "audit prune after settings save skipped: audit lock poisoned",
+            ),
         }
     }
     if changed {
@@ -851,14 +856,30 @@ fn is_local(call: &ToolCall) -> bool {
 fn reply(app: &tauri::AppHandle, call: &ToolCall, result: Value, confirmed: bool) {
     let state = app.state::<Desktop>();
     let days = state.settings.lock().map(|s| s.audit_days).unwrap_or(30);
-    if let Ok(_guard) = state.audit_lock.lock() {
-        let _ = audit::append(
+    match state.audit_lock.lock() {
+        Ok(_guard) => {
+            if let Err(error) = audit::append(
+                &state.root,
+                &call.tool,
+                result["status"].as_str().unwrap_or("error"),
+                confirmed,
+                days,
+            ) {
+                logs::log(
+                    &state.root,
+                    "warn",
+                    &format!("audit append failed for tool {}: {error}", call.tool),
+                );
+            }
+        }
+        Err(_) => logs::log(
             &state.root,
-            &call.tool,
-            result["status"].as_str().unwrap_or("error"),
-            confirmed,
-            days,
-        );
+            "warn",
+            &format!(
+                "audit append skipped for tool {}: audit lock poisoned",
+                call.tool
+            ),
+        ),
     }
     if is_local(call) {
         // Quick commands report to their own runner, never to the server.
