@@ -48,3 +48,4 @@ winreg = "0.55"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["tray-icon", "test"] }
+tokio = { version = "1", features = ["test-util"] }

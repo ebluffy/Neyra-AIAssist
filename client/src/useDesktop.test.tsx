@@ -1,0 +1,125 @@
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { useEffect } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { App } from './App';
+import { defaultVoice, type Settings } from './types';
+import { useDesktop } from './useDesktop';
+
+const ipc = vi.hoisted(() => ({ invoke: vi.fn(), listeners: new Map<string, (event: { payload: unknown }) => void>() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: ipc.invoke }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async (name, callback) => {
+  ipc.listeners.set(name, callback);
+  return () => ipc.listeners.delete(name);
+}) }));
+
+let app: ReturnType<typeof useDesktop>;
+function Harness() {
+  const current = useDesktop();
+  useEffect(() => { app = current; });
+  return <span>{current.connected ? 'Подключено' : 'Нет связи'}</span>;
+}
+let root: ReactTestRenderer;
+const settings: Settings = {
+  profiles: [{ id: 'test', name: 'Test', url: 'http://localhost:8765', session_id: '11111111-1111-4111-8111-111111111111' }], active_profile: 'test',
+  schema_version: 1, device_id: 'test', device_name: 'Test', theme: 'dark', voice: defaultVoice, graphics_mode: 'auto', audit_days: 7,
+  permissions: { enabled: false, apps: [], allow_web: false, web_domains: [], system: false, shell: false, files: false, fs_roots: [], screen: false, screen_auto: false, input: false },
+};
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.stubGlobal('window', globalThis);
+  vi.stubGlobal('document', { documentElement: { dataset: {} } });
+  ipc.listeners.clear();
+  ipc.invoke.mockReset().mockImplementation(async (command: string, args?: { settings?: unknown }) => {
+      if (command === 'load_settings') return { settings, data_root: '', global_shortcuts: false, pc_access_available: false };
+    if (command === 'save_settings') return args?.settings;
+    if (command === 'list_chats') return [];
+    if (command === 'pc_capabilities') return { available: false };
+    return {};
+  });
+});
+afterEach(async () => {
+  if (root) await act(async () => root.unmount());
+  vi.useRealTimers(); vi.unstubAllGlobals();
+});
+async function mount() { await act(async () => { root = create(<Harness />); }); }
+async function tick(ms: number) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
+
+describe('unavailable server', () => {
+  it.each(['connection refused', 'timeout', 'HTTP 503'])('shows offline and bounds retries for %s, then recovers', async reason => {
+    const base = ipc.invoke.getMockImplementation()!;
+    let available = false;
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'connect' && !available) throw new Error(reason);
+      return base(command, args);
+    });
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    expect(root.toJSON()).toMatchObject({ children: ['Нет связи'] });
+    expect(app.error).toContain('Нет связи');
+    expect(app.busy).toBe(false);
+    const attempts = () => ipc.invoke.mock.calls.filter(([command]) => command === 'connect').length;
+    expect(attempts()).toBe(1);
+    await tick(999); expect(attempts()).toBe(1);
+    await tick(1); expect(attempts()).toBe(2);
+    for (const delay of [2000, 4000, 8000, 16000, 30000]) await tick(delay);
+    expect(attempts()).toBe(7);
+    await tick(29999); expect(attempts()).toBe(7);
+    available = true;
+    await tick(1);
+    expect(app.connected).toBe(true);
+    expect(app.busy).toBe(false);
+    expect(app.error).toBe('');
+    await tick(120000); expect(attempts()).toBe(8);
+  });
+
+  it('clears a pending response on WSS loss and reconnects without replaying messages', async () => {
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    await act(async () => { await app.sendContent('hello'); });
+    expect(app.thinking).toBe(true);
+    await act(async () => { ipc.listeners.get('desktop-event')!({ payload: { type: 'disconnected' } }); });
+    expect(app.connected).toBe(false);
+    expect(app.thinking).toBe(false);
+    expect(app.notice).toContain('Нет связи');
+    expect(app.messages[0].content).toBe('hello');
+    await tick(1000);
+    expect(app.connected).toBe(true);
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'chat')).toHaveLength(1);
+    await act(async () => { await app.disconnect(); });
+    await tick(120000);
+    expect(app.connected).toBe(false);
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(2);
+  });
+
+  it('keeps failed message text and explains retry, without a pending spinner', async () => {
+    await mount();
+    ipc.invoke.mockRejectedValueOnce(new Error('connection refused'));
+    await act(async () => { app.setText('keep this'); });
+    await act(async () => { await app.sendContent('keep this'); });
+    expect(app.text).toBe('keep this');
+    expect(app.error).toContain('Сообщение не отправлено');
+    expect(app.error).toContain('Повторите');
+    expect(app.thinking).toBe(false);
+    expect(app.busy).toBe(false);
+    expect(app.messages).toHaveLength(0);
+  });
+
+  it('renders the offline state in the application', async () => {
+    await act(async () => { root = create(<App />); });
+    expect(JSON.stringify(root.toJSON())).toContain('Нет связи');
+  });
+
+  it('stops retrying after an explicit disconnect', async () => {
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    await act(async () => { await app.disconnect(); });
+    const attempts = ipc.invoke.mock.calls.filter(([command]) => command === 'connect').length;
+    await tick(120000);
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(attempts);
+  });
+});

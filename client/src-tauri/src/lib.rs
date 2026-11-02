@@ -26,6 +26,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
+    time::Duration,
 };
 use storage::{Profile, Settings};
 use tauri::{Emitter, Manager, State};
@@ -36,6 +37,27 @@ use tokio_tungstenite::{
 };
 
 type SocketSender = UnboundedSender<Message>;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(15);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(75);
+
+async fn socket_send<S: futures_util::Sink<Message> + Unpin>(
+    socket: &mut S,
+    message: Message,
+) -> Result<(), ()> {
+    tokio::time::timeout(WRITE_TIMEOUT, socket.send(message))
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())
+}
+
+async fn run_socket_pair<F: std::future::Future<Output = ()>>(
+    mut workers: futures_util::stream::FuturesUnordered<F>,
+) {
+    // Returning drops both sockets, including a peer blocked in a write.
+    workers.next().await;
+}
+
 pub struct Desktop {
     root: PathBuf,
     settings: Mutex<Settings>,
@@ -48,6 +70,7 @@ pub struct Desktop {
     generation: Arc<AtomicU64>,
     recording: Mutex<Option<audio::Recording>>,
     epoch: AtomicU64,
+    transport: Mutex<()>,
     audit_lock: Mutex<()>,
     shortcuts: AtomicBool,
     screen_locked: AtomicBool,
@@ -297,6 +320,7 @@ async fn api(
         .map_err(|_| "Сначала сохраните токен")?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(CONNECT_TIMEOUT)
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|_| "Ошибка сетевого клиента")?;
@@ -337,6 +361,7 @@ async fn set_module(
         .map_err(|_| "Токен не найден")?;
     let response = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(CONNECT_TIMEOUT)
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|_| "Ошибка сети")?
@@ -358,12 +383,15 @@ async fn connect(
     state: State<'_, Desktop>,
     profile_id: String,
 ) -> Result<(), String> {
-    disconnect_inner(&state)?;
+    let epoch = {
+        let _guard = state.transport.lock().map_err(lock_error)?;
+        disconnect_locked(&state)?;
+        state.epoch.load(Ordering::SeqCst)
+    };
     let p = profile(&state, &profile_id)?;
     let token = storage::secret(&profile_id)?
         .get_password()
         .map_err(|_| "Сначала сохраните токен")?;
-    let epoch = state.epoch.load(Ordering::SeqCst);
     let hello = manifest(&state, &p)?;
     let mut sockets = Vec::new();
     for (path, kind) in [
@@ -383,17 +411,21 @@ async fn connect(
                 .parse()
                 .map_err(|_| "Неверный токен")?,
         );
-        let (mut ws, _) =
-            tokio::time::timeout(std::time::Duration::from_secs(15), connect_async(request))
-                .await
-                .map_err(|_| "Сервер не ответил")?
-                .map_err(|_| "Подключение отклонено; проверьте токен и версию сервера")?;
-        ws.send(Message::Text(hello.to_string().into()))
+        let (mut ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
+            .await
+            .map_err(|_| "Сервер не ответил")?
+            .map_err(|_| "Подключение отклонено; проверьте токен и версию сервера")?;
+        socket_send(&mut ws, Message::Text(hello.to_string().into()))
             .await
             .map_err(|_| "Подключение закрыто")?;
         sockets.push((ws, kind));
     }
+    let _guard = state.transport.lock().map_err(lock_error)?;
+    if state.epoch.load(Ordering::SeqCst) != epoch {
+        return Err("Подключение отменено".into());
+    }
     *state.active_profile.lock().map_err(lock_error)? = Some(profile_id);
+    let workers = futures_util::stream::FuturesUnordered::new();
     for (ws, kind) in sockets {
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
         if kind == "bridge" {
@@ -402,17 +434,19 @@ async fn connect(
             *state.voice.lock().map_err(lock_error)? = Some(tx);
         }
         let handle = app.clone();
-        tauri::async_runtime::spawn(async move {
+        workers.push(async move {
             let (mut writer, mut reader) = ws.split();
             let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut last_pong = tokio::time::Instant::now();
             loop {
                 if handle.state::<Desktop>().epoch.load(Ordering::SeqCst) != epoch {
-                    let _ = writer.send(Message::Close(None)).await;
                     break;
                 }
                 tokio::select! {
-                                    message=rx.recv()=>{match message{Some(m)=>{if writer.send(m).await.is_err(){break;}},None=>break}},
-                                    _=heartbeat.tick()=>{if writer.send(Message::Text(json!({"type":"ping"}).to_string().into())).await.is_err(){break;}},
+                                    _=tokio::time::sleep_until(last_pong + HEARTBEAT_TIMEOUT)=>break,
+                                    message=rx.recv()=>{match message{Some(m)=>{if socket_send(&mut writer,m).await.is_err(){break;}},None=>break}},
+                                    _=heartbeat.tick()=>{if socket_send(&mut writer,Message::Text(json!({"type":"ping"}).to_string().into())).await.is_err(){break;}},
                                     message=reader.next()=>{
                                         match message{
                                             Some(Ok(Message::Text(text)))=>{
@@ -426,7 +460,8 @@ async fn connect(
                                     if current.as_deref()!=Some(request_id){continue;}
                                     if packet["type"]=="error" || packet["type"]=="cancelled" || packet["type"]=="audio.done" || packet["type"]=="command_match" || (kind=="bridge"&&packet["type"]=="done") {if let Ok(mut t)=state.current_turn.lock(){*t=None;}}
                                 }
-                                match packet["type"].as_str(){
+                                 match packet["type"].as_str(){
+                                                     Some("pong")=>{last_pong=tokio::time::Instant::now();let _=handle.emit("desktop-event",packet);},
                                                     Some("client_tool_call")=>{let mut data=packet.clone();if let Some(o)=data.as_object_mut(){o.remove("type");o.remove("protocol");o.remove("source");}
                 if let Ok(call)=serde_json::from_value::<ToolCall>(data){receive_call(handle.clone(),call);}},
                                                     Some("revoked")=>{break;},
@@ -458,18 +493,24 @@ async fn connect(
                                                     Some("cancelled")=>{if let Ok(mut s)=handle.state::<Desktop>().segments.lock(){s.reset(None);}let _=handle.emit("desktop-event",packet);},
                                                     _=>{let _=handle.emit("desktop-event",packet);}
                                                 }
-                                            },Some(Ok(Message::Ping(bytes)))=>{if writer.send(Message::Pong(bytes)).await.is_err(){break;}},Some(Ok(Message::Close(_)))|None|Some(Err(_))=>break,_=>{}
+                                            },Some(Ok(Message::Ping(bytes)))=>{if socket_send(&mut writer,Message::Pong(bytes)).await.is_err(){break;}},Some(Ok(Message::Close(_)))|None|Some(Err(_))=>break,_=>{}
                                         }
                                     }
                                 }
             }
-            let state = handle.state::<Desktop>();
-            if state.epoch.load(Ordering::SeqCst) == epoch {
-                let _ = disconnect_inner(&state);
-                let _ = handle.emit("desktop-event", json!({"type":"disconnected"}));
-            }
         });
     }
+    tauri::async_runtime::spawn(async move {
+        run_socket_pair(workers).await;
+        let state = app.state::<Desktop>();
+        let Ok(_guard) = state.transport.lock() else {
+            return;
+        };
+        if state.epoch.load(Ordering::SeqCst) == epoch {
+            let _ = disconnect_locked(&state);
+            let _ = app.emit("desktop-event", json!({"type":"disconnected"}));
+        }
+    });
     Ok(())
 }
 
@@ -1175,6 +1216,10 @@ fn stop_inner(state: &Desktop) -> Result<(), String> {
     Ok(())
 }
 fn disconnect_inner(state: &Desktop) -> Result<(), String> {
+    let _guard = state.transport.lock().map_err(lock_error)?;
+    disconnect_locked(state)
+}
+fn disconnect_locked(state: &Desktop) -> Result<(), String> {
     stop_inner(state)?;
     state.epoch.fetch_add(1, Ordering::SeqCst);
     *state.bridge.lock().map_err(lock_error)? = None;
@@ -1373,6 +1418,7 @@ pub fn run() {
                 generation,
                 recording: Mutex::new(None),
                 epoch: AtomicU64::new(0),
+                transport: Mutex::new(()),
                 audit_lock: Mutex::new(()),
                 shortcuts: AtomicBool::new(false),
                 screen_locked: AtomicBool::new(true),
@@ -1631,6 +1677,90 @@ fn monitor_session(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn either_socket_failure_drops_the_blocked_peer() {
+        for failed in [0, 1] {
+            let workers = futures_util::stream::FuturesUnordered::new();
+            let mut receivers = Vec::new();
+            for index in 0..2 {
+                let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+                receivers.push(rx);
+                workers.push(async move {
+                    let _held = tx;
+                    if index == failed {
+                        tokio::task::yield_now().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                });
+            }
+            run_socket_pair(workers).await;
+            for rx in receivers {
+                assert!(rx.await.is_err());
+            }
+        }
+    }
+
+    struct MockWriter {
+        fail: bool,
+    }
+
+    impl futures_util::Sink<Message> for MockWriter {
+        type Error = ();
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            if self.fail {
+                std::task::Poll::Ready(Err(()))
+            } else {
+                std::task::Poll::Pending
+            }
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), ()> {
+            unreachable!()
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            unreachable!()
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_socket_write_times_out() {
+        let start = tokio::time::Instant::now();
+        assert!(
+            socket_send(&mut MockWriter { fail: false }, Message::Close(None))
+                .await
+                .is_err()
+        );
+        assert_eq!(start.elapsed(), WRITE_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_socket_write_returns_immediately() {
+        let start = tokio::time::Instant::now();
+        assert!(
+            socket_send(&mut MockWriter { fail: true }, Message::Close(None))
+                .await
+                .is_err()
+        );
+        assert_eq!(start.elapsed(), Duration::ZERO);
+    }
+
     #[test]
     fn active_tray_icon_carries_a_red_mark() {
         assert_ne!(TRAY_ICON, TRAY_ICON_ACTIVE);
