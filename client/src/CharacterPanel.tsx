@@ -44,7 +44,7 @@ export function CharacterPanel() {
     <h2 id="character-title">Персонаж (бета, выключен по умолчанию)</h2>
     <p>3D-движок не загружается, пока персонаж выключен. Сейчас окно показывает заглушку без VRM; отрисовка модели ещё не реализована.</p>
     {message && <p role="alert" className="error">{message}</p>}
-    <p role="status">{state.enabled ? 'Персонаж включён.' : 'Персонаж появится на шаге 7 (оверлей VRM). Пока он выключен и отсюда не включается.'}</p>
+    <p role="status">{state.enabled ? 'Персонаж включён.' : 'Персонаж выключен. Включите «Персонаж на рабочем столе» в разделе «Настройки».'}</p>
     <label>Файл модели .vrm<select value={draft.model ?? ''} onChange={e => setDraft({ ...draft, model: e.target.value || null })}><option value="">Не выбрана</option>{state.models.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
     {typeof info === 'string' && <p role="alert" className="error">{info}</p>}
     {info && typeof info !== 'string' && <p role="note">Модель «{info.title || 'без названия'}»{info.authors.length > 0 && `, автор: ${info.authors.join(', ')}`}. Лицензия: {info.license || 'не указана'}. Распространение в сборке: {redistribution[info.redistribution]}. Файл остаётся на этом ПК.</p>}

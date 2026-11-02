@@ -10,7 +10,7 @@ bash client/scripts/acceptance-linux.sh
 
 ## Что делает команда
 
-1. Проверяет компилятор, Node, Rust ≥ 1.91, WebKitGTK 4.1, GTK 3, appindicator, librsvg, ALSA, D-Bus и `patchelf`. Если чего-то нет, печатает одну команду `sudo pacman -S --needed ...` и сборку не начинает. Сборка принимается на Node 20.19+ и на Node 22.12+. CI ставит Node 22. Ровно 22 на Arch: `paru -S nodejs-lts-jod` (AUR) или nvm.
+1. Проверяет компилятор, Node, Rust ≥ 1.91, WebKitGTK 4.1, GTK 3, appindicator, librsvg, ALSA, D-Bus и `patchelf`. Если чего-то нет, печатает одну команду `sudo pacman -S --needed ...` и сборку не начинает. Сборка принимается на Node 20.19+, 22.12+ и 23+. Node 21 и более старые миноры останавливают скрипт. CI ставит Node 22. Ровно 22 на Arch: `paru -S nodejs-lts-jod` (AUR) или nvm.
 2. Читает текущую сессию (Wayland или X11), NVIDIA, масштаб выходов (`kscreen-doctor`, иначе `wlr-randr` / `swaymsg` / `xrandr`), портал рабочего стола, Secret Service и файлы wake word.
 3. Ставит npm-зависимости (`npm ci --ignore-scripts`, повторно только если нет `node_modules` или сменился lockfile) и собирает AppImage.
 4. Печатает чеклист и запускает клиент. Текст чеклиста остаётся в `~/.local/state/neyra/acceptance-checklist.txt`. Терминал не закрывать: в нём stderr WebKit и портала.
@@ -35,7 +35,7 @@ FUSE 2 для обычного запуска AppImage: `sudo pacman -S --needed
 
 ## Куда смотреть
 
-Папка данных — та же, что у клиента: указатель `~/.config/neyra/data-location.json`, иначе `~/Documents/Neyra` (или `~/.local/share/neyra`, если каталога Documents нет).
+Папка данных — та же, что у клиента. Указатель `~/.config/neyra/data-location.json` побеждает, если в нём абсолютный путь к существующей папке. Иначе, если в `user-dirs.dirs` задан `XDG_DOCUMENTS_DIR` и эта папка есть, берётся `<этот путь>/Neyra`. Заданная, но отсутствующая папка не подменяется на `~/Documents`: тогда путь `${XDG_DATA_HOME:-~/.local/share}/neyra`. `~/Documents/Neyra` используется только когда `XDG_DOCUMENTS_DIR` не задан и каталог `~/Documents` существует.
 
 | Что | Где |
 |---|---|
@@ -56,7 +56,7 @@ FUSE 2 для обычного запуска AppImage: `sudo pacman -S --needed
 
 ## Шаг 7. Оверлей
 
-Галочка «Персонаж на рабочем столе» в настройках не нажимается. Закройте клиент, в `settings/app.json` поставьте `"character_enabled": true`, запустите снова и нажмите «Показать окно». Заголовок окна — «Neyra character». На KDE Wayland «поверх окон» не гарантировано: правило KWin для этого заголовка. Свой `.vrm` кладётся в подкаталог `character`. Файл `client/tests/fixtures/neyra-test.vrm` годится только чтобы увидеть окно, это не модель для защиты. Windows этим скриптом не проверяется.
+В разделе «Настройки» включите «Персонаж на рабочем столе». Галочка пишется в `settings/app.json` сразу, файл руками не правьте и клиент не перезапускайте. Откройте «Персонаж» и нажмите «Показать окно». Заголовок окна — «Neyra character». На KDE Wayland «поверх окон» не гарантировано: правило KWin для этого заголовка. Свой `.vrm` кладётся в подкаталог `character`. Файл `client/tests/fixtures/neyra-test.vrm` годится только чтобы увидеть окно, это не модель для защиты. Windows этим скриптом не проверяется.
 
 ## Шаг 8. N → N+1
 

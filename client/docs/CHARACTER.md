@@ -13,7 +13,7 @@ is used.
 
 | Part | Where |
 |---|---|
-| On/off switch (single source) | `settings/app.json` `character_enabled`, Server tab checkbox |
+| On/off switch (single source) | `settings/app.json` `character_enabled`, checkbox «Персонаж на рабочем столе» on the Settings screen |
 | Other options: model file, FPS 10-60, always-on-top, click-through, pause flags | `settings/character.json` (versioned, broken file is kept and reported) |
 | Capability report per platform, shown in the UI | `character.rs` `capabilities()` |
 | Overlay window: transparent, no frame, always-on-top, skip taskbar, click-through, content protection | `character.rs` `open_overlay()` |

@@ -219,17 +219,35 @@ documents_dir() {
   local line="" value=""
   if [[ -f "$file" ]]; then
     line="$(grep -E '^XDG_DOCUMENTS_DIR=' "$file" | head -n 1 || true)"
-    value="${line#XDG_DOCUMENTS_DIR=}"
-    value="${value#\"}"
-    value="${value%\"}"
-    value="${value//\$HOME/${HOME:-}}"
-    if [[ -n "$value" && -d "$value" ]]; then
-      printf '%s' "$value"
-      return 0
+    if [[ -n "$line" ]]; then
+      value="${line#XDG_DOCUMENTS_DIR=}"
+      value="${value#\"}"
+      value="${value%\"}"
+      value="${value//\$HOME/${HOME:-}}"
+      if [[ -n "$value" && -d "$value" ]]; then
+        printf '%s' "$value"
+        return 0
+      fi
+      return 1
     fi
   fi
   if [[ -n "${HOME:-}" && -d "$HOME/Documents" ]]; then
     printf '%s' "$HOME/Documents"
+    return 0
+  fi
+  return 1
+}
+
+node_ok() {
+  local major="$1" minor="$2"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+  if [[ "$major" -ge 23 ]]; then
+    return 0
+  fi
+  if [[ "$major" -eq 22 && "$minor" -ge 12 ]]; then
+    return 0
+  fi
+  if [[ "$major" -eq 20 && "$minor" -ge 19 ]]; then
     return 0
   fi
   return 1
@@ -343,6 +361,31 @@ self_test() {
   fi
   grep -q 'английская модель' <<<"$ready" || die "english message: $ready"
   rm -rf "$tmp"
+  node_ok 20 19 || die 'node 20.19 should pass'
+  node_ok 20 18 && die 'node 20.18 should fail'
+  node_ok 21 0 && die 'node 21.0 should fail'
+  node_ok 22 12 || die 'node 22.12 should pass'
+  node_ok 22 11 && die 'node 22.11 should fail'
+  node_ok 23 0 || die 'node 23.0 should pass'
+  root_tmp="$(mktemp -d)"
+  (
+    export HOME="$root_tmp/home"
+    export XDG_CONFIG_HOME="$root_tmp/config"
+    export XDG_DATA_HOME="$root_tmp/data"
+    mkdir -p "$HOME/Documents" "$XDG_CONFIG_HOME"
+    printf 'XDG_DOCUMENTS_DIR="%s"\n' "$root_tmp/missing-docs" >"$XDG_CONFIG_HOME/user-dirs.dirs"
+    got="$(resolve_data_root)"
+    [[ "$got" == "$XDG_DATA_HOME/neyra" ]] || die "set-but-missing documents should be data home, got $got"
+    printf '# unset\n' >"$XDG_CONFIG_HOME/user-dirs.dirs"
+    got="$(resolve_data_root)"
+    [[ "$got" == "$HOME/Documents/Neyra" ]] || die "unset documents var should use ~/Documents, got $got"
+    mkdir -p "$XDG_CONFIG_HOME/neyra" "$root_tmp/chosen"
+    printf '{"data_root":"%s"}\n' "$root_tmp/chosen" >"$XDG_CONFIG_HOME/neyra/data-location.json"
+    printf 'XDG_DOCUMENTS_DIR="%s"\n' "$root_tmp/missing-docs" >"$XDG_CONFIG_HOME/user-dirs.dirs"
+    got="$(resolve_data_root)"
+    [[ "$got" == "$root_tmp/chosen" ]] || die "pointer should win, got $got"
+  )
+  rm -rf "$root_tmp"
   printf 'self-test ok\n'
 }
 
@@ -425,7 +468,7 @@ check_deps() {
   fi
 
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    printf 'нет  node/npm (нужен Node 22, как в CI)\n'
+    printf 'нет  node/npm (нужен Node 20.19+, 22.12+ или 23+; CI ставит 22)\n'
     missing_pacman+=(nodejs npm)
     missing_apt+=(nodejs npm)
     missing_required=1
@@ -434,11 +477,13 @@ check_deps() {
     major="$(node -p 'process.versions.node.split(".")[0]')"
     minor="$(node -p 'process.versions.node.split(".")[1]')"
     printf 'ok   node %s\n' "$(node -v)"
-    if [[ "$major" -lt 20 || ("$major" -eq 20 && "$minor" -lt 19) || ("$major" -eq 22 && "$minor" -lt 12) ]]; then
-      node_note="Node $(node -v) для Vite 7 мало. CI ставит Node 22. На CachyOS: paru -S nodejs-lts-jod (AUR), либо nvm."
+    if node_ok "$major" "$minor"; then
+      if [[ "$major" -ne 22 ]]; then
+        node_note="Сейчас $(node -v). CI собирает Node 22. Если сборка упадёт на версии Node: paru -S nodejs-lts-jod (AUR) или nvm install 22."
+      fi
+    else
+      node_note="Node $(node -v) для Vite 7 не подходит. Нужен 20.19+, 22.12+ или 23+ (21 не годится). CI ставит Node 22. На CachyOS: paru -S nodejs-lts-jod (AUR), либо nvm."
       missing_required=1
-    elif [[ "$major" -ne 22 ]]; then
-      node_note="Сейчас $(node -v). CI собирает Node 22. Если сборка упадёт на версии Node: paru -S nodejs-lts-jod (AUR) или nvm install 22."
     fi
   fi
 
@@ -708,10 +753,9 @@ $HOTKEY_TEXT
 $CHARACTER_TEXT
 $OVERLAY_EXPECT
 
-Галочка «Персонаж на рабочем столе» в настройках сейчас не нажимается. Чтобы открыть окно:
-1. Закройте Neyra.
-2. В $DATA_ROOT/settings/app.json поставьте "character_enabled": true (файл появляется после первого запуска).
-3. Запустите клиент снова. Настройки → Персонаж → «Показать окно».
+Галочка «Персонаж на рабочем столе» в разделе «Настройки» сохраняется сразу. Перезапуск не нужен, файл settings/app.json руками не правьте.
+1. Включите её.
+2. Откройте «Персонаж» и нажмите «Показать окно».
 Заголовок окна: «Neyra character». На KDE правило KWin для этого заголовка — «держать поверх».
 Сверьте четыре строки возможностей в панели с ожиданием выше. Дальше руками: прозрачный фон, клики сквозь окно, окно остаётся на месте при переключении программ.
 Свой .vrm положите в папку, которую показывает панель (подкаталог character). Синтетический файл для дымовой проверки окна, не модель для защиты: client/tests/fixtures/neyra-test.vrm. Его лицензия в комментарии генератора, в сборку он не входит.

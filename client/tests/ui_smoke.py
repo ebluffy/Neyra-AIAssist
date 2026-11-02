@@ -29,7 +29,7 @@ if(cmd==='stop'){window.emitNative('desktop-event',{type:'cancelled'});return;}
 if(cmd==='applications')return ['/usr/bin/firefox','/usr/bin/steam'];
 if(cmd==='update_state')return {settings:{schema_version:1,channel:'beta',auto_check:false},current_version:'0.1.0',endpoint:'https://example.invalid/latest.json',key_configured:true,install_kind:'appimage',pending_version:null};
 if(cmd==='update_check')return {available:true,version:'0.1.1',notes:'Тест',date:null};
-if(cmd==='character_state')return {enabled:false,settings:{schema_version:1,model:null,fps_limit:30,pause_fullscreen:true,pause_battery:true,always_on_top:true,click_through:true},capabilities:{transparent:'yes',always_on_top:'not_guaranteed',click_through:'yes',exclude_from_capture:'no',mechanism:'wayland-kde',notes:['Wayland не гарантирует always-on-top.']},models:[],overlay_open:false,renderer:'vrm',directory:'/tmp/Neyra/character'};
+if(cmd==='character_state')return {enabled:!!settings.character_enabled,settings:{schema_version:1,model:null,fps_limit:30,pause_fullscreen:true,pause_battery:true,always_on_top:true,click_through:true},capabilities:{transparent:'yes',always_on_top:'not_guaranteed',click_through:'yes',exclude_from_capture:'no',mechanism:'wayland-kde',notes:['Wayland не гарантирует always-on-top.']},models:[],overlay_open:false,renderer:'vrm',directory:'/tmp/Neyra/character'};
 if(cmd==='audit_log')return [{time:Date.now(),tool:'client.open_url',status:'ok',confirmed:false}];
 if(cmd==='load_chats')return [];
 if(cmd==='save_chats')return;
@@ -80,11 +80,20 @@ with sync_playwright() as p:
     expect(page.get_by_role('heading', name=re.compile(r'^Добр(ой ночи|ое утро|ый день|ый вечер)$'))).to_be_visible()
     expect(page.get_by_text('Нет связи с сервером')).to_be_visible()
     menu(page, 'Персонаж')
-    expect(page.get_by_text('Персонаж появится на шаге 7 (оверлей VRM). Пока он выключен и отсюда не включается.')).to_be_visible()
+    expect(page.get_by_text('Персонаж выключен. Включите «Персонаж на рабочем столе» в разделе «Настройки».')).to_be_visible()
+    expect(page.get_by_role('button', name='Показать окно', exact=True)).to_be_disabled()
     expect(page.get_by_role('dialog', name='Настройки').get_by_role('button', name='Стоп', exact=True)).to_be_enabled()
     expect(page.get_by_label('Пауза при полноэкранном приложении')).to_be_disabled()
     expect(page.get_by_label('Пауза на батарее')).to_be_disabled()
     expect(page.get_by_text('Wayland не гарантирует always-on-top.')).to_be_visible()
+    page.get_by_role('navigation', name='Разделы настроек').get_by_role('button', name='Настройки', exact=True).click()
+    page.get_by_label('Персонаж на рабочем столе').check()
+    expect(page.get_by_label('Персонаж на рабочем столе')).to_be_checked()
+    page.wait_for_function("() => window.testCalls.some(c => c.cmd==='save_settings' && c.args.settings.character_enabled===true)")
+    assert page.evaluate("() => { const row = window.testCalls.filter(c => c.cmd==='save_settings').at(-1).args.settings; return row.character_enabled===true && row.profiles[0].url==='http://127.0.0.1:8787'; }")
+    page.get_by_role('navigation', name='Разделы настроек').get_by_role('button', name='Персонаж', exact=True).click()
+    expect(page.get_by_text('Персонаж включён.')).to_be_visible()
+    expect(page.get_by_role('button', name='Показать окно', exact=True)).to_be_enabled()
     page.get_by_role('navigation', name='Разделы настроек').get_by_role('button', name='Обновления', exact=True).click()
     page.get_by_role('button',name='Проверить обновления').click()
     expect(page.get_by_text('Доступна версия 0.1.1.')).to_be_visible()
