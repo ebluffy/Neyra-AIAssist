@@ -21,8 +21,8 @@ export function DraftDialog({ draft, busy, onSave, onReject }: Props) {
     <p>{summarizeActions(draft.command)}</p>
     <pre>{JSON.stringify(draft.command.actions, null, 2)}</pre>
     {draft.exists && <p className="error" role="alert">Команда с таким именем уже есть. Переименуйте или удалите её, затем попросите Нейру снова.</p>}
-    <div className="actions">
-      <button type="button" ref={reject} autoFocus onClick={() => onReject(draft)}>Отклонить</button>
+    <div className="actions dialog-actions">
+      <button type="button" ref={reject} onClick={() => onReject(draft)}>Отклонить</button>
       <button type="button" className="primary" disabled={busy || draft.exists} onClick={() => onSave(draft)}>Сохранить</button>
     </div>
   </dialog>;

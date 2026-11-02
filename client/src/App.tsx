@@ -10,7 +10,7 @@ import { SettingsSheet } from './components/SettingsSheet';
 import { StatusPanel } from './components/StatusPanel';
 import { VoicePanel } from './components/VoicePanel';
 import { VoiceRecorder } from './components/VoiceRecorder';
-import { ChevronLeft, ChevronRight, Plus, Settings } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Minus, Plus, Settings } from 'lucide-react';
 import { daypart } from './chat';
 import { VoiceOrb } from './components/VoiceOrb';
 import { CharacterPanel } from './CharacterPanel';
@@ -42,10 +42,10 @@ export function App() {
       <div className="chrome">
         <button type="button" className="stop" onClick={() => void app.stop()}>Стоп</button>
         <div className="chrome-rest" inert={app.sheet ? true : undefined}>
-          <span className="dot" data-on={app.connected ? 'true' : 'false'} role="status" data-tip={app.connected ? 'Подключено' : 'Нет подключения'} aria-label={app.connected ? 'Подключено' : 'Нет подключения'} />
+          <span className="dot" data-on={app.connected ? 'true' : 'false'} role="status" data-tip={app.connected ? 'Подключено' : 'Нет подключения'} aria-label={app.connected ? 'Подключено' : 'Нет подключения'}>{app.connected ? <Check size={12} strokeWidth={2} aria-hidden="true" /> : <Minus size={12} strokeWidth={2} aria-hidden="true" />}</span>
           <div className="menu-anchor">
-            <button type="button" className="icon" id="gear" aria-label="Меню" aria-haspopup="true" aria-expanded={app.menuOpen} aria-controls={app.menuOpen ? 'gear-menu' : undefined} disabled={!app.settings} onClick={() => app.setMenuOpen(open => !open)}><Settings size={18} strokeWidth={1.75} aria-hidden="true" /></button>
-            <GearMenu open={app.menuOpen} onClose={app.closeMenu} onSettings={() => app.openSheet('settings')} version={app.appVersion} os={app.platform ? osName(app.platform) : 'Загрузка…'} />
+            <button type="button" className="icon" id="gear" aria-label="Меню" aria-haspopup="menu" aria-expanded={app.menuOpen} aria-controls={app.menuOpen ? 'gear-menu' : undefined} disabled={!app.settings} onClick={() => app.setMenuOpen(open => !open)} onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); app.setMenuOpen(true); } }}><Settings size={18} strokeWidth={1.75} aria-hidden="true" /></button>
+            <GearMenu open={app.menuOpen} onClose={app.closeMenu} onSettings={app.openSheet} version={app.appVersion} os={app.platform ? osName(app.platform) : 'Загрузка…'} />
           </div>
         </div>
       </div>

@@ -35,6 +35,7 @@ export function CommandsScreen({ busy, run, notify, runLine, running }: Props) {
 
   return <section aria-labelledby="commands-title">
     <h1 id="commands-title">Быстрые команды</h1>
+    {busy && <p id="commands-busy" role="status">Дождитесь завершения текущего действия, чтобы изменить команды.</p>}
     <p>Команды хранятся только на этом ПК и работают без сервера. Из Discord, Telegram и dashboard они недоступны. Опасное действие всё равно спросит подтверждение.</p>
     <p className="path">Папка: {view?.folder ?? '…'}</p>
     {loadError && <div className="error" role="alert">{loadError} <button onClick={() => void load()}>Повторить</button></div>}
@@ -46,7 +47,7 @@ export function CommandsScreen({ busy, run, notify, runLine, running }: Props) {
       <button disabled={busy} onClick={() => void load()}>Обновить</button>
     </div>
     <form className="phrase" onSubmit={e => { e.preventDefault(); void say(); }}>
-      <label>Проверить фразу без сервера<input value={phrase} maxLength={300} onChange={e => setPhrase(e.target.value)} placeholder="режим игры"/></label>
+      <label>Проверить фразу без сервера<input name="command-phrase" type="text" autoComplete="off" value={phrase} maxLength={300} onChange={e => setPhrase(e.target.value)} placeholder="Например, режим игры…"/></label>
       <button disabled={busy || running || !phrase.trim()}>Выполнить фразу</button>
     </form>
     <p role="status" className="runline">{runLine}</p>
@@ -62,7 +63,7 @@ export function CommandsScreen({ busy, run, notify, runLine, running }: Props) {
           <p className="meta">{summarizeTriggers(c)}</p>
           <p className="meta">{summarizeActions(c)}{c.confirm ? ' · спросит перед запуском' : ''}{c.risk === 'confirm' ? ' · требует подтверждения' : ''}</p>
           {entry.hotkeys.filter(h => !h.registered).map(h => <p className="hint" key={h.hotkey}>Хоткей {h.hotkey} не зарегистрирован: занят системой или недоступен.</p>)}
-          <label className="check"><input type="checkbox" checked={c.enabled} disabled={busy} onChange={e => void act(() => invoke('command_set_enabled', { file: entry.file, enabled: e.target.checked }))}/>Включена</label>
+          <label className="check"><input name={`command-enabled-${entry.file}`} autoComplete="off" type="checkbox" checked={c.enabled} disabled={busy} aria-describedby={busy ? 'commands-busy' : undefined} onChange={e => void act(() => invoke('command_set_enabled', { file: entry.file, enabled: e.target.checked }))}/>Включена</label>
           <div className="actions">
             <button disabled={busy || running || !c.enabled} onClick={() => void run(async () => { await invoke('command_run', { file: entry.file }); })}>Запустить</button>
             <button disabled={busy} onClick={() => void test(entry.file)}>Проверить</button>
