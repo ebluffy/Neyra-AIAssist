@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Summarize Neyra's local startup JSONL logs without contacting any service."""
+
+import argparse
+import json
+import math
+import re
+import sys
+from collections import OrderedDict
+from pathlib import Path
+from uuid import UUID
+
+
+STAGES = ("process", "rust_setup", "webview_ready", "first_render", "connected")
+
+
+def record(value):
+    if (
+        not isinstance(value, dict)
+        or type(value.get("schema_version")) is not int
+        or value["schema_version"] != 1
+    ):
+        raise ValueError("unsupported schema_version (expected 1)")
+    run_id = value.get("run_id")
+    if not isinstance(run_id, str):
+        raise ValueError("run_id must be a UUID")
+    try:
+        value["run_id"] = str(UUID(run_id))
+    except ValueError as error:
+        raise ValueError("run_id must be a UUID") from error
+    if value.get("stage") not in STAGES:
+        raise ValueError("unknown startup stage")
+    elapsed = value.get("elapsed_ms")
+    if (
+        isinstance(elapsed, bool)
+        or not isinstance(elapsed, (int, float))
+        or not math.isfinite(elapsed)
+        or elapsed < 0
+    ):
+        raise ValueError("elapsed_ms must be a finite nonnegative number")
+    if not isinstance(value.get("os"), str) or not re.fullmatch(
+        r"[a-z0-9_-]{1,32}", value["os"]
+    ):
+        raise ValueError("os must be a platform name")
+    if value.get("graphics_backend") not in (None, "wayland", "x11"):
+        raise ValueError("graphics_backend must be wayland, x11 or null")
+    if value.get("library_mode") not in (None, "bundled", "system"):
+        raise ValueError("library_mode must be bundled, system or null")
+    return value
+
+
+def read_log(stream, name, runs):
+    for line_number, line in enumerate(stream, 1):
+        if not line.strip():
+            continue
+        try:
+            item = record(json.loads(line))
+        except (ValueError, OverflowError) as error:
+            print(f"{name}:{line_number}: skipped: {error}", file=sys.stderr)
+            continue
+        run = runs.setdefault(item["run_id"], {"metadata": {}, "stages": {}})
+        for key in ("os", "graphics_backend", "library_mode"):
+            previous = run["metadata"].get(key)
+            current = item.get(key)
+            if previous is not None and current is not None and previous != current:
+                print(
+                    f"{name}:{line_number}: skipped: conflicting {key} for run",
+                    file=sys.stderr,
+                )
+                break
+        else:
+            for key in ("os", "graphics_backend", "library_mode"):
+                if item.get(key) is not None:
+                    run["metadata"][key] = item[key]
+            stage = item["stage"]
+            elapsed = item["elapsed_ms"]
+            previous = run["stages"].get(stage)
+            if previous is not None and previous != elapsed:
+                print(
+                    f"{name}:{line_number}: duplicate {stage}; keeping earliest marker",
+                    file=sys.stderr,
+                )
+            run["stages"][stage] = min(previous, elapsed) if previous is not None else elapsed
+
+
+def report(runs):
+    for index, (run_id, run) in enumerate(runs.items()):
+        if index:
+            print()
+        metadata = run["metadata"]
+        print(f"Run {run_id}")
+        print(
+            f"OS: {metadata.get('os', 'unknown')}  "
+            f"graphics: {metadata.get('graphics_backend', 'unknown')}  "
+            f"libraries: {metadata.get('library_mode', 'unknown')}"
+        )
+        print(f"{'stage':<16} {'elapsed_ms':>12} {'delta_ms':>12}")
+        print(f"{'-' * 16} {'-' * 12} {'-' * 12}")
+        previous = None
+        for stage in STAGES:
+            elapsed = run["stages"].get(stage)
+            delta = "-"
+            if elapsed is not None and previous is not None:
+                delta = f"{elapsed - previous:.3f}" if elapsed >= previous else "out-of-order"
+            elapsed_text = f"{elapsed:.3f}" if elapsed is not None else "missing"
+            print(f"{stage:<16} {elapsed_text:>12} {delta:>12}")
+            previous = elapsed
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("logs", nargs="+", help="JSONL files (including rotated logs), or - for stdin")
+    args = parser.parse_args()
+    runs = OrderedDict()
+    try:
+        for name in args.logs:
+            if name == "-":
+                read_log(sys.stdin, "<stdin>", runs)
+            else:
+                with Path(name).open(encoding="utf-8") as stream:
+                    read_log(stream, name, runs)
+    except (OSError, UnicodeError) as error:
+        parser.exit(2, f"perf-report: {error}\n")
+    if not runs:
+        parser.exit(1, "perf-report: no valid performance records\n")
+    report(runs)
+
+
+if __name__ == "__main__":
+    main()

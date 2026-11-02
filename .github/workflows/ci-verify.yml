@@ -168,6 +168,8 @@ jobs:
           pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart
       - name: Run pytest
         run: cd server && pytest -q
+      - name: Performance report offline tests
+        run: python -m unittest discover -s devtools -p 'test_perf_report.py'
 
   dashboard:
     name: Dashboard lint/typecheck/test/build

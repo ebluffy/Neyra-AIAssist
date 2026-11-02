@@ -6,6 +6,7 @@ mod commands;
 mod files;
 mod host;
 mod logs;
+mod perf;
 mod policy;
 mod redact;
 mod screen;
@@ -427,6 +428,10 @@ async fn connect(
                                     if packet["type"]=="error" || packet["type"]=="cancelled" || packet["type"]=="audio.done" || packet["type"]=="command_match" || (kind=="bridge"&&packet["type"]=="done") {if let Ok(mut t)=state.current_turn.lock(){*t=None;}}
                                 }
                                 match packet["type"].as_str(){
+                                                    Some("hello")=>{
+                                                        if kind=="bridge"{handle.state::<perf::Perf>().mark(perf::Stage::Connected);}
+                                                        let _=handle.emit("desktop-event",packet);
+                                                    },
                                                     Some("client_tool_call")=>{let mut data=packet.clone();if let Some(o)=data.as_object_mut(){o.remove("type");o.remove("protocol");o.remove("source");}
                 if let Ok(call)=serde_json::from_value::<ToolCall>(data){receive_call(handle.clone(),call);}},
                                                     Some("revoked")=>{break;},
@@ -1316,15 +1321,35 @@ fn save_chats(state: State<'_, Desktop>, threads: Vec<storage::SavedChat>) -> Re
     storage::save_chats(&state.root, &threads)
 }
 
+#[tauri::command]
+fn perf_mark(
+    window: tauri::WebviewWindow,
+    state: State<'_, perf::Perf>,
+    stage: perf::FrontendStage,
+) {
+    if window.label() == "main" {
+        state.mark(stage.into());
+    }
+}
+
 pub fn run() {
+    let startup = perf::Startup::from_env();
     #[cfg(target_os = "linux")]
     apply_graphics();
-    let result = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    let builder = if startup.enabled() {
+        builder.append_invoke_initialization_script("window.__NEYRA_PERF__ = true;")
+    } else {
+        builder
+    };
+    let result = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
+            let setup_elapsed = startup.setup_elapsed();
             let root = storage::data_root().map_err(std::io::Error::other)?;
+            app.manage(startup.attach(&root, setup_elapsed));
             let (settings, recoveries) =
                 storage::initialize(&root).map_err(std::io::Error::other)?;
             for r in &recoveries {
@@ -1462,6 +1487,7 @@ pub fn run() {
             applications,
             load_chats,
             save_chats,
+            perf_mark,
             command_runner::commands_list,
             command_runner::command_save,
             command_runner::command_save_yaml,
