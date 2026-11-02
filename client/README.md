@@ -14,7 +14,7 @@ Implemented for PLAN §3b.11 steps 1–3:
 
 ## Updater and character (beta ship track)
 
-- Updater: Rust-only commands, beta/stable channel, signature and signed-version checks always on, draft-only release workflow, N to N+1 tests against a local server. See `docs/UPDATER.md`.
+- Updater: Rust-only commands, stable default and optional beta channel, signature and signed-version checks always on, automatic publication after all release builds pass, N to N+1 tests against a local server. See `docs/UPDATER.md`.
 - Linux packages and CachyOS notes: `docs/PACKAGING.md`.
 - Optional desktop character (off by default): `docs/CHARACTER.md`, licences in `character/LICENSES.md`.
 

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { invokedDirectly, readVersions, versionProblems } from './check-versions.mjs';
-import { signedVersion } from './check-updater-signature.mjs';
+import { publicKeyId, signatureKeyId, signedVersion } from './check-updater-signature.mjs';
 
 const root = join(import.meta.dirname, '..');
 const fixture = (name) => readFileSync(join(root, 'src-tauri/updater-test/fixtures', name), 'utf8');
@@ -75,5 +75,12 @@ describe('signature version binding', () => {
     expect(signedVersion(fixture('payload.unversioned.sig'))).toBeUndefined();
     expect(signedVersion(fixture('payload.garbage.sig'))).toBeUndefined();
     expect(signedVersion(fixture('payload.truncated.sig'))).toBeUndefined();
+  });
+  it('rejects a signature made with a different key even when its version matches', () => {
+    const testKey = readFileSync(join(root, 'src-tauri/updater-test/test.key.pub'), 'utf8');
+    expect(signatureKeyId(fixture('payload.valid.sig'))).toBe(publicKeyId(testKey));
+    expect(signedVersion(fixture('payload.untrusted-key.sig'))).toBe('0.1.1');
+    expect(signatureKeyId(fixture('payload.untrusted-key.sig'))).not.toBe(publicKeyId(testKey));
+    expect(signatureKeyId(fixture('payload.truncated.sig'))).toBeUndefined();
   });
 });

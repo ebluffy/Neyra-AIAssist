@@ -10,7 +10,7 @@ CI publishes only after every platform build succeeds.
   `update_check`, `update_install`, `update_restart`. The web UI only calls these.
   The JS updater plugin and the `updater:default` permission are not used.
 - Settings live in `Documents/Neyra/settings/updater.json` (versioned):
-  `channel` (`beta` default, or `stable`) and `auto_check` (default on, checked
+  `channel` (`stable` default, or `beta`) and `auto_check` (default on, checked
   once when the Server tab opens). Installing never changes `settings/app.json`,
   the keyring token, permissions or audit.
 - `tauri.conf.json` -> `plugins.updater`:
@@ -35,13 +35,11 @@ CI publishes only after every platform build succeeds.
 | beta | `https://github.com/ebluffy/Neyra-AIAssist/releases/download/client-beta/latest.json` |
 
 GitHub's `latest` never points at prereleases or drafts. A `client-v*-beta.*`
-release is published as a prerelease, but does not update the stable `latest`
-endpoint. The beta URL is a separate rolling prerelease tag `client-beta`;
-the release workflow does not update it. To serve beta updates, maintain that
-prerelease separately with the beta release's `latest.json` and its referenced
-signed assets (or use a separate beta feed). Until then, the beta endpoint does
-not serve new releases. The app defaults to the beta channel, so select stable
-in settings to receive stable releases without a beta feed.
+release is published as a prerelease and does not update the stable `latest`
+endpoint. Beta is optional; to offer beta updates, maintain a separate rolling
+`client-beta` prerelease with the chosen release's `latest.json` (whose asset
+URLs point to that release). Until such a feed exists, use the default stable
+channel for updates.
 
 Both URLs are hardcoded HTTPS. There is no user-editable endpoint.
 
@@ -112,8 +110,9 @@ Not covered by automation (owner, on real machines):
    `tauri-apps/tauri-action`: draft release, `prerelease` when the tag has a
    `-suffix`, updater `latest.json` uploaded by the action. Builds run serially
    so each platform's updater entry is retained.
-3. Every `.sig` must carry the release version, else the job fails. Only after
-   both builds succeed does the final job publish the release automatically.
+3. Every `.sig` must carry the release version and the configured public key ID,
+   else the job fails. Only after both builds succeed does the final job publish
+   the release automatically.
 
 Code signing (Authenticode) is not set up.
 
