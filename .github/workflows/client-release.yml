@@ -127,10 +127,43 @@ jobs:
     name: Publish release
     needs: [preflight, build]
     runs-on: ubuntu-22.04
+    concurrency:
+      group: client-beta-feed
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - name: Publish only after all builds succeed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.preflight.outputs.tag }}
         run: gh release edit "$TAG" --draft=false
+      - name: Update rolling beta feed if this release is newer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/candidate" "$tmp/current"
+          gh release download "$TAG" --pattern latest.json --dir "$tmp/candidate"
+          if gh release view client-beta --json assets --jq '.assets[].name' > "$tmp/assets"; then
+            if grep -Fxq latest.json "$tmp/assets"; then
+              gh release download client-beta --pattern latest.json --dir "$tmp/current"
+            fi
+          fi
+          current=()
+          if [ -f "$tmp/current/latest.json" ]; then current=("$tmp/current/latest.json"); fi
+          decision="$(node client/scripts/beta-feed.mjs "$TAG" "$tmp/candidate/latest.json" "${current[@]}")"
+          if [ "$decision" = skip ]; then
+            echo "client-beta already has this version or a newer one"
+            exit 0
+          fi
+          if ! gh release view client-beta --json tagName --jq .tagName > /dev/null 2>&1; then
+            gh release create client-beta --prerelease --title 'Neyra beta update feed' --notes 'Rolling updater manifest for the beta channel.'
+          fi
+          gh release upload client-beta "$tmp/candidate/latest.json" --clobber

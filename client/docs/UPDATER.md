@@ -36,10 +36,10 @@ CI publishes only after every platform build succeeds.
 
 GitHub's `latest` never points at prereleases or drafts. A `client-v*-beta.*`
 release is published as a prerelease and does not update the stable `latest`
-endpoint. Beta is optional; to offer beta updates, maintain a separate rolling
-`client-beta` prerelease with the chosen release's `latest.json` (whose asset
-URLs point to that release). Until such a feed exists, use the default stable
-channel for updates.
+endpoint. After publishing a release, CI copies its `latest.json` into the
+rolling `client-beta` prerelease if its version is newer than the current feed.
+Stable releases also advance this feed, so beta users receive stable versions
+when they are newer. Manifest asset URLs still point to the original release.
 
 Both URLs are hardcoded HTTPS. There is no user-editable endpoint.
 
@@ -94,8 +94,8 @@ version, the plugin installed it and rejected a tampered copy.
 Not covered by automation (owner, on real machines):
 
 - Windows NSIS update (passive installer, app restart) and SmartScreen.
-- A GitHub-hosted release: download over the real endpoint, `latest.json` from
-  tauri-action; beta feed, if maintained separately.
+- A GitHub-hosted release: download over the real endpoints, `latest.json` from
+  tauri-action and the rolling beta feed.
 - Restart after install on KDE Wayland; AppImage path preserved across update.
 - `.deb` update on Debian/Ubuntu (the plugin calls `pkexec dpkg -i`; not on Arch).
 
@@ -112,7 +112,8 @@ Not covered by automation (owner, on real machines):
    so each platform's updater entry is retained.
 3. Every `.sig` must carry the release version and the configured public key ID,
    else the job fails. Only after both builds succeed does the final job publish
-   the release automatically.
+   the release automatically. It then creates or updates `client-beta/latest.json`
+   when the published version is newer than the feed's current version.
 
 Code signing (Authenticode) is not set up.
 
