@@ -1,6 +1,35 @@
 use crate::{policy::now_ms, storage::atomic_write};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::{path::Path, time::Duration};
+use tauri::Manager;
+
+pub fn start_pruning(
+    app: tauri::AppHandle,
+    root: std::path::PathBuf,
+    initial_days: u32,
+) -> std::io::Result<()> {
+    prune_on_start(&root, initial_days).map_err(std::io::Error::other)?;
+    std::thread::Builder::new()
+        .name("audit-prune".into())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(24 * 60 * 60));
+            if let Some(state) = app.try_state::<crate::Desktop>() {
+                if let Ok(_guard) = state.audit_lock.lock() {
+                    let days = state
+                        .settings
+                        .lock()
+                        .map(|s| s.audit_days)
+                        .unwrap_or(initial_days);
+                    let _ = prune(&root, days);
+                }
+            }
+        })?;
+    Ok(())
+}
+
+fn prune_on_start(root: &Path, days: u32) -> Result<(), String> {
+    prune(root, days)
+}
 
 pub fn recent(root: &Path, days: u32) -> Result<Vec<Value>, String> {
     let path = root.join("audit/actions.json");
@@ -11,9 +40,13 @@ pub fn recent(root: &Path, days: u32) -> Result<Vec<Value>, String> {
     if metadata.len() > 2 * 1024 * 1024 {
         return Err("Журнал превышает лимит".into());
     }
-    let rows: Vec<Value> =
-        serde_json::from_slice(&std::fs::read(path).map_err(|_| "Журнал недоступен")?)
-            .map_err(|_| "Журнал повреждён")?;
+    let rows: Vec<Value> = match std::fs::read(path)
+        .ok()
+        .and_then(|data| serde_json::from_slice(&data).ok())
+    {
+        Some(rows) => rows,
+        None => return Ok(vec![]),
+    };
     let cutoff = now_ms().saturating_sub(u64::from(days.clamp(1, 365)) * 24 * 60 * 60 * 1000);
     Ok(rows
         .into_iter()
@@ -84,6 +117,44 @@ mod tests {
             1,
             "huge values clamp to 365 days"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_audit_file_is_ignored_and_replaced_atomically() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(root.join("audit")).unwrap();
+        std::fs::write(root.join("audit/actions.json"), b"not json").unwrap();
+
+        assert!(recent(&root, 30).unwrap().is_empty());
+        append(&root, "client.open_url", "ok", false, 30).unwrap();
+
+        let rows = recent(&root, 30).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["tool"], "client.open_url");
+        assert!(std::fs::read_dir(root.join("audit"))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_pruning_removes_expired_rows() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(root.join("audit")).unwrap();
+        std::fs::write(
+            root.join("audit/actions.json"),
+            serde_json::to_vec(&vec![json!({"ts": 1, "tool": "old"})]).unwrap(),
+        )
+        .unwrap();
+
+        prune_on_start(&root, 30).unwrap();
+
+        assert!(recent(&root, 30).unwrap().is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

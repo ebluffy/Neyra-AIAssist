@@ -232,6 +232,10 @@ pub(crate) fn apply_settings(
         != serde_json::to_value(&settings.permissions).ok();
     let screen_changed = (old.permissions.screen, old.permissions.input)
         != (settings.permissions.screen, settings.permissions.input);
+    if settings.audit_days != old.audit_days {
+        let _guard = state.audit_lock.lock().map_err(lock_error)?;
+        audit::prune(&state.root, settings.audit_days)?;
+    }
     storage::save(&state.root, &settings)?;
     character::on_settings_saved(app, settings.character_enabled);
     if settings.theme != old.theme {
@@ -1337,7 +1341,8 @@ pub fn run() {
                     ),
                 );
             }
-            audit::prune(&root, settings.audit_days).map_err(std::io::Error::other)?;
+            audit::start_pruning(app.handle().clone(), root.clone(), settings.audit_days)
+                .map_err(std::io::Error::other)?;
             let generation = Arc::new(AtomicU64::new(0));
             let events = app.handle().clone();
             let player = audio::Player::start(generation.clone(), move |event| {
