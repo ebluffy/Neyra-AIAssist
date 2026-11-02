@@ -434,7 +434,7 @@
 - [x] Проверки main `a947a82` перед деплоем 2026-10-19: CI 7/7, 490 server tests, compileall; Node 22 — lint/typecheck, 46 unit, build и 18 desktop/mobile E2E с временным backend. У lint осталось прежнее предупреждение LogViewer. Клиентские проверки относятся к §3b.
 - [x] Secrets scan исходников в CI зелёный; `.env`, локальные конфиги, runtime data, логи и приватная persona не включены в коммит.
 - [ ] Проверить отсутствие приватных данных в фактических логах приложения/библиотек/reverse proxy на стенде (§3a, BUG-06); локальные redaction-регрессии этот критерий не закрывают.
-- [ ] Smoke-путь «server → Control API → client» воспроизводим.
+- [x] Smoke-путь «server → Control API → client» воспроизводим offline: `devtools/smoke_control_api.py` с mock agent, loopback HTTPS/WSS и Node-клиентом; live-путь и внешний стенд этим не подтверждаются.
 - [ ] На копии production-данных подтвердить сохранность memory, Chroma, SQLite Hub, ignored configs и Lavalink state при обновлении/восстановлении. Миграция копии рабочей SQLite и обновление MiniPC с сохранением данных проверены 2026-10-19; восстановление целевого хоста остаётся открытым.
 
 ## 6. Документация и демонстрация

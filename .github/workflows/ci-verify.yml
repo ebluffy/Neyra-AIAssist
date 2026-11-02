@@ -13,6 +13,29 @@ permissions:
   contents: read
 
 jobs:
+  offline-control-api-smoke:
+    name: Offline server → Control API → Node client
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Install offline smoke dependencies
+        run: |
+          python -m pip install 'fastapi>=0.115.0' 'uvicorn[standard]>=0.30.0' 'httpx>=0.27.0' 'PyYAML>=6.0.0' 'python-multipart>=0.0.20'
+          npm ci --prefix client
+      - name: Smoke HTTPS + WSS on loopback (mock agent, no services)
+        run: |
+          python devtools/smoke_control_api.py
+          python -m unittest discover -s devtools -p test_smoke_control_api.py
+
   layout:
     name: Layout & tree
     runs-on: ubuntu-latest
