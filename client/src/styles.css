@@ -151,11 +151,9 @@ button.icon.plus:hover:enabled, button.icon.history-toggle:hover:enabled { backg
 .live-actions button.icon[aria-pressed="true"] { background: var(--surface-2); color: var(--accent); border-color: transparent }
 .live-actions button.icon.danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-color: transparent }
 .live-actions button.icon.danger:hover:enabled { background: color-mix(in srgb, var(--danger) 20%, var(--surface)); color: var(--danger); border-color: transparent }
-/* The optional wrapper spans the column; the log owns the offset in both layouts. */
-.live-transcript-layer { position: absolute; z-index: 2; inset: 0; pointer-events: none }
+.live-transcript-layer { position: absolute; z-index: 2; inset: 0 0 calc(64px + var(--s4)); display: flex; justify-content: center; align-items: flex-end; padding: var(--s3); pointer-events: none }
 .live-transcript-layer[aria-hidden="true"] { visibility: hidden }
-.live-log { position: absolute; z-index: 2; left: 0; right: 0; bottom: calc(64px + var(--s3)); margin-inline: auto; width: min(420px, calc(100% - 16px)); max-height: min(180px, 28dvh, max(0px, calc(50dvh - var(--live-orb-size) / 2 - 128px))); transform: translateY(8px); opacity: 0; flex: none; background: var(--surface); border: 1px solid var(--control-border); border-radius: 16px; box-shadow: 0 12px 32px var(--shadow); padding: var(--s2) var(--s3); gap: var(--s2); font-size: 14px; line-height: 1.4; pointer-events: none; transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease), visibility var(--dur) }
-.live-log[hidden] { display: none !important }
+.live-log { width: min(420px, calc(100% - 16px)); max-height: min(180px, 28dvh, max(0px, calc(50dvh - var(--live-orb-size) / 2 - 128px))); margin-inline: auto; transform: translateY(8px); opacity: 0; flex: none; background: var(--surface); border: 1px solid var(--control-border); border-radius: 16px; box-shadow: 0 12px 32px var(--shadow); padding: var(--s2) var(--s3); gap: var(--s2); font-size: 14px; line-height: 1.4; pointer-events: none; transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease), visibility var(--dur) }
 .live-log.open { opacity: 1; transform: translateY(0); pointer-events: auto }
 .live-log[aria-hidden="true"] { visibility: hidden; pointer-events: none }
 .live-log article { flex: none; min-width: 0; padding: var(--s1) 0; border-top: 1px solid var(--line) }
@@ -293,10 +291,13 @@ dialog.editor { width: min(760px, 94vw); padding: var(--s2) var(--s5) var(--s5) 
 }
 @media (max-height: 620px) {
   /* Above the orb there is room for an author and three lines at 480px tall. */
-  .live-log { top: 56px; bottom: auto; max-height: min(180px, 28dvh, max(0px, calc(50dvh - var(--live-orb-size) / 2 - 68px))) }
+  .live-transcript-layer { align-items: flex-start; padding-top: 56px }
+  .live-log { max-height: min(180px, 28dvh, max(0px, calc(50dvh - var(--live-orb-size) / 2 - 68px))) }
   /* The error alert and the sticky notice share this top band. Start the log under them. */
+  .column:has(.error) .live-transcript-layer,
+  .shell:has(.banner) .live-transcript-layer { padding-top: 136px }
   .column:has(.error) .live-log,
-  .shell:has(.banner) .live-log { top: 136px; max-height: min(180px, 28dvh, max(0px, calc(50% - var(--live-orb-size) / 2 - 148px))) }
+  .shell:has(.banner) .live-log { max-height: min(180px, 28dvh, max(0px, calc(50% - var(--live-orb-size) / 2 - 148px))) }
 }
 @media (max-width: 639px) {
   .msg-actions, .msg.is-last .msg-actions { position: static; top: auto; right: auto; bottom: auto; left: auto; height: 0; overflow: hidden; margin-top: 0; background: transparent }
@@ -318,4 +319,7 @@ dialog.editor { width: min(760px, 94vw); padding: var(--s2) var(--s5) var(--s5) 
   .stage::before, .stage::after { display: none }
   .dot, .orb, button.primary { forced-color-adjust: auto }
   :focus-visible { outline: 3px solid CanvasText }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important }
 }

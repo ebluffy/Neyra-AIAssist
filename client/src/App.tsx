@@ -21,11 +21,16 @@ import { PermissionsScreen } from './screens/PermissionsScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { useDesktop } from './useDesktop';
 
+declare global {
+  interface ImportMetaEnv { readonly DEV: boolean }
+  interface ImportMeta { readonly env: ImportMetaEnv }
+}
+
 function osName(value: string): string {
   if (value === 'windows') return 'Windows';
   if (value === 'macos' || value === 'darwin') return 'macOS';
   if (value === 'linux') return 'Linux';
-  return value || 'эта система';
+  return value || 'Загрузка…';
 }
 
 export function App() {
@@ -33,19 +38,19 @@ export function App() {
   const empty = app.messages.length === 0 && !app.partial;
   const turnBusy = app.thinking || app.partial.length > 0 || app.active;
   return <div className="shell" data-theme={app.theme}>
-    <HistoryPanel open={app.historyOpen} threads={app.threads} activeId={app.activeId} onClose={() => app.setHistoryOpen(false)} onOpen={id => void app.openThread(id)} onNew={() => void app.newChat()} />
+    <HistoryPanel open={app.historyOpen} threads={app.threads} activeId={app.activeId} disabled={app.liveOpen} onClose={() => app.setHistoryOpen(false)} onOpen={id => void app.openThread(id)} onNew={() => void app.newChat()} />
     <div className="stage">
       <div className="lead">
-        <button type="button" className="icon history-toggle" aria-label={app.historyOpen ? 'Свернуть' : 'Развернуть'} aria-expanded={app.historyOpen} data-tip={app.historyOpen ? 'Свернуть' : 'Развернуть'} onClick={() => app.setHistoryOpen(open => !open)}>{app.historyOpen ? <ChevronLeft size={18} strokeWidth={1.75} aria-hidden="true" /> : <ChevronRight size={18} strokeWidth={1.75} aria-hidden="true" />}</button>
-        {!app.historyOpen && <button type="button" className="icon plus" aria-label="Новый чат" data-tip="Новый чат" onClick={() => void app.newChat()}><Plus size={18} strokeWidth={1.75} aria-hidden="true" /></button>}
+        <button type="button" className="icon history-toggle" aria-label={app.historyOpen ? 'Свернуть' : 'Развернуть'} aria-expanded={app.historyOpen} data-tip={app.historyOpen ? 'Свернуть' : 'Развернуть'} disabled={app.liveOpen} onClick={() => app.setHistoryOpen(open => !open)}>{app.historyOpen ? <ChevronLeft size={18} strokeWidth={1.75} aria-hidden="true" /> : <ChevronRight size={18} strokeWidth={1.75} aria-hidden="true" />}</button>
+        <button type="button" className="icon plus" aria-label="Новый чат" data-tip="Новый чат" disabled={app.liveOpen} onClick={() => void app.newChat()}><Plus size={18} strokeWidth={1.75} aria-hidden="true" /></button>
       </div>
       <div className="chrome">
         <button type="button" className="stop" onClick={() => void app.stop()}>Стоп</button>
         <div className="chrome-rest" inert={app.sheet ? true : undefined}>
           <span className="dot" data-on={app.connected ? 'true' : 'false'} role="status" data-tip={app.connected ? 'Подключено' : 'Нет подключения'} aria-label={app.connected ? 'Подключено' : 'Нет подключения'} />
           <div className="menu-anchor">
-            <button type="button" className="icon" id="gear" aria-label="Меню" aria-haspopup="true" aria-expanded={app.menuOpen} aria-controls={app.menuOpen ? 'gear-menu' : undefined} onClick={() => app.setMenuOpen(open => !open)}><Settings size={18} strokeWidth={1.75} aria-hidden="true" /></button>
-            <GearMenu open={app.menuOpen} onClose={app.closeMenu} onSettings={() => app.openSheet('settings')} version={app.appVersion} os={osName(app.platform)} />
+            <button type="button" className="icon" id="gear" aria-label="Меню" aria-haspopup="true" aria-expanded={app.menuOpen} aria-controls={app.menuOpen ? 'gear-menu' : undefined} disabled={!app.settings} onClick={() => app.setMenuOpen(open => !open)}><Settings size={18} strokeWidth={1.75} aria-hidden="true" /></button>
+            <GearMenu open={app.menuOpen} onClose={app.closeMenu} onSettings={() => app.openSheet('settings')} version={app.appVersion} os={app.platform ? osName(app.platform) : 'Загрузка…'} />
           </div>
         </div>
       </div>
@@ -61,7 +66,7 @@ export function App() {
         {!app.liveOpen && (app.recording
           ? <VoiceRecorder level={app.micLevel} busy={app.busy} onCancel={() => void app.cancelRecording()} onDone={() => void app.finishRecording()} />
           : <Composer text={app.text} connected={app.connected} busy={app.busy} turnBusy={turnBusy} liveBlocked={app.voice.mode === 'ptt'} onText={app.setText} onSend={() => void app.sendContent(app.text)} onRecord={() => void app.beginRecording()} onLive={() => void app.startLive()} onStop={() => void app.stop()} />)}
-        {app.lastTrace !== undefined && !app.liveOpen && <details><summary>Модели последнего ответа</summary><pre>{JSON.stringify(app.lastTrace, null, 2)}</pre></details>}
+        {app.lastTrace !== undefined && !app.liveOpen && (import.meta.env.DEV || localStorage.getItem('neyra.debug') === '1') && <details><summary>Модели последнего ответа</summary><pre>{JSON.stringify(app.lastTrace, null, 2)}</pre></details>}
       </div>
     </div>
     {app.sheet && app.settings && <SettingsSheet section={app.sheet} onSection={app.setSheet} onClose={app.closeSheet} onStop={() => void app.stop()} alert={app.error}>

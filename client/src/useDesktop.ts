@@ -333,7 +333,9 @@ export function useDesktop() {
     catch (reason) { setSettings(settings); throw reason; }
   });
   const blockSwitch = () => {
-    if (thinking || partial || recording || liveOpen || active || hostCall || draft) throw 'Сначала остановите текущий ход кнопкой «Стоп»';
+    if (liveOpen) return false;
+    if (thinking || partial || recording || active || hostCall || draft) throw 'Сначала остановите текущий ход кнопкой «Стоп»';
+    return true;
   };
   const switchSession = async (sessionId: string, preserveMessages: boolean) => {
     const disk = savedSettings.current;
@@ -368,7 +370,7 @@ export function useDesktop() {
     }
   };
   const newChat = () => run(async () => {
-    blockSwitch();
+    if (!blockSwitch()) return;
     const sessionId = crypto.randomUUID();
     const fresh: ChatThread = { id: nextId(), title: 'Новый чат', sessionId, updated: Date.now(), messages: [] };
     const saved = threads.map(item => item.id === activeId ? { ...item, messages: messages.map(stripAudio), title: threadTitle(messages), updated: Date.now() } : item);
@@ -379,7 +381,7 @@ export function useDesktop() {
     setPartial(''); tokenBuffer.current = ''; setHistoryOpen(false); setMenuOpen(false);
   });
   const openThread = (id: string) => run(async () => {
-    blockSwitch();
+    if (!blockSwitch()) return;
     const switched = switchThread(threads, activeId, messages, id);
     if (!switched) { setHistoryOpen(false); return; }
     const target = switched.threads.find(item => item.id === switched.activeId);

@@ -15,7 +15,7 @@ export function GearMenu({ open, onClose, onSettings, version, os }: Props) {
   useEffect(() => { closeRef.current = onClose; });
   useEffect(() => {
     if (!open) return;
-    const onPointer = (event: PointerEvent) => { if (!panel.current?.contains(event.target as Node)) closeRef.current(); };
+    const onPointer = (event: PointerEvent) => { if (!panel.current?.contains(event.target as Node) && !document.getElementById('gear')?.contains(event.target as Node)) closeRef.current(); };
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
