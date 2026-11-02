@@ -164,6 +164,92 @@ describe('unavailable server', () => {
     expect(ipc.invoke.mock.calls.filter(([command]) => command === 'chat')).toHaveLength(1);
   });
 
+  it('keeps an in-flight connection when profile settings are edited', async () => {
+    const base = ipc.invoke.getMockImplementation()!;
+    let complete!: () => void;
+    ipc.invoke.mockImplementation((command, args) => command === 'connect' ? new Promise<void>(resolve => { complete = resolve; }) : base(command, args));
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    await act(async () => { app.patchProfile({ name: 'Edited', url: 'http://localhost:9999' }); });
+    await act(async () => { complete(); });
+    expect(app.connected).toBe(true);
+    await tick(120000);
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(1);
+  });
+
+  it('does not connect to a selected profile during backoff without a new command', async () => {
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'connect') throw 'unavailable';
+      return base(command, args);
+    });
+    await mount();
+    await act(async () => { app.setSettings({ ...settings, profiles: [...settings.profiles, { ...settings.profiles[0], id: 'other' }] }); });
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    await act(async () => { app.chooseProfile('other'); });
+    await tick(120000);
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(1);
+    expect(app.connected).toBe(false);
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    expect(ipc.invoke).toHaveBeenLastCalledWith('connect', { profileId: 'other' });
+  });
+
+  it('stops retries when a newly added profile becomes selected', async () => {
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'connect') throw 'connection refused';
+      return base(command, args);
+    });
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    await act(async () => { app.addProfile({ ...settings.profiles[0], id: 'added' }); });
+    await tick(120000);
+    expect(app.profileId).toBe('added');
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(1);
+  });
+
+  it.each(['handshake', 'revoked'])('stops automatic retries after auth rejection: %s', async mode => {
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'connect' && mode === 'handshake') throw 'AUTH_REJECTED';
+      return base(command, args);
+    });
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    if (mode === 'revoked') await act(async () => { ipc.listeners.get('desktop-event')!({ payload: { type: 'disconnected', reason: 'auth' } }); });
+    expect(app.connected).toBe(false);
+    expect(app.error).toContain('Токен отклонён или отозван');
+    await tick(120000);
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(1);
+    ipc.invoke.mockImplementation(base);
+    await act(async () => { app.setToken('replacement'); });
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    expect(app.connected).toBe(true);
+    expect(ipc.invoke).toHaveBeenCalledWith('store_token', { profileId: 'test', token: 'replacement' });
+  });
+
+  it.each(['history', 'devices'])('keeps the connection when the initial %s request fails', async kind => {
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'bridge_message' && args?.kind === kind) throw 'failed';
+      return base(command, args);
+    });
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    expect(app.connected).toBe(true);
+    expect(app.error).toContain(kind === 'history' ? 'Не удалось загрузить историю' : 'Не удалось загрузить список устройств');
+    expect(ipc.invoke).toHaveBeenCalledWith('bridge_message', { kind: 'devices' });
+    await tick(120000);
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(1);
+  });
+
   it('stops retrying after an explicit disconnect', async () => {
     await mount();
     await act(async () => { await app.connect(); });
