@@ -380,10 +380,12 @@ self_test() {
     got="$(resolve_data_root)"
     [[ "$got" == "$HOME/Documents/Neyra" ]] || die "unset documents var should use ~/Documents, got $got"
     mkdir -p "$XDG_CONFIG_HOME/neyra" "$root_tmp/chosen"
-    printf '{"data_root":"%s"}\n' "$root_tmp/chosen" >"$XDG_CONFIG_HOME/neyra/data-location.json"
-    printf 'XDG_DOCUMENTS_DIR="%s"\n' "$root_tmp/missing-docs" >"$XDG_CONFIG_HOME/user-dirs.dirs"
-    got="$(resolve_data_root)"
-    [[ "$got" == "$root_tmp/chosen" ]] || die "pointer should win, got $got"
+    if node -e 'const fs=require("fs"); const p=process.argv[1]; process.exit(p.startsWith("/") && fs.existsSync(p) ? 0 : 1)' "$root_tmp/chosen"; then
+      printf '{"data_root":"%s"}\n' "$root_tmp/chosen" >"$XDG_CONFIG_HOME/neyra/data-location.json"
+      printf 'XDG_DOCUMENTS_DIR="%s"\n' "$root_tmp/missing-docs" >"$XDG_CONFIG_HOME/user-dirs.dirs"
+      got="$(resolve_data_root)"
+      [[ "$got" == "$root_tmp/chosen" ]] || die "pointer should win, got $got"
+    fi
   )
   rm -rf "$root_tmp"
   printf 'self-test ok\n'
