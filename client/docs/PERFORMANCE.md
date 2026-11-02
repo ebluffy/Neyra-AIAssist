@@ -49,9 +49,10 @@ metadata so rotated files can be inspected independently:
 
 On Linux, graphics metadata uses `GDK_BACKEND` first, then the
 `XDG_SESSION_TYPE` hint. The `graphics_backend_source` is `graphics_setting`
-when the application applied a graphics recovery setting
-(`NEYRA_GRAPHICS_APPLIED=1`); otherwise it is `gdk_backend` for `GDK_BACKEND`
-or `session_type` for the session hint. The saved `graphics_mode` distinguishes
+when `graphics_mode` is a recognized recovery mode other than `auto` and
+`NEYRA_GRAPHICS_APPLIED=1`; otherwise it is `gdk_backend` for `GDK_BACKEND`
+or `session_type` for the session hint. An inherited marker is ignored for
+`auto`, missing or unrecognized modes. The saved `graphics_mode` distinguishes
 `auto` from `compatibility` even when both report `wayland`, so their startup
 measurements can be compared. These fields describe settings and environment,
 not a GPU/renderer probe; session type can differ from the backend actually

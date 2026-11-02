@@ -141,7 +141,9 @@ fn metadata(env: impl Fn(&str) -> Option<String>, graphics_mode: Option<&str>) -
     let forced = env("GDK_BACKEND").filter(|s| matches!(s.as_str(), "wayland" | "x11"));
     let session = env("XDG_SESSION_TYPE").filter(|s| matches!(s.as_str(), "wayland" | "x11"));
     let (backend, source) = if cfg!(target_os = "linux") {
-        if env("NEYRA_GRAPHICS_APPLIED").as_deref() == Some("1") {
+        if graphics_mode.is_some_and(|mode| mode != "auto")
+            && env("NEYRA_GRAPHICS_APPLIED").as_deref() == Some("1")
+        {
             (forced.or(session), Some("graphics_setting"))
         } else if forced.is_some() {
             (forced, Some("gdk_backend"))
@@ -263,6 +265,41 @@ mod tests {
         assert_eq!(auto["graphics_backend"], "wayland");
         assert_eq!(auto["graphics_backend_source"], "session_type");
         assert_eq!(auto["graphics_mode"], "auto");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn inherited_graphics_marker_requires_an_explicit_recovery_mode() {
+        for mode in [Some("auto"), None, Some("unknown")] {
+            for forced in [None, Some("x11")] {
+                let data = metadata(
+                    |key| match key {
+                        "GDK_BACKEND" => forced.map(str::to_owned),
+                        "XDG_SESSION_TYPE" => Some("wayland".into()),
+                        "NEYRA_GRAPHICS_APPLIED" => Some("1".into()),
+                        _ => None,
+                    },
+                    mode,
+                );
+                assert_eq!(data["graphics_backend"], forced.unwrap_or("wayland"));
+                assert_eq!(
+                    data["graphics_backend_source"],
+                    if forced.is_some() {
+                        "gdk_backend"
+                    } else {
+                        "session_type"
+                    }
+                );
+                assert_eq!(
+                    data["graphics_mode"],
+                    if mode == Some("auto") {
+                        json!("auto")
+                    } else {
+                        Value::Null
+                    }
+                );
+            }
+        }
     }
 
     #[test]
