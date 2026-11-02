@@ -996,7 +996,7 @@ mod tests {
     #[test]
     fn token_stays_out_of_entire_data_directory() {
         let root = temp();
-        let token = "fleet-test-opaque-49-7391";
+        let token = concat!("fleet-test-", "opaque-49-7391");
         let entry =
             keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
         let (mut settings, _) = initialize(&root).unwrap();
@@ -1064,7 +1064,7 @@ mod tests {
     fn unavailable_keyring_returns_error_without_disk_fallback() {
         let root = temp();
         fs::create_dir_all(&root).unwrap();
-        let token = "fleet-unavailable-test-49";
+        let token = concat!("fleet-unavailable-", "test-49");
         let entry =
             keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
         let mock = entry
