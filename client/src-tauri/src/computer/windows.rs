@@ -231,9 +231,11 @@ impl Backend {
     fn check_focus(&self, session: &Session, ctx: &Context) -> Result<(), Error> {
         let focused = checked(ctx, || unsafe { self.client.GetFocusedElement() })
             .map_err(|_| Error::StaleRef)?;
-        if !checked(ctx, || unsafe { self.client.CompareElements(&focused, &session.focused) })
-            .map_err(|_| Error::StaleRef)?
-            .as_bool()
+        if !checked(ctx, || unsafe {
+            self.client.CompareElements(&focused, &session.focused)
+        })
+        .map_err(|_| Error::StaleRef)?
+        .as_bool()
         {
             return Err(Error::StaleRef);
         }

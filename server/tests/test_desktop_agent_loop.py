@@ -168,7 +168,7 @@ def test_native_rejected_action_does_not_mark_delivery_unknown(code):
         token = DESKTOP_TURN.set(turn)
         try:
             assert await _desktop_action(registry, 'owner', str(m.session_id), str(m.device_id),
-                                           'client.computer_click', {'ref': 'old:0'}) == error
+                                          'client.computer_click', {'ref': 'old:0'}) == error
             assert not turn.outcome_unknown
             assert await _desktop_action(registry, 'owner', str(m.session_id), str(m.device_id),
                                           'client.computer_click', {'ref': 'new:0'}) == error
