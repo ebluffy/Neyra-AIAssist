@@ -385,6 +385,11 @@ self_test() {
       printf 'XDG_DOCUMENTS_DIR="%s"\n' "$root_tmp/missing-docs" >"$XDG_CONFIG_HOME/user-dirs.dirs"
       got="$(resolve_data_root)"
       [[ "$got" == "$root_tmp/chosen" ]] || die "pointer should win, got $got"
+    else
+      if [[ "$(uname -s)" == "Linux" ]]; then
+        die "pointer case skipped on Linux: node не видит $root_tmp/chosen"
+      fi
+      printf 'skip: pointer case (node не видит %s)\n' "$root_tmp/chosen"
     fi
   )
   rm -rf "$root_tmp"
