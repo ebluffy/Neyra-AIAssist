@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { type MouthTrack, mouthAt, smoothMouth } from '../lipsync';
+import { themeId, type ThemeId } from '../theme';
 import { drawFallback } from './fallback';
 import type { Rig } from './renderer';
 import { type CharacterState, stateFromEvent } from './state';
@@ -9,6 +10,7 @@ interface CharacterInfo { enabled: boolean; settings: { model: string | null; fp
 
 const canvas = document.getElementById('stage') as HTMLCanvasElement;
 let state: CharacterState = 'idle';
+let theme: ThemeId = 'neyra';
 let track: MouthTrack | undefined;
 let mouth = 0;
 let rig: Rig | undefined;
@@ -34,7 +36,15 @@ setInterval(() => {
 function runFallback() {
   const context = canvas.getContext('2d');
   if (!context) return;
-  const frame = (time: number) => { drawFallback(context, state, mouth, time); requestAnimationFrame(frame); };
+  let themeAt = 0;
+  const frame = (time: number) => {
+    if (time - themeAt > 1000) {
+      themeAt = time;
+      void invoke<{ settings?: { theme?: string } }>('load_settings').then(loaded => { theme = themeId(loaded.settings?.theme); }).catch(() => undefined);
+    }
+    drawFallback(context, state, mouth, time, theme);
+    requestAnimationFrame(frame);
+  };
   requestAnimationFrame(frame);
 }
 
