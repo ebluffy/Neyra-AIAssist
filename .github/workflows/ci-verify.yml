@@ -172,6 +172,7 @@ jobs:
   dashboard:
     name: Dashboard lint/typecheck/test/build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: server/dashboard
@@ -195,7 +196,16 @@ jobs:
         run: npm run test -- --run
       - name: Build
         run: npm run build
+      - name: Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install Playwright Chromium
+        timeout-minutes: 5
         run: npx playwright install --with-deps chromium
       - name: E2E smoke
         run: |

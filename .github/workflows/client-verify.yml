@@ -1,0 +1,51 @@
+name: Desktop client
+on:
+  pull_request:
+    paths:
+      - 'client/**'
+      - '.github/workflows/client-verify.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libdbus-1-dev
+      - run: npm ci --ignore-scripts
+        working-directory: client
+      - run: npm run check:versions && npm run lint && npm run typecheck && npm test && npm run build
+        working-directory: client
+      - run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
+        working-directory: client/src-tauri
+      - name: Release installer
+        # Linux: deb + AppImage. Updater signature artifacts stay off in tauri.conf until secrets exist.
+        run: npm run tauri build -- --bundles ${{ runner.os == 'Windows' && 'nsis' || 'deb,appimage' }}
+        working-directory: client
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neyra-desktop-${{ runner.os }}
+          path: |
+            client/src-tauri/target/release/bundle/nsis/*.exe
+            client/src-tauri/target/release/bundle/deb/*.deb
+            client/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error

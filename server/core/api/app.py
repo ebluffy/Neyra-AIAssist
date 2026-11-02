@@ -4351,6 +4351,9 @@ def build_app(
                         }
                     )
 
+    from core.desktop.routes import router_for
+    app.include_router(router_for(agent, config, lambda authorization: _require_ws_auth(None, authorization, config, dash_auth)))
+
     dash_cfg = config.get("dashboard") or {}
     if bool(dash_cfg.get("enabled", True)):
         dist = _dashboard_dist_path(config)

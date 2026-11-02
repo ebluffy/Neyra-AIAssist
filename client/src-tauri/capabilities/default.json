@@ -1,0 +1,12 @@
+{
+  "identifier": "main",
+  "description": "Neyra local window. The opener may open only http and https URLs. Every other I/O goes through Rust commands.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "http://*" }, { "url": "https://*" }]
+    }
+  ]
+}
