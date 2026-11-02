@@ -18,8 +18,8 @@ export function PermissionCard({ call, onAllow, onReject }: { call: HostCall; on
     <p><strong>{name}</strong></p>
     <pre>{call.preview || JSON.stringify(call.arguments, null, 2)}</pre>
     <p>Подтверждение действует только для этого вызова, до 30 секунд.</p>
-    <div className="actions">
-      <button type="button" ref={reject} autoFocus onClick={onReject}>Отклонить</button>
+    <div className="actions dialog-actions">
+      <button type="button" ref={reject} onClick={onReject}>Отклонить</button>
       <button type="button" className="primary" onClick={onAllow}>Разрешить один раз</button>
     </div>
   </dialog>;

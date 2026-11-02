@@ -44,17 +44,24 @@ export function SettingsSheet({ section, onSection, onClose, onStop, alert, chil
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
     root?.addEventListener('keydown', onKey);
-    return () => { root?.removeEventListener('keydown', onKey); previous?.focus(); };
+    return () => { root?.removeEventListener('keydown', onKey); (previous?.isConnected && previous !== document.body ? previous : document.getElementById('gear'))?.focus(); };
   }, []);
+  useEffect(() => {
+    panel.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const body = panel.current?.querySelector('.sheet-body');
+    if (body) body.scrollTop = 0;
+  }, [section]);
   return <div className="backdrop">
     <div className="sheet" ref={panel} role="dialog" aria-modal="true" aria-label="Настройки">
+      <header className="sheet-header">
+        <button type="button" className="icon sheet-close" aria-label="Закрыть настройки" onClick={onClose}><X size={18} strokeWidth={1.75} aria-hidden="true" /></button>
+        <button type="button" className="stop sheet-stop" title="Остановить текущий ответ, озвучку и действия" onClick={onStop}>Остановить Нейру</button>
+      </header>
       <nav className="sheet-nav" aria-label="Разделы настроек">
-        <button type="button" className="icon sheet-close" aria-label="Закрыть" onClick={onClose}><X size={18} strokeWidth={1.75} aria-hidden="true" /></button>
         {SHEETS.map(item => {
           const Icon = ICONS[item.id];
           return <button type="button" key={item.id} aria-current={item.id === section ? 'page' : undefined} onClick={() => onSection(item.id)}><Icon size={18} strokeWidth={1.75} aria-hidden="true" />{item.label}</button>;
         })}
-        <button type="button" className="stop sheet-stop" onClick={onStop}>Стоп</button>
       </nav>
       <div className="sheet-body">{alert && <div className="error" role="alert">{alert}</div>}{children}</div>
     </div>

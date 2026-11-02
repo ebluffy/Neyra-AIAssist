@@ -77,9 +77,9 @@ button.icon.plus:hover:enabled, button.icon.history-toggle:hover:enabled { backg
 .chrome-rest { display: flex; align-items: center; gap: var(--s2) }
 .shell:has(.sheet) .chrome { visibility: hidden }
 .menu-anchor { position: relative }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); flex: none }
-.dot[data-on="true"] { background: var(--accent) }
-.menu { position: absolute; top: calc(100% + 6px); right: 0; width: max-content; min-width: 196px; max-height: none; overflow: visible; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 32px var(--shadow); padding: 6px; display: flex; flex-direction: column; gap: 2px; transform-origin: top right; animation: rise var(--dur) var(--ease) }
+.dot { width: 16px; height: 16px; border: 1px solid currentColor; border-radius: 3px; color: var(--danger); display: grid; place-items: center; flex: none }
+.dot[data-on="true"] { border-radius: 50%; color: var(--accent) }
+.menu { position: absolute; top: calc(100% + 6px); right: 0; width: max-content; min-width: 196px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 72px); overflow: auto; overscroll-behavior: contain; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 32px var(--shadow); padding: 6px; display: flex; flex-direction: column; gap: 2px; transform-origin: top right; animation: rise var(--dur) var(--ease) }
 .menu > button { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; background: transparent; border-color: transparent; border-radius: 8px; min-height: 36px; padding: 8px 10px }
 .menu > button:hover:enabled { background: var(--hover); border-color: transparent }
 .menu hr { width: 100%; border: 0; border-top: 1px solid var(--line); margin: 4px 0 }
@@ -151,33 +151,40 @@ button.icon.plus:hover:enabled, button.icon.history-toggle:hover:enabled { backg
 .chat-debug pre { margin: var(--s2) 0 0; font-size: inherit; max-height: 180px; white-space: pre-wrap; overflow-wrap: anywhere }
 
 /* Anchor the visual and transcript to the full column, including its top padding. */
-.live-stage { --live-orb-size: min(180px, 28dvh, 60dvw); position: static; flex: 1; min-height: 0; width: 100%; display: grid; grid-template-rows: minmax(0, 1fr) auto }
-.live-visual { position: absolute; inset: 0; overflow: visible; pointer-events: none }
+.live-stage { --live-orb-size: min(180px, 28dvh, 60dvw); position: relative; flex: 1; min-height: 0; width: 100%; display: grid; grid-template-rows: minmax(0, 1fr) auto auto }
+.live-visual { position: relative; grid-row: 1; min-width: 0; min-height: 0; overflow: visible }
 .live-orb { position: absolute; top: 50%; left: 50%; width: var(--live-orb-size); aspect-ratio: 1; margin: 0; transform: translate(-50%, -50%); display: grid; place-items: center }
-.live-dock { grid-row: 2; position: static; display: flex; flex-direction: column; align-items: center; gap: var(--s3); width: 100%; min-height: 0; padding-bottom: var(--s4) }
-.orb { --level: 0; width: 180px; height: 180px; flex: none; aspect-ratio: 1; border-radius: 50%; position: relative; isolation: isolate; background: radial-gradient(circle at 32% 28%, var(--orb-hi), transparent 36%), radial-gradient(circle at 70% 74%, var(--orb-lo), transparent 46%), radial-gradient(circle at 48% 46%, var(--orb-mid), var(--orb-lo) 72%); background-size: 170% 170%, 150% 150%, 100% 100%; animation: orb-drift 7s ease-in-out infinite alternate; transform: scale(calc(0.94 + var(--level) * 0.18)); transition: transform 140ms linear, filter var(--dur) var(--ease); box-shadow: inset 0 -18px 24px rgb(0 0 0 / 0.16), 0 18px 36px color-mix(in srgb, var(--orb-lo) 26%, transparent) }
-.orb::before { content: ""; position: absolute; inset: -22%; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--orb-mid) 40%, transparent), transparent 68%); animation: orb-breathe 3.4s ease-in-out infinite; z-index: -1 }
-.orb[data-state="off"] { filter: grayscale(0.7) brightness(0.72) }
-.orb[data-state="off"]::before { animation: none; opacity: 0.2 }
-.orb[data-state="thinking"] { animation: orb-drift 6s ease-in-out infinite alternate, think 1.05s ease-in-out infinite }
-.orb[data-state="thinking"]::before { animation-duration: 0.9s }
-.orb[data-state="listening"]::before { animation-duration: 1.5s }
-.orb[data-state="speaking"]::before { animation-duration: 0.85s }
+.live-dock { grid-row: 3; position: static; display: flex; flex-direction: column; align-items: center; gap: var(--s3); width: 100%; min-height: 0; padding-bottom: var(--s4) }
+.orb { --level: 0; width: 180px; height: 180px; flex: none; aspect-ratio: 1; border-radius: 50%; position: relative; isolation: isolate; background: radial-gradient(circle at 32% 28%, var(--orb-hi), transparent 16%), radial-gradient(circle at 42% 40%, var(--accent), transparent 46%), radial-gradient(circle at 64% 74%, var(--orb-lo), color-mix(in srgb, var(--bg) 62%, var(--orb-lo)) 78%); transform: scale(calc(0.96 + var(--level) * 0.08)); transform-origin: center; transition: transform 140ms linear, opacity var(--dur) var(--ease); box-shadow: inset 0 -22px 28px rgb(0 0 0 / 0.34), 0 16px 36px color-mix(in srgb, var(--orb-lo) 34%, transparent) }
+.orb::before { content: ""; position: absolute; inset: -20%; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--orb-mid) 62%, transparent), transparent 68%); animation: orb-breathe 3.4s ease-in-out infinite; transform-origin: center; z-index: -1 }
+.orb::after { content: ""; position: absolute; inset: -7%; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--orb-mid) 70%, transparent); opacity: calc(0.18 + var(--level) * 0.78); transform: scale(calc(1 + var(--level) * 0.07)); transform-origin: center; pointer-events: none }
+.orb[data-state="off"] { opacity: 0.7 }
+.orb[data-state="off"]::before { animation: none; opacity: 0.22 }
+.orb[data-state="listening"]::before { animation-duration: 1.7s }
+.orb[data-state="speaking"]::before { animation-name: orb-speak; animation-duration: 0.52s }
+.orb[data-state="thinking"]::before { animation-name: think; animation-duration: 2.4s }
 .orb.mini { width: 64px; height: 64px; margin: 0 auto var(--s4); box-shadow: inset 0 -8px 12px rgb(0 0 0 / 0.14), 0 10px 22px color-mix(in srgb, var(--orb-lo) 22%, transparent) }
-.orb.mini, .orb.mini::before, .orb.pip, .orb.pip::before { animation: none }
+.orb.mini, .orb.mini::before, .orb.mini::after, .orb.pip, .orb.pip::before, .orb.pip::after { animation: none }
+.orb.mini::after, .orb.pip::after { display: none }
 .orb.pip { width: 22px; height: 22px; margin: 0; flex: none; aspect-ratio: 1; box-shadow: inset 0 -3px 5px rgb(0 0 0 / 0.2) }
-.orb.pip[data-state="thinking"], .orb.pip[data-state="thinking"]::before { animation: think 1.05s ease-in-out infinite }
+.orb.pip[data-state="thinking"]::before { animation: think 1.05s ease-in-out infinite }
 .live-orb .orb { width: 100%; height: 100% }
-.live-state { position: absolute; left: 50%; top: calc(50% + var(--live-orb-size) / 2 + 16px); margin: 0; transform: translateX(-50%); font-size: 15px; font-weight: 600; color: var(--text); white-space: nowrap }
+.live-state { grid-row: 2; position: static; margin: 2px 0 0; left: auto; top: auto; transform: none; text-align: center; font-size: 15px; font-weight: 600; color: var(--text); white-space: nowrap }
 .live-actions { display: flex; gap: var(--s3); margin: 0 }
 .live-actions button.icon { width: 48px; height: 48px; border-radius: 50%; background: var(--surface); border: 1px solid var(--line); color: var(--text) }
 .live-actions button.icon:hover:enabled { background: var(--hover); border-color: var(--line); color: var(--text) }
-.live-actions button.icon[aria-pressed="true"] { background: var(--surface-2); color: var(--accent); border-color: transparent }
+.live-actions button.icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px }
+.live-actions button.icon[aria-pressed="true"] { background: var(--surface-2); color: var(--muted); border-color: var(--line) }
+.live-actions button.icon[aria-expanded="true"] { background: var(--surface); color: var(--text); border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent) }
+.live-actions button:first-child[data-tip]::after { left: 0; transform: none }
+.live-actions button:last-child[data-tip]::after { left: auto; right: 0; transform: none }
 .live-actions button.icon.danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-color: transparent }
 .live-actions button.icon.danger:hover:enabled { background: color-mix(in srgb, var(--danger) 20%, var(--surface)); color: var(--danger); border-color: transparent }
-.live-transcript-layer { position: absolute; z-index: 2; inset: 0 0 calc(64px + var(--s4)); display: flex; justify-content: center; align-items: flex-end; padding: var(--s3); pointer-events: none }
+.live-transcript-layer { position: absolute; z-index: 2; left: 0; right: 0; top: 8px; min-height: 52px; height: max(52px, calc(50% - var(--live-orb-size) * 0.64 - 12px)); display: flex; justify-content: center; align-items: flex-end; padding: 0 var(--s3); overflow: hidden; pointer-events: none }
+.shell:has(.banner):not(:has(.error)) .live-stage { padding-top: 80px }
+.shell:has(.banner):not(:has(.error)) .live-transcript-layer { top: 0 }
 .live-transcript-layer[aria-hidden="true"] { visibility: hidden }
-.live-log { width: min(420px, calc(100% - 16px)); max-height: min(180px, 28dvh, max(0px, calc(50dvh - var(--live-orb-size) / 2 - 128px))); margin-inline: auto; transform: translateY(8px); opacity: 0; flex: none; background: var(--surface); border: 1px solid var(--control-border); border-radius: 16px; box-shadow: 0 12px 32px var(--shadow); padding: var(--s2) var(--s3); gap: var(--s2); font-size: 14px; line-height: 1.4; pointer-events: none; transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease), visibility var(--dur) }
+.live-log { width: min(420px, 100%); max-height: 100%; margin-inline: auto; overflow-y: auto; transform: translateY(8px); opacity: 0; flex: none; background: var(--surface); border: 1px solid var(--control-border); border-radius: 16px; box-shadow: 0 12px 32px var(--shadow); padding: var(--s2) var(--s3); gap: var(--s2); font-size: 14px; line-height: 1.4; pointer-events: none; transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease), visibility var(--dur) }
 .live-log.open { opacity: 1; transform: translateY(0); pointer-events: auto }
 .live-log[aria-hidden="true"] { visibility: hidden; pointer-events: none }
 .live-log article { flex: none; min-width: 0; padding: var(--s1) 0; border-top: 1px solid var(--line) }
@@ -194,19 +201,20 @@ button.icon.plus:hover:enabled, button.icon.history-toggle:hover:enabled { backg
 .live-log .md > :first-child { margin-top: 0 }
 .live-log .md > :last-child { margin-bottom: 0 }
 
-dialog.decision { position: fixed; inset: auto 0 var(--s6) 0; margin-inline: auto; width: min(760px, calc(100% - 32px)); max-height: min(70dvh, 520px); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: var(--s4); box-shadow: 0 12px 28px var(--shadow) }
+dialog.decision { position: fixed; inset: auto 0 var(--s6) 0; margin-inline: auto; width: min(760px, calc(100% - 32px)); max-height: min(70dvh, 520px); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: var(--s5); box-shadow: 0 12px 28px var(--shadow) }
 .decision h2 { font-size: 18px; margin: 0 0 var(--s2) }
 
 .backdrop { position: fixed; inset: 0; z-index: 40; background: var(--bg); display: flex }
-.sheet { position: relative; z-index: 1; width: 100%; height: 100%; background: var(--bg); display: grid; grid-template-columns: 248px minmax(0, 1fr) }
-.sheet-nav { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: var(--s4) var(--s3); border-right: 1px solid var(--line); background: var(--bg); overflow: auto }
+.sheet { position: relative; z-index: 1; width: 100%; height: 100%; background: var(--bg); display: grid; grid-template-columns: 248px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) }
+.sheet-header { grid-column: 1; display: flex; align-items: center; justify-content: space-between; gap: var(--s2); padding: var(--s3); border-right: 1px solid var(--line) }
+.sheet-header .sheet-close { width: 36px; height: 36px; min-height: 36px }
+.sheet-header .sheet-stop { flex: none }
+.sheet-nav { grid-column: 1; grid-row: 2; display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 0 var(--s3) var(--s4); border-right: 1px solid var(--line); background: var(--bg); overflow: auto; overscroll-behavior: contain }
 .sheet-nav button { display: flex; align-items: center; gap: 10px; text-align: left; background: transparent; border-color: transparent; border-radius: 8px; color: var(--text); min-height: 36px; padding: 8px 10px }
 .sheet-nav button:hover:enabled { background: var(--hover); border-color: transparent }
 .sheet-nav button[aria-current="page"] { background: var(--surface-2); border-color: transparent; font-weight: 600 }
-.sheet-nav .sheet-close { align-self: flex-start; width: 36px; height: 36px; justify-content: center; padding: 0; margin-bottom: var(--s2) }
-.sheet-nav .sheet-stop { margin-top: auto; align-self: flex-start }
-.sheet-body { position: relative; overflow: auto; padding: 56px 48px var(--s8) }
-.sheet-body > section { max-width: 720px }
+.sheet-body { grid-column: 2; grid-row: 1 / -1; position: relative; min-width: 0; overflow: auto; padding: 56px 48px var(--s8); overscroll-behavior: contain }
+.sheet-body > section { max-width: 720px; min-width: 0; overflow-wrap: anywhere }
 
 button, input, select, textarea { font: inherit; color: inherit; background: var(--surface-2); border: 1px solid var(--control-border); border-radius: 8px }
 button { padding: var(--s2) var(--s4); min-height: 40px; cursor: pointer; transition: transform var(--dur-press) var(--ease), background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease) }
@@ -224,33 +232,38 @@ button:active:enabled { transform: scale(0.96) }
 button:disabled { opacity: 0.55; cursor: not-allowed }
 button[aria-pressed="true"] { background: var(--surface-2); border-color: transparent; color: var(--accent) }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
-input, select, textarea { padding: var(--s2) var(--s3); min-height: 40px; width: 100% }
+input, select, textarea { padding: var(--s2) var(--s3); min-height: 40px; min-width: 0; width: 100% }
+input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1 }
 select { appearance: none; background-color: var(--surface); background-image: var(--chevron); background-repeat: no-repeat; background-position: right 12px center; padding-right: 36px; border-color: var(--control-border); border-radius: 10px }
 textarea { min-height: 88px; resize: vertical }
 label { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s4) 0; max-width: 680px }
-label.check { flex-direction: row-reverse; justify-content: space-between; align-items: center; gap: var(--s4); max-width: 100% }
+label.check { flex-direction: row-reverse; justify-content: space-between; align-items: center; gap: var(--s4); min-height: 44px; max-width: 100%; cursor: pointer }
 label.check input[type="checkbox"] { appearance: none; width: 40px; height: 24px; min-height: 24px; flex: none; margin: 0; padding: 2px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface-2); display: grid; align-items: center; justify-content: start; cursor: pointer }
 label.check input[type="checkbox"]::before { content: ""; width: 18px; height: 18px; border-radius: 50%; background: var(--text); transition: transform var(--dur) var(--ease) }
 label.check input[type="checkbox"]:checked { background: var(--accent); border-color: transparent; justify-content: end }
 label.check input[type="checkbox"]:checked::before { background: var(--accent-ink) }
+label.check input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px }
 label.check input[type="checkbox"]:disabled { opacity: 0.45; cursor: not-allowed }
+label.check:has(input:disabled) { cursor: not-allowed }
 h1 { font-size: 22px; margin: 0 0 var(--s4) }
 h2 { font-size: 18px; margin: var(--s6) 0 var(--s3) }
 h3 { font-size: 16px; margin: var(--s4) 0 var(--s2) }
 .group { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 4px var(--s4) var(--s3); margin: 0 0 var(--s4); max-width: 720px }
-.group > h2 { margin: var(--s3) 0 0; font-size: 13px; font-weight: 600; color: var(--muted) }
+.group > h2 { margin: var(--s4) 0 0; font-size: 16px; font-weight: 600; color: var(--text) }
 .group > * + * { border-top: 1px solid var(--line) }
 .group > label, .group > p, .group > .hint, .group > .actions, .group > button, .group > .import, .group > fieldset { margin: 0; padding: 14px 0; background: transparent; border-left: 0; border-right: 0; border-bottom: 0; border-radius: 0; max-width: none }
 .group > fieldset.theme-cards { border-top: 1px solid var(--line) }
 .group > button { align-self: flex-start }
 .actions { display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s4) 0 }
+.actions.dialog-actions { justify-content: flex-end; margin-bottom: 0 }
+.field-error { color: var(--danger); font-size: 14px; margin: var(--s2) 0 }
 .error { border: 1px solid var(--danger); color: var(--text); padding: var(--s4); margin: 0 0 var(--s4); border-radius: 8px }
 .path, pre, code, .yaml { font-family: var(--mono); font-size: 13px }
 pre { white-space: pre; overflow-wrap: normal; max-height: 380px; overflow-x: auto; padding: var(--s4); background: var(--code); border-radius: 8px }
 code { font-family: var(--mono) }
 .app-list { max-height: 280px; overflow: auto }
 li { line-height: 1.6 }
-dialog { color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; width: min(600px, 92vw); max-height: 85dvh; overflow: auto; box-shadow: 0 16px 40px var(--shadow) }
+dialog { color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; width: min(600px, 92vw); max-height: 85dvh; padding: var(--s5); overflow: auto; overscroll-behavior: contain; overflow-wrap: anywhere; box-shadow: 0 16px 40px var(--shadow) }
 dialog::backdrop { background: var(--backdrop) }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0 }
 .runline { min-height: 1.5em; font-weight: 600 }
@@ -266,9 +279,10 @@ fieldset { border: 1px solid var(--line); border-radius: 12px; margin: var(--s4)
 legend { padding: 0 var(--s2); font-weight: 600 }
 fieldset.theme-cards { border: 0; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; max-width: 520px }
 .theme-cards legend { padding: 0; margin: 0 0 2px }
-.theme-card { position: relative; margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); cursor: pointer; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-height: 0; max-width: none }
+.theme-card { position: relative; margin: 0; padding: 10px; border: 1px solid var(--control-border); border-radius: 12px; background: var(--bg); cursor: pointer; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-height: 0; max-width: none }
 .theme-card input { appearance: none; position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; margin: 0; opacity: 0; cursor: pointer; background: transparent; border: 0 }
-.theme-card:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) }
+.theme-card:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); color: var(--text); font-weight: 600 }
+.theme-card:hover { border-color: var(--accent) }
 .theme-card:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px }
 .swatch { display: block; width: 100%; height: 56px; border-radius: 8px; border: 1px solid var(--line) }
 .swatch.neyra { background: linear-gradient(var(--swatch-neyra-bg) 0 70%, var(--swatch-neyra-bar) 70%) }
@@ -280,7 +294,7 @@ fieldset.theme-cards { border: 0; margin: 0; padding: 0; display: grid; grid-tem
 .step:first-of-type { border-top: 0 }
 details { margin: var(--s3) 0 }
 summary { cursor: pointer; min-height: 32px }
-dialog.editor { width: min(760px, 94vw); padding: var(--s2) var(--s5) var(--s5) }
+dialog.editor { width: min(760px, 94vw); padding: var(--s5) }
 .yaml { min-height: 300px; max-width: 100% }
 .import { border: 1px solid var(--border); border-radius: 12px; padding: var(--s2) var(--s4) var(--s3); margin-top: var(--s3); max-width: 760px }
 .group > .import { border: 0; border-radius: 0; margin: 0 }
@@ -297,31 +311,21 @@ dialog.editor { width: min(760px, 94vw); padding: var(--s2) var(--s5) var(--s5) 
 .arriving { animation: fade-in 160ms var(--ease) }
 @keyframes mist { from { opacity: 0.82 } to { opacity: 1 } }
 @keyframes orb-drift { from { background-position: 10% 20%, 90% 80%, center } to { background-position: 80% 10%, 20% 90%, center } }
-@keyframes orb-breathe { 0%, 100% { transform: scale(0.92); opacity: 0.45 } 50% { transform: scale(1.06); opacity: 0.85 } }
-@keyframes think { 0%, 100% { filter: brightness(0.9) } 50% { filter: brightness(1.16) } }
+@keyframes orb-breathe { 0%, 100% { transform: scale(0.94); opacity: 0.38 } 50% { transform: scale(1.06); opacity: 0.82 } }
+@keyframes orb-speak { 0%, 100% { transform: scale(0.86); opacity: 0.28 } 50% { transform: scale(1.2); opacity: 1 } }
+@keyframes think { 0%, 100% { transform: scale(0.98); opacity: 0.32 } 50% { transform: scale(1.03); opacity: 0.9 } }
 
 @media (max-width: 720px) {
   .history.open { position: absolute; z-index: 25; inset: 0 auto 0 0; width: min(300px, 86vw); box-shadow: 0 12px 32px var(--shadow) }
   .history-inner { width: min(300px, 86vw) }
   .column { width: min(760px, calc(100% - 24px)) }
-  .sheet { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) }
-  .sheet-nav { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: var(--s3) 96px var(--s3) var(--s3) }
-  .sheet-nav button { flex: none }
-  .sheet-nav .sheet-close { margin: 0 var(--s1) 0 0 }
-  .sheet-nav .sheet-stop { position: absolute; z-index: 2; top: var(--s3); right: var(--s3); margin: 0 }
-  .sheet-body { padding: 48px var(--s4) var(--s6) }
+  .sheet { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) }
+  .sheet-header { border-right: 0; border-bottom: 1px solid var(--line) }
+  .sheet-nav { display: flex; flex-direction: row; align-items: center; gap: var(--s1); overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; border-right: 0; border-bottom: 1px solid var(--line); padding: var(--s3) }
+  .sheet-nav button { flex: 0 0 auto }
+  .sheet-body { grid-column: 1; grid-row: 3; padding: var(--s6) var(--s4) }
   .offline { align-items: stretch; flex-direction: column }
   fieldset.theme-cards { grid-template-columns: 1fr }
-}
-@media (max-height: 620px) {
-  /* Above the orb there is room for an author and three lines at 480px tall. */
-  .live-transcript-layer { align-items: flex-start; padding-top: 56px }
-  .live-log { max-height: min(180px, 28dvh, max(0px, calc(50dvh - var(--live-orb-size) / 2 - 68px))) }
-  /* The error alert and the sticky notice share this top band. Start the log under them. */
-  .column:has(.error) .live-transcript-layer,
-  .shell:has(.banner) .live-transcript-layer { padding-top: 136px }
-  .column:has(.error) .live-log,
-  .shell:has(.banner) .live-log { max-height: min(180px, 28dvh, max(0px, calc(50% - var(--live-orb-size) / 2 - 148px))) }
 }
 @media (max-width: 639px) {
   .msg-actions, .msg.is-last .msg-actions { position: static; top: auto; right: auto; bottom: auto; left: auto; height: 0; overflow: hidden; margin-top: 0; background: transparent }
@@ -340,16 +344,28 @@ dialog.editor { width: min(760px, 94vw); padding: var(--s2) var(--s5) var(--s5) 
   button.icon { width: 44px; height: 44px }
   button.icon.plus, button.icon.history-toggle { width: 36px; height: 36px; min-width: 36px; min-height: 36px }
   label.check input[type="checkbox"] { width: 40px; height: 24px; min-height: 24px }
+  .menu > button, .sheet-nav button, .sheet-header .sheet-close, .sheet-header .sheet-stop { min-height: 44px }
+  .sheet-header .sheet-close { width: 44px; height: 44px }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important }
   button:active:enabled { transform: none }
-  .orb { transform: none }
+  .orb, .orb::before, .orb::after { animation: none !important }
+  .orb { transform: none; filter: none; opacity: calc(0.8 + var(--level) * 0.2) }
+  .orb::before { opacity: calc(0.3 + var(--level) * 0.45); transform: none }
+  .orb::after { opacity: calc(0.22 + var(--level) * 0.7); transform: none }
 }
 @media (forced-colors: active) {
   .stage::before, .stage::after { display: none }
   .dot, .orb, button.primary { forced-color-adjust: auto }
+  .orb { border: 2px solid CanvasText }
   :focus-visible { outline: 3px solid CanvasText }
+  .dot { color: CanvasText; background: Canvas; border-color: CanvasText }
+  .theme-card:has(input:checked) { outline: 2px solid Highlight; outline-offset: 2px }
+  label.check input[type="checkbox"] { border-color: ButtonText }
+  label.check input[type="checkbox"]::before { background: ButtonText }
+  label.check input[type="checkbox"]:checked { background: Highlight }
+  label.check input[type="checkbox"]:checked::before { background: HighlightText }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important }

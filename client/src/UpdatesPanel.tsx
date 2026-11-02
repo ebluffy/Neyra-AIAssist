@@ -38,15 +38,16 @@ export function UpdatesPanel() {
     setBusy(true); setMessage('');
     try { await invoke('update_install'); setInstalled(true); } catch (error) { setMessage(formatError(error)); } finally { setBusy(false); }
   };
-  if (!state) return <section aria-labelledby="updates-title"><h2 id="updates-title">Обновления</h2><p role="status">{message || 'Загружаю…'}</p></section>;
+  if (!state) return <section aria-labelledby="updates-title"><h1 id="updates-title">Обновления</h1><p role="status">{message || 'Загружаю…'}</p></section>;
   return <section aria-labelledby="updates-title">
-    <h2 id="updates-title">Обновления</h2>
+    <h1 id="updates-title">Обновления</h1>
     <p>Версия {state.current_version}. Подпись обновления проверяется всегда; без неё файл не ставится. Установка не меняет разрешения для ПК и данные в папке Neyra.</p>
     {state.install_kind === 'package' && <p role="note">Эта копия установлена как пакет (.deb). Обновление пакета запросит права администратора. Для CachyOS используйте AppImage.</p>}
     {!state.key_configured && <p role="alert" className="error">В этой сборке не задан публичный ключ подписи, автообновление отключено.</p>}
     {message && <p role="alert" className="error">{message}</p>}
-    <label>Канал<select value={state.settings.channel} disabled={busy} onChange={e => void save({ ...state.settings, channel: e.target.value as UpdaterSettings['channel'] })}><option value="beta">Бета</option><option value="stable">Стабильный</option></select></label>
-    <label className="check"><input type="checkbox" checked={state.settings.auto_check} onChange={e => void save({ ...state.settings, auto_check: e.target.checked })}/>Проверять при запуске</label>
+    {busy && <p id="updates-busy" role="status">Дождитесь завершения текущего действия, чтобы изменить настройки обновлений.</p>}
+    <label>Канал<select name="updates-channel" autoComplete="off" value={state.settings.channel} disabled={busy} aria-describedby={busy ? 'updates-busy' : undefined} onChange={e => void save({ ...state.settings, channel: e.target.value as UpdaterSettings['channel'] })}><option value="beta">Бета</option><option value="stable">Стабильный</option></select></label>
+    <label className="check"><input name="updates-auto-check" autoComplete="off" type="checkbox" checked={state.settings.auto_check} disabled={busy} aria-describedby={busy ? 'updates-busy' : undefined} onChange={e => void save({ ...state.settings, auto_check: e.target.checked })}/>Проверять при запуске</label>
     <div className="actions"><button disabled={busy || !state.key_configured} onClick={() => void check()}>Проверить обновления</button></div>
     {result && !result.available && <p role="status">Установлена последняя версия.</p>}
     {result?.available && !installed && <div role="status"><p>Доступна версия {result.version}.</p>{result.notes && <pre>{result.notes}</pre>}{progress && <p>Скачано {progress.downloaded}{progress.total ? ` из ${progress.total}` : ''} байт</p>}<div className="actions"><button disabled={busy} onClick={() => void install()}>Скачать и установить</button></div></div>}

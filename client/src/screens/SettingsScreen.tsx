@@ -25,6 +25,7 @@ export function SettingsScreen({ settings, setSettings, saveSection, root, recov
   const [withPermissions, setWithPermissions] = useState(false);
   const [folderChoice, setFolderChoice] = useState<string | null>(null);
   const folderDialog = useRef<HTMLDialogElement>(null);
+  const deviceNameInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const node = folderDialog.current;
     if (!node) return;
@@ -34,6 +35,7 @@ export function SettingsScreen({ settings, setSettings, saveSection, root, recov
     } else if (node.open) node.close();
   }, [folderChoice, busy]);
   const usable = preview?.items?.filter(i => i.status !== 'invalid').length ?? 0;
+  const invalidDeviceName = !settings.device_name.trim();
 
   const exportConfig = () => run(async () => {
     const out = await invoke<{ cancelled: boolean; commands?: number; file?: string }>('config_export');
@@ -75,17 +77,19 @@ export function SettingsScreen({ settings, setSettings, saveSection, root, recov
 
   return <section aria-labelledby="settings-title">
     <h1 id="settings-title">Настройки</h1>
+    {busy && <p id="settings-busy" role="status">Дождитесь завершения текущего действия, чтобы сохранить изменения.</p>}
     {recoveries.length > 0 && <div className="error" role="alert"><strong>Часть файлов настроек была восстановлена</strong><ul>{recoveries.map((r, i) => <li key={i}>{recoveryText(r)}</li>)}</ul></div>}
     <div className="group">
     <h2>Этот ПК</h2>
-    <label>Имя этого ПК<input value={settings.device_name} maxLength={80} disabled={connected} aria-describedby={connected ? 'name-locked' : undefined} onChange={e => setSettings({ ...settings, device_name: e.target.value })}/></label>
+    <label>Имя этого ПК<input ref={deviceNameInput} name="device-name" type="text" autoComplete="off" value={settings.device_name} maxLength={80} disabled={connected} aria-invalid={invalidDeviceName} aria-describedby={connected ? 'name-locked' : invalidDeviceName ? 'device-name-error' : undefined} onChange={e => setSettings({ ...settings, device_name: e.target.value })}/></label>
+    {invalidDeviceName && <p className="field-error" id="device-name-error" role="alert">Укажите имя этого ПК.</p>}
     {connected && <p className="hint" id="name-locked">Имя можно менять, когда клиент отключён от сервера.</p>}
-    <fieldset className="theme-cards"><legend>Тема</legend>{THEMES.map(item => <label className="theme-card" key={item.id}><input type="radio" name="theme-choice" value={item.id} checked={settings.theme === item.id} onChange={() => onTheme(item.id)} /><span className={`swatch ${item.id}`} aria-hidden="true" />{item.label}</label>)}</fieldset>
-    <label>Графика Linux (после перезапуска)<select value={settings.graphics_mode} onChange={e => setSettings({ ...settings, graphics_mode: e.target.value })}><option value="auto">Автоматически</option><option value="wayland">Wayland</option><option value="wayland-nvidia">Wayland · NVIDIA explicit sync workaround</option><option value="x11">X11</option><option value="compatibility">Совместимость (может замедлять UI)</option></select></label>
-    <label className="check"><input type="checkbox" checked={settings.character_enabled === true} disabled={busy} onChange={e => { const enabled = e.target.checked; void run(async () => { await saveSection({ character_enabled: enabled }); notify(enabled ? 'Персонаж включён' : 'Персонаж выключен'); }); }} />Персонаж на рабочем столе</label>
+    <fieldset className="theme-cards"><legend>Тема</legend>{THEMES.map(item => <label className="theme-card" key={item.id}><input type="radio" name="theme-choice" autoComplete="off" value={item.id} checked={settings.theme === item.id} onChange={() => onTheme(item.id)} /><span className={`swatch ${item.id}`} aria-hidden="true" /><span>{item.label}{settings.theme === item.id ? ' · выбрана' : ''}</span></label>)}</fieldset>
+    <label>Графика Linux (после перезапуска)<select name="graphics-mode" autoComplete="off" value={settings.graphics_mode} onChange={e => setSettings({ ...settings, graphics_mode: e.target.value })}><option value="auto">Автоматически</option><option value="wayland">Wayland</option><option value="wayland-nvidia">Wayland · NVIDIA (обход ошибки синхронизации)</option><option value="x11">X11</option><option value="compatibility">Совместимость (может замедлять интерфейс)</option></select></label>
+    <label className="check"><input name="character-enabled" autoComplete="off" type="checkbox" checked={settings.character_enabled === true} disabled={busy} aria-describedby={busy ? 'settings-busy' : undefined} onChange={e => { const enabled = e.target.checked; void run(async () => { await saveSection({ character_enabled: enabled }); notify(enabled ? 'Персонаж включён' : 'Персонаж выключен'); }); }} />Персонаж на рабочем столе</label>
     <p className="hint">Раздел «Персонаж» читает галочку сразу. Перезапуск не нужен.</p>
-    <label>Хранить журнал действий, дней<input type="number" min={1} max={365} value={settings.audit_days} onChange={e => setSettings({ ...settings, audit_days: Math.min(365, Math.max(1, Number(e.target.value) || 30)) })}/></label>
-    <button disabled={busy} onClick={() => run(async () => { await saveSection({ device_name: settings.device_name, theme: settings.theme, graphics_mode: settings.graphics_mode, audit_days: settings.audit_days }); notify('Настройки сохранены'); })}>Сохранить настройки</button>
+    <label>Хранить журнал действий, дней<input name="audit-days" autoComplete="off" type="number" inputMode="numeric" min={1} max={365} value={settings.audit_days} onChange={e => setSettings({ ...settings, audit_days: Math.min(365, Math.max(1, Number(e.target.value) || 30)) })}/></label>
+    <button disabled={busy} onClick={() => { if (invalidDeviceName) { deviceNameInput.current?.focus(); return; } void run(async () => { await saveSection({ device_name: settings.device_name, theme: settings.theme, graphics_mode: settings.graphics_mode, audit_days: settings.audit_days }); notify('Настройки сохранены'); }); }}>Сохранить настройки</button>
     </div>
     <div className="group">
     <h2>Данные на этом ПК</h2>
@@ -98,7 +102,7 @@ export function SettingsScreen({ settings, setSettings, saveSection, root, recov
         <h2 id="data-move-title">В папке уже есть данные Neyra</h2>
         <p>Папка <span className="path">{folderChoice}</span> уже содержит настройки. Можно открыть её как есть или заменить текущими данными. Прежняя папка этого запуска останется на месте. Заменяемые данные будут отложены рядом, в папку с суффиксом <span className="path">.previous</span>.</p>
         <div className="actions">
-          <button autoFocus onClick={cancelFolder}>Отмена</button>
+          <button onClick={cancelFolder}>Отмена</button>
           <button disabled={busy} onClick={() => applyFolder('use_existing')}>Использовать эти данные</button>
           <button disabled={busy} onClick={() => applyFolder('overwrite')}>Заменить текущими</button>
         </div>
@@ -111,10 +115,10 @@ export function SettingsScreen({ settings, setSettings, saveSection, root, recov
     {preview?.items && <div className="import" role="group" aria-label="Предпросмотр импорта">
       <h3>Предпросмотр импорта</h3>
       {preview.items.length === 0 ? <p>В файле нет команд.</p> : <ul>{preview.items.map((item, i) => <li key={i}><strong>{item.name}</strong> · {STATUS[item.status]}{item.error ? ` · ${item.error}` : ''}</li>)}</ul>}
-      <label>Режим<select value={mode} onChange={e => setMode(e.target.value as 'merge' | 'replace')}><option value="merge">Добавить к текущим</option><option value="replace">Заменить текущие (с резервной копией)</option></select></label>
-      <label>Если имя уже занято<select value={conflict} onChange={e => setConflict(e.target.value as 'skip' | 'overwrite' | 'rename')}><option value="rename">Сохранить под новым именем</option><option value="skip">Пропустить</option><option value="overwrite">Заменить существующую</option></select></label>
-      <label className="check"><input type="checkbox" checked={withSettings} onChange={e => setWithSettings(e.target.checked)}/>Применить тему и графику из файла</label>
-      <label className="check"><input type="checkbox" checked={withPermissions} onChange={e => setWithPermissions(e.target.checked)}/>Применить разрешения из файла (главный выключатель не включится)</label>
+      <label>Режим<select name="import-mode" autoComplete="off" value={mode} onChange={e => setMode(e.target.value as 'merge' | 'replace')}><option value="merge">Добавить к текущим</option><option value="replace">Заменить текущие (с резервной копией)</option></select></label>
+      <label>Если имя уже занято<select name="import-conflict" autoComplete="off" value={conflict} onChange={e => setConflict(e.target.value as 'skip' | 'overwrite' | 'rename')}><option value="rename">Сохранить под новым именем</option><option value="skip">Пропустить</option><option value="overwrite">Заменить существующую</option></select></label>
+      <label className="check"><input name="import-settings" autoComplete="off" type="checkbox" checked={withSettings} onChange={e => setWithSettings(e.target.checked)}/>Применить тему и графику из файла</label>
+      <label className="check"><input name="import-permissions" autoComplete="off" type="checkbox" checked={withPermissions} onChange={e => setWithPermissions(e.target.checked)}/>Применить разрешения из файла (главный выключатель не включится)</label>
       {withPermissions && preview.permissions && <p className="hint">Браузер: {preview.permissions.allow_web ? 'да' : 'нет'} · приложения и система: {preview.permissions.system ? 'да' : 'нет'}. Домены, которые останутся: {preview.permissions.web_domains.join(', ') || 'нет'}. Программы, которые останутся: {preview.permissions.apps.join(', ') || 'нет'}. Новые домены и программы из файла не добавляются. {blockedLabels(preview.permissions.blocked)}</p>}
       <div className="actions"><button onClick={cancelImport} disabled={busy}>Отмена</button><button className="primary" disabled={busy || (usable === 0 && !withSettings && !withPermissions)} onClick={apply}>Применить импорт</button></div>
     </div>}
