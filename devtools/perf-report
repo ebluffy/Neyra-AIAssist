@@ -12,6 +12,8 @@ from uuid import UUID
 
 
 STAGES = ("process", "rust_setup", "webview_ready", "first_render", "connected")
+GRAPHICS_MODES = ("auto", "wayland", "wayland-nvidia", "x11", "compatibility")
+METADATA = ("os", "graphics_backend", "graphics_mode", "library_mode")
 
 
 def record(value):
@@ -44,6 +46,10 @@ def record(value):
         raise ValueError("os must be a platform name")
     if value.get("graphics_backend") not in (None, "wayland", "x11"):
         raise ValueError("graphics_backend must be wayland, x11 or null")
+    if value.get("graphics_mode") not in (None, *GRAPHICS_MODES):
+        raise ValueError(
+            "graphics_mode must be auto, wayland, wayland-nvidia, x11, compatibility or null"
+        )
     if value.get("library_mode") not in (None, "bundled", "system"):
         raise ValueError("library_mode must be bundled, system or null")
     return value
@@ -59,7 +65,7 @@ def read_log(stream, name, runs):
             print(f"{name}:{line_number}: skipped: {error}", file=sys.stderr)
             continue
         run = runs.setdefault(item["run_id"], {"metadata": {}, "stages": {}})
-        for key in ("os", "graphics_backend", "library_mode"):
+        for key in METADATA:
             previous = run["metadata"].get(key)
             current = item.get(key)
             if previous is not None and current is not None and previous != current:
@@ -69,7 +75,7 @@ def read_log(stream, name, runs):
                 )
                 break
         else:
-            for key in ("os", "graphics_backend", "library_mode"):
+            for key in METADATA:
                 if item.get(key) is not None:
                     run["metadata"][key] = item[key]
             stage = item["stage"]
@@ -92,6 +98,7 @@ def report(runs):
         print(
             f"OS: {metadata.get('os', 'unknown')}  "
             f"graphics: {metadata.get('graphics_backend', 'unknown')}  "
+            f"mode: {metadata.get('graphics_mode', 'unknown')}  "
             f"libraries: {metadata.get('library_mode', 'unknown')}"
         )
         print(f"{'stage':<16} {'elapsed_ms':>12} {'delta_ms':>12}")

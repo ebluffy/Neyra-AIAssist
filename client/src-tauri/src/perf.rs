@@ -4,16 +4,13 @@ use serde_json::{json, Value};
 use std::{
     fs,
     io::Write,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         atomic::{AtomicU8, Ordering},
         mpsc::{self, SyncSender},
     },
     time::{Duration, Instant},
 };
-
-const MAX_BYTES: u64 = 256 * 1024;
-const KEEP: usize = 3;
 
 pub struct Startup(Option<Instant>);
 
@@ -36,7 +33,11 @@ impl Startup {
 
     pub fn attach(self, root: &Path, setup: Option<Duration>) -> Perf {
         Perf(self.0.and_then(|origin| {
-            let metadata = metadata(|key| std::env::var(key).ok());
+            #[cfg(target_os = "linux")]
+            let graphics_mode = Some(crate::storage::graphics_mode(root));
+            #[cfg(not(target_os = "linux"))]
+            let graphics_mode: Option<String> = None;
+            let metadata = metadata(|key| std::env::var(key).ok(), graphics_mode.as_deref());
             let run_id = uuid::Uuid::new_v4().to_string();
             let (sender, receiver) = mpsc::sync_channel(8);
             let root = root.to_path_buf();
@@ -130,11 +131,19 @@ impl Recorder {
     }
 }
 
-fn metadata(env: impl Fn(&str) -> Option<String>) -> Value {
+fn metadata(env: impl Fn(&str) -> Option<String>, graphics_mode: Option<&str>) -> Value {
+    let graphics_mode = graphics_mode.filter(|mode| {
+        matches!(
+            *mode,
+            "auto" | "wayland" | "wayland-nvidia" | "x11" | "compatibility"
+        )
+    });
     let forced = env("GDK_BACKEND").filter(|s| matches!(s.as_str(), "wayland" | "x11"));
     let session = env("XDG_SESSION_TYPE").filter(|s| matches!(s.as_str(), "wayland" | "x11"));
     let (backend, source) = if cfg!(target_os = "linux") {
-        if forced.is_some() {
+        if env("NEYRA_GRAPHICS_APPLIED").as_deref() == Some("1") {
+            (forced.or(session), Some("graphics_setting"))
+        } else if forced.is_some() {
             (forced, Some("gdk_backend"))
         } else if session.is_some() {
             (session, Some("session_type"))
@@ -155,11 +164,7 @@ fn metadata(env: impl Fn(&str) -> Option<String>) -> Value {
                 None
             }
         });
-    json!({"os": std::env::consts::OS, "graphics_backend":backend, "graphics_backend_source":source, "library_mode":library_mode})
-}
-
-fn rotated(path: &Path, index: usize) -> PathBuf {
-    path.with_file_name(format!("perf.jsonl.{index}"))
+    json!({"os": std::env::consts::OS, "graphics_backend":backend, "graphics_backend_source":source, "graphics_mode":graphics_mode, "library_mode":library_mode})
 }
 
 fn write_record(root: &Path, row: &Value) {
@@ -168,14 +173,8 @@ fn write_record(root: &Path, row: &Value) {
         return;
     }
     let path = dir.join("perf.jsonl");
-    if fs::metadata(&path).map(|m| m.len()).unwrap_or(0) >= MAX_BYTES {
-        let _ = fs::remove_file(rotated(&path, KEEP));
-        for i in (1..KEEP).rev() {
-            let _ = fs::rename(rotated(&path, i), rotated(&path, i + 1));
-        }
-        if fs::rename(&path, rotated(&path, 1)).is_err() {
-            return;
-        }
+    if !crate::logs::rotate(&path, |index| dir.join(format!("perf.jsonl.{index}"))) {
+        return;
     }
     if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{row}");
@@ -185,6 +184,7 @@ fn write_record(root: &Path, row: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logs::{KEEP, MAX_BYTES};
 
     #[test]
     fn disabled_is_inert_and_only_exact_one_enables() {
@@ -203,23 +203,66 @@ mod tests {
 
     #[test]
     fn metadata_uses_fixed_values_without_paths_or_secrets() {
-        let data = metadata(|key| match key {
-            "GDK_BACKEND" => Some("x11".into()),
-            "XDG_SESSION_TYPE" => Some("wayland".into()),
-            "APPIMAGE" => Some("/private/path/app".into()),
-            _ => None,
-        });
+        let data = metadata(
+            |key| match key {
+                "GDK_BACKEND" => Some("x11".into()),
+                "XDG_SESSION_TYPE" => Some("wayland".into()),
+                "APPIMAGE" => Some("/private/path/app".into()),
+                _ => None,
+            },
+            Some("/private/path/secret"),
+        );
         assert_eq!(data["library_mode"], "bundled");
         if cfg!(target_os = "linux") {
             assert_eq!(data["graphics_backend"], "x11");
             assert_eq!(data["graphics_backend_source"], "gdk_backend");
         }
+        assert!(data["graphics_mode"].is_null());
         assert!(!data.to_string().contains("private"));
         assert_eq!(
-            metadata(|key| (key == "NEYRA_LIBRARY_MODE").then(|| "system".into()))["library_mode"],
+            metadata(
+                |key| (key == "NEYRA_LIBRARY_MODE").then(|| "system".into()),
+                None,
+            )["library_mode"],
             "system"
         );
-        assert!(metadata(|_| None)["graphics_backend"].is_null());
+        assert!(metadata(|_| None, None)["graphics_backend"].is_null());
+        for mode in ["auto", "wayland", "wayland-nvidia", "x11", "compatibility"] {
+            assert_eq!(metadata(|_| None, Some(mode))["graphics_mode"], mode);
+        }
+        for mode in [None, Some(""), Some("unknown"), Some("Compatibility")] {
+            assert!(metadata(|_| None, mode)["graphics_mode"].is_null());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn graphics_settings_distinguish_compatibility_and_nvidia_on_wayland() {
+        for (mode, forced) in [("compatibility", None), ("wayland-nvidia", Some("wayland"))] {
+            let data = metadata(
+                |key| match key {
+                    "GDK_BACKEND" => forced.map(str::to_owned),
+                    "XDG_SESSION_TYPE" => Some("wayland".into()),
+                    "NEYRA_GRAPHICS_APPLIED" => Some("1".into()),
+                    _ => None,
+                },
+                Some(mode),
+            );
+            assert_eq!(data["graphics_backend"], "wayland");
+            assert_eq!(data["graphics_backend_source"], "graphics_setting");
+            assert_eq!(data["graphics_mode"], mode);
+        }
+        let auto = metadata(
+            |key| match key {
+                "XDG_SESSION_TYPE" => Some("wayland".into()),
+                "NEYRA_GRAPHICS_APPLIED" => Some("true".into()),
+                _ => None,
+            },
+            Some("auto"),
+        );
+        assert_eq!(auto["graphics_backend"], "wayland");
+        assert_eq!(auto["graphics_backend_source"], "session_type");
+        assert_eq!(auto["graphics_mode"], "auto");
     }
 
     #[test]
@@ -227,7 +270,7 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(8);
         let recorder = Recorder {
             origin: Instant::now(),
-            metadata: metadata(|_| None),
+            metadata: metadata(|_| None, None),
             run_id: uuid::Uuid::new_v4().to_string(),
             sender,
             seen: AtomicU8::new(0),
@@ -254,13 +297,19 @@ mod tests {
         for row in &rows {
             assert_eq!(row["run_id"], rows[0]["run_id"]);
             assert_eq!(row["schema_version"], 1);
-            assert_eq!(row.as_object().unwrap().len(), 8);
+            assert_eq!(row.as_object().unwrap().len(), 9);
         }
     }
 
     #[test]
     fn enabled_pipeline_writes_all_five_stages_off_thread() {
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(root.join("settings")).unwrap();
+        fs::write(
+            root.join("settings/app.json"),
+            r#"{"graphics_mode":"compatibility"}"#,
+        )
+        .unwrap();
         let startup = Startup::new(Some("1"));
         let setup = startup.setup_elapsed();
         let perf = startup.attach(&root, setup);
@@ -302,6 +351,13 @@ mod tests {
             .windows(2)
             .all(|pair| pair[0]["elapsed_ms"].as_f64().unwrap()
                 <= pair[1]["elapsed_ms"].as_f64().unwrap()));
+        for row in &rows {
+            if cfg!(target_os = "linux") {
+                assert_eq!(row["graphics_mode"], "compatibility");
+            } else {
+                assert!(row["graphics_mode"].is_null());
+            }
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

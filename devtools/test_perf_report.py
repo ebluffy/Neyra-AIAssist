@@ -20,6 +20,7 @@ def row(stage, elapsed, **extra):
         "elapsed_ms": elapsed,
         "os": "linux",
         "graphics_backend": "wayland",
+        "graphics_mode": "auto",
         "library_mode": "bundled",
         **extra,
     }
@@ -49,7 +50,7 @@ class PerfReportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "")
         self.assertIn(f"Run {RUN}", result.stdout)
-        self.assertIn("OS: linux  graphics: wayland  libraries: bundled", result.stdout)
+        self.assertIn("OS: linux  graphics: wayland  mode: auto  libraries: bundled", result.stdout)
         self.assertRegex(result.stdout, r"first_render\s+100\.000\s+20\.000")
         self.assertRegex(result.stdout, r"connected\s+250\.000\s+150\.000")
 
@@ -57,10 +58,11 @@ class PerfReportTests(unittest.TestCase):
         data = [row("process", 0), row("first_render", 40), row("connected", 80)]
         for item in data:
             item["graphics_backend"] = None
+            item["graphics_mode"] = None
             item["library_mode"] = None
         result = self.cli("-", data="\n".join(map(json.dumps, data)))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("graphics: unknown  libraries: unknown", result.stdout)
+        self.assertIn("graphics: unknown  mode: unknown  libraries: unknown", result.stdout)
         self.assertRegex(result.stdout, r"rust_setup\s+missing\s+-")
         self.assertRegex(result.stdout, r"first_render\s+40\.000\s+-")
         self.assertRegex(result.stdout, r"connected\s+80\.000\s+40\.000")
@@ -106,6 +108,39 @@ class PerfReportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count("Run "), 2)
         self.assertIn(other, result.stdout)
+
+    def test_graphics_modes_include_compatibility_on_wayland(self):
+        for mode in ("auto", "wayland", "wayland-nvidia", "x11", "compatibility", None):
+            with self.subTest(mode=mode):
+                result = self.cli("-", data=json.dumps(row("process", 0, graphics_mode=mode)))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertIn(f"graphics: wayland  mode: {mode or 'unknown'}", result.stdout)
+
+    def test_older_records_without_graphics_mode_remain_supported(self):
+        item = row("process", 0)
+        del item["graphics_mode"]
+        result = self.cli("-", data=json.dumps(item))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertIn("graphics: wayland  mode: unknown", result.stdout)
+
+    def test_unknown_graphics_modes_are_skipped(self):
+        for mode in ("unknown", "WAYLAND", "", 1, True, [], {}):
+            with self.subTest(mode=mode):
+                result = self.cli("-", data=json.dumps(row("process", 0, graphics_mode=mode)))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("skipped: graphics_mode must be", result.stderr)
+                self.assertEqual(result.stdout, "")
+
+    def test_same_backend_with_conflicting_graphics_modes_is_not_merged(self):
+        result = self.cli("-", data="\n".join(map(json.dumps, [
+            row("process", 0), row("rust_setup", 5, graphics_mode="compatibility"),
+        ])))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("conflicting graphics_mode", result.stderr)
+        self.assertIn("graphics: wayland  mode: auto", result.stdout)
+        self.assertRegex(result.stdout, r"rust_setup\s+missing\s+-")
 
     def test_no_valid_records_and_unreadable_file_fail(self):
         result = self.cli("-", data="{}\n")

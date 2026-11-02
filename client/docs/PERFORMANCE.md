@@ -34,7 +34,7 @@ The local log uses JSON Lines, one record per stage. Each record repeats the
 metadata so rotated files can be inspected independently:
 
 ```json
-{"schema_version":1,"run_id":"00000000-0000-4000-8000-000000000001","stage":"rust_setup","elapsed_ms":12.5,"os":"linux","graphics_backend":"wayland","library_mode":"bundled"}
+{"schema_version":1,"run_id":"00000000-0000-4000-8000-000000000001","stage":"rust_setup","elapsed_ms":12.5,"os":"linux","graphics_backend":"wayland","graphics_backend_source":"graphics_setting","graphics_mode":"compatibility","library_mode":"bundled"}
 ```
 
 - `run_id`: random identifier for this process, unrelated to user or chat IDs.
@@ -43,12 +43,19 @@ metadata so rotated files can be inspected independently:
 - `stage`: `process`, `rust_setup`, `webview_ready`, `first_render`, `connected`.
 - `os`: Rust target OS name.
 - `graphics_backend`: `wayland` / `x11` when known, otherwise `null`.
+- `graphics_mode`: the saved Linux graphics setting, limited to `auto`,
+  `wayland`, `wayland-nvidia`, `x11` or `compatibility`; other values are `null`.
 - `library_mode`: `bundled` / `system` when known, otherwise `null`.
 
-On Linux, graphics metadata uses an explicitly selected `GDK_BACKEND` first,
-then the `XDG_SESSION_TYPE` hint. An optional `graphics_backend_source` field
-identifies the source. This is environment metadata, not a GPU/renderer probe;
-session type can differ from the backend actually chosen by GTK.
+On Linux, graphics metadata uses `GDK_BACKEND` first, then the
+`XDG_SESSION_TYPE` hint. The `graphics_backend_source` is `graphics_setting`
+when the application applied a graphics recovery setting
+(`NEYRA_GRAPHICS_APPLIED=1`); otherwise it is `gdk_backend` for `GDK_BACKEND`
+or `session_type` for the session hint. The saved `graphics_mode` distinguishes
+`auto` from `compatibility` even when both report `wayland`, so their startup
+measurements can be compared. These fields describe settings and environment,
+not a GPU/renderer probe; session type can differ from the backend actually
+chosen by GTK.
 
 Library metadata can be annotated explicitly with
 `NEYRA_LIBRARY_MODE=bundled` or `NEYRA_LIBRARY_MODE=system`. This variable only
@@ -74,7 +81,9 @@ within a process: the script groups records by `run_id` and prints one table
 with elapsed milliseconds and the delta from the preceding startup stage.
 `missing` marks absent stages; their deltas remain `-`. A timestamp earlier
 than its predecessor is shown as `out-of-order`, without a misleading negative
-duration. Unknown graphics/library metadata is printed as `unknown`.
+duration. Each report includes the graphics backend, saved graphics mode and
+library mode. Unknown metadata, including older logs without `graphics_mode`,
+is printed as `unknown`.
 
 Malformed records, unsupported schemas and conflicting metadata produce a
 warning on stderr and are skipped. Duplicate stages use the earliest marker.
