@@ -134,10 +134,11 @@ const manifest = {
   session_id: randomUUID(),
   name: 'Offline smoke desktop',
   platform: 'linux-x11',
-  tools: [],
+  tools: ['client.open_url'],
   commands: [],
   features: ['command_drafts'],
 };
+const updatedManifest = { ...manifest, tools: ['client.list_apps'] };
 const requestId = randomUUID();
 const bridge = new WebSocket(bridgeUrl, { headers, handshakeTimeout: 5000 });
 const bridgeTimer = setTimeout(() => bridge.terminate(), 5000);
@@ -158,10 +159,10 @@ try {
           assert.equal(packet.protocol, manifest.protocol);
           assert.equal(packet.device_id, manifest.device_id);
           stage = 'capabilities';
-          bridge.send(JSON.stringify({ type: 'capabilities', manifest }));
+          bridge.send(JSON.stringify({ type: 'capabilities', manifest: updatedManifest }));
         } else if (stage === 'capabilities') {
           assert.equal(packet.type, 'capabilities');
-          assert.deepEqual(packet.tools, manifest.tools);
+          assert.deepEqual(packet.tools, updatedManifest.tools);
           stage = 'pong';
           bridge.send(JSON.stringify({ type: 'ping' }));
         } else if (stage === 'pong') {

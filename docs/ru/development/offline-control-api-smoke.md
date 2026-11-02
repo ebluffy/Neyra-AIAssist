@@ -31,7 +31,8 @@ smoke не обращается к внешним сервисам или сте
   авторизованные `hello`, `ping`/`pong`, `chat`, `token` и `done`.
 - Путь десктоп-клиента `/api/v1/desktop/bridge`: отказ WSS без Bearer-токена,
   затем manifest формата `manifest()` из `client/src-tauri/src/lib.rs`, серверный
-  `hello` (`neyra.desktop.v1`), обновление `capabilities`, `chat`
+  `hello` (`neyra.desktop.v1`), замена `client.open_url` на `client.list_apps`
+  через `capabilities` с проверкой точного нового набора, ping/pong, `chat`
   и поток `token`/`done`. Проверяются device ID, совпадение `request_id`, содержимое
   ответа и закрытие WSS.
   `client/scripts/smoke-control-api.mjs` — Node-эквивалент транспорта клиента
