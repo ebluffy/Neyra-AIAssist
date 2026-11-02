@@ -1,9 +1,20 @@
+import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { historyGroups, type ChatThread } from '../chat';
 
 const historyDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 export function HistoryPanel({ open, threads, activeId, onClose, onOpen, onNew, disabled = false }: { open: boolean; threads: ChatThread[]; activeId: string; onClose: () => void; onOpen: (id: string) => void; onNew: () => void; disabled?: boolean }) {
+  const [, setDay] = useState(() => new Date().toDateString());
+  useEffect(() => {
+    if (!open) return;
+    const sync = () => setDay(new Date().toDateString());
+    const next = new Date(); next.setHours(24, 0, 1, 0);
+    const timer = window.setTimeout(sync, next.getTime() - Date.now());
+    window.addEventListener('focus', sync);
+    document.addEventListener('visibilitychange', sync);
+    return () => { window.clearTimeout(timer); window.removeEventListener('focus', sync); document.removeEventListener('visibilitychange', sync); };
+  });
   const groups = historyGroups(threads);
   return <aside className={open ? 'history open' : 'history'} aria-label="История чатов" inert={!open}>
     <div className="history-inner">
