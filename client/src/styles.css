@@ -150,9 +150,11 @@ button.icon.plus:hover:enabled, button.icon.history-toggle:hover:enabled { backg
 .live-actions button.icon[aria-pressed="true"] { background: var(--surface-2); color: var(--accent); border-color: transparent }
 .live-actions button.icon.danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-color: transparent }
 .live-actions button.icon.danger:hover:enabled { background: color-mix(in srgb, var(--danger) 20%, var(--surface)); color: var(--danger); border-color: transparent }
-.live-log { position: static; width: min(420px, calc(100% - 16px)); max-height: min(180px, 28dvh); transform: none; flex: none; background: var(--surface); border: 1px solid var(--control-border); border-radius: 16px; box-shadow: 0 12px 32px var(--shadow); padding: var(--s3) var(--s4); gap: var(--s3) }
-.live-log[hidden] { display: none !important }
-.live-log.open { animation: panel var(--dur) var(--ease) }
+.live-actions button:disabled { opacity: 0.55; cursor: not-allowed }
+.live-transcript-layer { position: absolute; z-index: 2; inset: 0 0 calc(64px + var(--s4)); display: flex; justify-content: center; align-items: flex-end; padding: var(--s3); pointer-events: none }
+.live-transcript-layer[aria-hidden="true"] { visibility: hidden }
+.live-log { width: min(420px, 100%); max-height: min(220px, 36dvh); transform: translateY(8px); opacity: 0; overflow-y: auto; flex: none; background: var(--surface); border: 1px solid var(--control-border); border-radius: 12px; box-shadow: 0 12px 32px var(--shadow); padding: var(--s3) var(--s4); gap: var(--s3); pointer-events: none; transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease), visibility var(--dur) }
+.live-log.open { opacity: 1; transform: translateY(0); pointer-events: auto }
 .live-log article { padding: var(--s2) 0; border-top: 1px solid var(--line) }
 .live-log article:first-of-type { border-top: 0 }
 .live-log strong { display: block; font-size: 13px; color: var(--muted); font-weight: 600 }
@@ -296,4 +298,7 @@ dialog.editor { width: min(760px, 94vw); padding: var(--s2) var(--s5) var(--s5) 
   .stage::before, .stage::after { display: none }
   .dot, .orb, button.primary { forced-color-adjust: auto }
   :focus-visible { outline: 3px solid CanvasText }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important }
 }
