@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { bindProfileSession, ensureSessionId, firstServerSession, isUuid, nextId, profileSessionRepair, selectedProfile, sessionOrNew, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
 import { type DraftEvent, type RunEvent, describeRun } from './commands';
 import { type SheetId, themeId } from './theme';
-import { acceptLiveRun, conversionNotice, defaultVoice, formatError, meterLevel, unwrapApi, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
+import { acceptLiveRun, conversionNotice, defaultVoice, formatError, liveStartOutcome, meterLevel, unwrapApi, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
 
 export function useDesktop() {
   const [settings, setSettings] = useState<Settings>();
@@ -52,6 +52,7 @@ export function useDesktop() {
   const chatsReady = useRef(false);
   const muteHold = useRef(false);
   const liveRun = useRef(0);
+  const liveEpoch = useRef(0);
   const keepLocal = useRef(false);
   const historyStamp = useRef(0);
   const savedSettings = useRef<Settings | undefined>(undefined);
@@ -256,7 +257,7 @@ export function useDesktop() {
   const patchProfile = (patch: Partial<Profile>) => { if (settings && profile) setSettings({ ...settings, profiles: settings.profiles.map(item => item.id === profileId ? { ...item, ...patch } : item) }); };
   const request = async <T,>(path: string, method = 'GET') => unwrapApi<T>(await invoke<unknown>('api', { profileId, path, method }));
   const rememberLive = (runId: unknown) => { if (typeof runId === 'number') liveRun.current = runId; };
-  const stop = () => run(async () => { await invoke('stop'); setHostCall(undefined); setActive(false); setThinking(false); setRecording(false); muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); });
+  const stop = () => run(async () => { liveEpoch.current += 1; await invoke('stop'); setHostCall(undefined); setActive(false); setThinking(false); setRecording(false); muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); });
   const saveVoice = (patch: Partial<VoiceSettings>) => run(async () => {
     const disk = savedSettings.current;
     if (!settings || !disk) return;
@@ -268,12 +269,34 @@ export function useDesktop() {
   });
   const draftVoice = (patch: Partial<VoiceSettings>) => { if (settings) setSettings({ ...settings, voice: { ...voice, ...patch } }); };
   const refreshVoice = () => run(async () => { setVoiceStatus(await invoke<VoiceStatus>('voice_status')); });
-  const startLive = () => run(async () => { muteHold.current = false; rememberLive(await invoke<number>('live_start')); setLiveOpen(true); setMuted(false); setLiveState('idle'); });
+  const finishLiveStart = async (epoch: number, id: number) => {
+    if (liveStartOutcome(epoch, liveEpoch.current) === 'stop') {
+      try { await invoke('live_stop'); } catch { /* End already stopped the mic. */ }
+      return;
+    }
+    rememberLive(id);
+    setMuted(false);
+  };
+  const startLive = () => run(async () => {
+    const epoch = liveEpoch.current;
+    muteHold.current = false;
+    const id = await invoke<number>('live_start');
+    if (liveStartOutcome(epoch, liveEpoch.current) === 'stop') {
+      try { await invoke('live_stop'); } catch { /* End already stopped the mic. */ }
+      return;
+    }
+    rememberLive(id);
+    setLiveOpen(true); setMuted(false); setLiveState('idle');
+  });
   const toggleMute = () => run(async () => {
-    if (muted) { muteHold.current = false; rememberLive(await invoke<number>('live_start')); setMuted(false); }
+    if (muted) {
+      const epoch = liveEpoch.current;
+      muteHold.current = false;
+      await finishLiveStart(epoch, await invoke<number>('live_start'));
+    }
     else { muteHold.current = true; await invoke('live_stop'); setMuted(true); setMicLevel(0); postNotice('Микрофон на паузе'); }
   });
-  const endLive = () => run(async () => { muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
+  const endLive = () => run(async () => { liveEpoch.current += 1; muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
   const settingsForServer = (current: Settings): Settings => {
     if (!profile) return current;
     const active = threads.find(item => item.id === activeId);

@@ -21,11 +21,6 @@ import { PermissionsScreen } from './screens/PermissionsScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { useDesktop } from './useDesktop';
 
-declare global {
-  interface ImportMetaEnv { readonly DEV: boolean }
-  interface ImportMeta { readonly env: ImportMetaEnv }
-}
-
 function osName(value: string): string {
   if (value === 'windows') return 'Windows';
   if (value === 'macos' || value === 'darwin') return 'macOS';

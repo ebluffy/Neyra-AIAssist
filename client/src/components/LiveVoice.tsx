@@ -25,9 +25,6 @@ export function LiveVoice({ state, mode, level, muted, busy, messages, partial, 
   const shown = muted ? 'off' : state;
   const recent = messages.slice(-8);
   useEffect(() => {
-    follow.current = true;
-  }, []);
-  useEffect(() => {
     const node = log.current;
     if (node && follow.current) node.scrollTop = node.scrollHeight;
   }, [messages, partial, transcript]);
