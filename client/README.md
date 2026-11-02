@@ -27,6 +27,7 @@ npm ci --ignore-scripts
 npm run lint
 npm run typecheck
 npm test
+npm run test:scripts
 npm run build
 cd src-tauri
 cargo fmt --check
@@ -36,6 +37,9 @@ cd ..
 npm run tauri build -- --bundles deb   # Linux
 npm run tauri build -- --bundles nsis  # Windows
 ```
+
+`npm test` runs the UI suites with Vitest. `npm run test:scripts` runs
+`scripts/*.test.mjs` with Node's test runner, one file at a time. Both run in CI.
 
 Dependency lifecycle scripts are disabled for installation; Vite/esbuild and the Tauri CLI use their platform packages. CI produces unsigned test installers (`nsis` / `deb` / `AppImage`) as artifacts, not a signed updater release. Updater plugin + pubkey are wired; `createUpdaterArtifacts` stays off until signing secrets exist — see `docs/UPDATER.md`. Character step-0 license research lives in `character/LICENSES.md` (Desktop Mate assets are not redistributable).
 

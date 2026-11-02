@@ -1,14 +1,19 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
+function parseVersion(version) {
+  if (typeof version !== 'string') throw new Error(`Invalid release version: ${version}`);
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
+  const prerelease = match?.[4]?.split('.');
+  if (!match || match[0] !== version || prerelease?.some((id) => /^0\d+$/.test(id))) {
+    throw new Error(`Invalid release version: ${version}`);
+  }
+  return [match.slice(1, 4).map(BigInt), prerelease];
+}
+
 export function compareVersions(a, b) {
-  const parse = (version) => {
-    const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
-    if (!match) throw new Error(`Invalid release version: ${version}`);
-    return [match.slice(1, 4).map(Number), match[4]?.split('.')];
-  };
-  const [numbersA, preA] = parse(a);
-  const [numbersB, preB] = parse(b);
+  const [numbersA, preA] = parseVersion(a);
+  const [numbersB, preB] = parseVersion(b);
   for (let i = 0; i < 3; i++) {
     if (numbersA[i] !== numbersB[i]) return numbersA[i] > numbersB[i] ? 1 : -1;
   }
@@ -30,13 +35,19 @@ export function compareVersions(a, b) {
   return 0;
 }
 
+export function decide(tag, candidateManifest, currentManifest) {
+  const candidate = candidateManifest?.version;
+  parseVersion(candidate);
+  if (tag !== `client-v${candidate}`) throw new Error(`Manifest version ${candidate} does not match ${tag}`);
+  return currentManifest === undefined || compareVersions(candidate, currentManifest?.version) > 0 ? 'update' : 'skip';
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const [tag, candidatePath, currentPath] = process.argv.slice(2);
-    const candidate = JSON.parse(readFileSync(candidatePath, 'utf8')).version;
-    if (tag !== `client-v${candidate}`) throw new Error(`Manifest version ${candidate} does not match ${tag}`);
-    const current = currentPath ? JSON.parse(readFileSync(currentPath, 'utf8')).version : undefined;
-    console.log(current && compareVersions(candidate, current) <= 0 ? 'skip' : 'update');
+    const candidate = JSON.parse(readFileSync(candidatePath, 'utf8'));
+    const current = currentPath ? JSON.parse(readFileSync(currentPath, 'utf8')) : undefined;
+    console.log(decide(tag, candidate, current));
   } catch (error) {
     console.error(`::error::Beta feed: ${error.message}`);
     process.exitCode = 1;

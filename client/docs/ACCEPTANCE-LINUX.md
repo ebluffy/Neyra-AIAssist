@@ -67,14 +67,14 @@ FUSE 2 для обычного запуска AppImage: `sudo pacman -S --needed
 
 Черновик GitHub по этим URL не отдаётся. Публичный ключ в `tauri.conf.json` — заготовка (minisign id `1AAFC11FB991FBB6`), приватной половины в репозитории нет. Пока нет своего ключа и файла `latest.json` на одном из этих адресов, кнопка в приложении не является прогоном N→N+1.
 
-Когда будете делать настоящий draft:
+Когда будете выпускать настоящий релиз:
 
 1. Вне git: `cd client && npm run tauri -- signer generate -w "$HOME/neyra-updater.key"`. Файл ключа не коммитить.
 2. Текст `.pub` записать в `plugins.updater.pubkey` и закоммитить только публичную половину.
 3. Секреты GitHub `TAURI_SIGNING_PRIVATE_KEY` и `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Без них workflow `.github/workflows/client-release.yml` останавливается на preflight.
 4. Одна версия в `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` и `src-tauri/Cargo.lock`. Проверка: `cd client && npm run check:versions`.
 5. Тег `client-v<версия>` (для беты с суффиксом) или ручной запуск workflow «Desktop release» с тегом. После успешной сборки обеих платформ workflow публикует релиз автоматически.
-6. Стабильный канал читает опубликованный GitHub Latest. Пререлизы туда не попадают; для бета-канала нужен отдельный feed (см. `client/docs/UPDATER.md`).
+6. Стабильный канал читает опубликованный GitHub Latest, пререлизы туда не попадают. Workflow автоматически создаёт или обновляет `client-beta/latest.json`, только если версия новее текущей по SemVer. Стабильные релизы тоже продвигают бета-канал (см. `client/docs/UPDATER.md`).
 7. AppImage версии N лежит в каталоге, куда пользователь может писать (`~/Applications`). В клиенте: проверить → установить → перезапустить. Сверить адрес, токен, тему, разрешения, device id и что файл по тому же пути заменён.
 
 Windows NSIS и SmartScreen сюда не входят. Подробный чеклист с вашими путями печатает сам скрипт.

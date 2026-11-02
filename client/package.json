@@ -9,6 +9,7 @@
     "typecheck": "tsc -b",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
+    "test:scripts": "node --test --test-concurrency=1 \"scripts/*.test.mjs\"",
     "tauri": "tauri",
     "check:versions": "node scripts/check-versions.mjs",
     "updater:fixtures": "node scripts/updater-fixtures.mjs"

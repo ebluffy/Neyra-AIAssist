@@ -72,7 +72,8 @@ All of this runs without secrets:
 | Real plugin, local HTTP server, N=0.1.0 to N+1=0.1.1: valid install, same/older version, untrusted key, tampered file, truncated/garbage/empty signature, wrong public key, announced version differs from signed version, unversioned signature, corrupt manifest, missing file, non-ELF payload. After every rejection the old AppImage must be unchanged. | `src-tauri/tests/updater_chain.rs` (Linux) | `cargo test --locked` |
 | Real `tauri build` output, signed with the test key, installed over an older version by the same plugin, then the same file tampered | same file, ignored by default | see below |
 | Config guards: HTTPS endpoints, no `dangerous*`, `requireSignedVersion`, shipped key is not the test key | `src-tauri/src/updater.rs` tests | `cargo test --locked` |
-| Version sync, release overlay, signature version binding | `scripts/release-checks.test.mjs` | `npm test` |
+| Version sync, release overlay, signature version binding | `scripts/release-checks.test.mjs` | `npm run test:scripts` |
+| Beta feed SemVer ordering, update/skip decisions and tag/manifest validation | `scripts/beta-feed.test.mjs` | `npm run test:scripts` |
 | Fixture regeneration (new throwaway "untrusted" key every run) | `scripts/updater-fixtures.mjs` | `npm run updater:fixtures` |
 
 Real-build check:
@@ -114,6 +115,7 @@ Not covered by automation (owner, on real machines):
    else the job fails. Only after both builds succeed does the final job publish
    the release automatically. It then creates or updates `client-beta/latest.json`
    when the published version is newer than the feed's current version.
+   Feed lookup/download errors or invalid manifest versions stop the update.
 
 Code signing (Authenticode) is not set up.
 
