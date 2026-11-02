@@ -64,15 +64,27 @@ voice:
       provider: ""
     cloud:
       enable: true
-      # EN: Cloud TTS provider.
-      # RU: Облачный TTS.
-      provider: "yandex"
-      endpoint: "https://tts.api.cloud.yandex.net/tts/v3/utteranceSynthesis"
-      voice: "masha"
-      role: "friendly"
-      speed: 1.1
-      pitch_shift_hz: 50.0
-      timeout_seconds: 60.0
+      # EN: Cloud TTS provider: deepgram | yandex
+      # RU: Облачный TTS провайдер: deepgram | yandex
+      provider: "deepgram"
+      
+      # Deepgram Flux TTS (Russian voice)
+      deepgram:
+        model: "flux-polina-ru"
+        # EN: api_key from DEEPGRAM_API_KEY (apply_env_secrets) — do not put secrets in YAML.
+        # RU: api_key из DEEPGRAM_API_KEY — не хранить секреты в YAML.
+        expressivity: 0
+        sample_rate: 24000
+        timeout_seconds: 60.0
+      
+      # Yandex SpeechKit fallback
+      yandex:
+        endpoint: "https://tts.api.cloud.yandex.net/tts/v3/utteranceSynthesis"
+        voice: "masha"
+        role: "friendly"
+        speed: 1.1
+        pitch_shift_hz: 50.0
+        timeout_seconds: 60.0
 
   # Optional voice conversion after TTS (desktop voice). Runs on the server only.
   # Models are read in place from server/models/ (plain file names, no paths).

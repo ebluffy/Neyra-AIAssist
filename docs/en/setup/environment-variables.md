@@ -17,7 +17,9 @@ Canonical list: `server/.env.example`.
 
 ## Voice / vision / integrations
 
-- `DEEPGRAM_API_KEY`, `GROQ_API_KEY`, `YANDEX_API_KEY`, `YANDEX_FOLDER_ID`
+- `DEEPGRAM_API_KEY` — for STT (speech-to-text recognition) and TTS (text-to-speech, Flux batch REST API, Russian voice flux-polina-ru)
+- `GROQ_API_KEY` — alternative STT provider
+- `YANDEX_API_KEY`, `YANDEX_FOLDER_ID` — Yandex SpeechKit TTS (fallback when Deepgram TTS is unavailable or fails)
 - `SCREEN_PROXY_SECRET`
 - `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`
 - `AGENT_PROXY_SECRET_KEY`

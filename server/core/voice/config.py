@@ -376,10 +376,16 @@ def collect_voice_soft_errors(config: dict[str, Any]) -> list[str]:
     if tts.get("primary_lane") == "cloud":
         tblock = _as_dict(tts.get("tts"))
         import os
-        if str(tblock.get("provider") or "").lower() == "yandex":
+        provider = str(tblock.get("provider") or "").lower()
+        if provider == "yandex":
             if not (tblock.get("api_key") or (os.environ.get("YANDEX_API_KEY") or "").strip()):
                 out.append(
                     "TTS(cloud/yandex): нет YANDEX_API_KEY — озвучка не заработает"
+                )
+        elif provider == "deepgram":
+            if not (tblock.get("api_key") or (os.environ.get("DEEPGRAM_API_KEY") or "").strip()):
+                out.append(
+                    "TTS(cloud/deepgram): нет DEEPGRAM_API_KEY — озвучка не заработает"
                 )
 
     return out
