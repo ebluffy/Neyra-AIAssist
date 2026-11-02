@@ -70,6 +70,23 @@ export function threadTitle(messages: { role: string; content: string }[]): stri
   return clean.length > 42 ? `${clean.slice(0, 42)}…` : clean;
 }
 
+export function historyGroups(threads: ChatThread[], now = Date.now()): { label: string; threads: ChatThread[] }[] {
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const groups = [
+    { label: 'Сегодня', threads: [] as ChatThread[] },
+    { label: 'Вчера', threads: [] as ChatThread[] },
+    { label: 'Ранее', threads: [] as ChatThread[] },
+  ];
+  for (const thread of [...threads].sort((a, b) => b.updated - a.updated)) {
+    const index = thread.updated >= today.getTime() ? 0 : thread.updated >= yesterday.getTime() ? 1 : 2;
+    groups[index].threads.push(thread);
+  }
+  return groups.filter(group => group.threads.length > 0);
+}
+
 export function daypart(hour: number): string {
   if (hour < 5 || hour >= 23) return 'Доброй ночи';
   if (hour < 12) return 'Доброе утро';

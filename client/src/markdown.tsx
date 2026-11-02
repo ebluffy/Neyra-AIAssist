@@ -81,7 +81,7 @@ export function parseMarkdown(source: string): Block[] {
 function inlineNodes(inlines: Inline[], key: string): ReactNode[] {
   return inlines.map((part, index) => {
     const id = `${key}-${index}`;
-    if (part.k === 'code') return <code key={id}>{part.v}</code>;
+    if (part.k === 'code') return <code key={id} translate="no">{part.v}</code>;
     if (part.k === 'strong') return <strong key={id}>{part.v}</strong>;
     if (part.k === 'em') return <em key={id}>{part.v}</em>;
     if (part.k === 'link') return <a key={id} href={part.href} onClick={event => { event.preventDefault(); if (SAFE_LINK.test(part.href)) void openUrl(part.href).catch(() => undefined); }}>{part.v}</a>;
@@ -112,7 +112,7 @@ export function Markdown({ text, fresh = '', onCopy }: { text: string; fresh?: s
     if (block.k === 'pre') {
       const kept = tail && block.code.endsWith(tail) ? block.code.slice(0, -tail.length) : block.code;
       const arriving = tail && block.code.endsWith(tail) ? tail : '';
-      return <div className="codeblock" key={index}><pre><code>{kept}{arriving && <span className="arriving">{arriving}</span>}</code></pre>{onCopy && <button type="button" aria-label="Копировать код" data-tip="Копировать код" onClick={() => onCopy(block.code)}><Copy size={15} strokeWidth={1.75} aria-hidden="true" /></button>}</div>;
+      return <div className="codeblock" key={index}><pre><code translate="no">{kept}{arriving && <span className="arriving">{arriving}</span>}</code></pre>{onCopy && <button type="button" aria-label="Копировать код" data-tip="Копировать код" onClick={() => onCopy(block.code)}><Copy size={15} strokeWidth={1.75} aria-hidden="true" /></button>}</div>;
     }
     if (block.k === 'ul') {
       const items = block.items.map(item => [...item]);

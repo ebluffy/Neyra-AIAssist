@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bindProfileSession, clock, composerSlot, daypart, ensureSessionId, firstServerSession, profileSessionRepair, selectedProfile, sessionOrNew, switchThread, threadTitle, type ChatThread } from './chat';
+import { bindProfileSession, clock, composerSlot, daypart, ensureSessionId, firstServerSession, historyGroups, profileSessionRepair, selectedProfile, sessionOrNew, switchThread, threadTitle, type ChatThread } from './chat';
 import { themeId } from './theme';
 
 describe('chat composer', () => {
@@ -75,6 +75,31 @@ describe('thread switch', () => {
     expect(next?.messages).toEqual([]);
     expect(next?.threads.find(thread => thread.id === 'b')?.messages).toEqual([]);
     expect(next?.threads.find(thread => thread.id === 'a')?.messages.map(message => message.content)).toEqual(['секрет']);
+  });
+});
+
+describe('history groups', () => {
+  const thread = (id: string, updated: number): ChatThread => ({ id, updated, title: id, sessionId: '', messages: [] });
+
+  it.each([[2026, 2, 9], [2026, 10, 2], [2026, 0, 1]])('uses local calendar boundaries on %i/%i/%i', (year, month, day) => {
+    const now = new Date(year, month, day, 0, 30).getTime();
+    const midnight = new Date(year, month, day).getTime();
+    const yesterday = new Date(year, month, day - 1).getTime();
+    const threads = [thread('earlier', yesterday - 1), thread('yesterday-end', midnight - 1), thread('today', midnight), thread('yesterday-start', yesterday)];
+    const original = [...threads];
+
+    expect(historyGroups(threads, now).map(group => [group.label, group.threads.map(item => item.id)])).toEqual([
+      ['Сегодня', ['today']],
+      ['Вчера', ['yesterday-end', 'yesterday-start']],
+      ['Ранее', ['earlier']],
+    ]);
+    expect(threads).toEqual(original);
+  });
+
+  it('omits empty sections', () => {
+    const now = new Date(2026, 0, 2, 12).getTime();
+    expect(historyGroups([], now)).toEqual([]);
+    expect(historyGroups([thread('old', new Date(2025, 11, 30).getTime())], now).map(group => group.label)).toEqual(['Ранее']);
   });
 });
 

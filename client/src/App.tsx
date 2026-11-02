@@ -61,7 +61,7 @@ export function App() {
         {!app.liveOpen && (app.recording
           ? <VoiceRecorder level={app.micLevel} busy={app.busy} onCancel={() => void app.cancelRecording()} onDone={() => void app.finishRecording()} />
           : <Composer text={app.text} connected={app.connected} busy={app.busy} turnBusy={turnBusy} liveBlocked={app.voice.mode === 'ptt'} onText={app.setText} onSend={() => void app.sendContent(app.text)} onRecord={() => void app.beginRecording()} onLive={() => void app.startLive()} onStop={() => void app.stop()} />)}
-        {app.lastTrace !== undefined && !app.liveOpen && (import.meta.env.DEV || localStorage.getItem('neyra.debug') === '1') && <details><summary>Модели последнего ответа</summary><pre>{JSON.stringify(app.lastTrace, null, 2)}</pre></details>}
+        {app.lastTrace !== undefined && !app.liveOpen && (import.meta.env.DEV || localStorage.getItem('neyra.debug') === '1') && <details className="chat-debug"><summary>Модели последнего ответа</summary><pre>{JSON.stringify(app.lastTrace, null, 2)}</pre></details>}
       </div>
     </div>
     {app.sheet && app.settings && <SettingsSheet section={app.sheet} onSection={app.setSheet} onClose={app.closeSheet} onStop={() => void app.stop()} alert={app.error}>
