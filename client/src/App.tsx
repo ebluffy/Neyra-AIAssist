@@ -36,11 +36,11 @@ export function App() {
     <HistoryPanel open={app.historyOpen} threads={app.threads} activeId={app.activeId} onClose={() => app.setHistoryOpen(false)} onOpen={id => void app.openThread(id)} onNew={() => void app.newChat()} />
     <div className="stage">
       <div className="lead">
-        <button type="button" className="icon history-toggle" aria-label={app.historyOpen ? 'Свернуть' : 'Развернуть'} aria-expanded={app.historyOpen} data-tip={app.historyOpen ? 'Свернуть' : 'Развернуть'} onClick={() => app.setHistoryOpen(open => !open)}>{app.historyOpen ? <ChevronLeft size={18} strokeWidth={1.75} aria-hidden="true" /> : <ChevronRight size={18} strokeWidth={1.75} aria-hidden="true" />}</button>
-        {!app.historyOpen && <button type="button" className="icon plus" aria-label="Новый чат" data-tip="Новый чат" onClick={() => void app.newChat()}><Plus size={18} strokeWidth={1.75} aria-hidden="true" /></button>}
+        {!app.liveOpen && <button type="button" className="icon history-toggle" aria-label={app.historyOpen ? 'Свернуть' : 'Развернуть'} aria-expanded={app.historyOpen} data-tip={app.historyOpen ? 'Свернуть' : 'Развернуть'} onClick={() => app.setHistoryOpen(open => !open)}>{app.historyOpen ? <ChevronLeft size={18} strokeWidth={1.75} aria-hidden="true" /> : <ChevronRight size={18} strokeWidth={1.75} aria-hidden="true" />}</button>}
+        {!app.historyOpen && !app.liveOpen && <button type="button" className="icon plus" aria-label="Новый чат" data-tip="Новый чат" onClick={() => void app.newChat()}><Plus size={18} strokeWidth={1.75} aria-hidden="true" /></button>}
       </div>
       <div className="chrome">
-        <button type="button" className="stop" onClick={() => void app.stop()}>Стоп</button>
+        <button type="button" className="stop" disabled={app.liveOpen} onClick={() => void app.stop()}>Стоп</button>
         <div className="chrome-rest" inert={app.sheet ? true : undefined}>
           <span className="dot" data-on={app.connected ? 'true' : 'false'} role="status" data-tip={app.connected ? 'Подключено' : 'Нет подключения'} aria-label={app.connected ? 'Подключено' : 'Нет подключения'} />
           <div className="menu-anchor">
