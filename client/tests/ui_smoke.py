@@ -59,12 +59,16 @@ return;
 '''
 def menu(page, name):
     page.get_by_role('button', name='Меню', exact=True).click()
-    page.locator('#gear-menu').get_by_role('button', name='Настройки', exact=True).click()
+    gear = page.locator('#gear-menu')
+    if name in {'Голос', 'Сервер и устройства', 'Персонаж', 'О программе'}:
+        gear.get_by_role('menuitem', name=name, exact=True).click()
+        return
+    gear.get_by_role('menuitem', name='Настройки', exact=True).click()
     if name != 'Настройки':
         page.get_by_role('navigation', name='Разделы настроек').get_by_role('button', name=name, exact=True).click()
 
 def close_sheet(page):
-    button = page.get_by_role('button', name='Закрыть', exact=True)
+    button = page.get_by_role('button', name='Закрыть настройки', exact=True)
     if button.count():
         button.click()
 
@@ -82,7 +86,7 @@ with sync_playwright() as p:
     menu(page, 'Персонаж')
     expect(page.get_by_text('Персонаж выключен. Включите «Персонаж на рабочем столе» в разделе «Настройки».')).to_be_visible()
     expect(page.get_by_role('button', name='Показать окно', exact=True)).to_be_disabled()
-    expect(page.get_by_role('dialog', name='Настройки').get_by_role('button', name='Стоп', exact=True)).to_be_enabled()
+    expect(page.get_by_role('dialog', name='Настройки').get_by_role('button', name='Остановить Нейру', exact=True)).to_be_enabled()
     expect(page.get_by_label('Пауза при полноэкранном приложении')).to_be_disabled()
     expect(page.get_by_label('Пауза на батарее')).to_be_disabled()
     expect(page.get_by_text('Wayland не гарантирует always-on-top.')).to_be_visible()
@@ -187,8 +191,10 @@ with sync_playwright() as p:
     expect(page.get_by_text('Команд пока нет')).to_be_visible()
     page.get_by_role('button',name='Создать команду').click()
     expect(page.get_by_role('dialog',name='Новая команда')).to_be_visible()
-    expect(page.get_by_role('button',name='Сохранить',exact=True)).to_be_disabled()
-    page.get_by_label('Название',exact=True).fill('Мой сайт')
+    expect(page.get_by_role('button',name='Сохранить',exact=True)).to_be_enabled()
+    page.get_by_role('button',name='Сохранить',exact=True).click()
+    expect(page.get_by_text('Укажите название команды.')).to_be_visible()
+    page.locator('input[name="command-name"]').fill('Мой сайт')
     page.get_by_label('Значение',exact=True).fill('мой сайт')
     page.get_by_label('Ссылка',exact=True).fill('https://example.com')
     page.get_by_role('button',name='Добавить шаг').click()
@@ -198,7 +204,7 @@ with sync_playwright() as p:
     page.keyboard.press('Escape')
     expect(page.get_by_role('dialog',name='Новая команда')).not_to_be_visible()
     page.get_by_role('button',name='Создать команду').click()
-    page.get_by_label('Название',exact=True).fill('Мой сайт')
+    page.locator('input[name="command-name"]').fill('Мой сайт')
     page.get_by_label('Значение',exact=True).fill('мой сайт')
     page.get_by_label('Ссылка',exact=True).fill('https://example.com')
     page.get_by_role('button',name='Сохранить',exact=True).click()
