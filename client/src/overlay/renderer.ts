@@ -33,6 +33,9 @@ export async function startVrm(canvas: HTMLCanvasElement, bytes: ArrayBuffer, fp
   const sun = new DirectionalLight(0xffffff, 1.6);
   sun.position.set(1, 2, 3);
   scene.add(sun);
+  const rim = new DirectionalLight(0x50d3e9, 0.45);
+  rim.position.set(-2, 0.6, 1);
+  scene.add(rim);
 
   const box = new Box3().setFromObject(vrm.scene);
   const size = box.getSize(new Vector3());
