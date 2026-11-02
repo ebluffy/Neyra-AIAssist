@@ -2,6 +2,9 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
+import { GearMenu } from './components/GearMenu';
+import { ServerPanel } from './components/ServerPanel';
+import { Composer } from './components/Composer';
 import { defaultVoice, type Settings } from './types';
 import { useDesktop } from './useDesktop';
 
@@ -29,7 +32,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('window', globalThis);
-  vi.stubGlobal('document', { documentElement: { dataset: {} } });
+  vi.stubGlobal('document', { documentElement: { dataset: {} }, getElementById: () => null });
   ipc.listeners.clear();
   ipc.invoke.mockReset().mockImplementation(async (command: string, args?: { settings?: unknown }) => {
       if (command === 'load_settings') return { settings, data_root: '', global_shortcuts: false, pc_access_available: false };
@@ -45,6 +48,18 @@ afterEach(async () => {
 });
 async function mount() { await act(async () => { root = create(<Harness />); }); }
 async function tick(ms: number) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
+async function mountApplication() {
+  await act(async () => { root = create(<App />); });
+  await act(async () => { root.root.findByType(GearMenu).props.onSettings('server'); });
+}
+function expectVisibleOffline() {
+  expect(root.root.findByProps({ className: 'dot' }).props['data-on']).toBe('false');
+  expect(root.root.findByProps({ className: 'offline' }).findByType('p').children.join('')).toContain('Нет связи');
+  const connectButton = root.root.findAllByType('button').find(node => node.children.includes('Подключить'));
+  expect(connectButton).toBeDefined();
+  expect(connectButton?.props.disabled).toBe(false);
+  expect(root.root.findAll(node => typeof node.props.className === 'string' && node.props.className.split(' ').includes('is-streaming'))).toHaveLength(0);
+}
 
 describe('unavailable server', () => {
   it.each(['connection refused', 'timeout', 'HTTP 503'])('shows offline and bounds retries for %s, then recovers', async reason => {
@@ -111,6 +126,42 @@ describe('unavailable server', () => {
   it('renders the offline state in the application', async () => {
     await act(async () => { root = create(<App />); });
     expect(JSON.stringify(root.toJSON())).toContain('Нет связи');
+  });
+
+  it.each(['connection refused', 'timeout', 'HTTP 503'])('renders usable offline UI after %s', async reason => {
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'connect') throw new Error(reason);
+      return base(command, args);
+    });
+    await mountApplication();
+    await act(async () => { await root.root.findByType(ServerPanel).props.onConnect(); });
+    await tick(0);
+    expectVisibleOffline();
+    expect(root.root.findByProps({ role: 'alert' }).children.join('')).toContain('Нет связи');
+    await tick(1000);
+    expectVisibleOffline();
+  });
+
+  it('renders offline and removes the response spinner after WSS close, including failed reconnect', async () => {
+    await mountApplication();
+    await act(async () => { await root.root.findByType(ServerPanel).props.onConnect(); });
+    await tick(0);
+    expect(root.root.findByProps({ className: 'dot' }).props['aria-label']).toBe('Подключено');
+    await act(async () => { root.root.findByType(Composer).props.onText('hello'); });
+    await act(async () => { await root.root.findByType(Composer).props.onSend(); });
+    expect(root.root.findAllByProps({ className: 'msg assistant is-streaming' })).toHaveLength(1);
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'connect') throw new Error('connection refused');
+      return base(command, args);
+    });
+    await act(async () => { ipc.listeners.get('desktop-event')!({ payload: { type: 'disconnected' } }); });
+    expectVisibleOffline();
+    expect(JSON.stringify(root.toJSON())).toContain('hello');
+    await tick(1000);
+    expectVisibleOffline();
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'chat')).toHaveLength(1);
   });
 
   it('stops retrying after an explicit disconnect', async () => {

@@ -47,5 +47,7 @@ ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 winreg = "0.55"
 
 [dev-dependencies]
+rcgen = "0.13"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tauri = { version = "2", features = ["tray-icon", "test"] }
 tokio = { version = "1", features = ["test-util"] }

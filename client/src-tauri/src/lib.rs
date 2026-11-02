@@ -385,7 +385,6 @@ async fn connect(
 ) -> Result<(), String> {
     let epoch = {
         let _guard = state.transport.lock().map_err(lock_error)?;
-        disconnect_locked(&state)?;
         state.epoch.load(Ordering::SeqCst)
     };
     let p = profile(&state, &profile_id)?;
@@ -393,12 +392,32 @@ async fn connect(
         .get_password()
         .map_err(|_| "Сначала сохраните токен")?;
     let hello = manifest(&state, &p)?;
+    let sockets = connect_sockets(&p, &token, &hello, CONNECT_TIMEOUT).await?;
+    let _guard = state.transport.lock().map_err(lock_error)?;
+    if state.epoch.load(Ordering::SeqCst) != epoch {
+        return Err("Подключение отменено".into());
+    }
+    disconnect_locked(&state)?;
+    let epoch = state.epoch.load(Ordering::SeqCst);
+    *state.active_profile.lock().map_err(lock_error)? = Some(profile_id);
+    start_socket_workers(app, &state, sockets, epoch)
+}
+
+type ClientSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn connect_sockets(
+    p: &Profile,
+    token: &str,
+    hello: &Value,
+    timeout: Duration,
+) -> Result<Vec<(ClientSocket, &'static str)>, String> {
     let mut sockets = Vec::new();
     for (path, kind) in [
         ("/v1/desktop/bridge", "bridge"),
         ("/v1/desktop/voice", "voice"),
     ] {
-        let mut url = server_url(&p, path)?;
+        let mut url = server_url(p, path)?;
         let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
         url.set_scheme(scheme).map_err(|_| "Неверный адрес")?;
         let mut request = url
@@ -411,7 +430,7 @@ async fn connect(
                 .parse()
                 .map_err(|_| "Неверный токен")?,
         );
-        let (mut ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
+        let (mut ws, _) = tokio::time::timeout(timeout, connect_async(request))
             .await
             .map_err(|_| "Сервер не ответил")?
             .map_err(|_| "Подключение отклонено; проверьте токен и версию сервера")?;
@@ -420,11 +439,15 @@ async fn connect(
             .map_err(|_| "Подключение закрыто")?;
         sockets.push((ws, kind));
     }
-    let _guard = state.transport.lock().map_err(lock_error)?;
-    if state.epoch.load(Ordering::SeqCst) != epoch {
-        return Err("Подключение отменено".into());
-    }
-    *state.active_profile.lock().map_err(lock_error)? = Some(profile_id);
+    Ok(sockets)
+}
+
+fn start_socket_workers(
+    app: tauri::AppHandle,
+    state: &Desktop,
+    sockets: Vec<(ClientSocket, &'static str)>,
+    epoch: u64,
+) -> Result<(), String> {
     let workers = futures_util::stream::FuturesUnordered::new();
     for (ws, kind) in sockets {
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
@@ -435,69 +458,118 @@ async fn connect(
         }
         let handle = app.clone();
         workers.push(async move {
-            let (mut writer, mut reader) = ws.split();
-            let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
-            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            let mut last_pong = tokio::time::Instant::now();
-            loop {
-                if handle.state::<Desktop>().epoch.load(Ordering::SeqCst) != epoch {
-                    break;
-                }
-                tokio::select! {
-                                    _=tokio::time::sleep_until(last_pong + HEARTBEAT_TIMEOUT)=>break,
-                                    message=rx.recv()=>{match message{Some(m)=>{if socket_send(&mut writer,m).await.is_err(){break;}},None=>break}},
-                                    _=heartbeat.tick()=>{if socket_send(&mut writer,Message::Text(json!({"type":"ping"}).to_string().into())).await.is_err(){break;}},
-                                    message=reader.next()=>{
-                                        match message{
-                                            Some(Ok(Message::Text(text)))=>{
-                                                if text.len()>100000{break;}
-                                if handle.state::<Desktop>().epoch.load(Ordering::SeqCst)!=epoch{break;}
-                                                let Ok(mut packet)=serde_json::from_str::<Value>(&text) else {break;};
-                                if let Some(object)=packet.as_object_mut(){object.insert("source".into(),json!(kind));}
-                                                if let Some(request_id)=packet["request_id"].as_str(){
-                                    let state=handle.state::<Desktop>();
-                                    let current=state.current_turn.lock().ok().and_then(|t|t.clone());
-                                    if current.as_deref()!=Some(request_id){continue;}
-                                    if packet["type"]=="error" || packet["type"]=="cancelled" || packet["type"]=="audio.done" || packet["type"]=="command_match" || (kind=="bridge"&&packet["type"]=="done") {if let Ok(mut t)=state.current_turn.lock(){*t=None;}}
+            socket_worker(
+                ws,
+                &mut rx,
+                (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
+                || handle.state::<Desktop>().epoch.load(Ordering::SeqCst) == epoch,
+                |mut packet| {
+                    if let Some(object) = packet.as_object_mut() {
+                        object.insert("source".into(), json!(kind));
+                    }
+                    if let Some(request_id) = packet["request_id"].as_str() {
+                        let state = handle.state::<Desktop>();
+                        let current = state.current_turn.lock().ok().and_then(|t| t.clone());
+                        if current.as_deref() != Some(request_id) {
+                            return true;
+                        }
+                        if packet["type"] == "error"
+                            || packet["type"] == "cancelled"
+                            || packet["type"] == "audio.done"
+                            || packet["type"] == "command_match"
+                            || (kind == "bridge" && packet["type"] == "done")
+                        {
+                            if let Ok(mut t) = state.current_turn.lock() {
+                                *t = None;
+                            }
+                        }
+                    }
+                    match packet["type"].as_str() {
+                        Some("pong") => {
+                            let _ = handle.emit("desktop-event", packet);
+                        }
+                        Some("client_tool_call") => {
+                            let mut data = packet.clone();
+                            if let Some(o) = data.as_object_mut() {
+                                o.remove("type");
+                                o.remove("protocol");
+                                o.remove("source");
+                            }
+                            if let Ok(call) = serde_json::from_value::<ToolCall>(data) {
+                                receive_call(handle.clone(), call);
+                            }
+                        }
+                        Some("revoked") => {
+                            return false;
+                        }
+                        Some("command_draft") => {
+                            if kind == "bridge" {
+                                command_runner::receive_draft(&handle, &packet);
+                            }
+                        }
+                        Some("command_match") => {
+                            // Only the authenticated voice socket may ask for a local command; the name is looked up locally.
+                            if kind == "voice" {
+                                if let Some(name) = packet["name"].as_str() {
+                                    command_runner::run_by_name(
+                                        handle.clone(),
+                                        name.to_string(),
+                                        "voice",
+                                    );
                                 }
-                                 match packet["type"].as_str(){
-                                                     Some("pong")=>{last_pong=tokio::time::Instant::now();let _=handle.emit("desktop-event",packet);},
-                                                    Some("client_tool_call")=>{let mut data=packet.clone();if let Some(o)=data.as_object_mut(){o.remove("type");o.remove("protocol");o.remove("source");}
-                if let Ok(call)=serde_json::from_value::<ToolCall>(data){receive_call(handle.clone(),call);}},
-                                                    Some("revoked")=>{break;},
-                                                    Some("command_draft")=>{if kind=="bridge"{command_runner::receive_draft(&handle,&packet);}},
-                                                    Some("command_match")=>{
-                                                        // Only the authenticated voice socket may ask for a local command; the name is looked up locally.
-                                                        if kind=="voice"{if let Some(name)=packet["name"].as_str(){command_runner::run_by_name(handle.clone(),name.to_string(),"voice");}}
-                                                        let _=handle.emit("desktop-event",packet);
-                                                    },
-                                    Some("cancel")=>{
-                                        // Per-call cancel must not become global Stop (AR-3).
-                                        let state=handle.state::<Desktop>();
-                                        if let Some(call_id)=packet["call_id"].as_str(){
-                                            if let Ok(mut pending)=state.pending.lock(){
-                                                if let Some(call)=pending.remove(call_id){
-                                                    drop(pending);
-                                                    reply(&handle,&call,json!({"status":"denied","code":"cancelled"}),false);
-                                                    let _=handle.emit("host-confirm-closed",json!({"call_id":call.call_id}));
-                                                }
-                                            }
-                                        }
-                                    },
-                                                    Some("audio.chunk"|"audio.segment"|"audio.done")=>{if !reply_audio(&handle,&packet){break;}},
-                                                    Some("voice.conversion")=>{
-                                        // Stop policy: stop speaking now; the turn ends with conversion_failed.
-                                        if packet["status"]=="stopped"{handle.state::<Desktop>().generation.fetch_add(1,Ordering::SeqCst);}
-                                        let _=handle.emit("desktop-event",packet);
-                                    },
-                                                    Some("cancelled")=>{if let Ok(mut s)=handle.state::<Desktop>().segments.lock(){s.reset(None);}let _=handle.emit("desktop-event",packet);},
-                                                    _=>{let _=handle.emit("desktop-event",packet);}
-                                                }
-                                            },Some(Ok(Message::Ping(bytes)))=>{if socket_send(&mut writer,Message::Pong(bytes)).await.is_err(){break;}},Some(Ok(Message::Close(_)))|None|Some(Err(_))=>break,_=>{}
-                                        }
+                            }
+                            let _ = handle.emit("desktop-event", packet);
+                        }
+                        Some("cancel") => {
+                            // Per-call cancel must not become global Stop (AR-3).
+                            let state = handle.state::<Desktop>();
+                            if let Some(call_id) = packet["call_id"].as_str() {
+                                if let Ok(mut pending) = state.pending.lock() {
+                                    if let Some(call) = pending.remove(call_id) {
+                                        drop(pending);
+                                        reply(
+                                            &handle,
+                                            &call,
+                                            json!({"status":"denied","code":"cancelled"}),
+                                            false,
+                                        );
+                                        let _ = handle.emit(
+                                            "host-confirm-closed",
+                                            json!({"call_id":call.call_id}),
+                                        );
                                     }
                                 }
-            }
+                            }
+                        }
+                        Some("audio.chunk" | "audio.segment" | "audio.done") => {
+                            if !reply_audio(&handle, &packet) {
+                                return false;
+                            }
+                        }
+                        Some("voice.conversion") => {
+                            // Stop policy: stop speaking now; the turn ends with conversion_failed.
+                            if packet["status"] == "stopped" {
+                                handle
+                                    .state::<Desktop>()
+                                    .generation
+                                    .fetch_add(1, Ordering::SeqCst);
+                            }
+                            let _ = handle.emit("desktop-event", packet);
+                        }
+                        Some("cancelled") => {
+                            if let Ok(mut s) = handle.state::<Desktop>().segments.lock() {
+                                s.reset(None);
+                            }
+                            let _ = handle.emit("desktop-event", packet);
+                        }
+                        _ => {
+                            let _ = handle.emit("desktop-event", packet);
+                        }
+                    }
+                    true
+                },
+            )
+            .await;
         });
     }
     tauri::async_runtime::spawn(async move {
@@ -512,6 +584,61 @@ async fn connect(
         }
     });
     Ok(())
+}
+
+async fn socket_worker<S>(
+    ws: tokio_tungstenite::WebSocketStream<S>,
+    rx: &mut mpsc::UnboundedReceiver<Message>,
+    timing: (Duration, Duration),
+    is_current: impl Fn() -> bool,
+    mut on_packet: impl FnMut(Value) -> bool,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (mut writer, mut reader) = ws.split();
+    let mut heartbeat = tokio::time::interval(timing.0);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut pong_deadline = None;
+    loop {
+        if !is_current() {
+            break;
+        }
+        if pong_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+            break;
+        }
+        tokio::select! {
+            _ = async {
+                match pong_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            } => break,
+            message = rx.recv() => match message {
+                Some(message) => if socket_send(&mut writer, message).await.is_err() { break; },
+                None => break,
+            },
+            _ = heartbeat.tick() => {
+                if socket_send(&mut writer, Message::Text(json!({"type":"ping"}).to_string().into())).await.is_err() {
+                    break;
+                }
+                // Only the first outstanding ping starts the response deadline.
+                pong_deadline.get_or_insert(tokio::time::Instant::now() + timing.1);
+            },
+            message = reader.next() => match message {
+                Some(Ok(Message::Text(text))) => {
+                    if text.len() > 100000 || !is_current() { break; }
+                    let Ok(packet) = serde_json::from_str::<Value>(&text) else { break; };
+                    if packet["type"] == "pong" { pong_deadline = None; }
+                    if !on_packet(packet) { break; }
+                },
+                Some(Ok(Message::Ping(bytes))) => {
+                    if socket_send(&mut writer, Message::Pong(bytes)).await.is_err() { break; }
+                },
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {},
+            },
+        }
+    }
 }
 
 /// Reply audio from the voice socket. Returns false on a protocol violation (close socket).
@@ -1677,6 +1804,356 @@ fn monitor_session(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn local_profile(address: std::net::SocketAddr) -> Profile {
+        Profile {
+            id: "transport-test".into(),
+            name: "local".into(),
+            url: format!("http://{address}"),
+            session_id: "test".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn real_handshakes_refused_repeatedly() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let profile = local_profile(listener.local_addr().unwrap());
+        drop(listener);
+        for _ in 0..3 {
+            assert!(
+                connect_sockets(&profile, "test", &json!({}), Duration::from_secs(1))
+                    .await
+                    .unwrap_err()
+                    .contains("отклонено")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn real_second_handshake_refusal_closes_first_socket() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let profile = local_profile(listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            // Refuse subsequent TCP connections while the first WebSocket remains open.
+            drop(listener);
+            let mut first = tokio_tungstenite::accept_async(stream).await.unwrap();
+            assert!(first.next().await.unwrap().unwrap().is_text());
+            tokio::time::timeout(Duration::from_secs(1), first.next())
+                .await
+                .expect("failed replacement must release its first socket")
+        });
+        for _ in 0..3 {
+            assert!(
+                connect_sockets(&profile, "test", &json!({}), Duration::from_secs(1))
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(!matches!(server.await.unwrap(), Some(Ok(Message::Text(_)))));
+    }
+
+    #[tokio::test]
+    async fn real_handshakes_timeout_and_http503_at_either_stage() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for stage in 0..2 {
+            for timeout in [false, true] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let profile = local_profile(listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    let first = if stage == 1 {
+                        let (tcp, _) = listener.accept().await.unwrap();
+                        let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                        assert!(socket.next().await.unwrap().unwrap().is_text());
+                        Some(socket)
+                    } else {
+                        None
+                    };
+                    let (mut tcp, _) = listener.accept().await.unwrap();
+                    let mut request = [0; 4096];
+                    assert!(tcp.read(&mut request).await.unwrap() > 0);
+                    if timeout {
+                        std::future::pending::<()>().await;
+                    } else {
+                        tcp.write_all(
+                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    drop(first);
+                });
+                let error = connect_sockets(
+                    &profile,
+                    "test",
+                    &json!({"type":"hello"}),
+                    Duration::from_millis(100),
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    error.contains(if timeout {
+                        "не ответил"
+                    } else {
+                        "отклонено"
+                    }),
+                    "{error}"
+                );
+                server.abort();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_replacements_preserve_established_sockets() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let profile = local_profile(listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut peers = Vec::new();
+            for _ in 0..2 {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                ws.next().await.unwrap().unwrap();
+                peers.push(tokio::spawn(async move {
+                    while let Some(Ok(message)) = ws.next().await {
+                        if message.is_text() && ws.send(message).await.is_err() {
+                            break;
+                        }
+                    }
+                }));
+            }
+            for stage in [0, 1, 0, 1] {
+                let mut first = None;
+                if stage == 1 {
+                    let (tcp, _) = listener.accept().await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                    ws.next().await.unwrap().unwrap();
+                    first = Some(ws);
+                }
+                let (mut tcp, _) = listener.accept().await.unwrap();
+                let mut request = [0; 2048];
+                assert!(tcp.read(&mut request).await.unwrap() > 0);
+                tcp.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+                drop(first);
+            }
+            peers
+        });
+        let mut existing = connect_sockets(&profile, "test", &json!({}), Duration::from_secs(1))
+            .await
+            .unwrap();
+        for _ in 0..4 {
+            assert!(
+                connect_sockets(&profile, "test", &json!({}), Duration::from_secs(1))
+                    .await
+                    .is_err()
+            );
+            for (ws, _) in &mut existing {
+                ws.send(Message::Text("still connected".into()))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(1), ws.next())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap(),
+                    Message::Text("still connected".into())
+                );
+            }
+        }
+        for peer in server.await.unwrap() {
+            peer.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn real_websocket_close_terminates_both_workers() {
+        for closing in 0..2 {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let profile = local_profile(listener.local_addr().unwrap());
+            let (close_tx, close_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let mut sockets = Vec::new();
+                for _ in 0..2 {
+                    let (tcp, _) = listener.accept().await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                    ws.next().await.unwrap().unwrap();
+                    sockets.push(ws);
+                }
+                close_rx.await.unwrap();
+                sockets[closing].close(None).await.unwrap();
+                // Both client TCP streams must disappear, including the blocked peer.
+                for mut socket in sockets {
+                    while let Some(Ok(Message::Text(_))) = socket.next().await {}
+                }
+            });
+            let sockets = connect_sockets(&profile, "test", &json!({}), Duration::from_secs(1))
+                .await
+                .unwrap();
+            let (tx0, mut rx0) = mpsc::unbounded_channel();
+            let (tx1, mut rx1) = mpsc::unbounded_channel();
+            let mut sockets = sockets.into_iter();
+            let worker = tokio::spawn(async move {
+                run_socket_pair(futures_util::stream::FuturesUnordered::from_iter([
+                    socket_worker(
+                        sockets.next().unwrap().0,
+                        &mut rx0,
+                        (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
+                        (|| true) as fn() -> bool,
+                        (|_| true) as fn(Value) -> bool,
+                    ),
+                    socket_worker(
+                        sockets.next().unwrap().0,
+                        &mut rx1,
+                        (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
+                        (|| true) as fn() -> bool,
+                        (|_| true) as fn(Value) -> bool,
+                    ),
+                ]))
+                .await;
+            });
+            close_tx.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), worker)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(tx0.is_closed());
+            assert!(tx1.is_closed());
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn real_wss_close_terminates_both_workers() {
+        use tokio_rustls::rustls::{self, pki_types::PrivatePkcs8KeyDer};
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![cert.cert.der().clone()],
+                PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()).into(),
+            )
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert.cert.der().clone()).unwrap();
+        let client_config = Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+        for closed in [0, 1] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("wss://localhost:{}", listener.local_addr().unwrap().port());
+            let acceptor = acceptor.clone();
+            let server = tokio::spawn(async move {
+                let mut peers = Vec::new();
+                for _ in 0..2 {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let tls = acceptor.accept(stream).await.unwrap();
+                    peers.push(tokio_tungstenite::accept_async(tls).await.unwrap());
+                }
+                peers[closed].close(None).await.unwrap();
+                let peer = &mut peers[1 - closed];
+                while let Some(Ok(_)) = peer.next().await {}
+            });
+            let mut sockets = Vec::new();
+            for _ in 0..2 {
+                sockets.push(
+                    tokio_tungstenite::connect_async_tls_with_config(
+                        &url,
+                        None,
+                        false,
+                        Some(tokio_tungstenite::Connector::Rustls(client_config.clone())),
+                    )
+                    .await
+                    .unwrap()
+                    .0,
+                );
+            }
+            let (_tx0, mut rx0) = mpsc::unbounded_channel();
+            let (_tx1, mut rx1) = mpsc::unbounded_channel();
+            let mut sockets = sockets.into_iter();
+            let timing = (Duration::from_secs(30), HEARTBEAT_TIMEOUT);
+            let current: fn() -> bool = || true;
+            let packet: fn(Value) -> bool = |_| true;
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                run_socket_pair(futures_util::stream::FuturesUnordered::from_iter([
+                    socket_worker(sockets.next().unwrap(), &mut rx0, timing, current, packet),
+                    socket_worker(sockets.next().unwrap(), &mut rx1, timing, current, packet),
+                ])),
+            )
+            .await
+            .expect("WSS close must stop both workers");
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn real_worker_delayed_pong_and_traffic_do_not_extend_ping_deadline() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            assert!(ws.next().await.unwrap().unwrap().is_text());
+            // Delay the first pong while application messages continue to arrive.
+            for _ in 0..6 {
+                ws.send(Message::Text(json!({"type":"traffic"}).to_string().into()))
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            ws.send(Message::Text(json!({"type":"pong"}).to_string().into()))
+                .await
+                .unwrap();
+            let mut ticks = tokio::time::interval(Duration::from_millis(10));
+            loop {
+                ticks.tick().await;
+                if ws
+                    .send(Message::Text(json!({"type":"traffic"}).to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let (ws, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let (_tx, mut rx) = mpsc::unbounded_channel();
+        let mut packets = 0;
+        let start = tokio::time::Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            socket_worker(
+                ws,
+                &mut rx,
+                (Duration::from_millis(50), Duration::from_millis(200)),
+                || true,
+                |_| {
+                    packets += 1;
+                    true
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(packets > 5);
+        // Pong at 120ms clears the first deadline; the ping at 150ms starts the next.
+        assert!(start.elapsed() >= Duration::from_millis(320));
+        assert!(start.elapsed() < Duration::from_millis(600));
+        server.abort();
+    }
 
     #[tokio::test(start_paused = true)]
     async fn either_socket_failure_drops_the_blocked_peer() {
