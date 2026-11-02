@@ -49,6 +49,7 @@ pub enum Error {
     Cancelled,
     InvalidArguments,
     ActionFailed,
+    ActionFailedNotDelivered,
 }
 
 impl Error {
@@ -71,7 +72,7 @@ impl Error {
             Self::Timeout => "timeout",
             Self::Cancelled => "cancelled",
             Self::InvalidArguments => "invalid_arguments",
-            Self::ActionFailed => "action_failed",
+            Self::ActionFailed | Self::ActionFailedNotDelivered => "action_failed",
         }
     }
 
@@ -579,6 +580,9 @@ mod tests {
         assert_eq!(Error::Timeout.response(true)["delivery"], "unknown");
         assert_eq!(Error::Timeout.response(false)["delivery"], "not_delivered");
         assert_eq!(Error::StaleRef.response(true)["delivery"], "not_delivered");
+        let held_key = Error::ActionFailedNotDelivered.response(true);
+        assert_eq!(held_key["code"], "action_failed");
+        assert_eq!(held_key["delivery"], "not_delivered");
     }
 
     #[test]

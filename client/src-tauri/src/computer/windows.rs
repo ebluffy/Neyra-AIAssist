@@ -64,6 +64,7 @@ struct Session {
     window: HWND,
     process: u32,
     root: IUIAutomationElement,
+    focused: IUIAutomationElement,
 }
 
 pub(super) struct Backend {
@@ -126,6 +127,7 @@ impl Backend {
         let process = process_of(window)?;
         probe(window, ctx)?;
         let root = checked(ctx, || unsafe { self.client.ElementFromHandle(window) })?;
+        let focused = checked(ctx, || unsafe { self.client.GetFocusedElement() })?;
         let mut refs = HashMap::new();
         let mut truncated = false;
         let tree = self.walk(&root, snapshot_id, 0, &mut refs, &mut truncated, ctx)?;
@@ -134,6 +136,7 @@ impl Backend {
             window,
             process,
             root,
+            focused,
         };
         self.check_window(&session, ctx)?;
         self.refs = refs;
@@ -221,6 +224,24 @@ impl Backend {
         .as_bool()
         {
             return Err(Error::StaleRef);
+        }
+        Ok(())
+    }
+
+    fn check_focus(&self, session: &Session, ctx: &Context) -> Result<(), Error> {
+        let focused = checked(ctx, || unsafe { self.client.GetFocusedElement() })
+            .map_err(|_| Error::StaleRef)?;
+        if !checked(ctx, || unsafe { self.client.CompareElements(&focused, &session.focused) })
+            .map_err(|_| Error::StaleRef)?
+            .as_bool()
+        {
+            return Err(Error::StaleRef);
+        }
+        if checked(ctx, || unsafe { focused.CurrentIsPassword() })
+            .map_err(|_| Error::StaleRef)?
+            .as_bool()
+        {
+            return Err(Error::PermissionDenied);
         }
         Ok(())
     }
@@ -321,7 +342,7 @@ impl Backend {
         if keys.iter().any(|(key, _)| key_is_down(*key))
             || [0x10, 0x11, 0x12, 0x5b, 0x5c].into_iter().any(key_is_down)
         {
-            return Err(Error::ActionFailed);
+            return Err(Error::ActionFailedNotDelivered);
         }
         let mut events: Vec<_> = keys
             .iter()
@@ -334,6 +355,7 @@ impl Backend {
             .collect();
         events.extend_from_slice(&releases);
         self.ensure_foreground(ctx)?;
+        self.check_focus(self.session.as_ref().ok_or(Error::StaleRef)?, ctx)?;
         let accepted = unsafe { SendInput(&events, std::mem::size_of::<INPUT>() as i32) };
         if accepted != events.len() as u32 {
             // An accepted prefix can contain key-down events even on failure.

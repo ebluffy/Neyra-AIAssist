@@ -229,9 +229,10 @@ async def _desktop_action(registry, owner, session, device, tool, arguments):
     try:
         result = await registry.call(owner, session, device, tool, arguments)
         if (turn is not None and tool in COMPUTER_MUTATIONS and isinstance(result, dict)
-                and (result.get('delivery') == 'unknown'
-                     or (result.get('retry') is False
-                         and result.get('code') in {'timeout', 'action_failed', 'cancelled'}))):
+                 and (result.get('delivery') == 'unknown'
+                      if 'delivery' in result else
+                      result.get('retry') is False
+                      and result.get('code') in {'timeout', 'action_failed', 'cancelled'})):
             turn.outcome_unknown = True
         return result
     except (ConnectionError, TimeoutError):

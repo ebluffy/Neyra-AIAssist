@@ -159,16 +159,19 @@ def test_native_unknown_delivery_blocks_mutations_but_allows_snapshot(tool, erro
     asyncio.run(scenario())
 
 
-def test_native_rejected_action_does_not_mark_delivery_unknown():
+@pytest.mark.parametrize('code', ['stale_ref', 'timeout', 'cancelled', 'action_failed'])
+def test_native_rejected_action_does_not_mark_delivery_unknown(code):
     async def scenario():
-        error = {'status': 'error', 'code': 'stale_ref', 'retry': False, 'delivery': 'not_delivered'}
+        error = {'status': 'error', 'code': code, 'retry': False, 'delivery': 'not_delivered'}
         registry, _, m = connect(tools=['client.computer_click'], reply=lambda name, args: error)
         turn = DesktopTurn()
         token = DESKTOP_TURN.set(turn)
         try:
             assert await _desktop_action(registry, 'owner', str(m.session_id), str(m.device_id),
-                                          'client.computer_click', {'ref': 'old:0'}) == error
+                                           'client.computer_click', {'ref': 'old:0'}) == error
             assert not turn.outcome_unknown
+            assert await _desktop_action(registry, 'owner', str(m.session_id), str(m.device_id),
+                                          'client.computer_click', {'ref': 'new:0'}) == error
         finally:
             DESKTOP_TURN.reset(token)
     asyncio.run(scenario())
