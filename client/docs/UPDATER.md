@@ -1,8 +1,8 @@
 # Desktop updater (Tauri 2)
 
 Signature checking is always on. The client never installs a file whose
-signature does not verify against the public key built into the app. No public
-release is created by CI; the release workflow only makes a draft.
+signature does not verify against the public key built into the app. Release
+CI publishes only after every platform build succeeds.
 
 ## How it works
 
@@ -34,13 +34,14 @@ release is created by CI; the release workflow only makes a draft.
 | stable | `https://github.com/ebluffy/Neyra-AIAssist/releases/latest/download/latest.json` |
 | beta | `https://github.com/ebluffy/Neyra-AIAssist/releases/download/client-beta/latest.json` |
 
-GitHub's `latest` never points at prereleases or drafts. Beta therefore uses a
-fixed prerelease tag `client-beta` that only holds the current beta `latest.json`.
-After you publish a beta release by hand, copy its `latest.json`:
-
-```sh
-gh release upload client-beta latest.json --clobber   # create client-beta as a prerelease once
-```
+GitHub's `latest` never points at prereleases or drafts. A `client-v*-beta.*`
+release is published as a prerelease, but does not update the stable `latest`
+endpoint. The beta URL is a separate rolling prerelease tag `client-beta`;
+the release workflow does not update it. To serve beta updates, maintain that
+prerelease separately with the beta release's `latest.json` and its referenced
+signed assets (or use a separate beta feed). Until then, the beta endpoint does
+not serve new releases. The app defaults to the beta channel, so select stable
+in settings to receive stable releases without a beta feed.
 
 Both URLs are hardcoded HTTPS. There is no user-editable endpoint.
 
@@ -53,17 +54,9 @@ and runs in PR CI. The release workflow also requires tag `client-v<version>`.
 
 ## Signing keys
 
-Production key (owner machine, never commit):
-
-```sh
-npm run tauri -- signer generate -w ./neyra-updater.key
-```
-
-1. Put the `.pub` text into `plugins.updater.pubkey` and commit.
-2. Add GitHub secrets `TAURI_SIGNING_PRIVATE_KEY` (key text) and
-   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
-3. Keep a backup of the key. If it is lost, installed clients cannot update and
-   need a manual reinstall. Changing `pubkey` has the same effect.
+Owner setup and release steps: [docs/RELEASE.md](../../docs/RELEASE.md).
+Keep a backup of the production key. If it is lost, installed clients cannot
+update and need a manual reinstall. Changing `pubkey` has the same effect.
 
 Production secrets are not available to this repo yet. Until they are set, the
 release workflow stops in its preflight job. It does not build unsigned releases.
@@ -103,8 +96,8 @@ version, the plugin installed it and rejected a tampered copy.
 Not covered by automation (owner, on real machines):
 
 - Windows NSIS update (passive installer, app restart) and SmartScreen.
-- A GitHub-hosted draft: download over the real endpoint, `latest.json` from
-  tauri-action, beta pointer `client-beta`.
+- A GitHub-hosted release: download over the real endpoint, `latest.json` from
+  tauri-action; beta feed, if maintained separately.
 - Restart after install on KDE Wayland; AppImage path preserved across update.
 - `.deb` update on Debian/Ubuntu (the plugin calls `pkexec dpkg -i`; not on Arch).
 
@@ -112,16 +105,17 @@ Not covered by automation (owner, on real machines):
 
 `.github/workflows/client-release.yml`, trigger: tag `client-v*` or manual run.
 
-1. Preflight: version equals tag, `TAURI_SIGNING_PRIVATE_KEY` is set, public key
+1. Preflight: version equals tag, both signing secrets are set, public key
    is not a placeholder or the test key, no `dangerous*` flags,
    `requireSignedVersion` is true. Fails with a clear message otherwise.
 2. Build on `windows-latest` (NSIS) and `ubuntu-22.04` (AppImage + deb) with
-   `tauri-apps/tauri-action`: **draft** release, `prerelease` when the tag has a
-   `-suffix`, updater `latest.json` included.
-3. Every `.sig` must carry the release version, else the job fails.
+   `tauri-apps/tauri-action`: draft release, `prerelease` when the tag has a
+   `-suffix`, updater `latest.json` uploaded by the action. Builds run serially
+   so each platform's updater entry is retained.
+3. Every `.sig` must carry the release version, else the job fails. Only after
+   both builds succeed does the final job publish the release automatically.
 
-Nothing is published. After review you publish the draft by hand, then update
-`client-beta` for the beta channel. Code signing (Authenticode) is not set up.
+Code signing (Authenticode) is not set up.
 
 ## Manual N to N+1 check
 

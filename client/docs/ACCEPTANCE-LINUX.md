@@ -73,8 +73,8 @@ FUSE 2 для обычного запуска AppImage: `sudo pacman -S --needed
 2. Текст `.pub` записать в `plugins.updater.pubkey` и закоммитить только публичную половину.
 3. Секреты GitHub `TAURI_SIGNING_PRIVATE_KEY` и `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Без них workflow `.github/workflows/client-release.yml` останавливается на preflight.
 4. Одна версия в `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` и `src-tauri/Cargo.lock`. Проверка: `cd client && npm run check:versions`.
-5. Тег `client-v<версия>` (для беты с суффиксом) или ручной запуск workflow «Desktop release (draft)». Workflow создаёт черновик и сам его не публикует.
-6. После ручной публикации, для канала «Бета»: `gh release upload client-beta latest.json --clobber`. Стабильный канал читает только опубликованный GitHub Latest.
+5. Тег `client-v<версия>` (для беты с суффиксом) или ручной запуск workflow «Desktop release» с тегом. После успешной сборки обеих платформ workflow публикует релиз автоматически.
+6. Стабильный канал читает опубликованный GitHub Latest. Пререлизы туда не попадают; для бета-канала нужен отдельный feed (см. `client/docs/UPDATER.md`).
 7. AppImage версии N лежит в каталоге, куда пользователь может писать (`~/Applications`). В клиенте: проверить → установить → перезапустить. Сверить адрес, токен, тему, разрешения, device id и что файл по тому же пути заменён.
 
 Windows NSIS и SmartScreen сюда не входят. Подробный чеклист с вашими путями печатает сам скрипт.
