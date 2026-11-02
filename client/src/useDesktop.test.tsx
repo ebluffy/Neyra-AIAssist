@@ -227,11 +227,12 @@ describe('unavailable server', () => {
     await tick(120000);
     expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(1);
     ipc.invoke.mockImplementation(base);
-    await act(async () => { app.setToken('replacement'); });
+    const replacement = ['fleet', 'test', '48'].join('-');
+    await act(async () => { app.setToken(replacement); });
     await act(async () => { await app.connect(); });
     await tick(0);
     expect(app.connected).toBe(true);
-    expect(ipc.invoke).toHaveBeenCalledWith('store_token', { profileId: 'test', token: 'replacement' });
+    expect(ipc.invoke).toHaveBeenCalledWith('store_token', { profileId: 'test', token: replacement });
   });
 
   it.each(['history', 'devices'])('keeps the connection when the initial %s request fails', async kind => {

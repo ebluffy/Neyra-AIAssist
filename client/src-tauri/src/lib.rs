@@ -400,18 +400,46 @@ async fn connect(
         .map_err(|_| "Сначала сохраните токен")?;
     let hello = manifest(&state, &p)?;
     let sockets = connect_sockets(&p, &token, &hello, CONNECT_TIMEOUT).await?;
-    let _guard = state.transport.lock().map_err(lock_error)?;
-    if state.epoch.load(Ordering::SeqCst) != epoch {
-        return Err("Подключение отменено".into());
-    }
-    disconnect_locked(&state)?;
-    let epoch = state.epoch.load(Ordering::SeqCst);
-    *state.active_profile.lock().map_err(lock_error)? = Some(profile_id);
-    start_socket_workers(app, &state, sockets, epoch)
+    install_connected_sockets(&state.transport, &state.epoch, epoch, sockets, |sockets| {
+        disconnect_locked(&state)?;
+        let epoch = state.epoch.load(Ordering::SeqCst);
+        *state.active_profile.lock().map_err(lock_error)? = Some(profile_id);
+        start_socket_workers(app, &state, sockets, epoch)
+    })
+    .await
 }
 
 type ClientSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn close_sockets(sockets: Vec<(ClientSocket, &'static str)>) {
+    futures_util::future::join_all(sockets.into_iter().map(|(mut socket, _)| async move {
+        let _ = socket_send(&mut socket, Message::Close(None)).await;
+    }))
+    .await;
+}
+
+async fn install_connected_sockets(
+    transport: &Mutex<()>,
+    current_epoch: &AtomicU64,
+    epoch: u64,
+    sockets: Vec<(ClientSocket, &'static str)>,
+    install: impl FnOnce(Vec<(ClientSocket, &'static str)>) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut sockets = Some(sockets);
+    let result = (|| {
+        let _guard = transport.lock().map_err(lock_error)?;
+        if current_epoch.load(Ordering::SeqCst) != epoch {
+            return Err("Подключение отменено".into());
+        }
+        install(sockets.take().unwrap())
+    })();
+    // Cancellation must flush Close without retaining the synchronous transport lock.
+    if let Some(sockets) = sockets {
+        close_sockets(sockets).await;
+    }
+    result
+}
 
 async fn connect_sockets(
     p: &Profile,
@@ -420,38 +448,49 @@ async fn connect_sockets(
     timeout: Duration,
 ) -> Result<Vec<(ClientSocket, &'static str)>, String> {
     let mut sockets = Vec::new();
-    for (path, kind) in [
-        ("/v1/desktop/bridge", "bridge"),
-        ("/v1/desktop/voice", "voice"),
-    ] {
-        let mut url = server_url(p, path)?;
-        let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
-        url.set_scheme(scheme).map_err(|_| "Неверный адрес")?;
-        let mut request = url
-            .as_str()
-            .into_client_request()
-            .map_err(|_| "Неверный адрес")?;
-        request.headers_mut().insert(
-            "Authorization",
-            format!("Bearer {token}")
-                .parse()
-                .map_err(|_| "Неверный токен")?,
-        );
-        let (mut ws, _) = tokio::time::timeout(timeout, connect_async(request))
-            .await
-            .map_err(|_| "Сервер не ответил")?
-            .map_err(|error| match error {
-                tokio_tungstenite::tungstenite::Error::Http(response)
-                    if matches!(response.status().as_u16(), 401 | 403) =>
-                {
-                    "AUTH_REJECTED"
-                }
-                _ => "Подключение отклонено; проверьте токен и версию сервера",
-            })?;
-        socket_send(&mut ws, Message::Text(hello.to_string().into()))
+    let result: Result<(), String> = async {
+        for (path, kind) in [
+            ("/v1/desktop/bridge", "bridge"),
+            ("/v1/desktop/voice", "voice"),
+        ] {
+            let mut url = server_url(p, path)?;
+            let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
+            url.set_scheme(scheme).map_err(|_| "Неверный адрес")?;
+            let mut request = url
+                .as_str()
+                .into_client_request()
+                .map_err(|_| "Неверный адрес")?;
+            request.headers_mut().insert(
+                "Authorization",
+                format!("Bearer {token}")
+                    .parse()
+                    .map_err(|_| "Неверный токен")?,
+            );
+            let (ws, _) = tokio::time::timeout(timeout, connect_async(request))
+                .await
+                .map_err(|_| "Сервер не ответил")?
+                .map_err(|error| match error {
+                    tokio_tungstenite::tungstenite::Error::Http(response)
+                        if matches!(response.status().as_u16(), 401 | 403) =>
+                    {
+                        "AUTH_REJECTED"
+                    }
+                    _ => "Подключение отклонено; проверьте токен и версию сервера",
+                })?;
+            sockets.push((ws, kind));
+            socket_send(
+                &mut sockets.last_mut().unwrap().0,
+                Message::Text(hello.to_string().into()),
+            )
             .await
             .map_err(|_| "Подключение закрыто")?;
-        sockets.push((ws, kind));
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        close_sockets(sockets).await;
+        return Err(error);
     }
     Ok(sockets)
 }
@@ -1831,6 +1870,14 @@ fn monitor_session(app: tauri::AppHandle) {
 mod tests {
     use super::*;
 
+    fn test_token() -> String {
+        let mut token = ["fleet", "test", "49"].join("-");
+        token.push('+');
+        token.push('/');
+        token.push('=');
+        token
+    }
+
     fn local_profile(address: std::net::SocketAddr) -> Profile {
         Profile {
             id: "transport-test".into(),
@@ -1847,7 +1894,7 @@ mod tests {
         drop(listener);
         for _ in 0..3 {
             assert!(
-                connect_sockets(&profile, "test", &json!({}), Duration::from_secs(1))
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
                     .await
                     .unwrap_err()
                     .contains("отклонено")
@@ -1871,12 +1918,12 @@ mod tests {
         });
         for _ in 0..3 {
             assert!(
-                connect_sockets(&profile, "test", &json!({}), Duration::from_secs(1))
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
                     .await
                     .is_err()
             );
         }
-        assert!(!matches!(server.await.unwrap(), Some(Ok(Message::Text(_)))));
+        assert!(matches!(server.await.unwrap(), Some(Ok(Message::Close(_)))));
     }
 
     #[tokio::test]
@@ -1911,7 +1958,7 @@ mod tests {
                 });
                 let error = connect_sockets(
                     &profile,
-                    "test",
+                    &test_token(),
                     &json!({"type":"hello"}),
                     Duration::from_millis(100),
                 )
@@ -1967,12 +2014,13 @@ mod tests {
             }
             peers
         });
-        let mut existing = connect_sockets(&profile, "test", &json!({}), Duration::from_secs(1))
-            .await
-            .unwrap();
+        let mut existing =
+            connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+                .await
+                .unwrap();
         for _ in 0..4 {
             assert!(
-                connect_sockets(&profile, "test", &json!({}), Duration::from_secs(1))
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
                     .await
                     .is_err()
             );
@@ -2018,12 +2066,13 @@ mod tests {
                     .await
                     .unwrap();
                     for mut socket in accepted {
-                        assert!(socket.next().await.is_none_or(|frame| frame.is_err()));
+                        assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
                     }
                 });
-                let error = connect_sockets(&profile, "test", &json!({}), Duration::from_secs(1))
-                    .await
-                    .unwrap_err();
+                let error =
+                    connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+                        .await
+                        .unwrap_err();
                 if status == 503 {
                     assert_ne!(error, "AUTH_REJECTED");
                 } else {
@@ -2032,6 +2081,49 @@ mod tests {
                 server.await.unwrap();
             }
         }
+    }
+
+    #[tokio::test]
+    async fn cancelled_connection_closes_both_sockets_without_installing_workers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let profile = local_profile(listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                assert!(matches!(socket.next().await, Some(Ok(Message::Text(_)))));
+                sockets.push(socket);
+            }
+            for mut socket in sockets {
+                assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
+            }
+        });
+        let transport = Arc::new(Mutex::new(()));
+        let epoch = Arc::new(AtomicU64::new(1));
+        let sockets = connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+            .await
+            .unwrap();
+        // Disconnect wins after both handshakes but before worker installation.
+        epoch.fetch_add(1, Ordering::SeqCst);
+        let lock = transport.clone();
+        // Spawning also requires the production future to be Send across cleanup awaits.
+        let cancelled = tokio::spawn(async move {
+            install_connected_sockets(&lock, &epoch, 1, sockets, |_| {
+                panic!("cancelled sockets must never install workers")
+            })
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            assert_eq!(
+                cancelled.await.unwrap().unwrap_err(),
+                "Подключение отменено"
+            );
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+        assert!(transport.try_lock().is_ok());
     }
 
     async fn worker_test_sockets() -> (
@@ -2211,9 +2303,10 @@ mod tests {
                     while let Some(Ok(Message::Text(_))) = socket.next().await {}
                 }
             });
-            let sockets = connect_sockets(&profile, "test", &json!({}), Duration::from_secs(1))
-                .await
-                .unwrap();
+            let sockets =
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+                    .await
+                    .unwrap();
             let (tx0, mut rx0) = mpsc::unbounded_channel();
             let (tx1, mut rx1) = mpsc::unbounded_channel();
             let mut sockets = sockets.into_iter();
