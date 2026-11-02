@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { bindProfileSession, ensureSessionId, firstServerSession, isUuid, nextId, profileSessionRepair, selectedProfile, sessionOrNew, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
 import { type DraftEvent, type RunEvent, describeRun } from './commands';
 import { type SheetId, themeId } from './theme';
-import { acceptLiveRun, conversionNotice, defaultVoice, formatError, liveStartOutcome, meterLevel, unwrapApi, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
+import { acceptLiveRun, conversionNotice, defaultVoice, formatError, meterLevel, settleLiveStart, unwrapApi, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
 
 export function useDesktop() {
   const [settings, setSettings] = useState<Settings>();
@@ -270,23 +270,16 @@ export function useDesktop() {
   const draftVoice = (patch: Partial<VoiceSettings>) => { if (settings) setSettings({ ...settings, voice: { ...voice, ...patch } }); };
   const refreshVoice = () => run(async () => { setVoiceStatus(await invoke<VoiceStatus>('voice_status')); });
   const finishLiveStart = async (epoch: number, id: number) => {
-    if (liveStartOutcome(epoch, liveEpoch.current) === 'stop') {
-      try { await invoke('live_stop'); } catch { /* End already stopped the mic. */ }
-      return;
-    }
+    const open = await settleLiveStart(epoch, liveEpoch.current, () => invoke('live_stop'));
+    if (!open) return false;
     rememberLive(id);
     setMuted(false);
+    return true;
   };
   const startLive = () => run(async () => {
     const epoch = liveEpoch.current;
     muteHold.current = false;
-    const id = await invoke<number>('live_start');
-    if (liveStartOutcome(epoch, liveEpoch.current) === 'stop') {
-      try { await invoke('live_stop'); } catch { /* End already stopped the mic. */ }
-      return;
-    }
-    rememberLive(id);
-    setLiveOpen(true); setMuted(false); setLiveState('idle');
+    if (await finishLiveStart(epoch, await invoke<number>('live_start'))) { setLiveOpen(true); setLiveState('idle'); }
   });
   const toggleMute = () => run(async () => {
     if (muted) {

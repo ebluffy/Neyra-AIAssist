@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptLiveRun, validServerUrl, formatError, newProfile, absolutePath, meterLevel, liveLabel, liveStartOutcome, conversionNotice, unwrapApi } from './types';
+import { acceptLiveRun, validServerUrl, formatError, newProfile, absolutePath, meterLevel, liveLabel, settleLiveStart, conversionNotice, unwrapApi } from './types';
 describe('allowed folders', () => {
   it('accepts only absolute paths', () => { expect(absolutePath('/home/me/Docs')).toBe(true); expect(absolutePath('C:\\Users\\me')).toBe(true); for (const v of ['Docs', '~/Docs', '..\\x', '']) expect(absolutePath(v)).toBe(false); });
 });
@@ -12,10 +12,16 @@ describe('server profiles', () => {
 describe('live voice labels', () => {
   it('clamps the mic meter', () => { expect(meterLevel(-100)).toBe(0); expect(meterLevel(0)).toBe(1); expect(meterLevel(-35)).toBeCloseTo(0.5); });
   it('says what the mic waits for', () => { expect(liveLabel('idle', 'wake')).toContain('Нейра'); expect(liveLabel('idle', 'always')).toBe('Слушаю'); });
-  it('stops a mic that starts after the conversation ended', () => {
-    const atUnmute = 4;
-    expect(liveStartOutcome(atUnmute, atUnmute)).toBe('apply');
-    expect(liveStartOutcome(atUnmute, atUnmute + 1)).toBe('stop');
+  it('stops a mic that starts after the conversation ended', async () => {
+    let epoch = 4;
+    const atUnmute = epoch;
+    const calls: string[] = [];
+    epoch += 1;
+    const opened = await settleLiveStart(atUnmute, epoch, async () => { calls.push('live_stop'); });
+    expect(opened).toBe(false);
+    expect(calls).toEqual(['live_stop']);
+    expect(await settleLiveStart(epoch, epoch, async () => { calls.push('live_stop'); })).toBe(true);
+    expect(calls).toEqual(['live_stop']);
   });
   it('never hides a conversion fallback', () => { expect(conversionNotice('passthrough', 'timeout')).toContain('исходный голос'); expect(conversionNotice('stopped', 'bad_output')).toContain('остановлена'); expect(conversionNotice(undefined)).toBe(''); });
 });

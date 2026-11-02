@@ -46,9 +46,11 @@ export function validServerUrl(value: string): boolean { try { const u = new URL
 export function meterLevel(db: number): number { return Math.min(1, Math.max(0, (db + 60) / 50)); }
 const liveLabels: Record<LiveState, string> = { off: 'Микрофон выключен', idle: 'Слушаю', armed: 'Слушаю команду', listening: 'Слышу вас', thinking: 'Думаю', speaking: 'Говорю' };
 export function liveLabel(state: LiveState, mode: VoiceSettings['mode']): string { return state === 'idle' && mode === 'wake' ? 'Жду слово «Нейра»' : liveLabels[state]; }
-/** A live_start that began before End must be stopped and must not reopen the mic. */
-export function liveStartOutcome(epochAtStart: number, epochNow: number): 'apply' | 'stop' {
-  return epochAtStart === epochNow ? 'apply' : 'stop';
+/** Returns whether a finished live_start still belongs to the open conversation. A false result already stopped the mic. */
+export async function settleLiveStart(epochAtStart: number, epochNow: number, stop: () => Promise<void>): Promise<boolean> {
+  if (epochAtStart === epochNow) return true;
+  try { await stop(); } catch { /* End already stopped the mic. */ }
+  return false;
 }
 export function conversionNotice(status?: string, code?: string): string {
   if (status === 'passthrough') return `Голос не преобразован (${code ?? 'ошибка'}): звучит исходный голос TTS.`;
