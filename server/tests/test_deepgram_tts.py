@@ -1,4 +1,5 @@
 """Tests for Deepgram TTS provider with mocked HTTP."""
+import asyncio
 import json
 import struct
 import wave
@@ -33,68 +34,64 @@ def mock_handler_success(request: httpx.Request) -> httpx.Response:
     # Verify headers
     assert request.headers["Authorization"] in {"Token test-api-key", "Token test-key"}
     assert request.headers["Content-Type"] == "application/json"
-    
+
     # Verify body
     import json
     body = json.loads(request.content.decode())
     assert "text" in body
-    
+
     # Return fake PCM data (100ms of silence at 24kHz)
     pcm_data = make_pcm_16bit_mono(100, 24000)
-    
+
     return httpx.Response(200, content=pcm_data)
 
 
-@pytest.mark.asyncio
-async def test_synthesize_success():
+def test_synthesize_success():
     """Test successful synthesis with correct URL, headers, and body."""
     transport = httpx.MockTransport(mock_handler_success)
-    
-    audio = await synthesize_to_wav_bytes(
+
+    audio = asyncio.run(synthesize_to_wav_bytes(
         "Hello world",
         api_key="test-api-key",
         model="flux-polina-ru",
         expressivity=0,
         sample_rate=24000,
         transport=transport,
-    )
-    
+    ))
+
     assert len(audio) > 44  # WAV header + data
     assert audio[:4] == b"RIFF"
     assert audio[8:12] == b"WAVE"
 
 
-@pytest.mark.asyncio
-async def test_wav_header_correctness():
+def test_wav_header_correctness():
     """Test that WAV header has correct length (not bogus placeholder)."""
     transport = httpx.MockTransport(mock_handler_success)
-    
-    audio = await synthesize_to_wav_bytes(
+
+    audio = asyncio.run(synthesize_to_wav_bytes(
         "Test",
         api_key="test-key",
         transport=transport,
-    )
-    
+    ))
+
     # Parse and verify the header
     meta = parse_wav_header(audio)
     assert meta["channels"] == 1
     assert meta["sample_width"] == 2  # 16-bit
     assert meta["framerate"] == 24000
-    
+
     # Verify RIFF chunk size matches actual file size
     riff_size = struct.unpack("<I", audio[4:8])[0]
     assert riff_size == len(audio) - 8
 
 
-@pytest.mark.asyncio
-async def test_missing_api_key():
+def test_missing_api_key():
     """Test that missing API key raises ValueError."""
     with pytest.raises(ValueError, match="DEEPGRAM_API_KEY is not set"):
-        await synthesize_to_wav_bytes("Test", api_key="")
+        asyncio.run(synthesize_to_wav_bytes("Test", api_key=""))
 
 
-@pytest.mark.asyncio
-async def test_http_400_error():
+def test_http_400_error():
     """Test HTTP 400 error with err_code parsing."""
     def mock_error(request: httpx.Request) -> httpx.Response:
         import json
@@ -102,15 +99,14 @@ async def test_http_400_error():
             400,
             content=json.dumps({"err_code": "invalid_text", "message": "Text is invalid"}),
         )
-    
+
     transport = httpx.MockTransport(mock_error)
-    
+
     with pytest.raises(RuntimeError, match=r"Deepgram TTS HTTP 400.*err_code=invalid_text"):
-        await synthesize_to_wav_bytes("Test", api_key="test-key", transport=transport)
+        asyncio.run(synthesize_to_wav_bytes("Test", api_key="test-key", transport=transport))
 
 
-@pytest.mark.asyncio
-async def test_url_and_query_params():
+def test_url_and_query_params():
     """Test that URL and query parameters are correct."""
     def mock_verify_url(request: httpx.Request) -> httpx.Response:
         url_str = str(request.url)
@@ -121,31 +117,29 @@ async def test_url_and_query_params():
         assert "container=none" in url_str
         assert "sample_rate=24000" in url_str
         return httpx.Response(200, content=make_pcm_16bit_mono())
-    
+
     transport = httpx.MockTransport(mock_verify_url)
-    
-    await synthesize_to_wav_bytes(
+
+    asyncio.run(synthesize_to_wav_bytes(
         "Test",
         api_key="test-key",
         transport=transport,
-    )
+    ))
 
 
-@pytest.mark.asyncio
-async def test_http_500_error():
+def test_http_500_error():
     """Test HTTP 500 error without err_code."""
     def mock_error(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, content=b"Internal Server Error")
-    
+
     transport = httpx.MockTransport(mock_error)
-    
+
     with pytest.raises(RuntimeError, match=r"^Deepgram TTS HTTP 500$"):
-        await synthesize_to_wav_bytes("Test", api_key="test-key", transport=transport)
+        asyncio.run(synthesize_to_wav_bytes("Test", api_key="test-key", transport=transport))
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("value", [0, 0.0, "0", -2, 2, 1.5, "0.5", 3, None, True, float("inf")])
-async def test_expressivity_integer_query(value, caplog):
+def test_expressivity_integer_query(value, caplog):
     valid = type(value) in (int, float) and value in {-2, -1, 0, 1, 2} or value == "0"
     expected = str(int(value)) if valid else "0"
 
@@ -153,14 +147,13 @@ async def test_expressivity_integer_query(value, caplog):
         assert request.url.params["expressivity"] == expected
         return httpx.Response(200, content=b"\x00\x00")
 
-    await synthesize_to_wav_bytes("Private text", api_key="test-key", expressivity=value,
-                                  transport=httpx.MockTransport(handler))
+    asyncio.run(synthesize_to_wav_bytes("Private text", api_key="test-key", expressivity=value,
+                                       transport=httpx.MockTransport(handler)))
     if not valid:
         assert "invalid expressivity" in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_exact_request_and_wav_payload():
+def test_exact_request_and_wav_payload():
     pcm = b"\x01\x02" * 50
 
     def handler(request):
@@ -175,8 +168,8 @@ async def test_exact_request_and_wav_payload():
         assert request.extensions["timeout"] == {"connect": 10, "read": 25, "write": 25, "pool": 25}
         return httpx.Response(200, content=pcm)
 
-    audio = await synthesize_to_wav_bytes("Привет", api_key="test-key", sample_rate=16000,
-                                         timeout=25, transport=httpx.MockTransport(handler))
+    audio = asyncio.run(synthesize_to_wav_bytes("Привет", api_key="test-key", sample_rate=16000,
+                                              timeout=25, transport=httpx.MockTransport(handler)))
     assert audio[44:] == pcm
     assert struct.unpack("<I", audio[40:44])[0] == len(pcm)
     assert parse_wav_header(audio) == {
@@ -184,9 +177,8 @@ async def test_exact_request_and_wav_payload():
     }
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["timeout", "network", "empty", "long_code", "non_json", "json_list"])
-async def test_safe_failures(failure, caplog):
+def test_safe_failures(failure, caplog):
     private = "PRIVATE_REQUEST_TEXT_AND_KEY"
 
     def handler(request):
@@ -204,8 +196,8 @@ async def test_safe_failures(failure, caplog):
         return httpx.Response(500, content=private.encode())
 
     with pytest.raises((RuntimeError, ValueError)) as caught:
-        await synthesize_to_wav_bytes(private, api_key=private, timeout=3,
-                                      transport=httpx.MockTransport(handler))
+        asyncio.run(synthesize_to_wav_bytes(private, api_key=private, timeout=3,
+                                           transport=httpx.MockTransport(handler)))
     assert private not in str(caught.value)
     assert private not in caplog.text
     assert caught.value.__cause__ is None
@@ -215,9 +207,8 @@ async def test_safe_failures(failure, caplog):
     assert private not in "".join(traceback.format_exception(caught.value))
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("code", ["private text", {"text": "private text"}])
-async def test_untrusted_error_code_is_not_echoed(code):
+def test_untrusted_error_code_is_not_echoed(code):
     transport = httpx.MockTransport(lambda r: httpx.Response(400, json={"err_code": code, "message": "private text"}))
     with pytest.raises(RuntimeError, match=r"^Deepgram TTS HTTP 400$"):
-        await synthesize_to_wav_bytes("private text", api_key="secret", transport=transport)
+        asyncio.run(synthesize_to_wav_bytes("private text", api_key="secret", transport=transport))

@@ -319,8 +319,12 @@ def resolve_tts_runtime(config: dict[str, Any]) -> dict[str, Any]:
     loc = _as_dict(tts.get("local"))
     cld = _as_dict(tts.get("cloud"))
     active = loc if primary == "local" else cld if primary == "cloud" else {}
-    if primary == "cloud" and not resolve_tts_providers(config):
-        errs.append("no usable cloud TTS provider credentials")
+    if primary == "cloud":
+        provider = tts_provider(cld)
+        if provider not in ("deepgram", "yandex"):
+            errs.append(f"unknown cloud TTS provider: {provider!r}")
+        elif not resolve_tts_providers(config):
+            errs.append("no usable cloud TTS provider credentials")
     return {
         "language": voice.get("language") or "ru",
         "prefer": _norm_prefer(tts.get("prefer"), "cloud"),
@@ -334,15 +338,12 @@ def resolve_tts_runtime(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _tts_provider(block: dict[str, Any]) -> str:
-    """Active cloud TTS provider: ``deepgram`` (default) | ``yandex``."""
-    prov = str(block.get("provider") or "").strip().lower()
-    if prov in ("deepgram", "yandex"):
-        return prov
-    return "deepgram"
+def tts_provider(block: dict[str, Any]) -> str:
+    """Cloud TTS provider; absent/blank means Deepgram, unknown names stay visible."""
+    return str(block.get("provider") or "").strip().lower() or "deepgram"
 
 
-def _tts_api_key(block: dict[str, Any], provider: str) -> str:
+def tts_api_key(block: dict[str, Any], provider: str) -> str:
     """
     Resolve the provider API key.
 
@@ -351,6 +352,8 @@ def _tts_api_key(block: dict[str, Any], provider: str) -> str:
     """
     import os
 
+    if provider not in ("deepgram", "yandex"):
+        return ""
     env_name = "DEEPGRAM_API_KEY" if provider == "deepgram" else "YANDEX_API_KEY"
     nested = _as_dict(block.get(provider)).get("api_key")
     if nested and str(nested).strip():
@@ -362,7 +365,7 @@ def _tts_api_key(block: dict[str, Any], provider: str) -> str:
     return (os.environ.get(env_name) or "").strip()
 
 
-def _tts_folder_id(block: dict[str, Any]) -> str:
+def tts_folder_id(block: dict[str, Any]) -> str:
     import os
 
     return str(
@@ -379,8 +382,8 @@ def tts_provider_usable(config: dict[str, Any], provider: str) -> bool:
     voice = normalize_voice_config(config)
     tts = _as_dict(voice.get("tts"))
     cld = _as_dict(tts.get("cloud"))
-    return bool(_tts_api_key(cld, provider)) and (
-        provider != "yandex" or bool(_tts_folder_id(cld))
+    return bool(tts_api_key(cld, provider)) and (
+        provider != "yandex" or bool(tts_folder_id(cld))
     )
 
 
@@ -396,8 +399,11 @@ def resolve_tts_providers(config: dict[str, Any]) -> list[str]:
     voice = normalize_voice_config(config)
     tts = _as_dict(voice.get("tts"))
     cld = _as_dict(tts.get("cloud"))
-    primary = _tts_provider(cld)
-    candidates = ("deepgram", "yandex") if primary == "deepgram" else ("yandex",)
+    primary = tts_provider(cld)
+    candidates = {
+        "deepgram": ("deepgram", "yandex"),
+        "yandex": ("yandex",),
+    }.get(primary, ())
     return [p for p in candidates if tts_provider_usable(config, p)]
 
 
@@ -449,13 +455,14 @@ def collect_voice_soft_errors(config: dict[str, Any]) -> list[str]:
             voice = normalize_voice_config(config)
             ttscfg = _as_dict(voice.get("tts"))
             cld = _as_dict(ttscfg.get("cloud"))
-            dgkey = _tts_api_key(cld, "deepgram")
-            yakey = _tts_api_key(cld, "yandex")
-            if not dgkey:
+            primary = tts_provider(cld)
+            dgkey = tts_api_key(cld, "deepgram")
+            yakey = tts_api_key(cld, "yandex")
+            if primary == "deepgram" and not dgkey:
                 out.append(
                     "TTS(cloud/deepgram): нет DEEPGRAM_API_KEY — озвучка не заработает"
                 )
-            if not yakey or not _tts_folder_id(cld):
+            if primary in ("deepgram", "yandex") and (not yakey or not tts_folder_id(cld)):
                 out.append(
                     "TTS(cloud/yandex): нет YANDEX_API_KEY/folder_id — озвучка не заработает"
                 )
