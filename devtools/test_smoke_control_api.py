@@ -29,6 +29,7 @@ class SmokeLifecycleTests(unittest.TestCase):
 
         with temporary_directory(prefix="neyra-smoke-test-") as root:
             def workspace(*args, **kwargs):
+                self.assertNotIn("dir", kwargs, "Smoke artifacts must use the system temporary directory")
                 kwargs["dir"] = root
                 return temporary_directory(*args, **kwargs)
 

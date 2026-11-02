@@ -3,12 +3,20 @@
 Из корня репозитория после установки зависимостей:
 
 ```bash
-python -m pip install fastapi 'uvicorn[standard]' httpx pyyaml python-multipart
+grep -E '^(fastapi|uvicorn|httpx|pyyaml|python-multipart)([<>=!~]|$)' server/requirements.txt |
+  python -m pip install -r /dev/stdin websockets
 npm ci --prefix client
 python devtools/smoke_control_api.py
 ```
 
-Нужны Python 3.12+, Node.js 22+ и OpenSSL CLI. Установку пакетов выполняют заранее; сам
+Smoke поддерживает Linux/macOS; Windows для этого скрипта не поддерживается и
+не проверялась. Это ограничение smoke, а не десктоп-клиента: скрипт использует
+POSIX-окружение дочерних процессов, сигналы и установленный OpenSSL CLI. На Windows
+запускайте smoke в WSL с Linux-версиями Python, Node.js и OpenSSL.
+
+Нужны Python 3.12+, Node.js 22+ и OpenSSL CLI. Команда выше выбирает минимальные
+Python-зависимости прямо из `server/requirements.txt`, сохраняя серверные ограничения
+версий; `websockets` явно добавлен как backend Uvicorn. Установку пакетов выполняют заранее; сам
 smoke не обращается к внешним сервисам или стенду. Дополнительные серверные
 зависимости (LLM, Chroma, Discord, MCP) не нужны.
 
@@ -21,9 +29,13 @@ smoke не обращается к внешним сервисам или сте
   `/api/v1/chat` с детерминированным ответом mock-агента.
 - Реальное TLS/WSS-соединение `/api/v1/ws/chat`: отказ без токена, затем
   авторизованные `hello`, `ping`/`pong`, `chat`, `token` и `done`.
+- Путь десктоп-клиента `/api/v1/desktop/bridge`: отказ WSS без Bearer-токена,
+  затем manifest формата `manifest()` из `client/src-tauri/src/lib.rs`, серверный
+  `hello` (`neyra.desktop.v1`), обновление `capabilities`, `chat`
+  и поток `token`/`done`. Проверяются device ID, совпадение `request_id`, содержимое
+  ответа и закрытие WSS.
   `client/scripts/smoke-control-api.mjs` — Node-эквивалент транспорта клиента
-  (HTTPS/WSS, Bearer, JSON); графический Tauri-клиент не запускается. Проверяется
-  именно legacy-протокол `neyra.ws.chat.v1`, а не desktop bridge/voice.
+  (HTTPS/WSS, Bearer, JSON); графический Tauri-клиент и desktop voice не запускаются.
 - Временный self-signed сертификат проверяется через отдельный CA только
   для этих запросов. Глобальное отключение проверки TLS не используется.
 
@@ -31,7 +43,9 @@ smoke не обращается к внешним сервисам или сте
 
 Токен генерируется заново для каждого запуска и передаётся через окружение,
 не через аргументы командной строки. Временные TLS-ключи, конфигурация,
-runtime data и лог дочернего процесса находятся в `TemporaryDirectory`.
+runtime data и лог дочернего процесса находятся в `TemporaryDirectory` в системном
+tmp, вне рабочего дерева репозитория. Защитный `.gitignore` также исключает
+`.control-api-smoke-*/`, оставшиеся от старых запусков в репозитории.
 Пользовательские `.env`, `config.yaml`, память и ключи не загружаются.
 LLM, memory, monitor и backup заменены offline-реализациями. Защитные заглушки
 блокируют исходящие вызовы HTTPX и Python socket в серверном процессе; это не
@@ -39,8 +53,10 @@ OS sandbox. HTTP readiness игнорирует настройки proxy, Node-�
 только loopback URL без credentials/query и не следует редиректам.
 
 При успехе вывод заканчивается `Offline Control API smoke: PASS`, код выхода 0.
-Ошибка запуска, HTTP/WSS, TLS или таймаут дают ненулевой код. Таймаут готовности
-сервера можно изменить: `python devtools/smoke_control_api.py --timeout 30`.
+Ошибка запуска, HTTP/WSS, TLS или таймаут дают ненулевой код. Таймаут на каждый этап
+(OpenSSL, готовность сервера, Node-клиент) можно изменить:
+`python devtools/smoke_control_api.py --timeout 30`. Это не общий лимит всего smoke;
+у HTTP/WSS-запросов Node-клиента дополнительно есть собственные короткие таймауты.
 При успехе, ошибке и SIGINT/SIGTERM сервер завершается (с принудительным
 kill после таймаута), временный каталог удаляется. Не следует прерывать
 процесс через SIGKILL, который не позволяет выполнить cleanup.

@@ -1,5 +1,6 @@
-// Node equivalent of the client's TLS + Bearer transport, for the legacy chat WS.
+// Node equivalent of the client's TLS + Bearer desktop bridge, plus legacy chat.
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import https from 'node:https';
 import { once } from 'node:events';
 import WebSocket from 'ws';
@@ -53,22 +54,25 @@ const wsUrl = new URL(`${base}/v1/ws/chat`);
 wsUrl.protocol = 'wss:';
 
 // The HTTP auth gate must also protect the WebSocket upgrade.
-const deniedSocket = new WebSocket(wsUrl, { handshakeTimeout: 5000 });
-try {
-  await new Promise((resolve, reject) => {
-    deniedSocket.on('error', reject);
-    deniedSocket.on('open', () => {
-      reject(new Error('Unauthenticated WebSocket accepted'));
+async function assertSocketDenied(url) {
+  const deniedSocket = new WebSocket(url, { handshakeTimeout: 5000 });
+  try {
+    await new Promise((resolve, reject) => {
+      deniedSocket.on('error', reject);
+      deniedSocket.on('open', () => {
+        reject(new Error('Unauthenticated WebSocket accepted'));
+      });
+      deniedSocket.on('unexpected-response', (_req, res) => {
+        res.resume();
+        try { assert.ok([401, 403].includes(res.statusCode)); resolve(); }
+        catch (error) { reject(error); }
+      });
     });
-    deniedSocket.on('unexpected-response', (_req, res) => {
-      res.resume();
-      try { assert.ok([401, 403].includes(res.statusCode)); resolve(); }
-      catch (error) { reject(error); }
-    });
-  });
-} finally {
-  deniedSocket.terminate();
+  } finally {
+    deniedSocket.terminate();
+  }
 }
+await assertSocketDenied(wsUrl);
 
 const ws = new WebSocket(wsUrl, { headers, handshakeTimeout: 5000 });
 const timer = setTimeout(() => ws.terminate(), 5000);
@@ -118,4 +122,74 @@ try {
   clearTimeout(timer);
   ws.terminate();
 }
-console.log('Node client: health/auth/REST chat/WSS hello/ping/token/done PASS');
+
+const bridgeUrl = new URL(`${base}/v1/desktop/bridge`);
+bridgeUrl.protocol = 'wss:';
+await assertSocketDenied(bridgeUrl);
+
+// Match lib.rs manifest() and connect_profile(): send the raw manifest on open.
+const manifest = {
+  protocol: 'neyra.desktop.v1',
+  device_id: randomUUID(),
+  session_id: randomUUID(),
+  name: 'Offline smoke desktop',
+  platform: 'linux-x11',
+  tools: [],
+  commands: [],
+  features: ['command_drafts'],
+};
+const requestId = randomUUID();
+const bridge = new WebSocket(bridgeUrl, { headers, handshakeTimeout: 5000 });
+const bridgeTimer = setTimeout(() => bridge.terminate(), 5000);
+try {
+  await new Promise((resolve, reject) => {
+    let stage = 'hello';
+    let text = '';
+    bridge.on('error', reject);
+    bridge.on('open', () => bridge.send(JSON.stringify(manifest)));
+    bridge.on('close', () => {
+      if (stage !== 'done') reject(new Error('Desktop bridge closed before done'));
+    });
+    bridge.on('message', (raw) => {
+      try {
+        const packet = JSON.parse(raw.toString());
+        if (stage === 'hello') {
+          assert.equal(packet.type, 'hello');
+          assert.equal(packet.protocol, manifest.protocol);
+          assert.equal(packet.device_id, manifest.device_id);
+          stage = 'capabilities';
+          bridge.send(JSON.stringify({ type: 'capabilities', manifest }));
+        } else if (stage === 'capabilities') {
+          assert.equal(packet.type, 'capabilities');
+          assert.deepEqual(packet.tools, manifest.tools);
+          stage = 'pong';
+          bridge.send(JSON.stringify({ type: 'ping' }));
+        } else if (stage === 'pong') {
+          assert.equal(packet.type, 'pong');
+          stage = 'chat';
+          bridge.send(JSON.stringify({ type: 'chat', text: 'smoke', request_id: requestId }));
+        } else {
+          assert.equal(stage, 'chat');
+          assert.equal(packet.request_id, requestId);
+          if (packet.type === 'token') {
+            text += packet.text;
+          } else {
+            assert.equal(packet.type, 'done');
+            assert.equal(packet.text, 'offline:smoke');
+            assert.equal(text, packet.text);
+            stage = 'done';
+            resolve();
+          }
+        }
+      } catch (error) { reject(error); }
+    });
+  });
+  const closed = once(bridge, 'close');
+  bridge.close(1000);
+  const [code] = await closed;
+  assert.equal(code, 1000);
+} finally {
+  clearTimeout(bridgeTimer);
+  bridge.terminate();
+}
+console.log('Node client: health/auth/REST/legacy WSS/desktop bridge hello/capabilities/chat/done PASS');

@@ -175,7 +175,7 @@ def interrupt_cleanup():
 
 
 def smoke(timeout: float) -> None:
-    with interrupt_cleanup(), tempfile.TemporaryDirectory(prefix=".control-api-smoke-", dir=ROOT) as directory:
+    with interrupt_cleanup(), tempfile.TemporaryDirectory(prefix=".control-api-smoke-") as directory:
         work = Path(directory)
         # No inherited API/provider keys, real config, proxy settings or home data.
         token = secrets.token_urlsafe(32)
@@ -220,7 +220,7 @@ def smoke(timeout: float) -> None:
         # Uvicorn re-raises SIGTERM after graceful shutdown on recent versions.
         if process.returncode not in (0, -signal.SIGTERM):
             raise RuntimeError(f"Server did not shut down cleanly ({process.returncode})")
-    print("Offline Control API smoke: PASS (HTTPS, auth, REST chat, WSS chat; cleaned up)")
+    print("Offline Control API smoke: PASS (HTTPS, auth, REST chat, legacy WSS, desktop bridge; cleaned up)")
 
 
 def main() -> int:
