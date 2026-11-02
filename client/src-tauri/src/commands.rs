@@ -981,6 +981,47 @@ pub fn export_bundle(settings: &crate::storage::Settings, entries: &[Entry]) -> 
     }
 }
 
+pub fn export_bytes(
+    settings: &crate::storage::Settings,
+    entries: &[Entry],
+) -> Result<Vec<u8>, String> {
+    export_bytes_with_credentials(settings, entries, crate::storage::secret)
+}
+
+pub(crate) fn export_bytes_with_credentials(
+    settings: &crate::storage::Settings,
+    entries: &[Entry],
+    credential: impl Fn(&str) -> Result<keyring::Entry, String>,
+) -> Result<Vec<u8>, String> {
+    // Include inactive profiles and credentials not yet loaded after a restart.
+    for profile in &settings.profiles {
+        match crate::storage::load_token(&credential(&profile.id)?) {
+            Ok(_) => {}
+            Err(error) if error == "token_missing" => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let value = serde_json::to_value(export_bundle(settings, entries))
+        .map_err(|_| "Не удалось подготовить файл")?;
+    for (index, command) in value["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        if crate::redact::contains_token(command) {
+            return Err(format!("export_contains_token:command:{}", index + 1));
+        }
+    }
+    if ["settings", "permissions"]
+        .iter()
+        .any(|key| crate::redact::contains_token(&value[*key]))
+    {
+        return Err("export_contains_token:settings".into());
+    }
+    serde_json::to_vec_pretty(&value).map_err(|_| "Не удалось подготовить файл".into())
+}
+
 pub fn parse_bundle(bytes: &[u8]) -> Result<Bundle, String> {
     if bytes.len() as u64 > MAX_BUNDLE_BYTES {
         return Err("Файл больше 1 МБ".into());
