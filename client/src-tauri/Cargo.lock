@@ -2839,6 +2839,7 @@ dependencies = [
  "tract-onnx",
  "url",
  "uuid",
+ "windows 0.62.2",
  "winreg 0.55.0",
  "x11rb",
 ]

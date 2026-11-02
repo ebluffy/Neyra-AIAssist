@@ -3,6 +3,7 @@ mod audit;
 mod character;
 mod command_runner;
 mod commands;
+mod computer;
 mod files;
 mod host;
 mod logs;
@@ -133,6 +134,8 @@ fn manifest(state: &Desktop, p: &Profile) -> Result<Value, String> {
     let s = state.settings.lock().map_err(lock_error)?;
     let platform = if cfg!(windows) {
         "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
     } else if std::env::var("XDG_SESSION_TYPE").unwrap_or_default() == "wayland" {
         "linux-wayland"
     } else {
@@ -736,7 +739,11 @@ fn receive_call(app: tauri::AppHandle, call: ToolCall) {
         reply(
             &app,
             &call,
-            json!({"status":"denied","code":"session_locked"}),
+            if computer::is_tool(&call.tool) {
+                computer::Error::PermissionDenied.response(false)
+            } else {
+                json!({"status":"denied","code":"session_locked"})
+            },
             false,
         );
         return;
@@ -772,10 +779,22 @@ fn receive_call(app: tauri::AppHandle, call: ToolCall) {
         Ok(Decision::Safe) => execute_call(app.clone(), call, false),
         Ok(Decision::Confirm) => {
             if !queue_confirm(&app, call.clone()) {
-                reply(&app, &call, json!({"status":"denied"}), false);
+                let result = if computer::is_tool(&call.tool) {
+                    computer::Error::Timeout.response(false)
+                } else {
+                    json!({"status":"denied"})
+                };
+                reply(&app, &call, result, false);
             }
         }
-        Err(_) => reply(&app, &call, json!({"status":"denied"}), false),
+        Err(message) => {
+            let result = if computer::is_tool(&call.tool) {
+                computer::Error::from_policy(&message).response(false)
+            } else {
+                json!({"status":"denied"})
+            };
+            reply(&app, &call, result, false);
+        }
     }
 }
 
@@ -818,7 +837,11 @@ fn queue_confirm(app: &tauri::AppHandle, call: ToolCall) -> bool {
             reply(
                 &h,
                 &c,
-                json!({"status":"denied","code":"confirmation_expired"}),
+                if computer::is_tool(&c.tool) {
+                    computer::Error::Timeout.response(false)
+                } else {
+                    json!({"status":"denied","code":"confirmation_expired"})
+                },
                 false,
             );
             let _ = h.emit("host-confirm-closed", json!({"call_id": call_id}));
@@ -887,7 +910,23 @@ fn execute_call(app: tauri::AppHandle, call: ToolCall, confirmed: bool) {
         )
     })();
     if current_check.is_err() || cancel.load(Ordering::SeqCst) {
-        reply(&app, &call, json!({"status":"denied"}), confirmed);
+        let result = if computer::is_tool(&call.tool) {
+            if cancel.load(Ordering::SeqCst) {
+                computer::Error::Cancelled.response(false)
+            } else {
+                computer::Error::from_policy(
+                    current_check
+                        .as_ref()
+                        .err()
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                )
+                .response(false)
+            }
+        } else {
+            json!({"status":"denied"})
+        };
+        reply(&app, &call, result, confirmed);
         return;
     }
     let (permissions, root) = {
@@ -931,6 +970,9 @@ fn execute_call(app: tauri::AppHandle, call: ToolCall, confirmed: bool) {
                     }
                 })
             }),
+            tool if computer::is_tool(tool) => with_own_windows_hidden(&handle, || {
+                host::execute(&c, action_cancel, &permissions, &root)
+            }),
             _ => host::execute(&c, action_cancel, &permissions, &root),
         })
         .await;
@@ -939,8 +981,14 @@ fn execute_call(app: tauri::AppHandle, call: ToolCall, confirmed: bool) {
         }
         let value = match result {
             Ok(Ok(v)) => v,
+            Ok(Err(_)) if computer::is_tool(&call.tool) => {
+                computer::Error::ActionFailed.response(call.tool != "client.computer_snapshot")
+            }
             Ok(Err(message)) => {
                 json!({"status":"error","code":"local_action_failed","message":message})
+            }
+            Err(_) if computer::is_tool(&call.tool) => {
+                computer::Error::ActionFailed.response(call.tool != "client.computer_snapshot")
             }
             Err(_) => json!({"status":"error","code":"local_action_failed"}),
         };
@@ -986,6 +1034,10 @@ const POWERFUL: &[&str] = &[
     "client.fs_move",
     "client.screenshot",
     "client.input",
+    "client.computer_snapshot",
+    "client.computer_click",
+    "client.computer_type",
+    "client.computer_press",
 ];
 
 const TRAY_ICON: &[u8] = include_bytes!("../icons/icon.png");
@@ -1076,7 +1128,12 @@ fn approve(
         .remove(&call_id)
         .ok_or("Подтверждение устарело")?;
     if !allow {
-        reply(&app, &call, json!({"status":"denied"}), false);
+        let result = if computer::is_tool(&call.tool) {
+            computer::Error::PermissionDenied.response(false)
+        } else {
+            json!({"status":"denied"})
+        };
+        reply(&app, &call, result, false);
         return Ok(());
     }
     if call.tool == command_runner::CONFIRM_TOOL && is_local(&call) {
@@ -1086,14 +1143,26 @@ fn approve(
     }
     let settings = state.settings.lock().map_err(lock_error)?.clone();
     let session = expected_session(&state, &settings, &call)?;
-    policy::validate(
+    let validation = policy::validate(
         &call,
         &settings.permissions,
         &state.root,
         &settings.device_id,
         &session,
         &mut HashMap::new(),
-    )?;
+    );
+    if let Err(message) = validation {
+        if computer::is_tool(&call.tool) {
+            reply(
+                &app,
+                &call,
+                computer::Error::from_policy(&message).response(false),
+                true,
+            );
+            return Ok(());
+        }
+        return Err(message);
+    }
     execute_call(app, call, true);
     Ok(())
 }
@@ -1157,6 +1226,7 @@ fn stop_inner(state: &Desktop) -> Result<(), String> {
     let mut cancel = state.cancelled.lock().map_err(lock_error)?;
     cancel.store(true, Ordering::SeqCst);
     *cancel = Arc::new(AtomicBool::new(false));
+    computer::reset();
     state.pending.lock().map_err(lock_error)?.clear();
     if let Ok(flags) = state.local_cancels.lock() {
         for flag in flags.values() {

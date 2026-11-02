@@ -14,7 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field
 TOOLS = Literal['client.list_apps', 'client.open_url', 'client.open_app', 'client.search_web', 'client.list_windows',
                 'client.focus_window', 'client.close_window', 'client.media', 'client.volume',
                 'client.shell_exec', 'client.fs_list', 'client.fs_read', 'client.fs_search', 'client.fs_write',
-                'client.fs_mkdir', 'client.fs_move', 'client.screenshot', 'client.input']
+                'client.fs_mkdir', 'client.fs_move', 'client.screenshot', 'client.input',
+                'client.computer_snapshot', 'client.computer_click', 'client.computer_type', 'client.computer_press']
 
 # Quick commands (and server-side drafts) never expose Contour 3–4 tools.
 QUICK_COMMAND_TOOLS = Literal['client.list_apps', 'client.open_url', 'client.open_app', 'client.search_web',
@@ -23,9 +24,12 @@ QUICK_COMMAND_TOOLS = Literal['client.list_apps', 'client.open_url', 'client.ope
 
 # Read-only tools may still run after an action with an unknown outcome; everything else may not.
 READ_ONLY = frozenset({'client.list_apps', 'client.list_windows', 'client.fs_list', 'client.fs_read',
-                       'client.fs_search', 'client.screenshot'})
+                       'client.fs_search', 'client.screenshot', 'client.computer_snapshot'})
+COMPUTER_MUTATIONS = frozenset({'client.computer_click', 'client.computer_type', 'client.computer_press'})
 # Seconds the server waits after the 30 s confirmation window for the action itself.
-EXECUTION_SECONDS = {'client.shell_exec': 65, 'client.input': 60, 'client.screenshot': 25, 'client.fs_search': 10}
+EXECUTION_SECONDS = {'client.shell_exec': 65, 'client.input': 60, 'client.screenshot': 25, 'client.fs_search': 10,
+                     'client.computer_snapshot': 10, 'client.computer_click': 10,
+                     'client.computer_type': 10, 'client.computer_press': 10}
 RESULT_LIMIT = 64 * 1024
 SCREENSHOT_LIMIT = 1_500_000
 
@@ -65,7 +69,7 @@ class Manifest(BaseModel):
     device_id: UUID
     session_id: UUID
     name: str = Field(min_length=1, max_length=90)
-    platform: Literal['windows', 'linux-wayland', 'linux-x11']
+    platform: Literal['windows', 'macos', 'linux-wayland', 'linux-x11']
     tools: list[TOOLS] = Field(default_factory=list, max_length=24)
     commands: list[CommandInfo] = Field(default_factory=list, max_length=32)
     features: list[FEATURES] = Field(default_factory=list, max_length=2)
@@ -223,7 +227,13 @@ async def _desktop_action(registry, owner, session, device, tool, arguments):
             return {'status': 'blocked', 'code': 'action_budget_exhausted'}
         turn.actions += 1
     try:
-        return await registry.call(owner, session, device, tool, arguments)
+        result = await registry.call(owner, session, device, tool, arguments)
+        if (turn is not None and tool in COMPUTER_MUTATIONS and isinstance(result, dict)
+                and (result.get('delivery') == 'unknown'
+                     or (result.get('retry') is False
+                         and result.get('code') in {'timeout', 'action_failed', 'cancelled'}))):
+            turn.outcome_unknown = True
+        return result
     except (ConnectionError, TimeoutError):
         if turn is not None:
             turn.outcome_unknown = True
@@ -269,6 +279,22 @@ def brain_tools():
                         'of the screenshot given by screenshot_id. Steps: {"op":"move|click|drag|scroll|type|key|wait",...} '
                         'e.g. {"screenshot_id":"...","steps":[{"op":"click","x":100,"y":200},{"op":"type","text":"hi"},'
                         '{"op":"key","keys":"ctrl+s"}]}. Never submit payments or forms the user did not ask for.',
+        'client.computer_snapshot': 'Read the foreground window accessibility tree on Windows/macOS. arguments: {}. '
+                                    'Returns JSON elements with ref identifiers, without editable field values. '
+                                    'Requires screen permission and local confirmation unless screen_auto is enabled. '
+                                    'Refs expire after 120 seconds, on the next snapshot, or after any mutation attempt. '
+                                    'Take a new snapshot after each action and after stale_ref; never guess a ref.',
+        'client.computer_click': 'Invoke an element from the latest foreground accessibility snapshot; needs local '
+                                 'input permission and confirmation. arguments: {"ref":"<snapshot ref>"}. '
+                                 'Take a fresh snapshot afterwards. Never retry an unknown mutation outcome.',
+        'client.computer_type': 'Replace the entire value of an editable element from the latest accessibility '
+                                'snapshot; needs input permission and local confirmation. '
+                                'arguments: {"ref":"<snapshot ref>","text":"..."}. '
+                                'Take a fresh snapshot afterwards. Never retry an unknown mutation outcome.',
+        'client.computer_press': 'Press a key chord in the window from the latest accessibility snapshot; needs '
+                                 'input permission and local confirmation. arguments: {"keys":["Ctrl","a"]}. '
+                                 'Use Meta for Command on macOS. Take a fresh snapshot afterwards. '
+                                 'Never retry an unknown mutation outcome.',
         'client.open_url': 'Open a web URL on this PC. arguments: {"url":"https://..."}.',
         'client.search_web': 'Search in this PC browser. arguments: {"query":"..."}.',
         'client.list_apps': 'List local application executable paths. arguments: {}.',
