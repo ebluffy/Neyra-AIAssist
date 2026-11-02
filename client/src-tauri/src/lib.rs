@@ -232,16 +232,19 @@ pub(crate) fn apply_settings(
         != serde_json::to_value(&settings.permissions).ok();
     let screen_changed = (old.permissions.screen, old.permissions.input)
         != (settings.permissions.screen, settings.permissions.input);
-    if settings.audit_days != old.audit_days {
-        let _guard = state.audit_lock.lock().map_err(lock_error)?;
-        audit::prune(&state.root, settings.audit_days)?;
-    }
+    let retention_changed = settings.audit_days != old.audit_days;
+    let audit_days = settings.audit_days;
     storage::save(&state.root, &settings)?;
     character::on_settings_saved(app, settings.character_enabled);
     if settings.theme != old.theme {
         let _ = app.emit("theme-changed", json!({ "theme": settings.theme }));
     }
     *state.settings.lock().map_err(lock_error)? = settings;
+    if retention_changed {
+        if let Ok(_guard) = state.audit_lock.lock() {
+            prune_after_settings_save(&state.root, audit_days);
+        }
+    }
     if changed {
         stop_inner(state)?;
         if screen_changed {
@@ -250,6 +253,16 @@ pub(crate) fn apply_settings(
         send_capabilities(state);
     }
     Ok(())
+}
+
+fn prune_after_settings_save(root: &std::path::Path, audit_days: u32) {
+    if let Err(error) = audit::prune(root, audit_days) {
+        logs::log(
+            root,
+            "warn",
+            &format!("audit prune after settings save failed: {error}"),
+        );
+    }
 }
 
 /// Refreshes the server's runtime view (tools and quick-command names) when a bridge is connected.
@@ -1341,8 +1354,15 @@ pub fn run() {
                     ),
                 );
             }
-            audit::start_pruning(app.handle().clone(), root.clone(), settings.audit_days)
-                .map_err(std::io::Error::other)?;
+            if let Err(error) =
+                audit::start_pruning(app.handle().clone(), root.clone(), settings.audit_days)
+            {
+                logs::log(
+                    &root,
+                    "warn",
+                    &format!("could not start audit pruning: {error}"),
+                );
+            }
             let generation = Arc::new(AtomicU64::new(0));
             let events = app.handle().clone();
             let player = audio::Player::start(generation.clone(), move |event| {
@@ -1636,6 +1656,26 @@ fn monitor_session(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_retention_prunes_immediately_after_save() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(root.join("audit")).unwrap();
+        std::fs::write(
+            root.join("audit/actions.json"),
+            br#"[{"time":1,"tool":"old"},{"time":9999999999999,"tool":"fresh"}]"#,
+        )
+        .unwrap();
+
+        prune_after_settings_save(&root, 1);
+
+        let rows: Vec<Value> =
+            serde_json::from_slice(&std::fs::read(root.join("audit/actions.json")).unwrap())
+                .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["tool"], "fresh");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn active_tray_icon_carries_a_red_mark() {
         assert_ne!(TRAY_ICON, TRAY_ICON_ACTIVE);
