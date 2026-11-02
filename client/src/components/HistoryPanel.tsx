@@ -5,7 +5,7 @@ import { historyGroups, type ChatThread } from '../chat';
 const historyDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 export function HistoryPanel({ open, threads, activeId, onClose, onOpen, onNew, disabled = false }: { open: boolean; threads: ChatThread[]; activeId: string; onClose: () => void; onOpen: (id: string) => void; onNew: () => void; disabled?: boolean }) {
-  const [, setDay] = useState(() => new Date().toDateString());
+  const [day, setDay] = useState(() => new Date().toDateString());
   useEffect(() => {
     if (!open) return;
     const sync = () => setDay(new Date().toDateString());
@@ -14,7 +14,7 @@ export function HistoryPanel({ open, threads, activeId, onClose, onOpen, onNew, 
     window.addEventListener('focus', sync);
     document.addEventListener('visibilitychange', sync);
     return () => { window.clearTimeout(timer); window.removeEventListener('focus', sync); document.removeEventListener('visibilitychange', sync); };
-  });
+  }, [open, day]);
   const groups = historyGroups(threads);
   return <aside className={open ? 'history open' : 'history'} aria-label="История чатов" inert={!open}>
     <div className="history-inner">
