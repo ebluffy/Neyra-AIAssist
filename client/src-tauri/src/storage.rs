@@ -999,7 +999,10 @@ mod tests {
     #[test]
     fn token_stays_out_of_entire_data_directory() {
         let root = temp();
-        let token = concat!("fleet-test-", "quote\"slash\\-49-7391");
+        let mut token = ["fleet", "test", "49", "7391"].join("-");
+        token.push('"');
+        token.push('\\');
+        let token = token.as_str();
         let entry =
             keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
         let (mut settings, _) = initialize(&root).unwrap();
@@ -1039,9 +1042,16 @@ mod tests {
             file: "export.yaml".into(),
             command,
         }];
-        let result = crate::commands::export_bytes(&settings, &entries)
-            .and_then(|bytes| atomic_write(&export, &bytes));
-        assert_eq!(result.unwrap_err(), "export_contains_token: команда №1");
+        let export_bytes = |settings: &Settings, entries: &[crate::commands::Entry]| {
+            crate::commands::export_bytes_with_credentials(settings, entries, |_| {
+                Ok(keyring::Entry::new_with_credential(Box::new(
+                    keyring::mock::MockCredential::default(),
+                )))
+            })
+        };
+        let result =
+            export_bytes(&settings, &entries).and_then(|bytes| atomic_write(&export, &bytes));
+        assert_eq!(result.unwrap_err(), "export_contains_token:command:1");
         assert!(!export.exists());
         let reply =
             "basic mode; Authorization: Bearer $NEYRA_TOKEN; https://example.invalid/?token=$VAR";
@@ -1051,11 +1061,7 @@ mod tests {
             "actions": [{"tool": "browser.open", "arguments": {"url": "https://example.invalid/?token=$VAR"}}],
             "reply": reply
         })).unwrap();
-        atomic_write(
-            &export,
-            &crate::commands::export_bytes(&settings, &entries).unwrap(),
-        )
-        .unwrap();
+        atomic_write(&export, &export_bytes(&settings, &entries).unwrap()).unwrap();
         let exported =
             crate::commands::parse_bundle(&fs::read(root.join("export.json")).unwrap()).unwrap();
         assert_eq!(exported.commands[0]["reply"], reply);
@@ -1078,10 +1084,97 @@ mod tests {
     }
 
     #[test]
+    fn export_checks_inactive_credentials_in_fresh_process() {
+        const CHILD: &str = "NEYRA_EXPORT_CREDENTIAL_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "storage::tests::export_checks_inactive_credentials_in_fresh_process",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            return;
+        }
+        let root = temp();
+        let (mut settings, _) = initialize(&root).unwrap();
+        settings.profiles = ["active", "inactive"]
+            .map(|id| Profile {
+                id: id.into(),
+                name: id.into(),
+                url: "https://example.invalid".into(),
+                session_id: Uuid::new_v4().to_string(),
+            })
+            .to_vec();
+        settings.active_profile = "active".into();
+        save(&root, &settings).unwrap();
+        let (mut settings, _) = initialize(&root).unwrap();
+        let mut token = ["fleet", "restart", "inactive", "49"].join("-");
+        token.push('"');
+        token.push('\\');
+        let command = serde_json::from_value(json!({
+            "name": "Restart export",
+            "triggers": [{"phrase": "restart export"}],
+            "actions": [{"tool": "browser.open", "arguments": {"url": "https://example.invalid"}}],
+            "reply": token
+        }))
+        .unwrap();
+        let entries = vec![crate::commands::Entry {
+            file: "restart.yaml".into(),
+            command,
+        }];
+        assert!(!crate::redact::contains_token(&json!(token)));
+        let credentials = |id: &str| {
+            let entry = keyring::Entry::new_with_credential(Box::new(
+                keyring::mock::MockCredential::default(),
+            ));
+            // Simulate credentials persisted by a previous process, without registration.
+            if id == "inactive" {
+                entry.set_password(&token).unwrap();
+            }
+            Ok(entry)
+        };
+        let export = root.join("export.json");
+        let result =
+            crate::commands::export_bytes_with_credentials(&settings, &entries, credentials)
+                .and_then(|bytes| atomic_write(&export, &bytes));
+        assert_eq!(result.unwrap_err(), "export_contains_token:command:1");
+        assert!(!export.exists());
+        settings.permissions.web_domains = vec![token.clone()];
+        assert_eq!(
+            crate::commands::export_bytes_with_credentials(&settings, &[], credentials)
+                .unwrap_err(),
+            "export_contains_token:settings"
+        );
+        let result = crate::commands::export_bytes_with_credentials(&settings, &[], |id| {
+            let entry = credentials(id)?;
+            if id == "inactive" {
+                entry
+                    .get_credential()
+                    .downcast_ref::<keyring::mock::MockCredential>()
+                    .unwrap()
+                    .set_error(keyring::Error::NoStorageAccess(Box::new(
+                        std::io::Error::other("locked"),
+                    )));
+            }
+            Ok(entry)
+        })
+        .and_then(|bytes| atomic_write(&export, &bytes));
+        assert_eq!(result.unwrap_err(), SECRET_ERROR);
+        assert!(!export.exists());
+        assert_no_secret(&root, &token);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn unavailable_keyring_returns_error_without_disk_fallback() {
         let root = temp();
         fs::create_dir_all(&root).unwrap();
-        let token = "fleet-unavailable-test-49";
+        let token = ["fleet", "unavailable", "test", "49"].join("-");
+        let token = token.as_str();
         let entry =
             keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
         let mock = entry

@@ -14,7 +14,8 @@ describe('server profiles', () => {
     expect(formatError('token_missing')).toBe('Сначала сохраните токен.');
   });
   it('explains a blocked export and identifies the command', () => {
-    expect(formatError('export_contains_token: команде №1')).toBe('Экспорт отменён: сохранённый токен найден в команде №1. Удалите токен из команды или настроек и повторите экспорт.');
+    expect(formatError('export_contains_token:command:1')).toBe('Экспорт отменён: сохранённый токен найден в команде №1. Удалите токен из команды или настроек и повторите экспорт.');
+    expect(formatError('export_contains_token:settings')).toBe('Экспорт отменён: сохранённый токен найден в настройках или разрешениях. Удалите токен из команды или настроек и повторите экспорт.');
   });
 });
 describe('live voice labels', () => {
