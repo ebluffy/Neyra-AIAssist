@@ -1,3 +1,4 @@
+mod appimage_env;
 mod audio;
 mod audit;
 mod character;
@@ -1458,6 +1459,7 @@ pub fn run() {
             record_stop,
             record_cancel,
             speak_text,
+            host::open_http_url,
             audit_log,
             applications,
             load_chats,

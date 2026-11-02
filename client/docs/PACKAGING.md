@@ -43,12 +43,13 @@ block). Do not assume the 30 vs 60 FPS number from Owyx applies to Neyra.
 
 ## Child process environment
 
-Programs started by Neyra (browser, terminal, media tools) must not inherit
-AppImage paths. This is handled in `src-tauri/src/policy.rs` (`child_environment`)
-and covered by its tests: unset, empty and custom `LD_LIBRARY_PATH` are restored,
-and `APPDIR`, `APPIMAGE`, `ARGV0`, `OWD` are removed for children only. The
-updater runs in the parent process and still sees `APPIMAGE`. Nothing in the
-updater or character code changes this.
+Programs started by Neyra (shell, browser, terminal helpers, media tools) must not
+inherit AppImage paths. `src-tauri/src/appimage_env.rs` restores the child
+environment. Unset, empty and custom `LD_LIBRARY_PATH` stay distinct. `APPDIR`,
+`APPIMAGE`, `ARGV0` and `OWD` are removed from the child. The parent process keeps
+`APPIMAGE` for the updater. Sync launches use `std::process::Command`; chat links
+on Linux use `tokio::process::Command`. Windows launches are unchanged. There is
+no sidecar process and no file-event watcher.
 
 ## What was checked in the cloud (Ubuntu VM, no GPU)
 
