@@ -8,6 +8,11 @@ describe('server profiles', () => {
   it('allows local development and a proxy prefix', () => { expect(validServerUrl('http://127.0.0.1:8787')).toBe(true); expect(validServerUrl('https://neyra.example/api')).toBe(true); });
   it('creates independent private profile sessions', () => { const a = newProfile(); const b = newProfile(); expect(a.id).not.toBe(b.id); expect(a.session_id).not.toBe(b.session_id); });
   it('does not stringify internal errors', () => { expect(formatError(new Error('secret'))).not.toContain('secret'); });
+  it('explains unavailable credential storage without suggesting a file fallback', () => {
+    expect(formatError('credential_store_unavailable')).toContain('Secret Service/keyring');
+    expect(formatError('credential_store_unavailable')).toContain('Токен не сохранён в файл');
+    expect(formatError('token_missing')).toBe('Сначала сохраните токен.');
+  });
 });
 describe('live voice labels', () => {
   it('clamps the mic meter', () => { expect(meterLevel(-100)).toBe(0); expect(meterLevel(0)).toBe(1); expect(meterLevel(-35)).toBeCloseTo(0.5); });

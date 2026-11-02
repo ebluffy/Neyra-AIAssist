@@ -3,6 +3,18 @@ use std::{fs, io::Write, path::Path};
 const MAX_BYTES: u64 = 256 * 1024;
 const KEEP: usize = 3;
 
+/// Never persist panic payloads: even an unlabelled or not-yet-stored token may be in them.
+pub fn crash(root: &Path) {
+    if fs::create_dir_all(root.join("logs")).is_err() {
+        return;
+    }
+    let _ = crate::storage::atomic_write(&root.join("logs/crash.log"), b"client_panic\n");
+}
+
+pub fn install_crash_hook(root: std::path::PathBuf) {
+    std::panic::set_hook(Box::new(move |_| crash(&root)));
+}
+
 /// Small local client log with rotation. Callers pass event codes and file names only: no tokens, arguments or output.
 pub fn log(root: &Path, level: &str, message: &str) {
     let dir = root.join("logs");
@@ -11,13 +23,19 @@ pub fn log(root: &Path, level: &str, message: &str) {
     }
     let path = dir.join("client.log");
     rotate(&path);
-    let clean: String = message
+    let clean: String = crate::redact::redact(message)
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .take(300)
         .collect();
     if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(file, "{} {} {}", crate::policy::now_ms(), level, clean);
+        let _ = writeln!(
+            file,
+            "{} {} {}",
+            crate::policy::now_ms(),
+            crate::redact::redact(level),
+            clean
+        );
     }
 }
 
@@ -36,6 +54,34 @@ fn rotate(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crash_hook_child() {
+        let Some(root) = std::env::var_os("NEYRA_TEST_CRASH_ROOT") else {
+            return;
+        };
+        install_crash_hook(root.into());
+        panic!("unlabelled secret: crash-only-token-49");
+    }
+
+    #[test]
+    fn crash_hook_does_not_write_panic_payload() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "logs::tests::crash_hook_child", "--nocapture"])
+            .env("NEYRA_TEST_CRASH_ROOT", &root)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("crash-only-token-49"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("crash-only-token-49"));
+        assert_eq!(
+            fs::read(root.join("logs/crash.log")).unwrap(),
+            b"client_panic\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn rotates_and_keeps_a_bounded_history() {
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());

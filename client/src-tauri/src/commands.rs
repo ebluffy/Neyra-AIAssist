@@ -981,6 +981,16 @@ pub fn export_bundle(settings: &crate::storage::Settings, entries: &[Entry]) -> 
     }
 }
 
+pub fn export_bytes(
+    settings: &crate::storage::Settings,
+    entries: &[Entry],
+) -> Result<Vec<u8>, String> {
+    let mut value = serde_json::to_value(export_bundle(settings, entries))
+        .map_err(|_| "Не удалось подготовить файл")?;
+    crate::redact::redact_value(&mut value);
+    serde_json::to_vec_pretty(&value).map_err(|_| "Не удалось подготовить файл".into())
+}
+
 pub fn parse_bundle(bytes: &[u8]) -> Result<Bundle, String> {
     if bytes.len() as u64 > MAX_BUNDLE_BYTES {
         return Err("Файл больше 1 МБ".into());

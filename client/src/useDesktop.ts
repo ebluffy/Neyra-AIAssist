@@ -422,6 +422,7 @@ export function useDesktop() {
     const saved = { ...disk, active_profile: created.id, profiles: [...disk.profiles, profile] };
     setSettings({ ...settings, active_profile: created.id, profiles: [...settings.profiles, profile] });
     setProfileId(created.id);
+    setToken('');
     void persistSaved(saved).catch(reason => setError(formatError(reason)));
   };
   const chooseProfile = (id: string) => {

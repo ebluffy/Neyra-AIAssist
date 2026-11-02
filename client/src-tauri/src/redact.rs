@@ -1,5 +1,17 @@
 use regex::Regex;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
+
+static SECRETS: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+pub fn protect_token(token: &str) {
+    if !token.is_empty() {
+        let mut secrets = SECRETS.write().unwrap_or_else(|e| e.into_inner());
+        if !secrets.iter().any(|s| s == token) {
+            secrets.push(token.to_owned());
+            secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+        }
+    }
+}
 
 const MASK: &str = "[REDACTED]";
 
@@ -22,9 +34,9 @@ fn patterns() -> &'static [(Regex, &'static str)] {
                 r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b",
                 MASK,
             ),
-            (r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]{12,}", "$1 [REDACTED]"),
+            (r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]+", "$1 [REDACTED]"),
             (
-                r#"(?i)\b([A-Z0-9_]*(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)[A-Z0-9_]*)(\s*[:=]\s*)("[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)"#,
+                r#"(?i)\b([A-Z0-9_]*(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)[A-Z0-9_]*)(\s*[:=]\s*)("[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&#]+)"#,
                 "$1$3[REDACTED]",
             ),
             (r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/\s:@]+:[^/\s@]+@", "$1[REDACTED]@"),
@@ -38,10 +50,23 @@ fn patterns() -> &'static [(Regex, &'static str)] {
 /// Masks common secret shapes before local output leaves the PC.
 pub fn redact(text: &str) -> String {
     let mut out = text.to_string();
+    for secret in SECRETS.read().unwrap_or_else(|e| e.into_inner()).iter() {
+        out = out.replace(secret, MASK);
+    }
     for (re, replacement) in patterns() {
         out = re.replace_all(&out, *replacement).into_owned();
     }
     out
+}
+
+/// Mask secrets in nested export fields before serialization.
+pub fn redact_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => *text = redact(text),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(redact_value),
+        serde_json::Value::Object(fields) => fields.values_mut().for_each(redact_value),
+        _ => {}
+    }
 }
 
 /// Bounded, redacted, valid UTF-8 text with a truncation flag.
@@ -61,6 +86,17 @@ pub fn bounded_text(bytes: &[u8], limit: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bearer_and_query_tokens_are_redacted() {
+        let token = "test-fleet-secret-49";
+        let output = redact(&format!(
+            "Authorization: Bearer {token}\nhttps://example.invalid/?token={token}&page=1"
+        ));
+        assert!(!output.contains(token));
+        assert!(output.contains("Bearer [REDACTED]"));
+        assert!(output.contains("token=[REDACTED]&page=1"));
+    }
 
     #[test]
     fn masks_known_secret_shapes() {
@@ -102,6 +138,16 @@ mod tests {
     fn ordinary_text_is_unchanged() {
         let text = "build ok: 12 passed, token count 40";
         assert_eq!(redact(text), text);
+    }
+
+    #[test]
+    fn bearer_and_query_tokens_are_masked() {
+        let out = redact(
+            "Authorization: Bearer short https://example.invalid/?token=query-secret&ok=yes",
+        );
+        assert!(!out.contains("short"));
+        assert!(!out.contains("query-secret"));
+        assert!(out.contains("&ok=yes"));
     }
 
     #[test]

@@ -775,8 +775,26 @@ fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 pub fn secret(profile: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new("site.owyx.neyra", profile)
-        .map_err(|_| "Системное хранилище секретов недоступно".into())
+    keyring::Entry::new("site.owyx.neyra", profile).map_err(|_| SECRET_ERROR.into())
+}
+
+pub const SECRET_ERROR: &str = "credential_store_unavailable";
+
+pub fn store_token(entry: &keyring::Entry, token: &str) -> Result<(), String> {
+    if token.len() < 8 || token.len() > 4096 || token.chars().any(char::is_control) {
+        return Err("invalid_token".into());
+    }
+    crate::redact::protect_token(token);
+    entry.set_password(token).map_err(|_| SECRET_ERROR.into())
+}
+
+pub fn load_token(entry: &keyring::Entry) -> Result<String, String> {
+    let token = entry.get_password().map_err(|error| match error {
+        keyring::Error::NoEntry => "token_missing".to_owned(),
+        _ => SECRET_ERROR.to_owned(),
+    })?;
+    crate::redact::protect_token(&token);
+    Ok(token)
 }
 
 const CHAT_VERSION: u32 = 1;
@@ -958,6 +976,116 @@ fn plain_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_no_secret(root: &Path, token: &str) {
+        for entry in fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                assert_no_secret(&path, token);
+            } else {
+                let bytes = fs::read(&path).unwrap();
+                assert!(
+                    !bytes.windows(token.len()).any(|w| w == token.as_bytes()),
+                    "secret in {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn token_stays_out_of_entire_data_directory() {
+        let root = temp();
+        let token = "fleet-test-opaque-49-7391";
+        let entry =
+            keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
+        let (mut settings, _) = initialize(&root).unwrap();
+        store_token(&entry, token).unwrap();
+        assert_eq!(load_token(&entry).unwrap(), token);
+        assert_no_secret(&root, token);
+        settings.profiles = vec![
+            Profile {
+                id: "a".into(),
+                name: "A".into(),
+                url: "https://example.invalid".into(),
+                session_id: Uuid::new_v4().to_string(),
+            },
+            Profile {
+                id: "b".into(),
+                name: "B".into(),
+                url: "https://example.invalid".into(),
+                session_id: Uuid::new_v4().to_string(),
+            },
+        ];
+        for profile in ["a", "b", "a"] {
+            settings.active_profile = profile.into();
+            save(&root, &settings).unwrap();
+            assert_no_secret(&root, token);
+        }
+        let command = serde_json::from_value(json!({
+            "name": "Export regression",
+            "triggers": [{"phrase": "export regression"}],
+            "actions": [{"tool": "browser.open", "arguments": {
+                "url": format!("https://example.invalid/?token={token}")
+            }}],
+            "reply": token
+        }))
+        .unwrap();
+        atomic_write(
+            &root.join("export.json"),
+            &crate::commands::export_bytes(
+                &settings,
+                &[crate::commands::Entry {
+                    file: "export.yaml".into(),
+                    command,
+                }],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let exported =
+            crate::commands::parse_bundle(&fs::read(root.join("export.json")).unwrap()).unwrap();
+        assert_eq!(exported.commands[0]["reply"], "[REDACTED]");
+        assert_no_secret(&root, token);
+        crate::logs::log(
+            &root,
+            "warn",
+            &format!("Bearer {token} https://example.invalid/?token={token} raw {token}"),
+        );
+        crate::audit::append(&root, token, &format!("token={token}"), false, 30).unwrap();
+        assert_eq!(crate::audit::recent(&root, 30).unwrap().len(), 1);
+        crate::logs::crash(&root);
+        assert!(root.join("logs/crash.log").exists());
+        assert_no_secret(&root, token);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unavailable_keyring_returns_error_without_disk_fallback() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let token = "fleet-unavailable-test-49";
+        let entry =
+            keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
+        let mock = entry
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .unwrap();
+        mock.set_error(keyring::Error::NoStorageAccess(Box::new(
+            std::io::Error::other("locked"),
+        )));
+        assert_eq!(store_token(&entry, token).unwrap_err(), SECRET_ERROR);
+        assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+        mock.set_error(keyring::Error::NoStorageAccess(Box::new(
+            std::io::Error::other("locked"),
+        )));
+        assert_eq!(load_token(&entry).unwrap_err(), SECRET_ERROR);
+        assert_eq!(load_token(&entry).unwrap_err(), "token_missing");
+        assert!(store_token(&entry, "tiny").is_err());
+        assert_no_secret(&root, token);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
     fn temp() -> PathBuf {
         std::env::temp_dir().join(Uuid::new_v4().to_string())
     }
