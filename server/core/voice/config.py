@@ -319,6 +319,8 @@ def resolve_tts_runtime(config: dict[str, Any]) -> dict[str, Any]:
     loc = _as_dict(tts.get("local"))
     cld = _as_dict(tts.get("cloud"))
     active = loc if primary == "local" else cld if primary == "cloud" else {}
+    if primary == "cloud" and not resolve_tts_providers(config):
+        errs.append("no usable cloud TTS provider credentials")
     return {
         "language": voice.get("language") or "ru",
         "prefer": _norm_prefer(tts.get("prefer"), "cloud"),
@@ -327,9 +329,76 @@ def resolve_tts_runtime(config: dict[str, Any]) -> dict[str, Any]:
         "tts": active,
         "local_tts": loc,
         "cloud_tts": cld,
-        "available": primary is not None,
+        "available": primary is not None and not errs,
         "soft_errors": errs,
     }
+
+
+def _tts_provider(block: dict[str, Any]) -> str:
+    """Active cloud TTS provider: ``deepgram`` (default) | ``yandex``."""
+    prov = str(block.get("provider") or "").strip().lower()
+    if prov in ("deepgram", "yandex"):
+        return prov
+    return "deepgram"
+
+
+def _tts_api_key(block: dict[str, Any], provider: str) -> str:
+    """
+    Resolve the provider API key.
+
+    Nested provider key, then legacy flat Yandex key, then environment.
+    Flat keys belong to Yandex and must never be sent to Deepgram.
+    """
+    import os
+
+    env_name = "DEEPGRAM_API_KEY" if provider == "deepgram" else "YANDEX_API_KEY"
+    nested = _as_dict(block.get(provider)).get("api_key")
+    if nested and str(nested).strip():
+        return str(nested).strip()
+    if provider == "yandex":
+        flat = str(block.get("api_key") or "").strip()
+        if flat:
+            return flat
+    return (os.environ.get(env_name) or "").strip()
+
+
+def _tts_folder_id(block: dict[str, Any]) -> str:
+    import os
+
+    return str(
+        _as_dict(block.get("yandex")).get("folder_id")
+        or block.get("folder_id")
+        or os.environ.get("YANDEX_FOLDER_ID")
+        or os.environ.get("YANDEX_ID_KEY")
+        or ""
+    ).strip()
+
+
+def tts_provider_usable(config: dict[str, Any], provider: str) -> bool:
+    """True if the given cloud TTS provider has the credentials it needs."""
+    voice = normalize_voice_config(config)
+    tts = _as_dict(voice.get("tts"))
+    cld = _as_dict(tts.get("cloud"))
+    return bool(_tts_api_key(cld, provider)) and (
+        provider != "yandex" or bool(_tts_folder_id(cld))
+    )
+
+
+def resolve_tts_providers(config: dict[str, Any]) -> list[str]:
+    """
+    Ordered list of usable cloud TTS providers.
+
+    The configured ``provider`` comes first (default ``deepgram``), with
+    Yandex appended as a fallback for Deepgram when it has credentials.
+
+    A missing Deepgram key must NOT disable TTS when Yandex credentials exist.
+    """
+    voice = normalize_voice_config(config)
+    tts = _as_dict(voice.get("tts"))
+    cld = _as_dict(tts.get("cloud"))
+    primary = _tts_provider(cld)
+    candidates = ("deepgram", "yandex") if primary == "deepgram" else ("yandex",)
+    return [p for p in candidates if tts_provider_usable(config, p)]
 
 
 def collect_voice_soft_errors(config: dict[str, Any]) -> list[str]:
@@ -374,18 +443,21 @@ def collect_voice_soft_errors(config: dict[str, Any]) -> list[str]:
                 )
 
     if tts.get("primary_lane") == "cloud":
-        tblock = _as_dict(tts.get("tts"))
-        import os
-        provider = str(tblock.get("provider") or "").lower()
-        if provider == "yandex":
-            if not (tblock.get("api_key") or (os.environ.get("YANDEX_API_KEY") or "").strip()):
-                out.append(
-                    "TTS(cloud/yandex): нет YANDEX_API_KEY — озвучка не заработает"
-                )
-        elif provider == "deepgram":
-            if not (tblock.get("api_key") or (os.environ.get("DEEPGRAM_API_KEY") or "").strip()):
+        # Missing primary credentials are fine when the fallback is usable.
+        providers = resolve_tts_providers(config)
+        if not providers:
+            voice = normalize_voice_config(config)
+            ttscfg = _as_dict(voice.get("tts"))
+            cld = _as_dict(ttscfg.get("cloud"))
+            dgkey = _tts_api_key(cld, "deepgram")
+            yakey = _tts_api_key(cld, "yandex")
+            if not dgkey:
                 out.append(
                     "TTS(cloud/deepgram): нет DEEPGRAM_API_KEY — озвучка не заработает"
+                )
+            if not yakey or not _tts_folder_id(cld):
+                out.append(
+                    "TTS(cloud/yandex): нет YANDEX_API_KEY/folder_id — озвучка не заработает"
                 )
 
     return out

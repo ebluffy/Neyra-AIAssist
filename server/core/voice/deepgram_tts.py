@@ -1,11 +1,14 @@
-"""Deepgram Flux — TTS batch REST API (Russian voice flux-polina-ru).
+"""Deepgram Flux batch TTS — Russian voice (flux-polina-ru).
 
-Documentation: https://developers.deepgram.com/docs/tts-models
+API: https://developers.deepgram.com/docs/tts-rest
+Model: flux-polina-ru (Russian), expressivity: int {-2,-1,0,1,2}.
+Container=none (raw PCM 16-bit mono LE) + manual WAV header (Deepgram's container=wav has bogus length).
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import struct
 from typing import Any
 
@@ -13,36 +16,54 @@ import httpx
 
 logger = logging.getLogger("neyra.deepgram_tts")
 
-DEFAULT_ENDPOINT = "https://api.deepgram.com/v2/speak"
 DEFAULT_MODEL = "flux-polina-ru"
-DEFAULT_EXPRESSIVITY = 0
 DEFAULT_SAMPLE_RATE = 24000
+DEFAULT_EXPRESSIVITY = 0
+
+
+def _validate_expressivity(value: Any) -> int:
+    """
+    Deepgram expressivity must be an integer in {-2, -1, 0, 1, 2}.
+    Invalid values → warning + return 0.
+    """
+    try:
+        e = int(value)
+        valid = not isinstance(value, bool) and float(value) == e and e in (-2, -1, 0, 1, 2)
+    except (ValueError, TypeError, OverflowError):
+        valid = False
+    if not valid:
+        logger.warning("Deepgram TTS: invalid expressivity; expected integer in {-2,-1,0,1,2}; using 0")
+        return 0
+    return e
 
 
 def _build_wav_header(pcm_data: bytes, sample_rate: int) -> bytes:
-    """Build a correct WAV header for raw PCM 16-bit mono data."""
+    """
+    Build correct WAV header for mono 16-bit PCM.
+    Deepgram's container=wav returns a placeholder length — we build ours.
+    """
     num_channels = 1
     bits_per_sample = 16
-    byte_rate = sample_rate * num_channels * (bits_per_sample // 8)
-    block_align = num_channels * (bits_per_sample // 8)
+    byte_rate = sample_rate * num_channels * bits_per_sample // 8
+    block_align = num_channels * bits_per_sample // 8
     data_size = len(pcm_data)
-    file_size = 36 + data_size
-
+    # RIFF header
     header = b"RIFF"
-    header += struct.pack("<I", file_size)
+    header += struct.pack("<I", 36 + data_size)  # file size - 8
     header += b"WAVE"
+    # fmt chunk
     header += b"fmt "
     header += struct.pack("<I", 16)  # fmt chunk size
-    header += struct.pack("<H", 1)   # audio format (PCM)
+    header += struct.pack("<H", 1)  # audio format (PCM=1)
     header += struct.pack("<H", num_channels)
     header += struct.pack("<I", sample_rate)
     header += struct.pack("<I", byte_rate)
     header += struct.pack("<H", block_align)
     header += struct.pack("<H", bits_per_sample)
+    # data chunk
     header += b"data"
     header += struct.pack("<I", data_size)
-    
-    return header
+    return header + pcm_data
 
 
 async def synthesize_to_wav_bytes(
@@ -52,142 +73,74 @@ async def synthesize_to_wav_bytes(
     model: str = DEFAULT_MODEL,
     expressivity: int = DEFAULT_EXPRESSIVITY,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
-    endpoint: str = DEFAULT_ENDPOINT,
     timeout: float = 60.0,
-    transport = None,  # For testing: optional httpx transport override
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> bytes:
     """
-    Synthesize text to WAV using Deepgram Flux batch REST API.
-    
-    Args:
-        text: Text to synthesize
-        api_key: Deepgram API key
-        model: TTS model (default: flux-polina-ru)
-        expressivity: Expressivity level 0-2 (default: 0)
-        sample_rate: Sample rate in Hz (default: 24000)
-        endpoint: API endpoint (default: https://api.deepgram.com/v2/speak)
-        timeout: Request timeout in seconds (default: 60.0)
-        
-    Returns:
-        WAV audio bytes with correct header
-        
-    Raises:
-        ValueError: If API key is empty
-        RuntimeError: If HTTP request fails
-    """
-    if not api_key.strip():
-        raise ValueError("Deepgram TTS: пустой api_key")
+    Synthesize text via Deepgram Flux batch TTS (Russian voice).
 
-    # Build query parameters
-    params = {
-        "model": model,
-        "expressivity": str(expressivity),
-        "encoding": "linear16",
-        "container": "none",
-        "sample_rate": str(sample_rate),
-    }
+    Returns WAV bytes (PCM 16-bit mono).
+
+    Raises:
+        ValueError: if api_key is missing or empty response from Deepgram.
+        RuntimeError: on HTTP errors (status + Deepgram err_code if present).
+
+    Never logs request text, response body, or the api_key.
+    """
+    api_key = api_key.strip()
+    if not api_key:
+        raise ValueError("DEEPGRAM_API_KEY is not set")
+
+    # Validate expressivity as int
+    expr_int = _validate_expressivity(expressivity)
+
+    # Build URL with query params
+    url = "https://api.deepgram.com/v2/speak"
+    params = {"model": model, "expressivity": str(expr_int), "encoding": "linear16",
+              "container": "none", "sample_rate": str(sample_rate)}
 
     headers = {
-        "Authorization": f"Token {api_key.strip()}",
+        "Authorization": f"Token {api_key}",
         "Content-Type": "application/json",
     }
 
     body = {"text": text}
 
+    connect_timeout = min(10.0, timeout)
+    timeout_config = httpx.Timeout(connect=connect_timeout, read=timeout, write=timeout, pool=timeout)
+
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout, connect=10.0, read=timeout),
-            transport=transport,
-        ) as client:
-            resp = await client.post(
-                endpoint.strip(),
-                headers=headers,
-                params=params,
-                json=body,
-            )
+        async with httpx.AsyncClient(timeout=timeout_config, transport=transport) as client:
+            resp = await client.post(url, params=params, headers=headers, json=body)
 
             if resp.status_code >= 400:
-                # Parse error code if available (don't log full response or request text)
-                err_code = "unknown"
+                # Parse Deepgram error code if present (truncated to 64 chars)
+                err_code = ""
                 try:
                     err_json = resp.json()
-                    err_code = err_json.get("err_code", err_json.get("code", "unknown"))
+                    raw_code = err_json.get("err_code")
+                    if isinstance(raw_code, str) and re.fullmatch(r"[A-Za-z0-9_-]+", raw_code):
+                        err_code = raw_code[:64]
                 except Exception:
                     pass
-                raise RuntimeError(
-                    f"Deepgram TTS HTTP {resp.status_code}: err_code={err_code}"
-                )
+
+                # Safe error message: status + err_code only
+                err_msg = f"Deepgram TTS HTTP {resp.status_code}"
+                if err_code:
+                    err_msg += f" (err_code={err_code})"
+                raise RuntimeError(err_msg)
 
             pcm_data = resp.content
+
+            # Empty response = failure (trigger fallback)
             if not pcm_data:
-                logger.error("Deepgram TTS: пустой ответ от API")
-                return b""
+                raise ValueError("Deepgram TTS: пустой ответ от API")
 
-            # Build correct WAV header (Deepgram's container=wav has bogus placeholder length)
-            wav_header = _build_wav_header(pcm_data, sample_rate)
-            return wav_header + pcm_data
+            # Build correct WAV header
+            return _build_wav_header(pcm_data, sample_rate)
 
-    except httpx.TimeoutException as e:
-        raise RuntimeError(f"Deepgram TTS: timeout after {timeout}s") from e
-    except httpx.RequestError as e:
-        raise RuntimeError(f"Deepgram TTS: network error: {type(e).__name__}") from e
-
-
-async def synthesize_from_config(text: str, config: dict[str, Any]) -> bytes:
-    """
-    TTS via ``voice.tts`` modality. Soft-fail: empty bytes + ERROR log, never crashes core.
-    """
-    from core.voice.config import resolve_tts_runtime
-
-    rt = resolve_tts_runtime(config)
-    if not rt.get("available"):
-        for e in rt.get("soft_errors") or []:
-            logger.error("TTS недоступен (soft): %s — озвучка пропущена, ядро живо", e)
-        return b""
-
-    lane = rt.get("primary_lane")
-    block = dict(rt.get("tts") or {})
-    
-    if lane == "local":
-        logger.error(
-            "TTS(local): провайдер ещё не подключён (Stage 4) — озвучка пропущена, ядро живо"
-        )
-        return b""
-
-    provider = str(block.get("provider") or "").strip().lower()
-    if provider != "deepgram":
-        logger.error(
-            "TTS(cloud): неизвестный/пустой provider=%r — озвучка пропущена, ядро живо",
-            provider,
-        )
-        return b""
-
-    import os
-
-    api_key = str(block.get("api_key") or "").strip() or (
-        os.environ.get("DEEPGRAM_API_KEY") or ""
-    ).strip()
-    
-    if not api_key:
-        logger.error(
-            "TTS(Deepgram): DEEPGRAM_API_KEY is not set — озвучка пропущена, "
-            "задайте DEEPGRAM_API_KEY в .env или voice.tts.cloud"
-        )
-        return b""
-
-    # Get Deepgram-specific settings
-    deepgram_block = dict(block.get("deepgram") or {})
-    
-    try:
-        return await synthesize_to_wav_bytes(
-            text,
-            api_key=api_key,
-            model=str(deepgram_block.get("model") or block.get("model") or DEFAULT_MODEL),
-            expressivity=int(deepgram_block.get("expressivity", block.get("expressivity", DEFAULT_EXPRESSIVITY))),
-            sample_rate=int(deepgram_block.get("sample_rate", block.get("sample_rate", DEFAULT_SAMPLE_RATE))),
-            endpoint=str(deepgram_block.get("endpoint") or block.get("endpoint") or DEFAULT_ENDPOINT),
-            timeout=float(block.get("timeout_seconds", 60.0)),
-        )
-    except Exception as e:
-        logger.error("TTS(Deepgram) soft-fail: %s — ядро продолжает работу", e)
-        return b""
+    except httpx.TimeoutException:
+        raise RuntimeError("Deepgram TTS: request timed out") from None
+    except httpx.RequestError:
+        # Network error — safe message without exposing request details
+        raise RuntimeError("Deepgram TTS: network error") from None

@@ -51,7 +51,7 @@ async def synthesize_from_config(text: str, config: dict[str, Any]) -> bytes:
             return result
         # Deepgram failed or key missing, try fallback to yandex
         logger.warning("TTS(deepgram): недоступен или ошибка — fallback на yandex")
-        return await _try_yandex(text, config, block)
+        return await _try_yandex(text, config, block) or b""
     
     elif provider == "yandex":
         result = await _try_yandex(text, config, block)
@@ -84,17 +84,20 @@ async def _try_deepgram(text: str, config: dict[str, Any], block: dict[str, Any]
         )
         return None
     
+    expressivity = deepgram_tts._validate_expressivity(dg_block.get("expressivity", 0))
+
     try:
-        return await deepgram_tts.synthesize_to_wav_bytes(
+        result = await deepgram_tts.synthesize_to_wav_bytes(
             text,
             api_key=api_key,
             model=str(dg_block.get("model") or "flux-polina-ru"),
-            expressivity=float(dg_block.get("expressivity", 0)),
+            expressivity=expressivity,
             sample_rate=int(dg_block.get("sample_rate", 24000)),
             timeout=float(dg_block.get("timeout_seconds", 60.0)),
         )
-    except Exception as e:
-        logger.error("TTS(Deepgram) soft-fail: %s", e)
+        return result or None
+    except Exception:
+        logger.warning("TTS(Deepgram) failed; trying configured fallback")
         return None
 
 
@@ -126,12 +129,11 @@ async def _try_yandex(text: str, config: dict[str, Any], block: dict[str, Any]) 
             folder_id=folder_id,
             voice=str(ya_block.get("voice") or block.get("voice") or "masha"),
             role=str(ya_block.get("role") or block.get("role") or "friendly"),
-            speed=float(ya_block.get("speed") or block.get("speed", 1.15)),
-            pitch_shift_hz=float(ya_block.get("pitch_shift_hz") or block.get("pitch_shift_hz", 150.0)),
+            speed=float(ya_block.get("speed", block.get("speed", 1.15))),
+            pitch_shift_hz=float(ya_block.get("pitch_shift_hz", block.get("pitch_shift_hz", 150.0))),
             endpoint=str(ya_block.get("endpoint") or block.get("endpoint") or yandex_tts.DEFAULT_ENDPOINT),
             timeout=float(ya_block.get("timeout_seconds") or block.get("timeout_seconds", 60.0)),
         )
-    except Exception as e:
-        logger.error("TTS(Yandex) soft-fail: %s — ядро продолжает работу", e)
+    except Exception:
+        logger.error("TTS(Yandex) soft-fail — ядро продолжает работу")
         return None
-

@@ -1,5 +1,5 @@
 """Tests for Deepgram TTS provider with mocked HTTP."""
-import asyncio
+import json
 import struct
 import wave
 from io import BytesIO
@@ -31,7 +31,7 @@ def parse_wav_header(wav_bytes: bytes) -> dict:
 def mock_handler_success(request: httpx.Request) -> httpx.Response:
     """Mock successful Deepgram response."""
     # Verify headers
-    assert request.headers["Authorization"].startswith("Token ")
+    assert request.headers["Authorization"] in {"Token test-api-key", "Token test-key"}
     assert request.headers["Content-Type"] == "application/json"
     
     # Verify body
@@ -89,7 +89,7 @@ async def test_wav_header_correctness():
 @pytest.mark.asyncio
 async def test_missing_api_key():
     """Test that missing API key raises ValueError."""
-    with pytest.raises(ValueError, match="пустой api_key"):
+    with pytest.raises(ValueError, match="DEEPGRAM_API_KEY is not set"):
         await synthesize_to_wav_bytes("Test", api_key="")
 
 
@@ -116,7 +116,7 @@ async def test_url_and_query_params():
         url_str = str(request.url)
         assert "api.deepgram.com/v2/speak" in url_str
         assert "model=flux-polina-ru" in url_str
-        assert "expressivity=0" in url_str
+        assert request.url.params["expressivity"] == "0"
         assert "encoding=linear16" in url_str
         assert "container=none" in url_str
         assert "sample_rate=24000" in url_str
@@ -139,5 +139,85 @@ async def test_http_500_error():
     
     transport = httpx.MockTransport(mock_error)
     
-    with pytest.raises(RuntimeError, match=r"Deepgram TTS HTTP 500.*err_code=unknown"):
+    with pytest.raises(RuntimeError, match=r"^Deepgram TTS HTTP 500$"):
         await synthesize_to_wav_bytes("Test", api_key="test-key", transport=transport)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [0, 0.0, "0", -2, 2, 1.5, "0.5", 3, None, True, float("inf")])
+async def test_expressivity_integer_query(value, caplog):
+    valid = type(value) in (int, float) and value in {-2, -1, 0, 1, 2} or value == "0"
+    expected = str(int(value)) if valid else "0"
+
+    def handler(request):
+        assert request.url.params["expressivity"] == expected
+        return httpx.Response(200, content=b"\x00\x00")
+
+    await synthesize_to_wav_bytes("Private text", api_key="test-key", expressivity=value,
+                                  transport=httpx.MockTransport(handler))
+    if not valid:
+        assert "invalid expressivity" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_exact_request_and_wav_payload():
+    pcm = b"\x01\x02" * 50
+
+    def handler(request):
+        assert request.method == "POST"
+        assert request.url.host == "api.deepgram.com"
+        assert request.url.path == "/v2/speak"
+        assert dict(request.url.params) == {
+            "model": "flux-polina-ru", "expressivity": "0", "encoding": "linear16",
+            "container": "none", "sample_rate": "16000",
+        }
+        assert json.loads(request.content) == {"text": "Привет"}
+        assert request.extensions["timeout"] == {"connect": 10, "read": 25, "write": 25, "pool": 25}
+        return httpx.Response(200, content=pcm)
+
+    audio = await synthesize_to_wav_bytes("Привет", api_key="test-key", sample_rate=16000,
+                                         timeout=25, transport=httpx.MockTransport(handler))
+    assert audio[44:] == pcm
+    assert struct.unpack("<I", audio[40:44])[0] == len(pcm)
+    assert parse_wav_header(audio) == {
+        "channels": 1, "sample_width": 2, "framerate": 16000, "n_frames": 50,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "network", "empty", "long_code", "non_json", "json_list"])
+async def test_safe_failures(failure, caplog):
+    private = "PRIVATE_REQUEST_TEXT_AND_KEY"
+
+    def handler(request):
+        assert request.extensions["timeout"]["connect"] == 3
+        if failure == "timeout":
+            raise httpx.ReadTimeout(private, request=request)
+        if failure == "network":
+            raise httpx.ConnectError(private, request=request)
+        if failure == "empty":
+            return httpx.Response(200, content=b"")
+        if failure == "long_code":
+            return httpx.Response(400, json={"err_code": "A" * 100, "message": private})
+        if failure == "json_list":
+            return httpx.Response(400, json=[private])
+        return httpx.Response(500, content=private.encode())
+
+    with pytest.raises((RuntimeError, ValueError)) as caught:
+        await synthesize_to_wav_bytes(private, api_key=private, timeout=3,
+                                      transport=httpx.MockTransport(handler))
+    assert private not in str(caught.value)
+    assert private not in caplog.text
+    assert caught.value.__cause__ is None
+    if failure == "long_code":
+        assert str(caught.value) == "Deepgram TTS HTTP 400 (err_code=" + "A" * 64 + ")"
+    import traceback
+    assert private not in "".join(traceback.format_exception(caught.value))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["private text", {"text": "private text"}])
+async def test_untrusted_error_code_is_not_echoed(code):
+    transport = httpx.MockTransport(lambda r: httpx.Response(400, json={"err_code": code, "message": "private text"}))
+    with pytest.raises(RuntimeError, match=r"^Deepgram TTS HTTP 400$"):
+        await synthesize_to_wav_bytes("private text", api_key="secret", transport=transport)

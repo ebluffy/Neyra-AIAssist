@@ -115,3 +115,10 @@ async def synthesize_to_wav_bytes(
         if not audio:
             logger.error("Yandex TTS: в ответе нет audioChunk (первые 200 символов): %r", raw[:200])
         return audio
+
+
+# Backward compatibility wrapper - delegates to the centralized dispatcher
+async def synthesize_from_config(text: str, config: dict) -> bytes:
+    """Legacy compat: delegate to core.voice.tts.synthesize_from_config."""
+    from core.voice.tts import synthesize_from_config as dispatch_tts
+    return await dispatch_tts(text, config)
