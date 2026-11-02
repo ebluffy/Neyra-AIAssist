@@ -11,16 +11,16 @@ describe('permissions path precheck', () => {
   });
 });
 
-describe('domain field draft', () => {
-  it('keeps a typed comma and commits two domains', () => {
-    let draft = '';
-    for (const char of 'a.com, b.com') draft += char;
-    expect(draft).toBe('a.com, b.com');
+describe('domainList parses and normalizes', () => {
+  it('drops empty pieces and lowercases hosts', () => {
     expect(domainList('a.com,')).toEqual(['a.com']);
-    expect(domainList(draft)).toEqual(['a.com', 'b.com']);
-    expect(draft.split('').includes(',')).toBe(true);
+    expect(domainList(' A.COM , ,b.com ')).toEqual(['a.com', 'b.com']);
+  });
+  it('rejects a path, a port and a scheme', () => {
     expect(invalidDomain('a.com')).toBe(false);
-    expect(invalidDomain('b.com')).toBe(false);
+    expect(invalidDomain('a.com/x')).toBe(true);
+    expect(invalidDomain('a.com:80')).toBe(true);
+    expect(invalidDomain('https://a.com')).toBe(true);
   });
 });
 
