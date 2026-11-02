@@ -4,15 +4,29 @@ const MAX_BYTES: u64 = 256 * 1024;
 const KEEP: usize = 3;
 
 /// Never persist panic payloads: even an unlabelled or not-yet-stored token may be in them.
-pub fn crash(root: &Path) {
+pub fn crash(root: &Path, location: &str) {
     if fs::create_dir_all(root.join("logs")).is_err() {
         return;
     }
-    let _ = crate::storage::atomic_write(&root.join("logs/crash.log"), b"client_panic\n");
+    let path = root.join("logs/crash.log");
+    rotate(&path);
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(
+            file,
+            "{} client_panic {}",
+            crate::policy::now_ms(),
+            crate::redact::redact(location)
+        );
+    }
 }
 
 pub fn install_crash_hook(root: std::path::PathBuf) {
-    std::panic::set_hook(Box::new(move |_| crash(&root)));
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|location| format!("{}:{}", location.file(), location.line()));
+        crash(&root, location.as_deref().unwrap_or("unknown"));
+    }));
 }
 
 /// Small local client log with rotation. Callers pass event codes and file names only: no tokens, arguments or output.
@@ -75,9 +89,22 @@ mod tests {
         assert!(!output.status.success());
         assert!(!String::from_utf8_lossy(&output.stderr).contains("crash-only-token-49"));
         assert!(!String::from_utf8_lossy(&output.stdout).contains("crash-only-token-49"));
+        let text = fs::read_to_string(root.join("logs/crash.log")).unwrap();
+        assert!(!text.contains("crash-only-token-49"));
+        let fields: Vec<_> = text.split_whitespace().collect();
+        assert_eq!(fields.len(), 3);
+        assert!(fields[0].parse::<u64>().unwrap() > 0);
+        assert_eq!(fields[1], "client_panic");
+        let (file, line) = fields[2].rsplit_once(':').unwrap();
+        assert!(file.ends_with("logs.rs"));
+        assert!(line.parse::<u32>().unwrap() > 0);
+        crash(&root, "test.rs:49");
         assert_eq!(
-            fs::read(root.join("logs/crash.log")).unwrap(),
-            b"client_panic\n"
+            fs::read_to_string(root.join("logs/crash.log"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
         );
         fs::remove_dir_all(root).unwrap();
     }

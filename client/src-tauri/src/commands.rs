@@ -985,9 +985,24 @@ pub fn export_bytes(
     settings: &crate::storage::Settings,
     entries: &[Entry],
 ) -> Result<Vec<u8>, String> {
-    let mut value = serde_json::to_value(export_bundle(settings, entries))
+    let value = serde_json::to_value(export_bundle(settings, entries))
         .map_err(|_| "Не удалось подготовить файл")?;
-    crate::redact::redact_value(&mut value);
+    for (index, command) in value["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        if crate::redact::contains_token(command) {
+            return Err(format!("export_contains_token: команда №{}", index + 1));
+        }
+    }
+    if ["settings", "permissions"]
+        .iter()
+        .any(|key| crate::redact::contains_token(&value[*key]))
+    {
+        return Err("export_contains_token: настройки или разрешения".into());
+    }
     serde_json::to_vec_pretty(&value).map_err(|_| "Не удалось подготовить файл".into())
 }
 

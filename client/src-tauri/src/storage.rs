@@ -984,11 +984,14 @@ mod tests {
                 assert_no_secret(&path, token);
             } else {
                 let bytes = fs::read(&path).unwrap();
-                assert!(
-                    !bytes.windows(token.len()).any(|w| w == token.as_bytes()),
-                    "secret in {}",
-                    path.display()
-                );
+                let encoded = serde_json::to_string(token).unwrap();
+                for secret in [token, &encoded[1..encoded.len() - 1]] {
+                    assert!(
+                        !bytes.windows(secret.len()).any(|w| w == secret.as_bytes()),
+                        "secret in {}",
+                        path.display()
+                    );
+                }
             }
         }
     }
@@ -996,7 +999,7 @@ mod tests {
     #[test]
     fn token_stays_out_of_entire_data_directory() {
         let root = temp();
-        let token = concat!("fleet-test-", "opaque-49-7391");
+        let token = concat!("fleet-test-", "quote\"slash\\-49-7391");
         let entry =
             keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
         let (mut settings, _) = initialize(&root).unwrap();
@@ -1031,21 +1034,35 @@ mod tests {
             "reply": token
         }))
         .unwrap();
+        let export = root.join("export.json");
+        let mut entries = vec![crate::commands::Entry {
+            file: "export.yaml".into(),
+            command,
+        }];
+        let result = crate::commands::export_bytes(&settings, &entries)
+            .and_then(|bytes| atomic_write(&export, &bytes));
+        assert_eq!(result.unwrap_err(), "export_contains_token: команда №1");
+        assert!(!export.exists());
+        let reply =
+            "basic mode; Authorization: Bearer $NEYRA_TOKEN; https://example.invalid/?token=$VAR";
+        entries[0].command = serde_json::from_value(json!({
+            "name": "Export regression",
+            "triggers": [{"phrase": "export regression"}],
+            "actions": [{"tool": "browser.open", "arguments": {"url": "https://example.invalid/?token=$VAR"}}],
+            "reply": reply
+        })).unwrap();
         atomic_write(
-            &root.join("export.json"),
-            &crate::commands::export_bytes(
-                &settings,
-                &[crate::commands::Entry {
-                    file: "export.yaml".into(),
-                    command,
-                }],
-            )
-            .unwrap(),
+            &export,
+            &crate::commands::export_bytes(&settings, &entries).unwrap(),
         )
         .unwrap();
         let exported =
             crate::commands::parse_bundle(&fs::read(root.join("export.json")).unwrap()).unwrap();
-        assert_eq!(exported.commands[0]["reply"], "[REDACTED]");
+        assert_eq!(exported.commands[0]["reply"], reply);
+        assert_eq!(
+            exported.commands[0],
+            serde_json::to_value(&entries[0].command).unwrap()
+        );
         assert_no_secret(&root, token);
         crate::logs::log(
             &root,
@@ -1054,7 +1071,7 @@ mod tests {
         );
         crate::audit::append(&root, token, &format!("token={token}"), false, 30).unwrap();
         assert_eq!(crate::audit::recent(&root, 30).unwrap().len(), 1);
-        crate::logs::crash(&root);
+        crate::logs::crash(&root, "storage.rs:49");
         assert!(root.join("logs/crash.log").exists());
         assert_no_secret(&root, token);
         fs::remove_dir_all(root).unwrap();
@@ -1064,7 +1081,7 @@ mod tests {
     fn unavailable_keyring_returns_error_without_disk_fallback() {
         let root = temp();
         fs::create_dir_all(&root).unwrap();
-        let token = concat!("fleet-unavailable-", "test-49");
+        let token = "fleet-unavailable-test-49";
         let entry =
             keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
         let mock = entry

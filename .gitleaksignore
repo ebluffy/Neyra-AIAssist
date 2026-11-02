@@ -17,6 +17,6 @@
 1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:jwt:78
 1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:private-key:75
 1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/shell.rs:generic-api-key:528
-# synthetic test tokens (not secrets), replaced in 2414634
+# Intentional mock keyring tokens in commit fdcfd7f; exact historical findings only.
 fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic-api-key:999
 fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic-api-key:1067

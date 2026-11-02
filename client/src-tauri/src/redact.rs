@@ -34,7 +34,7 @@ fn patterns() -> &'static [(Regex, &'static str)] {
                 r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b",
                 MASK,
             ),
-            (r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]+", "$1 [REDACTED]"),
+            (r"(?i)\b(Authorization:\s*(?:bearer|basic))\s+[A-Za-z0-9._~+/=\-]+", "$1 [REDACTED]"),
             (
                 r#"(?i)\b([A-Z0-9_]*(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)[A-Z0-9_]*)(\s*[:=]\s*)("[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&#]+)"#,
                 "$1$3[REDACTED]",
@@ -59,14 +59,20 @@ pub fn redact(text: &str) -> String {
     out
 }
 
-/// Mask secrets in nested export fields before serialization.
-pub fn redact_value(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::String(text) => *text = redact(text),
-        serde_json::Value::Array(items) => items.iter_mut().for_each(redact_value),
-        serde_json::Value::Object(fields) => fields.values_mut().for_each(redact_value),
-        _ => {}
+/// Inspect decoded fields, including object keys, without changing user data.
+pub fn contains_token(value: &serde_json::Value) -> bool {
+    let secrets = SECRETS.read().unwrap_or_else(|e| e.into_inner());
+    fn contains(value: &serde_json::Value, secrets: &[String]) -> bool {
+        match value {
+            serde_json::Value::String(text) => secrets.iter().any(|secret| text.contains(secret)),
+            serde_json::Value::Array(items) => items.iter().any(|item| contains(item, secrets)),
+            serde_json::Value::Object(fields) => fields.iter().any(|(key, value)| {
+                secrets.iter().any(|secret| key.contains(secret)) || contains(value, secrets)
+            }),
+            _ => false,
+        }
     }
+    contains(value, &secrets)
 }
 
 /// Bounded, redacted, valid UTF-8 text with a truncation flag.
@@ -96,6 +102,11 @@ mod tests {
         assert!(!output.contains(token));
         assert!(output.contains("Bearer [REDACTED]"));
         assert!(output.contains("token=[REDACTED]&page=1"));
+        assert_eq!(redact("basic mode"), "basic mode");
+        assert_eq!(
+            redact("Authorization: Bearer short"),
+            "Authorization: Bearer [REDACTED]"
+        );
     }
 
     #[test]
@@ -138,16 +149,6 @@ mod tests {
     fn ordinary_text_is_unchanged() {
         let text = "build ok: 12 passed, token count 40";
         assert_eq!(redact(text), text);
-    }
-
-    #[test]
-    fn bearer_and_query_tokens_are_masked() {
-        let out = redact(
-            "Authorization: Bearer short https://example.invalid/?token=query-secret&ok=yes",
-        );
-        assert!(!out.contains("short"));
-        assert!(!out.contains("query-secret"));
-        assert!(out.contains("&ok=yes"));
     }
 
     #[test]

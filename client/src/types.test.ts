@@ -13,6 +13,9 @@ describe('server profiles', () => {
     expect(formatError('credential_store_unavailable')).toContain('Токен не сохранён в файл');
     expect(formatError('token_missing')).toBe('Сначала сохраните токен.');
   });
+  it('explains a blocked export and identifies the command', () => {
+    expect(formatError('export_contains_token: команде №1')).toBe('Экспорт отменён: сохранённый токен найден в команде №1. Удалите токен из команды или настроек и повторите экспорт.');
+  });
 });
 describe('live voice labels', () => {
   it('clamps the mic meter', () => { expect(meterLevel(-100)).toBe(0); expect(meterLevel(0)).toBe(1); expect(meterLevel(-35)).toBeCloseTo(0.5); });

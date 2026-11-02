@@ -43,6 +43,7 @@ export function newProfile(): Profile { return { id: crypto.randomUUID(), name: 
 export function formatError(error: unknown): string {
   if (error === 'credential_store_unavailable') return 'Системное хранилище секретов недоступно. Запустите и разблокируйте Secret Service/keyring. Токен не сохранён в файл.';
   if (error === 'token_missing') return 'Сначала сохраните токен.';
+  if (typeof error === 'string' && error.startsWith('export_contains_token:')) return `Экспорт отменён: сохранённый токен найден в ${error.slice('export_contains_token:'.length).trim()}. Удалите токен из команды или настроек и повторите экспорт.`;
   if (error === 'invalid_token') return 'Неверный токен.';
   return typeof error === 'string' ? error : 'Действие не выполнено. Повторите попытку.';
 }
