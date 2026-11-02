@@ -20,3 +20,4 @@
 # Intentional mock keyring tokens in commit fdcfd7f; exact historical findings only.
 fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic-api-key:999
 fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic-api-key:1067
+73a7006b96f283a202ff00c170a53769d04d754e:client/src-tauri/src/storage.rs:generic-api-key:1084
