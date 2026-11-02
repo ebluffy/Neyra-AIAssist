@@ -44,7 +44,7 @@ export function SettingsSheet({ section, onSection, onClose, onStop, alert, chil
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
     root?.addEventListener('keydown', onKey);
-    return () => { root?.removeEventListener('keydown', onKey); (previous?.isConnected ? previous : document.getElementById('gear'))?.focus(); };
+    return () => { root?.removeEventListener('keydown', onKey); (previous?.isConnected && previous !== document.body ? previous : document.getElementById('gear'))?.focus(); };
   }, []);
   useEffect(() => {
     panel.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });

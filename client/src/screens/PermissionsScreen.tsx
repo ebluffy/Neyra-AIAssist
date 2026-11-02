@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { type AuditRow, type Permissions, type Settings, absolutePath } from '../types';
+import { type AuditRow, type Permissions, type Settings } from '../types';
+import { absoluteRoot } from './validation';
 
 type Runner = (action: () => Promise<void>) => Promise<void>;
 interface Props {
@@ -23,14 +24,14 @@ export function PermissionsScreen({ settings, setSettings, saveSection, pcAvaila
   });
   const addRoot = () => run(async () => {
     const path = newRoot.trim();
-    if (!absolutePath(path)) { newRootInput.current?.focus(); return; }
+    if (!absoluteRoot(path)) { newRootInput.current?.focus(); return; }
     if (p.fs_roots.includes(path)) return;
     await saveSection({ permissions: { ...p, fs_roots: [...p.fs_roots, path] } });
     setNewRoot(''); notify('Папка разрешена');
   });
   const shown = (applications ?? []).filter(path => path.toLowerCase().includes(appFilter.toLowerCase()));
-  const invalidNewRoot = !!newRoot.trim() && !absolutePath(newRoot.trim());
-  const invalidRoots = p.fs_roots.some(path => !absolutePath(path));
+  const invalidNewRoot = !!newRoot.trim() && !absoluteRoot(newRoot.trim());
+  const invalidRoots = p.fs_roots.some(path => !absoluteRoot(path));
   const invalidDomains = p.web_domains.some(domain => {
     try {
       const url = new URL(`https://${domain}`);
