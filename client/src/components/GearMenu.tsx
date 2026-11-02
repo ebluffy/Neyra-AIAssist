@@ -41,8 +41,10 @@ export function GearMenu({ open, onClose, onSettings, version, os }: Props) {
     };
     const timer = window.setTimeout(() => window.addEventListener('pointerdown', onPointer), 0);
     window.addEventListener('keydown', onKey);
-    panel.current?.querySelector('button')?.focus();
-    return () => { window.clearTimeout(timer); window.removeEventListener('pointerdown', onPointer); window.removeEventListener('keydown', onKey); };
+    const focusFirst = () => panel.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    focusFirst();
+    const frame = window.requestAnimationFrame(focusFirst);
+    return () => { window.cancelAnimationFrame(frame); window.clearTimeout(timer); window.removeEventListener('pointerdown', onPointer); window.removeEventListener('keydown', onKey); };
   }, [open]);
   if (!open) return null;
   return <div className="menu" id="gear-menu" ref={panel} role="menu" aria-label="Разделы настроек">

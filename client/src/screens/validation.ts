@@ -6,6 +6,19 @@ export function absoluteRoot(value: string): boolean {
   return absolutePath(value) || value.startsWith('\\\\');
 }
 
+export function domainList(value: string): string[] {
+  return value.split(',').map(part => part.trim().toLowerCase()).filter(Boolean);
+}
+
+export function invalidDomain(domain: string): boolean {
+  try {
+    const url = new URL(`https://${domain}`);
+    return url.hostname !== domain || url.pathname !== '/' || !!url.port;
+  } catch {
+    return true;
+  }
+}
+
 export function commandErrorFields(message: string, command: QuickCommand): string[] {
   if (/^(Укажите имя|Имя:|Команда с таким именем)/.test(message)) return ['command-name'];
   if (message.startsWith('Описание:')) return ['command-description'];

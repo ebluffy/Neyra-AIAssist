@@ -6,7 +6,7 @@ import { drawFallback } from './fallback';
 import type { Rig } from './renderer';
 import { type CharacterState, stateFromEvent } from './state';
 
-interface CharacterInfo { enabled: boolean; settings: { model: string | null; fps_limit: number } }
+interface CharacterInfo { enabled: boolean; theme?: string; settings: { model: string | null; fps_limit: number } }
 
 const canvas = document.getElementById('stage') as HTMLCanvasElement;
 let state: CharacterState = 'idle';
@@ -26,6 +26,9 @@ void listen<{ x: number; y: number }>('character-cursor', ({ payload }) => rig?.
 void listen<{ fps_limit: number }>('character-settings', ({ payload }) => {
   if (typeof payload.fps_limit === 'number') rig?.setFps(payload.fps_limit);
 });
+void listen<{ theme?: string }>('theme-changed', ({ payload }) => {
+  theme = themeId(payload.theme);
+});
 
 // Mouth is smoothed here so the 3D and the flat renderer share one source.
 setInterval(() => {
@@ -36,12 +39,7 @@ setInterval(() => {
 function runFallback() {
   const context = canvas.getContext('2d');
   if (!context) return;
-  let themeAt = 0;
   const frame = (time: number) => {
-    if (time - themeAt > 1000) {
-      themeAt = time;
-      void invoke<{ settings?: { theme?: string } }>('load_settings').then(loaded => { theme = themeId(loaded.settings?.theme); }).catch(() => undefined);
-    }
     drawFallback(context, state, mouth, time, theme);
     requestAnimationFrame(frame);
   };
@@ -50,6 +48,7 @@ function runFallback() {
 
 async function start() {
   const info = await invoke<CharacterInfo>('character_state');
+  theme = themeId(info.theme);
   if (!info.enabled || !info.settings.model) { runFallback(); return; }
   try {
     const bytes = await invoke<ArrayBuffer>('character_model_load', { name: info.settings.model });

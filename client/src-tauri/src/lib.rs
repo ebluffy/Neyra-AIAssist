@@ -234,6 +234,9 @@ pub(crate) fn apply_settings(
         != (settings.permissions.screen, settings.permissions.input);
     storage::save(&state.root, &settings)?;
     character::on_settings_saved(app, settings.character_enabled);
+    if settings.theme != old.theme {
+        let _ = app.emit("theme-changed", json!({ "theme": settings.theme }));
+    }
     *state.settings.lock().map_err(lock_error)? = settings;
     if changed {
         stop_inner(state)?;

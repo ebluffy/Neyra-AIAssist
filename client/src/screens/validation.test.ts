@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptyCommand, makeTrigger } from '../commands';
-import { absoluteRoot, commandErrorFields } from './validation';
+import { absoluteRoot, commandErrorFields, domainList, invalidDomain } from './validation';
 
 describe('permissions path precheck', () => {
   it.each(['/home/me/Docs', 'D:\\Work', 'D:/Work', '\\\\?\\D:\\Work', '\\\\?\\UNC\\server\\share', '\\\\server\\share'])('allows %s to reach backend validation', path => {
@@ -8,6 +8,19 @@ describe('permissions path precheck', () => {
   });
   it.each(['Work', 'D:Work', '\\Work', '~/Work', '..\\Work', ''])('rejects relative path %s', path => {
     expect(absoluteRoot(path)).toBe(false);
+  });
+});
+
+describe('domain field draft', () => {
+  it('keeps a typed comma and commits two domains', () => {
+    let draft = '';
+    for (const char of 'a.com, b.com') draft += char;
+    expect(draft).toBe('a.com, b.com');
+    expect(domainList('a.com,')).toEqual(['a.com']);
+    expect(domainList(draft)).toEqual(['a.com', 'b.com']);
+    expect(draft.split('').includes(',')).toBe(true);
+    expect(invalidDomain('a.com')).toBe(false);
+    expect(invalidDomain('b.com')).toBe(false);
   });
 });
 

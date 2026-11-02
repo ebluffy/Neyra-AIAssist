@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type AuditRow, type Permissions, type Settings } from '../types';
-import { absoluteRoot } from './validation';
+import { absoluteRoot, domainList, invalidDomain } from './validation';
 
 type Runner = (action: () => Promise<void>) => Promise<void>;
 interface Props {
@@ -14,10 +14,13 @@ export function PermissionsScreen({ settings, setSettings, saveSection, pcAvaila
   const [appFilter, setAppFilter] = useState('');
   const [audit, setAudit] = useState<AuditRow[]>();
   const [newRoot, setNewRoot] = useState('');
+  const [domainDraft, setDomainDraft] = useState<string | null>(null);
   const newRootInput = useRef<HTMLInputElement>(null);
   const rootsInput = useRef<HTMLTextAreaElement>(null);
   const domainsInput = useRef<HTMLInputElement>(null);
   const p = settings.permissions;
+  const domainValue = domainDraft ?? p.web_domains.join(', ');
+  const parsedDomains = domainList(domainValue);
   const patch = (permissions: Partial<Permissions>, warning?: string) => run(async () => {
     if (warning && !window.confirm(warning)) return;
     await saveSection({ permissions: { ...p, ...permissions } });
@@ -32,12 +35,7 @@ export function PermissionsScreen({ settings, setSettings, saveSection, pcAvaila
   const shown = (applications ?? []).filter(path => path.toLowerCase().includes(appFilter.toLowerCase()));
   const invalidNewRoot = !!newRoot.trim() && !absoluteRoot(newRoot.trim());
   const invalidRoots = p.fs_roots.some(path => !absoluteRoot(path));
-  const invalidDomains = p.web_domains.some(domain => {
-    try {
-      const url = new URL(`https://${domain}`);
-      return url.hostname !== domain || url.pathname !== '/' || !!url.port;
-    } catch { return true; }
-  });
+  const invalidDomains = parsedDomains.some(invalidDomain);
 
   return <section aria-labelledby="permissions-title">
     <h1 id="permissions-title">Доступ к ПК</h1>
@@ -60,9 +58,9 @@ export function PermissionsScreen({ settings, setSettings, saveSection, pcAvaila
     {!p.screen && <p id="permissions-screen-hint" className="hint">Включите снимки экрана, чтобы разрешить их без подтверждения.</p>}
     <label className="check"><input name="permissions-contour-screen-auto" autoComplete="off" type="checkbox" checked={!!p.screen_auto} disabled={busy || !p.screen} aria-describedby={busy ? 'permissions-busy' : !p.screen ? 'permissions-screen-hint' : undefined} onChange={e => patch({ screen_auto: e.target.checked })}/>Скриншоты без карточки (только capture)</label>
     <label className="check"><input name="permissions-contour-input" autoComplete="off" type="checkbox" checked={!!p.input} disabled={busy || !p.enabled} aria-describedby={busy ? 'permissions-busy' : !p.enabled ? 'permissions-master-hint' : undefined} onChange={e => patch({ input: e.target.checked })}/>Мышь и клавиатура (каждая последовательность с подтверждением)</label>
-    <label>Домены без подтверждения (через запятую)<input ref={domainsInput} name="allowed-domains" type="text" inputMode="url" autoComplete="off" spellCheck={false} value={p.web_domains.join(', ')} aria-invalid={invalidDomains} aria-describedby={invalidDomains ? 'allowed-domains-error' : undefined} onChange={e => setSettings({ ...settings, permissions: { ...p, web_domains: e.target.value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean) } })}/></label>
+    <label>Домены без подтверждения (через запятую)<input ref={domainsInput} name="allowed-domains" type="text" inputMode="url" autoComplete="off" spellCheck={false} value={domainValue} aria-invalid={invalidDomains} aria-describedby={invalidDomains ? 'allowed-domains-error' : undefined} onChange={e => setDomainDraft(e.target.value)} onBlur={() => { if (domainDraft === null) return; setSettings({ ...settings, permissions: { ...p, web_domains: domainList(domainDraft) } }); setDomainDraft(null); }}/></label>
     {invalidDomains && <p id="allowed-domains-error" className="field-error" role="alert">Укажите домены без протокола, пути и порта, например example.com.</p>}
-    <button disabled={busy} onClick={() => { if (invalidDomains) { domainsInput.current?.focus(); return; } void run(async () => { await saveSection({ permissions: settings.permissions }); notify('Список доменов сохранён'); }); }}>Сохранить домены</button>
+    <button disabled={busy} onClick={() => { const domains = domainList(domainsInput.current?.value ?? domainValue); if (domains.some(invalidDomain)) { domainsInput.current?.focus(); return; } void run(async () => { await saveSection({ permissions: { ...p, web_domains: domains } }); setDomainDraft(null); notify('Список доменов сохранён'); }); }}>Сохранить домены</button>
     <p>Неизвестные домены требуют подтверждения. Поиск открывается в Google.</p>
     <h2>Разрешённые приложения</h2>
     <button disabled={busy} onClick={() => run(async () => { setApplications(await invoke<string[]>('applications')); })}>Найти установленные приложения</button>

@@ -125,6 +125,19 @@ pub fn app_enabled(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn app_theme(root: &Path) -> String {
+    let theme = fs::read(root.join("settings/app.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|value| value.get("theme")?.as_str().map(str::to_string))
+        .unwrap_or_else(|| "neyra".into());
+    if crate::storage::valid_theme(&theme) {
+        theme
+    } else {
+        "neyra".into()
+    }
+}
+
 pub fn on_settings_saved(app: &tauri::AppHandle, enabled: bool) {
     if !enabled {
         close_overlay(app);
@@ -428,6 +441,7 @@ fn open_overlay(app: &tauri::AppHandle, settings: &CharacterSettings) -> Result<
 fn state_value(root: &Path, app: &tauri::AppHandle) -> Result<Value, String> {
     Ok(json!({
         "enabled": app_enabled(root),
+        "theme": app_theme(root),
         "settings": load(root)?,
         "capabilities": detect_capabilities(),
         "models": list_models(root),
@@ -507,7 +521,23 @@ mod tests {
         let settings = load(&root).unwrap();
         assert!(settings.model.is_none());
         assert!(!app_enabled(&root));
+        assert_eq!(app_theme(&root), "neyra");
         assert!(!root.join(SETTINGS_FILE).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn overlay_theme_reads_only_the_theme_field() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("settings")).unwrap();
+        fs::write(
+            root.join("settings/app.json"),
+            r#"{"theme":"dark","device_id":"x","permissions":{"apps":["secret"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(app_theme(&root), "dark");
+        fs::write(root.join("settings/app.json"), r#"{"theme":"purple"}"#).unwrap();
+        assert_eq!(app_theme(&root), "neyra");
         fs::remove_dir_all(root).unwrap();
     }
 

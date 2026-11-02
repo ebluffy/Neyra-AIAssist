@@ -29,7 +29,7 @@ if(cmd==='stop'){window.emitNative('desktop-event',{type:'cancelled'});return;}
 if(cmd==='applications')return ['/usr/bin/firefox','/usr/bin/steam'];
 if(cmd==='update_state')return {settings:{schema_version:1,channel:'beta',auto_check:false},current_version:'0.1.0',endpoint:'https://example.invalid/latest.json',key_configured:true,install_kind:'appimage',pending_version:null};
 if(cmd==='update_check')return {available:true,version:'0.1.1',notes:'Тест',date:null};
-if(cmd==='character_state')return {enabled:!!settings.character_enabled,settings:{schema_version:1,model:null,fps_limit:30,pause_fullscreen:true,pause_battery:true,always_on_top:true,click_through:true},capabilities:{transparent:'yes',always_on_top:'not_guaranteed',click_through:'yes',exclude_from_capture:'no',mechanism:'wayland-kde',notes:['Wayland не гарантирует always-on-top.']},models:[],overlay_open:false,renderer:'vrm',directory:'/tmp/Neyra/character'};
+if(cmd==='character_state')return {enabled:!!settings.character_enabled,theme:settings.theme,settings:{schema_version:1,model:null,fps_limit:30,pause_fullscreen:true,pause_battery:true,always_on_top:true,click_through:true},capabilities:{transparent:'yes',always_on_top:'not_guaranteed',click_through:'yes',exclude_from_capture:'no',mechanism:'wayland-kde',notes:['Wayland не гарантирует always-on-top.']},models:[],overlay_open:false,renderer:'vrm',directory:'/tmp/Neyra/character'};
 if(cmd==='audit_log')return [{time:Date.now(),tool:'client.open_url',status:'ok',confirmed:false}];
 if(cmd==='load_chats')return [];
 if(cmd==='save_chats')return;
@@ -83,6 +83,22 @@ with sync_playwright() as p:
     page.wait_for_load_state('networkidle')
     expect(page.get_by_role('heading', name=re.compile(r'^Добр(ой ночи|ое утро|ый день|ый вечер)$'))).to_be_visible()
     expect(page.get_by_text('Нет связи с сервером')).to_be_visible()
+    for _ in range(8):
+        if page.evaluate("() => document.activeElement?.id === 'gear'"):
+            break
+        page.keyboard.press('Tab')
+    else:
+        raise AssertionError('Tab did not reach the gear button')
+    page.keyboard.press('Enter')
+    page.keyboard.press('Escape')
+    expect(page.locator('#gear-menu')).to_have_count(0)
+    assert page.evaluate("() => document.activeElement?.id") == 'gear'
+    page.keyboard.press('Enter')
+    expect(page.locator('#gear-menu [role="menuitem"]').first).to_be_focused()
+    page.keyboard.press('ArrowDown')
+    page.keyboard.press('Enter')
+    expect(page.get_by_role('heading', name='Сервер и устройства')).to_be_visible()
+    close_sheet(page)
     menu(page, 'Персонаж')
     expect(page.get_by_text('Персонаж выключен. Включите «Персонаж на рабочем столе» в разделе «Настройки».')).to_be_visible()
     expect(page.get_by_role('button', name='Показать окно', exact=True)).to_be_disabled()
@@ -136,6 +152,13 @@ with sync_playwright() as p:
     expect(page.locator('.live-stage')).to_have_count(0)
     assert any(c['cmd']=='save_settings' and c['args']['settings'].get('voice',{}).get('mode')=='wake' for c in page.evaluate('window.testCalls'))
     menu(page, 'Доступ к ПК')
+    domains = page.get_by_label('Домены без подтверждения (через запятую)')
+    domains.click()
+    domains.press_sequentially('a.com, b.com', delay=15)
+    expect(domains).to_have_value('a.com, b.com')
+    page.get_by_role('button', name='Сохранить домены', exact=True).click()
+    expect(page.get_by_text('Список доменов сохранён')).to_be_visible()
+    assert page.evaluate("() => { const row = window.testCalls.filter(c => c.cmd==='save_settings').at(-1).args.settings.permissions.web_domains; return row.length===2 && row[0]==='a.com' && row[1]==='b.com'; }")
     page.get_by_label('Разрешить Нейре управлять этим ПК').check()
     page.get_by_role('button',name='Найти установленные приложения').click()
     expect(page.get_by_label('/usr/bin/firefox',exact=True)).to_be_visible()
