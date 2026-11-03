@@ -233,6 +233,23 @@ describe('unavailable server', () => {
     expect(app.error).toBe('');
   });
 
+  it.each([
+    ['token_missing', 'Сначала сохраните токен.'],
+    ['credential_store_unavailable', 'Системное хранилище секретов недоступно. Запустите и разблокируйте Secret Service/keyring. Токен не сохранён в файл.'],
+  ])('explains keyring configuration error %s without retrying', async (code, expected) => {
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'connect') throw `CONFIG_ERROR: ${code}`;
+      return base(command, args);
+    });
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    expect(app.error).toBe(expected);
+    await tick(120000);
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(1);
+  });
+
   it.each(['handshake', 'revoked'])('stops automatic retries after auth rejection: %s', async mode => {
     const base = ipc.invoke.getMockImplementation()!;
     ipc.invoke.mockImplementation(async (command, args) => {
