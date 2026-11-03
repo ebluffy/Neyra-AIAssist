@@ -67,7 +67,7 @@ voice:
       # EN: Cloud TTS provider: deepgram | yandex
       # RU: Облачный TTS провайдер: deepgram | yandex
       provider: "deepgram"
-      
+
       # Deepgram Flux TTS (Russian voice)
       deepgram:
         model: "flux-polina-ru"
@@ -76,7 +76,7 @@ voice:
         expressivity: 0
         sample_rate: 24000
         timeout_seconds: 60.0
-      
+
       # Yandex SpeechKit fallback
       yandex:
         endpoint: "https://tts.api.cloud.yandex.net/tts/v3/utteranceSynthesis"
