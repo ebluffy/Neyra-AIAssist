@@ -1,4 +1,4 @@
-use crate::{policy::now_ms, storage::atomic_write};
+use crate::{policy::now_ms, redact, storage::atomic_write};
 use serde_json::{json, Value};
 use std::{
     path::{Path, PathBuf},
@@ -216,6 +216,22 @@ pub fn recent(root: &Path, days: u32) -> Result<Vec<Value>, String> {
         .filter(|r| r["time"].as_u64().unwrap_or_default() >= cutoff)
         .collect())
 }
+fn write_rows(root: &Path, mut rows: Vec<Value>) -> Result<(), String> {
+    fn redact_value(value: &mut Value) {
+        match value {
+            Value::String(text) => *text = redact::redact(text),
+            Value::Array(values) => values.iter_mut().for_each(redact_value),
+            Value::Object(fields) => fields.values_mut().for_each(redact_value),
+            _ => {}
+        }
+    }
+    rows.iter_mut().for_each(redact_value);
+    atomic_write(
+        &root.join("audit/actions.json"),
+        &serde_json::to_vec(&rows).map_err(|_| "Журнал недоступен")?,
+    )
+}
+
 pub fn append(
     root: &Path,
     tool: &str,
@@ -229,10 +245,7 @@ pub fn append(
     if rows.len() > 2000 {
         rows.drain(..rows.len() - 2000);
     }
-    atomic_write(
-        &root.join("audit/actions.json"),
-        &serde_json::to_vec(&rows).map_err(|_| "Журнал недоступен")?,
-    )
+    write_rows(root, rows)
 }
 pub fn prune(root: &Path, days: u32) -> Result<(), String> {
     cleanup_corrupt(root, days);
@@ -261,10 +274,7 @@ pub fn prune(root: &Path, days: u32) -> Result<(), String> {
         .cloned()
         .collect();
     if rows.len() != current.len() {
-        atomic_write(
-            &path,
-            &serde_json::to_vec(&rows).map_err(|_| "Журнал недоступен")?,
-        )?;
+        write_rows(root, rows)?;
     }
     Ok(())
 }
@@ -272,6 +282,75 @@ pub fn prune(root: &Path, days: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_redacts_new_and_existing_rows_on_disk() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(root.join("audit")).unwrap();
+        let path = root.join("audit/actions.json");
+        let existing = json!({
+            "time": now_ms(), "tool": "client.open_url", "status": "ok",
+            "origin": "password=synthetic-old", "confirmed": false,
+            "extra": {"values": ["api_key=synthetic-nested", 42]}
+        });
+        atomic_write(&path, &serde_json::to_vec(&vec![existing]).unwrap()).unwrap();
+
+        append(
+            &root,
+            "token=synthetic-tool",
+            "secret=synthetic-status",
+            true,
+            30,
+        )
+        .unwrap();
+
+        let rows: Vec<Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["tool"], "client.open_url");
+        assert_eq!(rows[0]["status"], "ok");
+        assert_eq!(rows[0]["origin"], "password=[REDACTED]");
+        assert_eq!(
+            rows[0]["extra"]["values"],
+            json!(["api_key=[REDACTED]", 42])
+        );
+        assert_eq!(rows[1]["tool"], "token=[REDACTED]");
+        assert_eq!(rows[1]["status"], "secret=[REDACTED]");
+        assert_eq!(rows[1]["origin"], "host_bridge");
+        assert_eq!(rows[1]["confirmed"], true);
+        assert!(rows[1]["time"].as_u64().unwrap() > 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prune_redacts_retained_rows_on_disk() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(root.join("audit")).unwrap();
+        let path = root.join("audit/actions.json");
+        let time = now_ms();
+        let rows = vec![
+            json!({"time": 1, "tool": "expired"}),
+            json!({
+                "time": time, "tool": "token=synthetic-tool",
+                "status": "password=synthetic-status",
+                "origin": "secret=synthetic-origin", "confirmed": true
+            }),
+        ];
+        atomic_write(&path, &serde_json::to_vec(&rows).unwrap()).unwrap();
+
+        prune(&root, 30).unwrap();
+
+        let rows: Vec<Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            rows,
+            vec![json!({
+                "time": time, "tool": "token=[REDACTED]",
+                "status": "password=[REDACTED]", "origin": "secret=[REDACTED]",
+                "confirmed": true
+            })]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn retention_removes_old_rows() {
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
