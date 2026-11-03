@@ -62,6 +62,9 @@ pub fn execute(
     permissions: &Permissions,
     data_root: &Path,
 ) -> Result<Value, String> {
+    if crate::computer::is_tool(&call.tool) {
+        return crate::computer::execute(call, cancel);
+    }
     if cancel.load(Ordering::SeqCst) {
         return Err("Действие остановлено".into());
     }
@@ -476,7 +479,7 @@ fn discover_platform_apps(found: &mut std::collections::HashSet<String>) {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn session_unlocked() -> bool {
     let Ok(session) = std::env::var("XDG_SESSION_ID") else {
         return false;
@@ -491,6 +494,10 @@ pub fn session_unlocked() -> bool {
     let mut command = Command::new("loginctl");
     command.args(["show-session", &session, "-p", "LockedHint", "--value"]);
     bounded(command, &AtomicBool::new(false)).is_ok_and(|s| s.trim() == "no")
+}
+#[cfg(target_os = "macos")]
+pub fn session_unlocked() -> bool {
+    crate::computer::session_unlocked()
 }
 #[cfg(windows)]
 pub fn session_unlocked() -> bool {

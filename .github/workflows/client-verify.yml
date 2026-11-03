@@ -8,6 +8,29 @@ on:
 permissions:
   contents: read
 jobs:
+  native-computer:
+    name: Native computer use (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+      - name: Frontend fixture for Rust-only checks
+        shell: bash
+        run: |
+          mkdir -p client/dist
+          printf '<!doctype html><html><body></body></html>' > client/dist/index.html
+      - run: cargo check --locked
+        working-directory: client/src-tauri
+      - run: cargo test --locked --lib
+        working-directory: client/src-tauri
   desktop:
     name: Desktop (${{ matrix.os }})
     strategy:

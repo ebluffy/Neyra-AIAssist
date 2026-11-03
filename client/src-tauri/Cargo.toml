@@ -45,6 +45,13 @@ ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+windows = { version = "=0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["tray-icon", "test"] }

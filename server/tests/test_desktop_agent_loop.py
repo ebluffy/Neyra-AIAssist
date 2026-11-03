@@ -11,7 +11,7 @@ from core.agent import brain_phase
 from core.agent.brain_phase import desktop_loop_limits, run_brain_tool_phase
 from core.desktop.bridge import (
     ACTIVE_DESKTOP, DESKTOP_TURN, SCREENSHOT_LIMIT, BridgeRegistry, DesktopTurn, Manifest, _desktop_action,
-    checked_result,
+    DraftAction, brain_tools, checked_result,
 )
 
 ALL = ['client.open_url', 'client.shell_exec', 'client.fs_read', 'client.fs_write', 'client.screenshot', 'client.input']
@@ -95,6 +95,83 @@ def test_unknown_outcome_blocks_further_changes_but_not_reads():
             read = await _desktop_action(registry, 'owner', str(m.session_id), str(m.device_id),
                                          'client.fs_read', {'path': '/x'})
             assert read['status'] == 'ok'
+        finally:
+            DESKTOP_TURN.reset(token)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('platform', ['windows', 'macos'])
+def test_native_computer_manifest_and_tools(platform):
+    native = ['client.computer_snapshot', 'client.computer_click', 'client.computer_type', 'client.computer_press']
+    registry = BridgeRegistry()
+    m = manifest(native).model_copy(update={'platform': platform})
+    m = Manifest.model_validate(m.model_dump(mode='json'))
+
+    async def send(packet):
+        pass
+
+    registry.connect('owner', m, send)
+    token = ACTIVE_DESKTOP.set((registry, 'owner', str(m.session_id), str(m.device_id)))
+    try:
+        assert set(brain_tools()) == {name.replace('.', '_') for name in native}
+    finally:
+        ACTIVE_DESKTOP.reset(token)
+    for tool in native:
+        with pytest.raises(ValueError):
+            DraftAction(tool=tool, arguments={})
+
+
+def test_native_snapshot_uses_the_bounded_json_result_path():
+    snapshot = {'status': 'ok', 'snapshot_id': 's', 'tree': {'ref': 's:0', 'children': []}}
+    assert checked_result('client.computer_snapshot', snapshot) == snapshot
+    too_large = {**snapshot, 'tree': {'name': 'я' * 40_000}}
+    assert checked_result('client.computer_snapshot', too_large)['code'] == 'result_too_large'
+    assert checked_result('client.computer_snapshot', {**snapshot, 'data': 'QUJD'})['code'] == 'result_too_large'
+
+
+@pytest.mark.parametrize('tool', ['client.computer_click', 'client.computer_type', 'client.computer_press'])
+@pytest.mark.parametrize('error', [
+    {'status': 'error', 'code': 'timeout', 'retry': False, 'delivery': 'unknown'},
+    {'status': 'error', 'code': 'action_failed', 'retry': False},
+    {'status': 'error', 'code': 'cancelled', 'retry': False},
+    {'status': 'error', 'code': 'unexpected', 'delivery': 'unknown'},
+])
+def test_native_unknown_delivery_blocks_mutations_but_allows_snapshot(tool, error):
+    async def scenario():
+        native = ['client.computer_snapshot', 'client.computer_click', 'client.computer_type', 'client.computer_press']
+        registry, client, m = connect(tools=native,
+                                      reply=lambda name, args: {'status': 'ok'} if name.endswith('_snapshot') else error)
+        turn = DesktopTurn()
+        token = DESKTOP_TURN.set(turn)
+        try:
+            result = await _desktop_action(registry, 'owner', str(m.session_id), str(m.device_id), tool, {})
+            assert result == error and turn.outcome_unknown
+            sent_before = len(client.packets)
+            blocked = await _desktop_action(registry, 'owner', str(m.session_id), str(m.device_id), tool, {})
+            assert blocked['code'] == 'previous_outcome_unknown'
+            assert len(client.packets) == sent_before
+            snapshot = await _desktop_action(registry, 'owner', str(m.session_id), str(m.device_id),
+                                              'client.computer_snapshot', {})
+            assert snapshot['status'] == 'ok'
+            assert turn.outcome_unknown
+        finally:
+            DESKTOP_TURN.reset(token)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('code', ['stale_ref', 'timeout', 'cancelled', 'action_failed'])
+def test_native_rejected_action_does_not_mark_delivery_unknown(code):
+    async def scenario():
+        error = {'status': 'error', 'code': code, 'retry': False, 'delivery': 'not_delivered'}
+        registry, _, m = connect(tools=['client.computer_click'], reply=lambda name, args: error)
+        turn = DesktopTurn()
+        token = DESKTOP_TURN.set(turn)
+        try:
+            assert await _desktop_action(registry, 'owner', str(m.session_id), str(m.device_id),
+                                          'client.computer_click', {'ref': 'old:0'}) == error
+            assert not turn.outcome_unknown
+            assert await _desktop_action(registry, 'owner', str(m.session_id), str(m.device_id),
+                                          'client.computer_click', {'ref': 'new:0'}) == error
         finally:
             DESKTOP_TURN.reset(token)
     asyncio.run(scenario())

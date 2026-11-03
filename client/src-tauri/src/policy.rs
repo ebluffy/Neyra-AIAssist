@@ -43,6 +43,10 @@ pub fn tool_keys(tool: &str) -> Option<&'static [&'static str]> {
         "client.fs_move" => &["from", "to"],
         "client.screenshot" => &["window"],
         "client.input" => &["steps", "screenshot_id"],
+        "client.computer_snapshot" => &[],
+        "client.computer_click" => &["ref"],
+        "client.computer_type" => &["ref", "text"],
+        "client.computer_press" => &["keys"],
         _ => return None,
     })
 }
@@ -159,6 +163,30 @@ pub fn validate(
     session: &str,
     seen: &mut HashMap<String, u64>,
 ) -> Result<Decision, String> {
+    let result = validate_inner(call, permissions, data_root, device, session, seen);
+    if crate::computer::is_tool(&call.tool) {
+        result.map_err(|error| {
+            if !crate::computer::supported() {
+                "unsupported_platform".into()
+            } else if call.deadline_ms <= now_ms() {
+                "timeout".into()
+            } else {
+                crate::computer::Error::from_policy(&error).code().into()
+            }
+        })
+    } else {
+        result
+    }
+}
+
+fn validate_inner(
+    call: &ToolCall,
+    permissions: &Permissions,
+    data_root: &Path,
+    device: &str,
+    session: &str,
+    seen: &mut HashMap<String, u64>,
+) -> Result<Decision, String> {
     if uuid::Uuid::parse_str(&call.call_id).is_err()
         || call.device_id != device
         || call.session_id != session
@@ -175,6 +203,12 @@ pub fn validate(
         return Err("Лимит сессии: переподключитесь".into());
     }
     seen.insert(call.call_id.clone(), call.deadline_ms);
+    if crate::computer::is_tool(&call.tool) {
+        if !crate::computer::supported() {
+            return Err("unsupported_platform".into());
+        }
+        crate::computer::validate_arguments(&call.tool, &call.arguments)?;
+    }
     if !permissions.enabled {
         return Err("Доступ к ПК выключен".into());
     }
@@ -273,6 +307,16 @@ pub fn validate(
         }
         "client.input" if permissions.input => {
             crate::screen::parse(args)?;
+            Ok(Decision::Confirm)
+        }
+        "client.computer_snapshot" if permissions.screen => Ok(if permissions.screen_auto {
+            Decision::Safe
+        } else {
+            Decision::Confirm
+        }),
+        "client.computer_click" | "client.computer_type" | "client.computer_press"
+            if permissions.input =>
+        {
             Ok(Decision::Confirm)
         }
         "client.open_url" if permissions.allow_web => {
@@ -470,6 +514,18 @@ pub fn capabilities(p: &Permissions) -> Vec<String> {
     if p.input && crate::screen::input_available() {
         tools.push("client.input".into());
     }
+    if crate::computer::supported() {
+        if p.screen {
+            tools.push("client.computer_snapshot".into());
+        }
+        if p.input {
+            tools.extend([
+                "client.computer_click".into(),
+                "client.computer_type".into(),
+                "client.computer_press".into(),
+            ]);
+        }
+    }
     tools
 }
 
@@ -526,6 +582,21 @@ pub fn preview(call: &ToolCall, permissions: &Permissions, data_root: &Path) -> 
             .and_then(|a| crate::screen::parse(a).ok())
             .map(|(_, steps)| crate::screen::preview(&steps))
             .unwrap_or_else(|| "Действия не прошли проверку".into()),
+        "client.computer_snapshot" => {
+            "Дерево доступности активного окна (названия элементов передаются серверу)".into()
+        }
+        "client.computer_click" => format!("Нажать элемент {} активного окна", get("ref")),
+        "client.computer_type" => format!(
+            "Заменить текст элемента {} активного окна\n---\n{}",
+            get("ref"),
+            get("text")
+        ),
+        "client.computer_press" => format!(
+            "Клавиши в окне последнего снимка: {}",
+            args.and_then(|a| a.get("keys"))
+                .map(Value::to_string)
+                .unwrap_or_default()
+        ),
         "client.open_url" => format!("Открыть ссылку: {}", get("url")),
         "client.open_app" => format!("Запустить программу: {}", get("path")),
         "client.close_window" => format!("Закрыть окно {}", get("window")),
