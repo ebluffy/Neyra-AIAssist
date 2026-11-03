@@ -212,6 +212,27 @@ describe('unavailable server', () => {
     expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(1);
   });
 
+  it.each(['Сначала сохраните токен', 'Профиль не найден', 'Неверный адрес сервера', 'Удалённый сервер требует HTTPS', 'Неверный токен', 'Системное хранилище секретов недоступно'])('stops automatic retries after configuration error: %s', async message => {
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'connect') throw `CONFIG_ERROR: ${message}`;
+      return base(command, args);
+    });
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    expect(app.connected).toBe(false);
+    expect(app.busy).toBe(false);
+    expect(app.error).toBe(message);
+    await tick(120000);
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(1);
+    ipc.invoke.mockImplementation(base);
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    expect(app.connected).toBe(true);
+    expect(app.error).toBe('');
+  });
+
   it.each(['handshake', 'revoked'])('stops automatic retries after auth rejection: %s', async mode => {
     const base = ipc.invoke.getMockImplementation()!;
     ipc.invoke.mockImplementation(async (command, args) => {

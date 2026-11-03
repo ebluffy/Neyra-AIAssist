@@ -123,6 +123,9 @@ fn release_live(mut live: Live) {
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
     "Внутренняя ошибка состояния".into()
 }
+fn config_error(message: impl std::fmt::Display) -> String {
+    format!("CONFIG_ERROR: {message}")
+}
 fn send(sender: &Mutex<Option<SocketSender>>, value: Value) -> Result<(), String> {
     let guard = sender.lock().map_err(lock_error)?;
     guard
@@ -394,10 +397,11 @@ async fn connect(
         let _guard = state.transport.lock().map_err(lock_error)?;
         state.epoch.load(Ordering::SeqCst)
     };
-    let p = profile(&state, &profile_id)?;
-    let token = storage::secret(&profile_id)?
+    let p = profile(&state, &profile_id).map_err(config_error)?;
+    let token = storage::secret(&profile_id)
+        .map_err(config_error)?
         .get_password()
-        .map_err(|_| "Сначала сохраните токен")?;
+        .map_err(|_| config_error("Сначала сохраните токен"))?;
     let hello = manifest(&state, &p)?;
     let sockets = connect_sockets(&p, &token, &hello, CONNECT_TIMEOUT).await?;
     install_connected_sockets(&state.transport, &state.epoch, epoch, sockets, |sockets| {
@@ -453,18 +457,19 @@ async fn connect_sockets(
             ("/v1/desktop/bridge", "bridge"),
             ("/v1/desktop/voice", "voice"),
         ] {
-            let mut url = server_url(p, path)?;
+            let mut url = server_url(p, path).map_err(config_error)?;
             let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
-            url.set_scheme(scheme).map_err(|_| "Неверный адрес")?;
+            url.set_scheme(scheme)
+                .map_err(|_| config_error("Неверный адрес"))?;
             let mut request = url
                 .as_str()
                 .into_client_request()
-                .map_err(|_| "Неверный адрес")?;
+                .map_err(|_| config_error("Неверный адрес"))?;
             request.headers_mut().insert(
                 "Authorization",
                 format!("Bearer {token}")
                     .parse()
-                    .map_err(|_| "Неверный токен")?,
+                    .map_err(|_| config_error("Неверный токен"))?,
             );
             let (ws, _) = tokio::time::timeout(timeout, connect_async(request))
                 .await
@@ -1888,17 +1893,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_connection_settings_return_config_errors() {
+        let mut profile = local_profile("127.0.0.1:1".parse().unwrap());
+        for (address, expected) in [
+            ("invalid", "CONFIG_ERROR: Неверный адрес сервера"),
+            ("ftp://localhost", "CONFIG_ERROR: Неверный адрес сервера"),
+            (
+                "http://example.com",
+                "CONFIG_ERROR: Удалённый сервер требует HTTPS",
+            ),
+        ] {
+            profile.url = address.into();
+            let error =
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+                    .await
+                    .unwrap_err();
+            assert_eq!(error, expected);
+        }
+        profile.url = "http://127.0.0.1:1".into();
+        let error = connect_sockets(&profile, "\n", &json!({}), Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(error, "CONFIG_ERROR: Неверный токен");
+    }
+
+    #[tokio::test]
     async fn real_handshakes_refused_repeatedly() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let profile = local_profile(listener.local_addr().unwrap());
         drop(listener);
         for _ in 0..3 {
-            assert!(
-                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+            let error =
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(5))
                     .await
-                    .unwrap_err()
-                    .contains("отклонено")
-            );
+                    .unwrap_err();
+            assert!(error.contains("отклонено"), "{error}");
         }
     }
 
@@ -1912,13 +1941,13 @@ mod tests {
             drop(listener);
             let mut first = tokio_tungstenite::accept_async(stream).await.unwrap();
             assert!(first.next().await.unwrap().unwrap().is_text());
-            tokio::time::timeout(Duration::from_secs(1), first.next())
+            tokio::time::timeout(Duration::from_secs(7), first.next())
                 .await
                 .expect("failed replacement must release its first socket")
         });
         for _ in 0..3 {
             assert!(
-                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(5))
                     .await
                     .is_err()
             );
@@ -2045,7 +2074,7 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_auth_statuses_are_fixed_codes_on_either_socket() {
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         for status in [401, 403, 503] {
             for rejected in 0..2 {
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2059,12 +2088,23 @@ mod tests {
                         accepted.push(ws);
                     }
                     let (mut tcp, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        tcp.read_exact(&mut byte).await.unwrap();
+                        request.push(byte[0]);
+                        assert!(request.len() <= 4096);
+                    }
                     tcp.write_all(
                         format!("HTTP/1.1 {status} Rejected\r\nContent-Length: 0\r\n\r\n")
                             .as_bytes(),
                     )
                     .await
                     .unwrap();
+                    let mut byte = [0];
+                    let _ = tokio::time::timeout(Duration::from_secs(5), tcp.read(&mut byte))
+                        .await
+                        .expect("client must close the rejected handshake");
                     for mut socket in accepted {
                         assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
                     }
@@ -2076,7 +2116,7 @@ mod tests {
                 if status == 503 {
                     assert_ne!(error, "AUTH_REJECTED");
                 } else {
-                    assert_eq!(error, "AUTH_REJECTED");
+                    assert_eq!(error, "AUTH_REJECTED", "HTTP {status}, socket {rejected}");
                 }
                 server.await.unwrap();
             }

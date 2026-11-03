@@ -92,6 +92,9 @@ export function useDesktop() {
         if (reason === 'AUTH_REJECTED') {
           setConnectionWanted(''); setError(authError); return;
         }
+        if (typeof reason === 'string' && reason.startsWith('CONFIG_ERROR: ')) {
+          setConnectionWanted(''); setError(reason.slice('CONFIG_ERROR: '.length)); return;
+        }
         setError(`Нет связи. Повторное подключение автоматически. ${formatError(reason)}`);
         setRetry(value => value + 1);
       });
