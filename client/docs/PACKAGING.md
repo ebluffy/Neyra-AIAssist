@@ -51,6 +51,49 @@ environment. Unset, empty and custom `LD_LIBRARY_PATH` stay distinct. `APPDIR`,
 on Linux use `tokio::process::Command`. Windows launches are unchanged. There is
 no sidecar process and no file-event watcher.
 
+### AppRun / hook inventory (AR-43)
+
+Audited on 2026-11-03 using the existing `Neyra_0.1.0_amd64.AppImage`
+produced on 2026-10-31 (desktop-foundation build), without rebuilding the app.
+SHA-256: `4ea67d2ac9124e4d7b0c096feae1d179ab0713101555239ab350706ce762c48d`.
+This is evidence for that artifact; the next CI package still needs the same
+inspection if bundler or hook versions change.
+
+In a temporary directory, extract just the launchers:
+
+```sh
+/path/to/Neyra_0.1.0_amd64.AppImage --appimage-extract 'AppRun*'
+/path/to/Neyra_0.1.0_amd64.AppImage --appimage-extract 'apprun-hooks/*'
+```
+
+`AppRun` sources only `apprun-hooks/linuxdeploy-plugin-gtk.sh`, then executes
+`AppRun.wrapped` (ELF). The hook actively exports `APPDIR`, `GTK_DATA_PREFIX`,
+`GTK_THEME`, `XDG_DATA_DIRS`, `GSETTINGS_SCHEMA_DIR`, `GI_TYPELIB_PATH`,
+`GIO_MODULE_DIR`, `GTK_EXE_PREFIX`, `GTK_PATH`, `GTK_IM_MODULE_FILE`, and
+`GDK_PIXBUF_MODULE_FILE`. Its `GDK_BACKEND=x11` export is commented out;
+`APPIMAGE_GTK_THEME`, `COLOR_SCHEME`, and `GTK_THEME_VARIANT` are shell locals.
+
+The wrapped ELF sets `PATH`, `LD_LIBRARY_PATH`, `PYTHONHOME`, `PYTHONPATH`,
+`PERLLIB`, `XDG_DATA_DIRS`, `QT_PLUGIN_PATH`, `GSETTINGS_SCHEMA_DIR`,
+`GST_PLUGIN_SYSTEM_PATH`, `GST_PLUGIN_SYSTEM_PATH_1_0`, and
+`PYTHONDONTWRITEBYTECODE`. Verified with `strings` and by running the extracted
+launchers with a temporary `.desktop` containing `Exec=/usr/bin/env` and an
+empty `usr/` directory, starting with only `PATH=/usr/bin:/bin`. This executes
+the real launchers without starting Neyra. Neither launcher saves `OLD_*`.
+The runtime also supplies `APPIMAGE`, `APPDIR`, `ARGV0`, and `OWD`.
+
+The exhaustive cleanup inventory is checked into
+`src-tauri/tests/fixtures/appimage-exports.txt` and tested for removal and,
+except runtime markers, restoration from `OLD_*`. Path values lose only bundled
+components; `GTK_THEME` and `PYTHONDONTWRITEBYTECODE` are restored from `OLD_*`
+or removed because the package overwrites them. No gstreamer hook is present
+in this artifact; `GST_PLUGIN_SCANNER*` and `GST_PLUGIN_PATH*` are not exported.
+Re-audit when enabling that hook or changing the package tooling.
+
+Shell caller variables are applied after parent cleanup. Explicit graphics and
+theme values win; explicit path variables retain their non-AppImage components.
+The parent environment remains unchanged.
+
 ## What was checked in the cloud (Ubuntu VM, no GPU)
 
 - `tauri build --bundles appimage` with the test key produced a signed AppImage

@@ -4,9 +4,11 @@
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
-    path::{Path, PathBuf},
     process::Command,
 };
+
+#[cfg(target_os = "linux")]
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct EnvEdit {
@@ -14,8 +16,10 @@ pub struct EnvEdit {
     pub remove: Vec<OsString>,
 }
 
+#[cfg(target_os = "linux")]
 const MARKERS: &[&str] = &["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
 
+#[cfg(target_os = "linux")]
 const PATH_VARS: &[&str] = &[
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
@@ -34,11 +38,16 @@ const PATH_VARS: &[&str] = &[
     "GSETTINGS_SCHEMA_DIR",
     "QT_PLUGIN_PATH",
     "PYTHONPATH",
+    "PYTHONHOME",
+    "PERLLIB",
+    "GST_PLUGIN_SYSTEM_PATH",
+    "GST_PLUGIN_SYSTEM_PATH_1_0",
     "XDG_DATA_DIRS",
     "WEBKIT_EXEC_PATH",
     "WEBKIT_INJECTED_BUNDLE_PATH",
 ];
 
+#[cfg(target_os = "linux")]
 const GRAPHICS: &[(&str, &str)] = &[
     ("GDK_BACKEND", "NEYRA_ORIGINAL_GDK_BACKEND"),
     ("WEBKIT_DISABLE_DMABUF_RENDERER", "NEYRA_ORIGINAL_DMABUF"),
@@ -46,6 +55,7 @@ const GRAPHICS: &[(&str, &str)] = &[
 ];
 
 /// glibc `execvp` default. Used only to find a program when AppImage left PATH unset.
+#[cfg(target_os = "linux")]
 const DEFAULT_PATH: &str = "/usr/bin:/bin";
 
 pub fn child_env_edit(env: &HashMap<OsString, OsString>) -> EnvEdit {
@@ -65,9 +75,40 @@ pub fn apply_std(command: &mut Command) {
     apply_edit(command, &child_env_edit(&env));
 }
 
+#[cfg(target_os = "linux")]
 pub fn apply_async(command: &mut tokio::process::Command) {
     let env = std::env::vars_os().collect();
     apply_edit(command, &child_env_edit(&env));
+}
+
+pub fn apply_caller_env(command: &mut Command, pairs: &[(String, String)]) {
+    let parent = std::env::vars_os().collect();
+    apply_overrides(command, pairs, &parent);
+}
+
+fn apply_overrides(
+    command: &mut Command,
+    pairs: &[(String, String)],
+    parent: &HashMap<OsString, OsString>,
+) {
+    #[cfg(not(target_os = "linux"))]
+    let _ = parent;
+    for (key, value) in pairs {
+        #[cfg(target_os = "linux")]
+        if appimage(parent) && PATH_VARS.contains(&key.as_str()) {
+            let mount = get(parent, "APPDIR").map(Path::new);
+            match restored_path(Some(OsStr::new(value)), None, mount) {
+                Some(clean) => {
+                    command.env(key, clean);
+                }
+                None => {
+                    command.env_remove(key);
+                }
+            }
+            continue;
+        }
+        command.env(key, value);
+    }
 }
 
 pub fn command_path() -> Option<OsString> {
@@ -191,6 +232,14 @@ fn linux_edit(env: &HashMap<OsString, OsString>) -> EnvEdit {
             }
             edit.remove.push(OsString::from(old));
         }
+        for name in ["GTK_THEME", "PYTHONDONTWRITEBYTECODE"] {
+            let old = format!("OLD_{name}");
+            match get(env, &old) {
+                Some(value) => edit.set.push((OsString::from(name), value.to_os_string())),
+                None => edit.remove.push(OsString::from(name)),
+            }
+            edit.remove.push(OsString::from(old));
+        }
         for name in MARKERS {
             edit.remove.push(OsString::from(*name));
         }
@@ -218,14 +267,6 @@ mod tests {
             .iter()
             .map(|(key, value)| (OsString::from(*key), OsString::from(*value)))
             .collect()
-    }
-
-    #[test]
-    fn preparing_a_child_leaves_appimage_on_the_parent_process() {
-        let before = std::env::var_os("APPIMAGE");
-        let mut command = Command::new("neyra-child-env-test");
-        apply_std(&mut command);
-        assert_eq!(std::env::var_os("APPIMAGE"), before);
     }
 
     #[test]
@@ -297,45 +338,48 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_spawn_keeps_unset_empty_and_custom_library_path() {
-        let comspec = std::env::var("COMSPEC").unwrap();
-        let system_root = std::env::var("SYSTEMROOT").unwrap();
-        let probe = |preset: Option<&str>| {
-            let mut command = Command::new(&comspec);
-            command.args(["/d", "/c", "set LD_LIBRARY_PATH& set APPIMAGE"]);
-            command.env_clear();
-            command.env("SYSTEMROOT", &system_root);
-            command.env("COMSPEC", &comspec);
-            if let Some(value) = preset {
+        const PROBE: &str = "NEYRA_WINDOWS_ENV_PROBE";
+        if let Some(case) = std::env::var_os(PROBE) {
+            let expected = match case.to_str().unwrap() {
+                "unset" => None,
+                "empty" => Some(OsString::new()),
+                "custom" => Some(OsString::from(r"C:\custom\lib")),
+                _ => panic!("unknown probe"),
+            };
+            assert_eq!(std::env::var_os("LD_LIBRARY_PATH"), expected);
+            assert_eq!(std::env::var_os("APPIMAGE").unwrap(), r"C:\Neyra.AppImage");
+            return;
+        }
+        for (case, value) in [
+            ("unset", None),
+            ("empty", Some("")),
+            ("custom", Some(r"C:\custom\lib")),
+        ] {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    &format!(
+                        "{}::windows_spawn_keeps_unset_empty_and_custom_library_path",
+                        module_path!().split_once("::").unwrap().1
+                    ),
+                ])
+                .env(PROBE, case)
+                .env_remove("LD_LIBRARY_PATH")
+                .env("APPIMAGE", r"C:\Neyra.AppImage");
+            if let Some(value) = value {
                 command.env("LD_LIBRARY_PATH", value);
             }
-            command.env("APPIMAGE", r"C:\Neyra.AppImage");
             apply_std(&mut command);
             let output = command.output().unwrap();
             assert!(
                 output.status.success(),
-                "{}",
+                "{case}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-            String::from_utf8_lossy(&output.stdout).into_owned()
-        };
-        let unset = probe(None);
-        assert!(
-            unset.contains("LD_LIBRARY_PATH") && unset.contains("not defined"),
-            "{unset}"
-        );
-        assert!(unset.contains(r"APPIMAGE=C:\Neyra.AppImage"), "{unset}");
-        let empty = probe(Some(""));
-        assert!(
-            empty
-                .lines()
-                .any(|line| line.trim_end() == "LD_LIBRARY_PATH="),
-            "{empty}"
-        );
-        let custom = probe(Some(r"C:\custom\lib"));
-        assert!(
-            custom.contains(r"LD_LIBRARY_PATH=C:\custom\lib"),
-            "{custom}"
-        );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -703,29 +747,104 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn apply_std_matches_the_edit_of_the_process_environment() {
-        let env = std::env::vars_os().collect();
-        let edit = child_env_edit(&env);
-        let program = env_program();
-        let mut via_process = Command::new(&program);
-        apply_std(&mut via_process);
-        let mut via_edit = Command::new(&program);
-        apply_edit(&mut via_edit, &edit);
-        let left = finish(via_process.output().unwrap(), "process");
-        let right = finish(via_edit.output().unwrap(), "edit");
-        for key in [
-            "LD_LIBRARY_PATH",
-            "APPIMAGE",
-            "APPDIR",
-            "ARGV0",
-            "OWD",
-            "GTK_PATH",
-            "GIO_EXTRA_MODULES",
-            "GDK_PIXBUF_MODULE_FILE",
-            "WEBKIT_EXEC_PATH",
-            "PATH",
-        ] {
-            assert_eq!(left.get(key), right.get(key), "{key}");
+    fn caller_values_override_restored_parent_without_mount_paths() {
+        let parent = map(&[
+            ("APPDIR", "/tmp/.mount_N"),
+            ("NEYRA_GRAPHICS_APPLIED", "1"),
+            ("NEYRA_ORIGINAL_GDK_BACKEND", "wayland"),
+        ]);
+        let mut command = Command::new(env_program());
+        command.env_clear().envs(&parent);
+        apply_edit(&mut command, &child_env_edit(&parent));
+        apply_overrides(
+            &mut command,
+            &[
+                ("GDK_BACKEND".into(), "x11".into()),
+                ("GTK_THEME".into(), "Breeze".into()),
+                (
+                    "XDG_DATA_DIRS".into(),
+                    "/tmp/.mount_N/share:/custom/share".into(),
+                ),
+                ("QT_PLUGIN_PATH".into(), "/run/.mount_other/plugins".into()),
+                ("GTK_PATH".into(), "/custom/gtk".into()),
+            ],
+            &parent,
+        );
+        let got = finish(command.output().unwrap(), "caller env");
+        assert_eq!(got.get("GDK_BACKEND").unwrap(), "x11");
+        assert_eq!(got.get("GTK_THEME").unwrap(), "Breeze");
+        assert_eq!(got.get("XDG_DATA_DIRS").unwrap(), "/custom/share");
+        assert_eq!(got.get("GTK_PATH").unwrap(), "/custom/gtk");
+        assert!(!got.contains_key("QT_PLUGIN_PATH"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn packaged_exports_are_removed_or_restored() {
+        let inventory = include_str!("../tests/fixtures/appimage-exports.txt");
+        for name in inventory
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.is_empty())
+        {
+            let mut parent = map(&[("APPDIR", "/tmp/.mount_N")]);
+            parent.insert(name.into(), "/tmp/.mount_N/bundled".into());
+            let edit = child_env_edit(&parent);
+            assert!(edit.remove.iter().any(|key| key == name), "{name}");
+            if !MARKERS.contains(&name) {
+                parent.insert(format!("OLD_{name}").into(), "/custom/original".into());
+                let edit = child_env_edit(&parent);
+                assert!(
+                    edit.set.contains(&(name.into(), "/custom/original".into())),
+                    "{name}"
+                );
+                assert!(edit.remove.contains(&format!("OLD_{name}").into()));
+            }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_environment_is_cleaned_without_changing_parent() {
+        const PROBE: &str = "NEYRA_CHILD_ENV_PROBE";
+        if std::env::var_os(PROBE).is_some() {
+            let before: HashMap<_, _> = std::env::vars_os().collect();
+            assert_eq!(
+                std::env::var_os("APPIMAGE").unwrap(),
+                "/home/me/Neyra.AppImage"
+            );
+            let mut command = Command::new(env_program());
+            apply_std(&mut command);
+            let child = finish(command.output().unwrap(), "probe");
+            assert!(!child.contains_key("APPIMAGE"));
+            assert!(!child.contains_key("APPDIR"));
+            assert!(!child.contains_key("GTK_THEME"));
+            assert_eq!(child.get("LD_LIBRARY_PATH").unwrap(), "/custom/lib");
+            assert_eq!(std::env::vars_os().collect::<HashMap<_, _>>(), before);
+            return;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!(
+                    "{}::process_environment_is_cleaned_without_changing_parent",
+                    module_path!().split_once("::").unwrap().1
+                ),
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(PROBE, "1")
+            .env("APPIMAGE", "/home/me/Neyra.AppImage")
+            .env("APPDIR", "/tmp/.mount_N")
+            .env("GTK_THEME", "Adwaita:dark")
+            .env("LD_LIBRARY_PATH", "/tmp/.mount_N/usr/lib:/custom/lib")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
     }
 }

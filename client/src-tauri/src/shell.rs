@@ -338,12 +338,11 @@ pub fn run(plan: &Plan, cancel: &AtomicBool) -> Result<Value, String> {
     command
         .args(&plan.args)
         .current_dir(&plan.cwd)
-        .envs(plan.env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // After the caller's env, so an explicit value cannot put the AppImage path back.
     child_environment(&mut command);
+    crate::appimage_env::apply_caller_env(&mut command, &plan.env);
     let tree = tree::Tree::prepare(&mut command);
     let mut child = command.spawn().map_err(|_| "Программа не запустилась")?;
     let tree = tree.attach(&child);
