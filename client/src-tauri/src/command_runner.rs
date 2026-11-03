@@ -846,8 +846,7 @@ pub async fn config_export(app: tauri::AppHandle) -> Result<Value, String> {
         .entries()
         .to_vec();
     let settings = state.settings.lock().map_err(lock_error)?.clone();
-    let bundle = commands::export_bundle(&settings, &entries);
-    let bytes = serde_json::to_vec_pretty(&bundle).map_err(|_| "Не удалось подготовить файл")?;
+    let bytes = commands::export_bytes(&settings, &entries)?;
     if bytes.len() as u64 > commands::MAX_BUNDLE_BYTES {
         return Err("Конфигурация слишком большая для экспорта".into());
     }

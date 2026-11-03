@@ -98,6 +98,7 @@ logs/voice_tmp/
 server/.neyra_pending_restore/
 .tmp_restore/
 .tmp_backup_staging/
+.control-api-smoke-*/
 
 # Ephemeral AR/verify fixture (must never ship as a live resident module)
 server/modules/_ar_fake_resident/

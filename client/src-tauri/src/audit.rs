@@ -33,15 +33,25 @@ pub fn append(
     if rows.len() > 2000 {
         rows.drain(..rows.len() - 2000);
     }
-    atomic_write(
-        &root.join("audit/actions.json"),
-        &serde_json::to_vec(&rows).map_err(|_| "Журнал недоступен")?,
-    )
+    write_rows(root, &mut rows)
 }
 pub fn prune(root: &Path, days: u32) -> Result<(), String> {
+    write_rows(root, &mut recent(root, days)?)
+}
+
+fn write_rows(root: &Path, rows: &mut [Value]) -> Result<(), String> {
+    for row in rows.iter_mut() {
+        if let Some(fields) = row.as_object_mut() {
+            for value in fields.values_mut() {
+                if let Some(text) = value.as_str() {
+                    *value = Value::String(crate::redact::redact(text));
+                }
+            }
+        }
+    }
     atomic_write(
         &root.join("audit/actions.json"),
-        &serde_json::to_vec(&recent(root, days)?).map_err(|_| "Журнал недоступен")?,
+        &serde_json::to_vec(rows).map_err(|_| "Журнал недоступен")?,
     )
 }
 #[cfg(test)]
