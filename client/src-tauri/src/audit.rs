@@ -216,7 +216,7 @@ pub fn recent(root: &Path, days: u32) -> Result<Vec<Value>, String> {
         .filter(|r| r["time"].as_u64().unwrap_or_default() >= cutoff)
         .collect())
 }
-fn write_rows(root: &Path, mut rows: Vec<Value>) -> Result<(), String> {
+fn encode_rows(mut rows: Vec<Value>) -> Result<Vec<u8>, String> {
     fn redact_value(value: &mut Value) {
         match value {
             Value::String(text) => *text = redact::redact(text),
@@ -226,10 +226,11 @@ fn write_rows(root: &Path, mut rows: Vec<Value>) -> Result<(), String> {
         }
     }
     rows.iter_mut().for_each(redact_value);
-    atomic_write(
-        &root.join("audit/actions.json"),
-        &serde_json::to_vec(&rows).map_err(|_| "Журнал недоступен")?,
-    )
+    serde_json::to_vec(&rows).map_err(|_| "Журнал недоступен".into())
+}
+
+fn write_rows(root: &Path, rows: Vec<Value>) -> Result<(), String> {
+    atomic_write(&root.join("audit/actions.json"), &encode_rows(rows)?)
 }
 
 pub fn append(
@@ -273,8 +274,9 @@ pub fn prune(root: &Path, days: u32) -> Result<(), String> {
         .filter(|row| row["time"].as_u64().unwrap_or_default() >= cutoff)
         .cloned()
         .collect();
-    if rows.len() != current.len() {
-        write_rows(root, rows)?;
+    let sanitized = encode_rows(rows)?;
+    if sanitized != data {
+        atomic_write(&path, &sanitized)?;
     }
     Ok(())
 }
@@ -327,14 +329,11 @@ mod tests {
         std::fs::create_dir_all(root.join("audit")).unwrap();
         let path = root.join("audit/actions.json");
         let time = now_ms();
-        let rows = vec![
-            json!({"time": 1, "tool": "expired"}),
-            json!({
-                "time": time, "tool": "token=synthetic-tool",
-                "status": "password=synthetic-status",
-                "origin": "secret=synthetic-origin", "confirmed": true
-            }),
-        ];
+        let rows = vec![json!({
+            "time": time, "tool": "token=synthetic-tool",
+            "status": "password=synthetic-status",
+            "origin": "secret=synthetic-origin", "confirmed": true
+        })];
         atomic_write(&path, &serde_json::to_vec(&rows).unwrap()).unwrap();
 
         prune(&root, 30).unwrap();
