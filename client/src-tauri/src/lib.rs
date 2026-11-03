@@ -234,28 +234,48 @@ pub(crate) fn apply_settings(
         != (settings.permissions.screen, settings.permissions.input);
     let retention_changed = settings.audit_days != old.audit_days;
     let audit_days = settings.audit_days;
-    storage::save(&state.root, &settings)?;
-    character::on_settings_saved(app, settings.character_enabled);
-    if settings.theme != old.theme {
-        let _ = app.emit("theme-changed", json!({ "theme": settings.theme }));
-    }
-    *state.settings.lock().map_err(lock_error)? = settings;
-    if retention_changed {
-        match state.audit_lock.lock() {
-            Ok(_guard) => prune_after_settings_save(&state.root, audit_days),
-            Err(_) => logs::log(
-                &state.root,
-                "warn",
-                "audit prune after settings save skipped: audit lock poisoned",
-            ),
-        }
-    }
+    save_settings_and_prune(
+        &state.root,
+        &state.audit_lock,
+        retention_changed.then_some(audit_days),
+        || storage::save(&state.root, &settings),
+        || {
+            character::on_settings_saved(app, settings.character_enabled);
+            if settings.theme != old.theme {
+                let _ = app.emit("theme-changed", json!({ "theme": settings.theme }));
+            }
+            *state.settings.lock().map_err(lock_error)? = settings.clone();
+            Ok(())
+        },
+    )?;
     if changed {
         stop_inner(state)?;
         if screen_changed {
             screen::reset();
         }
         send_capabilities(state);
+    }
+    Ok(())
+}
+
+fn save_settings_and_prune(
+    root: &std::path::Path,
+    audit_lock: &Mutex<()>,
+    audit_days: Option<u32>,
+    save: impl FnOnce() -> Result<(), String>,
+    after_save: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    save()?;
+    after_save()?;
+    if let Some(days) = audit_days {
+        match audit_lock.lock() {
+            Ok(_guard) => prune_after_settings_save(root, days),
+            Err(_) => logs::log(
+                root,
+                "warn",
+                "audit prune after settings save skipped: audit lock poisoned",
+            ),
+        }
     }
     Ok(())
 }
@@ -1680,14 +1700,50 @@ mod tests {
     #[test]
     fn settings_retention_prunes_immediately_after_save() {
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir_all(root.join("audit")).unwrap();
+        for directory in ["audit", "settings", "permissions"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
         std::fs::write(
             root.join("audit/actions.json"),
             br#"[{"time":1,"tool":"old"},{"time":9999999999999,"tool":"fresh"}]"#,
         )
         .unwrap();
 
-        prune_after_settings_save(&root, 1);
+        let path = root.join("audit/actions.json");
+        let before = std::fs::read(&path).unwrap();
+        let settings = Settings {
+            audit_days: 1,
+            ..Settings::default()
+        };
+        let audit_lock = Mutex::new(());
+        let result = save_settings_and_prune(
+            &root,
+            &audit_lock,
+            Some(settings.audit_days),
+            || Err("save failed".into()),
+            || panic!("state must not change after a failed save"),
+        );
+        assert_eq!(result.unwrap_err(), "save failed");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        save_settings_and_prune(
+            &root,
+            &audit_lock,
+            Some(settings.audit_days),
+            || {
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+                storage::save(&root, &settings)
+            },
+            || {
+                let saved: Value =
+                    serde_json::from_slice(&std::fs::read(root.join("settings/app.json")).unwrap())
+                        .unwrap();
+                assert_eq!(saved["audit_days"], 1);
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+                Ok(())
+            },
+        )
+        .unwrap();
 
         let rows: Vec<Value> =
             serde_json::from_slice(&std::fs::read(root.join("audit/actions.json")).unwrap())

@@ -26,14 +26,14 @@ pub fn start_pruning(
     std::thread::Builder::new()
         .name("audit-prune".into())
         .spawn(move || {
-            pruning_loop(&root, Duration::from_secs(24 * 60 * 60), None, || {
+            pruning_loop(Duration::from_secs(24 * 60 * 60), None, || {
                 prune_tick(&app, &root, initial_days);
             })
         })?;
     Ok(())
 }
 
-fn pruning_loop<F>(_root: &Path, period: Duration, ticks: Option<usize>, mut tick: F)
+fn pruning_loop<F>(period: Duration, ticks: Option<usize>, mut tick: F)
 where
     F: FnMut(),
 {
@@ -57,7 +57,16 @@ fn prune_tick(app: &tauri::AppHandle, root: &Path, initial_days: u32) {
         );
         return;
     };
-    let _guard = match state.audit_lock.lock() {
+    prune_tick_with(root, &state.audit_lock, &state.settings, initial_days);
+}
+
+fn prune_tick_with(
+    root: &Path,
+    audit_lock: &std::sync::Mutex<()>,
+    settings: &std::sync::Mutex<crate::storage::Settings>,
+    initial_days: u32,
+) {
+    let _guard = match audit_lock.lock() {
         Ok(guard) => guard,
         Err(_) => {
             crate::logs::log(
@@ -68,7 +77,7 @@ fn prune_tick(app: &tauri::AppHandle, root: &Path, initial_days: u32) {
             return;
         }
     };
-    let days = match state.settings.lock() {
+    let days = match settings.lock() {
         Ok(settings) => settings.audit_days,
         Err(_) => {
             crate::logs::log(
@@ -101,38 +110,70 @@ fn cleanup_corrupt(root: &Path, days: u32) {
     let audit_dir = root.join("audit");
     let now = now_ms();
     let max_age = u64::from(days.clamp(1, 365).min(CORRUPT_MAX_AGE_DAYS)) * 24 * 60 * 60 * 1000;
-    let mut files: Vec<(PathBuf, u64, u64)> = std::fs::read_dir(&audit_dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            let name = path.file_name()?.to_str()?;
-            if !(name == "actions.json.corrupt"
-                || (name.starts_with("actions.json.") && name.ends_with(".corrupt")))
-            {
-                return None;
+    let entries = match std::fs::read_dir(&audit_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(_) => {
+            crate::logs::log(
+                root,
+                "warn",
+                "audit corrupt cleanup failed: category=read_dir",
+            );
+            return;
+        }
+    };
+    let mut scan_errors = 0;
+    let mut remove_errors = 0;
+    let mut files: Vec<(PathBuf, u64, u64)> = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                scan_errors += 1;
+                continue;
             }
-            let metadata = entry.metadata().ok()?;
-            let modified = metadata
-                .modified()
-                .ok()?
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()?
-                .as_millis() as u64;
-            Some((path, modified, metadata.len()))
-        })
-        .collect();
+        };
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !(name == "actions.json.corrupt"
+            || (name.starts_with("actions.json.") && name.ends_with(".corrupt")))
+        {
+            continue;
+        }
+        let info = entry.metadata().and_then(|metadata| {
+            let modified = metadata.modified()?;
+            Ok((metadata.len(), modified))
+        });
+        match info {
+            Ok((size, modified)) => {
+                let modified = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                files.push((path, modified, size));
+            }
+            Err(_) => scan_errors += 1,
+        }
+    }
     files.sort_by_key(|(_, modified, _)| *modified);
     let mut total = files.iter().map(|(_, _, size)| *size).sum::<u64>();
     for (index, (path, modified, size)) in files.iter().enumerate() {
         let expired = now.saturating_sub(*modified) > max_age;
         let over_count = files.len().saturating_sub(index) > CORRUPT_MAX_FILES;
         let over_size = total > CORRUPT_MAX_BYTES;
-        if (expired || over_count || over_size) && std::fs::remove_file(path).is_ok() {
-            total = total.saturating_sub(*size);
+        if expired || over_count || over_size {
+            match std::fs::remove_file(path) {
+                Ok(()) => total = total.saturating_sub(*size),
+                Err(_) => remove_errors += 1,
+            }
         }
+    }
+    if scan_errors > 0 || remove_errors > 0 {
+        crate::logs::log(root, "warn", &format!(
+            "audit corrupt cleanup failed: category=io scan_errors={scan_errors} remove_errors={remove_errors}"
+        ));
     }
 }
 
@@ -292,14 +333,14 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_cleanup_applies_age_and_size_limits() {
+    fn corrupt_cleanup_limits_file_count() {
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         let audit = root.join("audit");
         std::fs::create_dir_all(&audit).unwrap();
         for index in 0..(CORRUPT_MAX_FILES + 2) {
             std::fs::write(
                 audit.join(format!("actions.json.{index}.corrupt")),
-                vec![b'x'; 1024 * 1024],
+                b"small",
             )
             .unwrap();
         }
@@ -308,7 +349,85 @@ mod tests {
             .unwrap()
             .filter_map(Result::ok)
             .count();
-        assert!(remaining <= CORRUPT_MAX_FILES);
+        assert_eq!(remaining, CORRUPT_MAX_FILES);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn corrupt_cleanup_removes_expired_files_only() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let audit = root.join("audit");
+        std::fs::create_dir_all(&audit).unwrap();
+        let old = audit.join("actions.json.old.corrupt");
+        let fresh = audit.join("actions.json.corrupt");
+        let unrelated = audit.join("unrelated.corrupt");
+        for path in [&old, &fresh, &unrelated] {
+            std::fs::write(path, b"data").unwrap();
+        }
+        let expired = std::time::SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60);
+        for path in [&old, &unrelated] {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(expired)
+                .unwrap();
+        }
+        prune(&root, 30).unwrap();
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        assert!(unrelated.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn corrupt_cleanup_limits_bytes_below_file_count_limit() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let audit = root.join("audit");
+        std::fs::create_dir_all(&audit).unwrap();
+        for index in 0..3 {
+            std::fs::write(
+                audit.join(format!("actions.json.{index}.corrupt")),
+                vec![b'x'; 3 * 1024 * 1024],
+            )
+            .unwrap();
+        }
+        prune(&root, 30).unwrap();
+        let sizes: Vec<u64> = std::fs::read_dir(&audit)
+            .unwrap()
+            .map(|entry| entry.unwrap().metadata().unwrap().len())
+            .collect();
+        assert_eq!(sizes.len(), 2);
+        assert_eq!(sizes.iter().sum::<u64>(), 6 * 1024 * 1024);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn corrupt_cleanup_logs_read_dir_failure_without_paths() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("audit"), b"not a directory").unwrap();
+        cleanup_corrupt(&root, 30);
+        let log = std::fs::read_to_string(root.join("logs/client.log")).unwrap();
+        assert_eq!(log.lines().count(), 1);
+        assert!(log.contains("warn audit corrupt cleanup failed: category=read_dir"));
+        assert!(!log.contains(root.to_str().unwrap()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn corrupt_cleanup_aggregates_removal_failures_without_names() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let audit = root.join("audit");
+        for index in 0..10 {
+            std::fs::create_dir_all(audit.join(format!("actions.json.private-{index}.corrupt")))
+                .unwrap();
+        }
+        cleanup_corrupt(&root, 30);
+        let log = std::fs::read_to_string(root.join("logs/client.log")).unwrap();
+        assert_eq!(log.lines().count(), 1);
+        assert!(log.contains("scan_errors=0 remove_errors=2"));
+        assert!(!log.contains("private"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -401,7 +520,9 @@ mod tests {
     fn periodic_tick_prunes_expired_rows() {
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(root.join("audit")).unwrap();
-        let current_days = 2;
+        let settings = std::sync::Mutex::new(crate::storage::Settings::default());
+        let audit_lock = std::sync::Mutex::new(());
+        settings.lock().unwrap().audit_days = 2;
         std::fs::write(
             root.join("audit/actions.json"),
             serde_json::to_vec(&vec![json!({
@@ -411,8 +532,8 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        pruning_loop(&root, Duration::from_millis(1), Some(1), || {
-            prune_tick_for_root(&root, current_days)
+        pruning_loop(Duration::from_millis(1), Some(1), || {
+            prune_tick_with(&root, &audit_lock, &settings, 30)
         });
         assert!(serde_json::from_slice::<Vec<Value>>(
             &std::fs::read(root.join("audit/actions.json")).unwrap()
