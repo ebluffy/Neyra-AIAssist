@@ -134,7 +134,19 @@ fn path_from_env(env: &HashMap<OsString, OsString>) -> Option<OsString> {
     if edit.remove.iter().any(|key| key == "PATH") {
         return None;
     }
-    env.get(OsStr::new("PATH")).cloned()
+    #[cfg(windows)]
+    {
+        env.iter()
+            .find(|(key, _)| {
+                key.to_str()
+                    .is_some_and(|key| key.eq_ignore_ascii_case("PATH"))
+            })
+            .map(|(_, value)| value.clone())
+    }
+    #[cfg(not(windows))]
+    {
+        env.get(OsStr::new("PATH")).cloned()
+    }
 }
 
 trait CommandEnv {
@@ -332,6 +344,26 @@ mod tests {
             let edit = child_env_edit(&map(pairs));
             assert!(edit.set.is_empty() && edit.remove.is_empty());
         }
+        assert_eq!(command_path(), std::env::var_os("PATH"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_lookup_ignores_key_case() {
+        for key in ["PATH", "Path", "path", "pAtH"] {
+            for value in [r"C:\Windows\System32;C:\custom\bin", ""] {
+                let env = map(&[(key, value)]);
+                assert_eq!(launch_path(&env), Some(OsString::from(value)));
+            }
+        }
+        assert_eq!(launch_path(&map(&[("PATHEXT", ".EXE;.CMD")])), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_collected_environment_keeps_the_process_path() {
+        let env = std::env::vars_os().collect();
+        assert_eq!(launch_path(&env), std::env::var_os("PATH"));
         assert_eq!(command_path(), std::env::var_os("PATH"));
     }
 
