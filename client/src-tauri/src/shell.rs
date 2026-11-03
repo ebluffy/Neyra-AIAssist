@@ -148,7 +148,7 @@ fn requested_name(raw: &str) -> String {
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
+    let paths = crate::policy::command_path()?;
     let exts: Vec<String> = if cfg!(windows) {
         let mut e = vec![String::new()];
         e.extend([".exe", ".com", ".cmd", ".bat"].map(String::from));
@@ -335,14 +335,14 @@ pub fn run(plan: &Plan, cancel: &AtomicBool) -> Result<Value, String> {
     let mut command = Command::new(&plan.program);
     // Exec the real file, but keep the name the user typed so busybox-style applets still work.
     set_argv0(&mut command, &plan.argv0);
-    child_environment(&mut command);
     command
         .args(&plan.args)
         .current_dir(&plan.cwd)
-        .envs(plan.env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    child_environment(&mut command);
+    crate::appimage_env::apply_caller_env(&mut command, &plan.env);
     let tree = tree::Tree::prepare(&mut command);
     let mut child = command.spawn().map_err(|_| "Программа не запустилась")?;
     let tree = tree.attach(&child);

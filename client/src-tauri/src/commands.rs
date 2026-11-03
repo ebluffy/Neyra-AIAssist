@@ -1458,6 +1458,8 @@ mod tests {
         assert!(store.reload(&dir));
         assert_eq!(store.entries().len(), 2);
         assert!(!store.dirty(&dir) && !store.reload(&dir));
+        fs::read(dir.join("game.yaml")).unwrap();
+        assert!(!store.dirty(&dir), "a read must not look like a change");
         std::thread::sleep(std::time::Duration::from_millis(15));
         fs::write(dir.join("game.yaml"), "name: Режим игры\ntriggers: [\n").unwrap();
         assert!(store.dirty(&dir) && store.reload(&dir));

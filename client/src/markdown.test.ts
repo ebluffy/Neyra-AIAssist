@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { Markdown, parseInlines, parseMarkdown } from './markdown';
+import { Markdown, httpLinkOpener, parseInlines, parseMarkdown } from './markdown';
 
 describe('markdown', () => {
   it('keeps prose, emphasis and inline code as text nodes', () => {
@@ -10,6 +10,12 @@ describe('markdown', () => {
       { k: 'text', v: ' и ' },
       { k: 'code', v: 'a' },
     ]);
+  });
+  it('opens chat links through the sanitized launcher only in the Linux app', () => {
+    expect(httpLinkOpener(true, true)).toBe('sanitized');
+    expect(httpLinkOpener(true, false)).toBe('plugin');
+    expect(httpLinkOpener(false, true)).toBe('plugin');
+    expect(httpLinkOpener(false, false)).toBe('plugin');
   });
   it('allows only http links', () => {
     const parts = parseInlines('[сайт](https://example.com) [x](javascript:alert(1))');

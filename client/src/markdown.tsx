@@ -1,6 +1,19 @@
 import type { ReactNode } from 'react';
 import { Copy } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
+
+/** Linux app links use the Rust launcher so the child does not inherit the AppImage path. */
+export function httpLinkOpener(inTauri: boolean, linux: boolean): 'sanitized' | 'plugin' {
+  return inTauri && linux ? 'sanitized' : 'plugin';
+}
+
+function openHttp(href: string): Promise<unknown> {
+  const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  const linux = typeof navigator !== 'undefined' && /linux/i.test(navigator.userAgent || '');
+  if (httpLinkOpener(inTauri, linux) === 'sanitized') return invoke('open_http_url', { url: href });
+  return openUrl(href);
+}
 
 export type Inline =
   | { k: 'text'; v: string }
@@ -84,7 +97,7 @@ function inlineNodes(inlines: Inline[], key: string): ReactNode[] {
     if (part.k === 'code') return <code key={id} translate="no">{part.v}</code>;
     if (part.k === 'strong') return <strong key={id}>{part.v}</strong>;
     if (part.k === 'em') return <em key={id}>{part.v}</em>;
-    if (part.k === 'link') return <a key={id} href={part.href} onClick={event => { event.preventDefault(); if (SAFE_LINK.test(part.href)) void openUrl(part.href).catch(() => undefined); }}>{part.v}</a>;
+    if (part.k === 'link') return <a key={id} href={part.href} onClick={event => { event.preventDefault(); if (SAFE_LINK.test(part.href)) void openHttp(part.href).catch(() => undefined); }}>{part.v}</a>;
     return <span key={id}>{part.v}</span>;
   });
 }

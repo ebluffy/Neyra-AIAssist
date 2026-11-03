@@ -201,6 +201,37 @@ fn open_url(url: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "linux")]
+async fn open_url_async(url: &str) -> Result<(), String> {
+    let opener = available_program("xdg-open").ok_or("xdg-open не установлен")?;
+    let mut command = tokio::process::Command::new(opener);
+    command.arg(url);
+    crate::policy::child_environment_async(&mut command);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().map_err(|_| "Не удалось открыть браузер")?;
+    tauri::async_runtime::spawn(async move {
+        let _ = child.wait().await;
+    });
+    Ok(())
+}
+
+/// Chat links. On Linux this uses the same child environment as the host bridge.
+#[tauri::command]
+pub async fn open_http_url(url: String) -> Result<(), String> {
+    let url = crate::policy::web_url(&url)?;
+    #[cfg(target_os = "linux")]
+    {
+        open_url_async(url.as_str()).await
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        open_url(url.as_str())
+    }
+}
+
 #[cfg(not(windows))]
 fn list_windows(cancel: &AtomicBool) -> Result<Value, String> {
     if std::env::var("XDG_SESSION_TYPE").unwrap_or_default() == "wayland" {

@@ -376,93 +376,22 @@ fn validate_inner(
     }
 }
 
-#[cfg(target_os = "linux")]
-fn restored_path(
-    current: Option<std::ffi::OsString>,
-    original: Option<std::ffi::OsString>,
-    mount: &Path,
-) -> Option<std::ffi::OsString> {
-    if original.is_some() {
-        return original;
-    }
-    let value = current?;
-    if value.is_empty() {
-        return Some(value);
-    }
-    let kept: Vec<_> = std::env::split_paths(&value)
-        .filter(|p| !p.starts_with(mount) && !p.to_string_lossy().contains("/tmp/.mount_"))
-        .collect();
-    if kept.is_empty() {
-        None
-    } else {
-        std::env::join_paths(kept).ok()
-    }
+pub fn child_environment(command: &mut Command) {
+    crate::appimage_env::apply_std(command);
 }
 
-pub fn child_environment(command: &mut Command) {
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(appdir) = std::env::var_os("APPDIR") {
-            let mount = PathBuf::from(appdir);
-            for name in [
-                "LD_LIBRARY_PATH",
-                "LD_PRELOAD",
-                "PATH",
-                "GTK_PATH",
-                "GTK_EXE_PREFIX",
-                "GTK_DATA_PREFIX",
-                "GIO_EXTRA_MODULES",
-                "GIO_MODULE_DIR",
-                "GI_TYPELIB_PATH",
-                "GDK_PIXBUF_MODULE_FILE",
-                "GSETTINGS_SCHEMA_DIR",
-                "QT_PLUGIN_PATH",
-                "PYTHONPATH",
-                "XDG_DATA_DIRS",
-            ] {
-                let old = format!("OLD_{name}");
-                match restored_path(std::env::var_os(name), std::env::var_os(&old), &mount) {
-                    Some(value) => {
-                        command.env(name, value);
-                    }
-                    None => {
-                        command.env_remove(name);
-                    }
-                }
-                command.env_remove(old);
-            }
-            for name in ["APPDIR", "APPIMAGE", "ARGV0", "OWD"] {
-                command.env_remove(name);
-            }
-        }
-        for (key, original) in [
-            ("GDK_BACKEND", "NEYRA_ORIGINAL_GDK_BACKEND"),
-            ("WEBKIT_DISABLE_DMABUF_RENDERER", "NEYRA_ORIGINAL_DMABUF"),
-            ("__NV_DISABLE_EXPLICIT_SYNC", "NEYRA_ORIGINAL_EXPLICIT_SYNC"),
-        ] {
-            if std::env::var_os("NEYRA_GRAPHICS_APPLIED").is_some() {
-                match std::env::var_os(original) {
-                    Some(value) => {
-                        command.env(key, value);
-                    }
-                    None => {
-                        command.env_remove(key);
-                    }
-                }
-            }
-            command.env_remove(original);
-        }
-        command.env_remove("NEYRA_GRAPHICS_APPLIED");
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = command;
+#[cfg(target_os = "linux")]
+pub use crate::appimage_env::apply_async as child_environment_async;
+
+pub fn command_path() -> Option<std::ffi::OsString> {
+    crate::appimage_env::command_path()
 }
 
 pub fn available_program(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
+    command_path().and_then(|paths| {
         std::env::split_paths(&paths)
-            .map(|p| p.join(name))
-            .find(|p| p.is_file())
+            .map(|dir| dir.join(name))
+            .find(|path| path.is_file())
     })
 }
 
@@ -607,32 +536,6 @@ pub fn preview(call: &ToolCall, permissions: &Permissions, data_root: &Path) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn appimage_restores_unset_empty_and_custom_values() {
-        use std::ffi::OsString;
-        let mount = Path::new("/tmp/.mount_test");
-        assert_eq!(
-            restored_path(Some(OsString::from("/tmp/.mount_test/lib")), None, mount),
-            None
-        );
-        assert_eq!(
-            restored_path(None, Some(OsString::new()), mount),
-            Some(OsString::new())
-        );
-        assert_eq!(
-            restored_path(None, Some(OsString::from("/my/lib")), mount),
-            Some(OsString::from("/my/lib"))
-        );
-        assert_eq!(
-            restored_path(
-                Some(OsString::from("/tmp/.mount_test/lib:/my/lib")),
-                None,
-                mount
-            ),
-            Some(OsString::from("/my/lib"))
-        );
-    }
     #[test]
     fn reject_local_and_credential_urls() {
         for u in [
