@@ -298,12 +298,7 @@ fn send_capabilities(state: &Desktop) {
 #[tauri::command]
 fn store_token(state: State<'_, Desktop>, profile_id: String, token: String) -> Result<(), String> {
     profile(&state, &profile_id)?;
-    if token.len() < 8 || token.len() > 4096 || token.contains(['\n', '\r']) {
-        return Err("Неверный токен".into());
-    }
-    storage::secret(&profile_id)?
-        .set_password(&token)
-        .map_err(|_| "Не удалось сохранить токен: разблокируйте системное хранилище".into())
+    storage::store_token(&storage::secret(&profile_id)?, &token)
 }
 
 #[tauri::command]
@@ -325,9 +320,7 @@ async fn api(
     }
     let p = profile(&state, &profile_id)?;
     let url = server_url(&p, &path)?;
-    let token = storage::secret(&profile_id)?
-        .get_password()
-        .map_err(|_| "Сначала сохраните токен")?;
+    let token = storage::load_token(&storage::secret(&profile_id)?)?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(CONNECT_TIMEOUT)
@@ -366,9 +359,7 @@ async fn set_module(
         return Err("Неверный модуль".into());
     }
     let p = profile(&state, &profile_id)?;
-    let token = storage::secret(&profile_id)?
-        .get_password()
-        .map_err(|_| "Токен не найден")?;
+    let token = storage::load_token(&storage::secret(&profile_id)?)?;
     let response = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(CONNECT_TIMEOUT)
@@ -398,10 +389,8 @@ async fn connect(
         state.epoch.load(Ordering::SeqCst)
     };
     let p = profile(&state, &profile_id).map_err(config_error)?;
-    let token = storage::secret(&profile_id)
-        .map_err(config_error)?
-        .get_password()
-        .map_err(|_| config_error("Сначала сохраните токен"))?;
+    let token = storage::load_token(&storage::secret(&profile_id).map_err(config_error)?)
+        .map_err(config_error)?;
     let hello = manifest(&state, &p)?;
     let sockets = connect_sockets(&p, &token, &hello, CONNECT_TIMEOUT).await?;
     install_connected_sockets(&state.transport, &state.epoch, epoch, sockets, |sockets| {
@@ -1567,6 +1556,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let root = storage::data_root().map_err(std::io::Error::other)?;
+            logs::install_crash_hook(root.clone());
             let (settings, recoveries) =
                 storage::initialize(&root).map_err(std::io::Error::other)?;
             for r in &recoveries {
