@@ -61,7 +61,7 @@ class DesktopVoice:
             return await asyncio.shield(job)
 
     async def synthesize(self, text: str) -> bytes:
-        from core.voice.yandex_tts import synthesize_from_config
+        from core.voice.tts import synthesize_from_config
         plain = plain_text(text)
         if not plain:
             return b''
