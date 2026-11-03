@@ -266,12 +266,7 @@ fn send_capabilities(state: &Desktop) {
 #[tauri::command]
 fn store_token(state: State<'_, Desktop>, profile_id: String, token: String) -> Result<(), String> {
     profile(&state, &profile_id)?;
-    if token.len() < 8 || token.len() > 4096 || token.contains(['\n', '\r']) {
-        return Err("Неверный токен".into());
-    }
-    storage::secret(&profile_id)?
-        .set_password(&token)
-        .map_err(|_| "Не удалось сохранить токен: разблокируйте системное хранилище".into())
+    storage::store_token(&storage::secret(&profile_id)?, &token)
 }
 
 #[tauri::command]
@@ -293,9 +288,7 @@ async fn api(
     }
     let p = profile(&state, &profile_id)?;
     let url = server_url(&p, &path)?;
-    let token = storage::secret(&profile_id)?
-        .get_password()
-        .map_err(|_| "Сначала сохраните токен")?;
+    let token = storage::load_token(&storage::secret(&profile_id)?)?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15))
@@ -333,9 +326,7 @@ async fn set_module(
         return Err("Неверный модуль".into());
     }
     let p = profile(&state, &profile_id)?;
-    let token = storage::secret(&profile_id)?
-        .get_password()
-        .map_err(|_| "Токен не найден")?;
+    let token = storage::load_token(&storage::secret(&profile_id)?)?;
     let response = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(20))
@@ -361,9 +352,7 @@ async fn connect(
 ) -> Result<(), String> {
     disconnect_inner(&state)?;
     let p = profile(&state, &profile_id)?;
-    let token = storage::secret(&profile_id)?
-        .get_password()
-        .map_err(|_| "Сначала сохраните токен")?;
+    let token = storage::load_token(&storage::secret(&profile_id)?)?;
     let epoch = state.epoch.load(Ordering::SeqCst);
     let hello = manifest(&state, &p)?;
     let mut sockets = Vec::new();
@@ -1350,6 +1339,7 @@ pub fn run() {
             let setup_elapsed = startup.setup_elapsed();
             let root = storage::data_root().map_err(std::io::Error::other)?;
             app.manage(startup.attach(&root, setup_elapsed));
+            logs::install_crash_hook(root.clone());
             let (settings, recoveries) =
                 storage::initialize(&root).map_err(std::io::Error::other)?;
             for r in &recoveries {

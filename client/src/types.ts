@@ -40,7 +40,17 @@ export function acceptLiveRun(current: number, event: { type: string; run?: numb
 export type LiveState = 'off' | 'idle' | 'armed' | 'listening' | 'thinking' | 'speaking';
 export const defaultVoice: VoiceSettings = { mode: 'ptt', vad_sensitivity: 0.5, end_silence_ms: 700, wake_threshold: 0.5, barge_in: 'off' };
 export function newProfile(): Profile { return { id: crypto.randomUUID(), name: 'Новый сервер', url: 'http://127.0.0.1:8787', session_id: crypto.randomUUID() }; }
-export function formatError(error: unknown): string { return typeof error === 'string' ? error : 'Действие не выполнено. Повторите попытку.'; }
+export function formatError(error: unknown): string {
+  if (error === 'credential_store_unavailable') return 'Системное хранилище секретов недоступно. Запустите и разблокируйте Secret Service/keyring. Токен не сохранён в файл.';
+  if (error === 'token_missing') return 'Сначала сохраните токен.';
+  if (typeof error === 'string' && error.startsWith('export_contains_token:')) {
+    const source = error.slice('export_contains_token:'.length);
+    const location = source === 'settings' ? 'настройках или разрешениях' : /^command:\d+$/.test(source) ? `команде №${source.slice('command:'.length)}` : 'экспортируемых данных';
+    return `Экспорт отменён: сохранённый токен найден в ${location}. Удалите токен из команды или настроек и повторите экспорт.`;
+  }
+  if (error === 'invalid_token') return 'Неверный токен.';
+  return typeof error === 'string' ? error : 'Действие не выполнено. Повторите попытку.';
+}
 export function validServerUrl(value: string): boolean { try { const u = new URL(value); return (u.protocol === 'https:' || (u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname))) && !u.username && !u.password && !u.search && !u.hash; } catch { return false; } }
 /** Mic level in dBFS to a 0..1 meter value: -60 dB is silence, -10 dB is loud. */
 export function meterLevel(db: number): number { return Math.min(1, Math.max(0, (db + 60) / 50)); }
