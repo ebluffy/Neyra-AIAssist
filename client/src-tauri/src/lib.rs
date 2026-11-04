@@ -236,12 +236,22 @@ pub(crate) fn apply_settings(
         != serde_json::to_value(&settings.permissions).ok();
     let screen_changed = (old.permissions.screen, old.permissions.input)
         != (settings.permissions.screen, settings.permissions.input);
-    storage::save(&state.root, &settings)?;
-    character::on_settings_saved(app, settings.character_enabled);
-    if settings.theme != old.theme {
-        let _ = app.emit("theme-changed", json!({ "theme": settings.theme }));
-    }
-    *state.settings.lock().map_err(lock_error)? = settings;
+    let retention_changed = settings.audit_days != old.audit_days;
+    let audit_days = settings.audit_days;
+    save_settings_and_prune(
+        &state.root,
+        &state.audit_lock,
+        retention_changed.then_some(audit_days),
+        || storage::save(&state.root, &settings),
+        || {
+            character::on_settings_saved(app, settings.character_enabled);
+            if settings.theme != old.theme {
+                let _ = app.emit("theme-changed", json!({ "theme": settings.theme }));
+            }
+            *state.settings.lock().map_err(lock_error)? = settings.clone();
+            Ok(())
+        },
+    )?;
     if changed {
         stop_inner(state)?;
         if screen_changed {
@@ -250,6 +260,38 @@ pub(crate) fn apply_settings(
         send_capabilities(state);
     }
     Ok(())
+}
+
+fn save_settings_and_prune(
+    root: &std::path::Path,
+    audit_lock: &Mutex<()>,
+    audit_days: Option<u32>,
+    save: impl FnOnce() -> Result<(), String>,
+    after_save: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    save()?;
+    after_save()?;
+    if let Some(days) = audit_days {
+        match audit_lock.lock() {
+            Ok(_guard) => prune_after_settings_save(root, days),
+            Err(_) => logs::log(
+                root,
+                "warn",
+                "audit prune after settings save skipped: audit lock poisoned",
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn prune_after_settings_save(root: &std::path::Path, audit_days: u32) {
+    if let Err(error) = audit::prune(root, audit_days) {
+        logs::log(
+            root,
+            "warn",
+            &format!("audit prune after settings save failed: {error}"),
+        );
+    }
 }
 
 /// Refreshes the server's runtime view (tools and quick-command names) when a bridge is connected.
@@ -847,14 +889,30 @@ fn is_local(call: &ToolCall) -> bool {
 fn reply(app: &tauri::AppHandle, call: &ToolCall, result: Value, confirmed: bool) {
     let state = app.state::<Desktop>();
     let days = state.settings.lock().map(|s| s.audit_days).unwrap_or(30);
-    if let Ok(_guard) = state.audit_lock.lock() {
-        let _ = audit::append(
+    match state.audit_lock.lock() {
+        Ok(_guard) => {
+            if let Err(error) = audit::append(
+                &state.root,
+                &call.tool,
+                result["status"].as_str().unwrap_or("error"),
+                confirmed,
+                days,
+            ) {
+                logs::log(
+                    &state.root,
+                    "warn",
+                    &format!("audit append failed for tool {}: {error}", call.tool),
+                );
+            }
+        }
+        Err(_) => logs::log(
             &state.root,
-            &call.tool,
-            result["status"].as_str().unwrap_or("error"),
-            confirmed,
-            days,
-        );
+            "warn",
+            &format!(
+                "audit append skipped for tool {}: audit lock poisoned",
+                call.tool
+            ),
+        ),
     }
     if is_local(call) {
         // Quick commands report to their own runner, never to the server.
@@ -1398,7 +1456,15 @@ pub fn run() {
                     ),
                 );
             }
-            audit::prune(&root, settings.audit_days).map_err(std::io::Error::other)?;
+            if let Err(error) =
+                audit::start_pruning(app.handle().clone(), root.clone(), settings.audit_days)
+            {
+                logs::log(
+                    &root,
+                    "warn",
+                    &format!("could not start audit pruning: {error}"),
+                );
+            }
             let generation = Arc::new(AtomicU64::new(0));
             let events = app.handle().clone();
             let player = audio::Player::start(generation.clone(), move |event| {
@@ -1693,6 +1759,62 @@ fn monitor_session(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_retention_prunes_immediately_after_save() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        for directory in ["audit", "settings", "permissions"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        std::fs::write(
+            root.join("audit/actions.json"),
+            br#"[{"time":1,"tool":"old"},{"time":9999999999999,"tool":"fresh"}]"#,
+        )
+        .unwrap();
+
+        let path = root.join("audit/actions.json");
+        let before = std::fs::read(&path).unwrap();
+        let settings = Settings {
+            audit_days: 1,
+            ..Settings::default()
+        };
+        let audit_lock = Mutex::new(());
+        let result = save_settings_and_prune(
+            &root,
+            &audit_lock,
+            Some(settings.audit_days),
+            || Err("save failed".into()),
+            || panic!("state must not change after a failed save"),
+        );
+        assert_eq!(result.unwrap_err(), "save failed");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        save_settings_and_prune(
+            &root,
+            &audit_lock,
+            Some(settings.audit_days),
+            || {
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+                storage::save(&root, &settings)
+            },
+            || {
+                let saved: Value =
+                    serde_json::from_slice(&std::fs::read(root.join("settings/app.json")).unwrap())
+                        .unwrap();
+                assert_eq!(saved["audit_days"], 1);
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let rows: Vec<Value> =
+            serde_json::from_slice(&std::fs::read(root.join("audit/actions.json")).unwrap())
+                .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["tool"], "fresh");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn active_tray_icon_carries_a_red_mark() {
         assert_ne!(TRAY_ICON, TRAY_ICON_ACTIVE);
