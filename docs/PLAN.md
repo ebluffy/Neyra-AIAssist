@@ -315,6 +315,14 @@
 - [x] Шаг 8 runtime: подписанный N→N+1, client-release и Updates UI реализованы. Пуш тега владельцем `client-v*` запускает сборку и автоматическую публикацию после успеха всех платформ; для рабочего релиза владелец задаёт production-ключ и секреты (см. `docs/RELEASE.md`).
 
 
+**Интеграция в PR #36 (2026-11-04, без merge в main):**
+
+- [x] Собраны изменения #43/#44/#45/#46/#52/#54/#55/#56: AppImage child env, release workflow, native accessibility tools, Deepgram TTS/fallback, perf, audit retention, offline smoke и восстановление транспорта. Исправление keyring из #53 уже включено ранее.
+- [x] На стыке веток сохранены рекурсивный redact аудита без expiry, crash hook и общая ротация, пакетная отрисовка токенов и метка подключения; ошибки keyring показываются понятным текстом без автоповторов.
+- [x] Совместный локальный прогон: 721 server pytest, 117 client unit tests, 188 Rust unit tests и 10 updater integration tests; Node 22 lint/typecheck/build, offline HTTPS/REST/WSS smoke, perf/lifecycle и release-script tests. Установщики Windows/Linux проверяются CI отдельно; автоматические тесты не закрывают аппаратную приёмку.
+- [ ] Приёмка владельцем остаётся открытой: Windows/CachyOS keyring, микрофон/голос/Stop/конверсия на MiniPC, доступ к ПК и Wayland, реальная модель «Нейра», production-подпись и опубликованное обновление N → N+1. Новое АР не ожидается по команде владельца; PR #36 остаётся открытым.
+
+
 #### Сборка и автообновление
 
 - Tauri 2 bundler, NSIS `setup.exe`, `installMode: currentUser`; MSI не нужен.
