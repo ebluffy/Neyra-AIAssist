@@ -35,7 +35,7 @@ impl Default for UpdaterSettings {
     fn default() -> Self {
         Self {
             schema_version: 1,
-            channel: "beta".into(),
+            channel: "stable".into(),
             auto_check: true,
         }
     }
@@ -231,11 +231,11 @@ mod tests {
     }
 
     #[test]
-    fn settings_default_to_beta_and_round_trip() {
+    fn settings_default_to_stable_and_round_trip() {
         let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
-        assert_eq!(load(&root).unwrap().channel, "beta");
+        assert_eq!(load(&root).unwrap().channel, "stable");
         let mut settings = UpdaterSettings {
-            channel: "stable".into(),
+            channel: "beta".into(),
             ..Default::default()
         };
         save(&root, &settings).unwrap();

@@ -309,10 +309,10 @@
 **Beta expansion (шаги 4–8, в работе; foundation 1–3 не регрессировать):**
 
 - [x] §3b.6 шаг 0 research: Desktop Mate EULA — ассеты **не** redistributable; таблица в `client/character/LICENSES.md` (URL+даты источников); рекомендуемый default после экспорта пользователем — VRoid β Ver AvatarSample_3 (CC0). Бинарный `.vrm` в сборку не кладётся. Поле `character_enabled` (default false) в settings; runtime оверлея — трек ship.
-- [x] Updater **scaffold only** на PR-ветке: pubkey + plugin wire, `createUpdaterArtifacts=false`, AppImage в Desktop CI. UI/кнопка/release workflow/срез `updater:default` — трек `codex/desktop-beta-ship` (не дублировать).
+- [x] Updater: pubkey + plugin wire, `createUpdaterArtifacts=false` в PR CI, UI/кнопка, N→N+1 тесты и client-release workflow для подписанных сборок.
 - [x] Desktop CI: Linux собирает `deb` + `AppImage` (артефакты вместе с NSIS).
 - [ ] Шаги 4–7 feature-код (commands / live+wake+conversion / contours 3–4 / character runtime) — in progress на `codex/desktop-beta-*`, merge интегратором.
-- [ ] Шаг 8 runtime: подписанный N→N+1, client-release, Updates UI — ship; без публичного release без команды владельца.
+- [x] Шаг 8 runtime: подписанный N→N+1, client-release и Updates UI реализованы. Пуш тега владельцем `client-v*` запускает сборку и автоматическую публикацию после успеха всех платформ; для рабочего релиза владелец задаёт production-ключ и секреты (см. `docs/RELEASE.md`).
 
 
 #### Сборка и автообновление
@@ -322,7 +322,7 @@
 - Приватный ключ и пароль только в GitHub Secrets: `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 - Публичный ключ в `tauri.conf.json`; endpoint — `latest.json` в GitHub Releases.
 - Проверка обновлений при старте и кнопка «Проверить обновления», диалог версии и restart после установки.
-- Запланировать `.github/workflows/client-release.yml` через `tauri-apps/tauri-action`, trigger `client-v*`: Windows job на `windows-latest` и отдельный Linux job для выбранных пакетов; PR CI делает lint, typecheck и build без релиза.
+- `.github/workflows/client-release.yml` использует `tauri-apps/tauri-action` по тегу `client-v*`: Windows и Linux matrix builds собирают draft, затем publish job публикует релиз при успехе обоих; PR CI делает lint, typecheck и build без релиза.
 - Единая версия в `package.json`, `tauri.conf.json` и `Cargo.toml`.
 - При подключении клиент проверяет совместимость версии API.
 - Сертификат подписи кода для SmartScreen — backlog.

@@ -780,16 +780,16 @@ Windows (прозрачность, always-on-top, click-through, скрытие 
 Черновик релиза по этим адресам не отдаётся. Публичный ключ в tauri.conf.json — заготовка (minisign id 1AAFC11FB991FBB6), приватной половины в репозитории нет. Тестовый ключ client/src-tauri/updater-test/test.key в этот конфиг подставлять нельзя.
 Пока нет своего ключа и опубликованного latest.json, «Проверить обновления» не является прогоном N→N+1. Ожидаемый исход сейчас: сетевая ошибка или «Установлена последняя версия».
 
-Настоящий draft, когда решите выпускать (из этого скрипта ничего не публикуется):
+Настоящий релиз, когда решите выпускать (из этого скрипта ничего не публикуется):
 1. Вне git: cd client && npm run tauri -- signer generate -w "\$HOME/neyra-updater.key"
    Файл ключа не коммитить.
 2. Текст .pub записать в client/src-tauri/tauri.conf.json → plugins.updater.pubkey и закоммитить только публичную половину.
 3. Секреты GitHub: TAURI_SIGNING_PRIVATE_KEY и TAURI_SIGNING_PRIVATE_KEY_PASSWORD.
    Пока их нет, .github/workflows/client-release.yml останавливается на preflight и релиз не собирает.
 4. Поднять одну версию в package.json, src-tauri/tauri.conf.json, src-tauri/Cargo.toml и src-tauri/Cargo.lock (пакет neyra-client). Проверка: cd client && npm run check:versions
-5. Тег client-v<версия> (бета с суффиксом, например client-v0.1.1-beta.1) и push тега, либо ручной запуск workflow «Desktop release (draft)». Workflow создаёт черновик и сам его не публикует.
-6. После вашей ручной публикации, для канала «Бета»: gh release upload client-beta latest.json --clobber
-   Тег client-beta один раз создаётся как prerelease. Стабильный канал читает только опубликованный GitHub latest, не prerelease и не draft.
+5. Тег client-v<версия> (бета с суффиксом, например client-v0.1.1-beta.1) и push тега, либо ручной запуск workflow «Desktop release» с тегом. Workflow публикует релиз только после успешной сборки обеих платформ.
+6. Workflow автоматически создаёт или обновляет client-beta/latest.json, только если версия новее текущей по SemVer. Стабильные релизы тоже продвигают бета-канал.
+   Стабильный канал читает только опубликованный GitHub latest, не prerelease и не draft.
 7. На ПК AppImage версии N лежит в каталоге, куда вы можете писать (например ~/Applications). Настройки → Обновления → проверить → установить → перезапустить.
    Сверить адрес сервера, токен в keyring, тему, разрешения, device id и что файл AppImage по тому же пути заменён.
    Дочерние программы не должны наследовать LD_LIBRARY_PATH AppImage.

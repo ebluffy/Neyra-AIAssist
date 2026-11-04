@@ -14,7 +14,7 @@ Implemented for PLAN §3b.11 steps 1–3:
 
 ## Updater and character (beta ship track)
 
-- Updater: Rust-only commands, beta/stable channel, signature and signed-version checks always on, draft-only release workflow, N to N+1 tests against a local server. See `docs/UPDATER.md`.
+- Updater: Rust-only commands, stable default and optional beta channel, signature and signed-version checks always on, automatic publication after all release builds pass, N to N+1 tests against a local server. See `docs/UPDATER.md`.
 - Linux packages and CachyOS notes: `docs/PACKAGING.md`.
 - Optional desktop character (off by default): `docs/CHARACTER.md`, licences in `character/LICENSES.md`.
 
@@ -27,6 +27,7 @@ npm ci --ignore-scripts
 npm run lint
 npm run typecheck
 npm test
+npm run test:scripts
 npm run build
 cd src-tauri
 cargo fmt --check
@@ -36,6 +37,9 @@ cd ..
 npm run tauri build -- --bundles deb   # Linux
 npm run tauri build -- --bundles nsis  # Windows
 ```
+
+`npm test` runs the UI suites with Vitest. `npm run test:scripts` runs
+`scripts/*.test.mjs` with Node's test runner, one file at a time. Both run in CI.
 
 Dependency lifecycle scripts are disabled for installation; Vite/esbuild and the Tauri CLI use their platform packages. CI produces unsigned test installers (`nsis` / `deb` / `AppImage`) as artifacts, not a signed updater release. Updater plugin + pubkey are wired; `createUpdaterArtifacts` stays off until signing secrets exist — see `docs/UPDATER.md`. Character step-0 license research lives in `character/LICENSES.md` (Desktop Mate assets are not redistributable).
 

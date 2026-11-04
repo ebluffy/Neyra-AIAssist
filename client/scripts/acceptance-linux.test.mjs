@@ -1,7 +1,8 @@
+import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'node:test';
 
 const script = join(import.meta.dirname, 'acceptance-linux.sh');
 const doc = join(import.meta.dirname, '../docs/ACCEPTANCE-LINUX.md');
@@ -28,22 +29,22 @@ function run(args) {
 }
 
 describe('acceptance-linux.sh', () => {
-  it.skipIf(!bash)('parses monitor scales and a wakeword manifest', () => {
-    expect(run(['--self-test'])).toContain('self-test ok');
+  it('parses monitor scales and a wakeword manifest', { skip: !bash }, () => {
+    assert.match(run(['--self-test']), /self-test ok/);
   });
 
-  it.skipIf(!bash)('names the owner command and the local updater flag', () => {
+  it('names the owner command and the local updater flag', { skip: !bash }, () => {
     const help = run(['--help']);
-    expect(help).toContain('bash client/scripts/acceptance-linux.sh');
-    expect(help).toContain('--check-only');
-    expect(help).toContain('--updater');
+    assert.ok(help.includes('bash client/scripts/acceptance-linux.sh'));
+    assert.ok(help.includes('--check-only'));
+    assert.ok(help.includes('--updater'));
   });
 
   it('keeps the Russian doc pointed at the same command', () => {
     const text = readFileSync(doc, 'utf8');
-    expect(text).toContain('bash client/scripts/acceptance-linux.sh');
-    expect(text).toContain('--check-only');
-    expect(text).toContain('client-beta');
-    expect(text).not.toContain('TAURI_SIGNING_PRIVATE_KEY=');
+    assert.ok(text.includes('bash client/scripts/acceptance-linux.sh'));
+    assert.ok(text.includes('--check-only'));
+    assert.ok(text.includes('client-beta'));
+    assert.ok(!text.includes('TAURI_SIGNING_PRIVATE_KEY='));
   });
 });
