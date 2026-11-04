@@ -7,6 +7,8 @@ import { type SheetId, themeId } from './theme';
 import { createTokenBatch } from './streaming';
 import { acceptLiveRun, conversionNotice, defaultVoice, formatError, meterLevel, settleLiveStart, unwrapApi, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
 
+const authError = 'Токен отклонён или отозван. Сохраните новый токен и подключитесь.';
+
 export function useDesktop() {
   const [settings, setSettings] = useState<Settings>();
   const [root, setRoot] = useState('');
@@ -14,6 +16,8 @@ export function useDesktop() {
   const [pcAvailable, setPcAvailable] = useState(false);
   const [profileId, setProfileId] = useState('');
   const [connected, setConnected] = useState(false);
+  const [connectionWanted, setConnectionWanted] = useState('');
+  const [retry, setRetry] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -70,6 +74,34 @@ export function useDesktop() {
   const openSheet = useCallback((id: SheetId) => { setMenuOpen(false); setSheet(id); }, []);
   const closeSheet = useCallback(() => setSheet(null), []);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
+  useEffect(() => {
+    if (!connectionWanted || connected) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void invoke('connect', { profileId: connectionWanted }).then(async () => {
+        if (cancelled) return;
+        setConnected(true); setRetry(0); setError('');
+        if (!keepLocal.current) {
+          try { await invoke('bridge_message', { kind: 'history' }); }
+          catch { setError('Не удалось загрузить историю. Повторите запрос после подключения.'); }
+        }
+        try { await invoke('bridge_message', { kind: 'devices' }); }
+        catch { setError('Не удалось загрузить список устройств. Повторите запрос.'); }
+      }).catch(reason => {
+        if (cancelled) return;
+        setConnected(false); setThinking(false);
+        if (reason === 'AUTH_REJECTED') {
+          setConnectionWanted(''); setError(authError); return;
+        }
+        if (typeof reason === 'string' && reason.startsWith('CONFIG_ERROR: ')) {
+          setConnectionWanted(''); setError(formatError(reason.slice('CONFIG_ERROR: '.length))); return;
+        }
+        setError(`Нет связи. Повторное подключение автоматически. ${formatError(reason)}`);
+        setRetry(value => value + 1);
+      });
+    }, retry === 0 ? 0 : Math.min(1000 * 2 ** Math.min(retry - 1, 5), 30000));
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [connectionWanted, connected, retry]);
   useEffect(() => {
     if (!notice || noticeSticky) return;
     const timer = window.setTimeout(() => setNotice(''), 2200);
@@ -203,7 +235,11 @@ export function useDesktop() {
         if (event.type === 'status' && event.state === 'slow') postNotice('Провайдер отвечает медленно, я ещё думаю…');
         if (event.type === 'status' && event.state === 'truncated') postNotice('Ответ длинный: озвучено только начало, полный текст в чате.', true);
         if (event.type === 'voice.conversion') { const text = conversionNotice(event.status, event.code); if (text) postNotice(text, true); }
-        if (event.type === 'disconnected') { muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); setConnected(false); setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBatch.reset(); postNotice('Соединение закрыто. Подключитесь повторно.', true); }
+        if (event.type === 'disconnected') {
+          muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); setRetry(1); setConnected(false); setBusy(false); setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBatch.reset();
+          if (event.reason === 'auth') { setConnectionWanted(''); setNotice(''); setError(authError); }
+          else postNotice('Нет связи. Ответ мог не дойти. Проверьте историю перед повторной отправкой.', true);
+        }
         if (event.type === 'error') { setError(`Сервер: ${event.code ?? 'ошибка'}. Повторите попытку.`); setThinking(false); tokenBatch.reset(); setLiveState(state => state === 'thinking' ? 'idle' : state); }
         if (event.type === 'cancelled') {
           setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBatch.reset(); postNotice('Остановлено');
@@ -313,16 +349,16 @@ export function useDesktop() {
     const active = threads.find(item => item.id === activeId);
     const preserve = messages.length > 0 || (active?.messages.length ?? 0) > 0;
     keepLocal.current = preserve;
-    await invoke('connect', { profileId }); setConnected(true);
+    setRetry(0); setConnectionWanted(profile.id);
     if (!preserve) setMessages([]);
-    if (!preserve) await invoke('bridge_message', { kind: 'history' });
-    await invoke('bridge_message', { kind: 'devices' });
   });
-  const disconnect = () => run(async () => { keepLocal.current = false; await invoke('disconnect'); setConnected(false); setDevices([]); setTarget(''); });
+  const disconnect = () => run(async () => { setConnectionWanted(''); keepLocal.current = false; await invoke('disconnect'); setConnected(false); setThinking(false); setDevices([]); setTarget(''); });
   const sendContent = (value: string) => run(async () => {
     const trimmed = value.trim();
     if (!trimmed) return;
-    const result = await invoke<{ handled: boolean; command?: string }>('chat', { text: trimmed, targetDeviceId: target || null });
+    let result: { handled: boolean; command?: string };
+    try { result = await invoke<typeof result>('chat', { text: trimmed, targetDeviceId: target || null }); }
+    catch (reason) { setThinking(false); throw `Сообщение не отправлено; текст сохранён. Повторите отправку после подключения. ${formatError(reason)}`; }
     setMessages(list => {
       const next = [...list.slice(-99), { id: nextId(), role: 'user' as const, content: trimmed, kind: 'text' as const }];
       return result?.handled ? [...next, { id: nextId(), role: 'assistant', content: `Команда «${result.command}» запущена на этом ПК.`, kind: 'text' }] : next;
@@ -416,6 +452,7 @@ export function useDesktop() {
   const addProfile = (created: Profile) => {
     const disk = savedSettings.current;
     if (!settings || !disk) return;
+    if (connectionWanted || connected) void disconnect();
     const active = threads.find(item => item.id === activeId);
     const sessionId = firstServerSession(disk.profiles.length > 0, created.session_id, active?.sessionId);
     if (disk.profiles.length === 0 && active && active.sessionId !== sessionId) setThreads(list => list.map(item => item.id === active.id ? { ...item, sessionId } : item));
@@ -427,6 +464,7 @@ export function useDesktop() {
     void persistSaved(saved).catch(reason => setError(formatError(reason)));
   };
   const chooseProfile = (id: string) => {
+    if (id !== profileId && (connectionWanted || connected)) void disconnect();
     setProfileId(id);
     setToken('');
     setStatus(undefined);

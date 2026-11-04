@@ -29,6 +29,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
+    time::Duration,
 };
 use storage::{Profile, Settings};
 use tauri::{Emitter, Manager, State};
@@ -39,6 +40,34 @@ use tokio_tungstenite::{
 };
 
 type SocketSender = UnboundedSender<Message>;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(15);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(75);
+
+async fn socket_send<S: futures_util::Sink<Message> + Unpin>(
+    socket: &mut S,
+    message: Message,
+) -> Result<(), ()> {
+    tokio::time::timeout(WRITE_TIMEOUT, socket.send(message))
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())
+}
+
+async fn run_socket_pair<F: std::future::Future<Output = &'static str>>(
+    mut workers: futures_util::stream::FuturesUnordered<F>,
+) -> Option<&'static str> {
+    // Failure drops the sibling; an orderly stop lets both flush Close.
+    let reason = workers.next().await;
+    if reason == Some("closed") {
+        let _ = tokio::time::timeout(WRITE_TIMEOUT, async {
+            while workers.next().await.is_some() {}
+        })
+        .await;
+    }
+    reason
+}
+
 pub struct Desktop {
     root: PathBuf,
     settings: Mutex<Settings>,
@@ -51,6 +80,7 @@ pub struct Desktop {
     generation: Arc<AtomicU64>,
     recording: Mutex<Option<audio::Recording>>,
     epoch: AtomicU64,
+    transport: Mutex<()>,
     audit_lock: Mutex<()>,
     shortcuts: AtomicBool,
     screen_locked: AtomicBool,
@@ -95,6 +125,9 @@ fn release_live(mut live: Live) {
 }
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
     "Внутренняя ошибка состояния".into()
+}
+fn config_error(message: impl std::fmt::Display) -> String {
+    format!("CONFIG_ERROR: {message}")
 }
 fn send(sender: &Mutex<Option<SocketSender>>, value: Value) -> Result<(), String> {
     let guard = sender.lock().map_err(lock_error)?;
@@ -337,6 +370,7 @@ async fn api(
     let token = storage::load_token(&storage::secret(&profile_id)?)?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(CONNECT_TIMEOUT)
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|_| "Ошибка сетевого клиента")?;
@@ -375,6 +409,7 @@ async fn set_module(
     let token = storage::load_token(&storage::secret(&profile_id)?)?;
     let response = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(CONNECT_TIMEOUT)
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|_| "Ошибка сети")?
@@ -396,40 +431,118 @@ async fn connect(
     state: State<'_, Desktop>,
     profile_id: String,
 ) -> Result<(), String> {
-    disconnect_inner(&state)?;
-    let p = profile(&state, &profile_id)?;
-    let token = storage::load_token(&storage::secret(&profile_id)?)?;
-    let epoch = state.epoch.load(Ordering::SeqCst);
+    let epoch = {
+        let _guard = state.transport.lock().map_err(lock_error)?;
+        state.epoch.load(Ordering::SeqCst)
+    };
+    let p = profile(&state, &profile_id).map_err(config_error)?;
+    let token = storage::load_token(&storage::secret(&profile_id).map_err(config_error)?)
+        .map_err(config_error)?;
     let hello = manifest(&state, &p)?;
+    let sockets = connect_sockets(&p, &token, &hello, CONNECT_TIMEOUT).await?;
+    install_connected_sockets(&state.transport, &state.epoch, epoch, sockets, |sockets| {
+        disconnect_locked(&state)?;
+        let epoch = state.epoch.load(Ordering::SeqCst);
+        *state.active_profile.lock().map_err(lock_error)? = Some(profile_id);
+        start_socket_workers(app, &state, sockets, epoch)
+    })
+    .await
+}
+
+type ClientSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn close_sockets(sockets: Vec<(ClientSocket, &'static str)>) {
+    futures_util::future::join_all(sockets.into_iter().map(|(mut socket, _)| async move {
+        let _ = socket_send(&mut socket, Message::Close(None)).await;
+    }))
+    .await;
+}
+
+async fn install_connected_sockets(
+    transport: &Mutex<()>,
+    current_epoch: &AtomicU64,
+    epoch: u64,
+    sockets: Vec<(ClientSocket, &'static str)>,
+    install: impl FnOnce(Vec<(ClientSocket, &'static str)>) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut sockets = Some(sockets);
+    let result = (|| {
+        let _guard = transport.lock().map_err(lock_error)?;
+        if current_epoch.load(Ordering::SeqCst) != epoch {
+            return Err("Подключение отменено".into());
+        }
+        install(sockets.take().unwrap())
+    })();
+    // Cancellation must flush Close without retaining the synchronous transport lock.
+    if let Some(sockets) = sockets {
+        close_sockets(sockets).await;
+    }
+    result
+}
+
+async fn connect_sockets(
+    p: &Profile,
+    token: &str,
+    hello: &Value,
+    timeout: Duration,
+) -> Result<Vec<(ClientSocket, &'static str)>, String> {
     let mut sockets = Vec::new();
-    for (path, kind) in [
-        ("/v1/desktop/bridge", "bridge"),
-        ("/v1/desktop/voice", "voice"),
-    ] {
-        let mut url = server_url(&p, path)?;
-        let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
-        url.set_scheme(scheme).map_err(|_| "Неверный адрес")?;
-        let mut request = url
-            .as_str()
-            .into_client_request()
-            .map_err(|_| "Неверный адрес")?;
-        request.headers_mut().insert(
-            "Authorization",
-            format!("Bearer {token}")
-                .parse()
-                .map_err(|_| "Неверный токен")?,
-        );
-        let (mut ws, _) =
-            tokio::time::timeout(std::time::Duration::from_secs(15), connect_async(request))
+    let result: Result<(), String> = async {
+        for (path, kind) in [
+            ("/v1/desktop/bridge", "bridge"),
+            ("/v1/desktop/voice", "voice"),
+        ] {
+            let mut url = server_url(p, path).map_err(config_error)?;
+            let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
+            url.set_scheme(scheme)
+                .map_err(|_| config_error("Неверный адрес"))?;
+            let mut request = url
+                .as_str()
+                .into_client_request()
+                .map_err(|_| config_error("Неверный адрес"))?;
+            request.headers_mut().insert(
+                "Authorization",
+                format!("Bearer {token}")
+                    .parse()
+                    .map_err(|_| config_error("Неверный токен"))?,
+            );
+            let (ws, _) = tokio::time::timeout(timeout, connect_async(request))
                 .await
                 .map_err(|_| "Сервер не ответил")?
-                .map_err(|_| "Подключение отклонено; проверьте токен и версию сервера")?;
-        ws.send(Message::Text(hello.to_string().into()))
+                .map_err(|error| match error {
+                    tokio_tungstenite::tungstenite::Error::Http(response)
+                        if matches!(response.status().as_u16(), 401 | 403) =>
+                    {
+                        "AUTH_REJECTED"
+                    }
+                    _ => "Подключение отклонено; проверьте токен и версию сервера",
+                })?;
+            sockets.push((ws, kind));
+            socket_send(
+                &mut sockets.last_mut().unwrap().0,
+                Message::Text(hello.to_string().into()),
+            )
             .await
             .map_err(|_| "Подключение закрыто")?;
-        sockets.push((ws, kind));
+        }
+        Ok(())
     }
-    *state.active_profile.lock().map_err(lock_error)? = Some(profile_id);
+    .await;
+    if let Err(error) = result {
+        close_sockets(sockets).await;
+        return Err(error);
+    }
+    Ok(sockets)
+}
+
+fn start_socket_workers(
+    app: tauri::AppHandle,
+    state: &Desktop,
+    sockets: Vec<(ClientSocket, &'static str)>,
+    epoch: u64,
+) -> Result<(), String> {
+    let workers = futures_util::stream::FuturesUnordered::new();
     for (ws, kind) in sockets {
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
         if kind == "bridge" {
@@ -438,79 +551,206 @@ async fn connect(
             *state.voice.lock().map_err(lock_error)? = Some(tx);
         }
         let handle = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let (mut writer, mut reader) = ws.split();
-            let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
-            loop {
-                if handle.state::<Desktop>().epoch.load(Ordering::SeqCst) != epoch {
-                    let _ = writer.send(Message::Close(None)).await;
-                    break;
-                }
-                tokio::select! {
-                                    message=rx.recv()=>{match message{Some(m)=>{if writer.send(m).await.is_err(){break;}},None=>break}},
-                                    _=heartbeat.tick()=>{if writer.send(Message::Text(json!({"type":"ping"}).to_string().into())).await.is_err(){break;}},
-                                    message=reader.next()=>{
-                                        match message{
-                                            Some(Ok(Message::Text(text)))=>{
-                                                if text.len()>100000{break;}
-                                if handle.state::<Desktop>().epoch.load(Ordering::SeqCst)!=epoch{break;}
-                                                let Ok(mut packet)=serde_json::from_str::<Value>(&text) else {break;};
-                                if let Some(object)=packet.as_object_mut(){object.insert("source".into(),json!(kind));}
-                                                if let Some(request_id)=packet["request_id"].as_str(){
-                                    let state=handle.state::<Desktop>();
-                                    let current=state.current_turn.lock().ok().and_then(|t|t.clone());
-                                    if current.as_deref()!=Some(request_id){continue;}
-                                    if packet["type"]=="error" || packet["type"]=="cancelled" || packet["type"]=="audio.done" || packet["type"]=="command_match" || (kind=="bridge"&&packet["type"]=="done") {if let Ok(mut t)=state.current_turn.lock(){*t=None;}}
+        workers.push(async move {
+            socket_worker(
+                ws,
+                &mut rx,
+                (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
+                || handle.state::<Desktop>().epoch.load(Ordering::SeqCst) == epoch,
+                |mut packet| {
+                    if let Some(object) = packet.as_object_mut() {
+                        object.insert("source".into(), json!(kind));
+                    }
+                    if let Some(request_id) = packet["request_id"].as_str() {
+                        let state = handle.state::<Desktop>();
+                        let current = state.current_turn.lock().ok().and_then(|t| t.clone());
+                        if current.as_deref() != Some(request_id) {
+                            return true;
+                        }
+                        if packet["type"] == "error"
+                            || packet["type"] == "cancelled"
+                            || packet["type"] == "audio.done"
+                            || packet["type"] == "command_match"
+                            || (kind == "bridge" && packet["type"] == "done")
+                        {
+                            if let Ok(mut t) = state.current_turn.lock() {
+                                *t = None;
+                            }
+                        }
+                    }
+                    match packet["type"].as_str() {
+                        Some("hello") => {
+                            if kind == "bridge" {
+                                handle.state::<perf::Perf>().mark(perf::Stage::Connected);
+                            }
+                            let _ = handle.emit("desktop-event", packet);
+                        }
+                        Some("pong") => {
+                            let _ = handle.emit("desktop-event", packet);
+                        }
+                        Some("client_tool_call") => {
+                            let mut data = packet.clone();
+                            if let Some(o) = data.as_object_mut() {
+                                o.remove("type");
+                                o.remove("protocol");
+                                o.remove("source");
+                            }
+                            if let Ok(call) = serde_json::from_value::<ToolCall>(data) {
+                                receive_call(handle.clone(), call);
+                            }
+                        }
+                        Some("revoked") => {
+                            return false;
+                        }
+                        Some("command_draft") => {
+                            if kind == "bridge" {
+                                command_runner::receive_draft(&handle, &packet);
+                            }
+                        }
+                        Some("command_match") => {
+                            // Only the authenticated voice socket may ask for a local command; the name is looked up locally.
+                            if kind == "voice" {
+                                if let Some(name) = packet["name"].as_str() {
+                                    command_runner::run_by_name(
+                                        handle.clone(),
+                                        name.to_string(),
+                                        "voice",
+                                    );
                                 }
-                                match packet["type"].as_str(){
-                                                    Some("hello")=>{
-                                                        if kind=="bridge"{handle.state::<perf::Perf>().mark(perf::Stage::Connected);}
-                                                        let _=handle.emit("desktop-event",packet);
-                                                    },
-                                                    Some("client_tool_call")=>{let mut data=packet.clone();if let Some(o)=data.as_object_mut(){o.remove("type");o.remove("protocol");o.remove("source");}
-                if let Ok(call)=serde_json::from_value::<ToolCall>(data){receive_call(handle.clone(),call);}},
-                                                    Some("revoked")=>{break;},
-                                                    Some("command_draft")=>{if kind=="bridge"{command_runner::receive_draft(&handle,&packet);}},
-                                                    Some("command_match")=>{
-                                                        // Only the authenticated voice socket may ask for a local command; the name is looked up locally.
-                                                        if kind=="voice"{if let Some(name)=packet["name"].as_str(){command_runner::run_by_name(handle.clone(),name.to_string(),"voice");}}
-                                                        let _=handle.emit("desktop-event",packet);
-                                                    },
-                                    Some("cancel")=>{
-                                        // Per-call cancel must not become global Stop (AR-3).
-                                        let state=handle.state::<Desktop>();
-                                        if let Some(call_id)=packet["call_id"].as_str(){
-                                            if let Ok(mut pending)=state.pending.lock(){
-                                                if let Some(call)=pending.remove(call_id){
-                                                    drop(pending);
-                                                    reply(&handle,&call,json!({"status":"denied","code":"cancelled"}),false);
-                                                    let _=handle.emit("host-confirm-closed",json!({"call_id":call.call_id}));
-                                                }
-                                            }
-                                        }
-                                    },
-                                                    Some("audio.chunk"|"audio.segment"|"audio.done")=>{if !reply_audio(&handle,&packet){break;}},
-                                                    Some("voice.conversion")=>{
-                                        // Stop policy: stop speaking now; the turn ends with conversion_failed.
-                                        if packet["status"]=="stopped"{handle.state::<Desktop>().generation.fetch_add(1,Ordering::SeqCst);}
-                                        let _=handle.emit("desktop-event",packet);
-                                    },
-                                                    Some("cancelled")=>{if let Ok(mut s)=handle.state::<Desktop>().segments.lock(){s.reset(None);}let _=handle.emit("desktop-event",packet);},
-                                                    _=>{let _=handle.emit("desktop-event",packet);}
-                                                }
-                                            },Some(Ok(Message::Ping(bytes)))=>{if writer.send(Message::Pong(bytes)).await.is_err(){break;}},Some(Ok(Message::Close(_)))|None|Some(Err(_))=>break,_=>{}
-                                        }
+                            }
+                            let _ = handle.emit("desktop-event", packet);
+                        }
+                        Some("cancel") => {
+                            // Per-call cancel must not become global Stop (AR-3).
+                            let state = handle.state::<Desktop>();
+                            if let Some(call_id) = packet["call_id"].as_str() {
+                                if let Ok(mut pending) = state.pending.lock() {
+                                    if let Some(call) = pending.remove(call_id) {
+                                        drop(pending);
+                                        reply(
+                                            &handle,
+                                            &call,
+                                            json!({"status":"denied","code":"cancelled"}),
+                                            false,
+                                        );
+                                        let _ = handle.emit(
+                                            "host-confirm-closed",
+                                            json!({"call_id":call.call_id}),
+                                        );
                                     }
                                 }
-            }
-            let state = handle.state::<Desktop>();
-            if state.epoch.load(Ordering::SeqCst) == epoch {
-                let _ = disconnect_inner(&state);
-                let _ = handle.emit("desktop-event", json!({"type":"disconnected"}));
-            }
+                            }
+                        }
+                        Some("audio.chunk" | "audio.segment" | "audio.done") => {
+                            if !reply_audio(&handle, &packet) {
+                                return false;
+                            }
+                        }
+                        Some("voice.conversion") => {
+                            // Stop policy: stop speaking now; the turn ends with conversion_failed.
+                            if packet["status"] == "stopped" {
+                                handle
+                                    .state::<Desktop>()
+                                    .generation
+                                    .fetch_add(1, Ordering::SeqCst);
+                            }
+                            let _ = handle.emit("desktop-event", packet);
+                        }
+                        Some("cancelled") => {
+                            if let Ok(mut s) = handle.state::<Desktop>().segments.lock() {
+                                s.reset(None);
+                            }
+                            let _ = handle.emit("desktop-event", packet);
+                        }
+                        _ => {
+                            let _ = handle.emit("desktop-event", packet);
+                        }
+                    }
+                    true
+                },
+            )
+            .await
         });
     }
+    tauri::async_runtime::spawn(async move {
+        let reason = run_socket_pair(workers).await.unwrap_or("transport");
+        let state = app.state::<Desktop>();
+        let Ok(_guard) = state.transport.lock() else {
+            return;
+        };
+        if state.epoch.load(Ordering::SeqCst) == epoch {
+            let _ = disconnect_locked(&state);
+            let _ = app.emit(
+                "desktop-event",
+                json!({"type":"disconnected", "reason":reason}),
+            );
+        }
+    });
     Ok(())
+}
+
+async fn socket_worker<S>(
+    ws: tokio_tungstenite::WebSocketStream<S>,
+    rx: &mut mpsc::UnboundedReceiver<Message>,
+    timing: (Duration, Duration),
+    is_current: impl Fn() -> bool,
+    mut on_packet: impl FnMut(Value) -> bool,
+) -> &'static str
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (mut writer, mut reader) = ws.split();
+    let mut heartbeat = tokio::time::interval(timing.0);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut pong_deadline = None;
+    let mut reason = "transport";
+    loop {
+        if !is_current() {
+            reason = "closed";
+            break;
+        }
+        if pong_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+            break;
+        }
+        tokio::select! {
+            _ = async {
+                match pong_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            } => break,
+            message = rx.recv() => match message {
+                Some(message) => if socket_send(&mut writer, message).await.is_err() { break; },
+                None => { reason = "closed"; break; },
+            },
+            _ = heartbeat.tick() => {
+                if socket_send(&mut writer, Message::Text(json!({"type":"ping"}).to_string().into())).await.is_err() {
+                    break;
+                }
+                // Only the first outstanding ping starts the response deadline.
+                pong_deadline.get_or_insert(tokio::time::Instant::now() + timing.1);
+            },
+            message = reader.next() => match message {
+                Some(Ok(Message::Text(text))) => {
+                    if !is_current() { reason = "closed"; break; }
+                    if text.len() > 100000 { break; }
+                    let Ok(packet) = serde_json::from_str::<Value>(&text) else { break; };
+                    if packet["type"] == "revoked" { reason = "auth"; break; }
+                    if packet["type"] == "pong" { pong_deadline = None; }
+                    if !on_packet(packet) { break; }
+                },
+                Some(Ok(Message::Ping(bytes))) => {
+                    if socket_send(&mut writer, Message::Pong(bytes)).await.is_err() { break; }
+                },
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {},
+            },
+        }
+    }
+    if reason == "closed" {
+        let _ = socket_send(&mut writer, Message::Close(None)).await;
+    }
+    reason
 }
 
 /// Reply audio from the voice socket. Returns false on a protocol violation (close socket).
@@ -1298,6 +1538,10 @@ fn stop_inner(state: &Desktop) -> Result<(), String> {
     Ok(())
 }
 fn disconnect_inner(state: &Desktop) -> Result<(), String> {
+    let _guard = state.transport.lock().map_err(lock_error)?;
+    disconnect_locked(state)
+}
+fn disconnect_locked(state: &Desktop) -> Result<(), String> {
     stop_inner(state)?;
     state.epoch.fetch_add(1, Ordering::SeqCst);
     *state.bridge.lock().map_err(lock_error)? = None;
@@ -1525,6 +1769,7 @@ pub fn run() {
                 generation,
                 recording: Mutex::new(None),
                 epoch: AtomicU64::new(0),
+                transport: Mutex::new(()),
                 audit_lock: Mutex::new(()),
                 shortcuts: AtomicBool::new(false),
                 screen_locked: AtomicBool::new(true),
@@ -1785,6 +2030,755 @@ fn monitor_session(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_token() -> String {
+        let mut token = ["fleet", "test", "49"].join("-");
+        token.push('+');
+        token.push('/');
+        token.push('=');
+        token
+    }
+
+    fn local_profile(address: std::net::SocketAddr) -> Profile {
+        Profile {
+            id: "transport-test".into(),
+            name: "local".into(),
+            url: format!("http://{address}"),
+            session_id: "test".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_connection_settings_return_config_errors() {
+        let mut profile = local_profile("127.0.0.1:1".parse().unwrap());
+        for (address, expected) in [
+            ("invalid", "CONFIG_ERROR: Неверный адрес сервера"),
+            ("ftp://localhost", "CONFIG_ERROR: Неверный адрес сервера"),
+            (
+                "http://example.com",
+                "CONFIG_ERROR: Удалённый сервер требует HTTPS",
+            ),
+        ] {
+            profile.url = address.into();
+            let error =
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+                    .await
+                    .unwrap_err();
+            assert_eq!(error, expected);
+        }
+        profile.url = "http://127.0.0.1:1".into();
+        let error = connect_sockets(&profile, "\n", &json!({}), Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(error, "CONFIG_ERROR: Неверный токен");
+    }
+
+    #[tokio::test]
+    async fn real_handshakes_refused_repeatedly() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let profile = local_profile(listener.local_addr().unwrap());
+        drop(listener);
+        for _ in 0..3 {
+            let error =
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(5))
+                    .await
+                    .unwrap_err();
+            assert!(error.contains("отклонено"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn real_second_handshake_refusal_closes_first_socket() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let profile = local_profile(listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            // Refuse subsequent TCP connections while the first WebSocket remains open.
+            drop(listener);
+            let mut first = tokio_tungstenite::accept_async(stream).await.unwrap();
+            assert!(first.next().await.unwrap().unwrap().is_text());
+            tokio::time::timeout(Duration::from_secs(7), first.next())
+                .await
+                .expect("failed replacement must release its first socket")
+        });
+        for _ in 0..3 {
+            assert!(
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(5))
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(matches!(server.await.unwrap(), Some(Ok(Message::Close(_)))));
+    }
+
+    #[tokio::test]
+    async fn real_handshakes_timeout_and_http503_at_either_stage() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for stage in 0..2 {
+            for timeout in [false, true] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let profile = local_profile(listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    let first = if stage == 1 {
+                        let (tcp, _) = listener.accept().await.unwrap();
+                        let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                        assert!(socket.next().await.unwrap().unwrap().is_text());
+                        Some(socket)
+                    } else {
+                        None
+                    };
+                    let (mut tcp, _) = listener.accept().await.unwrap();
+                    let mut request = [0; 4096];
+                    assert!(tcp.read(&mut request).await.unwrap() > 0);
+                    if timeout {
+                        std::future::pending::<()>().await;
+                    } else {
+                        tcp.write_all(
+                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    drop(first);
+                });
+                let error = connect_sockets(
+                    &profile,
+                    &test_token(),
+                    &json!({"type":"hello"}),
+                    Duration::from_millis(100),
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    error.contains(if timeout {
+                        "не ответил"
+                    } else {
+                        "отклонено"
+                    }),
+                    "{error}"
+                );
+                server.abort();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_replacements_preserve_established_sockets() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let profile = local_profile(listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut peers = Vec::new();
+            for _ in 0..2 {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                ws.next().await.unwrap().unwrap();
+                peers.push(tokio::spawn(async move {
+                    while let Some(Ok(message)) = ws.next().await {
+                        if message.is_text() && ws.send(message).await.is_err() {
+                            break;
+                        }
+                    }
+                }));
+            }
+            for stage in [0, 1, 0, 1] {
+                let mut first = None;
+                if stage == 1 {
+                    let (tcp, _) = listener.accept().await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                    ws.next().await.unwrap().unwrap();
+                    first = Some(ws);
+                }
+                let (mut tcp, _) = listener.accept().await.unwrap();
+                let mut request = [0; 2048];
+                assert!(tcp.read(&mut request).await.unwrap() > 0);
+                tcp.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+                drop(first);
+            }
+            peers
+        });
+        let mut existing =
+            connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+                .await
+                .unwrap();
+        for _ in 0..4 {
+            assert!(
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+                    .await
+                    .is_err()
+            );
+            for (ws, _) in &mut existing {
+                ws.send(Message::Text("still connected".into()))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(1), ws.next())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap(),
+                    Message::Text("still connected".into())
+                );
+            }
+        }
+        for peer in server.await.unwrap() {
+            peer.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_auth_statuses_are_fixed_codes_on_either_socket() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for status in [401, 403, 503] {
+            for rejected in 0..2 {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let profile = local_profile(listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    let mut accepted = Vec::new();
+                    for _ in 0..rejected {
+                        let (tcp, _) = listener.accept().await.unwrap();
+                        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                        ws.next().await.unwrap().unwrap();
+                        accepted.push(ws);
+                    }
+                    let (mut tcp, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        tcp.read_exact(&mut byte).await.unwrap();
+                        request.push(byte[0]);
+                        assert!(request.len() <= 4096);
+                    }
+                    tcp.write_all(
+                        format!("HTTP/1.1 {status} Rejected\r\nContent-Length: 0\r\n\r\n")
+                            .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                    let mut byte = [0];
+                    let _ = tokio::time::timeout(Duration::from_secs(5), tcp.read(&mut byte))
+                        .await
+                        .expect("client must close the rejected handshake");
+                    for mut socket in accepted {
+                        assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
+                    }
+                });
+                let error =
+                    connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+                        .await
+                        .unwrap_err();
+                if status == 503 {
+                    assert_ne!(error, "AUTH_REJECTED");
+                } else {
+                    assert_eq!(error, "AUTH_REJECTED", "HTTP {status}, socket {rejected}");
+                }
+                server.await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_connection_closes_both_sockets_without_installing_workers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let profile = local_profile(listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                assert!(matches!(socket.next().await, Some(Ok(Message::Text(_)))));
+                sockets.push(socket);
+            }
+            for mut socket in sockets {
+                assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
+            }
+        });
+        let transport = Arc::new(Mutex::new(()));
+        let epoch = Arc::new(AtomicU64::new(1));
+        let sockets = connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+            .await
+            .unwrap();
+        // Disconnect wins after both handshakes but before worker installation.
+        epoch.fetch_add(1, Ordering::SeqCst);
+        let lock = transport.clone();
+        // Spawning also requires the production future to be Send across cleanup awaits.
+        let cancelled = tokio::spawn(async move {
+            install_connected_sockets(&lock, &epoch, 1, sockets, |_| {
+                panic!("cancelled sockets must never install workers")
+            })
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            assert_eq!(
+                cancelled.await.unwrap().unwrap_err(),
+                "Подключение отменено"
+            );
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+        assert!(transport.try_lock().is_ok());
+    }
+
+    async fn worker_test_sockets() -> (
+        tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>,
+        tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>,
+    ) {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let (client, server) = tokio::io::duplex(4096);
+        (
+            tokio_tungstenite::WebSocketStream::from_raw_socket(client, Role::Client, None).await,
+            tokio_tungstenite::WebSocketStream::from_raw_socket(server, Role::Server, None).await,
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_expires_exactly_at_timeout_despite_traffic_and_pings() {
+        let (client, mut server) = worker_test_sockets().await;
+        let (_tx, mut rx) = mpsc::unbounded_channel();
+        let worker = tokio::spawn(async move {
+            socket_worker(
+                client,
+                &mut rx,
+                (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
+                || true,
+                |_| true,
+            )
+            .await
+        });
+        let start = tokio::time::Instant::now();
+        assert!(server.next().await.unwrap().unwrap().is_text());
+        for seconds in [30, 30, 14] {
+            tokio::time::advance(Duration::from_secs(seconds)).await;
+            server
+                .send(Message::Text(json!({"type":"traffic"}).to_string().into()))
+                .await
+                .unwrap();
+            tokio::task::yield_now().await;
+            assert!(!worker.is_finished());
+        }
+        assert_eq!(
+            tokio::time::Instant::now() - start,
+            HEARTBEAT_TIMEOUT - Duration::from_secs(1)
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(worker.await.unwrap(), "transport");
+        assert_eq!(tokio::time::Instant::now() - start, HEARTBEAT_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pong_every_thirty_seconds_keeps_worker_alive() {
+        let (client, mut server) = worker_test_sockets().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let worker = tokio::spawn(async move {
+            socket_worker(
+                client,
+                &mut rx,
+                (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
+                || true,
+                |_| true,
+            )
+            .await
+        });
+        for _ in 0..10 {
+            let ping = server.next().await.unwrap().unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&ping.into_text().unwrap()).unwrap()["type"],
+                "ping"
+            );
+            server
+                .send(Message::Text(json!({"type":"pong"}).to_string().into()))
+                .await
+                .unwrap();
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_secs(30)).await;
+            tokio::task::yield_now().await;
+            assert!(!worker.is_finished());
+        }
+        drop(tx);
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn worker_sends_close_on_channel_close_and_epoch_invalidation() {
+        for invalidate in [false, true] {
+            let (client, mut server) = worker_test_sockets().await;
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let current = Arc::new(AtomicBool::new(true));
+            let epoch = current.clone();
+            let worker = tokio::spawn(async move {
+                socket_worker(
+                    client,
+                    &mut rx,
+                    (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
+                    || epoch.load(Ordering::SeqCst),
+                    |_| true,
+                )
+                .await
+            });
+            assert!(server.next().await.unwrap().unwrap().is_text());
+            if invalidate {
+                current.store(false, Ordering::SeqCst);
+                server
+                    .send(Message::Text(json!({"type":"revoked"}).to_string().into()))
+                    .await
+                    .unwrap();
+            } else {
+                drop(tx);
+            }
+            let close = tokio::time::timeout(Duration::from_secs(1), server.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(close.is_close());
+            assert_eq!(worker.await.unwrap(), "closed");
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_from_either_worker_propagates_auth_and_cancels_peer() {
+        for revoked in 0..2 {
+            let (client0, mut server0) = worker_test_sockets().await;
+            let (client1, mut server1) = worker_test_sockets().await;
+            let (tx0, mut rx0) = mpsc::unbounded_channel();
+            let (tx1, mut rx1) = mpsc::unbounded_channel();
+            let pair = tokio::spawn(async move {
+                let timing = (Duration::from_secs(30), HEARTBEAT_TIMEOUT);
+                let current: fn() -> bool = || true;
+                let packet: fn(Value) -> bool = |_| true;
+                run_socket_pair(futures_util::stream::FuturesUnordered::from_iter([
+                    socket_worker(client0, &mut rx0, timing, current, packet),
+                    socket_worker(client1, &mut rx1, timing, current, packet),
+                ]))
+                .await
+            });
+            server0.next().await.unwrap().unwrap();
+            server1.next().await.unwrap().unwrap();
+            let server = if revoked == 0 {
+                &mut server0
+            } else {
+                &mut server1
+            };
+            server
+                .send(Message::Text(json!({"type":"revoked"}).to_string().into()))
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), pair)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                Some("auth")
+            );
+            assert!(tx0.is_closed());
+            assert!(tx1.is_closed());
+        }
+    }
+
+    #[tokio::test]
+    async fn real_websocket_close_terminates_both_workers() {
+        for closing in 0..2 {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let profile = local_profile(listener.local_addr().unwrap());
+            let (close_tx, close_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let mut sockets = Vec::new();
+                for _ in 0..2 {
+                    let (tcp, _) = listener.accept().await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                    ws.next().await.unwrap().unwrap();
+                    sockets.push(ws);
+                }
+                close_rx.await.unwrap();
+                sockets[closing].close(None).await.unwrap();
+                // Both client TCP streams must disappear, including the blocked peer.
+                for mut socket in sockets {
+                    while let Some(Ok(Message::Text(_))) = socket.next().await {}
+                }
+            });
+            let sockets =
+                connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+                    .await
+                    .unwrap();
+            let (tx0, mut rx0) = mpsc::unbounded_channel();
+            let (tx1, mut rx1) = mpsc::unbounded_channel();
+            let mut sockets = sockets.into_iter();
+            let worker = tokio::spawn(async move {
+                run_socket_pair(futures_util::stream::FuturesUnordered::from_iter([
+                    socket_worker(
+                        sockets.next().unwrap().0,
+                        &mut rx0,
+                        (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
+                        (|| true) as fn() -> bool,
+                        (|_| true) as fn(Value) -> bool,
+                    ),
+                    socket_worker(
+                        sockets.next().unwrap().0,
+                        &mut rx1,
+                        (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
+                        (|| true) as fn() -> bool,
+                        (|_| true) as fn(Value) -> bool,
+                    ),
+                ]))
+                .await;
+            });
+            close_tx.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), worker)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(tx0.is_closed());
+            assert!(tx1.is_closed());
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn orderly_pair_shutdown_closes_both_sockets() {
+        let workers = futures_util::stream::FuturesUnordered::new();
+        let mut peers = Vec::new();
+        for _ in 0..2 {
+            let (client, peer) = worker_test_sockets().await;
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            drop(tx);
+            workers.push(async move {
+                socket_worker(
+                    client,
+                    &mut rx,
+                    (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
+                    || true,
+                    |_| true,
+                )
+                .await
+            });
+            peers.push(peer);
+        }
+        assert_eq!(run_socket_pair(workers).await, Some("closed"));
+        for mut peer in peers {
+            loop {
+                if matches!(peer.next().await.unwrap().unwrap(), Message::Close(_)) {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn real_wss_close_terminates_both_workers() {
+        use tokio_rustls::rustls::{self, pki_types::PrivatePkcs8KeyDer};
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![cert.cert.der().clone()],
+                PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()).into(),
+            )
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert.cert.der().clone()).unwrap();
+        let client_config = Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+        for closed in [0, 1] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("wss://localhost:{}", listener.local_addr().unwrap().port());
+            let acceptor = acceptor.clone();
+            let server = tokio::spawn(async move {
+                let mut peers = Vec::new();
+                for _ in 0..2 {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let tls = acceptor.accept(stream).await.unwrap();
+                    peers.push(tokio_tungstenite::accept_async(tls).await.unwrap());
+                }
+                peers[closed].close(None).await.unwrap();
+                let peer = &mut peers[1 - closed];
+                while let Some(Ok(_)) = peer.next().await {}
+            });
+            let mut sockets = Vec::new();
+            for _ in 0..2 {
+                sockets.push(
+                    tokio_tungstenite::connect_async_tls_with_config(
+                        &url,
+                        None,
+                        false,
+                        Some(tokio_tungstenite::Connector::Rustls(client_config.clone())),
+                    )
+                    .await
+                    .unwrap()
+                    .0,
+                );
+            }
+            let (_tx0, mut rx0) = mpsc::unbounded_channel();
+            let (_tx1, mut rx1) = mpsc::unbounded_channel();
+            let mut sockets = sockets.into_iter();
+            let timing = (Duration::from_secs(30), HEARTBEAT_TIMEOUT);
+            let current: fn() -> bool = || true;
+            let packet: fn(Value) -> bool = |_| true;
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                run_socket_pair(futures_util::stream::FuturesUnordered::from_iter([
+                    socket_worker(sockets.next().unwrap(), &mut rx0, timing, current, packet),
+                    socket_worker(sockets.next().unwrap(), &mut rx1, timing, current, packet),
+                ])),
+            )
+            .await
+            .expect("WSS close must stop both workers");
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn real_worker_delayed_pong_and_traffic_do_not_extend_ping_deadline() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            assert!(ws.next().await.unwrap().unwrap().is_text());
+            // Delay the first pong while application messages continue to arrive.
+            for _ in 0..6 {
+                ws.send(Message::Text(json!({"type":"traffic"}).to_string().into()))
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            ws.send(Message::Text(json!({"type":"pong"}).to_string().into()))
+                .await
+                .unwrap();
+            let mut ticks = tokio::time::interval(Duration::from_millis(10));
+            loop {
+                ticks.tick().await;
+                if ws
+                    .send(Message::Text(json!({"type":"traffic"}).to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let (ws, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let (_tx, mut rx) = mpsc::unbounded_channel();
+        let mut packets = 0;
+        let start = tokio::time::Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            socket_worker(
+                ws,
+                &mut rx,
+                (Duration::from_millis(50), Duration::from_millis(200)),
+                || true,
+                |_| {
+                    packets += 1;
+                    true
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(packets > 5);
+        // Pong at 120ms clears the first deadline; the ping at 150ms starts the next.
+        assert!(start.elapsed() >= Duration::from_millis(320));
+        assert!(start.elapsed() < Duration::from_millis(600));
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn either_socket_failure_drops_the_blocked_peer() {
+        for failed in [0, 1] {
+            let workers = futures_util::stream::FuturesUnordered::new();
+            let mut receivers = Vec::new();
+            for index in 0..2 {
+                let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+                receivers.push(rx);
+                workers.push(async move {
+                    let _held = tx;
+                    if index == failed {
+                        tokio::task::yield_now().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                    "transport"
+                });
+            }
+            run_socket_pair(workers).await;
+            for rx in receivers {
+                assert!(rx.await.is_err());
+            }
+        }
+    }
+
+    struct MockWriter {
+        fail: bool,
+    }
+
+    impl futures_util::Sink<Message> for MockWriter {
+        type Error = ();
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            if self.fail {
+                std::task::Poll::Ready(Err(()))
+            } else {
+                std::task::Poll::Pending
+            }
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), ()> {
+            unreachable!()
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            unreachable!()
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_socket_write_times_out() {
+        let start = tokio::time::Instant::now();
+        assert!(
+            socket_send(&mut MockWriter { fail: false }, Message::Close(None))
+                .await
+                .is_err()
+        );
+        assert_eq!(start.elapsed(), WRITE_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_socket_write_returns_immediately() {
+        let start = tokio::time::Instant::now();
+        assert!(
+            socket_send(&mut MockWriter { fail: true }, Message::Close(None))
+                .await
+                .is_err()
+        );
+        assert_eq!(start.elapsed(), Duration::ZERO);
+    }
+
     #[test]
     fn settings_retention_prunes_immediately_after_save() {
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
