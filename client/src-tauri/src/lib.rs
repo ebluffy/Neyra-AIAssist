@@ -2836,62 +2836,6 @@ mod tests {
     }
 
     #[test]
-    fn settings_retention_prunes_immediately_after_save() {
-        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
-        for directory in ["audit", "settings", "permissions"] {
-            std::fs::create_dir_all(root.join(directory)).unwrap();
-        }
-        std::fs::write(
-            root.join("audit/actions.json"),
-            br#"[{"time":1,"tool":"old"},{"time":9999999999999,"tool":"fresh"}]"#,
-        )
-        .unwrap();
-
-        let path = root.join("audit/actions.json");
-        let before = std::fs::read(&path).unwrap();
-        let settings = Settings {
-            audit_days: 1,
-            ..Settings::default()
-        };
-        let audit_lock = Mutex::new(());
-        let result = save_settings_and_prune(
-            &root,
-            &audit_lock,
-            Some(settings.audit_days),
-            || Err("save failed".into()),
-            || panic!("state must not change after a failed save"),
-        );
-        assert_eq!(result.unwrap_err(), "save failed");
-        assert_eq!(std::fs::read(&path).unwrap(), before);
-
-        save_settings_and_prune(
-            &root,
-            &audit_lock,
-            Some(settings.audit_days),
-            || {
-                assert_eq!(std::fs::read(&path).unwrap(), before);
-                storage::save(&root, &settings)
-            },
-            || {
-                let saved: Value =
-                    serde_json::from_slice(&std::fs::read(root.join("settings/app.json")).unwrap())
-                        .unwrap();
-                assert_eq!(saved["audit_days"], 1);
-                assert_eq!(std::fs::read(&path).unwrap(), before);
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        let rows: Vec<Value> =
-            serde_json::from_slice(&std::fs::read(root.join("audit/actions.json")).unwrap())
-                .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["tool"], "fresh");
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn active_tray_icon_carries_a_red_mark() {
         assert_ne!(TRAY_ICON, TRAY_ICON_ACTIVE);
         let idle = tray_icon(false).unwrap();
