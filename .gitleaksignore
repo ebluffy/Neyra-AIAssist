@@ -1,2 +1,24 @@
 # Fingerprint of intentional fake secret in PR history (640c57e); tip no longer has it.
 640c57e171a3febad0a454dca86dcb689ccfe31b:server/tests/test_errors_and_trace.py:generic-api-key:49
+# Fake desktop fixtures in unrebased commits 0865818 and 1240ad4. Tip source is split.
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/shell.rs:generic-api-key:528
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/files.rs:generic-api-key:453
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:aws-access-token:68
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:aws-access-token:81
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:github-pat:69
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:github-pat:82
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:jwt:78
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:private-key:75
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/files.rs:generic-api-key:453
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:aws-access-token:68
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:aws-access-token:81
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:github-pat:69
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:github-pat:82
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:jwt:78
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:private-key:75
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/shell.rs:generic-api-key:528
+# Intentional mock keyring tokens in commit fdcfd7f; exact historical findings only.
+fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic-api-key:999
+fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic-api-key:1067
+# Synthetic test token in historical commit 73a7006 (storage.rs:1084); replaced by runtime-built tokens in 861f659.
+73a7006b96f283a202ff00c170a53769d04d754e:client/src-tauri/src/storage.rs:generic-api-key:1084

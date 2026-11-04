@@ -1,0 +1,196 @@
+use regex::Regex;
+use std::sync::{OnceLock, RwLock};
+
+static SECRETS: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+pub fn protect_token(token: &str) {
+    if !token.is_empty() {
+        let mut secrets = SECRETS.write().unwrap_or_else(|e| e.into_inner());
+        if !secrets.iter().any(|s| s == token) {
+            secrets.push(token.to_owned());
+            secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+        }
+    }
+}
+
+const MASK: &str = "[REDACTED]";
+
+fn patterns() -> &'static [(Regex, &'static str)] {
+    static PATTERNS: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        [
+            (
+                r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)",
+                MASK,
+            ),
+            (r"\b(AKIA|ASIA)[0-9A-Z]{16}\b", MASK),
+            (r"\bgh[pousr]_[A-Za-z0-9]{30,}\b", MASK),
+            (r"\bgithub_pat_[A-Za-z0-9_]{30,}\b", MASK),
+            (r"\bglpat-[A-Za-z0-9_\-]{20,}\b", MASK),
+            (r"\bsk-(proj-|ant-)?[A-Za-z0-9_\-]{20,}\b", MASK),
+            (r"\bxox[abprs]-[A-Za-z0-9\-]{10,}\b", MASK),
+            (r"\bAIza[0-9A-Za-z_\-]{35}\b", MASK),
+            (
+                r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b",
+                MASK,
+            ),
+            (r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=\-]+", "$1 [REDACTED]"),
+            (r"(?i)\b(Authorization:\s*basic)\s+[A-Za-z0-9._~+/=\-]+", "$1 [REDACTED]"),
+            (
+                r#"(?i)\b([A-Z0-9_]*(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)[A-Z0-9_]*)(\s*[:=]\s*)("[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&#]+)"#,
+                "$1$3[REDACTED]",
+            ),
+            (r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/\s:@]+:[^/\s@]+@", "$1[REDACTED]@"),
+        ]
+        .into_iter()
+        .filter_map(|(p, r)| Regex::new(p).ok().map(|re| (re, r)))
+        .collect()
+    })
+}
+
+/// Masks common secret shapes before local output leaves the PC.
+pub fn redact(text: &str) -> String {
+    let mut out = text.to_string();
+    for secret in SECRETS.read().unwrap_or_else(|e| e.into_inner()).iter() {
+        if let Ok(quoted) = serde_json::to_string(secret) {
+            out = out.replace(&quoted[1..quoted.len() - 1], MASK);
+        }
+        out = out.replace(secret, MASK);
+    }
+    for (re, replacement) in patterns() {
+        out = re.replace_all(&out, *replacement).into_owned();
+    }
+    out
+}
+
+/// Inspect decoded fields, including object keys, without changing user data.
+pub fn contains_token(value: &serde_json::Value) -> bool {
+    let secrets = SECRETS.read().unwrap_or_else(|e| e.into_inner());
+    fn contains(value: &serde_json::Value, secrets: &[String]) -> bool {
+        match value {
+            serde_json::Value::String(text) => secrets.iter().any(|secret| text.contains(secret)),
+            serde_json::Value::Array(items) => items.iter().any(|item| contains(item, secrets)),
+            serde_json::Value::Object(fields) => fields.iter().any(|(key, value)| {
+                secrets.iter().any(|secret| key.contains(secret)) || contains(value, secrets)
+            }),
+            _ => false,
+        }
+    }
+    contains(value, &secrets)
+}
+
+/// Bounded, redacted, valid UTF-8 text with a truncation flag.
+pub fn bounded_text(bytes: &[u8], limit: usize) -> (String, bool) {
+    let truncated = bytes.len() > limit;
+    let mut end = bytes.len().min(limit);
+    if truncated {
+        let floor = end.saturating_sub(3);
+        while end > floor && std::str::from_utf8(&bytes[..end]).is_err() {
+            end -= 1;
+        }
+    }
+    let text = String::from_utf8_lossy(&bytes[..end]);
+    (redact(&text), truncated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bearer_and_query_tokens_are_redacted() {
+        let token = ["test", "fleet", "secret", "49"].join("-");
+        let output = redact(&format!(
+            "Authorization: Bearer {token}\nhttps://example.invalid/?token={token}&page=1"
+        ));
+        assert!(!output.contains(&token));
+        assert!(output.contains("Bearer [REDACTED]"));
+        assert!(output.contains("token=[REDACTED]&page=1"));
+        assert_eq!(redact("basic mode"), "basic mode");
+        assert_eq!(
+            redact("Authorization: Bearer short"),
+            "Authorization: Bearer [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn unregistered_bearer_is_masked_in_standalone_and_json_text() {
+        let token = ["standalone", "fleet", "49"].join("-");
+        assert!(!SECRETS.read().unwrap().contains(&token));
+        for scheme in ["Bearer", "bearer", "BEARER"] {
+            assert_eq!(
+                redact(&format!("{scheme} {token}")),
+                format!("{scheme} {MASK}")
+            );
+            let json = serde_json::json!({"message": format!("{scheme} {token}")});
+            assert_eq!(
+                redact(&json.to_string()),
+                serde_json::json!({"message": format!("{scheme} {MASK}")}).to_string()
+            );
+        }
+        assert_eq!(redact(&format!("Basic {token}")), format!("Basic {token}"));
+        assert_eq!(
+            redact(&format!("Authorization: Basic {token}")),
+            format!("Authorization: Basic {MASK}")
+        );
+        assert_eq!(redact("basic mode"), "basic mode");
+    }
+
+    #[test]
+    fn masks_known_secret_shapes() {
+        let aws = format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP");
+        let gh = format!("ghp_{}", "abcdefghijklmnopqrstuvwxyz0123456789");
+        let openai = format!("sk-proj-{}", "abcdefghijklmnopqrstuvwx");
+        let bearer = format!("{}{}", "abcdefghij", "klmnopqrstu");
+        let password = format!("{}{}", "hunter2", "hunter2");
+        let quoted = ["quoted", "value"].join(" ");
+        let url_password = ["pa", "55"].concat();
+        let key_body = format!("{}{}", "b3BlbnNzaC1r", "ZXktdjEAAAAA");
+        let jwt_sig = format!("{}{}", "c2lnbmF0", "dXJlLXZhbHVl");
+        let jwt_header = format!("{}{}", "eyJ", "hbGciOiJIUzI1NiJ9");
+        let jwt_payload = format!("{}{}", "eyJ", "zdWIiOiIxMjM0NTY3ODkwIn0");
+        let jwt = format!("{jwt_header}.{jwt_payload}.{jwt_sig}");
+        let header = format!("-----BEGIN {}-----", "OPENSSH PRIVATE KEY");
+        let footer = format!("-----END {}-----", "OPENSSH PRIVATE KEY");
+        let input = format!(
+            "AWS={aws}\ngh={gh}\nopenai {openai}\nAuthorization: Bearer {bearer}\nDB_PASSWORD={password}\napi_key: \"{quoted}\"\nurl=https://user:{url_password}@example.com/x\n{header}\n{key_body}\n{footer}\njwt {jwt}"
+        );
+        let out = redact(&input);
+        for leaked in [
+            &aws,
+            &gh,
+            &openai,
+            &bearer,
+            &password,
+            &quoted,
+            &url_password,
+            &key_body,
+            &jwt_sig,
+        ] {
+            assert!(!out.contains(leaked), "leaked {leaked}: {out}");
+        }
+        assert!(out.contains("DB_PASSWORD=[REDACTED]"));
+        assert!(out.contains("https://[REDACTED]@example.com/x"));
+    }
+
+    #[test]
+    fn unterminated_private_key_is_masked_to_end() {
+        let header = format!("-----BEGIN {}-----", "RSA PRIVATE KEY");
+        let body = ["MII", "Eow"].concat();
+        let out = redact(&format!("x\n{header}\n{body}"));
+        assert!(!out.contains(&body));
+    }
+
+    #[test]
+    fn ordinary_text_is_unchanged() {
+        let text = "build ok: 12 passed, token count 40";
+        assert_eq!(redact(text), text);
+    }
+
+    #[test]
+    fn bounded_text_truncates_and_keeps_utf8() {
+        let (text, truncated) = bounded_text("привет".as_bytes(), 3);
+        assert!(truncated);
+        assert_eq!(text, "п");
+    }
+}
