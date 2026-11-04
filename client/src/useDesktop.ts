@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { bindProfileSession, ensureSessionId, firstServerSession, isUuid, nextId, profileSessionRepair, selectedProfile, sessionOrNew, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
 import { type DraftEvent, type RunEvent, describeRun } from './commands';
 import { type SheetId, themeId } from './theme';
+import { createTokenBatch } from './streaming';
 import { acceptLiveRun, conversionNotice, defaultVoice, formatError, meterLevel, settleLiveStart, unwrapApi, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
 
 export function useDesktop() {
@@ -22,7 +23,7 @@ export function useDesktop() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [partial, setPartial] = useState('');
   const [lastTrace, setLastTrace] = useState<unknown>();
-  const tokenBuffer = useRef('');
+  const [tokenBatch] = useState(() => createTokenBatch(setPartial));
   const [text, setText] = useState('');
   const [thinking, setThinking] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -110,8 +111,6 @@ export function useDesktop() {
       setActiveId(thread.id);
       setMessages(thread.messages);
     }).catch(reason => setError(formatError(reason)));
-    const timer = window.setInterval(() => setPartial(tokenBuffer.current), 60);
-    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -151,17 +150,19 @@ export function useDesktop() {
   }, [messages]);
 
   useEffect(() => {
+    let mounted = true;
     const listeners = [
       listen<ServerEvent>('desktop-event', ({ payload: event }) => {
+        if (!mounted) return;
         const gate = acceptLiveRun(liveRun.current, event);
         liveRun.current = gate.current;
         if (!gate.accept) return;
         if (event.type === 'hello') setConnected(true);
-        if (event.type === 'token') tokenBuffer.current += event.text ?? '';
+        if (event.type === 'token') tokenBatch.push(event.text ?? '');
         if (event.type === 'done') {
           setLastTrace(event.model_trace);
           setMessages(list => [...list.slice(-99), { id: nextId(), role: 'assistant', content: event.text ?? '', kind: 'text' }]);
-          tokenBuffer.current = ''; setPartial(''); setThinking(event.source === 'voice'); postNotice(event.source === 'voice' ? 'Готовлю озвучку…' : 'Ответ готов');
+          tokenBatch.reset(); setThinking(event.source === 'voice'); postNotice(event.source === 'voice' ? 'Готовлю озвучку…' : 'Ответ готов');
         }
         if (event.type === 'history') {
           if (keepLocal.current) return;
@@ -196,16 +197,16 @@ export function useDesktop() {
         if (event.type === 'live.stopped') { setLiveState('off'); setMicLevel(0); if (!muteHold.current) { setLiveOpen(false); setMuted(false); } }
         if (event.type === 'live.idle') setLiveState(state => state === 'off' ? state : 'idle');
         if (event.type === 'wake') setLiveState('armed');
-        if (event.type === 'listening') { tokenBuffer.current = ''; setPartial(''); setLiveState('listening'); }
+        if (event.type === 'listening') { tokenBatch.reset(); setLiveState('listening'); }
         if (event.type === 'mic.level') setMicLevel(meterLevel(event.db ?? -100));
         if (event.type === 'status' && event.state === 'thinking') setLiveState(state => state === 'off' ? state : 'thinking');
         if (event.type === 'status' && event.state === 'slow') postNotice('Провайдер отвечает медленно, я ещё думаю…');
         if (event.type === 'status' && event.state === 'truncated') postNotice('Ответ длинный: озвучено только начало, полный текст в чате.', true);
         if (event.type === 'voice.conversion') { const text = conversionNotice(event.status, event.code); if (text) postNotice(text, true); }
-        if (event.type === 'disconnected') { muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); setConnected(false); setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBuffer.current = ''; setPartial(''); postNotice('Соединение закрыто. Подключитесь повторно.', true); }
-        if (event.type === 'error') { setError(`Сервер: ${event.code ?? 'ошибка'}. Повторите попытку.`); setThinking(false); tokenBuffer.current = ''; setPartial(''); setLiveState(state => state === 'thinking' ? 'idle' : state); }
+        if (event.type === 'disconnected') { muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); setConnected(false); setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBatch.reset(); postNotice('Соединение закрыто. Подключитесь повторно.', true); }
+        if (event.type === 'error') { setError(`Сервер: ${event.code ?? 'ошибка'}. Повторите попытку.`); setThinking(false); tokenBatch.reset(); setLiveState(state => state === 'thinking' ? 'idle' : state); }
         if (event.type === 'cancelled') {
-          setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBuffer.current = ''; setPartial(''); postNotice('Остановлено');
+          setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBatch.reset(); postNotice('Остановлено');
           if (event.reason !== 'barge_in') { muteHold.current = false; setLiveOpen(false); setMuted(false); }
         }
       }),
@@ -221,8 +222,8 @@ export function useDesktop() {
       listen<DraftEvent>('command-draft', ({ payload }) => { setDraft(payload); setMenuOpen(false); setSheet(null); setHistoryOpen(false); }),
       listen<{ reason: string }>('command-draft-invalid', ({ payload }) => setError(`Черновик команды отклонён: ${payload.reason}`)),
     ];
-    return () => { for (const listener of listeners) void listener.then(unlisten => unlisten()); };
-  }, []);
+    return () => { mounted = false; tokenBatch.dispose(); for (const listener of listeners) void listener.then(unlisten => unlisten()); };
+  }, [tokenBatch]);
 
   useEffect(() => {
     if (!hostCall) return;
@@ -394,7 +395,7 @@ export function useDesktop() {
     setThreads([fresh, ...saved].slice(0, 30));
     setActiveId(fresh.id);
     setMessages([]);
-    setPartial(''); tokenBuffer.current = ''; setHistoryOpen(false); setMenuOpen(false);
+    tokenBatch.reset(); setHistoryOpen(false); setMenuOpen(false);
   });
   const openThread = (id: string) => run(async () => {
     if (!blockSwitch()) return;
@@ -410,7 +411,7 @@ export function useDesktop() {
     setActiveId(switched.activeId);
     if (hadMessages) setMessages(switched.messages);
     else if (historyStamp.current === beforeHistory) setMessages([]);
-    setPartial(''); tokenBuffer.current = ''; setHistoryOpen(false);
+    tokenBatch.reset(); setHistoryOpen(false);
   });
   const addProfile = (created: Profile) => {
     const disk = savedSettings.current;
