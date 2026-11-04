@@ -34,13 +34,22 @@ def test_safe_target_drops_userinfo_and_query():
     assert _safe_target("/v1/responses") == "/v1/responses"
 
 
-def test_failed_and_cancelled_turns_are_stored_outside_dialogue(tmp_path):
+def test_failed_and_cancelled_turns_are_stored_outside_dialogue(tmp_path, monkeypatch):
+    external_id = "112233445566778899"
+    original_report = TurnTrace.report
+
+    def report_with_fractional_duration(trace, status=None):
+        report = original_report(trace, status)
+        report["duration_ms"] = 3.123
+        return report
+
+    monkeypatch.setattr(TurnTrace, "report", report_with_fractional_duration)
     agent = offline_agent(tmp_path)
     agent.llm_brain.failures = 1
     try:
-        owner = agent._resolve_internal_user_id("123", None)
-        assert owner != "123"
-        failed = asyncio.run(agent.chat("PRIVATE-USER-TEXT", discord_user_id="123", channel_id="77"))
+        owner = agent._resolve_internal_user_id(external_id, None)
+        assert owner != external_id
+        failed = asyncio.run(agent.chat("PRIVATE-USER-TEXT", discord_user_id=external_id, channel_id="77"))
         assert failed["model_trace"]["status"] == "failed"
         assert failed["model_trace"]["error_class"] == "RuntimeError"
         assert failed["model_trace"]["calls"][-1]["error_class"] == "RuntimeError"
@@ -49,7 +58,8 @@ def test_failed_and_cancelled_turns_are_stored_outside_dialogue(tmp_path):
         assert len(stored) == 1 and stored[0]["role"] == "model_trace" and stored[0]["text"] == ""
         assert stored[0]["user_id"] == owner
         blob = stored[0]["meta"]
-        assert "PRIVATE-USER-TEXT" not in blob and "123" not in blob
+        assert "PRIVATE-USER-TEXT" not in blob and external_id not in blob
+        assert json.loads(blob)["model_trace"]["duration_ms"] == 3.123
         assert json.loads(blob)["model_trace"]["turn_id"] == failed["model_trace"]["turn_id"]
         manager = sessions_for(agent)
         manager.gates[conversation_scope(owner, "77").key] = Future()
@@ -63,7 +73,7 @@ def test_failed_and_cancelled_turns_are_stored_outside_dialogue(tmp_path):
         manager.enter = enter
 
         async def cancel():
-            task = asyncio.create_task(agent.chat("PRIVATE-CANCEL-TEXT", discord_user_id="123", channel_id="77"))
+            task = asyncio.create_task(agent.chat("PRIVATE-CANCEL-TEXT", discord_user_id=external_id, channel_id="77"))
             await asyncio.wait_for(entered.wait(), 2)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -78,7 +88,7 @@ def test_failed_and_cancelled_turns_are_stored_outside_dialogue(tmp_path):
         assert cancelled["error_class"] == "CancelledError"
         assert cancelled["queue_wait_ms"] >= 0
         assert cancelled_row["user_id"] == owner
-        assert "123" not in (cancelled_row["user_id"] or "")
+        assert external_id not in (cancelled_row["user_id"] or "")
         assert "PRIVATE-CANCEL-TEXT" not in cancelled_row["meta"]
         assert agent.memory_hub.list_chat(limit=10) == []
     finally:
