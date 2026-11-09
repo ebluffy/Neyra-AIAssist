@@ -299,3 +299,51 @@ describe('unavailable server', () => {
     expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(attempts);
   });
 });
+
+describe('connection check via health', () => {
+  const healthEnvelope = (apiVersion: unknown) => ({ ok: true, trace_id: 't', data: { status: 'ok', ...(apiVersion === undefined ? {} : { api_version: apiVersion }) } });
+  const stubApi = (health: () => unknown) => {
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation(async (command: string, args?: { path?: string }) => {
+      if (command === 'api' && args?.path === '/v1/health') return health();
+      if (command === 'api' && args?.path === '/openapi.json') throw new Error('HTTP 404');
+      return base(command, args);
+    });
+  };
+  const openapiCalls = () => ipc.invoke.mock.calls.filter(([, args]) => (args as { path?: string })?.path === '/openapi.json');
+
+  it('succeeds when health is available and OpenAPI is closed', async () => {
+    stubApi(() => healthEnvelope('1.1.0'));
+    await mount();
+    await act(async () => { await app.check(); });
+    expect(app.error).toBe('');
+    expect(app.notice).toContain('Сервер доступен · API 1.1.0');
+    expect(app.status).toMatchObject({ api_version: '1.1.0' });
+    expect(openapiCalls()).toHaveLength(0);
+  });
+
+  it('fails the check when the health endpoint is unavailable', async () => {
+    stubApi(() => { throw 'connection refused'; });
+    await mount();
+    await act(async () => { await app.check(); });
+    expect(app.error).toContain('connection refused');
+    expect(app.status).toBeUndefined();
+    expect(app.notice).toBe('');
+  });
+
+  it('surfaces an auth failure from health without connecting', async () => {
+    stubApi(() => { throw 'HTTP 401'; });
+    await mount();
+    await act(async () => { await app.check(); });
+    expect(app.error).toContain('HTTP 401');
+    expect(app.status).toBeUndefined();
+  });
+
+  it.each([['newer', '2.0.0'], ['missing', undefined]])('rejects an incompatible health version: %s', async (_kind, apiVersion) => {
+    stubApi(() => healthEnvelope(apiVersion));
+    await mount();
+    await act(async () => { await app.check(); });
+    expect(app.error).toBe('Несовместимая версия API. Требуется 1.x.');
+    expect(app.status).toBeUndefined();
+  });
+});

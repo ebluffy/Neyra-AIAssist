@@ -338,9 +338,10 @@ export function useDesktop() {
     if (!settings || !profile || !validServerUrl(profile.url)) throw 'Укажите HTTPS-адрес или HTTP localhost.';
     await save(settingsForServer(settings));
     if (token) { await invoke('store_token', { profileId, token }); setToken(''); }
-    const [health, schema] = await Promise.all([request<unknown>('/v1/health'), invoke<{ info: { version: string } }>('api', { profileId, path: '/openapi.json', method: 'GET' })]);
-    if (!schema.info.version.startsWith('1.')) throw 'Несовместимая версия API. Требуется 1.x.';
-    setStatus(health); postNotice(`Сервер доступен · API ${schema.info.version}`);
+    const health = await request<{ api_version?: unknown }>('/v1/health');
+    const version = typeof health?.api_version === 'string' ? health.api_version : '';
+    if (!version.startsWith('1.')) throw 'Несовместимая версия API. Требуется 1.x.';
+    setStatus(health); postNotice(`Сервер доступен · API ${version}`);
   });
   const connect = () => run(async () => {
     if (!settings || !profile || !validServerUrl(profile.url)) throw 'Сначала настройте сервер.';
