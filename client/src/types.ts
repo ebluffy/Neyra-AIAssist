@@ -20,7 +20,10 @@ export const toolTitles: Record<string, string> = {
 export function absolutePath(value: string): boolean { return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value); }
 export interface AuditRow { time: number; tool: string; status: string; confirmed: boolean }
 export interface Plugin { id: string; name?: string; enabled: boolean; lifecycle?: string }
+export interface LogTailData { source: string; path: string; exists: boolean; text: string }
+export interface LogSource { id: string; label: string; maintOnly?: boolean }
 export interface WakeStatus { ready: boolean; dir: string; message?: string; model?: string; license?: string }
+
 export interface VoiceStatus { wake: WakeStatus; live: boolean; dropped_frames: number }
 export interface ServerEvent { type: string; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number; run?: number }
 /** Server routes wrap the payload as `{ok, trace_id, data}`. Rust returns that JSON unchanged. */
@@ -49,8 +52,24 @@ export function formatError(error: unknown): string {
     return `Экспорт отменён: сохранённый токен найден в ${location}. Удалите токен из команды или настроек и повторите экспорт.`;
   }
   if (error === 'invalid_token') return 'Неверный токен.';
-  return typeof error === 'string' ? error : 'Действие не выполнено. Повторите попытку.';
+  if (typeof error === 'string') {
+    if (error === 'Сервер вернул HTTP 400' || error === 'HTTP 400') {
+      return 'Неизвестный источник логов или неверный запрос (HTTP 400).';
+    }
+    if (error === 'Сервер вернул HTTP 401' || error === 'HTTP 401') {
+      return 'Ошибка авторизации (HTTP 401): неверный токен или сессия отозвана.';
+    }
+    if (error === 'Сервер вернул HTTP 403' || error === 'HTTP 403') {
+      return 'Доступ запрещён (HTTP 403): просмотр логов chat/audit требует прав maint+.';
+    }
+    if (error === 'Сервер вернул HTTP 404' || error === 'HTTP 404') {
+      return 'Источник логов не найден (HTTP 404).';
+    }
+    return error;
+  }
+  return 'Действие не выполнено. Повторите попытку.';
 }
+
 export function validServerUrl(value: string): boolean { try { const u = new URL(value); return (u.protocol === 'https:' || (u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname))) && !u.username && !u.password && !u.search && !u.hash; } catch { return false; } }
 /** Mic level in dBFS to a 0..1 meter value: -60 dB is silence, -10 dB is loud. */
 export function meterLevel(db: number): number { return Math.min(1, Math.max(0, (db + 60) / 50)); }

@@ -162,9 +162,17 @@ fn server_url(profile: &Profile, path: &str) -> Result<url::Url, String> {
     if u.scheme() == "http" && !matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) {
         return Err("Удалённый сервер требует HTTPS".into());
     }
-    u.set_path(&format!("{}{}", u.path().trim_end_matches('/'), path));
+    let (clean_path, query) = match path.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (path, None),
+    };
+    u.set_path(&format!("{}{}", u.path().trim_end_matches('/'), clean_path));
+    if let Some(q) = query {
+        u.set_query(Some(q));
+    }
     Ok(u)
 }
+
 fn manifest(state: &Desktop, p: &Profile) -> Result<Value, String> {
     let s = state.settings.lock().map_err(lock_error)?;
     let platform = if cfg!(windows) {
@@ -355,16 +363,18 @@ async fn api(
     path: String,
     method: String,
 ) -> Result<Value, String> {
+    let route_path = path.split_once('?').map(|(p, _)| p).unwrap_or(&path);
     let allowed = matches!(
-        (method.as_str(), path.as_str()),
+        (method.as_str(), route_path),
         (
             "GET",
-            "/v1/health" | "/v1/status" | "/v1/plugins" | "/openapi.json"
+            "/v1/health" | "/v1/status" | "/v1/plugins" | "/openapi.json" | "/v1/logs"
         ) | ("POST", "/v1/system/restart")
     );
     if !allowed {
         return Err("API-действие недоступно".into());
     }
+
     let p = profile(&state, &profile_id)?;
     let url = server_url(&p, &path)?;
     let token = storage::load_token(&storage::secret(&profile_id)?)?;
@@ -2864,6 +2874,12 @@ mod tests {
             server_url(&p, "/v1/health").unwrap().as_str(),
             "https://example.com/api/v1/health"
         );
+        assert_eq!(
+            server_url(&p, "/v1/logs?source=system&tail=200")
+                .unwrap()
+                .as_str(),
+            "https://example.com/api/v1/logs?source=system&tail=200"
+        );
         for bad in [
             "http://example.com",
             "https://name:secret@example.com",
@@ -2872,6 +2888,38 @@ mod tests {
         ] {
             p.url = bad.into();
             assert!(server_url(&p, "/v1/health").is_err());
+        }
+    }
+    #[test]
+    fn server_url_rejects_invalid_inputs_and_handles_queries_safely() {
+        let mut p = Profile {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Test".into(),
+            url: "https://example.com/api".into(),
+            session_id: uuid::Uuid::new_v4().to_string(),
+        };
+        let u = server_url(&p, "/v1/logs?source=plugin%3Atelegram&tail=500").unwrap();
+        assert_eq!(
+            u.as_str(),
+            "https://example.com/api/v1/logs?source=plugin%3Atelegram&tail=500"
+        );
+        assert_eq!(u.query(), Some("source=plugin%3Atelegram&tail=500"));
+
+        for bad in [
+            "",
+            "not a url",
+            "ftp://example.com",
+            "http://remote.example.com",
+            "https://user:pass@example.com",
+            "https://example.com#section",
+            "https://example.com?query=value",
+            "javascript:alert(1)",
+        ] {
+            p.url = bad.into();
+            assert!(
+                server_url(&p, "/v1/logs?source=system").is_err(),
+                "Expected error for {bad}"
+            );
         }
     }
 }
