@@ -274,6 +274,57 @@ def test_audio_ack_must_be_a_segment_number(seq):
             ws.receive_json()
 
 
+def test_live_voice_ack_out_of_range_and_window_backpressure(monkeypatch):
+    stub_voice(monkeypatch)
+    captured = {}
+    orig_speech_init = LiveSpeech.__init__
+
+    def spy_speech_init(self, voice, send, playback, acked, *args, **kwargs):
+        kwargs.setdefault('window', 1)
+        kwargs.setdefault('ack_timeout', 0.3)
+        captured['speech'] = self
+        captured['playback'] = playback
+        return orig_speech_init(self, voice, send, playback, acked, *args, **kwargs)
+
+    monkeypatch.setattr(LiveSpeech, '__init__', spy_speech_init)
+
+    sentences = [
+        'Это первое длинное предложение для озвучки. ',
+        'Это второе длинное предложение для озвучки. ',
+        'Это третье длинное предложение для озвучки. ',
+        'Это четвёртое длинное предложение для озвучки. ',
+    ]
+    client, _ = make_client(TokenAgent(sentences))
+    rid = str(uuid4())
+    other_rid = str(uuid4())
+
+    with client, client.websocket_connect('/v1/desktop/voice', headers=AUTH) as ws:
+        connect_live(ws)
+        say(ws, rid)
+        packets = []
+        while True:
+            packet = ws.receive_json()
+            packets.append(packet)
+            if packet['type'] == 'audio.segment':
+                # Foreign request_id: valid seq=0 must be ignored and not update playback['acked']
+                ws.send_json({'type': 'audio.ack', 'request_id': other_rid, 'seq': packet['seq']})
+                # Out-of-range seq=10**6 for current request: must not shift playback['acked'] or bypass window
+                ws.send_json({'type': 'audio.ack', 'request_id': rid, 'seq': 10**6})
+            if packet['type'] in ('audio.done', 'error'):
+                break
+
+    playback = captured['playback']
+    segments = [p['seq'] for p in packets if p['type'] == 'audio.segment']
+
+    # Server must not advance beyond window without a valid ack
+    assert segments == [0], f"Expected only segment 0 before stall, got segments {segments}"
+    assert packets[-1] == {'type': 'error', 'code': 'playback_stalled', 'request_id': rid}
+
+    # playback['acked'] must never exceed last sent seq (0) and must not be shifted by foreign/out-of-range acks
+    assert playback['acked'] == -1, f"playback['acked'] was corrupted to {playback['acked']}"
+    assert playback['acked'] <= segments[-1]
+
+
 def test_command_speak_stopped_conversion_is_an_error(monkeypatch):
     async def speak(self, text):
         return Speech(b'', 'stopped:timeout')

@@ -230,7 +230,7 @@ def router_for(agent, config, authenticate):
         listening = None
         audio = bytearray()
         send_lock = asyncio.Lock()
-        playback = dict(acked=-1)
+        playback = dict(acked=-1, sent=-1)
         acked = asyncio.Event()
 
         async def send(packet):
@@ -260,6 +260,8 @@ def router_for(agent, config, authenticate):
                     # Late-chunk guard: a replaced or cancelled turn never reaches the client.
                     if current_request != request_id:
                         return
+                    if packet.get('type') == 'audio.segment' and isinstance(packet.get('seq'), int):
+                        playback['sent'] = max(playback.get('sent', -1), packet['seq'])
                     await send({**packet, "request_id": request_id})
 
                 speech = LiveSpeech(voice_service, turn_send, playback, acked) if live else None
@@ -388,6 +390,7 @@ def router_for(agent, config, authenticate):
                     listening = None
                     current_request = request_id
                     playback['acked'] = -1
+                    playback['sent'] = -1
                     work = asyncio.create_task(process(pcm, current_request, live))
                 elif kind == 'listen.begin':
                     request_id = _request_id(message.get('request_id'))
@@ -409,7 +412,11 @@ def router_for(agent, config, authenticate):
                     seq = message.get('seq')
                     if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
                         raise ValueError('bad_packet')
-                    if _request_id(message.get('request_id')) == current_request and seq > playback['acked']:
+                    if (
+                        current_request is not None
+                        and _request_id(message.get('request_id')) == current_request
+                        and playback['acked'] < seq <= playback.get('sent', -1)
+                    ):
                         playback['acked'] = seq
                         acked.set()
                 elif kind == 'stop':
