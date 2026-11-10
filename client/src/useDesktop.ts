@@ -56,6 +56,8 @@ export function useDesktop() {
   const hydrated = useRef(false);
   const chatsReady = useRef(false);
   const muteHold = useRef(false);
+  // The UI owns this ID before IPC starts; Rust uses it unchanged on the bridge.
+  const chatTurn = useRef<{ id: string; ipcPending: boolean; terminal: boolean } | null>(null);
   const liveRun = useRef(0);
   const liveEpoch = useRef(0);
   const keepLocal = useRef(false);
@@ -189,12 +191,22 @@ export function useDesktop() {
         const gate = acceptLiveRun(liveRun.current, event);
         liveRun.current = gate.current;
         if (!gate.accept) return;
+        if (event.source === 'bridge' && event.request_id) {
+          const turn = chatTurn.current;
+          if (!turn || turn.id !== event.request_id || turn.terminal) return;
+        }
+        const affectsText = !chatTurn.current || event.source === 'bridge' || event.scope === 'all';
         if (event.type === 'hello') setConnected(true);
         if (event.type === 'token') tokenBatch.push(event.text ?? '');
         if (event.type === 'done') {
+          if (affectsText && event.source !== 'voice' && chatTurn.current) {
+            chatTurn.current.terminal = true;
+            if (!chatTurn.current.ipcPending) chatTurn.current = null;
+          }
           setLastTrace(event.model_trace);
           setMessages(list => [...list.slice(-99), { id: nextId(), role: 'assistant', content: event.text ?? '', kind: 'text' }]);
-          tokenBatch.reset(); setThinking(event.source === 'voice'); postNotice(event.source === 'voice' ? 'Готовлю озвучку…' : 'Ответ готов');
+          if (affectsText) { tokenBatch.reset(); setThinking(event.source === 'voice'); }
+          postNotice(event.source === 'voice' ? 'Готовлю озвучку…' : 'Ответ готов');
         }
         if (event.type === 'history') {
           if (keepLocal.current) return;
@@ -236,13 +248,15 @@ export function useDesktop() {
         if (event.type === 'status' && event.state === 'truncated') postNotice('Ответ длинный: озвучено только начало, полный текст в чате.', true);
         if (event.type === 'voice.conversion') { const text = conversionNotice(event.status, event.code); if (text) postNotice(text, true); }
         if (event.type === 'disconnected') {
+          chatTurn.current = null;
           muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); setRetry(1); setConnected(false); setBusy(false); setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBatch.reset();
           if (event.reason === 'auth') { setConnectionWanted(''); setNotice(''); setError(authError); }
           else postNotice('Нет связи. Ответ мог не дойти. Проверьте историю перед повторной отправкой.', true);
         }
-        if (event.type === 'error') { setError(`Сервер: ${event.code ?? 'ошибка'}. Повторите попытку.`); setThinking(false); tokenBatch.reset(); setLiveState(state => state === 'thinking' ? 'idle' : state); }
+        if (event.type === 'error') { setError(`Сервер: ${event.code ?? 'ошибка'}. Повторите попытку.`); if (affectsText) { chatTurn.current = null; setThinking(false); tokenBatch.reset(); } setLiveState(state => state === 'thinking' ? 'idle' : state); }
         if (event.type === 'cancelled') {
-          setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBatch.reset(); postNotice('Остановлено');
+          if (affectsText) { chatTurn.current = null; setThinking(false); tokenBatch.reset(); }
+          setRecording(false); setActive(false); setHostCall(undefined); postNotice('Остановлено');
           if (event.reason !== 'barge_in') { muteHold.current = false; setLiveOpen(false); setMuted(false); }
         }
       }),
@@ -258,7 +272,7 @@ export function useDesktop() {
       listen<DraftEvent>('command-draft', ({ payload }) => { setDraft(payload); setMenuOpen(false); setSheet(null); setHistoryOpen(false); }),
       listen<{ reason: string }>('command-draft-invalid', ({ payload }) => setError(`Черновик команды отклонён: ${payload.reason}`)),
     ];
-    return () => { mounted = false; tokenBatch.dispose(); for (const listener of listeners) void listener.then(unlisten => unlisten()); };
+    return () => { mounted = false; chatTurn.current = null; tokenBatch.dispose(); for (const listener of listeners) void listener.then(unlisten => unlisten()); };
   }, [tokenBatch]);
 
   useEffect(() => {
@@ -294,7 +308,7 @@ export function useDesktop() {
   const patchProfile = (patch: Partial<Profile>) => { if (settings && profile) setSettings({ ...settings, profiles: settings.profiles.map(item => item.id === profileId ? { ...item, ...patch } : item) }); };
   const request = async <T,>(path: string, method = 'GET') => unwrapApi<T>(await invoke<unknown>('api', { profileId, path, method }));
   const rememberLive = (runId: unknown) => { if (typeof runId === 'number') liveRun.current = runId; };
-  const stop = () => run(async () => { liveEpoch.current += 1; await invoke('stop'); setHostCall(undefined); setActive(false); setThinking(false); setRecording(false); muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); });
+  const stop = () => run(async () => { chatTurn.current = null; tokenBatch.reset(); setThinking(false); liveEpoch.current += 1; await invoke('stop'); setHostCall(undefined); setActive(false); setThinking(false); setRecording(false); muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); });
   const saveVoice = (patch: Partial<VoiceSettings>) => run(async () => {
     const disk = savedSettings.current;
     if (!settings || !disk) return;
@@ -326,7 +340,7 @@ export function useDesktop() {
     }
     else { muteHold.current = true; await invoke('live_stop'); setMuted(true); setMicLevel(0); postNotice('Микрофон на паузе'); }
   });
-  const endLive = () => run(async () => { liveEpoch.current += 1; muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
+  const endLive = () => run(async () => { chatTurn.current = null; tokenBatch.reset(); setThinking(false); liveEpoch.current += 1; muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
   const settingsForServer = (current: Settings): Settings => {
     if (!profile) return current;
     const active = threads.find(item => item.id === activeId);
@@ -353,20 +367,51 @@ export function useDesktop() {
     setRetry(0); setConnectionWanted(profile.id);
     if (!preserve) setMessages([]);
   });
-  const disconnect = () => run(async () => { setConnectionWanted(''); keepLocal.current = false; await invoke('disconnect'); setConnected(false); setThinking(false); setDevices([]); setTarget(''); });
-  const sendContent = (value: string) => run(async () => {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    let result: { handled: boolean; command?: string };
-    try { result = await invoke<typeof result>('chat', { text: trimmed, targetDeviceId: target || null }); }
-    catch (reason) { setThinking(false); throw `Сообщение не отправлено; текст сохранён. Повторите отправку после подключения. ${formatError(reason)}`; }
-    setMessages(list => {
-      const next = [...list.slice(-99), { id: nextId(), role: 'user' as const, content: trimmed, kind: 'text' as const }];
-      return result?.handled ? [...next, { id: nextId(), role: 'assistant', content: `Команда «${result.command}» запущена на этом ПК.`, kind: 'text' }] : next;
+  const disconnect = () => run(async () => { chatTurn.current = null; tokenBatch.reset(); setThinking(false); setConnectionWanted(''); keepLocal.current = false; await invoke('disconnect'); setConnected(false); setThinking(false); setDevices([]); setTarget(''); });
+  const sendContent = (value: string) => {
+    // A ref also guards two submissions in the same render and pending quick commands.
+    if (chatTurn.current || !value.trim()) return Promise.resolve();
+    return run(async () => {
+      const trimmed = value.trim();
+      const turn = { id: crypto.randomUUID(), ipcPending: true, terminal: false };
+      const userId = nextId();
+      chatTurn.current = turn;
+      // Once a local turn starts, late unversioned history snapshots cannot replace it.
+      keepLocal.current = true;
+      setMessages(list => [...list, { id: userId, role: 'user', content: trimmed, kind: 'text' }]);
+      tokenBatch.reset(); setThinking(true);
+      let result: { handled: boolean; command?: string };
+      try {
+        const dispatchEpoch = await invoke<number>('chat_epoch');
+        if (chatTurn.current !== turn) return;
+        result = await invoke<typeof result>('chat', { text: trimmed, targetDeviceId: target || null, requestId: turn.id, dispatchEpoch });
+      }
+      catch (reason) {
+        // Stop/disconnect or a terminal event owns the result once it has arrived.
+        if (chatTurn.current !== turn) return;
+        if (turn.terminal) {
+          chatTurn.current = null;
+          setText(current => current === value ? '' : current);
+          return;
+        }
+        chatTurn.current = null;
+        setMessages(list => list.filter(item => item.id !== userId));
+        setText(current => current || value);
+        tokenBatch.reset(); setThinking(false);
+        throw `Сообщение не отправлено; текст сохранён. Повторите отправку после подключения. ${formatError(reason)}`;
+      }
+      if (chatTurn.current !== turn) return;
+      turn.ipcPending = false;
+      if (result?.handled) {
+        chatTurn.current = null;
+        setMessages(list => [...list.slice(-99), { id: nextId(), role: 'assistant', content: `Команда «${result.command}» запущена на этом ПК.`, kind: 'text' }]);
+        setThinking(false);
+      } else if (turn.terminal) chatTurn.current = null;
+      else setMessages(list => list.slice(-100));
+      // IPC acknowledgement must never restart thinking after an early WSS terminal.
+      setText(current => current === value ? '' : current);
     });
-    if (!result?.handled) setThinking(true);
-    setText('');
-  });
+  };
   const decideDraft = (accepted: boolean, item: DraftEvent) => run(async () => { setDraft(undefined); if (accepted) { await invoke('draft_confirm', { draftId: item.draft_id }); postNotice('Команда сохранена на этом ПК', true); } else await invoke('draft_reject', { draftId: item.draft_id }); });
   const beginRecording = () => run(async () => { await invoke('record_start'); setRecording(true); });
   const finishRecording = () => run(async () => { await invoke('record_stop'); setRecording(false); setThinking(true); postNotice('Распознаю речь…'); });

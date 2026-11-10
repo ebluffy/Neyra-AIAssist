@@ -36,6 +36,7 @@ beforeEach(() => {
   ipc.listeners.clear();
   ipc.invoke.mockReset().mockImplementation(async (command: string, args?: { settings?: unknown }) => {
       if (command === 'load_settings') return { settings, data_root: '', global_shortcuts: false, pc_access_available: false };
+    if (command === 'chat_epoch') return 0;
     if (command === 'save_settings') return args?.settings;
     if (command === 'list_chats') return [];
     if (command === 'pc_capabilities') return { available: false };
@@ -346,4 +347,250 @@ describe('connection check via health', () => {
     expect(app.error).toBe('Несовместимая версия API. Требуется 1.x.');
     expect(app.status).toBeUndefined();
   });
+});
+
+describe('chat IPC and WSS ordering', () => {
+  function deferChat() {
+    const base = ipc.invoke.getMockImplementation()!;
+    let resolve!: (result: { handled: boolean; command?: string }) => void;
+    let reject!: (reason: unknown) => void;
+    const pending = new Promise<{ handled: boolean; command?: string }>((yes, no) => { resolve = yes; reject = no; });
+    ipc.invoke.mockImplementation((command, args) => command === 'chat' ? pending : base(command, args));
+    return { resolve, reject, restore: () => ipc.invoke.mockImplementation(base) };
+  }
+  function requestId() {
+    return ipc.invoke.mock.calls.filter(([command]) => command === 'chat').at(-1)?.[1]?.requestId ?? 'rust-generated-id';
+  }
+  async function emit(payload: Record<string, unknown>) {
+    await act(async () => { ipc.listeners.get('desktop-event')!({ payload }); });
+  }
+  async function send(value = 'hello') {
+    let sending!: Promise<void>;
+    await act(async () => { app.setText(value); });
+    await act(async () => { sending = app.sendContent(value); });
+    return { finish: () => sending };
+  }
+
+  it('keeps user before assistant when done arrives before IPC resolves', async () => {
+    await mount();
+    const ipcChat = deferChat();
+    const sending = await send();
+    await emit({ type: 'done', source: 'bridge', request_id: requestId(), text: 'answer' });
+    await act(async () => { ipcChat.resolve({ handled: false }); await sending.finish(); });
+    expect(app.messages.map(message => [message.role, message.content])).toEqual([['user', 'hello'], ['assistant', 'answer']]);
+    expect(app.thinking).toBe(false);
+    expect(app.text).toBe('');
+  });
+
+  it('does not re-enable thinking after an early done, and accepts the next turn', async () => {
+    await mount();
+    const ipcChat = deferChat();
+    const sending = await send();
+    await emit({ type: 'done', source: 'bridge', request_id: requestId(), text: 'answer' });
+    await act(async () => { ipcChat.resolve({ handled: false }); await sending.finish(); });
+    expect(app.thinking).toBe(false);
+    ipcChat.restore();
+    await act(async () => { await app.sendContent('next'); });
+    expect(app.thinking).toBe(true);
+    await emit({ type: 'done', source: 'bridge', request_id: requestId(), text: 'next answer' });
+    expect(app.messages.map(message => message.content)).toEqual(['hello', 'answer', 'next', 'next answer']);
+    expect(app.thinking).toBe(false);
+  });
+
+  it('rolls back only the rejected user and retries the preserved draft without duplicates', async () => {
+    await mount();
+    const ipcChat = deferChat();
+    const sending = await send();
+    await act(async () => { ipcChat.reject('offline'); await sending.finish(); });
+    expect(app.text).toBe('hello');
+    expect(app.messages).toEqual([]);
+    expect(app.thinking).toBe(false);
+    expect(app.error).toContain('Сообщение не отправлено');
+    ipcChat.restore();
+    await act(async () => { await app.sendContent(app.text); });
+    expect(app.messages.map(message => message.content)).toEqual(['hello']);
+  });
+
+  it.each(['stop', 'disconnect', 'cancelled', 'disconnected', 'error'])('does not resurrect an interrupted turn after %s', async interruption => {
+    await mount();
+    const ipcChat = deferChat();
+    const sending = await send();
+    const oldId = requestId();
+    if (interruption === 'stop' || interruption === 'disconnect') await act(async () => { await app[interruption](); });
+    else await emit({ type: interruption, source: 'bridge', request_id: interruption === 'disconnected' ? undefined : oldId });
+    await act(async () => { app.setText('new draft'); ipcChat.resolve({ handled: false }); await sending.finish(); });
+    await emit({ type: 'token', source: 'bridge', request_id: oldId, text: 'late token' });
+    await emit({ type: 'done', source: 'bridge', request_id: oldId, text: 'late answer' });
+    await tick(100);
+    expect(app.thinking).toBe(false);
+    expect(app.partial).toBe('');
+    expect(app.text).toBe('new draft');
+    expect(app.messages.map(message => message.content)).toEqual(['hello']);
+  });
+
+  it('ignores stale and duplicate IDs without disturbing the next request', async () => {
+    await mount();
+    await act(async () => { await app.sendContent('first'); });
+    const oldId = requestId();
+    await emit({ type: 'done', source: 'bridge', request_id: oldId, text: 'first answer' });
+    await act(async () => { await app.sendContent('second'); });
+    const newId = requestId();
+    expect(newId).not.toBe(oldId);
+    for (const type of ['token', 'done', 'error', 'cancelled']) await emit({ type, source: 'bridge', request_id: oldId, text: 'stale' });
+    expect(app.thinking).toBe(true);
+    await emit({ type: 'done', source: 'bridge', request_id: newId, text: 'second answer' });
+    await emit({ type: 'done', source: 'bridge', request_id: newId, text: 'duplicate' });
+    expect(app.messages.map(message => message.content)).toEqual(['first', 'first answer', 'second', 'second answer']);
+    expect(app.thinking).toBe(false);
+  });
+
+  it('settles handled local commands with early runner events and no WSS reply', async () => {
+    await mount();
+    const ipcChat = deferChat();
+    const sending = await send('local command');
+    await act(async () => { ipc.listeners.get('command-run')!({ payload: { state: 'finished', name: 'local' } }); });
+    await act(async () => { ipcChat.resolve({ handled: true, command: 'local' }); await sending.finish(); });
+    expect(app.messages.map(message => message.role)).toEqual(['user', 'assistant']);
+    expect(app.messages[1].content).toContain('«local»');
+    expect(app.thinking).toBe(false);
+    expect(app.busy).toBe(false);
+  });
+
+  it.each(['success', 'failure'])('does not overwrite an edited draft on IPC %s', async outcome => {
+    await mount();
+    const ipcChat = deferChat();
+    const sending = await send();
+    await act(async () => { app.setText('edited'); if (outcome === 'success') ipcChat.resolve({ handled: false }); else ipcChat.reject('offline'); await sending.finish(); });
+    expect(app.text).toBe('edited');
+  });
+
+  it('retains a confirmed WSS answer even if IPC later rejects, then permits another turn', async () => {
+    await mount();
+    const ipcChat = deferChat();
+    const sending = await send();
+    await emit({ type: 'done', source: 'bridge', request_id: requestId(), text: 'answer' });
+    await act(async () => { ipcChat.reject('late IPC failure'); await sending.finish(); });
+    expect(app.messages.map(message => message.content)).toEqual(['hello', 'answer']);
+    expect(app.thinking).toBe(false);
+    expect(app.error).toBe('');
+    ipcChat.restore();
+    await act(async () => { await app.sendContent('next'); });
+    expect(app.messages.at(-1)?.content).toBe('next');
+  });
+
+  it('does not turn a cancelled pending local command into a new assistant reply', async () => {
+    await mount();
+    const ipcChat = deferChat();
+    const sending = await send('local command');
+    await act(async () => { await app.stop(); });
+    await act(async () => { ipcChat.resolve({ handled: true, command: 'local' }); await sending.finish(); });
+    expect(app.messages.map(message => message.role)).toEqual(['user']);
+    expect(app.thinking).toBe(false);
+  });
+
+  it('leaves voice request IDs and live-run filtering to the voice lifecycle', async () => {
+    await mount();
+    await emit({ type: 'live.started', run: 2 });
+    await emit({ type: 'done', source: 'voice', request_id: 'voice-turn', run: 1, text: 'stale voice' });
+    expect(app.messages).toEqual([]);
+    await emit({ type: 'done', source: 'voice', request_id: 'voice-turn', run: 2, text: 'voice answer' });
+    expect(app.messages.map(message => message.content)).toEqual(['voice answer']);
+    expect(app.thinking).toBe(true);
+  });
+
+  it('does not lose existing history when an optimistic row at the limit is rejected', async () => {
+    await mount();
+    await emit({ type: 'history', messages: Array.from({ length: 100 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `history ${i}` })) });
+    const previous = app.messages;
+    const ipcChat = deferChat();
+    const sending = await send();
+    await act(async () => { ipcChat.reject('offline'); await sending.finish(); });
+    expect(app.messages).toEqual(previous);
+    expect(app.text).toBe('hello');
+  });
+
+  it('does not submit the same pending turn twice', async () => {
+    await mount();
+    const ipcChat = deferChat();
+    const sending = await send();
+    await act(async () => { await app.sendContent('hello'); });
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'chat')).toHaveLength(1);
+    await act(async () => { ipcChat.resolve({ handled: false }); await sending.finish(); });
+  });
+});
+
+describe('text turn isolation and late history', () => {
+  const requestId = () => ipc.invoke.mock.calls.filter(([command]) => command === 'chat').at(-1)?.[1]?.requestId;
+  async function emit(payload: Record<string, unknown>) {
+    await act(async () => { ipc.listeners.get('desktop-event')!({ payload }); });
+  }
+  function deferredChat() {
+    const base = ipc.invoke.getMockImplementation()!;
+    let resolve!: (result: { handled: boolean; command?: string }) => void;
+    const promise = new Promise<{ handled: boolean; command?: string }>(done => { resolve = done; });
+    ipc.invoke.mockImplementation((name, args) => name === 'chat' ? promise : base(name, args));
+    return resolve;
+  }
+
+  it.each([
+    { type: 'error', code: 'audio_unavailable' },
+    { type: 'error', source: 'voice', code: 'voice_failed' },
+    { type: 'cancelled', source: 'voice' },
+    { type: 'cancelled' },
+  ])('retains active text A through unrelated $type/$source', async unrelated => {
+    await mount();
+    await act(async () => { await app.sendContent('A'); });
+    const id = requestId();
+    await emit({ type: 'token', source: 'bridge', request_id: id, text: 'part A' });
+    await tick(100);
+    await emit(unrelated);
+    expect(app.thinking).toBe(true);
+    expect(app.partial).toBe('part A');
+    await emit({ type: 'done', source: 'bridge', request_id: id, text: 'answer A' });
+    expect(app.messages.map(message => message.content)).toEqual(['A', 'answer A']);
+    expect(app.thinking).toBe(false);
+  });
+
+  it.each(['done-before-ack', 'done-after-ack', 'handled'])('preserves optimistic A after late history for %s', async order => {
+    await mount();
+    const resolve = deferredChat();
+    let sending!: Promise<void>;
+    await act(async () => { sending = app.sendContent('A'); });
+    const id = requestId();
+    await emit({ type: 'history', source: 'bridge', messages: [] });
+    if (order === 'done-before-ack') await emit({ type: 'done', source: 'bridge', request_id: id, text: 'answer A' });
+    await act(async () => { resolve({ handled: order === 'handled', command: 'local' }); await sending; });
+    if (order === 'done-after-ack') await emit({ type: 'done', source: 'bridge', request_id: id, text: 'answer A' });
+    expect(app.messages.map(message => message.role)).toEqual(['user', 'assistant']);
+    expect(app.messages[0].content).toBe('A');
+    expect(app.thinking).toBe(false);
+    await emit({ type: 'history', source: 'bridge', messages: [{ role: 'user', content: 'A' }] });
+    expect(app.messages.map(message => message.role)).toEqual(['user', 'assistant']);
+  });
+  it('honours a native global Stop while preserving other channel isolation', async () => {
+    await mount();
+    await act(async () => { await app.sendContent('A'); });
+    const id = requestId();
+    await emit({ type: 'cancelled', scope: 'all' });
+    await emit({ type: 'done', source: 'bridge', request_id: id, text: 'late A' });
+    expect(app.messages.map(message => message.content)).toEqual(['A']);
+    expect(app.thinking).toBe(false);
+  });
+
+  it('does not dispatch if Stop occurs before the native ticket reply', async () => {
+    await mount();
+    const base = ipc.invoke.getMockImplementation()!;
+    let ticket!: (epoch: number) => void;
+    const epoch = new Promise<number>(resolve => { ticket = resolve; });
+    ipc.invoke.mockImplementation((name, args) => name === 'chat_epoch' ? epoch : base(name, args));
+    let sending!: Promise<void>;
+    await act(async () => { sending = app.sendContent('A'); });
+    await act(async () => { await app.stop(); });
+    await act(async () => { ticket(7); await sending; });
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'chat')).toHaveLength(0);
+    expect(app.thinking).toBe(false);
+    await act(async () => { await app.sendContent('B'); });
+    expect(ipc.invoke).toHaveBeenCalledWith('chat', expect.objectContaining({ text: 'B', dispatchEpoch: 7 }));
+  });
+
 });

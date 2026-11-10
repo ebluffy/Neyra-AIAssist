@@ -2,6 +2,7 @@ mod appimage_env;
 mod audio;
 mod audit;
 mod character;
+mod chat_dispatch;
 mod command_runner;
 mod commands;
 mod computer;
@@ -85,6 +86,7 @@ pub struct Desktop {
     shortcuts: AtomicBool,
     screen_locked: AtomicBool,
     current_turn: Mutex<Option<String>>,
+    chat_dispatch: chat_dispatch::ChatDispatch,
     commands: Mutex<commands::Store>,
     waiters: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>,
     drafts: Mutex<HashMap<String, commands::Command>>,
@@ -1460,31 +1462,47 @@ fn approve(
     Ok(())
 }
 #[tauri::command]
+fn chat_epoch(state: State<'_, Desktop>) -> Result<u64, String> {
+    state.chat_dispatch.snapshot()
+}
+#[tauri::command]
 fn chat(
     app: tauri::AppHandle,
     state: State<'_, Desktop>,
     text: String,
     target_device_id: Option<String>,
+    request_id: Option<String>,
+    dispatch_epoch: u64,
 ) -> Result<Value, String> {
     if text.trim().is_empty() || text.len() > 6000 {
         return Err("Сообщение должно содержать 1–6000 символов".into());
     }
-    // An exact quick-command phrase runs locally without a model turn; anything else goes to the server.
-    if let Some(handled) = command_runner::try_phrase(&app, &state, &text)? {
-        return Ok(handled);
-    }
-    if state.recording.lock().map_err(lock_error)?.is_some() {
-        return Err("Сначала завершите запись".into());
-    }
-    let request_id = start_turn(&state)?;
-    let result = send(
-        &state.bridge,
-        json!({"type":"chat","text":text,"target_device_id":target_device_id,"request_id":request_id}),
-    );
-    if result.is_err() {
-        *state.current_turn.lock().map_err(lock_error)? = None;
-    }
-    result.map(|_| json!({"handled":false}))
+    state.chat_dispatch.dispatch(dispatch_epoch, || {
+        // An exact quick-command phrase runs locally without a model turn; anything else goes to the server.
+        if let Some(handled) = command_runner::try_phrase(&app, &state, &text)? {
+            return Ok(handled);
+        }
+        if state.recording.lock().map_err(lock_error)?.is_some() {
+            return Err("Сначала завершите запись".into());
+        }
+        // The WebView may receive WSS events before this IPC call resolves.
+        // Accept its preallocated ID so it can correlate those events immediately.
+        let request_id = match request_id {
+            Some(id) => {
+                uuid::Uuid::parse_str(&id).map_err(|_| "Неверный ID запроса")?;
+                start_turn_with_id(&state, id)?
+            }
+            None => start_turn(&state)?,
+        };
+        let result = send(
+            &state.bridge,
+            json!({"type":"chat","text":text,"target_device_id":target_device_id,"request_id":request_id}),
+        );
+        if result.is_err() {
+            *state.current_turn.lock().map_err(lock_error)? = None;
+        }
+        result.map(|_| json!({"handled":false}))
+    })
 }
 #[tauri::command]
 fn disconnect_device(state: State<'_, Desktop>, device_id: String) -> Result<(), String> {
@@ -1502,15 +1520,20 @@ fn bridge_message(state: State<'_, Desktop>, kind: String) -> Result<(), String>
     send(&state.bridge, json!({"type":kind}))
 }
 fn start_turn(state: &Desktop) -> Result<String, String> {
+    start_turn_with_id(state, uuid::Uuid::new_v4().to_string())
+}
+fn start_turn_with_id(state: &Desktop, id: String) -> Result<String, String> {
     let mut current = state.current_turn.lock().map_err(lock_error)?;
     if current.is_some() {
         return Err("Сначала дождитесь ответа или нажмите Stop".into());
     }
-    let id = uuid::Uuid::new_v4().to_string();
     *current = Some(id.clone());
     Ok(id)
 }
 fn stop_inner(state: &Desktop) -> Result<(), String> {
+    state.chat_dispatch.cancel(|| stop_inner_locked(state))
+}
+fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
     // Stop also turns the live microphone off: nothing keeps listening after Stop.
     live_stop_inner(state)?;
     state.generation.fetch_add(1, Ordering::SeqCst);
@@ -1552,7 +1575,7 @@ fn disconnect_locked(state: &Desktop) -> Result<(), String> {
 #[tauri::command]
 fn stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
     stop_inner(&state)?;
-    app.emit("desktop-event", json!({"type":"cancelled"}))
+    app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}))
         .map_err(|_| "Ошибка окна".into())
 }
 #[tauri::command]
@@ -1774,6 +1797,7 @@ pub fn run() {
                 shortcuts: AtomicBool::new(false),
                 screen_locked: AtomicBool::new(true),
                 current_turn: Mutex::new(None),
+                chat_dispatch: chat_dispatch::ChatDispatch::default(),
                 commands: Mutex::new(commands::Store::default()),
                 waiters: Mutex::new(HashMap::new()),
                 drafts: Mutex::new(HashMap::new()),
@@ -1820,7 +1844,8 @@ pub fn run() {
                     "stop" => {
                         let state = app.state::<Desktop>();
                         let _ = stop_inner(&state);
-                        let _ = app.emit("desktop-event", json!({"type":"cancelled"}));
+                        let _ =
+                            app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}));
                     }
                     "quit" => {
                         let state = app.state::<Desktop>();
@@ -1846,6 +1871,7 @@ pub fn run() {
             set_module,
             connect,
             disconnect,
+            chat_epoch,
             chat,
             bridge_message,
             disconnect_device,
@@ -1955,7 +1981,7 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
             if shortcut.key == Code::Escape && event.state == ShortcutState::Pressed {
                 let state = app.state::<Desktop>();
                 let _ = stop_inner(&state);
-                let _ = app.emit("desktop-event", json!({"type":"cancelled"}));
+                let _ = app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}));
             } else if shortcut.key == Code::Space {
                 let handle = app.clone();
                 let pressed = event.state == ShortcutState::Pressed;
@@ -2005,7 +2031,7 @@ fn monitor_session(app: tauri::AppHandle) {
         if old == unlocked {
             if !unlocked {
                 let _ = stop_inner(&state);
-                let _ = app.emit("desktop-event", json!({"type":"cancelled"}));
+                let _ = app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}));
             }
             let id = state.active_profile.lock().ok().and_then(|s| s.clone());
             if let Some(id) = id {

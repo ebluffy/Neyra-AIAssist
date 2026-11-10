@@ -22,7 +22,7 @@ export interface AuditRow { time: number; tool: string; status: string; confirme
 export interface Plugin { id: string; name?: string; enabled: boolean; lifecycle?: string }
 export interface WakeStatus { ready: boolean; dir: string; message?: string; model?: string; license?: string }
 export interface VoiceStatus { wake: WakeStatus; live: boolean; dropped_frames: number }
-export interface ServerEvent { type: string; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number; run?: number }
+export interface ServerEvent { type: string; request_id?: string; scope?: string; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number; run?: number }
 /** Server routes wrap the payload as `{ok, trace_id, data}`. Rust returns that JSON unchanged. */
 export function unwrapApi<T>(body: unknown): T {
   if (body !== null && typeof body === 'object' && 'data' in body) {
