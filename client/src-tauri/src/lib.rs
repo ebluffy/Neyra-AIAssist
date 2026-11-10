@@ -278,7 +278,7 @@ pub(crate) fn apply_settings(
         retention_changed.then_some(audit_days),
         || storage::save(&state.root, &settings),
         || {
-            character::on_settings_saved(app, settings.character_enabled);
+            character::refresh_overlay_after_settings_save(app, settings.character_enabled);
             if settings.theme != old.theme {
                 let _ = app.emit("theme-changed", json!({ "theme": settings.theme }));
             }

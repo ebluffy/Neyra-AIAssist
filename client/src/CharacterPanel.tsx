@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { formatError } from './types';
+import { capabilityLabel, formatError } from './types';
 
 export interface CharacterSettings { schema_version: number; model: string | null; fps_limit: number; pause_fullscreen: boolean; pause_battery: boolean; always_on_top: boolean; click_through: boolean }
 export interface OverlayCapabilities { transparent: string; always_on_top: string; click_through: string; exclude_from_capture: string; mechanism: string; notes: string[] }
@@ -9,8 +9,7 @@ interface CharacterState { enabled: boolean; settings: CharacterSettings; capabi
 interface ModelInfo { spec: string; title: string; authors: string[]; license: string; license_url: string; redistribution: 'allowed' | 'not_allowed' | 'unknown'; size_bytes: number }
 const redistribution: Record<ModelInfo['redistribution'], string> = { allowed: 'разрешено', not_allowed: 'запрещено', unknown: 'не указано' };
 
-const support: Record<string, string> = { yes: 'да', not_guaranteed: 'не гарантировано', no: 'нет' };
-export const capabilityLabel = (value: string) => support[value] ?? 'неизвестно';
+export { capabilityLabel };
 
 export function CharacterPanel() {
   const [state, setState] = useState<CharacterState>();
@@ -45,7 +44,7 @@ export function CharacterPanel() {
   return <section aria-labelledby="character-title">
     <h1 id="character-title">Персонаж</h1>
     <p>Бета, выключен по умолчанию.</p>
-    <p>3D-движок не загружается, пока персонаж выключен. Сейчас окно показывает заглушку без VRM; отрисовка модели ещё не реализована.</p>
+    <p>3D-движок не загружается, пока персонаж выключен. При отсутствии или ошибке загрузки модели .vrm окно показывает заглушку.</p>
     {message && <p role="alert" className="error">{message}</p>}
     <p id="character-enable-hint" role="status">{state.enabled ? 'Персонаж включён.' : 'Персонаж выключен. Включите «Персонаж на рабочем столе» в разделе «Настройки».'}</p>
     <label>Файл модели .vrm<select name="character-model" autoComplete="off" value={draft.model ?? ''} onChange={e => setDraft({ ...draft, model: e.target.value || null })}><option value="">Не выбрана</option>{state.models.map(name => <option key={name} value={name}>{name}</option>)}</select></label>

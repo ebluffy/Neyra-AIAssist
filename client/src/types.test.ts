@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptLiveRun, validServerUrl, formatError, newProfile, absolutePath, meterLevel, liveLabel, settleLiveStart, conversionNotice, unwrapApi } from './types';
+import { acceptLiveRun, validServerUrl, formatError, newProfile, absolutePath, meterLevel, liveLabel, settleLiveStart, conversionNotice, unwrapApi, capabilityLabel } from './types';
 describe('allowed folders', () => {
   it('accepts only absolute paths', () => { expect(absolutePath('/home/me/Docs')).toBe(true); expect(absolutePath('C:\\Users\\me')).toBe(true); for (const v of ['Docs', '~/Docs', '..\\x', '']) expect(absolutePath(v)).toBe(false); });
 });
@@ -46,5 +46,14 @@ describe('server envelope', () => {
     expect(acceptLiveRun(started.current, { type: 'live.stopped', run: 1 }).accept).toBe(false);
     expect(acceptLiveRun(started.current, { type: 'listening', run: 2 }).accept).toBe(true);
     expect(acceptLiveRun(started.current, { type: 'token' }).accept).toBe(true);
+  });
+});
+
+describe('overlay capability labels', () => {
+  it('translates capability values without hiding degraded state', () => {
+    expect(capabilityLabel('yes')).toBe('да');
+    expect(capabilityLabel('not_guaranteed')).toBe('не гарантировано');
+    expect(capabilityLabel('no')).toBe('нет');
+    expect(capabilityLabel('other')).toBe('неизвестно');
   });
 });

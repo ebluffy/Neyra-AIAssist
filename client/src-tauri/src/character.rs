@@ -138,9 +138,39 @@ fn app_theme(root: &Path) -> String {
     }
 }
 
-pub fn on_settings_saved(app: &tauri::AppHandle, enabled: bool) {
+fn on_settings_saved(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
     if !enabled {
         close_overlay(app);
+        Ok(())
+    } else if let Some(window) = app.get_webview_window(LABEL) {
+        let root = crate::storage::data_root()?;
+        let settings = load(&root)?;
+        // The character settings did not change here, so a refused platform call should
+        // roll back to the same values instead of closing a window the user is looking at.
+        apply_window_properties(&window, &settings, Some(&settings))?;
+        window
+            .emit(
+                "character-settings",
+                serde_json::json!({ "fps_limit": settings.fps_limit }),
+            )
+            .map_err(|e| format!("Не удалось отправить настройки в окно персонажа: {e}"))?;
+        Ok(())
+    } else {
+        Ok(())
+    }
+}
+
+/// Refresh a live overlay after a save that is not about the character (theme, permissions).
+/// Best effort: a refused platform call must not fail the save or close the overlay the user sees.
+pub fn refresh_overlay_after_settings_save(app: &tauri::AppHandle, enabled: bool) {
+    if let Err(error) = on_settings_saved(app, enabled) {
+        if let Ok(root) = crate::storage::data_root() {
+            crate::logs::log(
+                &root,
+                "warn",
+                &format!("character overlay refresh after settings save failed: {error}"),
+            );
+        }
     }
 }
 
@@ -412,6 +442,51 @@ fn close_overlay(app: &tauri::AppHandle) {
     }
 }
 
+pub trait WindowActions {
+    fn set_always_on_top(&self, always_on_top: bool) -> Result<(), String>;
+    fn set_ignore_cursor_events(&self, ignore: bool) -> Result<(), String>;
+    fn close(&self) -> Result<(), String>;
+}
+
+impl WindowActions for tauri::WebviewWindow {
+    fn set_always_on_top(&self, always_on_top: bool) -> Result<(), String> {
+        self.set_always_on_top(always_on_top)
+            .map_err(|e| format!("Не удалось установить режим поверх окон: {e}"))
+    }
+
+    fn set_ignore_cursor_events(&self, ignore: bool) -> Result<(), String> {
+        self.set_ignore_cursor_events(ignore)
+            .map_err(|e| format!("Не удалось переключить сквозной клик: {e}"))
+    }
+
+    fn close(&self) -> Result<(), String> {
+        <tauri::WebviewWindow>::close(self)
+            .map_err(|e| format!("Не удалось закрыть окно персонажа: {e}"))
+    }
+}
+
+pub fn apply_window_properties<W: WindowActions + ?Sized>(
+    window: &W,
+    target: &CharacterSettings,
+    previous: Option<&CharacterSettings>,
+) -> Result<(), String> {
+    window.set_always_on_top(target.always_on_top)?;
+    if let Err(err) = window.set_ignore_cursor_events(target.click_through) {
+        if let Some(prev) = previous {
+            if let Err(rb_err) = window.set_always_on_top(prev.always_on_top) {
+                let _ = window.close();
+                return Err(format!(
+                    "{err}. Откат поверх окон не удался ({rb_err}), окно закрыто"
+                ));
+            }
+        } else {
+            let _ = window.close();
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
 fn open_overlay(app: &tauri::AppHandle, settings: &CharacterSettings) -> Result<(), String> {
     if overlay_open(app) {
         return Ok(());
@@ -429,24 +504,35 @@ fn open_overlay(app: &tauri::AppHandle, settings: &CharacterSettings) -> Result<
         .content_protected(true)
         .build()
         .map_err(|_| "Не удалось открыть окно персонажа")?;
-    if settings.click_through {
-        window
-            .set_ignore_cursor_events(true)
-            .map_err(|_| "Не удалось включить click-through")?;
+    if let Err(err) = apply_window_properties(&window, settings, None) {
+        let _ = window.close();
+        return Err(err);
     }
     watch_cursor(app.clone());
     Ok(())
 }
 
+pub fn resolve_renderer_status(overlay_open: bool, model_configured: bool) -> &'static str {
+    if !overlay_open {
+        "unknown"
+    } else if model_configured {
+        "configured"
+    } else {
+        "fallback"
+    }
+}
+
 fn state_value(root: &Path, app: &tauri::AppHandle) -> Result<Value, String> {
+    let is_open = overlay_open(app);
+    let has_model = load(root).map(|s| s.model.is_some()).unwrap_or(false);
     Ok(json!({
         "enabled": app_enabled(root),
         "theme": app_theme(root),
         "settings": load(root)?,
         "capabilities": detect_capabilities(),
         "models": list_models(root),
-        "overlay_open": overlay_open(app),
-        "renderer": "placeholder",
+        "overlay_open": is_open,
+        "renderer": resolve_renderer_status(is_open, has_model),
         "directory": root.join("character").to_string_lossy(),
     }))
 }
@@ -455,6 +541,40 @@ fn state_value(root: &Path, app: &tauri::AppHandle) -> Result<Value, String> {
 pub fn character_state(app: tauri::AppHandle) -> Result<Value, String> {
     let root = crate::storage::data_root()?;
     state_value(&root, &app)
+}
+
+pub fn save_character_settings_orchestrated<W, FWrite, FEmit>(
+    window: Option<&W>,
+    target: &CharacterSettings,
+    previous: &CharacterSettings,
+    write_fn: FWrite,
+    emit_fn: FEmit,
+) -> Result<(), String>
+where
+    W: WindowActions + ?Sized,
+    FWrite: FnOnce(&CharacterSettings) -> Result<(), String>,
+    FEmit: FnOnce(u32) -> Result<(), String>,
+{
+    if let Some(w) = window {
+        apply_window_properties(w, target, Some(previous))?;
+
+        if let Err(write_err) = write_fn(target) {
+            if let Err(rb_err) = apply_window_properties(w, previous, None) {
+                let _ = w.close();
+                return Err(format!(
+                    "Не удалось сохранить настройки ({write_err}). Откат параметров окна не удался ({rb_err}), окно закрыто."
+                ));
+            }
+            return Err(write_err);
+        }
+
+        let _ = emit_fn(target.fps_limit);
+        Ok(())
+    } else {
+        write_fn(target)?;
+        let _ = emit_fn(target.fps_limit);
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -466,11 +586,20 @@ pub fn character_save(app: tauri::AppHandle, settings: CharacterSettings) -> Res
             return Err("Файл модели не найден в папке character".into());
         }
     }
-    save(&root, &settings)?;
-    let _ = app.emit(
-        "character-settings",
-        json!({ "fps_limit": settings.fps_limit }),
-    );
+
+    let previous = load(&root)?;
+    let window = app.get_webview_window(LABEL);
+    save_character_settings_orchestrated(
+        window.as_ref(),
+        &settings,
+        &previous,
+        |s| save(&root, s),
+        |fps| {
+            let _ = app.emit("character-settings", json!({ "fps_limit": fps }));
+            Ok(())
+        },
+    )?;
+
     state_value(&root, &app)
 }
 
@@ -728,5 +857,330 @@ mod tests {
         let mut float_wav = wav16(&[1, 2, 3], 16000);
         float_wav[20] = 3;
         assert!(mouth_levels(&float_wav).is_empty());
+    }
+
+    #[derive(Default)]
+    struct MockWindowActions {
+        always_on_top: std::cell::Cell<Option<bool>>,
+        click_through: std::cell::Cell<Option<bool>>,
+        closed: std::cell::Cell<bool>,
+        fail_always_on_top: std::cell::Cell<bool>,
+        fail_click_through: std::cell::Cell<bool>,
+        fail_close: std::cell::Cell<bool>,
+        fail_always_on_top_after_calls: std::cell::Cell<usize>,
+        always_on_top_calls: std::cell::Cell<usize>,
+    }
+
+    impl WindowActions for MockWindowActions {
+        fn set_always_on_top(&self, always_on_top: bool) -> Result<(), String> {
+            let calls = self.always_on_top_calls.get() + 1;
+            self.always_on_top_calls.set(calls);
+            let fail_after = self.fail_always_on_top_after_calls.get();
+            if self.fail_always_on_top.get() || (fail_after > 0 && calls > fail_after) {
+                return Err("mock platform rejected always-on-top".into());
+            }
+            self.always_on_top.set(Some(always_on_top));
+            Ok(())
+        }
+
+        fn set_ignore_cursor_events(&self, ignore: bool) -> Result<(), String> {
+            if self.fail_click_through.get() {
+                return Err("mock platform rejected click-through".into());
+            }
+            self.click_through.set(Some(ignore));
+            Ok(())
+        }
+
+        fn close(&self) -> Result<(), String> {
+            if self.fail_close.get() {
+                return Err("mock platform rejected close".into());
+            }
+            self.closed.set(true);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn character_settings_default_values_contract() {
+        let default_settings = CharacterSettings::default();
+        assert_eq!(default_settings.schema_version, 1);
+        assert!(default_settings.always_on_top);
+        assert!(default_settings.click_through);
+        assert!(default_settings.pause_fullscreen);
+        assert!(default_settings.pause_battery);
+        assert_eq!(default_settings.fps_limit, 30);
+        assert!(default_settings.model.is_none());
+    }
+
+    #[test]
+    fn apply_window_properties_sets_both_flags_and_allows_dynamic_updates() {
+        let window = MockWindowActions::default();
+        let mut settings = CharacterSettings {
+            always_on_top: true,
+            click_through: false,
+            ..Default::default()
+        };
+
+        apply_window_properties(&window, &settings, None).expect("initial apply should succeed");
+        assert_eq!(window.always_on_top.get(), Some(true));
+        assert_eq!(window.click_through.get(), Some(false));
+
+        let previous = settings.clone();
+        settings.always_on_top = false;
+        settings.click_through = true;
+        apply_window_properties(&window, &settings, Some(&previous))
+            .expect("dynamic apply should succeed");
+        assert_eq!(window.always_on_top.get(), Some(false));
+        assert_eq!(window.click_through.get(), Some(true));
+    }
+
+    #[test]
+    fn apply_window_properties_propagates_always_on_top_failure() {
+        let window = MockWindowActions::default();
+        window.fail_always_on_top.set(true);
+        let settings = CharacterSettings::default();
+
+        let err = apply_window_properties(&window, &settings, None).unwrap_err();
+        assert!(err.contains("rejected always-on-top"));
+        assert_eq!(window.click_through.get(), None);
+    }
+
+    #[test]
+    fn apply_window_properties_propagates_click_through_failure_and_rolls_back() {
+        let window = MockWindowActions::default();
+        let previous = CharacterSettings {
+            always_on_top: false,
+            click_through: false,
+            ..Default::default()
+        };
+        window.always_on_top.set(Some(false));
+        window.click_through.set(Some(false));
+        window.fail_click_through.set(true);
+
+        let target = CharacterSettings {
+            always_on_top: true,
+            click_through: true,
+            ..Default::default()
+        };
+        let err = apply_window_properties(&window, &target, Some(&previous)).unwrap_err();
+        assert!(err.contains("rejected click-through"));
+        assert_eq!(window.always_on_top.get(), Some(false));
+        assert!(!window.closed.get());
+    }
+
+    #[test]
+    fn apply_window_properties_closes_window_when_click_through_and_rollback_both_fail() {
+        let window = MockWindowActions::default();
+        let previous = CharacterSettings {
+            always_on_top: false,
+            click_through: false,
+            ..Default::default()
+        };
+        window.always_on_top.set(Some(false));
+        window.click_through.set(Some(false));
+        window.fail_always_on_top_after_calls.set(1);
+        window.fail_click_through.set(true);
+
+        let target = CharacterSettings {
+            always_on_top: true,
+            click_through: true,
+            ..Default::default()
+        };
+        let err = apply_window_properties(&window, &target, Some(&previous)).unwrap_err();
+        assert!(err.contains("rejected click-through"));
+        assert!(err.contains("окно закрыто"));
+        assert!(window.closed.get());
+    }
+
+    #[test]
+    fn orchestration_succeeds_without_window() {
+        let target = CharacterSettings {
+            fps_limit: 45,
+            ..Default::default()
+        };
+        let previous = CharacterSettings::default();
+        let mut wrote = false;
+        let mut emitted_fps = None;
+        let no_window: Option<&MockWindowActions> = None;
+        save_character_settings_orchestrated(
+            no_window,
+            &target,
+            &previous,
+            |_| {
+                wrote = true;
+                Ok(())
+            },
+            |fps| {
+                emitted_fps = Some(fps);
+                Ok(())
+            },
+        )
+        .expect("should succeed without window");
+        assert!(wrote);
+        assert_eq!(emitted_fps, Some(45));
+    }
+
+    #[test]
+    fn orchestration_succeeds_with_window_updating_flags_writing_and_emitting() {
+        let window = MockWindowActions::default();
+        let previous = CharacterSettings {
+            always_on_top: false,
+            click_through: false,
+            fps_limit: 30,
+            ..Default::default()
+        };
+        let target = CharacterSettings {
+            always_on_top: true,
+            click_through: true,
+            fps_limit: 60,
+            ..Default::default()
+        };
+        let mut wrote = false;
+        let mut emitted_fps = None;
+        save_character_settings_orchestrated(
+            Some(&window),
+            &target,
+            &previous,
+            |s| {
+                assert_eq!(s.fps_limit, 60);
+                wrote = true;
+                Ok(())
+            },
+            |fps| {
+                emitted_fps = Some(fps);
+                Ok(())
+            },
+        )
+        .expect("orchestrated save should succeed");
+        assert!(wrote);
+        assert_eq!(emitted_fps, Some(60));
+        assert_eq!(window.always_on_top.get(), Some(true));
+        assert_eq!(window.click_through.get(), Some(true));
+        assert!(!window.closed.get());
+    }
+
+    #[test]
+    fn orchestration_propagates_platform_failure_without_writing_file() {
+        let window = MockWindowActions::default();
+        window.fail_always_on_top.set(true);
+        let previous = CharacterSettings::default();
+        let target = CharacterSettings {
+            always_on_top: true,
+            click_through: true,
+            ..Default::default()
+        };
+        let mut wrote = false;
+        let err = save_character_settings_orchestrated(
+            Some(&window),
+            &target,
+            &previous,
+            |_| {
+                wrote = true;
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(err.contains("rejected always-on-top"));
+        assert!(!wrote, "write must never happen when platform apply fails");
+    }
+
+    #[test]
+    fn orchestration_rolls_back_window_when_write_fails() {
+        let window = MockWindowActions::default();
+        let previous = CharacterSettings {
+            always_on_top: false,
+            click_through: false,
+            ..Default::default()
+        };
+        let target = CharacterSettings {
+            always_on_top: true,
+            click_through: true,
+            ..Default::default()
+        };
+        let err = save_character_settings_orchestrated(
+            Some(&window),
+            &target,
+            &previous,
+            |_| Err("atomic write failed: out of disk space".into()),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(err, "atomic write failed: out of disk space");
+        assert_eq!(
+            window.always_on_top.get(),
+            Some(false),
+            "always_on_top must roll back to previous"
+        );
+        assert_eq!(
+            window.click_through.get(),
+            Some(false),
+            "click_through must roll back to previous"
+        );
+        assert!(
+            !window.closed.get(),
+            "window should remain open when rollback succeeds"
+        );
+    }
+
+    #[test]
+    fn orchestration_closes_window_when_write_and_rollback_both_fail() {
+        let window = MockWindowActions::default();
+        let previous = CharacterSettings {
+            always_on_top: false,
+            click_through: false,
+            ..Default::default()
+        };
+        let target = CharacterSettings {
+            always_on_top: true,
+            click_through: true,
+            ..Default::default()
+        };
+        window.fail_always_on_top_after_calls.set(1);
+
+        let err = save_character_settings_orchestrated(
+            Some(&window),
+            &target,
+            &previous,
+            |_| Err("disk write error".into()),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(err.contains("disk write error"));
+        assert!(err.contains("окно закрыто"));
+        assert!(
+            window.closed.get(),
+            "window must be closed when rollback fails after write failure"
+        );
+    }
+
+    #[test]
+    fn load_corrupted_settings_fails_and_preserves_error() {
+        let tmp = std::env::temp_dir().join(format!(
+            "neyra-test-corrupt-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(tmp.join("settings")).unwrap();
+        let path = tmp.join(SETTINGS_FILE);
+        std::fs::write(&path, b"{\"schema_version\": 1, invalid_json: true").unwrap();
+
+        let err = load(&tmp).unwrap_err();
+        assert!(err.contains("Повреждены настройки персонажа"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("invalid_json"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn renderer_resolution_contract_without_false_guarantees() {
+        // When overlay is closed, runtime rendering status is unknown
+        assert_eq!(resolve_renderer_status(false, false), "unknown");
+        assert_eq!(resolve_renderer_status(false, true), "unknown");
+        // When overlay is open: model configured indicates intent, empty indicates fallback placeholder
+        assert_eq!(resolve_renderer_status(true, true), "configured");
+        assert_eq!(resolve_renderer_status(true, false), "fallback");
     }
 }
