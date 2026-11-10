@@ -3794,6 +3794,7 @@ def build_app(
         if isinstance(arch, str) and arch:
             data["archive"] = Path(arch).name
             data.pop("path", None)
+        data.pop("chroma_db_path", None)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/backup/list")
@@ -3801,10 +3802,36 @@ def build_app(
         trace_id = _trace_id(request)
         rows = await asyncio.to_thread(backup_manager.list_backups)
         last_apply = await asyncio.to_thread(backup_manager.read_last_apply_result)
+        safe_archives = [
+            {
+                "name": r.get("name"),
+                "bytes": r.get("bytes"),
+                "mtime": r.get("mtime"),
+            }
+            for r in (rows or [])
+        ]
+        safe_last_apply = None
+        if isinstance(last_apply, dict):
+            safe_last_apply = {
+                k: v
+                for k, v in last_apply.items()
+                if k not in (
+                    "aside_path",
+                    "sqlite_aside_paths",
+                    "path",
+                    "archive_path",
+                    "memory_root",
+                    "restored_from",
+                )
+            }
+            if "aside_path" in last_apply:
+                safe_last_apply["has_aside"] = bool(last_apply.get("aside_path"))
+            if "sqlite_aside_paths" in last_apply:
+                safe_last_apply["has_sqlite_asides"] = bool(last_apply.get("sqlite_aside_paths"))
         return {
             "ok": True,
             "trace_id": trace_id,
-            "data": {"archives": rows, "last_restore_apply": last_apply},
+            "data": {"archives": safe_archives, "last_restore_apply": safe_last_apply},
         }
 
     @app.post("/v1/backup/restore")
@@ -3849,7 +3876,11 @@ def build_app(
         pre_path = str(pre.get("archive") or "")
         pre_name = Path(pre_path).name if pre_path else ""
         # Do not leak absolute paths to the client.
-        safe_res = {k: v for k, v in (res or {}).items() if k not in ("path", "archive_path")}
+        safe_res = {
+            k: v
+            for k, v in (res or {}).items()
+            if k not in ("path", "archive_path", "restored_from", "memory_root")
+        }
         if "archive" in safe_res and isinstance(safe_res["archive"], str):
             safe_res["archive"] = Path(str(safe_res["archive"])).name
         return {

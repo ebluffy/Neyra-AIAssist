@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +24,28 @@ PENDING_FLAG = "pending.json"
 PENDING_BLOCKED = "blocked.json"
 PENDING_MEMORY = "memory"
 LAST_APPLY_NAME = "last_restore_apply.json"
+
+
+def _atomic_publish_archive(src_zip: Path, target_zip: Path) -> None:
+    """Atomically place src_zip at target_zip without overwriting an existing file."""
+    try:
+        os.link(src_zip, target_zip)
+        return
+    except FileExistsError:
+        raise
+    except (OSError, NotImplementedError):
+        pass
+
+    fd = os.open(target_zip, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    try:
+        with open(fd, "wb") as dst_f, open(src_zip, "rb") as src_f:
+            shutil.copyfileobj(src_f, dst_f)
+    except Exception:
+        try:
+            target_zip.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 class SqliteRollbackError(RuntimeError):
@@ -61,89 +84,107 @@ class BackupManager:
         return out
 
     def run_backup(self, reason: str = "manual") -> dict:
+        self.local_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        archive_base = self.local_dir / f"neyra-backup-{ts}"
-        tmp_root = Path("./.tmp_backup_staging")
-        if tmp_root.exists():
-            shutil.rmtree(tmp_root, ignore_errors=True)
-        tmp_root.mkdir(parents=True, exist_ok=True)
-        # Always store the memory tree as archive "memory/" (AR-42), regardless of folder name.
-        for p in self.sources:
-            if not p.exists():
-                continue
-            if p.name == "logs" or str(p).replace("\\", "/").endswith("/logs"):
-                dst = tmp_root / "logs"
-            else:
-                dst = tmp_root / "memory"
-            if p.is_dir():
-                # AR-59: never copy live Hub .db / -wal / -shm into memory/ —
-                # sqlite backup API overlay is the authoritative consistent snapshot.
-                basenames: set[str] = set()
-                for sp in self._sqlite_paths():
-                    basenames.add(sp.name)
-                    if not sp.name.endswith(("-wal", "-shm")):
-                        basenames.add(sp.name + "-wal")
-                        basenames.add(sp.name + "-shm")
 
-                def _ignore(_dir: str, names: list[str]) -> set[str]:
-                    return {n for n in names if n in basenames}
+        with tempfile.TemporaryDirectory(dir=str(self.local_dir), prefix=".tmp_backup_staging-") as staging_dir_str:
+            staging_root = Path(staging_dir_str)
+            tmp_root = staging_root / "content"
+            tmp_root.mkdir(parents=True, exist_ok=True)
 
-                shutil.copytree(p, dst, dirs_exist_ok=True, ignore=_ignore)
-            else:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(p, dst)
-        # Ensure Hub SQLite via sqlite3 backup API (consistent snapshot; not copy2 of live WAL).
-        # Never open -wal/-shm as databases — connect/close can delete sidecar files.
-        # Use mode=ro so a failed probe cannot mutate live WAL.
-        mem_dir = tmp_root / "data" / "memory"
-        mem_dir.mkdir(parents=True, exist_ok=True)
-        copied_db: list[str] = []
-        import sqlite3
+            # Always store the memory tree as archive "memory/" (AR-42), regardless of folder name.
+            for p in self.sources:
+                if not p.exists():
+                    continue
+                if p.name == "logs" or str(p).replace("\\", "/").endswith("/logs"):
+                    dst = tmp_root / "logs"
+                else:
+                    dst = tmp_root / "memory"
+                if p.is_dir():
+                    # AR-59: never copy live Hub .db / -wal / -shm into memory/ —
+                    # sqlite backup API overlay is the authoritative consistent snapshot.
+                    basenames: set[str] = set()
+                    for sp in self._sqlite_paths():
+                        basenames.add(sp.name)
+                        if not sp.name.endswith(("-wal", "-shm")):
+                            basenames.add(sp.name + "-wal")
+                            basenames.add(sp.name + "-shm")
 
-        for p in self._sqlite_paths():
-            if not (p.exists() and p.is_file()):
-                continue
-            if p.name.endswith("-wal") or p.name.endswith("-shm"):
-                continue
-            dst = mem_dir / p.name
-            try:
-                uri = f"file:{p.resolve().as_posix()}?mode=ro"
-                src_conn = sqlite3.connect(uri, uri=True, timeout=30)
+                    def _ignore(_dir: str, names: list[str]) -> set[str]:
+                        return {n for n in names if n in basenames}
+
+                    shutil.copytree(p, dst, dirs_exist_ok=True, ignore=_ignore)
+                else:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(p, dst)
+            # Ensure Hub SQLite via sqlite3 backup API (consistent snapshot; not copy2 of live WAL).
+            # Never open -wal/-shm as databases — connect/close can delete sidecar files.
+            # Use mode=ro so a failed probe cannot mutate live WAL.
+            mem_dir = tmp_root / "data" / "memory"
+            mem_dir.mkdir(parents=True, exist_ok=True)
+            copied_db: list[str] = []
+            import sqlite3
+
+            for p in self._sqlite_paths():
+                if not (p.exists() and p.is_file()):
+                    continue
+                if p.name.endswith("-wal") or p.name.endswith("-shm"):
+                    continue
+                dst = mem_dir / p.name
                 try:
-                    dst_conn = sqlite3.connect(str(dst))
+                    uri = f"file:{p.resolve().as_posix()}?mode=ro"
+                    src_conn = sqlite3.connect(uri, uri=True, timeout=30)
                     try:
-                        src_conn.backup(dst_conn)
+                        dst_conn = sqlite3.connect(str(dst))
+                        try:
+                            src_conn.backup(dst_conn)
+                        finally:
+                            dst_conn.close()
                     finally:
-                        dst_conn.close()
-                finally:
-                    src_conn.close()
-                copied_db.append(p.name)
-                # API snapshot is consistent — do not copy live -wal/-shm.
-            except Exception as e:
-                logger.warning("sqlite backup API failed for %s (%s); falling back to copy2", p.name, e)
-                shutil.copy2(p, dst)
-                copied_db.append(p.name)
-                for suffix in ("-wal", "-shm"):
-                    side = Path(str(p) + suffix)
-                    if side.exists() and side.is_file():
-                        shutil.copy2(side, mem_dir / side.name)
-                        copied_db.append(side.name)
-        mem = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
-        chroma = Path(str(mem.get("chroma_db_path") or "./data/memory/chroma_db"))
-        manifest = {
-            "reason": reason,
-            "sqlite_files": copied_db,
-            "sqlite_path": str(mem.get("sqlite_path") or "./data/memory/neyra_memory.db"),
-            "chroma_db_path": str(chroma),
-            "memory_archive_dir": "memory",
-            "rag_write_mode": mem.get("rag_write_mode"),
-        }
-        (tmp_root / "backup_manifest.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        zip_path = Path(shutil.make_archive(str(archive_base), "zip", root_dir=str(tmp_root)))
-        shutil.rmtree(tmp_root, ignore_errors=True)
+                        src_conn.close()
+                    copied_db.append(p.name)
+                    # API snapshot is consistent — do not copy live -wal/-shm.
+                except Exception as e:
+                    logger.warning("sqlite backup API failed for %s (%s); falling back to copy2", p.name, e)
+                    shutil.copy2(p, dst)
+                    copied_db.append(p.name)
+                    for suffix in ("-wal", "-shm"):
+                        side = Path(str(p) + suffix)
+                        if side.exists() and side.is_file():
+                            shutil.copy2(side, mem_dir / side.name)
+                            copied_db.append(side.name)
+            mem = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
+            chroma = Path(str(mem.get("chroma_db_path") or "./data/memory/chroma_db"))
+            manifest = {
+                "reason": reason,
+                "sqlite_files": copied_db,
+                "sqlite_path": str(mem.get("sqlite_path") or "./data/memory/neyra_memory.db"),
+                "chroma_db_path": str(chroma),
+                "memory_archive_dir": "memory",
+                "rag_write_mode": mem.get("rag_write_mode"),
+            }
+            (tmp_root / "backup_manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temp_zip = Path(shutil.make_archive(str(staging_root / "archive"), "zip", root_dir=str(tmp_root)))
+
+            target_path: Path | None = None
+            candidates = [self.local_dir / f"neyra-backup-{ts}.zip"]
+            candidates.extend(self.local_dir / f"neyra-backup-{ts}-{i}.zip" for i in range(1, 10000))
+            for cand in candidates:
+                try:
+                    _atomic_publish_archive(temp_zip, cand)
+                    target_path = cand
+                    break
+                except FileExistsError:
+                    continue
+
+            if target_path is None:
+                raise RuntimeError(f"could not allocate unique backup archive name for timestamp {ts}")
+
+            zip_path = target_path
+
         external_ref = None
         if self.external_adapter is not None:
             try:
@@ -479,11 +520,8 @@ class BackupManager:
         mem_dst = self._memory_root()
         self._assert_safe_memory_dst(mem_dst)
 
-        unpack_root = Path("./.tmp_restore")
-        if unpack_root.exists():
-            shutil.rmtree(unpack_root, ignore_errors=True)
-        unpack_root.mkdir(parents=True, exist_ok=True)
-        try:
+        with tempfile.TemporaryDirectory(dir=".", prefix=".tmp_restore-") as unpack_dir_str:
+            unpack_root = Path(unpack_dir_str)
             shutil.unpack_archive(str(src), str(unpack_root), "zip")
             built = self._build_memory_staging(unpack_root, unpack_root / ".neyra_memory_staging")
             if built is None:
@@ -515,8 +553,6 @@ class BackupManager:
                 "applied": False,
                 "created_at": created_at,
             }
-        finally:
-            shutil.rmtree(unpack_root, ignore_errors=True)
 
     def _write_pending_blocked(
         self,
