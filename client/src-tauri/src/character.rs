@@ -445,7 +445,6 @@ fn close_overlay(app: &tauri::AppHandle) {
 pub trait WindowActions {
     fn set_always_on_top(&self, always_on_top: bool) -> Result<(), String>;
     fn set_ignore_cursor_events(&self, ignore: bool) -> Result<(), String>;
-    fn close(&self) -> Result<(), String>;
 }
 
 impl WindowActions for tauri::WebviewWindow {
@@ -458,11 +457,6 @@ impl WindowActions for tauri::WebviewWindow {
         self.set_ignore_cursor_events(ignore)
             .map_err(|e| format!("Не удалось переключить сквозной клик: {e}"))
     }
-
-    fn close(&self) -> Result<(), String> {
-        <tauri::WebviewWindow>::close(self)
-            .map_err(|e| format!("Не удалось закрыть окно персонажа: {e}"))
-    }
 }
 
 pub fn apply_window_properties<W: WindowActions + ?Sized>(
@@ -472,15 +466,11 @@ pub fn apply_window_properties<W: WindowActions + ?Sized>(
 ) -> Result<(), String> {
     window.set_always_on_top(target.always_on_top)?;
     if let Err(err) = window.set_ignore_cursor_events(target.click_through) {
+        // Degrade in place: never destroy a visible window because a platform call was refused.
         if let Some(prev) = previous {
             if let Err(rb_err) = window.set_always_on_top(prev.always_on_top) {
-                let _ = window.close();
-                return Err(format!(
-                    "{err}. Откат поверх окон не удался ({rb_err}), окно закрыто"
-                ));
+                return Err(format!("{err}. Откат поверх окон не удался ({rb_err})"));
             }
-        } else {
-            let _ = window.close();
         }
         return Err(err);
     }
@@ -513,10 +503,11 @@ fn open_overlay(app: &tauri::AppHandle, settings: &CharacterSettings) -> Result<
 }
 
 pub fn resolve_renderer_status(overlay_open: bool, model_configured: bool) -> &'static str {
+    // The backend cannot see whether the VRM actually loaded, so it never claims "configured".
     if !overlay_open {
         "unknown"
     } else if model_configured {
-        "configured"
+        "model_selected"
     } else {
         "fallback"
     }
@@ -524,11 +515,12 @@ pub fn resolve_renderer_status(overlay_open: bool, model_configured: bool) -> &'
 
 fn state_value(root: &Path, app: &tauri::AppHandle) -> Result<Value, String> {
     let is_open = overlay_open(app);
-    let has_model = load(root).map(|s| s.model.is_some()).unwrap_or(false);
+    let settings = load(root)?;
+    let has_model = settings.model.is_some();
     Ok(json!({
         "enabled": app_enabled(root),
         "theme": app_theme(root),
-        "settings": load(root)?,
+        "settings": settings,
         "capabilities": detect_capabilities(),
         "models": list_models(root),
         "overlay_open": is_open,
@@ -560,9 +552,8 @@ where
 
         if let Err(write_err) = write_fn(target) {
             if let Err(rb_err) = apply_window_properties(w, previous, None) {
-                let _ = w.close();
                 return Err(format!(
-                    "Не удалось сохранить настройки ({write_err}). Откат параметров окна не удался ({rb_err}), окно закрыто."
+                    "Не удалось сохранить настройки ({write_err}). Откат параметров окна не удался ({rb_err}); окно оставлено как есть."
                 ));
             }
             return Err(write_err);
@@ -863,10 +854,11 @@ mod tests {
     struct MockWindowActions {
         always_on_top: std::cell::Cell<Option<bool>>,
         click_through: std::cell::Cell<Option<bool>>,
+        // Written only by the mock close shim that the backend no longer calls.
+        #[allow(dead_code)]
         closed: std::cell::Cell<bool>,
         fail_always_on_top: std::cell::Cell<bool>,
         fail_click_through: std::cell::Cell<bool>,
-        fail_close: std::cell::Cell<bool>,
         fail_always_on_top_after_calls: std::cell::Cell<usize>,
         always_on_top_calls: std::cell::Cell<usize>,
     }
@@ -888,14 +880,6 @@ mod tests {
                 return Err("mock platform rejected click-through".into());
             }
             self.click_through.set(Some(ignore));
-            Ok(())
-        }
-
-        fn close(&self) -> Result<(), String> {
-            if self.fail_close.get() {
-                return Err("mock platform rejected close".into());
-            }
-            self.closed.set(true);
             Ok(())
         }
     }
@@ -969,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_window_properties_closes_window_when_click_through_and_rollback_both_fail() {
+    fn apply_window_properties_keeps_window_when_click_through_and_rollback_both_fail() {
         let window = MockWindowActions::default();
         let previous = CharacterSettings {
             always_on_top: false,
@@ -988,8 +972,11 @@ mod tests {
         };
         let err = apply_window_properties(&window, &target, Some(&previous)).unwrap_err();
         assert!(err.contains("rejected click-through"));
-        assert!(err.contains("окно закрыто"));
-        assert!(window.closed.get());
+        assert!(err.contains("Откат поверх окон не удался"));
+        assert!(
+            !window.closed.get(),
+            "a refused platform call must not destroy the window"
+        );
     }
 
     #[test]
@@ -1124,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn orchestration_closes_window_when_write_and_rollback_both_fail() {
+    fn orchestration_keeps_window_when_write_and_rollback_both_fail() {
         let window = MockWindowActions::default();
         let previous = CharacterSettings {
             always_on_top: false,
@@ -1147,10 +1134,10 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("disk write error"));
-        assert!(err.contains("окно закрыто"));
+        assert!(err.contains("окно оставлено как есть"));
         assert!(
-            window.closed.get(),
-            "window must be closed when rollback fails after write failure"
+            !window.closed.get(),
+            "window must stay open when rollback fails after write failure"
         );
     }
 
@@ -1179,8 +1166,8 @@ mod tests {
         // When overlay is closed, runtime rendering status is unknown
         assert_eq!(resolve_renderer_status(false, false), "unknown");
         assert_eq!(resolve_renderer_status(false, true), "unknown");
-        // When overlay is open: model configured indicates intent, empty indicates fallback placeholder
-        assert_eq!(resolve_renderer_status(true, true), "configured");
+        // When overlay is open: a chosen model is only an intent — the backend cannot see a load result
+        assert_eq!(resolve_renderer_status(true, true), "model_selected");
         assert_eq!(resolve_renderer_status(true, false), "fallback");
     }
 }
