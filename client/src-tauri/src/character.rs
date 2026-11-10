@@ -1,7 +1,11 @@
 use crate::storage::atomic_write;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 const LABEL: &str = "character";
@@ -12,6 +16,10 @@ const MAX_VRM_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MOUTH_FRAME_MS: u32 = 20;
 const MOUTH_NOISE_FLOOR: f32 = 0.02;
 const MOUTH_FULL_SCALE: f32 = 0.25;
+/// Set when the platform refused click-through for the live overlay, so the panel can say so.
+static CLICK_THROUGH_REFUSED: AtomicBool = AtomicBool::new(false);
+const CLICK_THROUGH_REFUSED_NOTE: &str =
+    "Клики сквозь окно не включились: платформа отклонила запрос в этой сессии.";
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 #[serde(deny_unknown_fields)]
@@ -145,9 +153,7 @@ fn on_settings_saved(app: &tauri::AppHandle, enabled: bool) -> Result<(), String
     } else if let Some(window) = app.get_webview_window(LABEL) {
         let root = crate::storage::data_root()?;
         let settings = load(&root)?;
-        // The character settings did not change here, so a refused platform call should
-        // roll back to the same values instead of closing a window the user is looking at.
-        apply_window_properties(&window, &settings, Some(&settings))?;
+        // Character settings did not change here: only tell the live window about FPS/theme.
         window
             .emit(
                 "character-settings",
@@ -494,9 +500,22 @@ fn open_overlay(app: &tauri::AppHandle, settings: &CharacterSettings) -> Result<
         .content_protected(true)
         .build()
         .map_err(|_| "Не удалось открыть окно персонажа")?;
-    if let Err(err) = apply_window_properties(&window, settings, None) {
-        let _ = window.close();
-        return Err(err);
+    // The builder already applied always-on-top; a fresh window ignores no cursor events.
+    // A refused click-through is a recorded degradation, not a reason to close the window.
+    if settings.click_through {
+        match window.set_ignore_cursor_events(true) {
+            Ok(()) => CLICK_THROUGH_REFUSED.store(false, Ordering::SeqCst),
+            Err(error) => {
+                CLICK_THROUGH_REFUSED.store(true, Ordering::SeqCst);
+                if let Ok(root) = crate::storage::data_root() {
+                    crate::logs::log(
+                        &root,
+                        "warn",
+                        &format!("character click-through refused: {error}"),
+                    );
+                }
+            }
+        }
     }
     watch_cursor(app.clone());
     Ok(())
@@ -513,15 +532,53 @@ pub fn resolve_renderer_status(overlay_open: bool, model_configured: bool) -> &'
     }
 }
 
+fn runtime_capabilities(mut caps: Capabilities, click_through_refused: bool) -> Capabilities {
+    if click_through_refused {
+        caps.click_through = "no";
+        caps.notes.push(CLICK_THROUGH_REFUSED_NOTE);
+    }
+    caps
+}
+
+fn load_for_panel(root: &Path) -> (CharacterSettings, Option<String>) {
+    match load(root) {
+        Ok(settings) => (settings, None),
+        // A broken file must not lock the panel: show defaults and let the user overwrite it.
+        Err(error) => (CharacterSettings::default(), Some(error)),
+    }
+}
+
+fn previous_or_backup(root: &Path) -> CharacterSettings {
+    match load(root) {
+        Ok(previous) => previous,
+        Err(error) => {
+            // Keep the user's broken file next to the fixed one before overwriting it.
+            let path = root.join(SETTINGS_FILE);
+            if path.is_file() {
+                let _ = fs::copy(&path, root.join(format!("{SETTINGS_FILE}.bak")));
+            }
+            crate::logs::log(
+                root,
+                "warn",
+                &format!("character settings were broken, backed up before overwrite: {error}"),
+            );
+            CharacterSettings::default()
+        }
+    }
+}
+
 fn state_value(root: &Path, app: &tauri::AppHandle) -> Result<Value, String> {
     let is_open = overlay_open(app);
-    let settings = load(root)?;
+    let (settings, settings_error) = load_for_panel(root);
+    let settings_error = settings_error.map(Value::String).unwrap_or(Value::Null);
     let has_model = settings.model.is_some();
+    let refused = CLICK_THROUGH_REFUSED.load(Ordering::SeqCst);
     Ok(json!({
         "enabled": app_enabled(root),
         "theme": app_theme(root),
         "settings": settings,
-        "capabilities": detect_capabilities(),
+        "settings_error": settings_error,
+        "capabilities": runtime_capabilities(detect_capabilities(), refused),
         "models": list_models(root),
         "overlay_open": is_open,
         "renderer": resolve_renderer_status(is_open, has_model),
@@ -559,11 +616,15 @@ where
             return Err(write_err);
         }
 
-        let _ = emit_fn(target.fps_limit);
+        emit_fn(target.fps_limit).map_err(|error| {
+            format!("Настройки сохранены, но окно персонажа не получило обновление: {error}")
+        })?;
         Ok(())
     } else {
         write_fn(target)?;
-        let _ = emit_fn(target.fps_limit);
+        emit_fn(target.fps_limit).map_err(|error| {
+            format!("Настройки сохранены, но окно персонажа не получило обновление: {error}")
+        })?;
         Ok(())
     }
 }
@@ -578,7 +639,7 @@ pub fn character_save(app: tauri::AppHandle, settings: CharacterSettings) -> Res
         }
     }
 
-    let previous = load(&root)?;
+    let previous = previous_or_backup(&root);
     let window = app.get_webview_window(LABEL);
     save_character_settings_orchestrated(
         window.as_ref(),
@@ -586,8 +647,10 @@ pub fn character_save(app: tauri::AppHandle, settings: CharacterSettings) -> Res
         &previous,
         |s| save(&root, s),
         |fps| {
-            let _ = app.emit("character-settings", json!({ "fps_limit": fps }));
-            Ok(())
+            app.emit("character-settings", json!({ "fps_limit": fps }))
+                .map_err(|error| {
+                    format!("Не удалось отправить настройки в окно персонажа: {error}")
+                })
         },
     )?;
 
@@ -729,6 +792,39 @@ mod tests {
         assert_eq!(capabilities("linux", "x11", "").exclude_from_capture, "no");
     }
 
+    #[test]
+    fn runtime_capabilities_report_refused_click_through() {
+        let caps = runtime_capabilities(capabilities("windows", "", ""), true);
+        assert_eq!(caps.click_through, "no");
+        assert!(caps.notes.contains(&CLICK_THROUGH_REFUSED_NOTE));
+        let healthy = runtime_capabilities(capabilities("windows", "", ""), false);
+        assert_eq!(healthy.click_through, "yes");
+        assert!(!healthy.notes.contains(&CLICK_THROUGH_REFUSED_NOTE));
+    }
+
+    #[test]
+    fn broken_settings_are_backed_up_and_panel_falls_back_to_defaults() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("settings")).unwrap();
+        let path = root.join(SETTINGS_FILE);
+        fs::write(&path, b"{\"schema_version\": 1, broken").unwrap();
+
+        let (panel, error) = load_for_panel(&root);
+        assert_eq!(panel, CharacterSettings::default());
+        assert!(error.unwrap().contains("Повреждены настройки персонажа"));
+
+        let previous = previous_or_backup(&root);
+        assert_eq!(previous, CharacterSettings::default());
+        assert_eq!(
+            fs::read(root.join(format!("{SETTINGS_FILE}.bak"))).unwrap(),
+            b"{\"schema_version\": 1, broken"
+        );
+
+        save(&root, &CharacterSettings::default()).unwrap();
+        assert!(load(&root).is_ok(), "a valid save must repair the panel");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn glb(json: &str) -> Vec<u8> {
         let mut body = json.as_bytes().to_vec();
         while body.len() & 3 != 0 {
@@ -854,9 +950,6 @@ mod tests {
     struct MockWindowActions {
         always_on_top: std::cell::Cell<Option<bool>>,
         click_through: std::cell::Cell<Option<bool>>,
-        // Written only by the mock close shim that the backend no longer calls.
-        #[allow(dead_code)]
-        closed: std::cell::Cell<bool>,
         fail_always_on_top: std::cell::Cell<bool>,
         fail_click_through: std::cell::Cell<bool>,
         fail_always_on_top_after_calls: std::cell::Cell<usize>,
@@ -949,7 +1042,11 @@ mod tests {
         let err = apply_window_properties(&window, &target, Some(&previous)).unwrap_err();
         assert!(err.contains("rejected click-through"));
         assert_eq!(window.always_on_top.get(), Some(false));
-        assert!(!window.closed.get());
+        assert_eq!(
+            window.click_through.get(),
+            Some(false),
+            "a refused call must leave the previous click-through value"
+        );
     }
 
     #[test]
@@ -973,10 +1070,8 @@ mod tests {
         let err = apply_window_properties(&window, &target, Some(&previous)).unwrap_err();
         assert!(err.contains("rejected click-through"));
         assert!(err.contains("Откат поверх окон не удался"));
-        assert!(
-            !window.closed.get(),
-            "a refused platform call must not destroy the window"
-        );
+        assert_eq!(window.always_on_top.get(), Some(true));
+        assert_eq!(window.click_through.get(), Some(false));
     }
 
     #[test]
@@ -1043,7 +1138,6 @@ mod tests {
         assert_eq!(emitted_fps, Some(60));
         assert_eq!(window.always_on_top.get(), Some(true));
         assert_eq!(window.click_through.get(), Some(true));
-        assert!(!window.closed.get());
     }
 
     #[test]
@@ -1104,10 +1198,6 @@ mod tests {
             Some(false),
             "click_through must roll back to previous"
         );
-        assert!(
-            !window.closed.get(),
-            "window should remain open when rollback succeeds"
-        );
     }
 
     #[test]
@@ -1135,9 +1225,11 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("disk write error"));
         assert!(err.contains("окно оставлено как есть"));
-        assert!(
-            !window.closed.get(),
-            "window must stay open when rollback fails after write failure"
+        assert_eq!(window.always_on_top.get(), Some(true));
+        assert_eq!(
+            window.click_through.get(),
+            Some(true),
+            "rollback stopped at the refused property, so the window keeps target values"
         );
     }
 
