@@ -393,7 +393,9 @@ static SHOTS: Mutex<VecDeque<Shot>> = Mutex::new(VecDeque::new());
 
 fn remember(shot: Shot) {
     if let Ok(mut shots) = SHOTS.lock() {
-        shots.retain(|s| s.created.elapsed() < SHOT_TTL);
+        // Only the newest screenshot of a session may be used: older pixels would map
+        // clicks through a stale geometry.
+        shots.retain(|s| s.session != shot.session && s.created.elapsed() < SHOT_TTL);
         if shots.len() >= 8 {
             shots.pop_front();
         }
@@ -1749,17 +1751,41 @@ mod tests {
     #[test]
     fn screenshot_is_downscaled_and_coordinates_map_back_with_offsets() {
         let mut m = Mock::default();
-        let shot = capture(&mut m, None, "s").unwrap();
+        let shot = capture(&mut m, None, "downscale").unwrap();
         assert_eq!(shot["width"], 1366);
         assert_eq!(shot["height"], 768);
         let id = shot["screenshot_id"].as_str().unwrap();
-        let s = find_shot(id, "s").unwrap();
+        let s = find_shot(id, "downscale").unwrap();
         let (x, y) = map_point(&s, 683.0, 384.0).unwrap();
         // Centre of the image → centre of the physical virtual desktop.
         assert!((x - (-1920.0 + 1280.0)).abs() < 2.0, "{x}");
         assert!((y - 720.0).abs() < 2.0, "{y}");
         assert!(map_point(&s, 1366.0, 10.0).is_err());
         assert!(find_shot(id, "other-session").is_err());
+    }
+
+    #[test]
+    fn second_capture_invalidates_first_screenshot_id() {
+        let mut m = Mock::default();
+        let session = "invalidate-first";
+        let other_session = "invalidate-other";
+        let first = capture(&mut m, None, session).unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let other = capture(&mut m, None, other_session).unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let second = capture(&mut m, None, session).unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert!(find_shot(&first, session).is_err());
+        assert!(find_shot(&second, session).is_ok());
+        // A new screenshot in one session must not invalidate another session's pixels.
+        assert!(find_shot(&other, other_session).is_ok());
     }
 
     #[test]
@@ -1782,7 +1808,7 @@ mod tests {
         }
         // An out-of-image point anywhere aborts the whole sequence before the first step.
         let mut m = Mock::default();
-        let id = capture(&mut m, None, "s").unwrap()["screenshot_id"]
+        let id = capture(&mut m, None, "validation").unwrap()["screenshot_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1792,7 +1818,7 @@ mod tests {
             &args(
                 json!({"screenshot_id":id,"steps":[{"op":"key","keys":"enter"},{"op":"click","x":5000,"y":1}]}),
             ),
-            "s",
+            "validation",
             &AtomicBool::new(false),
         );
         assert!(out.is_err());
@@ -1802,7 +1828,7 @@ mod tests {
     #[test]
     fn stop_midway_releases_held_keys_and_halts() {
         let mut m = Mock::default();
-        let id = capture(&mut m, None, "s").unwrap()["screenshot_id"]
+        let id = capture(&mut m, None, "stop-midway").unwrap()["screenshot_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1818,7 +1844,7 @@ mod tests {
                 {"op":"click","x":10,"y":10},
                 {"op":"type","text":"never"}
             ]})),
-            "s",
+            "stop-midway",
             &cancel,
         )
         .unwrap();
@@ -1831,7 +1857,7 @@ mod tests {
     #[test]
     fn full_sequence_runs_in_order() {
         let mut m = Mock::default();
-        let id = capture(&mut m, None, "s").unwrap()["screenshot_id"]
+        let id = capture(&mut m, None, "full-sequence").unwrap()["screenshot_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1844,7 +1870,7 @@ mod tests {
                 {"op":"key","keys":"ctrl+s"},
                 {"op":"scroll","x":1,"y":1,"dy":-3}
             ]})),
-            "s",
+            "full-sequence",
             &AtomicBool::new(false),
         )
         .unwrap();
