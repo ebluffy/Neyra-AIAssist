@@ -68,6 +68,9 @@ async fn run_socket_pair<F: std::future::Future<Output = &'static str>>(
     reason
 }
 
+/// Set when the server reports that this device was revoked, so the next manual connect can say so.
+static REVOKED_SEEN: AtomicBool = AtomicBool::new(false);
+
 pub struct Desktop {
     root: PathBuf,
     settings: Mutex<Settings>,
@@ -80,8 +83,6 @@ pub struct Desktop {
     generation: Arc<AtomicU64>,
     recording: Mutex<Option<audio::Recording>>,
     epoch: AtomicU64,
-    // Set when the server says this device was revoked, so the next manual connect can say so.
-    revoked_seen: AtomicBool,
     transport: Mutex<()>,
     audit_lock: Mutex<()>,
     shortcuts: AtomicBool,
@@ -442,10 +443,10 @@ async fn connect(
         .map_err(config_error)?;
     let hello = manifest(&state, &p)?;
     // After a revoke the person reconnects by hand; that explicit attempt carries the reauth header.
-    let reauth = state.revoked_seen.load(Ordering::SeqCst);
+    let reauth = REVOKED_SEEN.load(Ordering::SeqCst);
     let sockets = connect_sockets_with(&p, &token, &hello, CONNECT_TIMEOUT, reauth).await?;
     if reauth {
-        state.revoked_seen.store(false, Ordering::SeqCst);
+        REVOKED_SEEN.store(false, Ordering::SeqCst);
     }
     install_connected_sockets(&state.transport, &state.epoch, epoch, sockets, |sockets| {
         disconnect_locked(&state)?;
@@ -488,6 +489,7 @@ async fn install_connected_sockets(
     result
 }
 
+#[cfg(test)]
 async fn connect_sockets(
     p: &Profile,
     token: &str,
@@ -527,7 +529,8 @@ async fn connect_sockets_with(
             if reauth {
                 request.headers_mut().insert(
                     "x-neyra-reauth",
-                    "1".parse().map_err(|_| config_error("Неверный заголовок"))?,
+                    "1".parse()
+                        .map_err(|_| config_error("Неверный заголовок"))?,
                 );
             }
             let (ws, _) = tokio::time::timeout(timeout, connect_async(request))
@@ -759,7 +762,7 @@ where
                     if text.len() > 100000 { break; }
                     let Ok(packet) = serde_json::from_str::<Value>(&text) else { break; };
                     if packet["type"] == "revoked" {
-                        handle.state::<Desktop>().revoked_seen.store(true, Ordering::SeqCst);
+                        REVOKED_SEEN.store(true, Ordering::SeqCst);
                         reason = "auth";
                         break;
                     }
@@ -1796,7 +1799,6 @@ pub fn run() {
                 generation,
                 recording: Mutex::new(None),
                 epoch: AtomicU64::new(0),
-                revoked_seen: AtomicBool::new(false),
                 transport: Mutex::new(()),
                 audit_lock: Mutex::new(()),
                 shortcuts: AtomicBool::new(false),
