@@ -465,3 +465,55 @@ def test_live_speech_caps_spoken_text():
     packets = asyncio.run(scenario())
     assert {'type': 'status', 'state': 'truncated'} in packets
     assert [p['seq'] for p in packets if p['type'] == 'audio.segment'] == [0]
+
+
+def test_commit_resets_acked_window_for_the_next_turn(monkeypatch):
+    """A new commit starts from acked=-1, so ack for segment 0 of the new turn is valid."""
+    import time
+
+    stub_voice(monkeypatch)
+    captured = {}
+    orig_speech_init = LiveSpeech.__init__
+
+    def spy_speech_init(self, voice, send, playback, acked, *args, **kwargs):
+        captured['playback'] = playback
+        return orig_speech_init(self, voice, send, playback, acked, *args, **kwargs)
+
+    monkeypatch.setattr(LiveSpeech, '__init__', spy_speech_init)
+    sentences = [
+        'Это первое длинное предложение для озвучки. ',
+        'Это второе длинное предложение для озвучки. ',
+        'Это третье длинное предложение для озвучки. ',
+    ]
+    client, _ = make_client(TokenAgent(sentences))
+    first, second = str(uuid4()), str(uuid4())
+
+    with client, client.websocket_connect('/v1/desktop/voice', headers=AUTH) as ws:
+        connect_live(ws)
+        say(ws, first)
+        last_seq = -1
+        while True:
+            packet = ws.receive_json()
+            if packet['type'] == 'audio.segment':
+                last_seq = packet['seq']
+                ws.send_json({'type': 'audio.ack', 'request_id': first, 'seq': last_seq})
+            if packet['type'] in ('audio.done', 'error'):
+                break
+        playback = captured['playback']
+        assert last_seq >= 1, f"need several segments to make the reset observable, got {last_seq}"
+        assert playback['acked'] == last_seq
+
+        say(ws, second)
+        while True:
+            packet = ws.receive_json()
+            if packet['type'] == 'audio.segment':
+                break
+        assert packet['seq'] == 0
+        ws.send_json({'type': 'audio.ack', 'request_id': second, 'seq': 0})
+
+        deadline = time.time() + 2
+        while time.time() < deadline and playback['acked'] != 0:
+            time.sleep(0.01)
+        assert playback['acked'] == 0, (
+            "commit must reset acked to -1; otherwise ack for the new turn's segment 0 is ignored"
+        )

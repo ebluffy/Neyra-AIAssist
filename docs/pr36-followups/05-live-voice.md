@@ -20,7 +20,7 @@
 ## Сделано в этом PR
 
 - `audio.ack` принимается только для реально отправленных сегментов (`acked < seq <= sent`), `sent` — монотонный максимум по отправленным `audio.segment`, состояние сбрасывается на `commit`. Раньше клиент мог одним ack с огромным `seq` закрыть окно backpressure.
-- Тест `ack_above_sent_sequence_is_rejected` падает без правки (проверено откатом `routes.py`), полный offline pytest — 722 passed.
+- Тест `test_live_voice_ack_out_of_range_and_window_backpressure` падает без правки (проверено откатом `routes.py`); тест `test_commit_resets_acked_window_for_the_next_turn` падает, если убрать сброс `acked`/`sent` на `commit`. Полный offline pytest — 723 passed.
 
 ## Остаётся за владельцем
 
