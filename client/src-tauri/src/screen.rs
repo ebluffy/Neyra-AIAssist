@@ -1750,6 +1750,7 @@ mod tests {
 
     #[test]
     fn screenshot_is_downscaled_and_coordinates_map_back_with_offsets() {
+        forget_all();
         let mut m = Mock::default();
         let shot = capture(&mut m, None, "downscale").unwrap();
         assert_eq!(shot["width"], 1366);
@@ -1766,6 +1767,7 @@ mod tests {
 
     #[test]
     fn second_capture_invalidates_first_screenshot_id() {
+        forget_all();
         let mut m = Mock::default();
         let session = "invalidate-first";
         let other_session = "invalidate-other";
@@ -1827,6 +1829,7 @@ mod tests {
 
     #[test]
     fn stop_midway_releases_held_keys_and_halts() {
+        forget_all();
         let mut m = Mock::default();
         let id = capture(&mut m, None, "stop-midway").unwrap()["screenshot_id"]
             .as_str()
@@ -1856,6 +1859,7 @@ mod tests {
 
     #[test]
     fn full_sequence_runs_in_order() {
+        forget_all();
         let mut m = Mock::default();
         let id = capture(&mut m, None, "full-sequence").unwrap()["screenshot_id"]
             .as_str()
