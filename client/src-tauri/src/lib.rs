@@ -68,8 +68,162 @@ async fn run_socket_pair<F: std::future::Future<Output = &'static str>>(
     reason
 }
 
-/// Set when the server reports that this device was revoked, so the next manual connect can say so.
-static REVOKED_SEEN: AtomicBool = AtomicBool::new(false);
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let k: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+
+    let bit_len = (bytes.len() as u64) * 8;
+    let mut msg = bytes.to_vec();
+    msg.push(0x80);
+    while (msg.len() % 64) != 56 {
+        msg.push(0x00);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in msg.as_chunks::<64>().0 {
+        let mut w = [0u32; 64];
+        for (i, part) in chunk.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*part);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+
+        let mut a = h[0];
+        let mut b = h[1];
+        let mut c = h[2];
+        let mut d = h[3];
+        let mut e = h[4];
+        let mut f = h[5];
+        let mut g = h[6];
+        let mut h_val = h[7];
+
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = h_val
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(k[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+
+            h_val = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(h_val);
+    }
+
+    use std::fmt::Write;
+    let mut out = String::with_capacity(64);
+    for val in h {
+        let _ = write!(out, "{val:08x}");
+    }
+    out
+}
+
+/// Set when the server reports that this device was revoked for a given profile,
+/// so the next manual connect for that profile can include reauth.
+static REVOKED_PROFILES: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+fn record_revoked_seen(profile_id: &str) {
+    let mut guard = REVOKED_PROFILES.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .get_or_insert_with(std::collections::HashSet::new)
+        .insert(profile_id.to_string());
+}
+
+fn clear_revoked_seen(profile_id: &str) {
+    let mut guard = REVOKED_PROFILES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(set) = guard.as_mut() {
+        set.remove(profile_id);
+    }
+}
+
+fn is_revoked_seen(profile_id: &str) -> bool {
+    let guard = REVOKED_PROFILES.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .as_ref()
+        .map(|s| s.contains(profile_id))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+fn clear_all_revoked_seen() {
+    let mut guard = REVOKED_PROFILES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(set) = guard.as_mut() {
+        set.clear();
+    }
+}
+
+/// Computes SHA-256 hex digest to safely scope filenames per profile without
+/// path traversal, illegal characters, or leaking profile identifiers into the filesystem.
+fn profile_hash(profile_id: &str) -> String {
+    sha256_hex(profile_id.as_bytes())
+}
+
+/// Revocation marker path scoped strictly to the profile's cryptographic hash.
+fn revoked_marker(root: &std::path::Path, profile_id: &str) -> PathBuf {
+    let hash = profile_hash(profile_id);
+    root.join(format!("device-revoked-{hash}"))
+}
+
+fn mark_revoked(root: &std::path::Path, profile_id: &str) -> Result<(), String> {
+    record_revoked_seen(profile_id);
+    std::fs::create_dir_all(root).map_err(|e| format!("Не удалось создать папку данных: {e}"))?;
+    std::fs::write(revoked_marker(root, profile_id), b"revoked\n")
+        .map_err(|e| format!("Не удалось сохранить метку отзыва: {e}"))
+}
+
+fn clear_revoked(root: &std::path::Path, profile_id: &str) -> Result<(), String> {
+    clear_revoked_seen(profile_id);
+    let marker = revoked_marker(root, profile_id);
+    if marker.exists() {
+        std::fs::remove_file(&marker)
+            .map_err(|e| format!("Не удалось удалить метку отзыва: {e}"))?;
+    }
+    Ok(())
+}
+
+/// A revoke reported for this profile in this process or left on disk by a previous run.
+fn revoked_pending(root: &std::path::Path, profile_id: &str) -> bool {
+    is_revoked_seen(profile_id) || revoked_marker(root, profile_id).exists()
+}
 
 pub struct Desktop {
     root: PathBuf,
@@ -443,16 +597,17 @@ async fn connect(
         .map_err(config_error)?;
     let hello = manifest(&state, &p)?;
     // After a revoke the person reconnects by hand; that explicit attempt carries the reauth header.
-    let reauth = REVOKED_SEEN.load(Ordering::SeqCst);
+    let root = state.root.clone();
+    let reauth = revoked_pending(&root, &profile_id);
     let sockets = connect_sockets_with(&p, &token, &hello, CONNECT_TIMEOUT, reauth).await?;
-    if reauth {
-        REVOKED_SEEN.store(false, Ordering::SeqCst);
-    }
     install_connected_sockets(&state.transport, &state.epoch, epoch, sockets, |sockets| {
         disconnect_locked(&state)?;
         let epoch = state.epoch.load(Ordering::SeqCst);
-        *state.active_profile.lock().map_err(lock_error)? = Some(profile_id);
-        start_socket_workers(app, &state, sockets, epoch)
+        *state.active_profile.lock().map_err(lock_error)? = Some(profile_id.clone());
+        if reauth {
+            clear_revoked(&root, &profile_id)?;
+        }
+        start_socket_workers(app, &state, sockets, epoch, &profile_id)
     })
     .await
 }
@@ -567,6 +722,7 @@ fn start_socket_workers(
     state: &Desktop,
     sockets: Vec<(ClientSocket, &'static str)>,
     epoch: u64,
+    profile_id: &str,
 ) -> Result<(), String> {
     let workers = futures_util::stream::FuturesUnordered::new();
     for (ws, kind) in sockets {
@@ -577,6 +733,8 @@ fn start_socket_workers(
             *state.voice.lock().map_err(lock_error)? = Some(tx);
         }
         let handle = app.clone();
+        let revoked_root = state.root.clone();
+        let revoked_profile = profile_id.to_string();
         workers.push(async move {
             socket_worker(
                 ws,
@@ -624,9 +782,6 @@ fn start_socket_workers(
                             if let Ok(call) = serde_json::from_value::<ToolCall>(data) {
                                 receive_call(handle.clone(), call);
                             }
-                        }
-                        Some("revoked") => {
-                            return false;
                         }
                         Some("command_draft") => {
                             if kind == "bridge" {
@@ -694,6 +849,11 @@ fn start_socket_workers(
                     }
                     true
                 },
+                move || {
+                    if let Err(err) = mark_revoked(&revoked_root, &revoked_profile) {
+                        eprintln!("Neyra: failed to mark revoked: {err}");
+                    }
+                },
             )
             .await
         });
@@ -721,6 +881,7 @@ async fn socket_worker<S>(
     timing: (Duration, Duration),
     is_current: impl Fn() -> bool,
     mut on_packet: impl FnMut(Value) -> bool,
+    on_revoked: impl Fn(),
 ) -> &'static str
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -762,7 +923,7 @@ where
                     if text.len() > 100000 { break; }
                     let Ok(packet) = serde_json::from_str::<Value>(&text) else { break; };
                     if packet["type"] == "revoked" {
-                        REVOKED_SEEN.store(true, Ordering::SeqCst);
+                        on_revoked();
                         reason = "auth";
                         break;
                     }
@@ -772,6 +933,12 @@ where
                 Some(Ok(Message::Ping(bytes))) => {
                     if socket_send(&mut writer, Message::Pong(bytes)).await.is_err() { break; }
                 },
+                Some(Ok(Message::Close(Some(frame)))) if frame.reason == "revoked" => {
+                    // A revoked device may be closed without a packet.
+                    on_revoked();
+                    reason = "auth";
+                    break;
+                }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 _ => {},
             },
@@ -2375,6 +2542,7 @@ mod tests {
                 (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
                 || true,
                 |_| true,
+                || {},
             )
             .await
         });
@@ -2409,6 +2577,7 @@ mod tests {
                 (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
                 || true,
                 |_| true,
+                || {},
             )
             .await
         });
@@ -2445,6 +2614,7 @@ mod tests {
                     (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
                     || epoch.load(Ordering::SeqCst),
                     |_| true,
+                    || {},
                 )
                 .await
             });
@@ -2471,17 +2641,23 @@ mod tests {
     #[tokio::test]
     async fn revoked_from_either_worker_propagates_auth_and_cancels_peer() {
         for revoked in 0..2 {
+            let revoked_flag = Arc::new(AtomicBool::new(false));
             let (client0, mut server0) = worker_test_sockets().await;
             let (client1, mut server1) = worker_test_sockets().await;
             let (tx0, mut rx0) = mpsc::unbounded_channel();
             let (tx1, mut rx1) = mpsc::unbounded_channel();
+            let flag = revoked_flag.clone();
             let pair = tokio::spawn(async move {
                 let timing = (Duration::from_secs(30), HEARTBEAT_TIMEOUT);
                 let current: fn() -> bool = || true;
                 let packet: fn(Value) -> bool = |_| true;
+                let on_rev0 = move || {
+                    flag.store(true, Ordering::SeqCst);
+                };
+                let on_rev1 = on_rev0.clone();
                 run_socket_pair(futures_util::stream::FuturesUnordered::from_iter([
-                    socket_worker(client0, &mut rx0, timing, current, packet),
-                    socket_worker(client1, &mut rx1, timing, current, packet),
+                    socket_worker(client0, &mut rx0, timing, current, packet, on_rev0),
+                    socket_worker(client1, &mut rx1, timing, current, packet, on_rev1),
                 ]))
                 .await
             });
@@ -2503,9 +2679,47 @@ mod tests {
                     .unwrap(),
                 Some("auth")
             );
+            assert!(revoked_flag.load(Ordering::SeqCst));
             assert!(tx0.is_closed());
             assert!(tx1.is_closed());
         }
+    }
+
+    #[tokio::test]
+    async fn close_frame_with_revoked_reason_propagates_auth() {
+        use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
+        let (client, mut server) = worker_test_sockets().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let revoked_flag = Arc::new(AtomicBool::new(false));
+        let flag = revoked_flag.clone();
+        let worker = tokio::spawn(async move {
+            socket_worker(
+                client,
+                &mut rx,
+                (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
+                || true,
+                |_| true,
+                move || flag.store(true, Ordering::SeqCst),
+            )
+            .await
+        });
+        assert!(server.next().await.unwrap().unwrap().is_text());
+        server
+            .send(Message::Close(Some(CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "revoked".into(),
+            })))
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), worker)
+                .await
+                .unwrap()
+                .unwrap(),
+            "auth"
+        );
+        assert!(revoked_flag.load(Ordering::SeqCst));
+        drop(tx);
     }
 
     #[tokio::test]
@@ -2544,6 +2758,7 @@ mod tests {
                         (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
                         (|| true) as fn() -> bool,
                         (|_| true) as fn(Value) -> bool,
+                        (|| {}) as fn(),
                     ),
                     socket_worker(
                         sockets.next().unwrap().0,
@@ -2551,6 +2766,7 @@ mod tests {
                         (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
                         (|| true) as fn() -> bool,
                         (|_| true) as fn(Value) -> bool,
+                        (|| {}) as fn(),
                     ),
                 ]))
                 .await;
@@ -2584,6 +2800,7 @@ mod tests {
                     (Duration::from_secs(30), HEARTBEAT_TIMEOUT),
                     || true,
                     |_| true,
+                    || {},
                 )
                 .await
             });
@@ -2653,11 +2870,26 @@ mod tests {
             let timing = (Duration::from_secs(30), HEARTBEAT_TIMEOUT);
             let current: fn() -> bool = || true;
             let packet: fn(Value) -> bool = |_| true;
+            let on_rev: fn() = || {};
             tokio::time::timeout(
                 Duration::from_secs(2),
                 run_socket_pair(futures_util::stream::FuturesUnordered::from_iter([
-                    socket_worker(sockets.next().unwrap(), &mut rx0, timing, current, packet),
-                    socket_worker(sockets.next().unwrap(), &mut rx1, timing, current, packet),
+                    socket_worker(
+                        sockets.next().unwrap(),
+                        &mut rx0,
+                        timing,
+                        current,
+                        packet,
+                        on_rev,
+                    ),
+                    socket_worker(
+                        sockets.next().unwrap(),
+                        &mut rx1,
+                        timing,
+                        current,
+                        packet,
+                        on_rev,
+                    ),
                 ])),
             )
             .await
@@ -2714,6 +2946,7 @@ mod tests {
                     packets += 1;
                     true
                 },
+                || {},
             ),
         )
         .await
@@ -2903,5 +3136,155 @@ mod tests {
             p.url = bad.into();
             assert!(server_url(&p, "/v1/health").is_err());
         }
+    }
+
+    #[test]
+    fn profile_hash_prevents_path_traversal_and_leakage() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        for malicious_id in [
+            "../../etc/passwd",
+            "../secrets",
+            "foo/bar",
+            "foo\\bar",
+            "CON",
+            "",
+            "id with spaces and $pecial! chars",
+        ] {
+            let marker = revoked_marker(&root, malicious_id);
+            assert_eq!(marker.parent().unwrap(), &root);
+            let filename = marker.file_name().unwrap().to_str().unwrap();
+            assert!(filename.starts_with("device-revoked-"));
+            let hash = &filename["device-revoked-".len()..];
+            assert_eq!(hash.len(), 64);
+            assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+            assert!(!filename.contains("etc"));
+            assert!(!filename.contains("passwd"));
+            assert!(!filename.contains(".."));
+            assert!(!filename.contains('/'));
+            assert!(!filename.contains('\\'));
+        }
+    }
+
+    #[test]
+    fn profile_revoke_isolation_and_lifecycle() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let profile_a = "profile-alpha";
+        let profile_b = "profile-beta";
+
+        // 1. Initial state: neither is revoked
+        assert!(!revoked_pending(&root, profile_a));
+        assert!(!revoked_pending(&root, profile_b));
+
+        // 2. Mark profile A revoked
+        mark_revoked(&root, profile_a).unwrap();
+        assert!(revoked_pending(&root, profile_a));
+        assert!(revoked_marker(&root, profile_a).exists());
+        assert!(!revoked_pending(&root, profile_b));
+        assert!(!revoked_marker(&root, profile_b).exists());
+
+        // 3. Connect/clear profile B must NOT clear profile A
+        clear_revoked(&root, profile_b).unwrap();
+        assert!(revoked_pending(&root, profile_a));
+        assert!(revoked_marker(&root, profile_a).exists());
+        assert!(!revoked_pending(&root, profile_b));
+
+        // 4. Clearing profile A removes marker and clears status
+        clear_revoked(&root, profile_a).unwrap();
+        assert!(!revoked_pending(&root, profile_a));
+        assert!(!revoked_marker(&root, profile_a).exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn cancelled_install_retains_revoked_state() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let profile_a = "profile-retain-on-cancel";
+
+        mark_revoked(&root, profile_a).unwrap();
+        assert!(revoked_pending(&root, profile_a));
+
+        let transport = Mutex::new(());
+        let current_epoch = AtomicU64::new(42);
+        let mut install_ran = false;
+
+        // Attempt install with an epoch mismatch (cancelled connection)
+        let res = install_connected_sockets(
+            &transport,
+            &current_epoch,
+            41, // mismatched epoch
+            vec![],
+            |_| {
+                install_ran = true;
+                clear_revoked(&root, profile_a)
+            },
+        )
+        .await;
+
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), "Подключение отменено");
+        assert!(!install_ran);
+        assert!(revoked_pending(&root, profile_a));
+        assert!(revoked_marker(&root, profile_a).exists());
+
+        clear_revoked(&root, profile_a).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recreate_state_reads_disk_marker() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let profile_a = "profile-persists";
+
+        mark_revoked(&root, profile_a).unwrap();
+        assert!(revoked_marker(&root, profile_a).exists());
+
+        // Simulate app restart / recreated state by clearing in-memory cache
+        clear_all_revoked_seen();
+        assert!(!is_revoked_seen(profile_a));
+
+        // State check reads from disk marker
+        assert!(revoked_pending(&root, profile_a));
+
+        clear_revoked(&root, profile_a).unwrap();
+        assert!(!revoked_pending(&root, profile_a));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn io_errors_not_swallowed() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&root).unwrap();
+
+        // 1. Write error: root is a file rather than a directory
+        let file_as_root = root.join("file_blocker");
+        std::fs::write(&file_as_root, b"blocking file").unwrap();
+        let write_res = mark_revoked(&file_as_root, "profile-error");
+        assert!(write_res.is_err());
+
+        // 2. Delete error: marker path is a directory, so fs::remove_file deterministically fails
+        let profile_dir_blocker = "profile-dir-as-marker";
+        let blocker_path = revoked_marker(&root, profile_dir_blocker);
+        std::fs::create_dir_all(&blocker_path).unwrap();
+        assert!(blocker_path.is_dir());
+
+        let del_res = clear_revoked(&root, profile_dir_blocker);
+        assert!(del_res.is_err());
+        assert!(blocker_path.exists());
+
+        std::fs::remove_dir(&blocker_path).unwrap();
+        let del_ok = clear_revoked(&root, profile_dir_blocker);
+        assert!(del_ok.is_ok());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
