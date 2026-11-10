@@ -80,6 +80,8 @@ pub struct Desktop {
     generation: Arc<AtomicU64>,
     recording: Mutex<Option<audio::Recording>>,
     epoch: AtomicU64,
+    // Set when the server says this device was revoked, so the next manual connect can say so.
+    revoked_seen: AtomicBool,
     transport: Mutex<()>,
     audit_lock: Mutex<()>,
     shortcuts: AtomicBool,
@@ -439,7 +441,12 @@ async fn connect(
     let token = storage::load_token(&storage::secret(&profile_id).map_err(config_error)?)
         .map_err(config_error)?;
     let hello = manifest(&state, &p)?;
-    let sockets = connect_sockets(&p, &token, &hello, CONNECT_TIMEOUT).await?;
+    // After a revoke the person reconnects by hand; that explicit attempt carries the reauth header.
+    let reauth = state.revoked_seen.load(Ordering::SeqCst);
+    let sockets = connect_sockets_with(&p, &token, &hello, CONNECT_TIMEOUT, reauth).await?;
+    if reauth {
+        state.revoked_seen.store(false, Ordering::SeqCst);
+    }
     install_connected_sockets(&state.transport, &state.epoch, epoch, sockets, |sockets| {
         disconnect_locked(&state)?;
         let epoch = state.epoch.load(Ordering::SeqCst);
@@ -487,6 +494,16 @@ async fn connect_sockets(
     hello: &Value,
     timeout: Duration,
 ) -> Result<Vec<(ClientSocket, &'static str)>, String> {
+    connect_sockets_with(p, token, hello, timeout, false).await
+}
+
+async fn connect_sockets_with(
+    p: &Profile,
+    token: &str,
+    hello: &Value,
+    timeout: Duration,
+    reauth: bool,
+) -> Result<Vec<(ClientSocket, &'static str)>, String> {
     let mut sockets = Vec::new();
     let result: Result<(), String> = async {
         for (path, kind) in [
@@ -507,6 +524,12 @@ async fn connect_sockets(
                     .parse()
                     .map_err(|_| config_error("Неверный токен"))?,
             );
+            if reauth {
+                request.headers_mut().insert(
+                    "x-neyra-reauth",
+                    "1".parse().map_err(|_| config_error("Неверный заголовок"))?,
+                );
+            }
             let (ws, _) = tokio::time::timeout(timeout, connect_async(request))
                 .await
                 .map_err(|_| "Сервер не ответил")?
@@ -735,7 +758,11 @@ where
                     if !is_current() { reason = "closed"; break; }
                     if text.len() > 100000 { break; }
                     let Ok(packet) = serde_json::from_str::<Value>(&text) else { break; };
-                    if packet["type"] == "revoked" { reason = "auth"; break; }
+                    if packet["type"] == "revoked" {
+                        handle.state::<Desktop>().revoked_seen.store(true, Ordering::SeqCst);
+                        reason = "auth";
+                        break;
+                    }
                     if packet["type"] == "pong" { pong_deadline = None; }
                     if !on_packet(packet) { break; }
                 },
@@ -1769,6 +1796,7 @@ pub fn run() {
                 generation,
                 recording: Mutex::new(None),
                 epoch: AtomicU64::new(0),
+                revoked_seen: AtomicBool::new(false),
                 transport: Mutex::new(()),
                 audit_lock: Mutex::new(()),
                 shortcuts: AtomicBool::new(false),

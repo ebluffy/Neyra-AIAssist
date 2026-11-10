@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import re
 from contextvars import ContextVar
@@ -98,6 +100,15 @@ def wire_len(value):
     return len(json.dumps(value, ensure_ascii=False).encode())
 
 
+def valid_jpeg_data(data):
+    """A screenshot must be base64 of real JPEG bytes, not any string labelled image/jpeg."""
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError, TypeError):
+        return False
+    return raw.startswith(b'\xff\xd8\xff')
+
+
 def checked_result(tool, result):
     """Bounded, typed result: only a screenshot may carry image bytes."""
     if not isinstance(result, dict):
@@ -106,7 +117,7 @@ def checked_result(tool, result):
         if result.get('status') == 'ok':
             data = result.get('data')
             if (not isinstance(data, str) or len(data) > SCREENSHOT_LIMIT
-                    or result.get('mime') != 'image/jpeg'):
+                    or result.get('mime') != 'image/jpeg' or not valid_jpeg_data(data)):
                 return {'status': 'error', 'code': 'bad_screenshot'}
         elif 'data' in result:
             return {'status': 'error', 'code': 'bad_screenshot'}
@@ -124,9 +135,17 @@ class BridgeRegistry:
 
     def __init__(self):
         self.connections: dict[tuple[str, str], Connection] = {}
+        # Devices an admin explicitly disconnected. Silent re-register stays blocked
+        # until the device itself says a person reconnected (x-neyra-reauth header),
+        # so "revoke" is not just a kick that any client can undo on its own.
+        self.revoked_devices: set[tuple[str, str]] = set()
 
-    def connect(self, owner, manifest, send, close=None):
+    def connect(self, owner, manifest, send, close=None, reauth=False):
         key = owner, str(manifest.device_id)
+        if key in self.revoked_devices:
+            if not reauth:
+                raise ValueError('device_revoked')
+            self.revoked_devices.discard(key)
         if key in self.connections:
             raise ValueError('device_already_connected')
         if len(self.connections) >= 64:
@@ -146,8 +165,12 @@ class BridgeRegistry:
         connection.pending_tools.clear()
 
     async def revoke(self, connection):
-        """Remove from registry, notify, and close the current socket (manual reconnection remains possible)."""
+        """Remove from registry, notify, close the socket, and block silent re-register.
+
+        The device may come back only when it explicitly reports a manual reconnect.
+        """
         connection.revoked = True
+        self.revoked_devices.add((connection.owner, str(connection.manifest.device_id)))
         self.disconnect(connection)
         try:
             await connection.send(dict(type='revoked'))

@@ -212,8 +212,14 @@ def test_revoked_device_can_manually_reconnect_without_replaying_pending_calls()
 
             # Disconnect the target device
             requester.send_json({'type': 'disconnect_device', 'target_device_id': str(target_m.device_id)})
-            received = [requester.receive_json(), requester.receive_json()]
+            received = []
+            for _ in range(6):
+                received.append(requester.receive_json())
+                kinds = {p.get('type') for p in received}
+                if {'devices', 'done'} <= kinds:
+                    break
             dev_packet = next(p for p in received if p.get('type') == 'devices')
+            assert any(p.get('type') == 'done' for p in received), received
             assert all(d['device_id'] != str(target_m.device_id) for d in dev_packet['devices'])
 
             # Old target socket receives 'revoked' and is closed
@@ -226,8 +232,17 @@ def test_revoked_device_can_manually_reconnect_without_replaying_pending_calls()
         assert isinstance(call_finished.get('error'), ConnectionError)
         assert str(call_finished['error']) == 'device_disconnected'
 
-        # Target PC manually reconnects with the exact same manifest
-        with client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-b'}) as new_ws:
+        # A silent reconnect with the same manifest (same admin token) must be refused after revoke.
+        with client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-b'}) as silent_ws:
+            silent_ws.send_json(target_m.model_dump(mode='json'))
+            with pytest.raises(WebSocketDisconnect):
+                silent_ws.receive_json()
+
+        # The person reconnecting from that PC passes the explicit reauth header and gets back in.
+        with client.websocket_connect(
+            '/v1/desktop/bridge',
+            headers={'Authorization': 'Bearer owner-b', 'x-neyra-reauth': '1'},
+        ) as new_ws:
             new_ws.send_json(target_m.model_dump(mode='json'))
             hello = new_ws.receive_json()
             assert hello['type'] == 'hello'
