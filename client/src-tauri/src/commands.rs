@@ -786,6 +786,22 @@ pub fn slug(name: &str) -> String {
     }
 }
 
+/// Builds `base + suffix + ".yaml"` within the 96-byte limit of `safe_file_name`.
+/// The cut is made on a UTF-8 character boundary; suffixes up to `-200` still fit.
+fn file_candidate(base: &str, suffix: &str) -> String {
+    let tail = format!("{suffix}.yaml");
+    let mut budget = 96usize.saturating_sub(tail.len());
+    let mut cut = 0;
+    for c in base.chars() {
+        if c.len_utf8() > budget {
+            break;
+        }
+        budget -= c.len_utf8();
+        cut += c.len_utf8();
+    }
+    format!("{}{tail}", base[..cut].trim_end_matches('-'))
+}
+
 fn hotkeys_of(command: &Command) -> Vec<String> {
     command
         .triggers
@@ -834,10 +850,10 @@ pub fn write_command(
         Some(file) => safe_file_name(file)?.to_string(),
         None => {
             let base = slug(&command.name);
-            let mut candidate = format!("{base}.yaml");
+            let mut candidate = file_candidate(&base, "");
             let mut n = 2;
             while dir.join(&candidate).exists() {
-                candidate = format!("{base}-{n}.yaml");
+                candidate = file_candidate(&base, &format!("-{n}"));
                 n += 1;
                 if n > 200 {
                     return Err("Слишком много файлов с похожим именем".into());
@@ -1568,6 +1584,37 @@ mod tests {
             "",
         ] {
             assert!(safe_file_name(bad).is_err(), "{bad}");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn long_multibyte_names_stay_within_limit_and_remain_addressable() {
+        let dir = temp();
+        let mut entries = Vec::new();
+        let names = [
+            "я".repeat(60),
+            format!("{}ю", "я".repeat(59)),
+            "中".repeat(40),
+        ];
+        let mut files = Vec::new();
+        for (index, name) in names.iter().enumerate() {
+            let command = simple(name, &format!("длинная команда {}", index + 1));
+            let file = write_command(&dir, &entries, None, &command, None).unwrap();
+            assert!(file.len() <= 96, "{} bytes in {file}", file.len());
+            assert!(safe_file_name(&file).is_ok(), "{file}");
+            assert!(!fs::read(dir.join(&file)).unwrap().is_empty());
+            entries.push(Entry {
+                file: file.clone(),
+                command,
+            });
+            files.push(file);
+        }
+        assert!(files[1].ends_with("-2.yaml"), "{}", files[1]);
+        assert!(files[2].starts_with(&"中".repeat(29)), "{}", files[2]);
+        for file in files {
+            assert!(safe_file_name(&file).is_ok(), "{file}");
+            delete_file(&dir, &file).unwrap();
+            assert!(delete_file(&dir, &file).is_err());
         }
         fs::remove_dir_all(dir).unwrap();
     }
