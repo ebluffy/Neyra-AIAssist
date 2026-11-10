@@ -182,6 +182,27 @@ def test_backup_list_and_run_rbac(real_backup_env):
     assert fake_sqlite_aside not in r_list_with_apply.text
 
 
+def test_backup_run_does_not_leak_external_storage_path(real_backup_env, tmp_path):
+    """LocalFolderStorageAdapter returns an absolute path; the API must expose only its file name."""
+    from core.runtime.external_storage import LocalFolderStorageAdapter
+
+    client = real_backup_env["client"]
+    headers = real_backup_env["headers"]
+    backup_mgr = real_backup_env["backup_mgr"]
+    remote_dir = tmp_path / "remote-share"
+    backup_mgr.external_adapter = LocalFolderStorageAdapter(remote_dir)
+
+    r_run = client.post("/v1/backup/run", headers=headers["maint"])
+    assert r_run.status_code == 200
+    data = r_run.json()["data"]
+    assert data["external_uploaded"] is True
+    assert data["external_name"] == data["archive"]
+    assert str(remote_dir) not in r_run.text
+    assert str(tmp_path) not in r_run.text
+    assert list(remote_dir.glob("neyra-backup-*.zip")), "external copy must still be created"
+    assert "external_ref" not in data
+
+
 def test_backup_restore_rbac_and_validation(real_backup_env):
     """RBAC and validation for /v1/backup/restore."""
     client = real_backup_env["client"]
@@ -411,28 +432,41 @@ def test_concurrent_synthetic_backups_two_instances(real_backup_env):
 
 
 def test_backup_allocation_exhaustion_fails_closed_without_overwriting(real_backup_env, monkeypatch):
-    """If all candidate names are exhausted, run_backup fails closed and never overwrites existing archives."""
+    """With a small real candidate list, run_backup fails closed and keeps existing archives intact."""
     import hashlib
+    from datetime import datetime as real_datetime
+
     import core.runtime.backup as backup_module
 
     backup_mgr = real_backup_env["backup_mgr"]
     backups_dir = real_backup_env["backups_dir"]
 
-    # Pre-create a dummy archive at the base path
-    base_file = backups_dir / "neyra-backup-preexisting.zip"
-    base_file.write_bytes(b"PRE_EXISTING_CANNOT_OVERWRITE_BASE")
-    base_sha = hashlib.sha256(base_file.read_bytes()).hexdigest()
+    class FrozenDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ARG003 - fixed clock for deterministic candidate names
+            return cls(2026, 11, 10, 12, 0, 0)
 
-    # Simulate all candidate allocations failing with FileExistsError (collision on every candidate)
-    def mock_publish(src, target):
-        raise FileExistsError(f"Simulated collision on {target}")
+    monkeypatch.setattr(backup_module, "datetime", FrozenDatetime)
+    monkeypatch.setattr(backup_module, "ARCHIVE_NAME_LIMIT", 3)
 
-    monkeypatch.setattr(backup_module, "_atomic_publish_archive", mock_publish)
+    existing = [
+        backups_dir / "neyra-backup-20261110-120000.zip",
+        backups_dir / "neyra-backup-20261110-120000-1.zip",
+        backups_dir / "neyra-backup-20261110-120000-2.zip",
+    ]
+    before = {}
+    for index, path in enumerate(existing):
+        payload = b"PRE_EXISTING_" + str(index).encode()
+        path.write_bytes(payload)
+        before[path] = (payload, hashlib.sha256(payload).hexdigest())
 
     with pytest.raises(RuntimeError, match="could not allocate unique backup archive name"):
         backup_mgr.run_backup("fail_closed_test")
 
-    # VERIFY: existing files were NOT corrupted or overwritten
-    assert base_file.read_bytes() == b"PRE_EXISTING_CANNOT_OVERWRITE_BASE"
-    assert hashlib.sha256(base_file.read_bytes()).hexdigest() == base_sha
+    for path, (payload, digest) in before.items():
+        assert path.read_bytes() == payload
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+
+    leftovers = [p.name for p in backups_dir.iterdir() if p.name.endswith((".part", ".zip"))]
+    assert sorted(leftovers) == sorted(path.name for path in existing)
 

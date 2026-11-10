@@ -24,10 +24,17 @@ PENDING_FLAG = "pending.json"
 PENDING_BLOCKED = "blocked.json"
 PENDING_MEMORY = "memory"
 LAST_APPLY_NAME = "last_restore_apply.json"
+# Candidate names tried per backup timestamp: neyra-backup-<ts>.zip and -1..-N.
+ARCHIVE_NAME_LIMIT = 10000
 
 
 def _atomic_publish_archive(src_zip: Path, target_zip: Path) -> None:
-    """Atomically place src_zip at target_zip without overwriting an existing file."""
+    """Atomically place src_zip at target_zip without overwriting an existing file.
+
+    The fallback for filesystems without hardlinks copies to ``<target>.part`` first so
+    that a half-written file never appears under a name that ``list_backups`` and
+    ``restore`` accept.
+    """
     try:
         os.link(src_zip, target_zip)
         return
@@ -36,16 +43,25 @@ def _atomic_publish_archive(src_zip: Path, target_zip: Path) -> None:
     except (OSError, NotImplementedError):
         pass
 
-    fd = os.open(target_zip, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    part = target_zip.with_name(target_zip.name + ".part")
     try:
-        with open(fd, "wb") as dst_f, open(src_zip, "rb") as src_f:
+        with open(part, "wb") as dst_f, open(src_zip, "rb") as src_f:
             shutil.copyfileobj(src_f, dst_f)
-    except Exception:
+            dst_f.flush()
+            os.fsync(dst_f.fileno())
         try:
-            target_zip.unlink(missing_ok=True)
-        except OSError:
+            os.link(part, target_zip)
+        except FileExistsError:
+            raise
+        except (OSError, NotImplementedError):
+            fd = os.open(target_zip, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            os.replace(part, target_zip)
+    finally:
+        try:
+            part.unlink()
+        except FileNotFoundError:
             pass
-        raise
 
 
 class SqliteRollbackError(RuntimeError):
@@ -171,7 +187,7 @@ class BackupManager:
 
             target_path: Path | None = None
             candidates = [self.local_dir / f"neyra-backup-{ts}.zip"]
-            candidates.extend(self.local_dir / f"neyra-backup-{ts}-{i}.zip" for i in range(1, 10000))
+            candidates.extend(self.local_dir / f"neyra-backup-{ts}-{i}.zip" for i in range(1, ARCHIVE_NAME_LIMIT))
             for cand in candidates:
                 try:
                     _atomic_publish_archive(temp_zip, cand)
@@ -520,7 +536,7 @@ class BackupManager:
         mem_dst = self._memory_root()
         self._assert_safe_memory_dst(mem_dst)
 
-        with tempfile.TemporaryDirectory(dir=".", prefix=".tmp_restore-") as unpack_dir_str:
+        with tempfile.TemporaryDirectory(dir=str(self.local_dir), prefix=".tmp_restore-") as unpack_dir_str:
             unpack_root = Path(unpack_dir_str)
             shutil.unpack_archive(str(src), str(unpack_root), "zip")
             built = self._build_memory_staging(unpack_root, unpack_root / ".neyra_memory_staging")
