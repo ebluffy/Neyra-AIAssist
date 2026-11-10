@@ -13,7 +13,9 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -30,7 +32,36 @@ LAST_APPLY_NAME = "last_restore_apply.json"
 ARCHIVE_NAME_LIMIT = 10000
 # Staging directories and half-published archives older than this are crash leftovers.
 STALE_ARTIFACT_SECONDS = 3600
+# Process-local bookkeeping (AR-11): a BackupManager may be constructed while the
+# server is already running (reflection engine does this), so crash-leftover cleanup
+# must run at most once per backup directory per process and must never touch a
+# staging directory that a live backup/restore in this process is still using.
+_CLEANUP_LOCK = threading.Lock()
+_CLEANED_DIRS: set[Path] = set()
+_ACTIVE_STAGING: set[Path] = set()
 _ARCHIVE_NAME = re.compile(r"^neyra-backup-(\d{8}-\d{6})(?:-(\d+))?\.zip$")
+
+
+def _dir_key(path: Path) -> Path:
+    """Stable identity for a backup directory, resolved when possible."""
+    try:
+        return path.resolve()
+    except OSError:
+        return path.absolute()
+
+
+@contextmanager
+def _live_staging(path: Path):
+    """Mark a staging directory as in use so cleanup cannot delete it (AR-11)."""
+    key = _dir_key(path)
+    with _CLEANUP_LOCK:
+        _ACTIVE_STAGING.add(key)
+    try:
+        yield
+    finally:
+        with _CLEANUP_LOCK:
+            _ACTIVE_STAGING.discard(key)
+
 
 
 def _archive_sort_key(name: str) -> tuple[str, int]:
@@ -109,19 +140,39 @@ class BackupManager:
         if chroma.is_absolute():
             self.sources = [chroma.parent, Path("./logs")]
         self.external_adapter: ExternalStorageAdapter | None = build_external_storage_adapter(self.config)
+        self._cleanup_leftovers_once()
+
+    def _cleanup_leftovers_once(self) -> None:
+        """Remove crash leftovers once per process for this backup dir (AR-11).
+
+        ``BackupManager`` is also constructed mid-run (``reflection/engine.py``), so
+        repeating cleanup on every construction risks deleting a staging directory
+        that another backup is still writing: a long copy keeps its files growing
+        while the directory mtime stays old. Cleanup therefore runs on first use of
+        the directory in this process only, and skips directories registered as live.
+        """
+        key = _dir_key(self.local_dir)
+        with _CLEANUP_LOCK:
+            if key in _CLEANED_DIRS:
+                return
+            _CLEANED_DIRS.add(key)
         self.cleanup_stale_artifacts()
 
     def cleanup_stale_artifacts(self, max_age_seconds: float = STALE_ARTIFACT_SECONDS) -> None:
         """Remove staging dirs and partial archives left behind by a crash.
 
         Only entries older than ``max_age_seconds`` are touched, so a concurrent
-        backup or restore keeps its own live staging directory.
+        backup or restore keeps its own live staging directory. Staging directories
+        registered by a live run in this process are never removed, even when their
+        mtime is old.
         """
         cutoff = time.time() - max_age_seconds
         try:
             entries = list(self.local_dir.iterdir())
         except (FileNotFoundError, NotADirectoryError):
             return
+        with _CLEANUP_LOCK:
+            live = set(_ACTIVE_STAGING)
         for entry in entries:
             name = entry.name
             leftover = (
@@ -131,6 +182,8 @@ class BackupManager:
                 or name.endswith(".part")
             )
             if not leftover:
+                continue
+            if _dir_key(entry) in live:
                 continue
             try:
                 if entry.stat().st_mtime > cutoff:
@@ -156,7 +209,8 @@ class BackupManager:
         self.local_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-        with tempfile.TemporaryDirectory(dir=str(self.local_dir), prefix=".tmp_backup_staging-") as staging_dir_str:
+        staging_ctx = tempfile.TemporaryDirectory(dir=str(self.local_dir), prefix=".tmp_backup_staging-")
+        with staging_ctx as staging_dir_str, _live_staging(Path(staging_dir_str)):
             staging_root = Path(staging_dir_str)
             tmp_root = staging_root / "content"
             tmp_root.mkdir(parents=True, exist_ok=True)
@@ -593,7 +647,8 @@ class BackupManager:
         mem_dst = self._memory_root()
         self._assert_safe_memory_dst(mem_dst)
 
-        with tempfile.TemporaryDirectory(dir=str(self.local_dir), prefix=".tmp_restore-") as unpack_dir_str:
+        unpack_ctx = tempfile.TemporaryDirectory(dir=str(self.local_dir), prefix=".tmp_restore-")
+        with unpack_ctx as unpack_dir_str, _live_staging(Path(unpack_dir_str)):
             unpack_root = Path(unpack_dir_str)
             shutil.unpack_archive(str(src), str(unpack_root), "zip")
             built = self._build_memory_staging(unpack_root, unpack_root / ".neyra_memory_staging")

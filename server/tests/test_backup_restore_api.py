@@ -585,8 +585,69 @@ def test_cleanup_stale_artifacts_removes_only_old_entries(real_backup_env):
     fresh_part = backups_dir / ".part-fresh.zip"
     fresh_part.write_bytes(b"fresh")
 
-    BackupManager(backup_mgr.config)
+    # Cleanup also runs on first construction per process; calling it directly keeps
+    # this test independent of when the fixture manager was built (see AR-11 test).
+    backup_mgr.cleanup_stale_artifacts()
 
     assert not stale_dir.exists()
     assert not stale_part.exists()
     assert fresh_part.exists()
+
+
+def test_concurrent_manager_does_not_delete_live_staging(real_backup_env, monkeypatch):
+    """AR-11: a BackupManager created during a running backup must keep its staging.
+
+    ``reflection/engine.py`` constructs a new ``BackupManager`` while the server is
+    up, and a long copy leaves the staging directory with an old mtime, so cleanup
+    must not rely on mtime alone nor repeat on every construction.
+    """
+    import os
+    import shutil
+    import threading
+    import time
+
+    backup_mgr = real_backup_env["backup_mgr"]
+    backups_dir = real_backup_env["backups_dir"]
+    started = threading.Event()
+    release = threading.Event()
+    errors: list[BaseException] = []
+    real_copytree = shutil.copytree
+
+    def slow_copytree(src, dst, *args, **kwargs):
+        started.set()
+        if not release.wait(30):
+            raise RuntimeError("test did not release the copy")
+        return real_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr("core.runtime.backup.shutil.copytree", slow_copytree)
+
+    def _run_backup() -> None:
+        try:
+            backup_mgr.run_backup("concurrent")
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion below
+            errors.append(exc)
+
+    worker = threading.Thread(target=_run_backup, name="backup-under-test")
+    worker.start()
+    try:
+        assert started.wait(30), "backup never reached the copy stage"
+        staging = [p for p in backups_dir.iterdir() if p.name.startswith(".tmp_backup_staging-")]
+        assert len(staging) == 1, staging
+        old = time.time() - 2 * 3600
+        os.utime(staging[0], (old, old))
+
+        # Mid-run construction (same call the reflection engine makes) must not delete it.
+        BackupManager(backup_mgr.config)
+        assert staging[0].exists()
+
+        # Even an explicit cleanup has to skip a staging directory in active use.
+        backup_mgr.cleanup_stale_artifacts()
+        assert staging[0].exists()
+    finally:
+        release.set()
+        worker.join(60)
+
+    assert not worker.is_alive(), "backup thread did not finish"
+    assert not errors, errors
+    archives = backup_mgr.list_backups()
+    assert len(archives) == 1, archives
