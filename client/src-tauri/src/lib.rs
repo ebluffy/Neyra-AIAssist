@@ -1502,7 +1502,10 @@ fn bridge_message(state: State<'_, Desktop>, kind: String) -> Result<(), String>
     send(&state.bridge, json!({"type":kind}))
 }
 fn start_turn(state: &Desktop) -> Result<String, String> {
-    let mut current = state.current_turn.lock().map_err(lock_error)?;
+    reserve_turn(&state.current_turn)
+}
+fn reserve_turn(current: &Mutex<Option<String>>) -> Result<String, String> {
+    let mut current = current.lock().map_err(lock_error)?;
     if current.is_some() {
         return Err("Сначала дождитесь ответа или нажмите Stop".into());
     }
@@ -1589,6 +1592,31 @@ async fn record_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Resul
     });
     Ok(())
 }
+// The same capture/commit boundary is exercised without opening an audio device.
+async fn finish_ptt(
+    current_turn: &Mutex<Option<String>>,
+    request_id: &str,
+    finish: impl std::future::Future<Output = Result<Vec<u8>, String>>,
+    send_pcm: impl FnOnce(Vec<u8>) -> Result<(), String>,
+) -> Result<(), String> {
+    let result = async {
+        let pcm = finish.await?;
+        if pcm.is_empty() {
+            return Err("Запись пустая".into());
+        }
+        send_pcm(pcm)
+    }
+    .await;
+    if result.is_err() {
+        if let Ok(mut current) = current_turn.lock() {
+            // A delayed old capture must not clear a newer turn after Stop.
+            if current.as_deref() == Some(request_id) {
+                *current = None;
+            }
+        }
+    }
+    result
+}
 #[tauri::command]
 async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
     let recording = state
@@ -1598,44 +1626,41 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
         .take()
         .ok_or("Нет записи")?;
     let request_id = start_turn(&state)?;
-    let result = async {
-        let pcm = tauri::async_runtime::spawn_blocking(move || recording.finish())
-            .await
-            .map_err(|_| "Ошибка записи".to_string())??;
-        if !pcm.is_empty() {
+    finish_ptt(
+        &state.current_turn,
+        &request_id,
+        async {
+            tauri::async_runtime::spawn_blocking(move || recording.finish())
+                .await
+                .map_err(|_| "Ошибка записи".to_string())?
+        },
+        |pcm| {
             let duration_ms = (pcm.len() as u64).saturating_mul(1000) / 32_000;
             let clip = base64::engine::general_purpose::STANDARD.encode(audio::wav_s16le_16k(&pcm));
             let _ = app.emit(
                 "desktop-event",
                 json!({"type":"voice.clip","audio":clip,"duration_ms":duration_ms}),
             );
-        }
-        let tx = state
-            .voice
-            .lock()
-            .map_err(lock_error)?
-            .clone()
-            .ok_or_else(|| "Нет голосового подключения".to_string())?;
-        for chunk in pcm.chunks(32000) {
-            tx.send(Message::Binary(chunk.to_vec().into()))
-                .map_err(|_| "Подключение закрыто".to_string())?;
-        }
-        tx.send(Message::Text(
-            json!({"type":"commit","request_id":request_id})
-                .to_string()
-                .into(),
-        ))
-        .map_err(|_| "Подключение закрыто".to_string())?;
-        Ok::<(), String>(())
-    }
-    .await;
-    if result.is_err() {
-        // Clear sticky turn on any failure after start_turn (AR-8).
-        if let Ok(mut current) = state.current_turn.lock() {
-            *current = None;
-        }
-    }
-    result
+            let tx = state
+                .voice
+                .lock()
+                .map_err(lock_error)?
+                .clone()
+                .ok_or_else(|| "Нет голосового подключения".to_string())?;
+            for chunk in pcm.chunks(32000) {
+                tx.send(Message::Binary(chunk.to_vec().into()))
+                    .map_err(|_| "Подключение закрыто".to_string())?;
+            }
+            tx.send(Message::Text(
+                json!({"type":"commit","request_id":request_id})
+                    .to_string()
+                    .into(),
+            ))
+            .map_err(|_| "Подключение закрыто".to_string())?;
+            Ok(())
+        },
+    )
+    .await
 }
 #[tauri::command]
 async fn record_cancel(state: State<'_, Desktop>) -> Result<(), String> {
@@ -2030,6 +2055,84 @@ fn monitor_session(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn ptt_empty_capture_never_commits_and_releases_turn_for_retry() {
+        let current = Mutex::new(None);
+        let id = reserve_turn(&current).unwrap();
+        let error = finish_ptt(&current, &id, std::future::ready(Ok(vec![])), |_| {
+            panic!("empty PCM must not reach the clip/commit boundary")
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error, "Запись пустая");
+        assert!(current.lock().unwrap().is_none());
+        assert!(reserve_turn(&current).is_ok());
+    }
+
+    #[tokio::test]
+    async fn ptt_capture_failure_releases_turn_without_commit() {
+        let current = Mutex::new(None);
+        let id = reserve_turn(&current).unwrap();
+        let error = finish_ptt(
+            &current,
+            &id,
+            std::future::ready(Err("capture failed".into())),
+            |_| panic!("failed capture must not commit"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "capture failed");
+        assert!(reserve_turn(&current).is_ok());
+    }
+
+    #[tokio::test]
+    async fn ptt_send_failure_releases_turn_for_retry() {
+        let current = Mutex::new(None);
+        let id = reserve_turn(&current).unwrap();
+        let error = finish_ptt(&current, &id, std::future::ready(Ok(vec![0, 1])), |pcm| {
+            assert_eq!(pcm, vec![0, 1]);
+            Err("connection closed".into())
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error, "connection closed");
+        assert!(reserve_turn(&current).is_ok());
+    }
+
+    #[tokio::test]
+    async fn ptt_success_keeps_turn_until_server_terminal() {
+        let current = Mutex::new(None);
+        let id = reserve_turn(&current).unwrap();
+        let mut sent = false;
+        finish_ptt(&current, &id, std::future::ready(Ok(vec![0, 1])), |pcm| {
+            assert_eq!(pcm, vec![0, 1]);
+            sent = true;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(sent);
+        assert_eq!(current.lock().unwrap().as_deref(), Some(id.as_str()));
+        assert!(reserve_turn(&current).is_err());
+    }
+
+    #[tokio::test]
+    async fn ptt_late_failure_does_not_clear_new_turn() {
+        let current = Mutex::new(None);
+        let id = reserve_turn(&current).unwrap();
+        let finish = async {
+            *current.lock().unwrap() = None;
+            let replacement = reserve_turn(&current).unwrap();
+            assert_ne!(replacement, id);
+            Ok(vec![])
+        };
+        assert!(finish_ptt(&current, &id, finish, |_| panic!("empty PCM"))
+            .await
+            .is_err());
+        assert!(current.lock().unwrap().is_some());
+        assert!(reserve_turn(&current).is_err());
+    }
 
     fn test_token() -> String {
         let mut token = ["fleet", "test", "49"].join("-");

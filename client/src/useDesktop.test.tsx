@@ -298,4 +298,204 @@ describe('unavailable server', () => {
     await tick(120000);
     expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(attempts);
   });
+
+  it('separates local audio output errors from server errors in desktop-event handler', async () => {
+    await mount();
+    await act(async () => {
+      ipc.listeners.get('desktop-event')!({ payload: { type: 'error', code: 'audio_unavailable' } });
+    });
+    expect(app.error).toBe('Ошибка звука: audio_unavailable. Проверьте аудиоустройство.');
+    expect(app.thinking).toBe(false);
+
+    await act(async () => {
+      ipc.listeners.get('desktop-event')!({ payload: { type: 'error', code: 'microphone_unavailable' } });
+    });
+    expect(app.error).toBe('Ошибка звука: microphone_unavailable. Проверьте микрофон и его разрешение в системе.');
+
+    await act(async () => {
+      ipc.listeners.get('desktop-event')!({ payload: { type: 'error', code: 'audio_backpressure' } });
+    });
+    expect(app.error).toBe('Ошибка звука: audio_backpressure. Очередь озвучки переполнена, ответ показан текстом.');
+
+    await act(async () => {
+      ipc.listeners.get('desktop-event')!({ payload: { type: 'error', code: 'wake_failed' } });
+    });
+    expect(app.error).toBe('Ошибка звука: wake_failed. Прослушивание по слову не запустилось, проверьте микрофон.');
+
+    await act(async () => {
+      ipc.listeners.get('desktop-event')!({ payload: { type: 'error', code: 'voice_failed' } });
+    });
+    expect(app.error).toBe('Сервер: voice_failed. Повторите попытку.');
+
+    await act(async () => {
+      ipc.listeners.get('desktop-event')!({ payload: { type: 'error', code: 42 } });
+    });
+    expect(app.error).toBe('Сервер: ошибка. Повторите попытку.');
+  });
+
+  it('clears recording state when record_stop rejects with empty recording or error, allowing restart', async () => {
+    await mount();
+    ipc.invoke.mockImplementation(async (command: string) => {
+      if (command === 'record_start') return {};
+      if (command === 'record_stop') throw 'Запись пустая';
+      return {};
+    });
+
+    await act(async () => { await app.beginRecording(); });
+    expect(app.recording).toBe(true);
+
+    await act(async () => { await app.finishRecording(); });
+    expect(app.recording).toBe(false);
+    expect(app.error).toContain('Запись пустая');
+    expect(app.thinking).toBe(false);
+
+    // Can immediately start recording again without being locked
+    await act(async () => { await app.beginRecording(); });
+    expect(app.recording).toBe(true);
+  });
+});
+
+describe('PTT deferred IPC lifecycle', () => {
+  function defer(commandName = 'record_stop') {
+    const base = ipc.invoke.getMockImplementation()!;
+    let resolve!: () => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    ipc.invoke.mockImplementation((command, args) => command === commandName ? promise : base(command, args));
+    return { resolve, reject };
+  }
+  async function event(type: string, extra = {}) {
+    await act(async () => { ipc.listeners.get('desktop-event')!({ payload: { type, ...extra } }); });
+  }
+  async function startStop(path: string) {
+    await act(async () => { await app.beginRecording(); });
+    let pending: Promise<void> = Promise.resolve();
+    if (path === 'manual') await act(async () => { pending = app.finishRecording(); });
+    else await tick(30000);
+    return { settle: async () => { await act(async () => { await pending; }); } };
+  }
+
+  describe.each(['manual', 'limit'])('%s record_stop', path => {
+    it.each(['error', 'cancelled', 'disconnected', 'speaking', 'done'])('does not overwrite early %s with successful IPC acknowledgement', async type => {
+      await mount();
+      const ipcStop = defer();
+      const pending = await startStop(path);
+      await event(type, { code: 'voice_failed', text: 'answer' });
+      const notice = app.notice;
+      const error = app.error;
+      await act(async () => { ipcStop.resolve(); });
+      await pending.settle();
+      expect(app.thinking).toBe(false);
+      expect(app.recording).toBe(false);
+      expect(app.notice).toBe(notice);
+      expect(app.error).toBe(error);
+    });
+
+    it('keeps a successful acknowledgement waiting for transcription', async () => {
+      await mount();
+      const ipcStop = defer();
+      const pending = await startStop(path);
+      await act(async () => { ipcStop.resolve(); });
+      await pending.settle();
+      expect(app.thinking).toBe(true);
+      expect(app.recording).toBe(false);
+    });
+
+    it.each(['resolve', 'reject'])('does not change a new capture after Stop and late IPC %s', async outcome => {
+      await mount();
+      const ipcStop = defer();
+      const pending = await startStop(path);
+      await act(async () => { await app.stop(); await app.beginRecording(); });
+      const notice = app.notice;
+      await act(async () => { if (outcome === 'resolve') ipcStop.resolve(); else ipcStop.reject('old failure'); });
+      await pending.settle();
+      expect(app.recording).toBe(true);
+      expect(app.thinking).toBe(false);
+      expect(app.error).toBe('');
+      expect(app.notice).toBe(notice);
+    });
+
+    it('does not overwrite a terminal server error with a late IPC rejection', async () => {
+      await mount();
+      const ipcStop = defer();
+      const pending = await startStop(path);
+      await event('error', { code: 'voice_failed' });
+      await act(async () => { ipcStop.reject('old failure'); });
+      await pending.settle();
+      expect(app.error).toBe('Сервер: voice_failed. Повторите попытку.');
+      expect(app.thinking).toBe(false);
+    });
+
+    it('clears failed processing and allows another capture on IPC rejection', async () => {
+      await mount();
+      const ipcStop = defer();
+      const pending = await startStop(path);
+      await act(async () => { ipcStop.reject('Запись пустая'); });
+      await pending.settle();
+      expect(app.recording).toBe(false);
+      expect(app.thinking).toBe(false);
+      expect(app.error).toBe('Запись пустая');
+      await act(async () => { await app.beginRecording(); });
+      expect(app.recording).toBe(true);
+    });
+  });
+
+  it.each(['manual', 'limit'])('%s preserves the voice done TTS notice until speaking', async path => {
+    await mount();
+    const ipcStop = defer();
+    const pending = await startStop(path);
+    await event('done', { source: 'voice', text: 'answer' });
+    await act(async () => { ipcStop.resolve(); });
+    await pending.settle();
+    expect(app.thinking).toBe(true);
+    expect(app.notice).toBe('Готовлю озвучку…');
+    await event('speaking');
+    expect(app.thinking).toBe(false);
+  });
+
+  it.each(['resolve', 'reject'])('does not reset a new capture after a late record_cancel %s', async outcome => {
+    await mount();
+    const ipcCancel = defer('record_cancel');
+    await act(async () => { await app.beginRecording(); });
+    let pending!: Promise<void>;
+    await act(async () => { pending = app.cancelRecording(); });
+    await act(async () => { await app.stop(); await app.beginRecording(); });
+    await act(async () => { if (outcome === 'resolve') ipcCancel.resolve(); else ipcCancel.reject('old cancel'); await pending; });
+    expect(app.recording).toBe(true);
+    expect(app.error).toBe('');
+  });
+
+  it('clears recording in finally when record_cancel rejects', async () => {
+    await mount();
+    const ipcCancel = defer('record_cancel');
+    await act(async () => { await app.beginRecording(); });
+    let pending!: Promise<void>;
+    await act(async () => { pending = app.cancelRecording(); });
+    await act(async () => { ipcCancel.reject('cancel failed'); await pending; });
+    expect(app.recording).toBe(false);
+    expect(app.thinking).toBe(false);
+    expect(app.error).toBe('cancel failed');
+    await act(async () => { await app.beginRecording(); });
+    expect(app.recording).toBe(true);
+  });
+
+  it('does not revive a record_start acknowledgement after Stop', async () => {
+    await mount();
+    const ipcStart = defer('record_start');
+    let pending!: Promise<void>;
+    await act(async () => { pending = app.beginRecording(); });
+    await act(async () => { await app.stop(); });
+    await act(async () => { ipcStart.resolve(); await pending; });
+    expect(app.recording).toBe(false);
+  });
+
+  it('does not send a second record_stop when the limit expires during manual IPC', async () => {
+    await mount();
+    const ipcStop = defer();
+    const pending = await startStop('manual');
+    await tick(30000);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(1);
+    await act(async () => { ipcStop.resolve(); });
+    await pending.settle();
+  });
 });

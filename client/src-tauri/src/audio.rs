@@ -23,98 +23,115 @@ fn note_level(level: &AtomicI32, data: &[f32]) {
 impl Recording {
     pub fn start() -> Result<Self, String> {
         let (stop, rx) = mpsc::channel();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
         let level = Arc::new(AtomicI32::new(-1000));
         let meter_stop = Arc::new(AtomicBool::new(false));
         let level_thread = level.clone();
         let join = std::thread::spawn(move || {
-            let device = cpal::default_host()
-                .default_input_device()
-                .ok_or("Микрофон не найден")?;
-            let config = device
-                .default_input_config()
-                .map_err(|_| "Микрофон недоступен")?;
-            let channels = config.channels() as usize;
-            let rate = config.sample_rate().0;
-            let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
-            let max = rate as usize * channels * 30;
-            let build = |samples: Arc<Mutex<Vec<f32>>>, level: Arc<AtomicI32>| {
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    note_level(&level, data);
-                    if let Ok(mut out) = samples.lock() {
-                        let left = max.saturating_sub(out.len());
-                        out.extend(data.iter().take(left));
+            let opened = (|| -> Result<_, String> {
+                let device = cpal::default_host()
+                    .default_input_device()
+                    .ok_or("Микрофон не найден")?;
+                let config = device
+                    .default_input_config()
+                    .map_err(|_| "Микрофон недоступен")?;
+                let channels = config.channels() as usize;
+                let rate = config.sample_rate().0;
+                let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
+                let max = rate as usize * channels * 30;
+                let build = |samples: Arc<Mutex<Vec<f32>>>, level: Arc<AtomicI32>| {
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        note_level(&level, data);
+                        if let Ok(mut out) = samples.lock() {
+                            let left = max.saturating_sub(out.len());
+                            out.extend(data.iter().take(left));
+                        }
                     }
+                };
+                let stream = match config.sample_format() {
+                    cpal::SampleFormat::F32 => device.build_input_stream(
+                        &config.clone().into(),
+                        build(samples.clone(), level_thread.clone()),
+                        |_| {},
+                        None,
+                    ),
+                    cpal::SampleFormat::I16 => {
+                        let s = samples.clone();
+                        let level = level_thread.clone();
+                        device.build_input_stream(
+                            &config.clone().into(),
+                            move |data: &[i16], _| {
+                                let floats: Vec<f32> =
+                                    data.iter().map(|v| *v as f32 / 32768.0).collect();
+                                note_level(&level, &floats);
+                                if let Ok(mut out) = s.lock() {
+                                    let left = max.saturating_sub(out.len());
+                                    out.extend(floats.into_iter().take(left));
+                                }
+                            },
+                            |_| {},
+                            None,
+                        )
+                    }
+                    cpal::SampleFormat::U16 => {
+                        let s = samples.clone();
+                        let level = level_thread.clone();
+                        device.build_input_stream(
+                            &config.clone().into(),
+                            move |data: &[u16], _| {
+                                let floats: Vec<f32> = data
+                                    .iter()
+                                    .map(|v| (*v as f32 - 32768.0) / 32768.0)
+                                    .collect();
+                                note_level(&level, &floats);
+                                if let Ok(mut out) = s.lock() {
+                                    let left = max.saturating_sub(out.len());
+                                    out.extend(floats.into_iter().take(left));
+                                }
+                            },
+                            |_| {},
+                            None,
+                        )
+                    }
+                    _ => return Err("Формат микрофона не поддерживается".into()),
+                }
+                .map_err(|_| "Не удалось открыть микрофон")?;
+                stream.play().map_err(|_| "Не удалось включить микрофон")?;
+                Ok((stream, samples, channels, rate))
+            })();
+
+            let (stream, samples, channels, rate) = match opened {
+                Ok(res) => {
+                    let _ = ready_tx.send(Ok(()));
+                    res
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e.to_string()));
+                    return Err(e);
                 }
             };
-            let stream = match config.sample_format() {
-                cpal::SampleFormat::F32 => device.build_input_stream(
-                    &config.clone().into(),
-                    build(samples.clone(), level_thread.clone()),
-                    |_| {},
-                    None,
-                ),
-                cpal::SampleFormat::I16 => {
-                    let s = samples.clone();
-                    let level = level_thread.clone();
-                    device.build_input_stream(
-                        &config.clone().into(),
-                        move |data: &[i16], _| {
-                            let floats: Vec<f32> =
-                                data.iter().map(|v| *v as f32 / 32768.0).collect();
-                            note_level(&level, &floats);
-                            if let Ok(mut out) = s.lock() {
-                                let left = max.saturating_sub(out.len());
-                                out.extend(floats.into_iter().take(left));
-                            }
-                        },
-                        |_| {},
-                        None,
-                    )
-                }
-                cpal::SampleFormat::U16 => {
-                    let s = samples.clone();
-                    let level = level_thread.clone();
-                    device.build_input_stream(
-                        &config.clone().into(),
-                        move |data: &[u16], _| {
-                            let floats: Vec<f32> = data
-                                .iter()
-                                .map(|v| (*v as f32 - 32768.0) / 32768.0)
-                                .collect();
-                            note_level(&level, &floats);
-                            if let Ok(mut out) = s.lock() {
-                                let left = max.saturating_sub(out.len());
-                                out.extend(floats.into_iter().take(left));
-                            }
-                        },
-                        |_| {},
-                        None,
-                    )
-                }
-                _ => return Err("Формат микрофона не поддерживается".into()),
-            }
-            .map_err(|_| "Не удалось открыть микрофон")?;
-            stream.play().map_err(|_| "Не удалось включить микрофон")?;
-            let _ = ready_tx.send(());
+
             let _ = rx.recv_timeout(std::time::Duration::from_secs(30));
             drop(stream);
             let data = samples.lock().map_err(|_| "Ошибка аудиобуфера")?;
             Ok(resample(&data, channels, rate))
         });
-        if ready_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .is_err()
-        {
-            let _ = stop.send(());
-            return Err("Микрофон недоступен: проверьте разрешение ОС".into());
+        match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => Ok(Self {
+                stop,
+                join,
+                level,
+                meter_stop,
+            }),
+            Ok(Err(e)) => {
+                let _ = stop.send(());
+                Err(e)
+            }
+            Err(_) => {
+                let _ = stop.send(());
+                Err("Микрофон недоступен: проверьте разрешение ОС".into())
+            }
         }
-        Ok(Self {
-            stop,
-            join,
-            level,
-            meter_stop,
-        })
     }
     pub fn finish(self) -> Result<Vec<u8>, String> {
         self.meter_stop.store(true, Ordering::Relaxed);
@@ -390,5 +407,19 @@ mod tests {
         assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
         assert_eq!(wav.len(), 48);
         assert_eq!(&wav[44..], &[1, 2, 3, 4]);
+    }
+    #[test]
+    fn wav_header_empty_data() {
+        let wav = wav_s16le_16k(&[]);
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(wav[4..8].try_into().unwrap()), 36);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 0);
+        assert_eq!(wav.len(), 44);
+    }
+    #[test]
+    fn resample_empty_or_zero_rate() {
+        assert!(resample(&[], 1, 16000).is_empty());
+        assert!(resample(&[0.5; 100], 0, 16000).is_empty());
+        assert!(resample(&[0.5; 100], 1, 0).is_empty());
     }
 }
