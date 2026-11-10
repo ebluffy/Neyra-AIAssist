@@ -1501,13 +1501,33 @@ fn bridge_message(state: State<'_, Desktop>, kind: String) -> Result<(), String>
     }
     send(&state.bridge, json!({"type":kind}))
 }
+enum TurnStartError {
+    Busy,
+    Internal(String),
+}
+impl From<TurnStartError> for String {
+    fn from(value: TurnStartError) -> Self {
+        match value {
+            TurnStartError::Busy => "Сначала дождитесь ответа или нажмите Stop".into(),
+            TurnStartError::Internal(message) => message,
+        }
+    }
+}
 fn start_turn(state: &Desktop) -> Result<String, String> {
     reserve_turn(&state.current_turn)
 }
+fn start_turn_typed(state: &Desktop) -> Result<String, TurnStartError> {
+    reserve_turn_typed(&state.current_turn)
+}
 fn reserve_turn(current: &Mutex<Option<String>>) -> Result<String, String> {
-    let mut current = current.lock().map_err(lock_error)?;
+    reserve_turn_typed(current).map_err(String::from)
+}
+fn reserve_turn_typed(current: &Mutex<Option<String>>) -> Result<String, TurnStartError> {
+    let mut current = current
+        .lock()
+        .map_err(|e| TurnStartError::Internal(lock_error(e)))?;
     if current.is_some() {
-        return Err("Сначала дождитесь ответа или нажмите Stop".into());
+        return Err(TurnStartError::Busy);
     }
     let id = uuid::Uuid::new_v4().to_string();
     *current = Some(id.clone());
@@ -1567,21 +1587,39 @@ async fn record_start(
     app: tauri::AppHandle,
     state: State<'_, Desktop>,
 ) -> Result<(), CaptureError> {
-    if state.current_turn.lock().map_err(lock_error)?.is_some() {
+    if state
+        .current_turn
+        .lock()
+        .map_err(|e| CaptureError::internal(lock_error(e)))?
+        .is_some()
+    {
         return Err(CaptureError::TurnBusy);
     }
-    if state.voice.lock().map_err(lock_error)?.is_none() {
+    if state
+        .voice
+        .lock()
+        .map_err(|e| CaptureError::internal(lock_error(e)))?
+        .is_none()
+    {
         return Err(CaptureError::VoiceOffline);
     }
-    if state.live.lock().map_err(lock_error)?.is_some() {
+    if state
+        .live
+        .lock()
+        .map_err(|e| CaptureError::internal(lock_error(e)))?
+        .is_some()
+    {
         return Err(CaptureError::LiveActive);
     }
     state.generation.fetch_add(1, Ordering::SeqCst);
-    let mut recording = state.recording.lock().map_err(lock_error)?;
+    let mut recording = state
+        .recording
+        .lock()
+        .map_err(|e| CaptureError::internal(lock_error(e)))?;
     if recording.is_some() {
         return Err(CaptureError::AlreadyRecording);
     }
-    let started = audio::Recording::start()?;
+    let started = audio::Recording::start().map_err(CaptureError::Device)?;
     let level = started.level.clone();
     let meter_stop = started.meter_stop.clone();
     *recording = Some(started);
@@ -1605,9 +1643,14 @@ enum CaptureError {
     NoCapture,
     EmptyCapture,
     Device(String),
+    Internal(String),
 }
 
 impl CaptureError {
+    fn internal(message: impl Into<String>) -> Self {
+        Self::Internal(message.into())
+    }
+
     fn code(&self) -> &'static str {
         match self {
             Self::TurnBusy => "turn_busy",
@@ -1617,6 +1660,7 @@ impl CaptureError {
             Self::NoCapture => "no_capture",
             Self::EmptyCapture => "empty_capture",
             Self::Device(_) => "microphone_unavailable",
+            Self::Internal(_) => "internal_error",
         }
     }
 }
@@ -1630,7 +1674,7 @@ impl std::fmt::Display for CaptureError {
             Self::LiveActive => write!(f, "Сначала остановите разговор голосом"),
             Self::NoCapture => write!(f, "Нет записи"),
             Self::EmptyCapture => write!(f, "Запись пустая"),
-            Self::Device(message) => write!(f, "{message}"),
+            Self::Device(message) | Self::Internal(message) => write!(f, "{message}"),
         }
     }
 }
@@ -1678,16 +1722,18 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
     let recording = state
         .recording
         .lock()
-        .map_err(lock_error)?
+        .map_err(|e| CaptureError::internal(lock_error(e)))?
         .take()
         .ok_or(CaptureError::NoCapture)?;
-    let request_id = match start_turn(&state) {
+    let request_id = match start_turn_typed(&state) {
         Ok(id) => id,
-        Err(_) => {
-            // The only failure here is a busy turn; dropping a live capture without
-            // finish() keeps the meter stream alive forever.
+        Err(error) => {
+            // Dropping a live capture without finish() keeps the meter stream alive.
             let _ = tauri::async_runtime::spawn_blocking(move || recording.finish()).await;
-            return Err(CaptureError::TurnBusy);
+            return Err(match error {
+                TurnStartError::Busy => CaptureError::TurnBusy,
+                TurnStartError::Internal(message) => CaptureError::internal(message),
+            });
         }
     };
     finish_ptt(
@@ -1703,7 +1749,7 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
             let tx = state
                 .voice
                 .lock()
-                .map_err(lock_error)?
+                .map_err(|e| CaptureError::internal(lock_error(e)))?
                 .clone()
                 .ok_or(CaptureError::VoiceOffline)?;
             let duration_ms = (pcm.len() as u64).saturating_mul(1000) / 32_000;
@@ -2132,6 +2178,10 @@ mod tests {
                 CaptureError::Device("device broke".into()),
                 "microphone_unavailable",
             ),
+            (
+                CaptureError::Internal("Внутренняя ошибка состояния".into()),
+                "internal_error",
+            ),
         ];
         for (error, code) in cases {
             assert_eq!(error.code(), code);
@@ -2145,6 +2195,27 @@ mod tests {
             serde_json::to_string(&CaptureError::TurnBusy).unwrap(),
             "\"Дождитесь ответа или нажмите Stop\""
         );
+    }
+
+    #[test]
+    fn poisoned_turn_lock_reports_internal_error_not_microphone() {
+        let current = std::sync::Arc::new(Mutex::new(None));
+        let poisoned = current.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoned.lock().unwrap();
+            panic!("poison the turn lock on purpose");
+        })
+        .join();
+        let error = match reserve_turn_typed(&current) {
+            Ok(_) => panic!("poisoned lock must fail"),
+            Err(error) => error,
+        };
+        let capture = match error {
+            TurnStartError::Busy => panic!("a poisoned lock is not a busy turn"),
+            TurnStartError::Internal(message) => CaptureError::internal(message),
+        };
+        assert_eq!(capture.code(), "internal_error");
+        assert_ne!(capture.code(), "microphone_unavailable");
     }
 
     #[tokio::test]

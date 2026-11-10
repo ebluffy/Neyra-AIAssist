@@ -541,4 +541,58 @@ describe('PTT deferred IPC lifecycle', () => {
     await act(async () => { ipcStop.resolve(); });
     await pending.settle();
   });
+
+  it.each(['audio_backpressure', 'wake_failed'])(
+    'a foreign %s error while the mic is open still stops the capture on release (AR-11)',
+    async code => {
+      await mount();
+      await act(async () => { await app.beginRecording(); });
+      expect(app.recording).toBe(true);
+
+      // A player/wake error of another feature is not this capture's stop.
+      await event('error', { code });
+      expect(app.recording).toBe(true);
+      expect(app.thinking).toBe(false);
+
+      await act(async () => { await app.finishRecording(); });
+      expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(1);
+      expect(app.recording).toBe(false);
+    },
+  );
+
+  it('a foreign error does not freeze the 30s limit (AR-11)', async () => {
+    await mount();
+    await act(async () => { await app.beginRecording(); });
+    await event('error', { code: 'audio_backpressure' });
+    await tick(30000);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(1);
+    expect(app.recording).toBe(false);
+  });
+
+  it('commits a short press released while an unrelated speaking event arrives (AR-12)', async () => {
+    await mount();
+    const ipcStart = defer('record_start');
+    let pending!: Promise<void>;
+    await act(async () => { pending = app.beginRecording(); });
+    await event('speaking');
+    await act(async () => { await app.finishRecording(); });
+    await act(async () => { ipcStart.resolve(); await pending; });
+
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(1);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_cancel')).toHaveLength(0);
+    expect(app.error).toBe('');
+  });
+
+  it('keeps a held capture running when an unrelated error arrives while opening (AR-12)', async () => {
+    await mount();
+    const ipcStart = defer('record_start');
+    let pending!: Promise<void>;
+    await act(async () => { pending = app.beginRecording(); });
+    await event('error', { code: 'audio_backpressure' });
+    await act(async () => { ipcStart.resolve(); await pending; });
+
+    expect(app.recording).toBe(true);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_cancel')).toHaveLength(0);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(0);
+  });
 });

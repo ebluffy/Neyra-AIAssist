@@ -8,6 +8,8 @@ import { createTokenBatch } from './streaming';
 import { acceptLiveRun, conversionNotice, defaultVoice, formatError, meterLevel, settleLiveStart, unwrapApi, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
 
 const authError = 'Токен отклонён или отозван. Сохраните новый токен и подключитесь.';
+// Notices that belong to "processing a clip"; a cancelled capture must not leave them.
+const PROCESSING_NOTICES = ['Распознаю речь…', 'Запись завершена: лимит 30 секунд.'];
 
 // Codes this client raises itself (audio.rs, lib.rs). Nothing else is treated as local,
 // so a server error that happens to start with "audio_" is still shown as a server error.
@@ -23,6 +25,7 @@ const LOCAL_AUDIO_ERRORS: Record<string, string> = {
   turn_busy: 'Дождитесь ответа или нажмите Stop.',
   already_recording: 'Запись уже идёт.',
   live_active: 'Сначала остановите разговор голосом.',
+  internal_error: 'Внутренняя ошибка состояния, повторите попытку.',
 };
 
 export function localErrorText(code: string): string | undefined {
@@ -81,6 +84,10 @@ export function useDesktop() {
   const liveEpoch = useRef(0);
   const captureEpoch = useRef(0);
   const captureStopping = useRef(false);
+  // Only the code that really ends a capture sets it: release commits, Stop/cancel
+  // discard. Foreign events (speaking, done, error of an earlier answer) must not
+  // decide the fate of a clip that is being opened.
+  const captureIntent = useRef<'commit' | 'cancel' | null>(null);
   const captureStarting = useRef(false);
   const keepLocal = useRef(false);
   const historyStamp = useRef(0);
@@ -95,9 +102,11 @@ export function useDesktop() {
   const postNotice = (message: string, sticky = false) => { setNotice(message); setNoticeSticky(sticky); setError(''); };
   const notify = useCallback((message: string) => { setNotice(message); setNoticeSticky(false); setError(''); }, []);
   // Both the button and the 30s limit enter processing before IPC can emit events.
+  const clearProcessingNotice = () => setNotice(current => (PROCESSING_NOTICES.includes(current) ? '' : current));
   const finishCapture = useCallback(async (limited = false) => {
     if (captureStopping.current) return;
     captureStopping.current = true;
+    captureIntent.current = 'commit';
     const epoch = captureEpoch.current;
     setRecording(false); setThinking(true);
     setNotice(limited ? 'Запись завершена: лимит 30 секунд.' : 'Распознаю речь…');
@@ -266,7 +275,7 @@ export function useDesktop() {
         }
         if (event.type === 'pc_access') setPcAvailable(event.available ?? false);
         if (event.type === 'audio.finished') { postNotice('Озвучка завершена'); setLiveState(state => state === 'off' ? state : 'idle'); }
-        if (event.type === 'recording') { captureEpoch.current += 1; captureStopping.current = false; setRecording(true); setThinking(false); }
+        if (event.type === 'recording') { captureEpoch.current += 1; captureStopping.current = false; captureIntent.current = null; setRecording(true); setThinking(false); }
         if (event.type === 'transcribing') { setRecording(false); setThinking(true); setLiveState(state => state === 'off' ? state : 'thinking'); }
         if (event.type === 'speaking') { captureEpoch.current += 1; setThinking(false); setLiveState(state => state === 'off' ? state : 'speaking'); postNotice('Нейра говорит. Стоп прервёт озвучку.'); }
         if (event.type === 'live.started') { setLiveOpen(true); setMuted(false); setLiveState('idle'); }
@@ -282,13 +291,15 @@ export function useDesktop() {
         if (event.type === 'disconnected') {
           captureEpoch.current += 1;
           captureStopping.current = true;
+          captureIntent.current = 'cancel';
           muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); setRetry(1); setConnected(false); setBusy(false); setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBatch.reset();
           if (event.reason === 'auth') { setConnectionWanted(''); setNotice(''); setError(authError); }
           else postNotice('Нет связи. Ответ мог не дойти. Проверьте историю перед повторной отправкой.', true);
         }
         if (event.type === 'error') {
+          // A failed player/wake/previous answer is not this capture's stop: keeping
+          // captureStopping here froze PTT and the 30s limit while the mic kept running.
           captureEpoch.current += 1;
-          captureStopping.current = true;
           const code = typeof event.code === 'string' && event.code ? event.code : 'ошибка';
           const message = localErrorText(code) ?? `Сервер: ${code}. Повторите попытку.`;
           setError(message);
@@ -299,6 +310,7 @@ export function useDesktop() {
         if (event.type === 'cancelled') {
           captureEpoch.current += 1;
           captureStopping.current = true;
+          captureIntent.current = 'cancel';
           setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBatch.reset(); postNotice('Остановлено');
           if (event.reason !== 'barge_in') { muteHold.current = false; setLiveOpen(false); setMuted(false); }
         }
@@ -351,7 +363,7 @@ export function useDesktop() {
   const patchProfile = (patch: Partial<Profile>) => { if (settings && profile) setSettings({ ...settings, profiles: settings.profiles.map(item => item.id === profileId ? { ...item, ...patch } : item) }); };
   const request = async <T,>(path: string, method = 'GET') => unwrapApi<T>(await invoke<unknown>('api', { profileId, path, method }));
   const rememberLive = (runId: unknown) => { if (typeof runId === 'number') liveRun.current = runId; };
-  const stop = () => run(async () => { captureEpoch.current += 1; captureStopping.current = true; setRecording(false); setThinking(false); liveEpoch.current += 1; await invoke('stop'); setHostCall(undefined); setActive(false); setThinking(false); setRecording(false); muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); });
+  const stop = () => run(async () => { captureEpoch.current += 1; captureStopping.current = true; captureIntent.current = 'cancel'; setRecording(false); setThinking(false); liveEpoch.current += 1; await invoke('stop'); setHostCall(undefined); setActive(false); setThinking(false); setRecording(false); muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); });
   const saveVoice = (patch: Partial<VoiceSettings>) => run(async () => {
     const disk = savedSettings.current;
     if (!settings || !disk) return;
@@ -383,7 +395,7 @@ export function useDesktop() {
     }
     else { muteHold.current = true; await invoke('live_stop'); setMuted(true); setMicLevel(0); postNotice('Микрофон на паузе'); }
   });
-  const endLive = () => run(async () => { captureEpoch.current += 1; captureStopping.current = true; setRecording(false); setThinking(false); liveEpoch.current += 1; muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
+  const endLive = () => run(async () => { captureEpoch.current += 1; captureStopping.current = true; captureIntent.current = 'cancel'; setRecording(false); setThinking(false); liveEpoch.current += 1; muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
   const settingsForServer = (current: Settings): Settings => {
     if (!profile) return current;
     const active = threads.find(item => item.id === activeId);
@@ -409,7 +421,7 @@ export function useDesktop() {
     setRetry(0); setConnectionWanted(profile.id);
     if (!preserve) setMessages([]);
   });
-  const disconnect = () => run(async () => { captureEpoch.current += 1; captureStopping.current = true; setRecording(false); setThinking(false); setConnectionWanted(''); keepLocal.current = false; await invoke('disconnect'); setConnected(false); setThinking(false); setDevices([]); setTarget(''); });
+  const disconnect = () => run(async () => { captureEpoch.current += 1; captureStopping.current = true; captureIntent.current = 'cancel'; setRecording(false); setThinking(false); setConnectionWanted(''); keepLocal.current = false; await invoke('disconnect'); setConnected(false); setThinking(false); setDevices([]); setTarget(''); });
   const sendContent = (value: string) => run(async () => {
     const trimmed = value.trim();
     if (!trimmed) return;
@@ -428,6 +440,7 @@ export function useDesktop() {
     captureEpoch.current += 1;
     const epoch = captureEpoch.current;
     captureStopping.current = false;
+    captureIntent.current = null;
     captureStarting.current = true;
     try {
       await invoke('record_start');
@@ -439,12 +452,19 @@ export function useDesktop() {
     captureStarting.current = false;
     // A foreign event during the IPC call must not hide a capture that is really running.
     if (!captureStopping.current) { setRecording(true); setThinking(false); return; }
-    // The button was released (or Stop/disconnect fired) while the device was opening.
-    // Releasing commits the short clip; an aborted turn is discarded instead.
-    const released = captureEpoch.current === epoch;
-    try { await invoke(released ? 'record_stop' : 'record_cancel'); }
+    // The button was released (commit) or Stop/disconnect/cancel fired (discard) while
+    // the device was opening; only that intent decides, not a shared event counter.
+    const released = captureIntent.current === 'commit';
+    if (!released) {
+      try { await invoke('record_cancel'); }
+      catch (reason) { if (captureEpoch.current === epoch) setError(formatError(reason)); }
+      if (captureEpoch.current !== epoch) return;
+      setRecording(false); setThinking(false); clearProcessingNotice();
+      return;
+    }
+    try { await invoke('record_stop'); }
     catch (reason) {
-      if (!released || captureEpoch.current !== epoch) return;
+      if (captureEpoch.current !== epoch) return;
       setRecording(false); setThinking(false); setError(formatError(reason));
     }
   });
@@ -452,6 +472,7 @@ export function useDesktop() {
   const cancelRecording = () => run(async () => {
     const epoch = ++captureEpoch.current;
     captureStopping.current = true;
+    captureIntent.current = 'cancel';
     setThinking(false);
     try {
       await invoke('record_cancel');
