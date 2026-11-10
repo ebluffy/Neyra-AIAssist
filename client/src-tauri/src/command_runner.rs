@@ -690,7 +690,7 @@ pub fn command_save_yaml(
 
 #[tauri::command]
 pub fn command_get_yaml(state: State<'_, Desktop>, file: String) -> Result<String, String> {
-    let name = commands::safe_file_name(&file)?;
+    let name = commands::existing_file_name(&file)?;
     let bytes = storage::read_limited(&dir(&state).join(name), commands::MAX_FILE_BYTES)?;
     String::from_utf8(bytes).map_err(|_| "Файл должен быть в UTF-8".into())
 }
