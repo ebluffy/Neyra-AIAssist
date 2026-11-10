@@ -1563,20 +1563,23 @@ fn disconnect(state: State<'_, Desktop>) -> Result<(), String> {
     disconnect_inner(&state)
 }
 #[tauri::command]
-async fn record_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
+async fn record_start(
+    app: tauri::AppHandle,
+    state: State<'_, Desktop>,
+) -> Result<(), CaptureError> {
     if state.current_turn.lock().map_err(lock_error)?.is_some() {
-        return Err("Дождитесь ответа или нажмите Stop".into());
+        return Err(CaptureError::TurnBusy);
     }
     if state.voice.lock().map_err(lock_error)?.is_none() {
-        return Err("Нет голосового подключения".into());
+        return Err(CaptureError::VoiceOffline);
     }
     if state.live.lock().map_err(lock_error)?.is_some() {
-        return Err("Сначала остановите разговор голосом".into());
+        return Err(CaptureError::LiveActive);
     }
     state.generation.fetch_add(1, Ordering::SeqCst);
     let mut recording = state.recording.lock().map_err(lock_error)?;
     if recording.is_some() {
-        return Err("Запись уже идёт".into());
+        return Err(CaptureError::AlreadyRecording);
     }
     let started = audio::Recording::start()?;
     let level = started.level.clone();
@@ -1592,17 +1595,69 @@ async fn record_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Resul
     });
     Ok(())
 }
+/// Capture failures with a stable code for the UI, independent of the Russian text.
+#[derive(Debug, PartialEq, Eq)]
+enum CaptureError {
+    TurnBusy,
+    VoiceOffline,
+    AlreadyRecording,
+    LiveActive,
+    NoCapture,
+    EmptyCapture,
+    Device(String),
+}
+
+impl CaptureError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::TurnBusy => "turn_busy",
+            Self::VoiceOffline => "voice_unavailable",
+            Self::AlreadyRecording => "already_recording",
+            Self::LiveActive => "live_active",
+            Self::NoCapture => "no_capture",
+            Self::EmptyCapture => "empty_capture",
+            Self::Device(_) => "microphone_unavailable",
+        }
+    }
+}
+
+impl std::fmt::Display for CaptureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TurnBusy => write!(f, "Дождитесь ответа или нажмите Stop"),
+            Self::VoiceOffline => write!(f, "Нет голосового подключения"),
+            Self::AlreadyRecording => write!(f, "Запись уже идёт"),
+            Self::LiveActive => write!(f, "Сначала остановите разговор голосом"),
+            Self::NoCapture => write!(f, "Нет записи"),
+            Self::EmptyCapture => write!(f, "Запись пустая"),
+            Self::Device(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl From<String> for CaptureError {
+    fn from(message: String) -> Self {
+        Self::Device(message)
+    }
+}
+
+impl serde::Serialize for CaptureError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
 // The same capture/commit boundary is exercised without opening an audio device.
 async fn finish_ptt(
     current_turn: &Mutex<Option<String>>,
     request_id: &str,
     finish: impl std::future::Future<Output = Result<Vec<u8>, String>>,
-    send_pcm: impl FnOnce(Vec<u8>) -> Result<(), String>,
-) -> Result<(), String> {
+    send_pcm: impl FnOnce(Vec<u8>) -> Result<(), CaptureError>,
+) -> Result<(), CaptureError> {
     let result = async {
-        let pcm = finish.await?;
+        let pcm = finish.await.map_err(CaptureError::Device)?;
         if pcm.is_empty() {
-            return Err("Запись пустая".into());
+            return Err(CaptureError::EmptyCapture);
         }
         send_pcm(pcm)
     }
@@ -1617,32 +1672,22 @@ async fn finish_ptt(
     }
     result
 }
-fn ptt_error_code(error: &str) -> &'static str {
-    if error.contains("голосов") || error.contains("Подключение закрыто") {
-        "voice_unavailable"
-    } else if error.contains("Нет записи") {
-        "no_capture"
-    } else if error.contains("пустая") {
-        "empty_capture"
-    } else {
-        "microphone_unavailable"
-    }
-}
 
 #[tauri::command]
-async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
+async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), CaptureError> {
     let recording = state
         .recording
         .lock()
         .map_err(lock_error)?
         .take()
-        .ok_or("Нет записи")?;
+        .ok_or(CaptureError::NoCapture)?;
     let request_id = match start_turn(&state) {
         Ok(id) => id,
-        Err(error) => {
-            // Dropping a live capture without finish() keeps the meter stream alive forever.
+        Err(_) => {
+            // The only failure here is a busy turn; dropping a live capture without
+            // finish() keeps the meter stream alive forever.
             let _ = tauri::async_runtime::spawn_blocking(move || recording.finish()).await;
-            return Err(error);
+            return Err(CaptureError::TurnBusy);
         }
     };
     finish_ptt(
@@ -1654,28 +1699,29 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
                 .map_err(|_| "Ошибка записи".to_string())?
         },
         |pcm| {
+            // Never announce a clip before there is a voice socket to carry it.
+            let tx = state
+                .voice
+                .lock()
+                .map_err(lock_error)?
+                .clone()
+                .ok_or(CaptureError::VoiceOffline)?;
             let duration_ms = (pcm.len() as u64).saturating_mul(1000) / 32_000;
             let clip = base64::engine::general_purpose::STANDARD.encode(audio::wav_s16le_16k(&pcm));
             let _ = app.emit(
                 "desktop-event",
                 json!({"type":"voice.clip","audio":clip,"duration_ms":duration_ms}),
             );
-            let tx = state
-                .voice
-                .lock()
-                .map_err(lock_error)?
-                .clone()
-                .ok_or_else(|| "Нет голосового подключения".to_string())?;
             for chunk in pcm.chunks(32000) {
                 tx.send(Message::Binary(chunk.to_vec().into()))
-                    .map_err(|_| "Подключение закрыто".to_string())?;
+                    .map_err(|_| CaptureError::VoiceOffline)?;
             }
             tx.send(Message::Text(
                 json!({"type":"commit","request_id":request_id})
                     .to_string()
                     .into(),
             ))
-            .map_err(|_| "Подключение закрыто".to_string())?;
+            .map_err(|_| CaptureError::VoiceOffline)?;
             Ok(())
         },
     )
@@ -2018,10 +2064,8 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                             );
                         }
                         Err(error) => {
-                            let _ = handle.emit(
-                                "desktop-event",
-                                json!({"type":"error","code":ptt_error_code(&error)}),
-                            );
+                            let _ = handle
+                                .emit("desktop-event", json!({"type":"error","code":error.code()}));
                         }
                     }
                 });
@@ -2075,6 +2119,34 @@ fn monitor_session(app: tauri::AppHandle) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn capture_errors_have_stable_codes() {
+        let cases = [
+            (CaptureError::TurnBusy, "turn_busy"),
+            (CaptureError::VoiceOffline, "voice_unavailable"),
+            (CaptureError::AlreadyRecording, "already_recording"),
+            (CaptureError::LiveActive, "live_active"),
+            (CaptureError::NoCapture, "no_capture"),
+            (CaptureError::EmptyCapture, "empty_capture"),
+            (
+                CaptureError::Device("device broke".into()),
+                "microphone_unavailable",
+            ),
+        ];
+        for (error, code) in cases {
+            assert_eq!(error.code(), code);
+            assert!(!error.to_string().is_empty());
+        }
+        assert_eq!(
+            CaptureError::Device("device broke".into()).to_string(),
+            "device broke"
+        );
+        assert_eq!(
+            serde_json::to_string(&CaptureError::TurnBusy).unwrap(),
+            "\"Дождитесь ответа или нажмите Stop\""
+        );
+    }
+
     #[tokio::test]
     async fn ptt_empty_capture_never_commits_and_releases_turn_for_retry() {
         let current = Mutex::new(None);
@@ -2084,7 +2156,7 @@ mod tests {
         })
         .await
         .unwrap_err();
-        assert_eq!(error, "Запись пустая");
+        assert_eq!(error, CaptureError::EmptyCapture);
         assert!(current.lock().unwrap().is_none());
         assert!(reserve_turn(&current).is_ok());
     }
@@ -2101,7 +2173,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(error, "capture failed");
+        assert_eq!(error, CaptureError::Device("capture failed".into()));
         assert!(reserve_turn(&current).is_ok());
     }
 
@@ -2111,11 +2183,12 @@ mod tests {
         let id = reserve_turn(&current).unwrap();
         let error = finish_ptt(&current, &id, std::future::ready(Ok(vec![0, 1])), |pcm| {
             assert_eq!(pcm, vec![0, 1]);
-            Err("connection closed".into())
+            Err(CaptureError::VoiceOffline)
         })
         .await
         .unwrap_err();
-        assert_eq!(error, "connection closed");
+        assert_eq!(error, CaptureError::VoiceOffline);
+        assert_eq!(error.code(), "voice_unavailable");
         assert!(reserve_turn(&current).is_ok());
     }
 

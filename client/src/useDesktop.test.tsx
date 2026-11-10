@@ -323,6 +323,11 @@ describe('unavailable server', () => {
     expect(app.error).toBe('Ошибка звука: wake_failed. Прослушивание по слову не запустилось, проверьте микрофон.');
 
     await act(async () => {
+      ipc.listeners.get('desktop-event')!({ payload: { type: 'error', code: 'audio_invalid' } });
+    });
+    expect(app.error).toBe('Ошибка звука: audio_invalid. Не удалось воспроизвести ответ, текст показан в чате.');
+
+    await act(async () => {
       ipc.listeners.get('desktop-event')!({ payload: { type: 'error', code: 'voice_failed' } });
     });
     expect(app.error).toBe('Сервер: voice_failed. Повторите попытку.');
@@ -492,6 +497,38 @@ describe('PTT deferred IPC lifecycle', () => {
     await act(async () => { pending = app.beginRecording(); });
     await act(async () => { await app.stop(); });
     await act(async () => { ipcStart.resolve(); await pending; });
+    expect(app.recording).toBe(false);
+  });
+
+  it('commits a short press released while record_start is opening', async () => {
+    await mount();
+    const ipcStart = defer('record_start');
+    let pending!: Promise<void>;
+    await act(async () => { pending = app.beginRecording(); });
+    await act(async () => { await app.finishRecording(); });
+    expect(app.recording).toBe(false);
+    expect(app.thinking).toBe(true);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(0);
+
+    await act(async () => { ipcStart.resolve(); await pending; });
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(1);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_cancel')).toHaveLength(0);
+    expect(app.recording).toBe(false);
+    expect(app.thinking).toBe(true);
+    expect(app.error).toBe('');
+  });
+
+  it.each(['stop', 'cancelled', 'disconnected'])('cancels a capture that opens after %s', async kind => {
+    await mount();
+    const ipcStart = defer('record_start');
+    let pending!: Promise<void>;
+    await act(async () => { pending = app.beginRecording(); });
+    if (kind === 'stop') await act(async () => { await app.stop(); });
+    else await act(async () => { ipc.listeners.get('desktop-event')!({ payload: { type: kind } }); });
+
+    await act(async () => { ipcStart.resolve(); await pending; });
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_cancel')).toHaveLength(1);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(0);
     expect(app.recording).toBe(false);
   });
 
