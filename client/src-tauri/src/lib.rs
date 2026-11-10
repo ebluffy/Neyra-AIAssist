@@ -1617,6 +1617,18 @@ async fn finish_ptt(
     }
     result
 }
+fn ptt_error_code(error: &str) -> &'static str {
+    if error.contains("голосов") || error.contains("Подключение закрыто") {
+        "voice_unavailable"
+    } else if error.contains("Нет записи") {
+        "no_capture"
+    } else if error.contains("пустая") {
+        "empty_capture"
+    } else {
+        "microphone_unavailable"
+    }
+}
+
 #[tauri::command]
 async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
     let recording = state
@@ -1625,7 +1637,14 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
         .map_err(lock_error)?
         .take()
         .ok_or("Нет записи")?;
-    let request_id = start_turn(&state)?;
+    let request_id = match start_turn(&state) {
+        Ok(id) => id,
+        Err(error) => {
+            // Dropping a live capture without finish() keeps the meter stream alive forever.
+            let _ = tauri::async_runtime::spawn_blocking(move || recording.finish()).await;
+            return Err(error);
+        }
+    };
     finish_ptt(
         &state.current_turn,
         &request_id,
@@ -1998,10 +2017,10 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                                 json!({"type":if pressed{"recording"}else{"transcribing"}}),
                             );
                         }
-                        Err(_) => {
+                        Err(error) => {
                             let _ = handle.emit(
                                 "desktop-event",
-                                json!({"type":"error","code":"microphone_unavailable"}),
+                                json!({"type":"error","code":ptt_error_code(&error)}),
                             );
                         }
                     }

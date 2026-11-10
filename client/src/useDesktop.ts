@@ -9,13 +9,21 @@ import { acceptLiveRun, conversionNotice, defaultVoice, formatError, meterLevel,
 
 const authError = 'Токен отклонён или отозван. Сохраните новый токен и подключитесь.';
 
-// Codes this client raises itself (audio.rs, lib.rs) rather than codes that came from the server.
+// Codes this client raises itself (audio.rs, lib.rs). Nothing else is treated as local,
+// so a server error that happens to start with "audio_" is still shown as a server error.
+const LOCAL_AUDIO_ERRORS: Record<string, string> = {
+  audio_unavailable: 'Проверьте аудиоустройство.',
+  audio_backpressure: 'Очередь озвучки переполнена, ответ показан текстом.',
+  microphone_unavailable: 'Проверьте микрофон и его разрешение в системе.',
+  wake_failed: 'Прослушивание по слову не запустилось, проверьте микрофон.',
+  voice_unavailable: 'Голосовое соединение потеряно, повторите попытку.',
+  no_capture: 'Запись не шла, нажмите и удерживайте кнопку заново.',
+  empty_capture: 'Запись пустая, повторите.',
+};
+
 export function localErrorText(code: string): string | undefined {
-  if (code === 'audio_backpressure') return `Ошибка звука: ${code}. Очередь озвучки переполнена, ответ показан текстом.`;
-  if (code === 'microphone_unavailable') return `Ошибка звука: ${code}. Проверьте микрофон и его разрешение в системе.`;
-  if (code === 'wake_failed') return `Ошибка звука: ${code}. Прослушивание по слову не запустилось, проверьте микрофон.`;
-  if (code.startsWith('audio_')) return `Ошибка звука: ${code}. Проверьте аудиоустройство.`;
-  return undefined;
+  const hint = LOCAL_AUDIO_ERRORS[code];
+  return hint ? `Ошибка звука: ${code}. ${hint}` : undefined;
 }
 
 export function useDesktop() {
@@ -407,12 +415,13 @@ export function useDesktop() {
   });
   const decideDraft = (accepted: boolean, item: DraftEvent) => run(async () => { setDraft(undefined); if (accepted) { await invoke('draft_confirm', { draftId: item.draft_id }); postNotice('Команда сохранена на этом ПК', true); } else await invoke('draft_reject', { draftId: item.draft_id }); });
   const beginRecording = () => run(async () => {
-    const epoch = ++captureEpoch.current;
+    captureEpoch.current += 1;
     captureStopping.current = false;
     try {
       await invoke('record_start');
-      if (captureEpoch.current === epoch) { setRecording(true); setThinking(false); }
-    } catch (reason) { if (captureEpoch.current === epoch) throw reason; }
+      // A foreign event during the IPC call must not hide a capture that is really running.
+      if (!captureStopping.current) { setRecording(true); setThinking(false); }
+    } catch (reason) { if (!captureStopping.current) throw reason; }
   });
   const finishRecording = () => run(() => finishCapture());
   const cancelRecording = () => run(async () => {

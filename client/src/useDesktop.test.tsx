@@ -327,6 +327,12 @@ describe('unavailable server', () => {
     });
     expect(app.error).toBe('Сервер: voice_failed. Повторите попытку.');
 
+    // A server error that only looks like a local audio code must stay a server error.
+    await act(async () => {
+      ipc.listeners.get('desktop-event')!({ payload: { type: 'error', code: 'audio_pipeline_broken' } });
+    });
+    expect(app.error).toBe('Сервер: audio_pipeline_broken. Повторите попытку.');
+
     await act(async () => {
       ipc.listeners.get('desktop-event')!({ payload: { type: 'error', code: 42 } });
     });
