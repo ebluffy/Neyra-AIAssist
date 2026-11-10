@@ -60,6 +60,31 @@ def test_only_screenshots_may_carry_image_bytes_and_results_are_bounded():
     assert checked_result('client.shell_exec', {'status': 'ok', 'stdout': 'я' * 40_000})['code'] == 'result_too_large'
 
 
+def test_screenshot_data_rejected_on_non_ok_status_and_invalid_shapes():
+    # 1. error + valid jpeg data must be rejected as bad_screenshot
+    assert checked_result('client.screenshot', {
+        'status': 'error', 'code': 'capture_failed', 'data': 'QUJD', 'mime': 'image/jpeg',
+    }) == {'status': 'error', 'code': 'bad_screenshot'}
+    # 2. error + data larger than limit must be rejected as bad_screenshot
+    assert checked_result('client.screenshot', {
+        'status': 'error', 'code': 'capture_failed', 'data': 'A' * (SCREENSHOT_LIMIT + 1),
+    }) == {'status': 'error', 'code': 'bad_screenshot'}
+    # 3. ok without mime must be rejected as bad_screenshot
+    assert checked_result('client.screenshot', {
+        'status': 'ok', 'data': 'QUJD', 'screenshot_id': 'x',
+    }) == {'status': 'error', 'code': 'bad_screenshot'}
+    # 4. ok with mime not image/jpeg must be rejected as bad_screenshot
+    assert checked_result('client.screenshot', {
+        'status': 'ok', 'mime': 'image/png', 'data': 'QUJD',
+    }) == {'status': 'error', 'code': 'bad_screenshot'}
+    # 5. normal ok screenshot still passes
+    shot = {'status': 'ok', 'mime': 'image/jpeg', 'data': 'QUJD', 'screenshot_id': 'x'}
+    assert checked_result('client.screenshot', shot) == shot
+    # 6. error without data is preserved
+    err = {'status': 'error', 'code': 'hardware_failure'}
+    assert checked_result('client.screenshot', err) == err
+
+
 def test_large_non_result_packets_still_close_the_socket():
     from tests.test_desktop_bridge import make_client
     from starlette.websockets import WebSocketDisconnect

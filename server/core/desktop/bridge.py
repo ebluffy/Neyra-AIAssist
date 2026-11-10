@@ -103,9 +103,12 @@ def checked_result(tool, result):
     if not isinstance(result, dict):
         return {'status': 'error', 'code': 'bad_result'}
     if tool == 'client.screenshot':
-        data = result.get('data')
-        if result.get('status') == 'ok' and (not isinstance(data, str) or len(data) > SCREENSHOT_LIMIT
-                                             or result.get('mime') != 'image/jpeg'):
+        if result.get('status') == 'ok':
+            data = result.get('data')
+            if (not isinstance(data, str) or len(data) > SCREENSHOT_LIMIT
+                    or result.get('mime') != 'image/jpeg'):
+                return {'status': 'error', 'code': 'bad_screenshot'}
+        elif 'data' in result:
             return {'status': 'error', 'code': 'bad_screenshot'}
         rest = {k: v for k, v in result.items() if k != 'data'}
         if wire_len(rest) > 4096:
@@ -143,7 +146,7 @@ class BridgeRegistry:
         connection.pending_tools.clear()
 
     async def revoke(self, connection):
-        """Remove from registry, notify, and close the socket so it cannot re-register."""
+        """Remove from registry, notify, and close the current socket (manual reconnection remains possible)."""
         connection.revoked = True
         self.disconnect(connection)
         try:
