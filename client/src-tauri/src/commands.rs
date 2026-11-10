@@ -781,6 +781,17 @@ pub fn existing_file_name(file: &str) -> Result<&str, String> {
     }
 }
 
+/// Resolves a command file that must already exist in the folder. The name shape is
+/// checked by `existing_file_name`; here the file also has to be a regular file, so a
+/// rename or a dangling symlink can neither be edited nor read through this path.
+pub fn existing_file(dir: &Path, file: &str) -> Result<String, String> {
+    let name = existing_file_name(file)?;
+    match fs::symlink_metadata(dir.join(name)) {
+        Ok(meta) if meta.is_file() => Ok(name.to_string()),
+        _ => Err("Файл команды не найден".into()),
+    }
+}
+
 pub fn slug(name: &str) -> String {
     let mut out = String::new();
     for c in name.to_lowercase().chars() {
@@ -865,7 +876,7 @@ pub fn write_command(
     validate(&command)?;
     check_unique(entries, existing, &command)?;
     let file = match existing {
-        Some(file) => existing_file_name(file)?.to_string(),
+        Some(file) => existing_file(dir, file)?,
         None => {
             let base = slug(&command.name);
             let mut candidate = file_candidate(&base, "");
@@ -891,12 +902,8 @@ pub fn write_command(
 }
 
 pub fn delete_file(dir: &Path, file: &str) -> Result<(), String> {
-    let file = existing_file_name(file)?;
-    let path = dir.join(file);
-    if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
-        return Err("Файл команды не найден".into());
-    }
-    fs::remove_file(path).map_err(|_| "Не удалось удалить файл команды".into())
+    let file = existing_file(dir, file)?;
+    fs::remove_file(dir.join(file)).map_err(|_| "Не удалось удалить файл команды".into())
 }
 
 /// Server drafts ("запомни команду…") become ordinary commands only after the user confirms locally.
@@ -1161,12 +1168,32 @@ pub fn apply_import(
         // half of the commands in the folder and half of them in the backup folder.
         let mut planned = Vec::with_capacity(current.len());
         for entry in &current {
-            planned.push(existing_file_name(&entry.file)?.to_string());
+            planned.push(existing_file(dir, &entry.file)?);
         }
         fs::create_dir_all(backup_dir).map_err(|_| "Не удалось создать резервную копию")?;
+        // Files already moved are tracked so a failing rename (a locked file on Windows,
+        // a sync client holding the folder) can be undone instead of splitting the set.
+        let mut moved: Vec<String> = Vec::with_capacity(planned.len());
         for file in planned {
-            fs::rename(dir.join(&file), backup_dir.join(&file))
-                .map_err(|_| "Не удалось сохранить резервную копию")?;
+            match fs::rename(dir.join(&file), backup_dir.join(&file)) {
+                Ok(()) => moved.push(file),
+                Err(_) => {
+                    let mut stuck = Vec::new();
+                    for done in moved.iter().rev() {
+                        if fs::rename(backup_dir.join(done), dir.join(done)).is_err() {
+                            stuck.push(done.clone());
+                        }
+                    }
+                    return Err(if stuck.is_empty() {
+                        format!("Не удалось сохранить резервную копию: {file}")
+                    } else {
+                        format!(
+                            "Не удалось сохранить резервную копию: {file}. Остались в резервной копии: {}",
+                            stuck.join(", ")
+                        )
+                    });
+                }
+            }
         }
         current.clear();
     }
@@ -1708,6 +1735,102 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
         fs::remove_dir_all(backup).unwrap();
     }
+    #[test]
+    fn edit_refuses_a_name_that_is_not_a_file_yet() {
+        let dir = temp();
+        let long = format!("{}.yaml", "中".repeat(48));
+        assert!(long.len() > 96);
+        // "Edit" must not be a way around the creation limit: the file has to exist.
+        assert!(write_command(&dir, &[], Some(&long), &game(), None).is_err());
+        assert!(!dir.join(&long).exists(), "refused edit created a file");
+        assert!(delete_file(&dir, &long).is_err());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+
+        fs::write(dir.join(&long), GAME).unwrap();
+        let mut store = Store::default();
+        assert!(store.reload(&dir));
+        let mut command = store.entries()[0].command.clone();
+        command.name = "Правка длинного имени".into();
+        write_command(&dir, store.entries(), Some(&long), &command, None).unwrap();
+        assert!(fs::read_to_string(dir.join(&long))
+            .unwrap()
+            .contains("Правка длинного имени"));
+        delete_file(&dir, &long).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_command_file_is_neither_read_nor_edited_nor_deleted() {
+        let dir = temp();
+        let outside = temp().join("outside.yaml");
+        fs::write(&outside, GAME).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("link.yaml")).unwrap();
+        assert!(existing_file(&dir, "link.yaml").is_err());
+        assert!(write_command(&dir, &[], Some("link.yaml"), &game(), None).is_err());
+        assert!(delete_file(&dir, "link.yaml").is_err());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "link is untouched");
+        assert!(fs::read_to_string(&outside).unwrap().contains("Режим игры"));
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(outside.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn replace_import_rolls_back_when_a_backup_rename_fails() {
+        let dir = temp();
+        let backup = temp().join("backup");
+        write_command(&dir, &[], None, &simple("Первая", "первая команда"), None).unwrap();
+        fs::write(
+            dir.join("b.yaml"),
+            to_yaml(&simple("Вторая", "вторая команда")).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("c.yaml"),
+            to_yaml(&simple("Третья", "третья команда")).unwrap(),
+        )
+        .unwrap();
+        let mut store = Store::default();
+        assert!(store.reload(&dir));
+        assert_eq!(store.entries().len(), 3, "{:?}", store.errors());
+        let blocked = store.entries()[1].file.clone();
+        // A directory at the destination makes exactly that rename fail.
+        fs::create_dir_all(backup.join(&blocked)).unwrap();
+        let err = apply_import(
+            &dir,
+            &backup,
+            store.entries(),
+            vec![simple("Новая", "новая команда")],
+            true,
+            Conflict::Skip,
+        )
+        .unwrap_err();
+        assert!(err.contains("резервную копию"), "{err}");
+        for entry in store.entries() {
+            assert!(
+                dir.join(&entry.file).is_file(),
+                "{} went missing",
+                entry.file
+            );
+        }
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            3,
+            "every command stays in the folder after a failed replace"
+        );
+        assert!(
+            backup.join(&blocked).is_dir(),
+            "the blocker is untouched in the backup folder"
+        );
+        assert_eq!(
+            fs::read_dir(&backup).unwrap().count(),
+            1,
+            "moved files are returned, so no command is left only in the backup"
+        );
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(backup).unwrap();
+    }
+
     #[test]
     fn raw_yaml_is_preserved_when_saved_and_delete_is_confined() {
         let dir = temp();
