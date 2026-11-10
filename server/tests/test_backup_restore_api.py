@@ -470,3 +470,123 @@ def test_backup_allocation_exhaustion_fails_closed_without_overwriting(real_back
     leftovers = [p.name for p in backups_dir.iterdir() if p.name.endswith((".part", ".zip"))]
     assert sorted(leftovers) == sorted(path.name for path in existing)
 
+
+
+def test_backup_fallback_publish_without_hardlinks(real_backup_env, monkeypatch):
+    """The copy fallback publishes unique archives and leaves no partial files behind."""
+    import errno
+    import hashlib
+    import zipfile
+    from datetime import datetime as real_datetime
+
+    import core.runtime.backup as backup_module
+
+    backup_mgr = real_backup_env["backup_mgr"]
+    backups_dir = real_backup_env["backups_dir"]
+
+    class FrozenDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ARG003 - fixed clock for deterministic names
+            return cls(2026, 11, 10, 12, 0, 0)
+
+    monkeypatch.setattr(backup_module, "datetime", FrozenDatetime)
+    monkeypatch.setattr(
+        backup_module.os,
+        "link",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError(errno.EPERM, "hardlinks unavailable")
+        ),
+    )
+
+    first = Path(backup_mgr.run_backup("fallback_first")["archive"])
+    assert first.name == "neyra-backup-20261110-120000.zip"
+    digest = hashlib.sha256(first.read_bytes()).hexdigest()
+    with zipfile.ZipFile(first) as zf:
+        assert json.loads(zf.read("backup_manifest.json"))["reason"] == "fallback_first"
+
+    second = Path(backup_mgr.run_backup("fallback_second")["archive"])
+    assert second.name == "neyra-backup-20261110-120000-1.zip"
+    with zipfile.ZipFile(second) as zf:
+        assert json.loads(zf.read("backup_manifest.json"))["reason"] == "fallback_second"
+
+    assert hashlib.sha256(first.read_bytes()).hexdigest() == digest
+    leftovers = [p.name for p in backups_dir.iterdir() if p.name.startswith(".part")]
+    assert leftovers == []
+    assert Path(second).stat().st_size > 0
+
+
+def test_backup_replace_failure_leaves_no_empty_archive(real_backup_env, monkeypatch):
+    """A failed os.replace must not leave an empty file under the final archive name."""
+    import errno
+
+    import core.runtime.backup as backup_module
+
+    backup_mgr = real_backup_env["backup_mgr"]
+    backups_dir = real_backup_env["backups_dir"]
+
+    monkeypatch.setattr(
+        backup_module.os,
+        "link",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError(errno.EPERM, "no link")),
+    )
+    monkeypatch.setattr(
+        backup_module.os,
+        "replace",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError(errno.ENOSPC, "disk full")),
+    )
+
+    with pytest.raises(OSError):
+        backup_mgr.run_backup("replace_failure")
+
+    published = [p for p in backups_dir.iterdir() if p.name.startswith("neyra-backup-")]
+    assert published == [], f"failed publish left files: {[p.name for p in published]}"
+    leftovers = [p.name for p in backups_dir.iterdir()]
+    assert leftovers == [], f"failed publish left leftovers: {leftovers}"
+
+
+def test_list_backups_orders_numeric_suffixes(real_backup_env):
+    """Suffixes sort numerically: -10 is newer than -2, and the base name is oldest."""
+    backup_mgr = real_backup_env["backup_mgr"]
+    backups_dir = real_backup_env["backups_dir"]
+    names = [
+        "neyra-backup-20261110-120000.zip",
+        "neyra-backup-20261110-120000-1.zip",
+        "neyra-backup-20261110-120000-2.zip",
+        "neyra-backup-20261110-120000-10.zip",
+    ]
+    for name in names:
+        (backups_dir / name).write_bytes(b"x")
+
+    listed = [row["name"] for row in backup_mgr.list_backups()]
+    assert listed == [
+        "neyra-backup-20261110-120000-10.zip",
+        "neyra-backup-20261110-120000-2.zip",
+        "neyra-backup-20261110-120000-1.zip",
+        "neyra-backup-20261110-120000.zip",
+    ]
+
+
+def test_cleanup_stale_artifacts_removes_only_old_entries(real_backup_env):
+    """Crash leftovers older than an hour are removed; live staging is kept."""
+    import os
+    import time
+
+    backup_mgr = real_backup_env["backup_mgr"]
+    backups_dir = real_backup_env["backups_dir"]
+    old = time.time() - 2 * 3600
+
+    stale_dir = backups_dir / ".tmp_backup_staging-old"
+    stale_dir.mkdir()
+    (stale_dir / "memory.bin").write_bytes(b"old")
+    os.utime(stale_dir, (old, old))
+    stale_part = backups_dir / ".part-old.zip"
+    stale_part.write_bytes(b"old")
+    os.utime(stale_part, (old, old))
+    fresh_part = backups_dir / ".part-fresh.zip"
+    fresh_part.write_bytes(b"fresh")
+
+    BackupManager(backup_mgr.config)
+
+    assert not stale_dir.exists()
+    assert not stale_part.exists()
+    assert fresh_part.exists()

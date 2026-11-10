@@ -20,9 +20,10 @@
 ## Сделано в этом PR
 
 - `/v1/backup/run`, `/v1/backup/list` и `/v1/backup/restore` отдают клиенту белый список полей: локальные пути (`archive`, `external_ref`, `aside_path`, `restored_from`, `memory_root`) наружу не уходят, внешняя копия видна как `external_uploaded` + имя файла.
-- Архив получает уникальное имя без перезаписи; в запасе нет hardlink — запись идёт в `<имя>.part` и публикуется целиком.
-- Staging бэкапа и распаковка restore живут в каталоге бэкапов, а не в CWD; `.gitignore` закрывает `backups/`, `.tmp_restore-*`, `**/.tmp_backup_staging-*`.
-- Приёмочные тесты (`tests/test_backup_restore_api.py`) проверяют это на реальных `BackupManager`, `TestClient` и sqlite-файлах.
+- Архив получает уникальное имя без перезаписи. Если hardlink недоступен, копия пишется в уникальный `.part-*.zip` рядом с целью и публикуется атомарно; при отказе `os.replace` пустой файл под финальным именем не остаётся.
+- `list_backups` сортирует по метке времени и числовому суффиксу, а не по строке: `-10` действительно новее `-2`, базовое имя старше `-1`.
+- Staging бэкапа и распаковка restore живут в каталоге бэкапов, а не в CWD; `.gitignore` закрывает `backups/`, `.tmp_restore-*`, `**/.tmp_backup_staging-*`. При старте `BackupManager` удаляет брошенные staging-каталоги, `.part`-файлы и `.part-*.zip` старше часа.
+- Приёмочные тесты (`tests/test_backup_restore_api.py`) проверяют это на реальных `BackupManager`, `TestClient` и sqlite-файлах, включая fallback без hardlink, отказ `os.replace`, числовой порядок суффиксов и очистку старых артефактов.
 
 ## Остаётся за владельцем
 

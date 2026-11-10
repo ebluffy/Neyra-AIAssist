@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -26,14 +28,28 @@ PENDING_MEMORY = "memory"
 LAST_APPLY_NAME = "last_restore_apply.json"
 # Candidate names tried per backup timestamp: neyra-backup-<ts>.zip and -1..-N.
 ARCHIVE_NAME_LIMIT = 10000
+# Staging directories and half-published archives older than this are crash leftovers.
+STALE_ARTIFACT_SECONDS = 3600
+_ARCHIVE_NAME = re.compile(r"^neyra-backup-(\d{8}-\d{6})(?:-(\d+))?\.zip$")
+
+
+def _archive_sort_key(name: str) -> tuple[str, int]:
+    """Order archives by timestamp, then by the numeric collision suffix.
+
+    Plain string ordering puts ``-10`` before ``-2`` and the base name after ``-1``.
+    """
+    match = _ARCHIVE_NAME.match(name)
+    if match is None:
+        return ("", -1)
+    return (match.group(1), int(match.group(2) or 0))
 
 
 def _atomic_publish_archive(src_zip: Path, target_zip: Path) -> None:
     """Atomically place src_zip at target_zip without overwriting an existing file.
 
-    The fallback for filesystems without hardlinks copies to ``<target>.part`` first so
-    that a half-written file never appears under a name that ``list_backups`` and
-    ``restore`` accept.
+    The fallback for filesystems without hardlinks copies to a unique temporary file
+    first so that a half-written file never appears under a name that ``list_backups``
+    and ``restore`` accept, and parallel backups cannot share one partial file.
     """
     try:
         os.link(src_zip, target_zip)
@@ -43,20 +59,25 @@ def _atomic_publish_archive(src_zip: Path, target_zip: Path) -> None:
     except (OSError, NotImplementedError):
         pass
 
-    part = target_zip.with_name(target_zip.name + ".part")
+    fd, part_name = tempfile.mkstemp(dir=str(target_zip.parent), prefix=".part-", suffix=".zip")
+    part = Path(part_name)
     try:
-        with open(part, "wb") as dst_f, open(src_zip, "rb") as src_f:
+        with os.fdopen(fd, "wb") as dst_f, open(src_zip, "rb") as src_f:
             shutil.copyfileobj(src_f, dst_f)
             dst_f.flush()
             os.fsync(dst_f.fileno())
+        # Reserve the final name atomically, then replace our empty placeholder.
+        reserved = os.open(target_zip, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(reserved)
         try:
-            os.link(part, target_zip)
-        except FileExistsError:
-            raise
-        except (OSError, NotImplementedError):
-            fd = os.open(target_zip, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.close(fd)
             os.replace(part, target_zip)
+        except BaseException:
+            # A failed replace must not leave an empty archive under the final name.
+            try:
+                target_zip.unlink()
+            except FileNotFoundError:
+                pass
+            raise
     finally:
         try:
             part.unlink()
@@ -88,6 +109,38 @@ class BackupManager:
         if chroma.is_absolute():
             self.sources = [chroma.parent, Path("./logs")]
         self.external_adapter: ExternalStorageAdapter | None = build_external_storage_adapter(self.config)
+        self.cleanup_stale_artifacts()
+
+    def cleanup_stale_artifacts(self, max_age_seconds: float = STALE_ARTIFACT_SECONDS) -> None:
+        """Remove staging dirs and partial archives left behind by a crash.
+
+        Only entries older than ``max_age_seconds`` are touched, so a concurrent
+        backup or restore keeps its own live staging directory.
+        """
+        cutoff = time.time() - max_age_seconds
+        try:
+            entries = list(self.local_dir.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            return
+        for entry in entries:
+            name = entry.name
+            leftover = (
+                name.startswith(".tmp_backup_staging-")
+                or name.startswith(".tmp_restore-")
+                or name.startswith(".part-")
+                or name.endswith(".part")
+            )
+            if not leftover:
+                continue
+            try:
+                if entry.stat().st_mtime > cutoff:
+                    continue
+                if entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink()
+            except OSError as e:
+                logger.warning("could not remove stale backup artifact %s: %s", entry, e)
 
     def _pending_root(self) -> Path:
         return Path("./") / PENDING_DIR_NAME
@@ -220,7 +273,11 @@ class BackupManager:
         rows: list[dict] = []
         if not self.local_dir.is_dir():
             return rows
-        for p in sorted(self.local_dir.glob("neyra-backup-*.zip"), key=lambda x: x.name, reverse=True):
+        for p in sorted(
+            self.local_dir.glob("neyra-backup-*.zip"),
+            key=lambda x: _archive_sort_key(x.name),
+            reverse=True,
+        ):
             if not p.is_file():
                 continue
             st = p.stat()
