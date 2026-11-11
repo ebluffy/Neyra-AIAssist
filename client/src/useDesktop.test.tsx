@@ -567,6 +567,100 @@ describe('text turn isolation and late history', () => {
     await emit({ type: 'history', source: 'bridge', messages: [{ role: 'user', content: 'A' }] });
     expect(app.messages.map(message => message.role)).toEqual(['user', 'assistant']);
   });
+  it.each(['before-ack', 'after-ack'])('merges older history after terminal A, %s, preserving repeated rows', async order => {
+    await mount();
+    const resolve = deferredChat();
+    let sending!: Promise<void>;
+    await act(async () => { sending = app.sendContent('A'); });
+    await emit({ type: 'done', source: 'bridge', request_id: requestId(), text: 'answer A' });
+    if (order === 'after-ack') await act(async () => { resolve({ handled: false }); await sending; });
+    const id = requestId();
+    const older = [
+      { id: 1, role: 'user', content: 'repeat' }, { id: 2, role: 'assistant', content: 'same' },
+      { id: 3, role: 'user', content: 'repeat' }, { id: 4, role: 'assistant', content: 'same' },
+    ];
+    await emit({ type: 'history', messages: older });
+    expect(app.messages.map(row => row.content)).toEqual(['repeat', 'same', 'repeat', 'same', 'A', 'answer A']);
+    const userId = app.messages[4].id;
+    // Repeated delivery and snapshots overlapping the optimistic turn must be idempotent.
+    for (const messages of [older, [...older, { id: 5, request_id: id, role: 'user', content: 'A' }], [...older, { id: 5, request_id: id, role: 'user', content: 'A' }, { id: 6, request_id: id, role: 'assistant', content: 'answer A' }]]) {
+      await emit({ type: 'history', messages });
+      expect(app.messages.map(row => row.content)).toEqual(['repeat', 'same', 'repeat', 'same', 'A', 'answer A']);
+      expect(app.messages[4].id).toBe(userId);
+    }
+    if (order === 'before-ack') await act(async () => { resolve({ handled: false }); await sending; });
+    expect(app.thinking).toBe(false);
+  });
+
+  it('distinguishes identical old and optimistic turns by persisted identity across reconnect', async () => {
+    await mount();
+    const oldRequest = crypto.randomUUID();
+    const oldRows = [
+      { id: 101, turn_id: 'old-turn', request_id: oldRequest, role: 'user', content: 'A' },
+      { id: 102, turn_id: 'old-turn', request_id: oldRequest, role: 'assistant', content: 'same answer' },
+    ];
+    const resolve = deferredChat();
+    let sending!: Promise<void>;
+    await act(async () => { sending = app.sendContent('A'); });
+    const currentRequest = requestId();
+    await emit({ type: 'done', source: 'bridge', request_id: currentRequest, text: 'same answer' });
+    await emit({ type: 'history', messages: oldRows });
+    expect(app.messages.map(row => row.content)).toEqual(['A', 'same answer', 'A', 'same answer']);
+    const localIds = app.messages.slice(2).map(row => row.id);
+    const allRows = [...oldRows,
+      { id: 103, turn_id: 'new-turn', request_id: currentRequest, role: 'user', content: 'A' },
+      { id: 104, turn_id: 'new-turn', request_id: currentRequest, role: 'assistant', content: 'same answer' },
+    ];
+    for (const messages of [allRows, oldRows, allRows]) {
+      await emit({ type: 'history', messages });
+      expect(app.messages.map(row => row.content)).toEqual(['A', 'same answer', 'A', 'same answer']);
+      expect(app.messages.slice(2).map(row => row.id)).toEqual(localIds);
+    }
+    await act(async () => { resolve({ handled: false }); await sending; });
+    await emit({ type: 'disconnected' });
+    await emit({ type: 'history', messages: allRows });
+    expect(app.messages.map(row => row.content)).toEqual(['A', 'same answer', 'A', 'same answer']);
+  });
+
+  it('correlates persisted user before terminal and rejected IPC without losing older identical text', async () => {
+    await mount();
+    const base = ipc.invoke.getMockImplementation()!;
+    let reject!: (reason: Error) => void;
+    ipc.invoke.mockImplementation((name, args) => name === 'chat' ? new Promise((_, fail) => { reject = fail; }) : base(name, args));
+    let sending!: Promise<void>;
+    await act(async () => { sending = app.sendContent('A'); });
+    await emit({ type: 'history', messages: [
+      { id: 1, turn_id: 'old', role: 'user', content: 'A' },
+      { id: 2, turn_id: 'current', request_id: requestId(), role: 'user', content: 'A' },
+    ] });
+    expect(app.messages).toHaveLength(2);
+    await act(async () => { reject(new Error('lost ack')); await sending; });
+    expect(app.messages.map(row => row.content)).toEqual(['A']);
+    expect(app.text).toBe('A');
+  });
+
+  it('does not duplicate an assistant persisted before its terminal event', async () => {
+    await mount();
+    await act(async () => { await app.sendContent('A'); });
+    const id = requestId();
+    const rows = [
+      { id: '1', turn_id: 'turn', request_id: id, role: 'user', content: 'A' },
+      { id: '2', turn_id: 'turn', request_id: id, role: 'assistant', content: 'answer A' },
+    ];
+    await emit({ type: 'history', messages: rows });
+    await emit({ type: 'done', source: 'bridge', request_id: id, text: 'answer A' });
+    expect(app.messages.map(row => row.content)).toEqual(['A', 'answer A']);
+    const saved = ipc.invoke.mock.calls.filter(([name]) => name === 'save_chats').at(-1)![1].threads;
+    expect(saved[0].messages[0]).toMatchObject({ serverId: '1', turnId: 'turn', requestId: id });
+    await act(async () => { root.unmount(); });
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation((name, args) => name === 'load_chats' ? Promise.resolve(saved) : base(name, args));
+    await mount();
+    await act(async () => { await app.sendContent('B'); });
+    await emit({ type: 'history', messages: rows });
+    expect(app.messages.map(row => row.content)).toEqual(['A', 'answer A', 'B']);
+  });
+
   it('honours a native global Stop while preserving other channel isolation', async () => {
     await mount();
     await act(async () => { await app.sendContent('A'); });

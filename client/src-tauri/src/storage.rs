@@ -811,6 +811,12 @@ pub struct SavedMessage {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -959,6 +965,12 @@ fn validate_chats(threads: &[SavedChat]) -> Result<(), String> {
                 || !matches!(message.kind.as_str(), "text" | "voice")
                 || message.content.chars().count() > 8000
                 || message.duration_ms.is_some_and(|ms| ms > 120_000)
+                || message.server_id.as_ref().is_some_and(|id| {
+                    id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit())
+                })
+                || [&message.server_id, &message.turn_id, &message.request_id]
+                    .iter()
+                    .any(|id| id.as_ref().is_some_and(|id| !plain_id(id)))
             {
                 return Err("История чатов повреждена".into());
             }
@@ -1215,12 +1227,27 @@ mod tests {
                 content: "секрет".into(),
                 kind: "text".into(),
                 duration_ms: None,
+                server_id: Some("101".into()),
+                turn_id: Some("test-turn".into()),
+                request_id: Some("11111111-1111-4111-8111-111111111111".into()),
             }],
         };
         save_chats(&root, &[thread]).unwrap();
         let loaded = load_chats(&root).unwrap();
         assert!(loaded.recovery.is_none());
         assert_eq!(loaded.threads[0].messages[0].content, "секрет");
+        assert_eq!(
+            loaded.threads[0].messages[0].server_id.as_deref(),
+            Some("101")
+        );
+        assert_eq!(
+            loaded.threads[0].messages[0].turn_id.as_deref(),
+            Some("test-turn")
+        );
+        assert_eq!(
+            loaded.threads[0].messages[0].request_id.as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
         assert!(!root
             .join("chats")
             .read_dir()
@@ -1259,6 +1286,9 @@ mod tests {
                     content: "я".repeat(4000),
                     kind: "text".into(),
                     duration_ms: None,
+                    server_id: None,
+                    turn_id: None,
+                    request_id: None,
                 })
                 .collect();
             threads.push(SavedChat {

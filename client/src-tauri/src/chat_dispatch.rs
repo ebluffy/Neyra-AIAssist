@@ -1,6 +1,21 @@
 //! Serializes a chat ticket's dispatch with Stop/disconnect, before any side effect.
 use std::sync::Mutex;
 
+// Required IPC argument: deserialization rejects null/missing and malformed IDs
+// before chat can attempt a local command or reserve a bridge turn.
+#[derive(serde::Deserialize)]
+#[serde(try_from = "String")]
+pub(crate) struct ChatRequestId(pub(crate) String);
+
+impl TryFrom<String> for ChatRequestId {
+    type Error = String;
+
+    fn try_from(id: String) -> Result<Self, Self::Error> {
+        uuid::Uuid::parse_str(&id).map_err(|_| "Неверный ID запроса".to_string())?;
+        Ok(Self(id))
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ChatDispatch(Mutex<u64>);
 
@@ -45,6 +60,24 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         mpsc, Arc,
     };
+
+    #[test]
+    fn ipc_chat_id_rejects_missing_null_and_invalid_values() {
+        // Exercise the production argument deserializer with null (including an
+        // absent lookup) and invalid strings. The Tauri missing-key path still
+        // needs native IPC acceptance; it must not generate a replacement ID.
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({"requestId": null}),
+            serde_json::json!({"requestId": "invalid"}),
+            serde_json::json!({"requestId": ""}),
+        ] {
+            assert!(serde_json::from_value::<ChatRequestId>(payload["requestId"].clone()).is_err());
+        }
+        let id = "11111111-1111-4111-8111-111111111111";
+        let parsed = serde_json::from_value::<ChatRequestId>(serde_json::json!(id)).unwrap();
+        assert_eq!(parsed.0, id);
+    }
 
     #[test]
     fn stop_before_delayed_dispatch_forbids_local_and_remote_execution_but_allows_new_turn() {

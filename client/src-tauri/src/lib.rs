@@ -1471,7 +1471,7 @@ fn chat(
     state: State<'_, Desktop>,
     text: String,
     target_device_id: Option<String>,
-    request_id: Option<String>,
+    request_id: chat_dispatch::ChatRequestId,
     dispatch_epoch: u64,
 ) -> Result<Value, String> {
     if text.trim().is_empty() || text.len() > 6000 {
@@ -1487,13 +1487,7 @@ fn chat(
         }
         // The WebView may receive WSS events before this IPC call resolves.
         // Accept its preallocated ID so it can correlate those events immediately.
-        let request_id = match request_id {
-            Some(id) => {
-                uuid::Uuid::parse_str(&id).map_err(|_| "Неверный ID запроса")?;
-                start_turn_with_id(&state, id)?
-            }
-            None => start_turn(&state)?,
-        };
+        let request_id = start_turn_with_id(&state, request_id.0)?;
         let result = send(
             &state.bridge,
             json!({"type":"chat","text":text,"target_device_id":target_device_id,"request_id":request_id}),

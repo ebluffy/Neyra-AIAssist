@@ -4,7 +4,7 @@ export interface VoiceSettings { mode: 'ptt' | 'wake' | 'always'; vad_sensitivit
 export interface Settings { schema_version: number; device_id: string; device_name: string; profiles: Profile[]; permissions: Permissions; theme: string; graphics_mode: string; audit_days: number; character_enabled?: boolean; voice?: VoiceSettings; active_profile?: string }
 export interface Recovery { file: string; reason: string; quarantined: string | null; restored: string }
 export interface Device { device_id: string; name: string; tools: string[] }
-export interface Entry { role: 'user' | 'assistant'; content: string }
+export interface Entry { id?: string | number; turn_id?: string; request_id?: string; role: 'user' | 'assistant'; content: string }
 export interface HostCall { call_id: string; tool: string; arguments: Record<string, unknown>; deadline_ms: number; preview?: string }
 export const toolTitles: Record<string, string> = {
   'client.shell_exec': 'Выполнить команду',

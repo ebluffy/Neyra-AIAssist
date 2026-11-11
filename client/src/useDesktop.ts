@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { bindProfileSession, ensureSessionId, firstServerSession, isUuid, nextId, profileSessionRepair, selectedProfile, sessionOrNew, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
+import { bindProfileSession, ensureSessionId, firstServerSession, mergeHistory, isUuid, nextId, profileSessionRepair, selectedProfile, sessionOrNew, storedThreads, stripAudio, switchThread, threadTitle, wavBlob, type ChatMessage, type ChatThread } from './chat';
 import { type DraftEvent, type RunEvent, describeRun } from './commands';
 import { type SheetId, themeId } from './theme';
 import { createTokenBatch } from './streaming';
@@ -204,15 +204,19 @@ export function useDesktop() {
             if (!chatTurn.current.ipcPending) chatTurn.current = null;
           }
           setLastTrace(event.model_trace);
-          setMessages(list => [...list.slice(-99), { id: nextId(), role: 'assistant', content: event.text ?? '', kind: 'text' }]);
+          setMessages(list => {
+            const requestId = event.source === 'bridge' ? event.request_id : undefined;
+            const index = requestId ? list.findIndex(row => row.role === 'assistant' && row.requestId === requestId) : -1;
+            if (index >= 0) return list.map((row, i) => i === index ? { ...row, content: event.text ?? '' } : row);
+            return [...list.slice(-99), { id: nextId(), role: 'assistant', content: event.text ?? '', kind: 'text', requestId }];
+          });
           if (affectsText) { tokenBatch.reset(); setThinking(event.source === 'voice'); }
           postNotice(event.source === 'voice' ? 'Готовлю озвучку…' : 'Ответ готов');
         }
         if (event.type === 'history') {
-          if (keepLocal.current) return;
           historyStamp.current += 1;
-          const incoming = (event.messages ?? []).map((entry: Entry) => ({ id: nextId(), role: entry.role, content: entry.content, kind: 'text' as const }));
-          setMessages(incoming);
+          const incoming = (event.messages ?? []).map((entry: Entry) => ({ id: nextId(), role: entry.role, content: entry.content, kind: 'text' as const, serverId: entry.id != null && /^[0-9]+$/.test(String(entry.id)) ? String(entry.id) : undefined, turnId: entry.turn_id, requestId: entry.request_id }));
+          setMessages(local => keepLocal.current ? mergeHistory(incoming, local) : incoming);
         }
         if (event.type === 'devices') setDevices(event.devices ?? []);
         if (event.type === 'voice.clip' && event.audio) {
@@ -376,9 +380,9 @@ export function useDesktop() {
       const turn = { id: crypto.randomUUID(), ipcPending: true, terminal: false };
       const userId = nextId();
       chatTurn.current = turn;
-      // Once a local turn starts, late unversioned history snapshots cannot replace it.
+      // Reconcile late history with local rows instead of replacing the optimistic turn.
       keepLocal.current = true;
-      setMessages(list => [...list, { id: userId, role: 'user', content: trimmed, kind: 'text' }]);
+      setMessages(list => [...list, { id: userId, role: 'user', content: trimmed, kind: 'text', requestId: turn.id }]);
       tokenBatch.reset(); setThinking(true);
       let result: { handled: boolean; command?: string };
       try {

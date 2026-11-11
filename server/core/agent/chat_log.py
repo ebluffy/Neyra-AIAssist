@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextvars import ContextVar
 from typing import Any, Optional
+
+# Only the bridge chat task sets this; scoped metadata, not model input.
+DESKTOP_CHAT_REQUEST: ContextVar[tuple[str, str] | None] = ContextVar("desktop_chat_request", default=None)
 
 logger = logging.getLogger("neyra.agent.chat_log")
 
@@ -27,6 +31,9 @@ async def append_turn_to_chat_log(
     trace = ACTIVE_TRACE.get()
     turn_id = trace.id if trace is not None and not trace.closed else memory_hub.new_turn_id()
     base_meta = dict(meta or {})
+    desktop_request = DESKTOP_CHAT_REQUEST.get()
+    if desktop_request is not None and desktop_request[1] == channel_id:
+        base_meta["desktop_request_id"] = desktop_request[0]
     rows = [
         {
             "role": "user",
