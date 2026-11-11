@@ -106,7 +106,9 @@ def router_for(agent, config, authenticate):
 
         try:
             manifest = await read_manifest(ws)
-            connection = registry.connect(session_owner, manifest, send, close=close_socket)
+            # A revoked device may only return when the person reconnects explicitly.
+            reauth = ws.headers.get('x-neyra-reauth') == '1'
+            connection = registry.connect(session_owner, manifest, send, close=close_socket, reauth=reauth)
             username = 'desktop:' + session_owner
             channel = 'desktop:' + str(manifest.session_id)
             await send(dict(type='hello', protocol='neyra.desktop.v1', device_id=str(manifest.device_id)))
@@ -208,9 +210,12 @@ def router_for(agent, config, authenticate):
                     task = asyncio.create_task(turn(packet.text, target, str(packet.request_id) if packet.request_id else None))
                 else:
                     await send(dict(type='error', code='bad_packet'))
-        except (ValueError, TimeoutError, TypeError, AttributeError, KeyError, ValidationError, json.JSONDecodeError):
+        except (ValueError, TimeoutError, TypeError, AttributeError, KeyError, ValidationError, json.JSONDecodeError) as error:
             try:
-                await ws.close(code=1008, reason='invalid_or_expired_session')
+                await ws.close(
+                    code=1008,
+                    reason='revoked' if str(error) == 'device_revoked' else 'invalid_or_expired_session',
+                )
             except Exception:
                 pass
         except WebSocketDisconnect:
@@ -434,9 +439,12 @@ def router_for(agent, config, authenticate):
                     await send(dict(type='pong'))
                 else:
                     raise ValueError('bad_packet')
-        except (ValueError, TimeoutError, TypeError, AttributeError, KeyError, ValidationError, json.JSONDecodeError):
+        except (ValueError, TimeoutError, TypeError, AttributeError, KeyError, ValidationError, json.JSONDecodeError) as error:
             try:
-                await ws.close(code=1008, reason='invalid_or_expired_session')
+                await ws.close(
+                    code=1008,
+                    reason='revoked' if str(error) == 'device_revoked' else 'invalid_or_expired_session',
+                )
             except Exception:
                 pass
         except WebSocketDisconnect:

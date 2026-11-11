@@ -156,7 +156,7 @@ def test_capability_update_cannot_change_identity():
             ws.receive_json()
 
 
-def test_disconnect_device_closes_socket_and_blocks_reregister():
+def test_disconnect_device_closes_current_socket_and_removes_from_devices():
     client, _ = make_client()
     target = manifest()
     with client, client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-a'}) as requester:
@@ -177,6 +177,85 @@ def test_disconnect_device_closes_socket_and_blocks_reregister():
         assert requester.receive_json()['type'] == 'devices'
         requester.send_json({'type': 'ping'})
         assert requester.receive_json()['type'] == 'pong'
+
+
+def test_revoked_device_can_manually_reconnect_without_replaying_pending_calls():
+    call_finished = {}
+
+    class ToolAgent(Agent):
+        async def chat_stream(self, text, **kwargs):
+            registry, owner, session, device = ACTIVE_DESKTOP.get()
+            try:
+                call_finished['result'] = await registry.call(
+                    owner, session, device, 'client.open_url', {'url': 'https://example.com'})
+            except Exception as e:
+                call_finished['error'] = e
+            yield {'type': 'done', 'text': 'done', 'model_trace': {'calls': []}}
+
+    client, _ = make_client(ToolAgent())
+    target_m = manifest(tools=['client.open_url'])
+    req_m = manifest()
+
+    with client, client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-a'}) as requester:
+        requester.send_json(req_m.model_dump(mode='json'))
+        assert requester.receive_json()['type'] == 'hello'
+
+        with client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-b'}) as target_ws:
+            target_ws.send_json(target_m.model_dump(mode='json'))
+            assert target_ws.receive_json()['type'] == 'hello'
+
+            # Requester starts a turn targeting target_m, putting a tool call in flight
+            requester.send_json({'type': 'chat', 'text': 'open url', 'target_device_id': str(target_m.device_id)})
+            tool_call = target_ws.receive_json()
+            assert tool_call['type'] == 'client_tool_call'
+            assert tool_call['tool'] == 'client.open_url'
+
+            # Disconnect the target device
+            requester.send_json({'type': 'disconnect_device', 'target_device_id': str(target_m.device_id)})
+            received = []
+            for _ in range(6):
+                received.append(requester.receive_json())
+                kinds = {p.get('type') for p in received}
+                if {'devices', 'done'} <= kinds:
+                    break
+            dev_packet = next(p for p in received if p.get('type') == 'devices')
+            assert any(p.get('type') == 'done' for p in received), received
+            assert all(d['device_id'] != str(target_m.device_id) for d in dev_packet['devices'])
+
+            # Old target socket receives 'revoked' and is closed
+            revoked = target_ws.receive_json()
+            assert revoked['type'] == 'revoked'
+            with pytest.raises(WebSocketDisconnect):
+                target_ws.receive_json()
+
+        # Outstanding tool call fails cleanly with ConnectionError
+        assert isinstance(call_finished.get('error'), ConnectionError)
+        assert str(call_finished['error']) == 'device_disconnected'
+
+        # A silent reconnect with the same manifest (same admin token) must be refused after revoke.
+        with client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-b'}) as silent_ws:
+            silent_ws.send_json(target_m.model_dump(mode='json'))
+            with pytest.raises(WebSocketDisconnect):
+                silent_ws.receive_json()
+
+        # The person reconnecting from that PC passes the explicit reauth header and gets back in.
+        with client.websocket_connect(
+            '/v1/desktop/bridge',
+            headers={'Authorization': 'Bearer owner-b', 'x-neyra-reauth': '1'},
+        ) as new_ws:
+            new_ws.send_json(target_m.model_dump(mode='json'))
+            hello = new_ws.receive_json()
+            assert hello['type'] == 'hello'
+            assert hello['device_id'] == str(target_m.device_id)
+
+            # Device is restored in the devices list
+            requester.send_json({'type': 'devices'})
+            updated_devices = requester.receive_json()
+            assert any(d['device_id'] == str(target_m.device_id) for d in updated_devices['devices'])
+
+            # No stale pending call is replayed: ping/pong responds immediately
+            new_ws.send_json({'type': 'ping'})
+            assert new_ws.receive_json()['type'] == 'pong'
 
 
 def test_ptt_transcript_chat_and_audio_share_text_session(monkeypatch):

@@ -48,16 +48,49 @@ def connect(tools=ALL, **kwargs):
 
 
 def test_only_screenshots_may_carry_image_bytes_and_results_are_bounded():
-    shot = {'status': 'ok', 'mime': 'image/jpeg', 'data': 'QUJD', 'screenshot_id': 'x'}
+    shot = {'status': 'ok', 'mime': 'image/jpeg', 'data': '/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==', 'screenshot_id': 'x'}
     assert checked_result('client.screenshot', shot) == shot
     assert checked_result('client.screenshot', {**shot, 'mime': 'text/html'})['code'] == 'bad_screenshot'
     assert checked_result('client.screenshot', {**shot, 'data': 'A' * (SCREENSHOT_LIMIT + 1)})['code'] == 'bad_screenshot'
-    assert checked_result('client.fs_read', {'status': 'ok', 'data': 'QUJD'})['code'] == 'result_too_large'
+    assert checked_result('client.fs_read', {'status': 'ok', 'data': '/9j/4AAQSkZJRgABAQAAAQABAAD/2Q=='})['code'] == 'result_too_large'
     assert checked_result('client.shell_exec', {'status': 'ok', 'stdout': 'x' * 70000})['code'] == 'result_too_large'
     assert checked_result('client.shell_exec', ['not', 'a', 'dict'])['code'] == 'bad_result'
     cyrillic = 'я' * 24_000
     assert checked_result('client.shell_exec', {'status': 'ok', 'stdout': cyrillic})['status'] == 'ok'
     assert checked_result('client.shell_exec', {'status': 'ok', 'stdout': 'я' * 40_000})['code'] == 'result_too_large'
+
+
+def test_screenshot_data_rejected_on_non_ok_status_and_invalid_shapes():
+    # 1. error + valid jpeg data must be rejected as bad_screenshot
+    assert checked_result('client.screenshot', {
+        'status': 'error', 'code': 'capture_failed', 'data': '/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==', 'mime': 'image/jpeg',
+    }) == {'status': 'error', 'code': 'bad_screenshot'}
+    # 2. error + data larger than limit must be rejected as bad_screenshot
+    assert checked_result('client.screenshot', {
+        'status': 'error', 'code': 'capture_failed', 'data': 'A' * (SCREENSHOT_LIMIT + 1),
+    }) == {'status': 'error', 'code': 'bad_screenshot'}
+    # 3. ok without mime must be rejected as bad_screenshot
+    assert checked_result('client.screenshot', {
+        'status': 'ok', 'data': '/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==', 'screenshot_id': 'x',
+    }) == {'status': 'error', 'code': 'bad_screenshot'}
+    # 4. ok with mime not image/jpeg must be rejected as bad_screenshot
+    assert checked_result('client.screenshot', {
+        'status': 'ok', 'mime': 'image/png', 'data': '/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==',
+    }) == {'status': 'error', 'code': 'bad_screenshot'}
+    # 4b. base64 that is not JPEG bytes must be rejected as bad_screenshot
+    assert checked_result('client.screenshot', {
+        'status': 'ok', 'mime': 'image/jpeg', 'data': 'QUJD',
+    }) == {'status': 'error', 'code': 'bad_screenshot'}
+    # 4c. broken base64 must be rejected as bad_screenshot
+    assert checked_result('client.screenshot', {
+        'status': 'ok', 'mime': 'image/jpeg', 'data': 'not base64 !!',
+    }) == {'status': 'error', 'code': 'bad_screenshot'}
+    # 5. normal ok screenshot still passes
+    shot = {'status': 'ok', 'mime': 'image/jpeg', 'data': '/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==', 'screenshot_id': 'x'}
+    assert checked_result('client.screenshot', shot) == shot
+    # 6. error without data is preserved
+    err = {'status': 'error', 'code': 'hardware_failure'}
+    assert checked_result('client.screenshot', err) == err
 
 
 def test_large_non_result_packets_still_close_the_socket():
@@ -126,7 +159,7 @@ def test_native_snapshot_uses_the_bounded_json_result_path():
     assert checked_result('client.computer_snapshot', snapshot) == snapshot
     too_large = {**snapshot, 'tree': {'name': 'я' * 40_000}}
     assert checked_result('client.computer_snapshot', too_large)['code'] == 'result_too_large'
-    assert checked_result('client.computer_snapshot', {**snapshot, 'data': 'QUJD'})['code'] == 'result_too_large'
+    assert checked_result('client.computer_snapshot', {**snapshot, 'data': '/9j/4AAQSkZJRgABAQAAAQABAAD/2Q=='})['code'] == 'result_too_large'
 
 
 @pytest.mark.parametrize('tool', ['client.computer_click', 'client.computer_type', 'client.computer_press'])
@@ -361,7 +394,7 @@ def test_hallucinated_server_tool_is_not_executed_when_llm_tool_calls_off():
 
 
 def test_screenshot_reaches_brain_as_image_not_tool_text():
-    data = 'SU1BR0VEQVRB'
+    data = '/9j/4AAQSkZJRgABAQAAAQABAAD/2Q=='
     registry, client, m = connect(reply=lambda tool, args: (
         {'status': 'ok', 'mime': 'image/jpeg', 'data': data, 'screenshot_id': str(uuid.uuid4()), 'width': 10, 'height': 10}
         if tool == 'client.screenshot' else {'status': 'ok'}))
@@ -377,7 +410,7 @@ def test_screenshot_reaches_brain_as_image_not_tool_text():
 
 def test_screenshot_without_vision_is_not_guessed():
     registry, client, m = connect(reply=lambda tool, args: (
-        {'status': 'ok', 'mime': 'image/jpeg', 'data': 'QUJD', 'screenshot_id': str(uuid.uuid4())}))
+        {'status': 'ok', 'mime': 'image/jpeg', 'data': '/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==', 'screenshot_id': str(uuid.uuid4())}))
     brain = ScriptedBrain([('client_screenshot', {'arguments': {}})])
     run_turn(FakeAgent(brain, vision=False), registry, m)
     notes = [msg.content for msg in brain.seen[-1] if isinstance(msg, HumanMessage) and isinstance(msg.content, str)]
