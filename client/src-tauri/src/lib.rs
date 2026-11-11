@@ -1682,7 +1682,10 @@ fn reserve_turn(current: &Mutex<Option<String>>) -> Result<String, String> {
 fn reserve_turn_typed(current: &Mutex<Option<String>>) -> Result<String, TurnStartError> {
     reserve_turn_with_id(current, uuid::Uuid::new_v4().to_string())
 }
-fn reserve_turn_with_id(current: &Mutex<Option<String>>, id: String) -> Result<String, TurnStartError> {
+fn reserve_turn_with_id(
+    current: &Mutex<Option<String>>,
+    id: String,
+) -> Result<String, TurnStartError> {
     let mut current = current
         .lock()
         .map_err(|e| TurnStartError::Internal(lock_error(e)))?;
