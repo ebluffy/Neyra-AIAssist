@@ -1,5 +1,7 @@
 # Web UI (React dashboard)
 
+> **Being replaced:** the product web UI moves to a dedicated client v2 — see the Russian spec [web-v2.md](../../ru/architecture/web-v2.md). This document covers the current ops dashboard until migration.
+
 The dashboard is a **React + Vite + Tailwind CSS** SPA served by the same FastAPI process as the core. Source: `server/dashboard/src/`; build: `server/dashboard/dist`.
 
 HTTP lives in **`server/core/api/`**. Bind / public URL / dashboard flags: **`server/config/server.yaml`** (`api:`, `dashboard:`).
