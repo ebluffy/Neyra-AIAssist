@@ -101,6 +101,7 @@ pub struct Desktop {
     /// Local actions still running after a quick-command step stopped waiting.
     local_inflight: AtomicUsize,
     local_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    output_device: Arc<Mutex<String>>,
     player: audio::Player,
     segments: Mutex<voice::Segments>,
     live: Mutex<Option<Live>>,
@@ -285,6 +286,9 @@ pub(crate) fn apply_settings(
                 let _ = app.emit("theme-changed", json!({ "theme": settings.theme }));
             }
             *state.settings.lock().map_err(lock_error)? = settings.clone();
+            if let Ok(mut dev) = state.output_device.lock() {
+                *dev = settings.voice.output_device.clone();
+            }
             Ok(())
         },
     )?;
@@ -861,7 +865,9 @@ fn live_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<u64, S
         None
     };
     let (frames_tx, frames) = std::sync::mpsc::sync_channel::<Vec<i16>>(50);
-    let capture = audio::LiveCapture::start(frames_tx)?;
+    let input_device = settings.input_device.trim();
+    let dev_name = (!input_device.is_empty()).then_some(input_device);
+    let capture = audio::LiveCapture::start(frames_tx, dev_name)?;
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = stop.clone();
     let run_id = state.live_run.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1513,13 +1519,39 @@ fn bridge_message(state: State<'_, Desktop>, kind: String) -> Result<(), String>
     }
     send(&state.bridge, json!({"type":kind}))
 }
+enum TurnStartError {
+    Busy,
+    Internal(String),
+}
+impl From<TurnStartError> for String {
+    fn from(value: TurnStartError) -> Self {
+        match value {
+            TurnStartError::Busy => "Сначала дождитесь ответа или нажмите Stop".into(),
+            TurnStartError::Internal(message) => message,
+        }
+    }
+}
 fn start_turn(state: &Desktop) -> Result<String, String> {
-    start_turn_with_id(state, uuid::Uuid::new_v4().to_string())
+    reserve_turn(&state.current_turn)
 }
 fn start_turn_with_id(state: &Desktop, id: String) -> Result<String, String> {
-    let mut current = state.current_turn.lock().map_err(lock_error)?;
+    reserve_turn_with_id(&state.current_turn, id).map_err(String::from)
+}
+fn start_turn_typed(state: &Desktop) -> Result<String, TurnStartError> {
+    reserve_turn_typed(&state.current_turn)
+}
+fn reserve_turn(current: &Mutex<Option<String>>) -> Result<String, String> {
+    reserve_turn_typed(current).map_err(String::from)
+}
+fn reserve_turn_typed(current: &Mutex<Option<String>>) -> Result<String, TurnStartError> {
+    reserve_turn_with_id(current, uuid::Uuid::new_v4().to_string())
+}
+fn reserve_turn_with_id(current: &Mutex<Option<String>>, id: String) -> Result<String, TurnStartError> {
+    let mut current = current
+        .lock()
+        .map_err(|e| TurnStartError::Internal(lock_error(e)))?;
     if current.is_some() {
-        return Err("Сначала дождитесь ответа или нажмите Stop".into());
+        return Err(TurnStartError::Busy);
     }
     *current = Some(id.clone());
     Ok(id)
@@ -1577,22 +1609,51 @@ fn disconnect(state: State<'_, Desktop>) -> Result<(), String> {
     disconnect_inner(&state)
 }
 #[tauri::command]
-async fn record_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
-    if state.current_turn.lock().map_err(lock_error)?.is_some() {
-        return Err("Дождитесь ответа или нажмите Stop".into());
+async fn record_start(
+    app: tauri::AppHandle,
+    state: State<'_, Desktop>,
+) -> Result<(), CaptureError> {
+    if state
+        .current_turn
+        .lock()
+        .map_err(|e| CaptureError::internal(lock_error(e)))?
+        .is_some()
+    {
+        return Err(CaptureError::TurnBusy);
     }
-    if state.voice.lock().map_err(lock_error)?.is_none() {
-        return Err("Нет голосового подключения".into());
+    if state
+        .voice
+        .lock()
+        .map_err(|e| CaptureError::internal(lock_error(e)))?
+        .is_none()
+    {
+        return Err(CaptureError::VoiceOffline);
     }
-    if state.live.lock().map_err(lock_error)?.is_some() {
-        return Err("Сначала остановите разговор голосом".into());
+    if state
+        .live
+        .lock()
+        .map_err(|e| CaptureError::internal(lock_error(e)))?
+        .is_some()
+    {
+        return Err(CaptureError::LiveActive);
     }
     state.generation.fetch_add(1, Ordering::SeqCst);
-    let mut recording = state.recording.lock().map_err(lock_error)?;
+    let mut recording = state
+        .recording
+        .lock()
+        .map_err(|e| CaptureError::internal(lock_error(e)))?;
     if recording.is_some() {
-        return Err("Запись уже идёт".into());
+        return Err(CaptureError::AlreadyRecording);
     }
-    let started = audio::Recording::start()?;
+    let input_device = {
+        let s = state
+            .settings
+            .lock()
+            .map_err(|e| CaptureError::internal(lock_error(e)))?;
+        s.voice.input_device.clone()
+    };
+    let dev_name = (!input_device.trim().is_empty()).then_some(input_device.as_str());
+    let started = audio::Recording::start(dev_name).map_err(CaptureError::Device)?;
     let level = started.level.clone();
     let meter_stop = started.meter_stop.clone();
     *recording = Some(started);
@@ -1606,53 +1667,145 @@ async fn record_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Resul
     });
     Ok(())
 }
+/// Capture failures with a stable code for the UI, independent of the Russian text.
+#[derive(Debug, PartialEq, Eq)]
+enum CaptureError {
+    TurnBusy,
+    VoiceOffline,
+    AlreadyRecording,
+    LiveActive,
+    NoCapture,
+    EmptyCapture,
+    Device(String),
+    Internal(String),
+}
+
+impl CaptureError {
+    fn internal(message: impl Into<String>) -> Self {
+        Self::Internal(message.into())
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::TurnBusy => "turn_busy",
+            Self::VoiceOffline => "voice_unavailable",
+            Self::AlreadyRecording => "already_recording",
+            Self::LiveActive => "live_active",
+            Self::NoCapture => "no_capture",
+            Self::EmptyCapture => "empty_capture",
+            Self::Device(_) => "microphone_unavailable",
+            Self::Internal(_) => "internal_error",
+        }
+    }
+}
+
+impl std::fmt::Display for CaptureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TurnBusy => write!(f, "Дождитесь ответа или нажмите Stop"),
+            Self::VoiceOffline => write!(f, "Нет голосового подключения"),
+            Self::AlreadyRecording => write!(f, "Запись уже идёт"),
+            Self::LiveActive => write!(f, "Сначала остановите разговор голосом"),
+            Self::NoCapture => write!(f, "Нет записи"),
+            Self::EmptyCapture => write!(f, "Запись пустая"),
+            Self::Device(message) | Self::Internal(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl From<String> for CaptureError {
+    fn from(message: String) -> Self {
+        Self::Device(message)
+    }
+}
+
+impl serde::Serialize for CaptureError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+// The same capture/commit boundary is exercised without opening an audio device.
+async fn finish_ptt(
+    current_turn: &Mutex<Option<String>>,
+    request_id: &str,
+    finish: impl std::future::Future<Output = Result<Vec<u8>, String>>,
+    send_pcm: impl FnOnce(Vec<u8>) -> Result<(), CaptureError>,
+) -> Result<(), CaptureError> {
+    let result = async {
+        let pcm = finish.await.map_err(CaptureError::Device)?;
+        if pcm.is_empty() {
+            return Err(CaptureError::EmptyCapture);
+        }
+        send_pcm(pcm)
+    }
+    .await;
+    if result.is_err() {
+        if let Ok(mut current) = current_turn.lock() {
+            // A delayed old capture must not clear a newer turn after Stop.
+            if current.as_deref() == Some(request_id) {
+                *current = None;
+            }
+        }
+    }
+    result
+}
+
 #[tauri::command]
-async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
+async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), CaptureError> {
     let recording = state
         .recording
         .lock()
-        .map_err(lock_error)?
+        .map_err(|e| CaptureError::internal(lock_error(e)))?
         .take()
-        .ok_or("Нет записи")?;
-    let request_id = start_turn(&state)?;
-    let result = async {
-        let pcm = tauri::async_runtime::spawn_blocking(move || recording.finish())
-            .await
-            .map_err(|_| "Ошибка записи".to_string())??;
-        if !pcm.is_empty() {
+        .ok_or(CaptureError::NoCapture)?;
+    let request_id = match start_turn_typed(&state) {
+        Ok(id) => id,
+        Err(error) => {
+            // Dropping a live capture without finish() keeps the meter stream alive.
+            let _ = tauri::async_runtime::spawn_blocking(move || recording.finish()).await;
+            return Err(match error {
+                TurnStartError::Busy => CaptureError::TurnBusy,
+                TurnStartError::Internal(message) => CaptureError::internal(message),
+            });
+        }
+    };
+    finish_ptt(
+        &state.current_turn,
+        &request_id,
+        async {
+            tauri::async_runtime::spawn_blocking(move || recording.finish())
+                .await
+                .map_err(|_| "Ошибка записи".to_string())?
+        },
+        |pcm| {
+            // Never announce a clip before there is a voice socket to carry it.
+            let tx = state
+                .voice
+                .lock()
+                .map_err(|e| CaptureError::internal(lock_error(e)))?
+                .clone()
+                .ok_or(CaptureError::VoiceOffline)?;
             let duration_ms = (pcm.len() as u64).saturating_mul(1000) / 32_000;
             let clip = base64::engine::general_purpose::STANDARD.encode(audio::wav_s16le_16k(&pcm));
             let _ = app.emit(
                 "desktop-event",
                 json!({"type":"voice.clip","audio":clip,"duration_ms":duration_ms}),
             );
-        }
-        let tx = state
-            .voice
-            .lock()
-            .map_err(lock_error)?
-            .clone()
-            .ok_or_else(|| "Нет голосового подключения".to_string())?;
-        for chunk in pcm.chunks(32000) {
-            tx.send(Message::Binary(chunk.to_vec().into()))
-                .map_err(|_| "Подключение закрыто".to_string())?;
-        }
-        tx.send(Message::Text(
-            json!({"type":"commit","request_id":request_id})
-                .to_string()
-                .into(),
-        ))
-        .map_err(|_| "Подключение закрыто".to_string())?;
-        Ok::<(), String>(())
-    }
-    .await;
-    if result.is_err() {
-        // Clear sticky turn on any failure after start_turn (AR-8).
-        if let Ok(mut current) = state.current_turn.lock() {
-            *current = None;
-        }
-    }
-    result
+            for chunk in pcm.chunks(32000) {
+                tx.send(Message::Binary(chunk.to_vec().into()))
+                    .map_err(|_| CaptureError::VoiceOffline)?;
+            }
+            tx.send(Message::Text(
+                json!({"type":"commit","request_id":request_id})
+                    .to_string()
+                    .into(),
+            ))
+            .map_err(|_| CaptureError::VoiceOffline)?;
+            Ok(())
+        },
+    )
+    .await
 }
 #[tauri::command]
 async fn record_cancel(state: State<'_, Desktop>) -> Result<(), String> {
@@ -1664,6 +1817,12 @@ async fn record_cancel(state: State<'_, Desktop>) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[tauri::command]
+fn audio_devices() -> audio::AudioDevices {
+    audio::list_audio_devices()
+}
+
 #[tauri::command]
 fn speak_text(state: State<'_, Desktop>, text: String) -> Result<(), String> {
     let spoken: String = text.trim().chars().take(300).collect();
@@ -1752,8 +1911,11 @@ pub fn run() {
                 );
             }
             let generation = Arc::new(AtomicU64::new(0));
+            let output_device = Arc::new(Mutex::new(settings.voice.output_device.clone()));
             let events = app.handle().clone();
-            let player = audio::Player::start(generation.clone(), move |event| {
+            let gen = generation.clone();
+            let out_dev = output_device.clone();
+            let player = audio::Player::start(gen, out_dev, move |event| {
                 let state = events.state::<Desktop>();
                 match event {
                     audio::PlayerEvent::Started => {
@@ -1804,6 +1966,7 @@ pub fn run() {
                 pending_data_move: Mutex::new(None),
                 local_inflight: AtomicUsize::new(0),
                 local_cancels: Mutex::new(HashMap::new()),
+                output_device,
                 player,
                 segments: Mutex::new(voice::Segments::default()),
                 live: Mutex::new(None),
@@ -1899,6 +2062,7 @@ pub fn run() {
             command_runner::choose_data_root,
             command_runner::confirm_data_root,
             voice_status,
+            audio_devices,
             live_start,
             live_stop,
             character::character_state,
@@ -1993,10 +2157,10 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                                 json!({"type":if pressed{"recording"}else{"transcribing"}}),
                             );
                         }
-                        Err(_) => {
+                        Err(error) => {
                             let _ = handle.emit(
                                 "desktop-event",
-                                json!({"type":"error","code":"microphone_unavailable"}),
+                                json!({"type":"capture.failed","code":error.code(),"stage":if pressed{"start"}else{"stop"}}),
                             );
                         }
                     }
@@ -2050,6 +2214,138 @@ fn monitor_session(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_errors_have_stable_codes() {
+        let cases = [
+            (CaptureError::TurnBusy, "turn_busy"),
+            (CaptureError::VoiceOffline, "voice_unavailable"),
+            (CaptureError::AlreadyRecording, "already_recording"),
+            (CaptureError::LiveActive, "live_active"),
+            (CaptureError::NoCapture, "no_capture"),
+            (CaptureError::EmptyCapture, "empty_capture"),
+            (
+                CaptureError::Device("device broke".into()),
+                "microphone_unavailable",
+            ),
+            (
+                CaptureError::Internal("Внутренняя ошибка состояния".into()),
+                "internal_error",
+            ),
+        ];
+        for (error, code) in cases {
+            assert_eq!(error.code(), code);
+            assert!(!error.to_string().is_empty());
+        }
+        assert_eq!(
+            CaptureError::Device("device broke".into()).to_string(),
+            "device broke"
+        );
+        assert_eq!(
+            serde_json::to_string(&CaptureError::TurnBusy).unwrap(),
+            "\"Дождитесь ответа или нажмите Stop\""
+        );
+    }
+
+    #[test]
+    fn poisoned_turn_lock_reports_internal_error_not_microphone() {
+        let current = std::sync::Arc::new(Mutex::new(None));
+        let poisoned = current.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoned.lock().unwrap();
+            panic!("poison the turn lock on purpose");
+        })
+        .join();
+        let error = match reserve_turn_typed(&current) {
+            Ok(_) => panic!("poisoned lock must fail"),
+            Err(error) => error,
+        };
+        let capture = match error {
+            TurnStartError::Busy => panic!("a poisoned lock is not a busy turn"),
+            TurnStartError::Internal(message) => CaptureError::internal(message),
+        };
+        assert_eq!(capture.code(), "internal_error");
+        assert_ne!(capture.code(), "microphone_unavailable");
+    }
+
+    #[tokio::test]
+    async fn ptt_empty_capture_never_commits_and_releases_turn_for_retry() {
+        let current = Mutex::new(None);
+        let id = reserve_turn(&current).unwrap();
+        let error = finish_ptt(&current, &id, std::future::ready(Ok(vec![])), |_| {
+            panic!("empty PCM must not reach the clip/commit boundary")
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error, CaptureError::EmptyCapture);
+        assert!(current.lock().unwrap().is_none());
+        assert!(reserve_turn(&current).is_ok());
+    }
+
+    #[tokio::test]
+    async fn ptt_capture_failure_releases_turn_without_commit() {
+        let current = Mutex::new(None);
+        let id = reserve_turn(&current).unwrap();
+        let error = finish_ptt(
+            &current,
+            &id,
+            std::future::ready(Err("capture failed".into())),
+            |_| panic!("failed capture must not commit"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, CaptureError::Device("capture failed".into()));
+        assert!(reserve_turn(&current).is_ok());
+    }
+
+    #[tokio::test]
+    async fn ptt_send_failure_releases_turn_for_retry() {
+        let current = Mutex::new(None);
+        let id = reserve_turn(&current).unwrap();
+        let error = finish_ptt(&current, &id, std::future::ready(Ok(vec![0, 1])), |pcm| {
+            assert_eq!(pcm, vec![0, 1]);
+            Err(CaptureError::VoiceOffline)
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error, CaptureError::VoiceOffline);
+        assert_eq!(error.code(), "voice_unavailable");
+        assert!(reserve_turn(&current).is_ok());
+    }
+
+    #[tokio::test]
+    async fn ptt_success_keeps_turn_until_server_terminal() {
+        let current = Mutex::new(None);
+        let id = reserve_turn(&current).unwrap();
+        let mut sent = false;
+        finish_ptt(&current, &id, std::future::ready(Ok(vec![0, 1])), |pcm| {
+            assert_eq!(pcm, vec![0, 1]);
+            sent = true;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(sent);
+        assert_eq!(current.lock().unwrap().as_deref(), Some(id.as_str()));
+        assert!(reserve_turn(&current).is_err());
+    }
+
+    #[tokio::test]
+    async fn ptt_late_failure_does_not_clear_new_turn() {
+        let current = Mutex::new(None);
+        let id = reserve_turn(&current).unwrap();
+        let finish = async {
+            *current.lock().unwrap() = None;
+            let replacement = reserve_turn(&current).unwrap();
+            assert_ne!(replacement, id);
+            Ok(vec![])
+        };
+        assert!(finish_ptt(&current, &id, finish, |_| panic!("empty PCM"))
+            .await
+            .is_err());
+        assert!(current.lock().unwrap().is_some());
+        assert!(reserve_turn(&current).is_err());
+    }
 
     fn test_token() -> String {
         let mut token = ["fleet", "test", "49"].join("-");

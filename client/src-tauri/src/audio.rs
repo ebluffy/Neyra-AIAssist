@@ -1,8 +1,144 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
     mpsc, Arc, Mutex,
 };
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct AudioDevices {
+    pub input_devices: Vec<String>,
+    pub output_devices: Vec<String>,
+    pub default_input: Option<String>,
+    pub default_output: Option<String>,
+}
+
+pub fn list_audio_devices() -> AudioDevices {
+    let host = cpal::default_host();
+    let mut input_devices = Vec::new();
+    let mut output_devices = Vec::new();
+
+    if let Ok(devices) = host.input_devices() {
+        for dev in devices {
+            if let Ok(name) = dev.name() {
+                if !input_devices.contains(&name) {
+                    input_devices.push(name);
+                }
+            }
+        }
+    }
+
+    if let Ok(devices) = host.output_devices() {
+        for dev in devices {
+            if let Ok(name) = dev.name() {
+                if !output_devices.contains(&name) {
+                    output_devices.push(name);
+                }
+            }
+        }
+    }
+
+    let default_input = host.default_input_device().and_then(|d| d.name().ok());
+    let default_output = host.default_output_device().and_then(|d| d.name().ok());
+
+    AudioDevices {
+        input_devices,
+        output_devices,
+        default_input,
+        default_output,
+    }
+}
+
+/// Pure selector logic for choosing an input device and config with fallback to default.
+pub fn select_input_device<D, C>(
+    requested: Option<&str>,
+    available: impl IntoIterator<Item = (D, String)>,
+    get_config: impl Fn(&D) -> Result<C, String>,
+    get_default: impl FnOnce() -> Option<D>,
+) -> Result<(D, C), String> {
+    let target = requested.map(|s| s.trim()).filter(|s| !s.is_empty());
+    if let Some(name) = target {
+        let mut chosen = None;
+        for (dev, dev_name) in available {
+            if dev_name == name {
+                chosen = Some(dev);
+                break;
+            }
+        }
+        if let Some(dev) = chosen {
+            match get_config(&dev) {
+                Ok(cfg) => return Ok((dev, cfg)),
+                Err(err) => {
+                    eprintln!(
+                        "Neyra audio: выбранный микрофон недоступен ({err}), fallback на системный"
+                    );
+                }
+            }
+        } else {
+            eprintln!("Neyra audio: выбранный микрофон '{name}' не найден, fallback на системный");
+        }
+    }
+    if let Some(def_dev) = get_default() {
+        match get_config(&def_dev) {
+            Ok(cfg) => Ok((def_dev, cfg)),
+            Err(_) => Err("Микрофон недоступен".into()),
+        }
+    } else {
+        Err("Микрофон не найден".into())
+    }
+}
+
+pub fn open_input_device(
+    name: Option<&str>,
+) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
+    let host = cpal::default_host();
+    let mut available = Vec::new();
+    if let Ok(devices) = host.input_devices() {
+        for dev in devices {
+            if let Ok(dev_name) = dev.name() {
+                available.push((dev, dev_name));
+            }
+        }
+    }
+    select_input_device(
+        name,
+        available,
+        |dev| dev.default_input_config().map_err(|e| e.to_string()),
+        || host.default_input_device(),
+    )
+}
+
+pub fn open_output_stream(
+    name: Option<&str>,
+) -> Option<(rodio::OutputStream, rodio::OutputStreamHandle)> {
+    if let Some(target) = name {
+        let trimmed = target.trim();
+        if !trimmed.is_empty() {
+            let host = cpal::default_host();
+            if let Ok(devices) = host.output_devices() {
+                for dev in devices {
+                    if let Ok(dev_name) = dev.name() {
+                        if dev_name == trimmed {
+                            if let Ok(stream) = rodio::OutputStream::try_from_device(&dev) {
+                                return Some(stream);
+                            }
+                            eprintln!(
+                                "Neyra audio: выбранное устройство вывода '{}' \
+                                 недоступно, fallback на системное",
+                                trimmed
+                            );
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "Neyra audio: выбранное устройство вывода '{}' не найдено, fallback на системное",
+                trimmed
+            );
+        }
+    }
+    rodio::OutputStream::try_default().ok()
+}
 
 pub struct Recording {
     stop: mpsc::Sender<()>,
@@ -21,100 +157,113 @@ fn note_level(level: &AtomicI32, data: &[f32]) {
     level.store((db * 10.0) as i32, Ordering::Relaxed);
 }
 impl Recording {
-    pub fn start() -> Result<Self, String> {
+    pub fn start(device_name: Option<&str>) -> Result<Self, String> {
         let (stop, rx) = mpsc::channel();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
         let level = Arc::new(AtomicI32::new(-1000));
         let meter_stop = Arc::new(AtomicBool::new(false));
         let level_thread = level.clone();
+        let target_name = device_name.map(|s| s.to_string());
         let join = std::thread::spawn(move || {
-            let device = cpal::default_host()
-                .default_input_device()
-                .ok_or("Микрофон не найден")?;
-            let config = device
-                .default_input_config()
-                .map_err(|_| "Микрофон недоступен")?;
-            let channels = config.channels() as usize;
-            let rate = config.sample_rate().0;
-            let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
-            let max = rate as usize * channels * 30;
-            let build = |samples: Arc<Mutex<Vec<f32>>>, level: Arc<AtomicI32>| {
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    note_level(&level, data);
-                    if let Ok(mut out) = samples.lock() {
-                        let left = max.saturating_sub(out.len());
-                        out.extend(data.iter().take(left));
+            let opened = (|| -> Result<_, String> {
+                let (device, config) = open_input_device(target_name.as_deref())?;
+                let channels = config.channels() as usize;
+                let rate = config.sample_rate().0;
+                let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
+                let max = rate as usize * channels * 30;
+                let build = |samples: Arc<Mutex<Vec<f32>>>, level: Arc<AtomicI32>| {
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        note_level(&level, data);
+                        if let Ok(mut out) = samples.lock() {
+                            let left = max.saturating_sub(out.len());
+                            out.extend(data.iter().take(left));
+                        }
                     }
+                };
+                let stream = match config.sample_format() {
+                    cpal::SampleFormat::F32 => device.build_input_stream(
+                        &config.clone().into(),
+                        build(samples.clone(), level_thread.clone()),
+                        |_| {},
+                        None,
+                    ),
+                    cpal::SampleFormat::I16 => {
+                        let s = samples.clone();
+                        let level = level_thread.clone();
+                        device.build_input_stream(
+                            &config.clone().into(),
+                            move |data: &[i16], _| {
+                                let floats: Vec<f32> =
+                                    data.iter().map(|v| *v as f32 / 32768.0).collect();
+                                note_level(&level, &floats);
+                                if let Ok(mut out) = s.lock() {
+                                    let left = max.saturating_sub(out.len());
+                                    out.extend(floats.into_iter().take(left));
+                                }
+                            },
+                            |_| {},
+                            None,
+                        )
+                    }
+                    cpal::SampleFormat::U16 => {
+                        let s = samples.clone();
+                        let level = level_thread.clone();
+                        device.build_input_stream(
+                            &config.clone().into(),
+                            move |data: &[u16], _| {
+                                let floats: Vec<f32> = data
+                                    .iter()
+                                    .map(|v| (*v as f32 - 32768.0) / 32768.0)
+                                    .collect();
+                                note_level(&level, &floats);
+                                if let Ok(mut out) = s.lock() {
+                                    let left = max.saturating_sub(out.len());
+                                    out.extend(floats.into_iter().take(left));
+                                }
+                            },
+                            |_| {},
+                            None,
+                        )
+                    }
+                    _ => return Err("Формат микрофона не поддерживается".into()),
+                }
+                .map_err(|_| "Не удалось открыть микрофон")?;
+                stream.play().map_err(|_| "Не удалось включить микрофон")?;
+                Ok((stream, samples, channels, rate))
+            })();
+
+            let (stream, samples, channels, rate) = match opened {
+                Ok(res) => {
+                    let _ = ready_tx.send(Ok(()));
+                    res
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e.to_string()));
+                    return Err(e);
                 }
             };
-            let stream = match config.sample_format() {
-                cpal::SampleFormat::F32 => device.build_input_stream(
-                    &config.clone().into(),
-                    build(samples.clone(), level_thread.clone()),
-                    |_| {},
-                    None,
-                ),
-                cpal::SampleFormat::I16 => {
-                    let s = samples.clone();
-                    let level = level_thread.clone();
-                    device.build_input_stream(
-                        &config.clone().into(),
-                        move |data: &[i16], _| {
-                            let floats: Vec<f32> =
-                                data.iter().map(|v| *v as f32 / 32768.0).collect();
-                            note_level(&level, &floats);
-                            if let Ok(mut out) = s.lock() {
-                                let left = max.saturating_sub(out.len());
-                                out.extend(floats.into_iter().take(left));
-                            }
-                        },
-                        |_| {},
-                        None,
-                    )
-                }
-                cpal::SampleFormat::U16 => {
-                    let s = samples.clone();
-                    let level = level_thread.clone();
-                    device.build_input_stream(
-                        &config.clone().into(),
-                        move |data: &[u16], _| {
-                            let floats: Vec<f32> = data
-                                .iter()
-                                .map(|v| (*v as f32 - 32768.0) / 32768.0)
-                                .collect();
-                            note_level(&level, &floats);
-                            if let Ok(mut out) = s.lock() {
-                                let left = max.saturating_sub(out.len());
-                                out.extend(floats.into_iter().take(left));
-                            }
-                        },
-                        |_| {},
-                        None,
-                    )
-                }
-                _ => return Err("Формат микрофона не поддерживается".into()),
-            }
-            .map_err(|_| "Не удалось открыть микрофон")?;
-            stream.play().map_err(|_| "Не удалось включить микрофон")?;
-            let _ = ready_tx.send(());
+
             let _ = rx.recv_timeout(std::time::Duration::from_secs(30));
             drop(stream);
             let data = samples.lock().map_err(|_| "Ошибка аудиобуфера")?;
             Ok(resample(&data, channels, rate))
         });
-        if ready_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .is_err()
-        {
-            let _ = stop.send(());
-            return Err("Микрофон недоступен: проверьте разрешение ОС".into());
+        match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => Ok(Self {
+                stop,
+                join,
+                level,
+                meter_stop,
+            }),
+            Ok(Err(e)) => {
+                let _ = stop.send(());
+                Err(e)
+            }
+            Err(_) => {
+                let _ = stop.send(());
+                Err("Микрофон недоступен: проверьте разрешение ОС".into())
+            }
         }
-        Ok(Self {
-            stop,
-            join,
-            level,
-            meter_stop,
-        })
     }
     pub fn finish(self) -> Result<Vec<u8>, String> {
         self.meter_stop.store(true, Ordering::Relaxed);
@@ -175,19 +324,18 @@ pub struct LiveCapture {
     pub dropped: Arc<AtomicU64>,
 }
 impl LiveCapture {
-    pub fn start(frames: mpsc::SyncSender<Vec<i16>>) -> Result<Self, String> {
+    pub fn start(
+        frames: mpsc::SyncSender<Vec<i16>>,
+        device_name: Option<&str>,
+    ) -> Result<Self, String> {
         let (stop, rx) = mpsc::channel::<()>();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let dropped = Arc::new(AtomicU64::new(0));
         let lost = dropped.clone();
+        let target_name = device_name.map(|s| s.to_string());
         std::thread::spawn(move || {
-            let opened = (|| {
-                let device = cpal::default_host()
-                    .default_input_device()
-                    .ok_or("Микрофон не найден")?;
-                let config = device
-                    .default_input_config()
-                    .map_err(|_| "Микрофон недоступен")?;
+            let opened = (|| -> Result<_, String> {
+                let (device, config) = open_input_device(target_name.as_deref())?;
                 let resampler = Arc::new(Mutex::new(crate::voice::Resampler::new(
                     config.sample_rate().0,
                     config.channels() as usize,
@@ -229,10 +377,12 @@ impl LiveCapture {
                         |_| {},
                         None,
                     ),
-                    _ => return Err("Формат микрофона не поддерживается"),
+                    _ => return Err("Формат микрофона не поддерживается".into()),
                 }
-                .map_err(|_| "Не удалось открыть микрофон")?;
-                stream.play().map_err(|_| "Не удалось включить микрофон")?;
+                .map_err(|_| "Не удалось открыть микрофон".to_string())?;
+                stream
+                    .play()
+                    .map_err(|_| "Не удалось включить микрофон".to_string())?;
                 Ok(stream)
             })();
             match opened {
@@ -284,6 +434,7 @@ const QUEUE: usize = 8;
 impl Player {
     pub fn start(
         generation: Arc<AtomicU64>,
+        output_device: Arc<Mutex<String>>,
         notify: impl Fn(PlayerEvent) + Send + 'static,
     ) -> Self {
         let (tx, rx) = mpsc::sync_channel::<Command>(QUEUE);
@@ -291,6 +442,7 @@ impl Player {
         let flag = playing.clone();
         std::thread::spawn(move || {
             let mut output: Option<(rodio::OutputStream, rodio::OutputStreamHandle)> = None;
+            let mut last_dev: Option<String> = None;
             let mut sink: Option<rodio::Sink> = None;
             let mut owner = 0u64;
             let mut queued: std::collections::VecDeque<u64> = Default::default();
@@ -326,8 +478,18 @@ impl Player {
                 };
                 match command {
                     Command::Segment(gen, seq, bytes) if gen == owner => {
-                        if output.is_none() {
-                            output = rodio::OutputStream::try_default().ok();
+                        let current_dev = output_device.lock().ok().and_then(|d| {
+                            let trimmed = d.trim().to_string();
+                            if trimmed.is_empty() {
+                                None
+                            } else {
+                                Some(trimmed)
+                            }
+                        });
+                        if output.is_none() || last_dev != current_dev {
+                            sink = None;
+                            output = open_output_stream(current_dev.as_deref());
+                            last_dev = current_dev.clone();
                         }
                         let Some((_, handle)) = &output else {
                             notify(PlayerEvent::Error("audio_unavailable"));
@@ -335,6 +497,16 @@ impl Player {
                         };
                         if sink.is_none() {
                             sink = rodio::Sink::try_new(handle).ok();
+                            if sink.is_none() && current_dev.is_some() {
+                                eprintln!(
+                                    "Neyra audio: устройство вывода отключено или \
+                                     недоступно, fallback на системное"
+                                );
+                                output = rodio::OutputStream::try_default().ok();
+                                if let Some((_, def_handle)) = &output {
+                                    sink = rodio::Sink::try_new(def_handle).ok();
+                                }
+                            }
                             if sink.is_some() {
                                 flag.store(true, Ordering::SeqCst);
                                 notify(PlayerEvent::Started);
@@ -390,5 +562,112 @@ mod tests {
         assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
         assert_eq!(wav.len(), 48);
         assert_eq!(&wav[44..], &[1, 2, 3, 4]);
+    }
+    #[test]
+    fn wav_header_empty_data() {
+        let wav = wav_s16le_16k(&[]);
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(wav[4..8].try_into().unwrap()), 36);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 0);
+        assert_eq!(wav.len(), 44);
+    }
+    #[test]
+    fn resample_empty_or_zero_rate() {
+        assert!(resample(&[], 1, 16000).is_empty());
+        assert!(resample(&[0.5; 100], 0, 16000).is_empty());
+        assert!(resample(&[0.5; 100], 1, 0).is_empty());
+    }
+    #[test]
+    fn select_input_device_chosen_success() {
+        let available = vec![(1, "USB Mic".to_string()), (2, "Default Mic".to_string())];
+        let cfg_fn = |dev: &i32| match dev {
+            1 => Ok("48kHz"),
+            2 => Ok("44.1kHz"),
+            _ => Err("unknown".into()),
+        };
+        let res = select_input_device(Some("USB Mic"), available, cfg_fn, || Some(2));
+        let (dev, cfg) = res.unwrap();
+        assert_eq!(dev, 1);
+        assert_eq!(cfg, "48kHz");
+    }
+    #[test]
+    fn select_input_device_chosen_unavailable_fallback() {
+        let available = vec![(1, "USB Mic".to_string()), (2, "Default Mic".to_string())];
+        let cfg_fn = |dev: &i32| match dev {
+            1 => Err("device busy".into()),
+            2 => Ok("44.1kHz"),
+            _ => Err("unknown".into()),
+        };
+        let res = select_input_device(Some("USB Mic"), available, cfg_fn, || Some(2));
+        let (dev, cfg) = res.unwrap();
+        // When chosen device fails default_input_config, must return default
+        // device (2), not chosen (1)!
+        assert_eq!(dev, 2);
+        assert_eq!(cfg, "44.1kHz");
+    }
+    #[test]
+    fn select_input_device_chosen_not_found_fallback() {
+        let available = vec![(2, "Default Mic".to_string())];
+        let cfg_fn = |dev: &i32| match dev {
+            2 => Ok("44.1kHz"),
+            _ => Err("unknown".into()),
+        };
+        let res = select_input_device(Some("Disconnected Mic"), available, cfg_fn, || Some(2));
+        let (dev, cfg) = res.unwrap();
+        assert_eq!(dev, 2);
+        assert_eq!(cfg, "44.1kHz");
+    }
+    #[test]
+    fn select_input_device_none_or_empty_returns_default() {
+        let available = vec![(2, "Default Mic".to_string())];
+        let cfg_fn = |_: &i32| Ok("44.1kHz");
+        let res1 = select_input_device(None, available.clone(), cfg_fn, || Some(2));
+        let (dev1, cfg1) = res1.unwrap();
+        assert_eq!(dev1, 2);
+        assert_eq!(cfg1, "44.1kHz");
+
+        let res2 = select_input_device(Some("   "), available, cfg_fn, || Some(2));
+        let (dev2, cfg2) = res2.unwrap();
+        assert_eq!(dev2, 2);
+        assert_eq!(cfg2, "44.1kHz");
+    }
+    #[test]
+    fn select_input_device_both_fail_returns_error() {
+        let available = vec![(1, "USB Mic".to_string()), (2, "Default Mic".to_string())];
+        let err_fn = |_: &i32| -> Result<&'static str, String> { Err("busy".into()) };
+        let res = select_input_device(Some("USB Mic"), available, err_fn, || Some(2));
+        let err = res.unwrap_err();
+        assert_eq!(err, "Микрофон недоступен");
+    }
+    #[test]
+    fn select_input_device_no_default_returns_not_found() {
+        let available: Vec<(i32, String)> = vec![];
+        let cfg_fn = |_: &i32| Ok("48kHz");
+        let res = select_input_device(Some("USB Mic"), available, cfg_fn, || None);
+        let err = res.unwrap_err();
+        assert_eq!(err, "Микрофон не найден");
+    }
+    #[test]
+    fn select_input_device_duplicate_names_picks_first() {
+        let available = vec![
+            (1, "Generic Mic".to_string()),
+            (2, "Generic Mic".to_string()),
+        ];
+        let cfg_fn = |dev: &i32| match dev {
+            1 => Ok("48kHz"),
+            2 => Ok("16kHz"),
+            _ => Err("unknown".into()),
+        };
+        let res = select_input_device(Some("Generic Mic"), available, cfg_fn, || Some(3));
+        let (dev, cfg) = res.unwrap();
+        assert_eq!(dev, 1);
+        assert_eq!(cfg, "48kHz");
+    }
+    #[test]
+    fn open_input_device_safe_without_panic() {
+        // Calling open_input_device directly must never panic on any environment,
+        // returning either Ok((dev, cfg)) or Err(message).
+        let _ = open_input_device(Some("Nonexistent Mic"));
+        let _ = open_input_device(None);
     }
 }

@@ -29,6 +29,12 @@ pub struct VoiceSettings {
     /// off: the mic is muted while Neyra speaks (half-duplex, no echo cancellation).
     /// headphones: voice barge-in while Neyra speaks; only safe without speakers.
     pub barge_in: String,
+    /// Local input device name (empty = system default)
+    #[serde(default)]
+    pub input_device: String,
+    /// Local output device name (empty = system default)
+    #[serde(default)]
+    pub output_device: String,
 }
 impl Default for VoiceSettings {
     fn default() -> Self {
@@ -38,6 +44,8 @@ impl Default for VoiceSettings {
             end_silence_ms: 700,
             wake_threshold: 0.5,
             barge_in: "off".into(),
+            input_device: String::new(),
+            output_device: String::new(),
         }
     }
 }
@@ -48,6 +56,8 @@ impl VoiceSettings {
             || !(0.0..=1.0).contains(&self.vad_sensitivity)
             || !(0.05..=0.99).contains(&self.wake_threshold)
             || !(300..=2000).contains(&self.end_silence_ms)
+            || self.input_device.len() > 200
+            || self.output_device.len() > 200
         {
             return Err("Неверные настройки голоса".into());
         }
@@ -586,8 +596,41 @@ pub mod tests {
                 vad_sensitivity: 2.0,
                 ..Default::default()
             },
+            VoiceSettings {
+                input_device: "a".repeat(201),
+                ..Default::default()
+            },
+            VoiceSettings {
+                output_device: "b".repeat(201),
+                ..Default::default()
+            },
         ] {
             assert!(bad.validate().is_err());
         }
+    }
+
+    #[test]
+    fn voice_settings_device_names() {
+        let s = VoiceSettings {
+            input_device: "USB Microphone".into(),
+            output_device: "Headphones".into(),
+            ..Default::default()
+        };
+        assert!(s.validate().is_ok());
+        let json_str = serde_json::to_string(&s).unwrap();
+        let parsed: VoiceSettings = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed.input_device, "USB Microphone");
+        assert_eq!(parsed.output_device, "Headphones");
+
+        let legacy_json = r#"{
+            "mode": "ptt",
+            "vad_sensitivity": 0.5,
+            "end_silence_ms": 700,
+            "wake_threshold": 0.5,
+            "barge_in": "off"
+        }"#;
+        let legacy_parsed: VoiceSettings = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(legacy_parsed.input_device, "");
+        assert_eq!(legacy_parsed.output_device, "");
     }
 }
