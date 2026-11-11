@@ -7,7 +7,7 @@
 
 ## Работа
 
-Разделить транспорт, backend и поведение моделей. Подтвердить auth/HTTPS/WSS, модули и backup/restore только в тестовом окружении, затем память/persona/роль brain→talk, отказ/таймаут и наблюдаемость. Отдельно проверить Discord GIF/music/history, browsermcp и привязку фактов, когда доступен согласованный стенд. Не считать AIHope маршрутом тестирования. Живая проверка Discord/browsermcp, боевого TLS/proxy с доменом и качества моделей/persona в этот PR не входит и вынесена в [#68](https://github.com/ebluffy/Neyra-AIAssist/issues/68).
+Разделить транспорт, backend и поведение моделей. Подтвердить auth/HTTPS/WSS, backup/restore, память/persona и роль brain→talk, отказ/таймаут на тестовых копиях. Не считать AIHope маршрутом тестирования. Вне объёма этого PR и вынесено в [#68](https://github.com/ebluffy/Neyra-AIAssist/issues/68): живой Discord GIF/music/history и browsermcp с токенами, боевой TLS/proxy с доменом, качество моделей и persona-поведение, полный dataset, Windows/установщики, а также найденный дефект health при 429 и отсутствие `/chat/completions` fallback для talk.
 
 ## Готово, когда
 
