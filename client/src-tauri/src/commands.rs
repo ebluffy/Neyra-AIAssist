@@ -763,6 +763,35 @@ pub fn safe_file_name(file: &str) -> Result<&str, String> {
     }
 }
 
+/// Addresses a command file that already exists in the folder. The 96-byte creation
+/// limit does not apply here: files written by hand or created before that limit must
+/// stay openable, editable and deletable. Only the path shape is checked.
+pub fn existing_file_name(file: &str) -> Result<&str, String> {
+    let lower = file.to_lowercase();
+    let ok = !file.is_empty()
+        && !file.starts_with('.')
+        && (lower.ends_with(".yaml") || lower.ends_with(".yml"))
+        && !file.contains(['/', '\\', '\0', ':'])
+        && file != "."
+        && file != "..";
+    if ok {
+        Ok(file)
+    } else {
+        Err("Неверное имя файла команды".into())
+    }
+}
+
+/// Resolves a command file that must already exist in the folder. The name shape is
+/// checked by `existing_file_name`; here the file also has to be a regular file, so a
+/// rename or a dangling symlink can neither be edited nor read through this path.
+pub fn existing_file(dir: &Path, file: &str) -> Result<String, String> {
+    let name = existing_file_name(file)?;
+    match fs::symlink_metadata(dir.join(name)) {
+        Ok(meta) if meta.is_file() => Ok(name.to_string()),
+        _ => Err("Файл команды не найден".into()),
+    }
+}
+
 pub fn slug(name: &str) -> String {
     let mut out = String::new();
     for c in name.to_lowercase().chars() {
@@ -784,6 +813,22 @@ pub fn slug(name: &str) -> String {
     } else {
         trimmed
     }
+}
+
+/// Builds `base + suffix + ".yaml"` within the 96-byte limit of `safe_file_name`.
+/// The cut is made on a UTF-8 character boundary; suffixes up to `-200` still fit.
+fn file_candidate(base: &str, suffix: &str) -> String {
+    let tail = format!("{suffix}.yaml");
+    let mut budget = 96usize.saturating_sub(tail.len());
+    let mut cut = 0;
+    for c in base.chars() {
+        if c.len_utf8() > budget {
+            break;
+        }
+        budget -= c.len_utf8();
+        cut += c.len_utf8();
+    }
+    format!("{}{tail}", base[..cut].trim_end_matches('-'))
 }
 
 fn hotkeys_of(command: &Command) -> Vec<String> {
@@ -831,19 +876,21 @@ pub fn write_command(
     validate(&command)?;
     check_unique(entries, existing, &command)?;
     let file = match existing {
-        Some(file) => safe_file_name(file)?.to_string(),
+        Some(file) => existing_file(dir, file)?,
         None => {
             let base = slug(&command.name);
-            let mut candidate = format!("{base}.yaml");
+            let mut candidate = file_candidate(&base, "");
             let mut n = 2;
             while dir.join(&candidate).exists() {
-                candidate = format!("{base}-{n}.yaml");
+                candidate = file_candidate(&base, &format!("-{n}"));
                 n += 1;
                 if n > 200 {
                     return Err("Слишком много файлов с похожим именем".into());
                 }
             }
-            candidate
+            // Guard: names we create still honour the 96-byte limit; only existing
+            // files may be addressed without it.
+            safe_file_name(&candidate)?.to_string()
         }
     };
     let text = match raw {
@@ -855,12 +902,8 @@ pub fn write_command(
 }
 
 pub fn delete_file(dir: &Path, file: &str) -> Result<(), String> {
-    let file = safe_file_name(file)?;
-    let path = dir.join(file);
-    if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
-        return Err("Файл команды не найден".into());
-    }
-    fs::remove_file(path).map_err(|_| "Не удалось удалить файл команды".into())
+    let file = existing_file(dir, file)?;
+    fs::remove_file(dir.join(file)).map_err(|_| "Не удалось удалить файл команды".into())
 }
 
 /// Server drafts ("запомни команду…") become ordinary commands only after the user confirms locally.
@@ -1121,11 +1164,36 @@ pub fn apply_import(
     let mut report = ImportReport::default();
     let mut current: Vec<Entry> = existing.to_vec();
     if replace && !current.is_empty() {
-        fs::create_dir_all(backup_dir).map_err(|_| "Не удалось создать резервную копию")?;
+        // Every name is validated before the first move: a refused name must not leave
+        // half of the commands in the folder and half of them in the backup folder.
+        let mut planned = Vec::with_capacity(current.len());
         for entry in &current {
-            let file = safe_file_name(&entry.file)?;
-            fs::rename(dir.join(file), backup_dir.join(file))
-                .map_err(|_| "Не удалось сохранить резервную копию")?;
+            planned.push(existing_file(dir, &entry.file)?);
+        }
+        fs::create_dir_all(backup_dir).map_err(|_| "Не удалось создать резервную копию")?;
+        // Files already moved are tracked so a failing rename (a locked file on Windows,
+        // a sync client holding the folder) can be undone instead of splitting the set.
+        let mut moved: Vec<String> = Vec::with_capacity(planned.len());
+        for file in planned {
+            match fs::rename(dir.join(&file), backup_dir.join(&file)) {
+                Ok(()) => moved.push(file),
+                Err(_) => {
+                    let mut stuck = Vec::new();
+                    for done in moved.iter().rev() {
+                        if fs::rename(backup_dir.join(done), dir.join(done)).is_err() {
+                            stuck.push(done.clone());
+                        }
+                    }
+                    return Err(if stuck.is_empty() {
+                        format!("Не удалось сохранить резервную копию: {file}")
+                    } else {
+                        format!(
+                            "Не удалось сохранить резервную копию: {file}. Остались в резервной копии: {}",
+                            stuck.join(", ")
+                        )
+                    });
+                }
+            }
         }
         current.clear();
     }
@@ -1571,6 +1639,198 @@ mod tests {
         }
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn long_multibyte_names_stay_within_limit_and_remain_addressable() {
+        let dir = temp();
+        let mut entries = Vec::new();
+        let names = [
+            "я".repeat(60),
+            format!("{}ю", "я".repeat(59)),
+            "中".repeat(40),
+        ];
+        let mut files = Vec::new();
+        for (index, name) in names.iter().enumerate() {
+            let command = simple(name, &format!("длинная команда {}", index + 1));
+            let file = write_command(&dir, &entries, None, &command, None).unwrap();
+            assert!(file.len() <= 96, "{} bytes in {file}", file.len());
+            assert!(safe_file_name(&file).is_ok(), "{file}");
+            assert!(!fs::read(dir.join(&file)).unwrap().is_empty());
+            entries.push(Entry {
+                file: file.clone(),
+                command,
+            });
+            files.push(file);
+        }
+        assert_eq!(files[1], format!("{}-2.yaml", "я".repeat(44)));
+        assert_eq!(files[2], format!("{}.yaml", "中".repeat(30)));
+        assert_eq!(files[2].chars().count(), 30 + ".yaml".len());
+        // Created names keep the historical ASCII shape.
+        assert_eq!(file_candidate("game", ""), "game.yaml");
+        assert_eq!(file_candidate("game", "-2"), "game-2.yaml");
+        assert_eq!(file_candidate("game", "-100"), "game-100.yaml");
+        assert!(file_candidate(&"я".repeat(60), "-100").len() <= 96);
+        for file in files {
+            assert!(safe_file_name(&file).is_ok(), "{file}");
+            delete_file(&dir, &file).unwrap();
+            assert!(delete_file(&dir, &file).is_err());
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn long_manual_names_stay_editable_deletable_and_backed_up_first() {
+        let dir = temp();
+        let long = format!("{}.yaml", "中".repeat(48));
+        assert!(long.len() > 96);
+        assert!(safe_file_name(&long).is_err(), "creation limit covers it");
+        assert_eq!(existing_file_name(&long).unwrap(), long.as_str());
+        for bad in ["../x.yaml", "a/b.yaml", ".hidden.yaml", "x.txt", ""] {
+            assert!(existing_file_name(bad).is_err(), "{bad}");
+        }
+        fs::write(dir.join(&long), GAME).unwrap();
+        let mut store = Store::default();
+        assert!(store.reload(&dir));
+        assert_eq!(store.entries().len(), 1, "{:?}", store.errors());
+        let mut command = store.entries()[0].command.clone();
+        command.name = "Длинная правка".into();
+        write_command(&dir, store.entries(), Some(&long), &command, None).unwrap();
+        assert!(fs::read_to_string(dir.join(&long))
+            .unwrap()
+            .contains("Длинная правка"));
+
+        // Replace backs up every file, including the long manual name.
+        let backup = temp();
+        let report = apply_import(
+            &dir,
+            &backup,
+            store.entries(),
+            vec![simple("Новая", "новая команда")],
+            true,
+            Conflict::Skip,
+        )
+        .unwrap();
+        assert_eq!(report.added, 1);
+        assert!(backup.join(&long).is_file());
+        assert!(!dir.join(&long).exists());
+
+        // An unsafe name is refused before anything moves.
+        let unsafe_entry = Entry {
+            file: "sub/dir.yaml".into(),
+            command: game(),
+        };
+        let kept = dir.join("game.yaml");
+        fs::write(&kept, GAME).unwrap();
+        let before = fs::read_dir(&dir).unwrap().count();
+        assert!(apply_import(
+            &dir,
+            &backup,
+            &[unsafe_entry],
+            vec![simple("Ещё", "ещё команда")],
+            true,
+            Conflict::Skip
+        )
+        .is_err());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), before);
+        assert!(kept.is_file());
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(backup).unwrap();
+    }
+    #[test]
+    fn edit_refuses_a_name_that_is_not_a_file_yet() {
+        let dir = temp();
+        let long = format!("{}.yaml", "中".repeat(48));
+        assert!(long.len() > 96);
+        // "Edit" must not be a way around the creation limit: the file has to exist.
+        assert!(write_command(&dir, &[], Some(&long), &game(), None).is_err());
+        assert!(!dir.join(&long).exists(), "refused edit created a file");
+        assert!(delete_file(&dir, &long).is_err());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+
+        fs::write(dir.join(&long), GAME).unwrap();
+        let mut store = Store::default();
+        assert!(store.reload(&dir));
+        let mut command = store.entries()[0].command.clone();
+        command.name = "Правка длинного имени".into();
+        write_command(&dir, store.entries(), Some(&long), &command, None).unwrap();
+        assert!(fs::read_to_string(dir.join(&long))
+            .unwrap()
+            .contains("Правка длинного имени"));
+        delete_file(&dir, &long).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_command_file_is_neither_read_nor_edited_nor_deleted() {
+        let dir = temp();
+        let outside = temp().join("outside.yaml");
+        fs::write(&outside, GAME).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("link.yaml")).unwrap();
+        assert!(existing_file(&dir, "link.yaml").is_err());
+        assert!(write_command(&dir, &[], Some("link.yaml"), &game(), None).is_err());
+        assert!(delete_file(&dir, "link.yaml").is_err());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "link is untouched");
+        assert!(fs::read_to_string(&outside).unwrap().contains("Режим игры"));
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(outside.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn replace_import_rolls_back_when_a_backup_rename_fails() {
+        let dir = temp();
+        let backup = temp().join("backup");
+        write_command(&dir, &[], None, &simple("Первая", "первая команда"), None).unwrap();
+        fs::write(
+            dir.join("b.yaml"),
+            to_yaml(&simple("Вторая", "вторая команда")).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("c.yaml"),
+            to_yaml(&simple("Третья", "третья команда")).unwrap(),
+        )
+        .unwrap();
+        let mut store = Store::default();
+        assert!(store.reload(&dir));
+        assert_eq!(store.entries().len(), 3, "{:?}", store.errors());
+        let blocked = store.entries()[1].file.clone();
+        // A directory at the destination makes exactly that rename fail.
+        fs::create_dir_all(backup.join(&blocked)).unwrap();
+        let err = apply_import(
+            &dir,
+            &backup,
+            store.entries(),
+            vec![simple("Новая", "новая команда")],
+            true,
+            Conflict::Skip,
+        )
+        .unwrap_err();
+        assert!(err.contains("резервную копию"), "{err}");
+        for entry in store.entries() {
+            assert!(
+                dir.join(&entry.file).is_file(),
+                "{} went missing",
+                entry.file
+            );
+        }
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            3,
+            "every command stays in the folder after a failed replace"
+        );
+        assert!(
+            backup.join(&blocked).is_dir(),
+            "the blocker is untouched in the backup folder"
+        );
+        assert_eq!(
+            fs::read_dir(&backup).unwrap().count(),
+            1,
+            "moved files are returned, so no command is left only in the backup"
+        );
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(backup).unwrap();
+    }
+
     #[test]
     fn raw_yaml_is_preserved_when_saved_and_delete_is_confined() {
         let dir = temp();
