@@ -99,6 +99,7 @@ pub struct Desktop {
     /// Local actions still running after a quick-command step stopped waiting.
     local_inflight: AtomicUsize,
     local_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    output_device: Arc<Mutex<String>>,
     player: audio::Player,
     segments: Mutex<voice::Segments>,
     live: Mutex<Option<Live>>,
@@ -283,6 +284,9 @@ pub(crate) fn apply_settings(
                 let _ = app.emit("theme-changed", json!({ "theme": settings.theme }));
             }
             *state.settings.lock().map_err(lock_error)? = settings.clone();
+            if let Ok(mut dev) = state.output_device.lock() {
+                *dev = settings.voice.output_device.clone();
+            }
             Ok(())
         },
     )?;
@@ -859,7 +863,9 @@ fn live_start(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<u64, S
         None
     };
     let (frames_tx, frames) = std::sync::mpsc::sync_channel::<Vec<i16>>(50);
-    let capture = audio::LiveCapture::start(frames_tx)?;
+    let input_device = settings.input_device.trim();
+    let dev_name = (!input_device.is_empty()).then_some(input_device);
+    let capture = audio::LiveCapture::start(frames_tx, dev_name)?;
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = stop.clone();
     let run_id = state.live_run.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1619,7 +1625,15 @@ async fn record_start(
     if recording.is_some() {
         return Err(CaptureError::AlreadyRecording);
     }
-    let started = audio::Recording::start().map_err(CaptureError::Device)?;
+    let input_device = {
+        let s = state
+            .settings
+            .lock()
+            .map_err(|e| CaptureError::internal(lock_error(e)))?;
+        s.voice.input_device.clone()
+    };
+    let dev_name = (!input_device.trim().is_empty()).then_some(input_device.as_str());
+    let started = audio::Recording::start(dev_name).map_err(CaptureError::Device)?;
     let level = started.level.clone();
     let meter_stop = started.meter_stop.clone();
     *recording = Some(started);
@@ -1783,6 +1797,12 @@ async fn record_cancel(state: State<'_, Desktop>) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[tauri::command]
+fn audio_devices() -> audio::AudioDevices {
+    audio::list_audio_devices()
+}
+
 #[tauri::command]
 fn speak_text(state: State<'_, Desktop>, text: String) -> Result<(), String> {
     let spoken: String = text.trim().chars().take(300).collect();
@@ -1871,8 +1891,11 @@ pub fn run() {
                 );
             }
             let generation = Arc::new(AtomicU64::new(0));
+            let output_device = Arc::new(Mutex::new(settings.voice.output_device.clone()));
             let events = app.handle().clone();
-            let player = audio::Player::start(generation.clone(), move |event| {
+            let gen = generation.clone();
+            let out_dev = output_device.clone();
+            let player = audio::Player::start(gen, out_dev, move |event| {
                 let state = events.state::<Desktop>();
                 match event {
                     audio::PlayerEvent::Started => {
@@ -1922,6 +1945,7 @@ pub fn run() {
                 pending_data_move: Mutex::new(None),
                 local_inflight: AtomicUsize::new(0),
                 local_cancels: Mutex::new(HashMap::new()),
+                output_device,
                 player,
                 segments: Mutex::new(voice::Segments::default()),
                 live: Mutex::new(None),
@@ -2015,6 +2039,7 @@ pub fn run() {
             command_runner::choose_data_root,
             command_runner::confirm_data_root,
             voice_status,
+            audio_devices,
             live_start,
             live_stop,
             character::character_state,
@@ -2110,8 +2135,10 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                             );
                         }
                         Err(error) => {
-                            let _ = handle
-                                .emit("desktop-event", json!({"type":"error","code":error.code()}));
+                            let _ = handle.emit(
+                                "desktop-event",
+                                json!({"type":"capture.failed","code":error.code(),"stage":if pressed{"start"}else{"stop"}}),
+                            );
                         }
                     }
                 });

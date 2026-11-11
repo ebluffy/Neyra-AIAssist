@@ -1,4 +1,4 @@
-import type { VoiceSettings, VoiceStatus } from '../types';
+import type { AudioDevices, VoiceSettings, VoiceStatus } from '../types';
 
 interface Props {
   voice: VoiceSettings;
@@ -6,18 +6,23 @@ interface Props {
   busy: boolean;
   shortcuts: boolean;
   voiceStatus?: VoiceStatus;
+  audioDevices?: AudioDevices;
   onDraft: (patch: Partial<VoiceSettings>) => void;
   onSave: (patch: Partial<VoiceSettings>) => void;
   onRefresh: () => void;
 }
 
-export function VoicePanel({ voice, root, busy, shortcuts, voiceStatus, onDraft, onSave, onRefresh }: Props) {
+export function VoicePanel({ voice, root, busy, shortcuts, voiceStatus, audioDevices, onDraft, onSave, onRefresh }: Props) {
   return <section className="voice" aria-labelledby="voice-title">
     <h1 id="voice-title">Голос</h1>
     <p>STT и TTS работают на сервере. На этом ПК только микрофон, воспроизведение и детектор слова «Нейра». Аудио не сохраняется.</p>
     <p>Голосовое сообщение — кнопка микрофона у поля ввода. Разговор голосом включается только кнопкой волны рядом с ним.</p>
     <p>{shortcuts ? 'Push-to-talk: удерживайте Ctrl+Alt+Space. Стоп: Ctrl+Alt+Escape или кнопка «Стоп» справа сверху.' : 'Глобальные хоткеи недоступны: используйте кнопки записи и Стоп.'}</p>
     {busy && <p id="voice-busy" role="status">Дождитесь завершения текущего действия, чтобы изменить голос.</p>}
+    <h2>Устройства звука</h2>
+    <label>Микрофон (ввод)<select name="voice-input-device" autoComplete="off" value={voice.input_device ?? ''} disabled={busy} aria-describedby={busy ? 'voice-busy' : undefined} onChange={event => onSave({ input_device: event.target.value })}><option value="">По умолчанию {audioDevices?.default_input ? `(${audioDevices.default_input})` : '(системный)'}</option>{audioDevices?.input_devices.map(device => <option key={device} value={device}>{device}</option>)}{voice.input_device && !audioDevices?.input_devices.includes(voice.input_device) && <option value={voice.input_device}>{voice.input_device} (не подключено, fallback на системный)</option>}</select></label>
+    <label>Динамики / наушники (вывод)<select name="voice-output-device" autoComplete="off" value={voice.output_device ?? ''} disabled={busy} aria-describedby={busy ? 'voice-busy' : undefined} onChange={event => onSave({ output_device: event.target.value })}><option value="">По умолчанию {audioDevices?.default_output ? `(${audioDevices.default_output})` : '(системный)'}</option>{audioDevices?.output_devices.map(device => <option key={device} value={device}>{device}</option>)}{voice.output_device && !audioDevices?.output_devices.includes(voice.output_device) && <option value={voice.output_device}>{voice.output_device} (не подключено, fallback на системный)</option>}</select></label>
+    <p>Выбор устройства сохраняется только на этом ПК и не передаётся на сервер. Если выбранного устройства нет при следующем открытии записи или воспроизведения, используется системное устройство по умолчанию.</p>
     <h2>Режим</h2>
     <label>Как начинать разговор<select name="voice-mode" autoComplete="off" value={voice.mode} disabled={busy} aria-describedby={busy ? 'voice-busy' : undefined} onChange={event => onSave({ mode: event.target.value as VoiceSettings['mode'] })}><option value="ptt">Push-to-talk: кнопка или хоткей</option><option value="wake">Слово «Нейра» и команда</option><option value="always">Слушать всегда</option></select></label>
     <label>Чувствительность к речи: {Math.round(voice.vad_sensitivity * 100)}%<input name="voice-sensitivity" autoComplete="off" type="range" min={0} max={1} step={0.05} value={voice.vad_sensitivity} disabled={busy} aria-describedby={busy ? 'voice-busy' : undefined} onChange={event => onDraft({ vad_sensitivity: Number(event.target.value) })} onPointerUp={() => onSave({})} onKeyUp={() => onSave({})} /></label>

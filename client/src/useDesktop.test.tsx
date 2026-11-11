@@ -5,7 +5,8 @@ import { App } from './App';
 import { GearMenu } from './components/GearMenu';
 import { ServerPanel } from './components/ServerPanel';
 import { Composer } from './components/Composer';
-import { defaultVoice, type Settings } from './types';
+import { VoicePanel } from './components/VoicePanel';
+import { defaultVoice, type AudioDevices, type Settings } from './types';
 import { useDesktop } from './useDesktop';
 
 const ipc = vi.hoisted(() => ({ invoke: vi.fn(), listeners: new Map<string, (event: { payload: unknown }) => void>() }));
@@ -542,7 +543,7 @@ describe('PTT deferred IPC lifecycle', () => {
     await pending.settle();
   });
 
-  it.each(['audio_backpressure', 'wake_failed'])(
+  it.each(['audio_backpressure', 'wake_failed', 'chat_failed', 'voice_unavailable'])(
     'a foreign %s error while the mic is open still stops the capture on release (AR-11)',
     async code => {
       await mount();
@@ -594,5 +595,282 @@ describe('PTT deferred IPC lifecycle', () => {
     expect(app.recording).toBe(true);
     expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_cancel')).toHaveLength(0);
     expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(0);
+  });
+
+  it.each(['speaking', 'done'])(
+    'does not lose record_stop error when unrelated %s event arrives while IPC is in flight (AR-14)',
+    async foreignType => {
+      await mount();
+      const ipcStop = defer('record_stop');
+      await act(async () => { await app.beginRecording(); });
+      let pending!: Promise<void>;
+      await act(async () => { pending = app.finishRecording(); });
+      expect(app.thinking).toBe(true);
+      await event(foreignType, { text: 'foreign reply' });
+      await act(async () => {
+        ipcStop.reject('Микрофон недоступен');
+        await pending;
+      });
+      expect(app.error).toBe('Микрофон недоступен');
+      expect(app.thinking).toBe(false);
+      expect(app.recording).toBe(false);
+    },
+  );
+
+  it.each(['empty_capture', 'turn_busy', 'microphone_unavailable', 'no_capture', 'voice_unavailable'])(
+    'hotkey record_stop error %s clears recording and prevents 30s timer stop (AR-15)',
+    async errorCode => {
+      await mount();
+      await event('recording');
+      expect(app.recording).toBe(true);
+
+      // Hotkey release fails after taking the microphone; this is a capture-specific terminal.
+      await event('capture.failed', { code: errorCode, stage: 'stop' });
+      expect(app.recording).toBe(false);
+      expect(app.error).toContain(errorCode);
+      expect(app.thinking).toBe(false);
+
+      // Fast-forward past 30 seconds
+      await tick(30000);
+      expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(0);
+    },
+  );
+
+  it('shows a rejected stop after a short press released while start is opening (AR-13)', async () => {
+    await mount();
+    const ipcStart = defer('record_start');
+    const ipcStop = defer('record_stop');
+    let pending!: Promise<void>;
+    await act(async () => { pending = app.beginRecording(); });
+    await act(async () => { await app.finishRecording(); });
+    expect(app.thinking).toBe(true);
+    await act(async () => { ipcStart.resolve(); });
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(1);
+    await act(async () => { ipcStop.reject('Запись пустая, повторите.'); await pending; });
+    expect(app.error).toContain('Запись пустая');
+    expect(app.thinking).toBe(false);
+    expect(app.recording).toBe(false);
+    expect(app.notice).not.toBe('Распознаю речь…');
+  });
+
+  it('reports a failed hotkey start and permits the next capture', async () => {
+    await mount();
+    await event('capture.failed', { stage: 'start', code: 'microphone_unavailable' });
+    expect(app.recording).toBe(false);
+    expect(app.error).toContain('Проверьте микрофон');
+    await act(async () => { await app.beginRecording(); });
+    expect(app.recording).toBe(true);
+    await act(async () => { await app.finishRecording(); });
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(1);
+  });
+
+  it('invokes record_cancel, clears state and reports error when cancelled during pending record_start (AR-17)', async () => {
+    await mount();
+    const ipcStart = defer('record_start');
+    const ipcCancel = defer('record_cancel');
+    let startPending!: Promise<void>;
+    await act(async () => { startPending = app.beginRecording(); });
+
+    // Cancel is requested while record_start is still opening
+    let cancelPending!: Promise<void>;
+    await act(async () => { cancelPending = app.cancelRecording(); });
+    expect(app.recording).toBe(false);
+    expect(app.thinking).toBe(false);
+
+    // Device resolves opening; hook must now trigger record_cancel
+    await act(async () => { ipcStart.resolve(); });
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_cancel')).toHaveLength(1);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(0);
+
+    // record_cancel fails with an error
+    await act(async () => {
+      ipcCancel.reject('Ошибка отмены записи');
+      await startPending;
+      await cancelPending;
+    });
+
+    expect(app.error).toBe('Ошибка отмены записи');
+    expect(app.recording).toBe(false);
+    expect(app.thinking).toBe(false);
+
+    // Allows subsequent capture
+    await act(async () => { await app.beginRecording(); });
+    expect(app.recording).toBe(true);
+  });
+
+  it('invokes record_cancel and resets state on successful cancel during pending record_start (AR-17)', async () => {
+    await mount();
+    const ipcStart = defer('record_start');
+    const ipcCancel = defer('record_cancel');
+    let startPending!: Promise<void>;
+    await act(async () => { startPending = app.beginRecording(); });
+
+    await act(async () => { void app.cancelRecording(); });
+    expect(app.recording).toBe(false);
+
+    await act(async () => { ipcStart.resolve(); });
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_cancel')).toHaveLength(1);
+
+    await act(async () => {
+      ipcCancel.resolve();
+      await startPending;
+    });
+
+    expect(app.notice).toBe('Запись отменена');
+    expect(app.recording).toBe(false);
+    expect(app.thinking).toBe(false);
+    expect(app.error).toBe('');
+  });
+
+  it('handles record_start mutual exclusion rejection without corrupting capture state', async () => {
+    await mount();
+    ipc.invoke.mockImplementation(async (command: string) => {
+      if (command === 'record_start') throw 'Запись уже идёт';
+      return {};
+    });
+
+    await act(async () => {
+      await app.beginRecording();
+    });
+
+    expect(app.error).toBe('Запись уже идёт');
+    expect(app.recording).toBe(false);
+    expect(app.thinking).toBe(false);
+  });
+});
+
+describe('voice audio devices (AR-1)', () => {
+  const sampleDevices: AudioDevices = {
+    input_devices: ['Встроенный микрофон', 'USB Наушники Mic'],
+    output_devices: ['Встроенные динамики', 'USB Наушники Audio'],
+    default_input: 'Встроенный микрофон',
+    default_output: 'Встроенные динамики',
+  };
+
+  it('loads audio devices when voice sheet is opened', async () => {
+    ipc.invoke.mockImplementation(async (command: string, args?: { settings?: unknown }) => {
+      if (command === 'load_settings') return { settings, data_root: '', global_shortcuts: false, pc_access_available: false };
+      if (command === 'save_settings') return args?.settings;
+      if (command === 'audio_devices') return sampleDevices;
+      if (command === 'voice_status') return { wake: { ready: true, dir: '/wakeword' }, live: false, dropped_frames: 0 };
+      return {};
+    });
+    await mount();
+
+    await act(async () => {
+      app.openSheet('voice');
+    });
+
+    expect(ipc.invoke).toHaveBeenCalledWith('audio_devices');
+    expect(app.audioDevices).toEqual(sampleDevices);
+  });
+
+  it('refreshes audio devices and status via refreshVoice', async () => {
+    ipc.invoke.mockImplementation(async (command: string, args?: { settings?: unknown }) => {
+      if (command === 'load_settings') return { settings, data_root: '', global_shortcuts: false, pc_access_available: false };
+      if (command === 'save_settings') return args?.settings;
+      if (command === 'audio_devices') return sampleDevices;
+      if (command === 'voice_status') return { wake: { ready: true, dir: '/wakeword' }, live: false, dropped_frames: 0 };
+      return {};
+    });
+    await mount();
+
+    await act(async () => {
+      await app.refreshVoice();
+    });
+
+    expect(ipc.invoke).toHaveBeenCalledWith('voice_status');
+    expect(ipc.invoke).toHaveBeenCalledWith('audio_devices');
+    expect(app.audioDevices).toEqual(sampleDevices);
+  });
+
+  it('saves chosen audio devices locally without sending to remote server', async () => {
+    let savedPayload: Settings | undefined;
+    ipc.invoke.mockImplementation(async (command: string, args?: { settings?: Settings }) => {
+      if (command === 'load_settings') return { settings, data_root: '', global_shortcuts: false, pc_access_available: false };
+      if (command === 'save_settings') {
+        savedPayload = args?.settings;
+        return args?.settings;
+      }
+      return {};
+    });
+    await mount();
+
+    await act(async () => {
+      await app.saveVoice({
+        input_device: 'USB Наушники Mic',
+        output_device: 'USB Наушники Audio',
+      });
+    });
+
+    expect(savedPayload?.voice?.input_device).toBe('USB Наушники Mic');
+    expect(savedPayload?.voice?.output_device).toBe('USB Наушники Audio');
+    // Ensure no bridge/api/websocket calls transmitted device preferences to server
+    const remoteCalls = ipc.invoke.mock.calls.filter(([name]) => name === 'api' || name === 'bridge_message');
+    expect(remoteCalls).toHaveLength(0);
+  });
+
+  it('renders VoicePanel device selectors with fallback for unplugged device', () => {
+    const onSave = vi.fn();
+    const testVoice = {
+      ...defaultVoice,
+      input_device: 'Старый микрофон',
+      output_device: 'USB Наушники Audio',
+    };
+
+    let panelRenderer!: ReactTestRenderer;
+    act(() => {
+      panelRenderer = create(
+        <VoicePanel
+          voice={testVoice}
+          root="/test-root"
+          busy={false}
+          shortcuts={true}
+          audioDevices={sampleDevices}
+          onDraft={vi.fn()}
+          onSave={onSave}
+          onRefresh={vi.fn()}
+        />,
+      );
+    });
+
+    const selects = panelRenderer.root.findAllByType('select');
+    const inputSelect = selects.find(s => s.props.name === 'voice-input-device');
+    const outputSelect = selects.find(s => s.props.name === 'voice-output-device');
+
+    expect(inputSelect).toBeDefined();
+    expect(outputSelect).toBeDefined();
+
+    // Check options in inputSelect
+    const inputOptions = inputSelect!.findAllByType('option');
+    expect(inputOptions[0].props.value).toBe('');
+    expect(inputOptions[0].children.join('')).toContain('По умолчанию (Встроенный микрофон)');
+    expect(inputOptions.some(o => o.props.value === 'Встроенный микрофон')).toBe(true);
+    // Missing device should be listed as disconnected fallback
+    const missingInputOpt = inputOptions.find(o => o.props.value === 'Старый микрофон');
+    expect(missingInputOpt).toBeDefined();
+    expect(missingInputOpt!.children.join('')).toContain('Старый микрофон (не подключено, fallback на системный)');
+
+    // Check options in outputSelect
+    const outputOptions = outputSelect!.findAllByType('option');
+    expect(outputOptions[0].props.value).toBe('');
+    expect(outputOptions[0].children.join('')).toContain('По умолчанию (Встроенные динамики)');
+    expect(outputOptions.some(o => o.props.value === 'USB Наушники Audio')).toBe(true);
+
+    // Changing selection triggers onSave
+    act(() => {
+      inputSelect!.props.onChange({ target: { value: 'USB Наушники Mic' } });
+    });
+    expect(onSave).toHaveBeenCalledWith({ input_device: 'USB Наушники Mic' });
+
+    act(() => {
+      outputSelect!.props.onChange({ target: { value: '' } });
+    });
+    expect(onSave).toHaveBeenCalledWith({ output_device: '' });
+
+    const paragraphs = panelRenderer.root.findAllByType('p');
+    const noticeP = paragraphs.find(p => p.children.join('').includes('следующем открытии записи или воспроизведения'));
+    expect(noticeP).toBeDefined();
+    expect(noticeP!.children.join('')).toBe('Выбор устройства сохраняется только на этом ПК и не передаётся на сервер. Если выбранного устройства нет при следующем открытии записи или воспроизведения, используется системное устройство по умолчанию.');
   });
 });
