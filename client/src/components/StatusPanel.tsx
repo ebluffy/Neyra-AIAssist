@@ -1,4 +1,5 @@
 import type { Plugin } from '../types';
+import { ServerLogsViewer } from './ServerLogsViewer';
 
 export function StatusPanel({ busy, profileId, status, plugins, onStatus, onPlugins, onRestart, onToggle }: { busy: boolean; profileId: string; status: unknown; plugins: Plugin[]; onStatus: () => void; onPlugins: () => void; onRestart: () => void; onToggle: (plugin: Plugin) => void }) {
   return <section aria-labelledby="status-title">
@@ -13,5 +14,6 @@ export function StatusPanel({ busy, profileId, status, plugins, onStatus, onPlug
     </div>
     {plugins.length === 0 && <p>Загрузите список модулей.</p>}
     {plugins.map(plugin => <article key={plugin.id}><h3>{plugin.name ?? plugin.id}</h3><p>{plugin.lifecycle ?? 'Модуль'} · {plugin.enabled ? 'Включён' : 'Выключен'}</p><button type="button" disabled={busy} onClick={() => onToggle(plugin)}>{plugin.enabled ? 'Выключить' : 'Включить'}</button></article>)}
+    <ServerLogsViewer profileId={profileId} plugins={plugins} />
   </section>;
 }
