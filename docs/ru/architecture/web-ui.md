@@ -1,5 +1,7 @@
 # Web UI (дашборд на React)
 
+> **Устаревает:** продуктовый веб переходит на собственный клиент v2 — см. [web-v2.md](web-v2.md). Этот документ описывает текущий ops-dashboard до миграции.
+
 Дашборд — SPA на **React + Vite + Tailwind CSS**, раздаётся тем же процессом FastAPI, что и ядро (из корня репо: `python server/main.py`, или из `server/` cwd: `python main.py`). Исходники — `server/dashboard/src/`, сборка — `server/dashboard/dist`.
 
 HTTP-стек живёт в **`server/core/api/`** (Control API), это не модуль-плагин. Bind, публичный URL и поведение дашборда — в **`server/config/server.yaml`** (`api:`, `dashboard:`).
