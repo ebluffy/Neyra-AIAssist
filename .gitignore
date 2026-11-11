@@ -97,7 +97,15 @@ logs/voice_tmp/
 .neyra_pending_restore/
 server/.neyra_pending_restore/
 .tmp_restore/
+.tmp_restore-*/
+**/.tmp_restore-*/
 .tmp_backup_staging/
+.tmp_backup_staging-*/
+**/.tmp_backup_staging-*/
+**/.tmp_archive_staging-*/
+**/.active-staging-*.lock
+**/.neyra-backup-publish.lock
+backups/
 .control-api-smoke-*/
 
 # Ephemeral AR/verify fixture (must never ship as a live resident module)

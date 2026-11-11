@@ -3791,20 +3791,59 @@ def build_app(
         res = await asyncio.to_thread(backup_manager.run_backup, "api_manual")
         data = dict(res) if isinstance(res, dict) else {"result": res}
         arch = data.get("archive")
+        external_ref = data.get("external_ref")
+        # Whitelist: local paths from the runtime must never reach the client,
+        # including ones added later (external_ref is an absolute path for local storage).
+        safe = {"reason": data.get("reason")}
         if isinstance(arch, str) and arch:
-            data["archive"] = Path(arch).name
-            data.pop("path", None)
-        return {"ok": True, "trace_id": trace_id, "data": data}
+            safe["archive"] = Path(arch).name
+        if data.get("sqlite_files") is not None:
+            safe["sqlite_files"] = data.get("sqlite_files")
+        if external_ref is not None:
+            safe["external_uploaded"] = True
+            safe["external_name"] = Path(str(external_ref)).name
+        else:
+            safe["external_uploaded"] = False
+        return {"ok": True, "trace_id": trace_id, "data": safe}
 
     @app.get("/v1/backup/list")
     async def v1_backup_list(request: Request, _: None = Depends(dep_maint)):
         trace_id = _trace_id(request)
         rows = await asyncio.to_thread(backup_manager.list_backups)
         last_apply = await asyncio.to_thread(backup_manager.read_last_apply_result)
+        safe_archives = [
+            {
+                "name": r.get("name"),
+                "bytes": r.get("bytes"),
+                "mtime": r.get("mtime"),
+            }
+            for r in (rows or [])
+        ]
+        safe_last_apply = None
+        if isinstance(last_apply, dict):
+            safe_last_apply = {
+                key: last_apply.get(key)
+                for key in (
+                    "status",
+                    "archive_name",
+                    "error",
+                    "created_at",
+                    "at",
+                    "applied",
+                    "pending",
+                    "logs_restored",
+                    "reason",
+                )
+                if key in last_apply
+            }
+            if "aside_path" in last_apply:
+                safe_last_apply["has_aside"] = bool(last_apply.get("aside_path"))
+            if "sqlite_aside_paths" in last_apply:
+                safe_last_apply["has_sqlite_asides"] = bool(last_apply.get("sqlite_aside_paths"))
         return {
             "ok": True,
             "trace_id": trace_id,
-            "data": {"archives": rows, "last_restore_apply": last_apply},
+            "data": {"archives": safe_archives, "last_restore_apply": safe_last_apply},
         }
 
     @app.post("/v1/backup/restore")
@@ -3848,10 +3887,14 @@ def build_app(
         _schedule_exit_after_response(reason=f"backup_restore:{archive_name}")
         pre_path = str(pre.get("archive") or "")
         pre_name = Path(pre_path).name if pre_path else ""
-        # Do not leak absolute paths to the client.
-        safe_res = {k: v for k, v in (res or {}).items() if k not in ("path", "archive_path")}
-        if "archive" in safe_res and isinstance(safe_res["archive"], str):
-            safe_res["archive"] = Path(str(safe_res["archive"])).name
+        # Whitelist: never forward local paths, including fields added later.
+        safe_res = {
+            key: (res or {}).get(key)
+            for key in ("pending", "archive_name", "logs_restored", "applied", "status", "error")
+            if isinstance(res, dict) and key in res
+        }
+        if isinstance(safe_res.get("archive_name"), str):
+            safe_res["archive_name"] = Path(safe_res["archive_name"]).name
         return {
             "ok": True,
             "trace_id": trace_id,
