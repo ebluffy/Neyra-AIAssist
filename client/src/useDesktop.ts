@@ -83,10 +83,10 @@ export function useDesktop() {
       void invoke('connect', { profileId: connectionWanted }).then(async () => {
         if (cancelled) return;
         setConnected(true); setRetry(0); setError('');
-        if (!keepLocal.current) {
-          try { await invoke('bridge_message', { kind: 'history' }); }
-          catch { setError('Не удалось загрузить историю. Повторите запрос после подключения.'); }
-        }
+        // Local rows are reconciled by identity in the history handler. Always
+        // refresh after reconnect to include turns persisted while we were offline.
+        try { await invoke('bridge_message', { kind: 'history' }); }
+        catch { setError('Не удалось загрузить историю. Повторите запрос после подключения.'); }
         try { await invoke('bridge_message', { kind: 'devices' }); }
         catch { setError('Не удалось загрузить список устройств. Повторите запрос.'); }
       }).catch(reason => {

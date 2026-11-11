@@ -111,6 +111,49 @@ describe('unavailable server', () => {
     expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(2);
   });
 
+  it('requests and reconciles server history after auto-reconnect with local A and answer', async () => {
+    const base = ipc.invoke.getMockImplementation()!;
+    let serverRows: Record<string, unknown>[] = [];
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'bridge_message' && args?.kind === 'history') {
+        ipc.listeners.get('desktop-event')!({ payload: { type: 'history', messages: serverRows } });
+      }
+      return base(command, args);
+    });
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    await act(async () => { await app.sendContent('A'); });
+    const request = ipc.invoke.mock.calls.find(([command]) => command === 'chat')![1].requestId;
+    await act(async () => {
+      ipc.listeners.get('desktop-event')!({ payload: { type: 'done', source: 'bridge', request_id: request, text: 'answer' } });
+    });
+    const localIds = app.messages.map(row => row.id);
+    const historyCalls = () => ipc.invoke.mock.calls.filter(([command, args]) => command === 'bridge_message' && args?.kind === 'history').length;
+    expect(historyCalls()).toBe(1);
+    await act(async () => { ipc.listeners.get('desktop-event')!({ payload: { type: 'disconnected' } }); });
+    // Another client writes while this one is disconnected. Only a real history
+    // request delivers these rows to the hook; the test never calls mergeHistory.
+    serverRows = [
+      { id: '1', turn_id: 'turn-a', request_id: request, role: 'user', content: 'A' },
+      { id: '2', turn_id: 'turn-a', request_id: request, role: 'assistant', content: 'answer' },
+      { id: '3', turn_id: 'other-client', role: 'user', content: '3' },
+      { id: '4', turn_id: 'other-client', role: 'assistant', content: '4' },
+    ];
+    await tick(1000);
+    expect(app.connected).toBe(true);
+    expect(app.messages.map(row => row.content)).toEqual(['A', 'answer', '3', '4']);
+    expect(historyCalls()).toBe(2);
+    expect(app.messages.slice(0, 2).map(row => row.id)).toEqual(localIds);
+    expect(app.thinking).toBe(false);
+    // A second reconnect receives the same persisted snapshot without duplicates.
+    await act(async () => { ipc.listeners.get('desktop-event')!({ payload: { type: 'disconnected' } }); });
+    await tick(1000);
+    expect(historyCalls()).toBe(3);
+    expect(app.messages.map(row => row.content)).toEqual(['A', 'answer', '3', '4']);
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'chat')).toHaveLength(1);
+  });
+
   it('keeps failed message text and explains retry, without a pending spinner', async () => {
     await mount();
     ipc.invoke.mockRejectedValueOnce(new Error('connection refused'));
