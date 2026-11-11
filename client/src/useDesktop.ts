@@ -458,7 +458,7 @@ export function useDesktop() {
       setConnected(true);
       await invoke('bridge_message', { kind: 'devices' });
       keepLocal.current = preserveMessages;
-      if (!preserveMessages) await invoke('bridge_message', { kind: 'history' });
+      await invoke('bridge_message', { kind: 'history' });
     } catch (reason) {
       try {
         keepLocal.current = true;
@@ -492,11 +492,17 @@ export function useDesktop() {
     const nextThreads = target && target.sessionId !== sessionId ? switched.threads.map(item => item.id === target.id ? { ...item, sessionId } : item) : switched.threads;
     const hadMessages = !!(target && target.messages.length > 0);
     const beforeHistory = historyStamp.current;
-    await switchSession(sessionId, hadMessages);
+    // History can arrive before connect's IPC reply. Reconcile against the
+    // target thread's cache, and persist updates to that thread, not the old one.
     setThreads(nextThreads);
     setActiveId(switched.activeId);
-    if (hadMessages) setMessages(switched.messages);
-    else if (historyStamp.current === beforeHistory) setMessages([]);
+    setMessages(switched.messages);
+    try { await switchSession(sessionId, hadMessages); }
+    catch (reason) {
+      setThreads(threads); setActiveId(activeId); setMessages(messages);
+      throw reason;
+    }
+    if (historyStamp.current === beforeHistory) setMessages(switched.messages);
     tokenBatch.reset(); setHistoryOpen(false);
   });
   const addProfile = (created: Profile) => {

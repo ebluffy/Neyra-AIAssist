@@ -154,6 +154,73 @@ describe('unavailable server', () => {
     expect(ipc.invoke.mock.calls.filter(([command]) => command === 'chat')).toHaveLength(1);
   });
 
+  it.each(['during-open', 'after-open'])('reconciles cached thread with server rows when history arrives %s', async delivery => {
+    const targetSession = '22222222-2222-4222-8222-222222222222';
+    const cached = [
+      { id: 'local-a', serverId: '1', turnId: 'turn-a', role: 'user', content: 'A', kind: 'text' },
+      { id: 'local-answer', serverId: '2', turnId: 'turn-a', role: 'assistant', content: 'answer', kind: 'text' },
+    ];
+    const stored = [
+      { id: 'current', title: 'Current', sessionId: settings.profiles[0].session_id, updated: 2,
+        messages: [{ id: 'other', role: 'user', content: 'other thread', kind: 'text' }] },
+      { id: 'cached', title: 'A', sessionId: targetSession, updated: 1, messages: cached },
+    ];
+    const rows = [
+      { id: '1', turn_id: 'turn-a', role: 'user', content: 'A' },
+      { id: '2', turn_id: 'turn-a', role: 'assistant', content: 'answer' },
+      { id: '3', turn_id: 'remote', role: 'user', content: '3' },
+      { id: '4', turn_id: 'remote', role: 'assistant', content: '4' },
+    ];
+    const base = ipc.invoke.getMockImplementation()!;
+    let session = settings.profiles[0].session_id;
+    let deliver = () => {};
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'load_chats') return stored;
+      if (command === 'save_settings') session = args.settings.profiles[0].session_id;
+      if (command === 'bridge_message' && args?.kind === 'history') {
+        const send = () => ipc.listeners.get('desktop-event')!({ payload: { type: 'history', messages: session === targetSession ? rows : [] } });
+        if (session === targetSession && delivery === 'after-open') deliver = send;
+        else send();
+      }
+      return base(command, args);
+    });
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    await act(async () => { await app.openThread('cached'); });
+    if (delivery === 'after-open') await act(async () => { deliver(); });
+    expect(app.messages.map(row => row.content)).toEqual(['A', 'answer', '3', '4']);
+    expect(app.messages.slice(0, 2).map(row => row.id)).toEqual(['local-a', 'local-answer']);
+    expect(app.threads.find(thread => thread.id === 'current')!.messages.map(row => row.content)).toEqual(['other thread']);
+    expect(ipc.invoke.mock.calls.filter(([command]) => command === 'chat')).toHaveLength(0);
+    await act(async () => { ipc.listeners.get('desktop-event')!({ payload: { type: 'history', messages: rows } }); });
+    expect(app.messages.map(row => row.content)).toEqual(['A', 'answer', '3', '4']);
+  });
+
+  it('restores the previous thread when opening a cached session fails', async () => {
+    const base = ipc.invoke.getMockImplementation()!;
+    let failConnect = false;
+    ipc.invoke.mockImplementation(async (command, args) => {
+      if (command === 'load_chats') return [
+        { id: 'current', title: 'Current', sessionId: settings.profiles[0].session_id, updated: 2,
+          messages: [{ id: 'original', role: 'user', content: 'original thread', kind: 'text' }] },
+        { id: 'cached', title: 'Cached', sessionId: '22222222-2222-4222-8222-222222222222', updated: 1,
+          messages: [{ id: 'cached-a', role: 'user', content: 'A', kind: 'text' }] },
+      ];
+      if (command === 'connect' && failConnect) throw new Error('target unavailable');
+      return base(command, args);
+    });
+    await mount();
+    await act(async () => { await app.connect(); });
+    await tick(0);
+    failConnect = true;
+    await act(async () => { await app.openThread('cached'); });
+    expect(app.activeId).toBe('current');
+    expect(app.messages.map(row => row.content)).toEqual(['original thread']);
+    expect(app.threads.find(thread => thread.id === 'cached')!.messages.map(row => row.content)).toEqual(['A']);
+    expect(app.error).toBe('Действие не выполнено. Повторите попытку.');
+  });
+
   it('keeps failed message text and explains retry, without a pending spinner', async () => {
     await mount();
     ipc.invoke.mockRejectedValueOnce(new Error('connection refused'));
