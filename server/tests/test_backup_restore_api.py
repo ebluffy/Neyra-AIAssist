@@ -512,6 +512,8 @@ def test_backup_fallback_publish_without_hardlinks(real_backup_env, monkeypatch)
     assert hashlib.sha256(first.read_bytes()).hexdigest() == digest
     leftovers = [p.name for p in backups_dir.iterdir() if p.name.startswith(".part")]
     assert leftovers == []
+    assert not list(backups_dir.glob(".tmp_archive_staging-*"))
+    assert not list(backups_dir.glob(".active-staging-*.lock"))
     assert Path(second).stat().st_size > 0
 
 
@@ -645,11 +647,31 @@ def test_backup_replace_failure_leaves_no_empty_archive(real_backup_env, monkeyp
     published = [p for p in backups_dir.iterdir() if p.name.startswith("neyra-backup-")]
     assert published == [], f"failed publish left files: {[p.name for p in published]}"
     leftovers = {p.name for p in backups_dir.iterdir()}
-    persistent_locks = {".neyra-backup-publish.lock"} | {
-        name for name in leftovers
-        if name.startswith(".active-staging-") and name.endswith(".lock")
-    }
+    persistent_locks = {".neyra-backup-publish.lock"}
     assert leftovers == persistent_locks, f"unexpected leftovers: {sorted(leftovers)}"
+
+
+def test_successful_backup_leaves_no_staging_or_marker_lock(real_backup_env):
+    backup_mgr = real_backup_env["backup_mgr"]
+    backups_dir = real_backup_env["backups_dir"]
+
+    result = backup_mgr.run_backup("staging_cleanup")
+
+    assert Path(result["archive"]).is_file()
+    assert not list(backups_dir.glob(".tmp_backup_staging-*"))
+    assert not list(backups_dir.glob(".tmp_archive_staging-*"))
+    assert not list(backups_dir.glob(".active-staging-*.lock"))
+
+
+def test_restore_prepare_leaves_no_staging_or_marker_lock(real_backup_env):
+    backup_mgr = real_backup_env["backup_mgr"]
+    archive = Path(backup_mgr.run_backup("restore_staging_cleanup")["archive"])
+
+    result = backup_mgr.prepare_restore(archive.name)
+
+    assert result["pending"] is True
+    assert not list(real_backup_env["backups_dir"].glob(".tmp_restore-*"))
+    assert not list(real_backup_env["backups_dir"].glob(".active-staging-*.lock"))
 
 
 def test_list_backups_orders_numeric_suffixes(real_backup_env):

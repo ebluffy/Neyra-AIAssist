@@ -98,9 +98,13 @@ logs/voice_tmp/
 server/.neyra_pending_restore/
 .tmp_restore/
 .tmp_restore-*/
+**/.tmp_restore-*/
 .tmp_backup_staging/
 .tmp_backup_staging-*/
 **/.tmp_backup_staging-*/
+**/.tmp_archive_staging-*/
+**/.active-staging-*.lock
+**/.neyra-backup-publish.lock
 backups/
 .control-api-smoke-*/
 

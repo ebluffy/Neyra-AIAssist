@@ -126,14 +126,34 @@ def _staging_lock_path(path: Path) -> Path:
 def _live_staging(path: Path):
     """Mark a staging directory live in this process and across processes (AR-12)."""
     key = _dir_key(path)
-    with _file_lock(_staging_lock_path(path)):
-        with _CLEANUP_LOCK:
-            _ACTIVE_STAGING.add(key)
-        try:
-            yield
-        finally:
+    try:
+        with _file_lock(_staging_lock_path(path)):
             with _CLEANUP_LOCK:
-                _ACTIVE_STAGING.discard(key)
+                _ACTIVE_STAGING.add(key)
+            try:
+                yield
+            finally:
+                with _CLEANUP_LOCK:
+                    _ACTIVE_STAGING.discard(key)
+    finally:
+        # Release/close the descriptor before unlinking; Windows rejects unlinking an
+        # open lock file. Owners remove their staging directory before leaving this scope.
+        if not path.exists():
+            try:
+                _staging_lock_path(path).unlink()
+            except FileNotFoundError:
+                pass
+
+
+@contextmanager
+def _live_temporary_directory(parent: Path, prefix: str):
+    """Remove a staging directory before releasing and unlinking its marker lock."""
+    path = Path(tempfile.mkdtemp(dir=str(parent), prefix=prefix))
+    with _live_staging(path):
+        try:
+            yield path
+        finally:
+            shutil.rmtree(path)
 
 
 
@@ -167,10 +187,8 @@ def _atomic_publish_archive(src_zip: Path, target_zip: Path) -> None:
     except (OSError, NotImplementedError):
         pass
 
-    with tempfile.TemporaryDirectory(
-        dir=str(target_zip.parent), prefix=".tmp_archive_staging-"
-    ) as staging_str, _live_staging(Path(staging_str)):
-        part = Path(staging_str) / "archive.zip.part"
+    with _live_temporary_directory(target_zip.parent, ".tmp_archive_staging-") as staging_root:
+        part = staging_root / "archive.zip.part"
         with open(part, "xb") as dst_f, open(src_zip, "rb") as src_f:
             shutil.copyfileobj(src_f, dst_f)
             dst_f.flush()
@@ -261,9 +279,11 @@ class BackupManager:
                     staging_name = name[len(".active-staging-") : -len(".lock")]
                     if (self.local_dir / staging_name).exists():
                         continue
+                    remove_marker = False
                     with _file_lock(entry, blocking=False) as locked:
-                        if locked and not (self.local_dir / staging_name).exists():
-                            entry.unlink()
+                        remove_marker = locked and not (self.local_dir / staging_name).exists()
+                    if remove_marker:
+                        entry.unlink(missing_ok=True)
                     continue
                 if entry.is_dir():
                     marker = _staging_lock_path(entry)
@@ -274,10 +294,7 @@ class BackupManager:
                             # Hold the cross-process lock through deletion. The marker
                             # is a sibling, so Windows can remove the directory too.
                             shutil.rmtree(entry)
-                        try:
-                            marker.unlink()
-                        except FileNotFoundError:
-                            pass
+                        marker.unlink(missing_ok=True)
                     else:
                         shutil.rmtree(entry, ignore_errors=True)
                 else:
@@ -299,9 +316,7 @@ class BackupManager:
         self.local_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-        staging_ctx = tempfile.TemporaryDirectory(dir=str(self.local_dir), prefix=".tmp_backup_staging-")
-        with staging_ctx as staging_dir_str, _live_staging(Path(staging_dir_str)):
-            staging_root = Path(staging_dir_str)
+        with _live_temporary_directory(self.local_dir, ".tmp_backup_staging-") as staging_root:
             tmp_root = staging_root / "content"
             tmp_root.mkdir(parents=True, exist_ok=True)
 
@@ -737,9 +752,7 @@ class BackupManager:
         mem_dst = self._memory_root()
         self._assert_safe_memory_dst(mem_dst)
 
-        unpack_ctx = tempfile.TemporaryDirectory(dir=str(self.local_dir), prefix=".tmp_restore-")
-        with unpack_ctx as unpack_dir_str, _live_staging(Path(unpack_dir_str)):
-            unpack_root = Path(unpack_dir_str)
+        with _live_temporary_directory(self.local_dir, ".tmp_restore-") as unpack_root:
             shutil.unpack_archive(str(src), str(unpack_root), "zip")
             built = self._build_memory_staging(unpack_root, unpack_root / ".neyra_memory_staging")
             if built is None:
