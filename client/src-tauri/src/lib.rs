@@ -1667,15 +1667,13 @@ impl From<TurnStartError> for String {
         }
     }
 }
-fn start_turn(state: &Desktop) -> Result<String, String> {
-    reserve_turn(&state.current_turn)
-}
 fn start_turn_with_id(state: &Desktop, id: String) -> Result<String, String> {
     reserve_turn_with_id(&state.current_turn, id).map_err(String::from)
 }
 fn start_turn_typed(state: &Desktop) -> Result<String, TurnStartError> {
     reserve_turn_typed(&state.current_turn)
 }
+#[cfg(test)]
 fn reserve_turn(current: &Mutex<Option<String>>) -> Result<String, String> {
     reserve_turn_typed(current).map_err(String::from)
 }
