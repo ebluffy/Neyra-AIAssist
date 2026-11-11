@@ -81,3 +81,6 @@ export function conversionNotice(status?: string, code?: string): string {
   if (status === 'stopped') return `Преобразование голоса не удалось (${code ?? 'ошибка'}): озвучка остановлена, текст ответа в чате.`;
   return '';
 }
+
+const overlaySupport: Record<string, string> = { yes: 'да', not_guaranteed: 'не гарантировано', no: 'нет' };
+export const capabilityLabel = (value: string): string => overlaySupport[value] ?? 'неизвестно';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptLiveRun, validServerUrl, formatError, newProfile, absolutePath, meterLevel, liveLabel, settleLiveStart, conversionNotice, unwrapApi, defaultVoice, emptyAudioDevices } from './types';
+import { acceptLiveRun, validServerUrl, formatError, newProfile, absolutePath, meterLevel, liveLabel, settleLiveStart, conversionNotice, unwrapApi, defaultVoice, emptyAudioDevices, capabilityLabel } from './types';
 describe('allowed folders', () => {
   it('accepts only absolute paths', () => { expect(absolutePath('/home/me/Docs')).toBe(true); expect(absolutePath('C:\\Users\\me')).toBe(true); for (const v of ['Docs', '~/Docs', '..\\x', '']) expect(absolutePath(v)).toBe(false); });
 });
@@ -60,5 +60,14 @@ describe('audio devices types', () => {
       default_input: null,
       default_output: null,
     });
+  });
+});
+
+describe('overlay capability labels', () => {
+  it('translates capability values without hiding degraded state', () => {
+    expect(capabilityLabel('yes')).toBe('да');
+    expect(capabilityLabel('not_guaranteed')).toBe('не гарантировано');
+    expect(capabilityLabel('no')).toBe('нет');
+    expect(capabilityLabel('other')).toBe('неизвестно');
   });
 });
