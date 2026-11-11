@@ -7,11 +7,13 @@ replaced at process start via ``apply_pending_restore`` (before Memory Hub opens
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -42,6 +44,71 @@ _ACTIVE_STAGING: set[Path] = set()
 _ARCHIVE_NAME = re.compile(r"^neyra-backup-(\d{8}-\d{6})(?:-(\d+))?\.zip$")
 
 
+def _open_lock_file(path: Path) -> int:
+    """Open a persistent lock inode (never a symlink) and ensure byte zero exists."""
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError(f"lock path is not a regular file: {path}")
+    if os.fstat(fd).st_size == 0:
+        os.write(fd, b"\0")
+    return fd
+
+
+def _lock_fd(fd: int, *, blocking: bool) -> bool:
+    """Acquire an exclusive cross-process lock with stdlib POSIX/Windows backends."""
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+        try:
+            msvcrt.locking(fd, mode, 1)
+        except OSError as exc:
+            if not blocking and exc.errno in {errno.EACCES, errno.EDEADLK, errno.EAGAIN}:
+                return False
+            raise
+        return True
+
+    import fcntl
+
+    mode = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+    try:
+        fcntl.flock(fd, mode)
+    except BlockingIOError:
+        if blocking:
+            raise
+        return False
+    return True
+
+
+def _unlock_fd(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextmanager
+def _file_lock(path: Path, *, blocking: bool = True):
+    fd = _open_lock_file(path)
+    locked = False
+    try:
+        locked = _lock_fd(fd, blocking=blocking)
+        yield locked
+    finally:
+        if locked:
+            _unlock_fd(fd)
+        os.close(fd)
+
+
 def _dir_key(path: Path) -> Path:
     """Stable identity for a backup directory, resolved when possible."""
     try:
@@ -50,17 +117,23 @@ def _dir_key(path: Path) -> Path:
         return path.absolute()
 
 
+def _staging_lock_path(path: Path) -> Path:
+    """Return the sibling lock path so Windows can remove stale staging safely."""
+    return path.parent / f".active-staging-{path.name}.lock"
+
+
 @contextmanager
 def _live_staging(path: Path):
-    """Mark a staging directory as in use so cleanup cannot delete it (AR-11)."""
+    """Mark a staging directory live in this process and across processes (AR-12)."""
     key = _dir_key(path)
-    with _CLEANUP_LOCK:
-        _ACTIVE_STAGING.add(key)
-    try:
-        yield
-    finally:
+    with _file_lock(_staging_lock_path(path)):
         with _CLEANUP_LOCK:
-            _ACTIVE_STAGING.discard(key)
+            _ACTIVE_STAGING.add(key)
+        try:
+            yield
+        finally:
+            with _CLEANUP_LOCK:
+                _ACTIVE_STAGING.discard(key)
 
 
 
@@ -82,38 +155,32 @@ def _atomic_publish_archive(src_zip: Path, target_zip: Path) -> None:
     first so that a half-written file never appears under a name that ``list_backups``
     and ``restore`` accept, and parallel backups cannot share one partial file.
     """
+    publish_lock = target_zip.parent / ".neyra-backup-publish.lock"
     try:
-        os.link(src_zip, target_zip)
+        with _file_lock(publish_lock):
+            if target_zip.exists():
+                raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target_zip))
+            os.link(src_zip, target_zip)
         return
     except FileExistsError:
         raise
     except (OSError, NotImplementedError):
         pass
 
-    fd, part_name = tempfile.mkstemp(dir=str(target_zip.parent), prefix=".part-", suffix=".zip")
-    part = Path(part_name)
-    try:
-        with os.fdopen(fd, "wb") as dst_f, open(src_zip, "rb") as src_f:
+    with tempfile.TemporaryDirectory(
+        dir=str(target_zip.parent), prefix=".tmp_archive_staging-"
+    ) as staging_str, _live_staging(Path(staging_str)):
+        part = Path(staging_str) / "archive.zip.part"
+        with open(part, "xb") as dst_f, open(src_zip, "rb") as src_f:
             shutil.copyfileobj(src_f, dst_f)
             dst_f.flush()
             os.fsync(dst_f.fileno())
-        # Reserve the final name atomically, then replace our empty placeholder.
-        reserved = os.open(target_zip, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.close(reserved)
-        try:
+        # Serialize the final existence check and rename across processes. The target
+        # name is not visible until the complete archive is atomically published.
+        with _file_lock(publish_lock):
+            if target_zip.exists():
+                raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target_zip))
             os.replace(part, target_zip)
-        except BaseException:
-            # A failed replace must not leave an empty archive under the final name.
-            try:
-                target_zip.unlink()
-            except FileNotFoundError:
-                pass
-            raise
-    finally:
-        try:
-            part.unlink()
-        except FileNotFoundError:
-            pass
 
 
 class SqliteRollbackError(RuntimeError):
@@ -178,6 +245,8 @@ class BackupManager:
             leftover = (
                 name.startswith(".tmp_backup_staging-")
                 or name.startswith(".tmp_restore-")
+                or name.startswith(".tmp_archive_staging-")
+                or (name.startswith(".active-staging-") and name.endswith(".lock"))
                 or name.startswith(".part-")
                 or name.endswith(".part")
             )
@@ -188,8 +257,29 @@ class BackupManager:
             try:
                 if entry.stat().st_mtime > cutoff:
                     continue
+                if name.startswith(".active-staging-") and name.endswith(".lock"):
+                    staging_name = name[len(".active-staging-") : -len(".lock")]
+                    if (self.local_dir / staging_name).exists():
+                        continue
+                    with _file_lock(entry, blocking=False) as locked:
+                        if locked and not (self.local_dir / staging_name).exists():
+                            entry.unlink()
+                    continue
                 if entry.is_dir():
-                    shutil.rmtree(entry, ignore_errors=True)
+                    marker = _staging_lock_path(entry)
+                    if marker.exists():
+                        with _file_lock(marker, blocking=False) as locked:
+                            if not locked:
+                                continue
+                            # Hold the cross-process lock through deletion. The marker
+                            # is a sibling, so Windows can remove the directory too.
+                            shutil.rmtree(entry)
+                        try:
+                            marker.unlink()
+                        except FileNotFoundError:
+                            pass
+                    else:
+                        shutil.rmtree(entry, ignore_errors=True)
                 else:
                     entry.unlink()
             except OSError as e:

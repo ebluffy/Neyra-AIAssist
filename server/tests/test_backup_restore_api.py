@@ -515,8 +515,112 @@ def test_backup_fallback_publish_without_hardlinks(real_backup_env, monkeypatch)
     assert Path(second).stat().st_size > 0
 
 
+def test_fallback_archive_is_invisible_until_complete_rename(real_backup_env, monkeypatch):
+    """AR-6: list/restore cannot observe a half-written final archive name."""
+    import errno
+    import threading
+    from datetime import datetime as real_datetime
+
+    import core.runtime.backup as backup_module
+
+    backup_mgr = real_backup_env["backup_mgr"]
+    started = threading.Event()
+    release = threading.Event()
+    result: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+    real_replace = backup_module.os.replace
+
+    class FrozenDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ARG003 - fixed time forces a stable target name
+            return cls(2026, 11, 10, 12, 0, 0)
+
+    def slow_replace(src, dst):
+        started.set()
+        if not release.wait(30):
+            raise RuntimeError("test did not release atomic publication")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(backup_module, "datetime", FrozenDatetime)
+    monkeypatch.setattr(
+        backup_module.os,
+        "link",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError(errno.EPERM, "hardlinks unavailable")
+        ),
+    )
+    monkeypatch.setattr(backup_module.os, "replace", slow_replace)
+
+    def _publish() -> None:
+        try:
+            result.append(backup_mgr.run_backup("atomic_visibility"))
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion below
+            errors.append(exc)
+
+    worker = threading.Thread(target=_publish, name="backup-publisher-under-test")
+    worker.start()
+    try:
+        assert started.wait(30), "backup never reached the atomic rename"
+        target = real_backup_env["backups_dir"] / "neyra-backup-20261110-120000.zip"
+        assert not target.exists()
+        assert backup_mgr.list_backups() == []
+    finally:
+        release.set()
+        worker.join(60)
+
+    assert not worker.is_alive(), "backup publisher did not finish"
+    assert not errors, errors
+    assert len(result) == 1
+    assert Path(result[0]["archive"]).is_file()
+
+
+def test_concurrent_fallback_publish_is_atomic_and_never_overwrites(real_backup_env, monkeypatch):
+    """AR-6: concurrent no-hardlink publishers expose only complete unique archives."""
+    import concurrent.futures
+    import errno
+    import zipfile
+    from datetime import datetime as real_datetime
+
+    import core.runtime.backup as backup_module
+
+    backup_mgr = real_backup_env["backup_mgr"]
+
+    class FrozenDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ARG003 - fixed time forces a real name collision
+            return cls(2026, 11, 10, 12, 0, 0)
+
+    monkeypatch.setattr(backup_module, "datetime", FrozenDatetime)
+    monkeypatch.setattr(
+        backup_module.os,
+        "link",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError(errno.EPERM, "hardlinks unavailable")
+        ),
+    )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(backup_mgr.run_backup, reason)
+            for reason in ("parallel_fallback_a", "parallel_fallback_b")
+        ]
+        results = [future.result(timeout=60) for future in futures]
+
+    archives = {Path(result["archive"]).name: Path(result["archive"]) for result in results}
+    assert set(archives) == {
+        "neyra-backup-20261110-120000.zip",
+        "neyra-backup-20261110-120000-1.zip",
+    }
+    reasons = set()
+    for archive in archives.values():
+        with zipfile.ZipFile(archive) as zf:
+            assert zf.testzip() is None
+            reasons.add(json.loads(zf.read("backup_manifest.json"))["reason"])
+    assert reasons == {"parallel_fallback_a", "parallel_fallback_b"}
+
+
 def test_backup_replace_failure_leaves_no_empty_archive(real_backup_env, monkeypatch):
-    """A failed os.replace must not leave an empty file under the final archive name."""
+    """A failed replace leaves no archive or staging; only the reusable lock remains."""
     import errno
 
     import core.runtime.backup as backup_module
@@ -540,8 +644,12 @@ def test_backup_replace_failure_leaves_no_empty_archive(real_backup_env, monkeyp
 
     published = [p for p in backups_dir.iterdir() if p.name.startswith("neyra-backup-")]
     assert published == [], f"failed publish left files: {[p.name for p in published]}"
-    leftovers = [p.name for p in backups_dir.iterdir()]
-    assert leftovers == [], f"failed publish left leftovers: {leftovers}"
+    leftovers = {p.name for p in backups_dir.iterdir()}
+    persistent_locks = {".neyra-backup-publish.lock"} | {
+        name for name in leftovers
+        if name.startswith(".active-staging-") and name.endswith(".lock")
+    }
+    assert leftovers == persistent_locks, f"unexpected leftovers: {sorted(leftovers)}"
 
 
 def test_list_backups_orders_numeric_suffixes(real_backup_env):
@@ -582,6 +690,9 @@ def test_cleanup_stale_artifacts_removes_only_old_entries(real_backup_env):
     stale_part = backups_dir / ".part-old.zip"
     stale_part.write_bytes(b"old")
     os.utime(stale_part, (old, old))
+    stale_archive_stage = backups_dir / ".tmp_archive_staging-old"
+    stale_archive_stage.mkdir()
+    os.utime(stale_archive_stage, (old, old))
     fresh_part = backups_dir / ".part-fresh.zip"
     fresh_part.write_bytes(b"fresh")
 
@@ -591,6 +702,7 @@ def test_cleanup_stale_artifacts_removes_only_old_entries(real_backup_env):
 
     assert not stale_dir.exists()
     assert not stale_part.exists()
+    assert not stale_archive_stage.exists()
     assert fresh_part.exists()
 
 
@@ -651,3 +763,72 @@ def test_concurrent_manager_does_not_delete_live_staging(real_backup_env, monkey
     assert not errors, errors
     archives = backup_mgr.list_backups()
     assert len(archives) == 1, archives
+
+
+def test_subprocess_cleanup_does_not_delete_live_staging(real_backup_env, monkeypatch):
+    """AR-12: a fresh process cannot remove another process's live staging directory."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import threading
+    import time
+
+    backup_mgr = real_backup_env["backup_mgr"]
+    backups_dir = real_backup_env["backups_dir"]
+    started = threading.Event()
+    release = threading.Event()
+    errors: list[BaseException] = []
+    real_copytree = shutil.copytree
+    server_root = Path(__file__).resolve().parents[1]
+
+    def slow_copytree(src, dst, *args, **kwargs):
+        started.set()
+        if not release.wait(30):
+            raise RuntimeError("test did not release the copy")
+        return real_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr("core.runtime.backup.shutil.copytree", slow_copytree)
+
+    def _run_backup() -> None:
+        try:
+            backup_mgr.run_backup("subprocess_cleanup")
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion below
+            errors.append(exc)
+
+    worker = threading.Thread(target=_run_backup, name="backup-under-test")
+    worker.start()
+    try:
+        assert started.wait(30), "backup never reached the copy stage"
+        staging = [p for p in backups_dir.iterdir() if p.name.startswith(".tmp_backup_staging-")]
+        assert len(staging) == 1, staging
+        old = time.time() - 2 * 3600
+        os.utime(staging[0], (old, old))
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(
+            item for item in (str(server_root), env.get("PYTHONPATH", "")) if item
+        )
+        code = (
+            "import sys; from core.runtime.backup import BackupManager; "
+            "BackupManager({'backup': {'local_dir': sys.argv[1]}})"
+        )
+        child = subprocess.run(
+            [sys.executable, "-c", code, str(backups_dir)],
+            cwd=server_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert child.returncode == 0, child.stderr
+        assert staging[0].exists(), "fresh-process cleanup removed live staging"
+        assert (backups_dir / f".active-staging-{staging[0].name}.lock").exists()
+    finally:
+        release.set()
+        worker.join(60)
+
+    assert not worker.is_alive(), "backup thread did not finish"
+    assert not errors, errors
+    assert len(backup_mgr.list_backups()) == 1
