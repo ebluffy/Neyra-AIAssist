@@ -4,7 +4,7 @@ export interface VoiceSettings { mode: 'ptt' | 'wake' | 'always'; vad_sensitivit
 export interface Settings { schema_version: number; device_id: string; device_name: string; profiles: Profile[]; permissions: Permissions; theme: string; graphics_mode: string; audit_days: number; character_enabled?: boolean; voice?: VoiceSettings; active_profile?: string }
 export interface Recovery { file: string; reason: string; quarantined: string | null; restored: string }
 export interface Device { device_id: string; name: string; tools: string[] }
-export interface Entry { role: 'user' | 'assistant'; content: string }
+export interface Entry { id?: string | number; turn_id?: string; request_id?: string; role: 'user' | 'assistant'; content: string }
 export interface HostCall { call_id: string; tool: string; arguments: Record<string, unknown>; deadline_ms: number; preview?: string }
 export const toolTitles: Record<string, string> = {
   'client.shell_exec': 'Выполнить команду',
@@ -22,7 +22,7 @@ export interface AuditRow { time: number; tool: string; status: string; confirme
 export interface Plugin { id: string; name?: string; enabled: boolean; lifecycle?: string }
 export interface WakeStatus { ready: boolean; dir: string; message?: string; model?: string; license?: string }
 export interface VoiceStatus { wake: WakeStatus; live: boolean; dropped_frames: number }
-export interface ServerEvent { type: string; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number; run?: number }
+export interface ServerEvent { type: string; request_id?: string; scope?: string; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number; run?: number }
 /** Server routes wrap the payload as `{ok, trace_id, data}`. Rust returns that JSON unchanged. */
 export function unwrapApi<T>(body: unknown): T {
   if (body !== null && typeof body === 'object' && 'data' in body) {

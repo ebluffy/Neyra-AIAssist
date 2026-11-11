@@ -559,3 +559,56 @@ def test_voice_speak_synthesizes_short_text_and_rejects_long_text(monkeypatch):
         with pytest.raises(WebSocketDisconnect):
             ws.receive_json()
     assert spoken == ['Запускаю режим игры'] and not agent.turns
+
+
+def test_history_preserves_sqlite_row_turn_and_bridge_request_identity(tmp_path):
+    from core.memory.hub import MemoryHub
+    from core.agent.chat_log import append_turn_to_chat_log
+    from core.agent.model_trace import ACTIVE_TRACE, TurnTrace
+
+    class LoggingAgent(Agent):
+        def _resolve_internal_user_id(self, discord_id, username):
+            return 'synthetic-desktop-user'
+
+        async def chat_stream(self, text, **kwargs):
+            trace = TurnTrace(None, kwargs['channel_id'], {})
+            token = ACTIVE_TRACE.set(trace)
+            try:
+                turn_id = await append_turn_to_chat_log(
+                    self.memory_hub, user_text=text, assistant_text='same answer',
+                    internal_user_id='synthetic-desktop-user', display_name='synthetic',
+                    channel_id=kwargs['channel_id'], source='chat_stream')
+                yield {'type': 'done', 'text': 'same answer', 'model_trace': {'turn_id': turn_id}}
+            finally:
+                ACTIVE_TRACE.reset(token)
+
+    agent = LoggingAgent()
+    agent.memory_hub = MemoryHub({'memory': {'sqlite_path': str(tmp_path / 'synthetic.db')}})
+    client, _ = make_client(agent)
+    m = manifest()
+    requests = [str(uuid.uuid4()), str(uuid.uuid4())]
+    try:
+        with client, client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-a'}) as ws:
+            ws.send_json(m.model_dump(mode='json'))
+            assert ws.receive_json()['type'] == 'hello'
+            turns = []
+            for request in requests:
+                ws.send_json({'type': 'chat', 'text': 'A', 'request_id': request})
+                packet = ws.receive_json()
+                assert packet['type'] == 'done'
+                turns.append(packet['model_trace']['turn_id'])
+            ws.send_json({'type': 'history'})
+            rows = ws.receive_json()['messages']
+            assert [r['content'] for r in rows] == ['A', 'same answer', 'A', 'same answer']
+            assert len({r['id'] for r in rows}) == 4
+            assert [r['turn_id'] for r in rows] == [turns[0], turns[0], turns[1], turns[1]]
+            assert [r['request_id'] for r in rows] == [requests[0], requests[0], requests[1], requests[1]]
+            ws.send_json({'type': 'history'})
+            assert ws.receive_json()['messages'] == rows
+        # A later ordinary (non-bridge) append must not inherit the bridge request.
+        asyncio.run(append_turn_to_chat_log(agent.memory_hub, user_text='ordinary', assistant_text='ok',
+                    internal_user_id='synthetic-desktop-user', display_name='synthetic',
+                    channel_id='other', source='chat'))
+        assert 'desktop_request_id' not in agent.memory_hub.list_chat(channel_id='other')[0]['meta']
+    finally:
+        agent.memory_hub.close()

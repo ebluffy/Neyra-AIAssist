@@ -3,6 +3,9 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   kind: 'text' | 'voice';
+  serverId?: string;
+  turnId?: string;
+  requestId?: string;
   audioUrl?: string;
   durationMs?: number;
   pending?: boolean;
@@ -131,7 +134,34 @@ export function storedThreads(threads: ChatThread[]) {
       role: message.role,
       content: message.content.slice(0, 8000),
       kind: message.kind,
+      ...(message.serverId ? { serverId: message.serverId } : {}),
+      ...(message.turnId ? { turnId: message.turnId } : {}),
+      ...(message.requestId ? { requestId: message.requestId } : {}),
       ...(message.durationMs !== undefined ? { durationMs: message.durationMs } : {}),
     })),
   }));
+}
+
+// Reconcile persisted identity only. Equal text is never evidence of equal rows.
+// Older servers provide no identity: preserve local rows until a metadata-capable
+// history arrives rather than guessing which repeated turn they represent.
+export function mergeHistory(incoming: ChatMessage[], local: ChatMessage[]): ChatMessage[] {
+  if (!incoming.some(row => row.serverId)) return local;
+  const merged = [...local];
+  for (const row of incoming) {
+    const index = merged.findIndex(item =>
+      (row.serverId && item.serverId === row.serverId) ||
+      (row.requestId && item.requestId === row.requestId && item.role === row.role) ||
+      (row.turnId && item.turnId === row.turnId && item.role === row.role));
+    if (index < 0) merged.push(row);
+    else merged[index] = { ...row, ...merged[index], serverId: row.serverId, turnId: row.turnId, requestId: row.requestId ?? merged[index].requestId };
+  }
+  // SQLite row IDs preserve insertion order; unresolved optimistic rows follow
+  // persisted history, in their original local order. Keep local UI IDs for IPC rollback.
+  return merged.sort((a, b) => {
+    if (!a.serverId) return b.serverId ? 1 : 0;
+    if (!b.serverId) return -1;
+    const left = BigInt(a.serverId), right = BigInt(b.serverId);
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
 }

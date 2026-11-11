@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from core.agent.chat_log import DESKTOP_CHAT_REQUEST
 from core.desktop.bridge import ACTIVE_DESKTOP, SCREENSHOT_LIMIT, BridgeRegistry, Manifest
 from core.voice.desktop import DesktopVoice
 from core.voice.live import LIVE_PLAYBACK_WINDOW, LIVE_SLOW_SECONDS, LiveSpeech, announce_conversion
@@ -114,6 +115,7 @@ def router_for(agent, config, authenticate):
                 async def turn_send(packet):
                     await send({**packet, "request_id": request_id})
                 token = ACTIVE_DESKTOP.set((registry, session_owner, str(target.manifest.session_id), str(target.manifest.device_id)))
+                request_context = DESKTOP_CHAT_REQUEST.set((request_id, channel) if request_id else None)
                 try:
                     async for chunk in agent.chat_stream(text, username=username, channel_id=channel):
                         if chunk.get('type') == 'token':
@@ -128,6 +130,7 @@ def router_for(agent, config, authenticate):
                 except Exception:
                     await turn_send(dict(type='error', code='chat_failed'))
                 finally:
+                    DESKTOP_CHAT_REQUEST.reset(request_context)
                     ACTIVE_DESKTOP.reset(token)
 
             while True:
@@ -189,7 +192,9 @@ def router_for(agent, config, authenticate):
                     if hub is not None:
                         uid = agent._resolve_internal_user_id(None, username)
                         rows = await asyncio.to_thread(hub.list_chat, user_id=uid, channel_id=channel, limit=50)
-                    await send(dict(type='history', messages=[dict(role=r['role'], content=r.get('content', '')) for r in reversed(rows)]))
+                    await send(dict(type='history', messages=[dict(id=str(r['id']), turn_id=r.get('turn_id'),
+                        request_id=(r.get('meta') or {}).get('desktop_request_id') if isinstance(r.get('meta'), dict) else None,
+                        role=r['role'], content=r.get('text', r.get('content', ''))) for r in reversed(rows)]))
                 elif packet.type == 'chat' and packet.text.strip():
                     if task and not task.done():
                         await send(dict(type='error', code='turn_busy'))

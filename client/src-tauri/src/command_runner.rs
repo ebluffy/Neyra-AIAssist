@@ -213,6 +213,7 @@ fn start_run(
     source: &'static str,
 ) -> Result<(), String> {
     let state = app.state::<Desktop>();
+    let cancel = state.cancelled.lock().map_err(lock_error)?.clone();
     {
         let mut running = state.running.lock().map_err(lock_error)?;
         if running.is_some() || state.local_inflight.load(Ordering::SeqCst) > 0 {
@@ -222,7 +223,7 @@ fn start_run(
     }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        run(&handle, &command, params, source).await;
+        run(&handle, &command, params, source, cancel).await;
         if let Ok(mut running) = handle.state::<Desktop>().running.lock() {
             *running = None;
         }
@@ -382,13 +383,23 @@ async fn run(
     command: &Command,
     params: HashMap<String, String>,
     source: &'static str,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     let state = app.state::<Desktop>();
     let run_id = uuid::Uuid::new_v4().to_string();
-    let cancel = match state.cancelled.lock() {
-        Ok(c) => c.clone(),
-        Err(_) => return,
-    };
+    // Capture cancellation at scheduling time, not when a delayed worker wakes after Stop.
+    if cancel.load(Ordering::SeqCst) {
+        finish(
+            app,
+            &run_id,
+            command,
+            "cancelled",
+            "Остановлено",
+            source,
+            "",
+        );
+        return;
+    }
     let (device, enabled) = match state.settings.lock() {
         Ok(s) => (s.device_id.clone(), s.permissions.enabled),
         Err(_) => return,
