@@ -331,9 +331,7 @@ export function useDesktop() {
           const code = typeof event.code === 'string' && event.code ? event.code : 'ошибка';
           const message = localErrorText(code) ?? `Сервер: ${code}. Повторите попытку.`;
           setError(message);
-          if (affectsText) chatTurn.current = null;
-          setThinking(false);
-          tokenBatch.reset();
+          if (affectsText) { chatTurn.current = null; setThinking(false); tokenBatch.reset(); }
           setLiveState(state => state === 'thinking' ? 'idle' : state);
         }
         if (event.type === 'capture.failed') {
@@ -350,8 +348,8 @@ export function useDesktop() {
           captureId.current += 1;
           captureStopping.current = true;
           captureIntent.current = 'cancel';
-          if (affectsText) chatTurn.current = null;
-          setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBatch.reset(); postNotice('Остановлено');
+          if (affectsText) { chatTurn.current = null; setThinking(false); tokenBatch.reset(); }
+          setRecording(false); setActive(false); setHostCall(undefined); postNotice('Остановлено');
           if (event.reason !== 'barge_in') { muteHold.current = false; setLiveOpen(false); setMuted(false); }
         }
       }),
