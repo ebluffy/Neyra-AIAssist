@@ -7,7 +7,7 @@
 
 ## Работа
 
-Разделить транспорт, backend и поведение моделей. Подтвердить auth/HTTPS/WSS, модули и backup/restore только в тестовом окружении, затем память/persona/роль brain→talk, отказ/таймаут и наблюдаемость. Отдельно проверить Discord GIF/music/history, browsermcp и привязку фактов, когда доступен согласованный стенд. Не считать AIHope маршрутом тестирования.
+Разделить транспорт, backend и поведение моделей. Подтвердить auth/HTTPS/WSS, модули и backup/restore только в тестовом окружении, затем память/persona/роль brain→talk, отказ/таймаут и наблюдаемость. Отдельно проверить Discord GIF/music/history, browsermcp и привязку фактов, когда доступен согласованный стенд. Не считать AIHope маршрутом тестирования. Живая проверка Discord/browsermcp, боевого TLS/proxy с доменом и качества моделей/persona в этот PR не входит и вынесена в [#68](https://github.com/ebluffy/Neyra-AIAssist/issues/68).
 
 ## Готово, когда
 
@@ -43,22 +43,25 @@
 
 ## Приёмка на копиях рабочего стенда (MiniPC) · 2026-11-11
 
-- Источник: рабочая Neyra на MiniPC. Скопированы через SQLite backup API `neyra_memory.db` (schema v7, `integrity_check=ok`), каталог Chroma (11 записей), working memory, people, дневник (47 записей), журнал (9). Персона и appearance — байт-в-байт копии файлов. Работающий сервер, его БД, конфиг, модели и прежние бэкапы не изменялись; всё выполнялось в отдельном закрытом каталоге.
-- Reverse proxy + TLS: Caddy 2.11.9 на loopback с отдельным self-signed сертификатом, HTTP/2. `/v1/health/live` 200; `/v1/health/ready` 401 без токена и 200 с bearer; тот же набор через префикс `/api/*` со снятием префикса — 200/401, неизвестный путь 404.
-- WSS через тот же прокси: без токена handshake отклонён (403), с admin bearer сервер вернул `hello` с протоколом `neyra.ws.chat.v1`; результат одинаков для прямого пути и `/api`-префикса.
+- Проверенный код: `d20190e0f2fdcd2eb725c1f70cf2310c4e8d5459` (тот же код, что `71408583bb5fa1ebc9bd534c6005175a9042ad8c`; коммит `d20190e` менял только документы). Linux x86_64, Python 3.12.3 из venv рабочей Neyra.
+- Данные: копии рабочей Neyra на MiniPC — `neyra_memory.db` через SQLite backup API (schema v7, `integrity_check=ok`), Chroma (11 записей), working memory, people, дневник (47 записей), журнал (9); персона и appearance байт-в-байт. Рабочий сервер, его БД, конфиг, модели и прежние бэкапы не менялись; всё выполнялось в закрытом каталоге `NeyraWork/live65`, сервер — на отдельном loopback-порту.
+- Повторяемость: checkout указанного SHA, копия данных в `server/data/memory`, реальные `config/*.yaml` и `prompts/persona.md` в копии, `python main.py --mode core` на loopback. Caddy ставится отдельным бинарником в тот же каталог; ключевые строки Caddyfile: `:9443 { tls <cert> <key>; reverse_proxy 127.0.0.1:8788 }` и `:9444 { tls <cert> <key>; handle_path /api/* { reverse_proxy 127.0.0.1:8788 } }`. Сертификат — отдельный self-signed с SAN `localhost`/`127.0.0.1`.
+- TLS/reverse proxy: `GET /v1/health/live` 200; `/v1/health/ready` 401 без токена и 200 с bearer; через `/api/*` те же 200/401, неизвестный путь 404; HTTP/2. WSS через прокси: без токена handshake отклонён (403), с admin bearer `hello` с протоколом `neyra.ws.chat.v1` — и для прямого пути, и для `/api`-префикса.
 - backup/restore на копии рабочей БД: `python scripts/pr65_backup_restore_copy_smoke.py --sqlite-copy <copy> --i-confirm-this-is-a-copy` — PASS (schema v7, integrity ok).
-- Память и персона: RAG-поиск на копии (реальная Chroma, локальные embeddings) вернул 3 релевантные записи за 89 мс. Сборка talk-промпта из реального конфига: персона совпадает с файлом, в промпт попадают персона, extra memory, working memory и имя пользователя; brain-промпт персону не содержит — как и задумано.
-- Отказ провайдера: AIHope отдавал `429 Rate limit or quota exceeded` на `/chat/completions` при доступном `/models` → `/v1/chat` вернул HTTP 200 с `brain_unavailable`, `error_class=OpenAIRateLimitError`, `sdk_retries=1`; сервер остался работоспособным.
-- Таймаут провайдера: отдельный экземпляр с недоступным апстримом и таймаутом 3 с дал `OpenAITimeoutError` через 3010 мс, тот же graceful-ответ, `/v1/health/ready` 200 после.
-- Наблюдаемость: в момент 429 `/v1/health` показывал `backend.ok=true`, потому что проверяет только `/v1/models`; упавшие ходы видны в `/v1/llm/activity` с `error_class`. Истощение квоты в health не отражается — отдельное ограничение, не задача этого PR.
-- Модули: без токенов в окружении browsermcp MCP-сервер падает и ретраится, discord resident plugin завершается с ошибкой про `DISCORD_TOKEN`; сервер и API при этом живы, `/v1/health` показывает integration issue.
-- Модели: оба реальных провайдера были недоступны (AIHope 429; ключ OpenRouter заменён владельцем). С разрешения владельца live-ход выполнен на бесплатных моделях OpenRouter. Talk-лейн использует `/v1/responses`, которого у OpenRouter нет, поэтому для теста применялся локальный адаптер `responses → chat/completions` (в репозиторий не входит). Полный ход brain→talk завершился: 3 вызова brain, ответ talk 200, HTTP 200, `status=completed`; в запросе talk были реальная персона и реальная память (system 6370 символов, маркеры персоны и памяти). Качество памяти на малых free-моделях проверить нельзя: на вопрос по записи из промпта модель отвечает «в памяти нет записей». Качество моделей и persona-поведение остаются непроверенными.
+- Память и персона: `POST /v1/memory/search` на копии (реальная Chroma и локальные embeddings) вернул 3 релевантные записи за 89 мс. Офлайн-сборка talk-промпта из реального конфига: персона совпадает с файлом байт-в-байт, в промпт попадают персона, extra memory, working memory и имя пользователя; brain-промпт персону не содержит — как и задумано.
+- Отказ провайдера: AIHope отдавал `429 Rate limit or quota exceeded` на `/chat/completions` при доступном `/models`; `POST /v1/chat` вернул HTTP 200 с `brain_unavailable`, `error_class=OpenAIRateLimitError`, `sdk_retries=1`, сервер остался работоспособным. Воспроизведение: провайдер, у которого `/models` отвечает 200, а `/chat/completions` — 429.
+- Таймаут провайдера: отдельный экземпляр с `llm.providers.*.base_url` на локальный слушатель, который принимает соединение и не отвечает, при `timeout_seconds: 3` и `max_retries: 0` дал `OpenAITimeoutError` через 3010 мс, graceful-ответ и `/v1/health/ready` 200 после.
+- Наблюдаемость: в момент 429 `/v1/health` показывал `backend.ok=true`, потому что проверяет только `/v1/models`; упавшие ходы видны в `/v1/llm/activity` с `error_class`. Health не отражает истощение квоты — вынесено в [#68](https://github.com/ebluffy/Neyra-AIAssist/issues/68) вместе с остатком.
+- Модули: без токенов browsermcp MCP-сервер падает и ретраится, discord resident plugin завершается с ошибкой про `DISCORD_TOKEN`; сервер и API при этом живы, `/v1/health` показывает integration issue.
+- Модели: оба реальных провайдера были недоступны (AIHope 429; ключ OpenRouter владелец заменил). С разрешения владельца live-ход выполнен на бесплатных моделях OpenRouter. Talk-лейн ходит в `/v1/responses`, которого у OpenRouter нет, поэтому для прогона поднимался локальный адаптер `responses → chat/completions` (в репозиторий не входит). **Без такого адаптера talk с провайдером без `/v1/responses` не работает** — это отдельный пункт в #68. Полный ход brain→talk завершился: 3 вызова brain, talk 200, HTTP 200, `status=completed`; в talk-запросе присутствовали реальная персона и реальная память (system 6370 символов). На малых free-моделях качество памяти не проверить: на вопрос по записи из промпта модель отвечает «в памяти нет записей».
 
 ## Остаётся открытым
 
-- Полный свежий архив и production-подобный объём данных: текущие timings и проверки сняты на существующих копиях, а не на полном dataset.
-- Боевая конфигурация TLS/reverse-proxy и домен: проверен локальный Caddy на loopback с self-signed сертификатом, а не реальный прокси стенда.
-- Качество моделей и persona-поведение: реальные провайдеры были недоступны (AIHope 429, ключ OpenRouter заменён), live-ход выполнен на бесплатных моделях через локальный адаптер; на них нельзя судить о памяти и стиле.
-- Discord GIF/music/history и browsermcp: живые интеграции с реальными токенами не проверялись; наблюдались только отказы без токенов и повторные подключения.
-- Windows-ветка `msvcrt.locking`, Windows/Linux установщики и аппаратная приёмка этим прогоном не проверялись.
-- Квота/429 провайдера не видна в `/v1/health` (проверяется только `/v1/models`) — нужен отдельный пункт наблюдаемости.
+Остаток вынесен в [#68](https://github.com/ebluffy/Neyra-AIAssist/issues/68):
+
+- живой Discord/browsermcp с реальными токенами;
+- боевая конфигурация TLS/reverse-proxy и домен;
+- качество моделей и persona-поведение на реальном провайдере;
+- полный dataset для замеров backup/restore;
+- Windows `msvcrt.locking`, установщики и аппаратная приёмка;
+- health при 429 (найденный дефект) и отсутствие `/chat/completions` fallback для talk.
