@@ -517,7 +517,7 @@ async fn connect(
             disconnect_locked(&state)?;
             let epoch = state.epoch.load(Ordering::SeqCst);
             *state.active_profile.lock().map_err(lock_error)? = Some(profile_id.clone());
-            start_socket_workers(app, &state, sockets, epoch, &profile_id)
+            start_socket_workers(app, &state, sockets.take().unwrap(), epoch, &profile_id)
         })
     })
     .await
@@ -554,7 +554,7 @@ async fn install_connected_sockets(
     current_epoch: &AtomicU64,
     epoch: u64,
     sockets: Vec<(ClientSocket, &'static str)>,
-    install: impl FnOnce(Vec<(ClientSocket, &'static str)>) -> Result<(), String>,
+    install: impl FnOnce(&mut Option<Vec<(ClientSocket, &'static str)>>) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut sockets = Some(sockets);
     let result = (|| {
@@ -562,9 +562,11 @@ async fn install_connected_sockets(
         if current_epoch.load(Ordering::SeqCst) != epoch {
             return Err("Подключение отменено".into());
         }
-        install(sockets.take().unwrap())
+        install(&mut sockets)
     })();
-    // Cancellation must flush Close without retaining the synchronous transport lock.
+    // Cancellation and install failures must flush Close without retaining the
+    // synchronous transport lock; a socket the install step did not take is
+    // still ours to close.
     if let Some(sockets) = sockets {
         close_sockets(sockets).await;
     }
@@ -2633,7 +2635,7 @@ mod tests {
         assert!(server.next().await.unwrap().unwrap().is_text());
         server
             .send(Message::Close(Some(CloseFrame {
-                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Policy,
                 reason: "revoked".into(),
             })))
             .await
@@ -3164,6 +3166,57 @@ mod tests {
         assert!(revoked_marker(&root, profile_a).exists());
 
         clear_revoked(&root, profile_a).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn failed_reauth_clear_flushes_close_instead_of_dropping_sockets() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let profile = local_profile(listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            for _ in 0..2 {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                assert!(ws.next().await.unwrap().unwrap().is_text());
+                sockets.push(ws);
+            }
+            // A socket that already passed the handshake must be closed with a
+            // Close frame, not dropped as a bare TCP disconnect.
+            for mut ws in sockets {
+                match tokio::time::timeout(Duration::from_secs(2), ws.next()).await {
+                    Ok(Some(Ok(Message::Close(_)))) => {}
+                    other => panic!("expected Close frame, got {other:?}"),
+                }
+            }
+        });
+        let sockets = connect_sockets(&profile, &test_token(), &json!({}), Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let profile_id = "profile-close-on-failed-clear";
+        mark_revoked(&root, profile_id).unwrap();
+        // Block removal deterministically: the marker path becomes a directory.
+        std::fs::remove_file(revoked_marker(&root, profile_id)).unwrap();
+        std::fs::create_dir_all(revoked_marker(&root, profile_id)).unwrap();
+
+        let transport = Mutex::new(());
+        let current_epoch = AtomicU64::new(7);
+        let result = install_connected_sockets(&transport, &current_epoch, 7, sockets, |sockets| {
+            apply_connection_install(&root, profile_id, true, || {
+                let _installed = sockets.take().unwrap();
+                Ok(())
+            })
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert!(revoked_pending(&root, profile_id));
+        server.await.unwrap();
+
+        std::fs::remove_dir(revoked_marker(&root, profile_id)).unwrap();
+        clear_revoked(&root, profile_id).unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
 

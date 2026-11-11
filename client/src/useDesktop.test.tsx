@@ -250,7 +250,10 @@ describe('unavailable server', () => {
     expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(1);
   });
 
-  it.each(['handshake', 'revoked'])('stops automatic retries after auth rejection: %s', async mode => {
+  it.each([
+    ['handshake', 'Токен отклонён сервером'],
+    ['revoked', 'Сеанс отключён с сервера'],
+  ])('stops automatic retries after auth rejection: %s', async (mode, expected) => {
     const base = ipc.invoke.getMockImplementation()!;
     ipc.invoke.mockImplementation(async (command, args) => {
       if (command === 'connect' && mode === 'handshake') throw 'AUTH_REJECTED';
@@ -261,7 +264,7 @@ describe('unavailable server', () => {
     await tick(0);
     if (mode === 'revoked') await act(async () => { ipc.listeners.get('desktop-event')!({ payload: { type: 'disconnected', reason: 'auth' } }); });
     expect(app.connected).toBe(false);
-    expect(app.error).toContain('Токен отклонён или отозван');
+    expect(app.error).toContain(expected);
     await tick(120000);
     expect(ipc.invoke.mock.calls.filter(([command]) => command === 'connect')).toHaveLength(1);
     ipc.invoke.mockImplementation(base);

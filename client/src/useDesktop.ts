@@ -7,7 +7,8 @@ import { type SheetId, themeId } from './theme';
 import { createTokenBatch } from './streaming';
 import { acceptLiveRun, conversionNotice, defaultVoice, formatError, meterLevel, settleLiveStart, unwrapApi, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
 
-const authError = 'Токен отклонён или отозван. Сохраните новый токен и подключитесь.';
+const authError = 'Токен отклонён сервером. Проверьте токен профиля и подключитесь снова.';
+const revokedError = 'Сеанс отключён с сервера. Нажмите «Подключить», чтобы войти снова.';
 
 export function useDesktop() {
   const [settings, setSettings] = useState<Settings>();
@@ -237,7 +238,7 @@ export function useDesktop() {
         if (event.type === 'voice.conversion') { const text = conversionNotice(event.status, event.code); if (text) postNotice(text, true); }
         if (event.type === 'disconnected') {
           muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); setRetry(1); setConnected(false); setBusy(false); setThinking(false); setRecording(false); setActive(false); setHostCall(undefined); tokenBatch.reset();
-          if (event.reason === 'auth') { setConnectionWanted(''); setNotice(''); setError(authError); }
+          if (event.reason === 'auth') { setConnectionWanted(''); setNotice(''); setError(revokedError); }
           else postNotice('Нет связи. Ответ мог не дойти. Проверьте историю перед повторной отправкой.', true);
         }
         if (event.type === 'error') { setError(`Сервер: ${event.code ?? 'ошибка'}. Повторите попытку.`); setThinking(false); tokenBatch.reset(); setLiveState(state => state === 'thinking' ? 'idle' : state); }
