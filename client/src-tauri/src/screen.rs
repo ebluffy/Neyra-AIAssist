@@ -389,31 +389,61 @@ pub struct Shot {
     pub area: Rect,
 }
 
-static SHOTS: Mutex<VecDeque<Shot>> = Mutex::new(VecDeque::new());
+pub struct ShotStore {
+    shots: Mutex<VecDeque<Shot>>,
+}
 
-fn remember(shot: Shot) {
-    if let Ok(mut shots) = SHOTS.lock() {
-        shots.retain(|s| s.created.elapsed() < SHOT_TTL);
-        if shots.len() >= 8 {
-            shots.pop_front();
-        }
-        shots.push_back(shot);
+impl Default for ShotStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
+
+impl ShotStore {
+    pub const fn new() -> Self {
+        Self {
+            shots: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    pub fn remember(&self, shot: Shot) {
+        if let Ok(mut shots) = self.shots.lock() {
+            // Only the newest screenshot of a session may be used: older pixels would map
+            // clicks through a stale geometry.
+            shots.retain(|s| s.session != shot.session && s.created.elapsed() < SHOT_TTL);
+            if shots.len() >= 8 {
+                shots.pop_front();
+            }
+            shots.push_back(shot);
+        }
+    }
+
+    pub fn find(&self, id: &str, session: &str) -> Result<Shot, String> {
+        let shots = self.shots.lock().map_err(|_| "Внутренняя ошибка")?;
+        shots
+            .iter()
+            .find(|s| s.id == id && s.session == session && s.created.elapsed() < SHOT_TTL)
+            .cloned()
+            .ok_or_else(|| "Снимок устарел: сделайте новый скриншот".into())
+    }
+
+    pub fn clear(&self) {
+        if let Ok(mut shots) = self.shots.lock() {
+            shots.clear();
+        }
+    }
+
+    pub fn forget_session(&self, session: &str) {
+        if let Ok(mut shots) = self.shots.lock() {
+            shots.retain(|s| s.session != session);
+        }
+    }
+}
+
+static GLOBAL: ShotStore = ShotStore::new();
 
 pub fn forget_all() {
-    if let Ok(mut shots) = SHOTS.lock() {
-        shots.clear();
-    }
-}
-
-fn find_shot(id: &str, session: &str) -> Result<Shot, String> {
-    let shots = SHOTS.lock().map_err(|_| "Внутренняя ошибка")?;
-    shots
-        .iter()
-        .find(|s| s.id == id && s.session == session && s.created.elapsed() < SHOT_TTL)
-        .cloned()
-        .ok_or_else(|| "Снимок устарел: сделайте новый скриншот".into())
+    GLOBAL.clear();
 }
 
 /// Screenshot pixels → native input coordinates (DPI scale and monitor offsets included).
@@ -470,6 +500,16 @@ pub fn capture<B: Backend + ?Sized>(
     window: Option<&str>,
     session: &str,
 ) -> Result<Value, String> {
+    capture_with(&GLOBAL, backend, window, session)
+}
+
+pub fn capture_with<B: Backend + ?Sized>(
+    store: &ShotStore,
+    backend: &mut B,
+    window: Option<&str>,
+    session: &str,
+) -> Result<Value, String> {
+    store.forget_session(session);
     let frame = backend.capture(window)?;
     if frame.rgb.len() != (frame.width * frame.height * 3) as usize {
         return Err("Неверный кадр".into());
@@ -490,7 +530,7 @@ pub fn capture<B: Backend + ?Sized>(
         return Err("Снимок слишком большой".into());
     }
     let id = uuid::Uuid::new_v4().to_string();
-    remember(Shot {
+    store.remember(Shot {
         id: id.clone(),
         session: session.to_string(),
         created: Instant::now(),
@@ -562,8 +602,18 @@ pub fn run<B: Backend + ?Sized>(
     session: &str,
     cancel: &AtomicBool,
 ) -> Result<Value, String> {
+    run_with(&GLOBAL, backend, args, session, cancel)
+}
+
+pub fn run_with<B: Backend + ?Sized>(
+    store: &ShotStore,
+    backend: &mut B,
+    args: &Map<String, Value>,
+    session: &str,
+    cancel: &AtomicBool,
+) -> Result<Value, String> {
     let (shot_id, steps) = parse(args)?;
-    let shot = shot_id.map(|id| find_shot(&id, session)).transpose()?;
+    let shot = shot_id.map(|id| store.find(&id, session)).transpose()?;
     // Map every point first: nothing is sent unless the whole sequence is valid.
     let mut mapped = Vec::with_capacity(steps.len());
     for step in &steps {
@@ -1690,6 +1740,7 @@ mod tests {
         log: Vec<String>,
         held_keys: Vec<&'static str>,
         cancel_after: Option<(usize, std::sync::Arc<AtomicBool>)>,
+        fail_capture: bool,
     }
     impl Mock {
         fn note(&mut self, s: String) {
@@ -1703,6 +1754,9 @@ mod tests {
     }
     impl Backend for Mock {
         fn capture(&mut self, _: Option<&str>) -> Result<Frame, String> {
+            if self.fail_capture {
+                return Err("Сбой захвата".into());
+            }
             // 2560x1440 physical desktop starting at x=-1920 (second monitor on the left).
             Ok(Frame {
                 width: 2560,
@@ -1748,18 +1802,109 @@ mod tests {
 
     #[test]
     fn screenshot_is_downscaled_and_coordinates_map_back_with_offsets() {
+        let store = ShotStore::new();
         let mut m = Mock::default();
-        let shot = capture(&mut m, None, "s").unwrap();
+        let shot = capture_with(&store, &mut m, None, "downscale").unwrap();
         assert_eq!(shot["width"], 1366);
         assert_eq!(shot["height"], 768);
         let id = shot["screenshot_id"].as_str().unwrap();
-        let s = find_shot(id, "s").unwrap();
+        let s = store.find(id, "downscale").unwrap();
         let (x, y) = map_point(&s, 683.0, 384.0).unwrap();
         // Centre of the image → centre of the physical virtual desktop.
         assert!((x - (-1920.0 + 1280.0)).abs() < 2.0, "{x}");
         assert!((y - 720.0).abs() < 2.0, "{y}");
         assert!(map_point(&s, 1366.0, 10.0).is_err());
-        assert!(find_shot(id, "other-session").is_err());
+        assert!(store.find(id, "other-session").is_err());
+    }
+
+    #[test]
+    fn second_capture_invalidates_first_screenshot_id() {
+        let store = ShotStore::new();
+        let mut m = Mock::default();
+        let session = "invalidate-first";
+        let other_session = "invalidate-other";
+        let first = capture_with(&store, &mut m, None, session).unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let other = capture_with(&store, &mut m, None, other_session).unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let second = capture_with(&store, &mut m, None, session).unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert!(store.find(&first, session).is_err());
+        assert!(store.find(&second, session).is_ok());
+        // A new screenshot in one session must not invalidate another session's pixels.
+        assert!(store.find(&other, other_session).is_ok());
+    }
+
+    #[test]
+    fn failed_capture_invalidates_previous_screenshot_id() {
+        let store = ShotStore::new();
+        let mut m = Mock::default();
+        let session = "fail-session";
+        let first = capture_with(&store, &mut m, None, session).unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(store.find(&first, session).is_ok());
+
+        let mut failing = Mock {
+            fail_capture: true,
+            ..Default::default()
+        };
+        assert!(capture_with(&store, &mut failing, None, session).is_err());
+        assert!(store.find(&first, session).is_err());
+    }
+
+    #[test]
+    fn forget_session_removes_only_target_session() {
+        let store = ShotStore::new();
+        let mut m = Mock::default();
+        let s1 = "clean-session-1";
+        let s2 = "clean-session-2";
+        let id1 = capture_with(&store, &mut m, None, s1).unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let id2 = capture_with(&store, &mut m, None, s2).unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert!(store.find(&id1, s1).is_ok());
+        assert!(store.find(&id2, s2).is_ok());
+
+        store.forget_session(s1);
+
+        assert!(store.find(&id1, s1).is_err());
+        assert!(store.find(&id2, s2).is_ok());
+    }
+
+    #[test]
+    fn clear_drops_all_stored_shots() {
+        let store = ShotStore::new();
+        let mut m = Mock::default();
+        let id1 = capture_with(&store, &mut m, None, "clear-s1").unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let id2 = capture_with(&store, &mut m, None, "clear-s2").unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert!(store.find(&id1, "clear-s1").is_ok());
+        assert!(store.find(&id2, "clear-s2").is_ok());
+
+        store.clear();
+
+        assert!(store.find(&id1, "clear-s1").is_err());
+        assert!(store.find(&id2, "clear-s2").is_err());
     }
 
     #[test]
@@ -1781,18 +1926,24 @@ mod tests {
             assert!(parse(&args(bad.clone())).is_err(), "{bad}");
         }
         // An out-of-image point anywhere aborts the whole sequence before the first step.
+        let store = ShotStore::new();
         let mut m = Mock::default();
-        let id = capture(&mut m, None, "s").unwrap()["screenshot_id"]
+        let id = capture_with(&store, &mut m, None, "validation").unwrap()["screenshot_id"]
             .as_str()
             .unwrap()
             .to_string();
         let mut m = Mock::default();
-        let out = run(
+        let out = run_with(
+            &store,
             &mut m,
-            &args(
-                json!({"screenshot_id":id,"steps":[{"op":"key","keys":"enter"},{"op":"click","x":5000,"y":1}]}),
-            ),
-            "s",
+            &args(json!({
+                "screenshot_id": id,
+                "steps": [
+                    {"op": "key", "keys": "enter"},
+                    {"op": "click", "x": 5000, "y": 1}
+                ],
+            })),
+            "validation",
             &AtomicBool::new(false),
         );
         assert!(out.is_err());
@@ -1801,8 +1952,9 @@ mod tests {
 
     #[test]
     fn stop_midway_releases_held_keys_and_halts() {
+        let store = ShotStore::new();
         let mut m = Mock::default();
-        let id = capture(&mut m, None, "s").unwrap()["screenshot_id"]
+        let id = capture_with(&store, &mut m, None, "stop-midway").unwrap()["screenshot_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1811,14 +1963,15 @@ mod tests {
             cancel_after: Some((2, cancel.clone())),
             ..Default::default()
         };
-        let out = run(
+        let out = run_with(
+            &store,
             &mut m,
             &args(json!({"screenshot_id":id,"steps":[
                 {"op":"key","keys":"ctrl+shift+s"},
                 {"op":"click","x":10,"y":10},
                 {"op":"type","text":"never"}
             ]})),
-            "s",
+            "stop-midway",
             &cancel,
         )
         .unwrap();
@@ -1830,13 +1983,15 @@ mod tests {
 
     #[test]
     fn full_sequence_runs_in_order() {
+        let store = ShotStore::new();
         let mut m = Mock::default();
-        let id = capture(&mut m, None, "s").unwrap()["screenshot_id"]
+        let id = capture_with(&store, &mut m, None, "full-sequence").unwrap()["screenshot_id"]
             .as_str()
             .unwrap()
             .to_string();
         let mut m = Mock::default();
-        let out = run(
+        let out = run_with(
+            &store,
             &mut m,
             &args(json!({"screenshot_id":id,"steps":[
                 {"op":"click","x":0,"y":0,"count":2},
@@ -1844,7 +1999,7 @@ mod tests {
                 {"op":"key","keys":"ctrl+s"},
                 {"op":"scroll","x":1,"y":1,"dy":-3}
             ]})),
-            "s",
+            "full-sequence",
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -1894,7 +2049,7 @@ mod tests {
         let (conn, screen) = x11rb::connect(None).unwrap();
         let root = x11rb::connection::Connection::setup(&conn).roots[screen].root;
         let pointer = conn.query_pointer(root).unwrap().reply().unwrap();
-        let s = find_shot(&id, "x").unwrap();
+        let s = GLOBAL.find(&id, "x").unwrap();
         let (ex, ey) = map_point(&s, 10.0, 20.0).unwrap();
         assert!(
             (pointer.root_x as f64 - ex).abs() <= 1.0,

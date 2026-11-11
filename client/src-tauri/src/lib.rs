@@ -1695,6 +1695,7 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
     cancel.store(true, Ordering::SeqCst);
     *cancel = Arc::new(AtomicBool::new(false));
     computer::reset();
+    screen::forget_all();
     state.pending.lock().map_err(lock_error)?.clear();
     if let Ok(flags) = state.local_cancels.lock() {
         for flag in flags.values() {
