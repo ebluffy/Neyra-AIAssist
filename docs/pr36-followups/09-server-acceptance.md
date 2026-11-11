@@ -7,7 +7,7 @@
 
 ## Работа
 
-Разделить транспорт, backend и поведение моделей. Подтвердить auth/HTTPS/WSS, backup/restore, память/persona и роль brain→talk, отказ/таймаут на тестовых копиях. Не считать AIHope маршрутом тестирования. Вне объёма этого PR и вынесено в [#68](https://github.com/ebluffy/Neyra-AIAssist/issues/68): живой Discord GIF/music/history и browsermcp с токенами, боевой TLS/proxy с доменом, качество моделей и persona-поведение, полный dataset, Windows/установщики, а также найденный дефект health при 429 и отсутствие `/chat/completions` fallback для talk.
+Разделить транспорт, backend и поведение моделей. Подтвердить auth/HTTPS/WSS, backup/restore, память/persona и роль brain→talk, отказ/таймаут на тестовых копиях. Не считать AIHope маршрутом тестирования. Вне объёма этого PR и вынесено в [#68](https://github.com/ebluffy/Neyra-AIAssist/issues/68): живая проверка модулей и интеграций с токенами (Discord GIF/music/history, browsermcp, привязка фактов), боевой TLS/proxy с доменом, качество моделей и persona-поведение, полный dataset, Windows/установщики, а также найденный дефект health при 429 и отсутствие `/chat/completions` fallback для talk.
 
 ## Готово, когда
 
@@ -59,9 +59,9 @@
 
 Остаток вынесен в [#68](https://github.com/ebluffy/Neyra-AIAssist/issues/68):
 
-- живой Discord/browsermcp с реальными токенами;
+- живая проверка модулей и интеграций с реальными токенами: Discord GIF/music/history, browsermcp, привязка фактов;
 - боевая конфигурация TLS/reverse-proxy и домен;
 - качество моделей и persona-поведение на реальном провайдере;
 - полный dataset для замеров backup/restore;
 - Windows `msvcrt.locking`, установщики и аппаратная приёмка;
-- health при 429 (найденный дефект) и отсутствие `/chat/completions` fallback для talk.
+- health при 429 (найденный дефект) и отсутствие `/chat/completions` fallback для talk при провайдере без `/v1/responses`.
