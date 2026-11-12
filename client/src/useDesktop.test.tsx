@@ -895,6 +895,34 @@ describe('PTT deferred IPC lifecycle', () => {
     expect(app.recording).toBe(true);
   });
 
+  it('does not cancel a capture that is opening when an older Stop arrives', async () => {
+    await mount();
+    let release!: (value: number) => void;
+    const pending = new Promise<number>(done => { release = done; });
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation((command, args) => command === 'record_start' ? pending : base(command, args));
+    let opening!: Promise<void>;
+    await act(async () => { opening = app.beginRecording(); });
+    await event('cancelled', { scope: 'all', seq: 1 });
+    await act(async () => { release(2); await opening; });
+    expect(app.recording).toBe(true);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_cancel')).toHaveLength(0);
+  });
+
+  it('cancels the capture it was opening when that very Stop arrives', async () => {
+    await mount();
+    let release!: (value: number) => void;
+    const pending = new Promise<number>(done => { release = done; });
+    const base = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation((command, args) => command === 'record_start' ? pending : base(command, args));
+    let opening!: Promise<void>;
+    await act(async () => { opening = app.beginRecording(); });
+    await event('cancelled', { scope: 'all', seq: 1 });
+    await act(async () => { release(1); await opening; });
+    expect(app.recording).toBe(false);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_cancel')).toHaveLength(1);
+  });
+
   it.each(['empty_capture', 'turn_busy', 'microphone_unavailable', 'no_capture', 'voice_unavailable'])(
     'hotkey record_stop error %s clears recording and prevents 30s timer stop (AR-15)',
     async errorCode => {

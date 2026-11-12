@@ -101,6 +101,10 @@ export function useDesktop() {
   // A late stop announcement of an older capture must not touch the capture running now.
   // A capture that Stop already closed: its own numbered outcome must not be applied again.
   const cancelledSeq = useRef<number | null>(null);
+  // A Stop that arrived while this capture was still opening: compare it with our own number.
+  const pendingCancelSeq = useRef<number | null>(null);
+  // Mutating through a helper keeps TypeScript from narrowing the ref's type after an assignment.
+  const setCaptureIntent = (value: 'commit' | 'cancel' | null) => { captureIntent.current = value; };
   // A numbered stop outcome belongs to some capture; never apply it to a capture that is
   // still opening (its number is not known yet), to a cancelled one, or to a newer one.
   const staleCaptureEvent = (seq: unknown) => {
@@ -370,6 +374,9 @@ export function useDesktop() {
           setError(message);
         }
         if (event.type === 'cancelled') {
+          // The number of a capture that is still opening is not known yet: decide after the
+          // start resolves whether this Stop belonged to it or to an older capture.
+          if (captureStarting.current && typeof event.seq === 'number') { pendingCancelSeq.current = event.seq; return; }
           // A cancel of an older capture must not stop the one that is running now.
           if (typeof event.seq === 'number' && typeof captureSeq.current === 'number' && event.seq < captureSeq.current) return;
           // The shell knows which capture it closed even when the window never saw it start.
@@ -552,6 +559,7 @@ export function useDesktop() {
     // A clip of a previous turn must never look like this capture's own clip.
     lastVoiceClipRequestId.current = null;
     captureSeq.current = null;
+    pendingCancelSeq.current = null;
     const currentCapture = ++captureId.current;
     captureStopping.current = false;
     captureIntent.current = null;
@@ -560,6 +568,12 @@ export function useDesktop() {
       const seq = await invoke<number>('record_start');
       // The shell answers with the number of this capture; only its clip may be correlated.
       captureSeq.current = typeof seq === 'number' ? seq : null;
+      if (typeof seq === 'number' && typeof pendingCancelSeq.current === 'number' && seq <= pendingCancelSeq.current) {
+        // That Stop closed this very capture while it was opening.
+        captureStopping.current = true;
+        setCaptureIntent('cancel');
+      }
+      pendingCancelSeq.current = null;
     } catch (reason) {
       captureStarting.current = false;
       setRecording(false);

@@ -1816,7 +1816,15 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
     }
     // Dropping the senders wakes any running quick command, which then reports "stopped".
     state.waiters.lock().map_err(lock_error)?.clear();
-    if let Some(recording) = state.recording.lock().map_err(lock_error)?.take() {
+    // Take the capture and the cancellation bound under one lock: a capture that starts after
+    // this point gets a higher number, so the bound can never include it.
+    let (closed, bound) = {
+        let mut slot = state.recording.lock().map_err(lock_error)?;
+        let taken = slot.take();
+        let bound = state.capture_seq.load(Ordering::SeqCst).saturating_sub(1);
+        (taken, bound)
+    };
+    if let Some(recording) = closed {
         {
             let mut hotkey = hotkey_state(state);
             hotkey.held = 0;
@@ -1828,10 +1836,9 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
     }
     let _ = send(&state.bridge, json!({"type":"stop"}));
     let _ = send(&state.voice, json!({"type":"stop"}));
-    // One authoritative cancel announcement, published here and nowhere else. The bound is the
-    // last capture number issued, so it also covers a stop whose capture is already out of the
+    // One authoritative cancel announcement, published here and nowhere else. The bound was
+    // taken with the capture, so it also covers a stop whose capture is already out of the
     // slot (record_stop took it) and a capture the window never saw start.
-    let bound = state.capture_seq.load(Ordering::SeqCst).saturating_sub(1);
     let event = if bound > 0 {
         json!({"type":"cancelled","scope":"all","seq":bound})
     } else {
