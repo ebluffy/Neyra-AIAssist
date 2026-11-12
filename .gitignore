@@ -182,3 +182,8 @@ server/config.yaml.bak*
 # Local agent skills (not part of product)
 .agents/
 skills-lock.json
+
+# Client monorepo
+node_modules/
+.next/
+*.tsbuildinfo
