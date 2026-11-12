@@ -415,7 +415,6 @@ pub(crate) fn apply_settings(
         // Permissions changed: a running capture is closed here, so the window must learn
         // about it instead of keeping a recording that no longer exists.
         stop_inner(state)?;
-        let _ = app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}));
         if screen_changed {
             screen::reset();
         }
@@ -1025,9 +1024,8 @@ fn reply_audio(app: &tauri::AppHandle, packet: &Value) -> bool {
     if let Some((number, bytes)) = finished {
         character::emit_mouth(app, &bytes);
         if state.player.segment(generation, number, bytes).is_err() {
+            // Playback died and the capture was closed with it; stop_inner announces that.
             let _ = stop_inner(&state);
-            // Playback died and the capture was closed with it: end it in the window too.
-            let _ = app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}));
             let _ = app.emit(
                 "desktop-event",
                 json!({"type":"error","code":"audio_backpressure"}),
@@ -1828,15 +1826,19 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
         std::thread::spawn(move || {
             let _ = recording.finish();
         });
-        // Every Stop closes the capture here, including paths whose caller does not emit
-        // anything: the window must know which capture ended, even one it never saw start.
-        let _ = state.app.emit(
-            "desktop-event",
-            json!({"type":"cancelled","scope":"all","seq":seq}),
-        );
     }
     let _ = send(&state.bridge, json!({"type":"stop"}));
     let _ = send(&state.voice, json!({"type":"stop"}));
+    // One authoritative cancel announcement, published here and nowhere else. The bound is the
+    // last capture number issued, so it also covers a stop whose capture is already out of the
+    // slot (record_stop took it) and a capture the window never saw start.
+    let bound = state.capture_seq.load(Ordering::SeqCst).saturating_sub(1);
+    let event = if bound > 0 {
+        json!({"type":"cancelled","scope":"all","seq":bound})
+    } else {
+        json!({"type":"cancelled","scope":"all"})
+    };
+    let _ = state.app.emit("desktop-event", event);
     Ok(())
 }
 fn disconnect_inner(state: &Desktop) -> Result<(), String> {
@@ -1852,10 +1854,9 @@ fn disconnect_locked(state: &Desktop) -> Result<(), String> {
     Ok(())
 }
 #[tauri::command]
-fn stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
-    stop_inner(&state)?;
-    app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}))
-        .map_err(|_| "Ошибка окна".into())
+fn stop(_app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), String> {
+    // stop_inner publishes the single cancel announcement with the capture bound.
+    stop_inner(&state)
 }
 #[tauri::command]
 fn disconnect(state: State<'_, Desktop>) -> Result<(), String> {
@@ -2303,8 +2304,6 @@ pub fn run() {
                     "stop" => {
                         let state = app.state::<Desktop>();
                         let _ = stop_inner(&state);
-                        let _ =
-                            app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}));
                     }
                     "quit" => {
                         let state = app.state::<Desktop>();
@@ -2441,7 +2440,6 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
             if shortcut.key == Code::Escape && event.state == ShortcutState::Pressed {
                 let state = app.state::<Desktop>();
                 let _ = stop_inner(&state);
-                let _ = app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}));
             } else if shortcut.key == Code::Space {
                 let handle = app.clone();
                 let pressed = event.state == ShortcutState::Pressed;
@@ -2566,7 +2564,6 @@ fn monitor_session(app: tauri::AppHandle) {
         if old == unlocked {
             if !unlocked {
                 let _ = stop_inner(&state);
-                let _ = app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}));
             }
             let id = state.active_profile.lock().ok().and_then(|s| s.clone());
             if let Some(id) = id {

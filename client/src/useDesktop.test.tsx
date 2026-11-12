@@ -888,6 +888,13 @@ describe('PTT deferred IPC lifecycle', () => {
     expect(app.thinking).toBe(true);
   });
 
+  it('ignores a cancel of an older capture after a newer one started', async () => {
+    await mount();
+    await event('recording', { seq: 2 });
+    await event('cancelled', { scope: 'all', seq: 1 });
+    expect(app.recording).toBe(true);
+  });
+
   it.each(['empty_capture', 'turn_busy', 'microphone_unavailable', 'no_capture', 'voice_unavailable'])(
     'hotkey record_stop error %s clears recording and prevents 30s timer stop (AR-15)',
     async errorCode => {
