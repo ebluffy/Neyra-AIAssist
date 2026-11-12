@@ -5,3 +5,4 @@ pytest-timeout>=2.3.0
 langchain-core>=0.3.0
 # Offline message/command adapter tests; never logs in to Discord.
 discord.py>=2.3.0
+PyJWT==2.15.1  # web identity tests use the same verifier as runtime
