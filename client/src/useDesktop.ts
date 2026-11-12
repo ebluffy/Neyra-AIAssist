@@ -10,6 +10,8 @@ import { acceptLiveRun, conversionNotice, defaultVoice, emptyAudioDevices, forma
 const authError = 'Токен отклонён сервером. Проверьте токен профиля и подключитесь снова.';
 const revokedError = 'Сеанс отключён с сервера. Нажмите «Подключить», чтобы войти снова.';
 // Notices that belong to "processing a clip"; a cancelled capture must not leave them.
+// Playback and TTS failures belong to the previous answer, never to the capture being committed.
+const FOREIGN_ERROR_CODES = new Set(['tts_unavailable', 'audio_unavailable', 'audio_invalid', 'audio_backpressure', 'wake_failed']);
 const PROCESSING_NOTICES = ['Распознаю речь…', 'Запись завершена: лимит 30 секунд.'];
 
 // Codes this client raises itself (audio.rs, lib.rs). Nothing else is treated as local,
@@ -328,7 +330,7 @@ export function useDesktop() {
           // captureStopping here froze PTT and the 30s limit while the mic kept running.
           const code = typeof event.code === 'string' && event.code ? event.code : 'ошибка';
           const message = localErrorText(code) ?? `Сервер: ${code}. Повторите попытку.`;
-          if (captureIntent.current === 'commit' && (event.source === 'voice' || code === 'voice_failed')) captureTerminalError.current = message;
+          if (captureStopping.current && captureIntent.current === 'commit' && !FOREIGN_ERROR_CODES.has(code)) captureTerminalError.current = message;
           setError(message);
           if (affectsText) { chatTurn.current = null; setThinking(false); tokenBatch.reset(); }
           setLiveState(state => state === 'thinking' ? 'idle' : state);

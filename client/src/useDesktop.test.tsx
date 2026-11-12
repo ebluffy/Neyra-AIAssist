@@ -756,6 +756,19 @@ describe('PTT deferred IPC lifecycle', () => {
     expect(app.thinking).toBe(false);
   });
 
+  it('a voice error during the commit window never replaces the real rejection (P3-1)', async () => {
+    await mount();
+    const stop = defer('record_stop');
+    await act(async () => { await app.beginRecording(); });
+    let finishing!: Promise<void>;
+    await act(async () => { finishing = app.finishRecording(); });
+    // TTS of the previous answer reports an error while this capture is still committing.
+    await event('error', { source: 'voice', code: 'tts_unavailable' });
+    await act(async () => { stop.reject('Запись пустая, повторите.'); await finishing; });
+    expect(app.error).toContain('Запись пустая');
+    expect(app.thinking).toBe(false);
+  });
+
   it.each(['empty_capture', 'turn_busy', 'microphone_unavailable', 'no_capture', 'voice_unavailable'])(
     'hotkey record_stop error %s clears recording and prevents 30s timer stop (AR-15)',
     async errorCode => {
