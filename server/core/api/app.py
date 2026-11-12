@@ -1525,6 +1525,22 @@ def build_app(
         def __init__(self, app_):
             self.app = app_
 
+        @staticmethod
+        def _provision(agent_, identity):
+            """Create the web person on the trusted boundary, never a Discord card.
+
+            The signed ``sub`` is the account key, so the row id equals the person_id
+            the token carries; first-turn relations/diary then have an owner.
+            """
+            hub = getattr(agent_, "memory_hub", None)
+            if hub is None:
+                return
+            hub.ensure_person_for_account(
+                platform="web",
+                platform_user_id=identity.user_id,
+                display_name=(identity.name or "").strip() or None,
+            )
+
         async def __call__(self, scope, receive, send):
             if scope["type"] not in ("http", "websocket"):
                 await self.app(scope, receive, send)
@@ -1561,6 +1577,23 @@ def build_app(
                         response = JSONResponse(
                             status_code=401,
                             content=_err_payload(tid, "invalid_web_identity", "Invalid web identity"),
+                            headers={"x-trace-id": tid},
+                        )
+                        await response(scope, receive, send)
+                    return
+                try:
+                    await asyncio.to_thread(self._provision, agent, identity)
+                except Exception:
+                    logger.exception("web person provisioning failed")
+                    if scope["type"] == "websocket":
+                        from starlette.websockets import WebSocket as StarletteWebSocket
+
+                        await StarletteWebSocket(scope, receive, send).close(code=1011)
+                    else:
+                        tid = _trace_id(Request(scope, receive))
+                        response = JSONResponse(
+                            status_code=503,
+                            content=_err_payload(tid, "identity_storage_unavailable", "Identity storage unavailable"),
                             headers={"x-trace-id": tid},
                         )
                         await response(scope, receive, send)

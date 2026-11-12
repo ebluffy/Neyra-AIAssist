@@ -247,3 +247,33 @@ def test_web_turn_keeps_affect_and_diary_on_signed_person(tmp_path):
         assert notes and notes[0]["meta"].get("person_id") == pid
     finally:
         hub.close()
+
+
+def test_first_signed_turn_provisions_web_person(tmp_path, api_config, stub_monitor, stub_backup, auth_headers):
+    """Пустая БД: первый подписанный запрос создаёт веб-карточку, ход пишет отношения."""
+    from fastapi.testclient import TestClient
+
+    from core.api.app import build_app
+    from tests.offline_support import offline_agent
+
+    agent = offline_agent(tmp_path / "web-first-turn")
+    person = UnifiedIdentityMapper.resolve("web", "web-user-1")
+    project_root = tmp_path / "project"
+    (project_root / "logs").mkdir(parents=True)
+    (project_root / "modules").mkdir(parents=True)
+    app = build_app(api_config, shared_agent=agent, shared_monitor=stub_monitor,
+                    shared_backup_manager=stub_backup, project_root=project_root)
+    try:
+        with TestClient(app, client=("127.0.0.1", 50001)) as http:
+            assert http.get("/v1/web/me", headers=headers(auth_headers)).status_code == 200
+            assert agent.memory_hub.get_person(person) is not None
+            assert agent.memory_hub.sqlite.get_account("web", "web-user-1")["person_id"] == person
+
+            chat = http.post("/v1/chat", json={
+                "text": "спасибо, ты классная", "platform_user_id": "web-user-1", "channel_id": "chat-1",
+            }, headers=headers(auth_headers, role="admin"))
+            assert chat.status_code == 200, chat.text
+        assert agent.memory_hub.affect_snapshot(person)["relation"] is not None
+        assert agent.memory_hub.find_person("", discord_id="web-user-1") is None
+    finally:
+        agent.memory_hub.close()
