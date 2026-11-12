@@ -19,4 +19,4 @@
 ## Public URL / WebSocket issues
 
 - Verify `api.public_base_url` and `api.public_path_prefix` match your proxy (see [api-reverse-proxy](api-reverse-proxy.md)).
-- For frp tunnels, see [`docs/PLAN.md`](../../PLAN.md) §3.
+- For frp tunnels, see [`docs/PLAN.md`](../../PLAN.md) §9.

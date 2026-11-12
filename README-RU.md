@@ -78,9 +78,9 @@ SPA раздаётся Control API из `server/dashboard/dist`.
 
 SDK: [HELP-RU.md](server/modules/000EXAMPLE/HELP-RU.md) · [HELP.md](server/modules/000EXAMPLE/HELP.md)
 
-## Клиент (Этап 3)
+## Клиент
 
-`client/` — только scaffold. Этап 3: Tauri 2 + React (Connect / Chat / Status / Modules) и публикация `https://neyra.owyx.site` через frp (домашний сервер → VPS). См. [docs/PLAN.md](docs/PLAN.md) §3.
+`client/` — десктоп-приложение Tauri 2 + React: экраны Connect / Chat / Status / Modules, push-to-talk и live voice, трей, локальные разрешения и Rust-исполнитель `host bridge` (`client/src-tauri`). Сейчас UI лежит в `client/src`; фронт переезжает в `apps/desktop` на общем ките ([ADR-0001](docs/ru/architecture/adr-0001-client-monorepo.md)). Windows и Linux поддерживаются на равных; публичный адрес `https://neyra.owyx.site` — через frp (домашний сервер → VPS). См. [docs/PLAN.md](docs/PLAN.md) §7.
 
 ## Статус
 

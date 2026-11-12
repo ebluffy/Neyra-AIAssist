@@ -1,8 +1,8 @@
 # Клиентская реформа v2: веб, десктоп и ядро
 
-> **Статус:** draft-спека, 11.11.2026. Заменяет план интеграции с Open WebUI (issue #66).
-> **Область:** §3a.2 `docs/PLAN.md`. Реформа затрагивает веб, десктоп (§3b) и часть контрактов ядра.
-> Разделы §0 (паспорт ВКР) и §9 (рабочий стол Нейры) не меняются.
+> **Статус:** принята 11.11.2026 (решения D1–D27); открытые вопросы — §21. Заменяет план интеграции с Open WebUI (issue #66).
+> **Область:** §6 `docs/PLAN.md`. Реформа затрагивает веб, десктоп (§7) и часть контрактов ядра.
+> Разделы §0 (паспорт ВКР) и §11.2 (рабочий стол Нейры) не меняются.
 > Решение по общему UI — [ADR-0001](adr-0001-client-monorepo.md).
 > **Нормативная версия:** русская. Английская — после ревью спеки.
 
@@ -118,7 +118,7 @@ Issue #66 предлагал использовать Open WebUI как прос
 - Rate limit на вход и регистрацию по IP и по аккаунту.
 - Пользователь сам меняет пароль, логин и email в профиле. Смена email без подтверждения (SMTP нет) требует текущий пароль.
 - Аватар — из Discord; если его нет, показываются инициалы.
-- Удаление аккаунта — пользователем с двойным подтверждением; чаты и аккаунт удаляются, память в ядре очищается отдельной процедурой.
+- Удаление аккаунта — пользователем с двойным подтверждением; чаты, вложения и аккаунт удаляются, память в ядре анонимизируется отдельной процедурой (`person_id` остаётся, имя и привязки стираются).
 - 2FA (TOTP) — после v1, место в схеме заложено.
 
 ### 5.4. Discord
@@ -168,10 +168,10 @@ PostgreSQL, схема `public`, миграции — Drizzle.
 | `sessions` | Сессии | `id`, `user_id`, `expires_at`, `ip`, `user_agent` |
 | `invites` | Инвайты | `code`, `kind` (`single`/`multi`), `created_by`, `max_uses`, `used`, `expires_at`, `revoked_at` |
 | `folders` | Папки чатов | `id`, `user_id`, `name`, `position` |
-| `conversations` | Чаты | `id`, `user_id`, `title`, `model`, `pinned`, `folder_id`, `created_at`, `updated_at`, `archived_at` |
+| `conversations` | Чаты | `id`, `user_id`, `title`, `model`, `pinned`, `folder_id`, `active_leaf_id`, `created_at`, `updated_at`, `archived_at` |
 | `messages` | Сообщения | `id`, `conversation_id`, `parent_id?`, `role`, `content` (jsonb), `model`, `tokens_in`, `tokens_out`, `status`, `error_code`, `created_at` |
 | `attachments` | Вложения | `id`, `message_id`, `kind`, `path`, `mime`, `size`, `meta` (jsonb) |
-| `shares` | Публичные ссылки | `id`, `conversation_id`, `token`, `expires_at`, `created_by` |
+| `shares` | Доступ для вошедших (без публичного) | `id`, `conversation_id`, `token`, `expires_at`, `created_by` |
 | `model_providers` | Провайдеры | `id`, `kind`, `base_url`, `api_key_enc`, `enabled` |
 | `models` | Модели | `id`, `provider_id`, `model_id`, `label`, `visibility`, `allowed_roles`, `is_default` |
 | `user_settings` | Настройки пользователя | `user_id`, `theme`, `density`, `default_model`, `language` |
@@ -402,7 +402,7 @@ UPLOAD_DIR=/data/uploads
 
 До Нового года около 7 недель. Цель — успеть P0–P6, но P4–P6 срезаются первыми, если поджимает: минимум для демо — P0–P3. Архитектура от среза не меняется, недоделанное переносится в январь без переделки.
 
-Мобильные приложения — после бета-релиза десктопа: порт Tauri 2 на Android/iOS, отдельный этап вне ВКР (зафиксировано в `PLAN.md` §3b).
+Мобильные приложения — после бета-релиза десктопа: порт Tauri 2 на Android/iOS, отдельный этап вне ВКР (зафиксировано в `PLAN.md` §7.12).
 
 ## 19. Приёмка
 
@@ -437,7 +437,7 @@ UPLOAD_DIR=/data/uploads
 ## 21. Открытые вопросы
 
 - SMTP и подтверждение email — когда появится провайдер писем.
-- Десктоп: грузит web v2 или сохраняет свой UI и синхронизирует историю по API.
+- Решено (ADR-0001): десктоп — `apps/desktop` на общем ките `packages/ui`, Rust `client/src-tauri` и IPC не переписываются.
 - Модель для заголовков и фоновых задач.
 - Целевая задержка голоса в вебе.
 - Брендинг: кто рисует логотип и когда фиксируем палитру и шрифты.
@@ -448,7 +448,7 @@ UPLOAD_DIR=/data/uploads
 - [ADR-0001: клиентский монорепо](adr-0001-client-monorepo.md)
 - [Архитектура](overview.md)
 - [Модель безопасности](security-model.md)
-- [PLAN.md §3a.2](../../PLAN.md)
+- [PLAN.md §6](../../PLAN.md)
 
 ## 23. Консолидация PR и веток
 

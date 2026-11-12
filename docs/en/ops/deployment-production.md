@@ -12,4 +12,4 @@
 
 Canonical publish path: Neyra on a **home server** (mini PC, spare desktop, laptop, …), **frpc** → VPS **frps** → **Caddy**/nginx for `https://neyra.owyx.site` / `wss://neyra.owyx.site/api/v1/ws/chat`. Runtime data remains on the home server (`server/data/memory/`, `server/.env`, `server/logs/`).
 
-Details: [`docs/PLAN.md`](../../PLAN.md) §3.
+Details: [`docs/PLAN.md`](../../PLAN.md) §9.

@@ -1,8 +1,8 @@
 # Neyra desktop · Windows and Linux
 
-Tauri 2 + React + TypeScript, with a Rust executor. The server owns LLM orchestration, chat history/memory and STT/TTS. This client has an independent UI; dashboard sources are not reused (only the existing Neyra brand icon).
+Tauri 2 + React + TypeScript, with a Rust executor. The server owns LLM orchestration, chat history/memory and STT/TTS. The UI currently lives in `client/src` and keeps its own styles; it moves to `apps/desktop` on the shared kit `packages/ui` with contracts in `packages/contracts` ([ADR-0001](../docs/ru/architecture/adr-0001-client-monorepo.md), PLAN §5).
 
-Implemented for PLAN §3b.11 steps 1–3:
+Implemented for PLAN §7.9 steps 1–3:
 
 - Server profiles, TLS/loopback URL validation, health/API check, OS-keyring tokens, streaming private chat, status, module enable/disable and soft restart.
 - Tray open/Stop/quit; first-launch data directory; dark/light UI. No server is required to open settings.
@@ -61,7 +61,7 @@ Tokens are stored only by `keyring`: Windows Credential Manager or Linux Secret 
 
 The current Control API has token roles, not personal user accounts. Desktop requires an **admin** Bearer (the same bar as existing chat). Owner scope is the stable server `api.desktop_owner_id` (default `admin`), never a hash of the token value and never a client-supplied username. Admin Bearer only authenticates; rotating the API token keeps the same desktop history/memory namespace. Separate owners need distinct `desktop_owner_id` values in server config. Device/session manifests exist only in server RAM. Disconnecting a selected device closes its server socket and ends the current session; it must reconnect manually on that PC. Permanent per-device credentials/pairing are not claimed.
 
-## Quick commands and local data (PLAN §3b.5, §3b.10)
+## Quick commands and local data (PLAN §7.5, §7.8)
 
 User quick commands live only on this PC, one YAML file per command in `Documents/Neyra/commands/`. They are never written to server config or memory, work without a server connection, and are unavailable from Discord, Telegram and the dashboard (the server only sees names, phrase/hotkey texts and tool names of the current session in RAM; no arguments, paths or regexes).
 

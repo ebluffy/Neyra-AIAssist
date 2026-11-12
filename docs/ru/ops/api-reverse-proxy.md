@@ -30,7 +30,7 @@ Neyra слушает `127.0.0.1:8787` на машине, где крутится
 
 Цепочка: клиент → `https://` / `wss://neyra.owyx.site/api/v1/ws/chat` → TLS на VPS → frps → frpc → Control API `127.0.0.1:8787`.
 
-Схема, `frpc.toml` и требования к токенам — [`docs/PLAN.md`](../../PLAN.md) §3.
+Схема, `frpc.toml` и требования к токенам — [`docs/PLAN.md`](../../PLAN.md) §9.
 
 ## DNS (пример Cloudflare)
 

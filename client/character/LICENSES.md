@@ -1,4 +1,4 @@
-# Character assets — license research (§3b.6 step 0)
+# Character assets — license research (§7.5, шаг 0)
 
 Research date: 2026-10-31. Code of Desktop Mate is **not** copied. Behaviour notes only (transparent overlay, always-on-top, click-through except avatar, idle, cursor look, sit-on-window where OS allows, lip-sync with TTS).
 

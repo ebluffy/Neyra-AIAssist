@@ -53,9 +53,9 @@ Docker: `docker compose up --build` (root compose includes `server/`).
 | HTTP bind, public URL, dashboard | `server/config/server.yaml` (`api:`, `dashboard:`) |
 | Secrets | `server/.env` only |
 | Config keys and defaults | `server/config/*.example.yaml`; [configuration guide](docs/en/setup/config-reference.md) |
-| English service prompts and initial ru/en messages | `server/resources/`; [PLAN §14](docs/PLAN.md#14-единая-папка-текстов-и-промптов-первая-поставка-реализована) |
-| Assistant mood and per-person relationships | SQLite + dashboard; [PLAN §7.5](docs/PLAN.md#75-mood--relations-серверный-mvp-реализован-локально-live-приёмка-открыта) |
-| Optional Responses talk sessions and persona warmup | Settings → Речь; [PLAN §12](docs/PLAN.md#12-приоритет-аудит-системных-промптов-и-связей-моделей) |
+| English service prompts and initial ru/en messages | `server/resources/`; [PLAN §8.6](docs/PLAN.md#86-тексты-промпты-и-локализация) |
+| Assistant mood and per-person relationships | SQLite + dashboard; [PLAN §8.5](docs/PLAN.md#85-mood--relations-развитие) |
+| Optional Responses talk sessions and persona warmup | Settings → Речь; [PLAN §8.2](docs/PLAN.md#82-аудит-системных-промптов-и-связей-моделей) |
 
 Roadmap and open acceptance checks: [PLAN](docs/PLAN.md). Version history: [VERSION](docs/VERSION.md).
 
@@ -86,9 +86,9 @@ Enable/disable only via `plugin.yaml`. Settings in `server/modules/<id>/config.y
 
 Plugin SDK: [HELP.md](server/modules/000EXAMPLE/HELP.md) · [HELP-RU.md](server/modules/000EXAMPLE/HELP-RU.md)
 
-## Client (Stage 3)
+## Client
 
-`client/` is scaffold only. Stage 3 adds Tauri 2 + React MVP (Connect / Chat / Status / Modules) and public host `https://neyra.owyx.site` via frp (home server → VPS). See [docs/PLAN.md](docs/PLAN.md) §3.
+`client/` is the Tauri 2 + React desktop app: Connect / Chat / Status / Modules screens, push-to-talk and live voice, tray, local permissions and the Rust `host bridge` executor (`client/src-tauri`). Today the UI lives in `client/src`; the front moves to `apps/desktop` on the shared kit ([ADR-0001](docs/ru/architecture/adr-0001-client-monorepo.md)). Windows and Linux are supported equally; public host `https://neyra.owyx.site` is reached via frp (home server → VPS). See [docs/PLAN.md](docs/PLAN.md) §7.
 
 ## Status vs roadmap
 
