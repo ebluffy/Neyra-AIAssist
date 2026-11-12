@@ -14,7 +14,7 @@ memory browsing, and the desktop client's server-side counterpart. The old dashb
 
 | ID | Decision |
 | --- | --- |
-| D1 | The web client lives in the client monorepo (`apps/web`), not in `server/dashboard` |
+| D1 | The web client lives in the client monorepo (`web`), not in `server/dashboard` |
 | D3 | Stack: Next.js, Better Auth, PostgreSQL, Drizzle |
 | D5 | Identity: the web signs a short-lived JWT (HS256, 60 s TTL); the core verifies it and maps `platform='web'`, `platform_user_id=<sub>` to a `person_id` = uuid5 of `web:<sub>` |
 | D14 | Old dashboard is decommissioned after parity; `/legacy` during migration |

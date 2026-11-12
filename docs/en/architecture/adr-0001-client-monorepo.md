@@ -16,8 +16,8 @@ after the reform would reproduce the two design languages the reform exists to r
 1. **A monorepo with a shared kit and two thin applications:**
    - `packages/ui` — tokens, theme, Radix/shadcn primitives;
    - `packages/contracts` — zod schemas for HTTP/WSS and the desktop bridge;
-   - `apps/web` — today's dashboard and the web client;
-   - `apps/desktop` — the Tauri front end on the same kit.
+   - `web` — today's dashboard and the web client;
+   - `desktop` — the Tauri front end on the same kit.
 2. **Rust is untouched.** `client/src-tauri` (cpal, PTT hotkeys, keyring, updater) and
    `client/overlay.html` stay, and the IPC contract stays the same, so hardware acceptance is done
    once and does not depend on the UI.

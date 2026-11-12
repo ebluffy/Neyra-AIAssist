@@ -18,7 +18,7 @@
 Ключевые документы по реформе клиента:
 
 - [architecture/web-v2.md](architecture/web-v2.md) — спека веб-клиента v2: решения D1–D27, схема данных, идентичность, деплой, этапы P0–P6.
-- [architecture/adr-0001-client-monorepo.md](architecture/adr-0001-client-monorepo.md) — ADR о клиентском монорепо `packages/ui` + `packages/contracts` + `apps/web` + `apps/desktop`; Rust и IPC не меняются.
+- [architecture/adr-0001-client-monorepo.md](architecture/adr-0001-client-monorepo.md) — ADR о клиентском монорепо `packages/ui` + `packages/contracts` + `web` + `desktop`; Rust и IPC не меняются.
 
 **Репозиторий:** [github.com/ebluffy/Neyra-AIAssist](https://github.com/ebluffy/Neyra-AIAssist)
 

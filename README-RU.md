@@ -18,7 +18,7 @@
 - Плагины в `server/modules/` (`discord`, `local_voice`, шаблон `000EXAMPLE`)
 - Веб-дашборд сервера в `server/dashboard/` (React + Vite + Tailwind; gate по access key)
 - Dev MCP в `devtools/mcp_server/` (отладка в Cursor; не часть runtime-пакетов)
-- Десктоп-клиент в `client/` (Tauri 2 + React): Connect/Chat/Status/Modules, голос, трей; фронт переезжает в `apps/desktop` по ADR-0001
+- Десктоп-клиент в `client/` (Tauri 2 + React): Connect/Chat/Status/Modules, голос, трей; фронт переезжает в `desktop` по ADR-0001
 
 ## Структура
 
@@ -80,13 +80,13 @@ SDK: [HELP-RU.md](server/modules/000EXAMPLE/HELP-RU.md) · [HELP.md](server/modu
 
 ## Клиент
 
-`client/` — десктоп-приложение Tauri 2 + React: экраны Connect / Chat / Status / Modules, push-to-talk и live voice, трей, локальные разрешения и Rust-исполнитель `host bridge` (`client/src-tauri`). Сейчас UI лежит в `client/src`; фронт переезжает в `apps/desktop` на общем ките ([ADR-0001](docs/ru/architecture/adr-0001-client-monorepo.md)). Windows и Linux поддерживаются на равных; публичный адрес `https://neyra.owyx.site` — через frp (домашний сервер → VPS). См. [docs/PLAN.md](docs/PLAN.md) §7.
+`client/` — десктоп-приложение Tauri 2 + React: экраны Connect / Chat / Status / Modules, push-to-talk и live voice, трей, локальные разрешения и Rust-исполнитель `host bridge` (`client/src-tauri`). Сейчас UI лежит в `client/src`; фронт переезжает в `desktop` на общем ките ([ADR-0001](docs/ru/architecture/adr-0001-client-monorepo.md)). Windows и Linux поддерживаются на равных; публичный адрес `https://neyra.owyx.site` — через frp (домашний сервер → VPS). См. [docs/PLAN.md](docs/PLAN.md) §7.
 
 ## Статус
 
 | Закрыто | Дальше |
 |---------|--------|
-| 1b layout, 1c конфиг, 1d dual LLM, Stage 2 API Wave 1, dashboard gate | Переезд UI в `apps/desktop` + приёмка |
+| 1b layout, 1c конфиг, 1d dual LLM, Stage 2 API Wave 1, dashboard gate | Переезд UI в `desktop` + приёмка |
 
 ## Поддержка
 
