@@ -778,6 +778,7 @@ class NeyraAgent:
                 channel_id=channel_id, author_display_name=author_display_name,
                 lyrics_marker=LYRICS_REQUEST_MARKER, avatar_url=avatar_url,
                 discord_context=discord_context,
+                person_id=person_id,
             )
             status = "failed" if out.get("code") in ("brain_unavailable", "generation_failed") else None
             if trace.talk_session is not None and status is None:
@@ -847,6 +848,7 @@ class NeyraAgent:
             channel_id=channel_id, author_display_name=author_display_name,
             lyrics_marker=LYRICS_REQUEST_MARKER, avatar_url=avatar_url,
             discord_context=discord_context,
+            person_id=person_id,
         )
         try:
             await self._enter_talk_session(trace, discord_user_id, username, channel_id, discord_context, person_id)
@@ -886,7 +888,8 @@ class NeyraAgent:
         from core.agent.conversation_scope import conversation_scope
         from core.runtime.features import feature_enabled
         trace.queue_wait_ms = 0.0
-        if not user_id:
+        # A signed web identity is a complete owner even without a platform account id.
+        if not user_id and not person_id:
             return
         owner = self._resolve_internal_user_id(user_id, username, person_id)
         trace.memory_owner_id = owner

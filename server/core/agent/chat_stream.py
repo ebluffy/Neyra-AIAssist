@@ -36,6 +36,7 @@ async def iter_chat_stream(
     lyrics_marker: str,
     avatar_url: Optional[str] = None,
     discord_context=None,
+    person_id: Optional[str] = None,
 ) -> AsyncIterator[dict]:
     """Yield token/error/done chunks for streaming chat."""
     try:
@@ -51,6 +52,7 @@ async def iter_chat_stream(
             vision_images=vision_images,
             lyrics_marker=lyrics_marker,
             source="chat_stream",
+            person_id=person_id,
         )
         if fp is not None:
             text = str(fp.get("text") or "")
@@ -83,6 +85,7 @@ async def iter_chat_stream(
         log_lane="stream",
         avatar_url=avatar_url,
         discord_context=discord_context,
+        person_id=person_id,
     )
     try:
         try:

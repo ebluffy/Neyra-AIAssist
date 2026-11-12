@@ -95,9 +95,10 @@ async def prepare_turn(
     log_lane: str = "chat",
     avatar_url: Optional[str] = None,
     discord_context=None,
+    person_id: Optional[str] = None,
 ) -> TurnPrep:
     """Gather RAG/people/tools/vision inputs and build brain system prompt."""
-    internal_uid = agent._resolve_internal_user_id(discord_user_id, username)
+    internal_uid = agent._resolve_internal_user_id(discord_user_id, username, person_id)
     from core.agent.model_trace import ACTIVE_TRACE
     trace = ACTIVE_TRACE.get()
     if trace is not None:
@@ -114,7 +115,8 @@ async def prepare_turn(
         pass
 
     # Account-first person card (create/bind on first contact)
-    if getattr(agent, "memory_hub", None) is not None and discord_user_id:
+    # A signed web identity already names the person: never mint a Discord card for it.
+    if getattr(agent, "memory_hub", None) is not None and discord_user_id and not person_id:
         try:
             agent.memory_hub.ensure_person_for_account(
                 platform="discord",

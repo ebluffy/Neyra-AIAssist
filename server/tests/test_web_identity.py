@@ -181,3 +181,41 @@ def test_signed_identity_wins_over_platform_fallback():
     discord = UnifiedIdentityMapper.resolve_from_discord("discord-42")
     assert resolve("discord-42", "someone") == discord
     assert resolve("discord-42", "someone", person) == person
+
+
+def test_web_identity_owner_reaches_turn_prep(tmp_path):
+    """prepare_turn не перезаписывает доверенного владельца discord/console-id."""
+    import asyncio
+
+    from core.agent.model_trace import ACTIVE_TRACE, TurnTrace
+    from core.agent.turn_prep import prepare_turn
+    from core.runtime.identity import UnifiedIdentityMapper
+    from tests.offline_support import offline_agent
+
+    agent = offline_agent(tmp_path / "web-owner")
+    person = UnifiedIdentityMapper.resolve("web", "site-user-1")
+
+    async def run():
+        trace = TurnTrace(None, "chat-1", agent.config)
+        token = ACTIVE_TRACE.set(trace)
+        try:
+            prep = await prepare_turn(
+                agent,
+                user_message="привет",
+                username="web@example.com",
+                discord_user_id=None,
+                channel_id="chat-1",
+                vision_images=None,
+                author_display_name=None,
+                lyrics_marker="[GET_LYRICS]",
+                person_id=person,
+            )
+        finally:
+            ACTIVE_TRACE.reset(token)
+        assert prep.internal_uid == person
+        assert trace.memory_owner_id == person
+
+    try:
+        asyncio.run(run())
+    finally:
+        agent.memory_hub.close()
