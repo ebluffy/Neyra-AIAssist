@@ -484,13 +484,58 @@ fn api_route_allowed(method: &str, path: &str) -> bool {
     )
 }
 
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum ApiError {
+    Http {
+        status: u16,
+        code: String,
+        message: String,
+    },
+    Text(String),
+}
+
+impl From<String> for ApiError {
+    fn from(message: String) -> Self {
+        Self::Text(message)
+    }
+}
+
+impl From<&str> for ApiError {
+    fn from(message: &str) -> Self {
+        Self::Text(message.to_string())
+    }
+}
+
+impl ApiError {
+    fn http(status: u16, body: &str) -> Self {
+        let parsed = serde_json::from_str::<Value>(body).ok();
+        let fields = parsed.as_ref().and_then(|body| {
+            let error = body.get("error")?;
+            Some((
+                error.get("code")?.as_str()?,
+                error.get("message")?.as_str()?,
+            ))
+        });
+        let (code, message) = match fields {
+            Some((code, message)) => (code.to_string(), message.to_string()),
+            None => (format!("http_{status}"), String::new()),
+        };
+        Self::Http {
+            status,
+            code,
+            message,
+        }
+    }
+}
+
 #[tauri::command]
 async fn api(
     state: State<'_, Desktop>,
     profile_id: String,
     path: String,
     method: String,
-) -> Result<Value, String> {
+) -> Result<Value, ApiError> {
     if !api_route_allowed(&method, &path) {
         return Err("API-действие недоступно".into());
     }
@@ -512,12 +557,14 @@ async fn api(
         .await
         .map_err(|_| "Сервер недоступен; проверьте адрес и сеть")?;
     if !response.status().is_success() {
-        return Err(format!("Сервер вернул HTTP {}", response.status().as_u16()));
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        return Err(ApiError::http(status, &body));
     }
     response
         .json()
         .await
-        .map_err(|_| "Сервер вернул неверный ответ".into())
+        .map_err(|_| ApiError::Text("Сервер вернул неверный ответ".into()))
 }
 
 #[tauri::command]
@@ -1984,7 +2031,7 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
             let clip = base64::engine::general_purpose::STANDARD.encode(audio::wav_s16le_16k(&pcm));
             let _ = app.emit(
                 "desktop-event",
-                json!({"type":"voice.clip","audio":clip,"duration_ms":duration_ms}),
+                json!({"type":"voice.clip","audio":clip,"duration_ms":duration_ms,"request_id":request_id}),
             );
             for chunk in pcm.chunks(32000) {
                 tx.send(Message::Binary(chunk.to_vec().into()))
@@ -2513,6 +2560,36 @@ fn monitor_session(app: tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn api_http_error_preserves_server_reason() {
+        let error = super::ApiError::http(
+            400,
+            r#"{"error":{"code":"bad_request","message":"unknown log source"}}"#,
+        );
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({"status":400,"code":"bad_request","message":"unknown log source"}),
+        );
+    }
+
+    #[test]
+    fn api_http_error_defaults_without_valid_fields() {
+        for body in ["not JSON", "{}", r#"{"error":{"code":"bad_request"}}"#] {
+            assert_eq!(
+                serde_json::to_value(super::ApiError::http(500, body)).unwrap(),
+                serde_json::json!({"status":500,"code":"http_500","message":""}),
+            );
+        }
+    }
+
+    #[test]
+    fn api_text_error_keeps_the_legacy_wire_string() {
+        assert_eq!(
+            serde_json::to_value(super::ApiError::from("Неверный метод")).unwrap(),
+            serde_json::json!("Неверный метод"),
+        );
+    }
+
     use super::*;
 
     #[test]

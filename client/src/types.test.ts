@@ -78,7 +78,18 @@ describe('HTTP error context', () => {
   });
 });
 
-it('uses the actual API log error body, not just its status', () => {
-  expect(formatError({ status: 400, error: { code: 'bad_request', message: 'unknown log source' } })).toBe('Неизвестный источник логов (HTTP 400).');
-  expect(formatError({ status: 400, error: { code: 'bad_request', message: 'invalid settings' } })).toBe('Неверный запрос (HTTP 400).');
+it('formats flat API error objects with status, code, and message', () => {
+  expect(formatError({ status: 400, code: 'bad_request', message: 'unknown log source' })).toBe('Неизвестный источник логов (HTTP 400).');
+  expect(formatError({ status: 400, code: 'bad_request', message: 'invalid settings' })).toBe('Неверный запрос (HTTP 400).');
+  expect(formatError({ status: 400, code: 'http_400', message: '' })).toBe('Неверный запрос (HTTP 400).');
+  expect(formatError({ status: 401, code: 'unauthorized', message: '' })).toBe('Ошибка авторизации (HTTP 401): неверный токен или сессия отозвана.');
+  expect(formatError({ status: 401, code: 'http_401', message: '' })).toBe('Ошибка авторизации (HTTP 401): неверный токен или сессия отозвана.');
+  expect(formatError({ status: 403, code: 'forbidden', message: '' })).toBe('Доступ запрещён (HTTP 403): просмотр логов chat/audit требует прав maint+.');
+  expect(formatError({ status: 403, code: 'http_403', message: '' })).toBe('Доступ запрещён (HTTP 403): просмотр логов chat/audit требует прав maint+.');
+  expect(formatError({ status: 404, code: 'not_found', message: '' })).toBe('Источник логов не найден (HTTP 404).');
+  expect(formatError({ status: 404, code: 'http_404', message: '' })).toBe('Источник логов не найден (HTTP 404).');
+  expect(formatError({ status: 500, code: 'http_500', message: '' })).toBe('Сервер вернул HTTP 500.');
+  expect(formatError({ status: 502, code: 'bad_gateway', message: '' })).toBe('Сервер вернул HTTP 502.');
+  expect(formatError({ code: 'http_404' })).toBe('Источник логов не найден (HTTP 404).');
+  expect(formatError({ code: 'http_500' })).toBe('Сервер вернул HTTP 500.');
 });

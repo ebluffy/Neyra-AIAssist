@@ -95,6 +95,7 @@ export function useDesktop() {
   // decide the fate of a clip that is being opened.
   const captureIntent = useRef<'commit' | 'cancel' | null>(null);
   const captureStarting = useRef(false);
+  const lastVoiceClipRequestId = useRef<string | null>(null);
   const keepLocal = useRef(false);
   const historyStamp = useRef(0);
   const savedSettings = useRef<Settings | undefined>(undefined);
@@ -277,12 +278,17 @@ export function useDesktop() {
           setMessages(local => keepLocal.current ? mergeHistory(incoming, local) : incoming);
         }
         if (event.type === 'devices') setDevices(event.devices ?? []);
-        if (event.type === 'voice.clip' && event.audio) {
-          try {
-            const url = URL.createObjectURL(wavBlob(event.audio));
-            urls.current.push(url);
-            setMessages(list => [...list.slice(-99), { id: nextId(), role: 'user', content: '', kind: 'voice', audioUrl: url, durationMs: event.duration_ms, pending: true }]);
-          } catch { setError('Не удалось показать запись'); }
+        if (event.type === 'voice.clip') {
+          if (typeof event.request_id === 'string' && event.request_id) {
+            lastVoiceClipRequestId.current = event.request_id;
+          }
+          if (event.audio) {
+            try {
+              const url = URL.createObjectURL(wavBlob(event.audio));
+              urls.current.push(url);
+              setMessages(list => [...list.slice(-99), { id: nextId(), role: 'user', content: '', kind: 'voice', audioUrl: url, durationMs: event.duration_ms, pending: true }]);
+            } catch { setError('Не удалось показать запись'); }
+          }
         }
         if (event.type === 'transcript.final') {
           const spoken = event.text ?? '';
@@ -330,7 +336,7 @@ export function useDesktop() {
           const message = localErrorText(code) ?? `Сервер: ${code}. Повторите попытку.`;
           // Only a turn-scoped error can belong to this commit: playback and quick-command
           // errors arrive without a request_id and must never replace the capture reason.
-          if (captureStopping.current && captureIntent.current === 'commit' && typeof event.request_id === 'string' && event.request_id) captureTerminalError.current = message;
+          if (captureStopping.current && captureIntent.current === 'commit' && typeof event.request_id === 'string' && event.request_id && event.request_id === lastVoiceClipRequestId.current) captureTerminalError.current = message;
           setError(message);
           if (affectsText) { chatTurn.current = null; setThinking(false); tokenBatch.reset(); }
           setLiveState(state => state === 'thinking' ? 'idle' : state);

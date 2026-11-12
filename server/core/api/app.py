@@ -1288,7 +1288,17 @@ def build_app(
         backup_manager = shared_backup_manager
     else:
         agent = NeyraAgent(config)
-        monitor = HealthMonitor(config, project_root=root)
+
+        def _llm_rate_limit_probe():
+            from core.agent.model_trace import recent_provider_rate_limit
+
+            return recent_provider_rate_limit(agent)
+
+        monitor = HealthMonitor(
+            config,
+            project_root=root,
+            llm_activity=_llm_rate_limit_probe,
+        )
         backup_manager = BackupManager(config)
     app.state.agent = agent
     app.state.monitor = monitor
@@ -2078,6 +2088,20 @@ def build_app(
         except Exception:
             ready = False
             checks.append({"name": "data_dir_writable", "ok": False})
+        # Provider rate limit within the recent window. The /models probe cannot see
+        # this failure mode; readiness must not stay green while every turn dies with 429.
+        try:
+            from core.agent.model_trace import recent_provider_rate_limit
+
+            rate_limit = recent_provider_rate_limit(agent)
+        except Exception:
+            logger.debug("health ready llm activity probe failed", exc_info=True)
+            rate_limit = None
+        if rate_limit:
+            ready = False
+            checks.append({"name": "llm_provider", "ok": False, "reason": rate_limit})
+        else:
+            checks.append({"name": "llm_provider", "ok": True})
         status = 200 if ready else 503
         return JSONResponse(
             status_code=status,

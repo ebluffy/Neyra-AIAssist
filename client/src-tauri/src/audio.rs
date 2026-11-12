@@ -101,6 +101,22 @@ pub fn open_input_device(
     name: Option<&str>,
 ) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
     let host = cpal::default_host();
+    let requested = name
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if requested.is_none() {
+        // No preference: ask the system directly instead of walking every device on each PTT
+        // (NEW-3). Named requests still enumerate, because only a fresh cpal::Device can be
+        // opened and only its config tells "not found" from "unavailable".
+        let device = host
+            .default_input_device()
+            .ok_or_else(|| "Микрофон не найден".to_string())?;
+        let config = device
+            .default_input_config()
+            .map_err(|_| "Микрофон недоступен".to_string())?;
+        return Ok((device, config));
+    }
     let mut available = Vec::new();
     if let Ok(devices) = host.input_devices() {
         for dev in devices {
@@ -109,10 +125,6 @@ pub fn open_input_device(
             }
         }
     }
-    let requested = name
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
     let (device, config) = select_input_device(
         requested.as_deref(),
         available,

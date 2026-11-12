@@ -102,6 +102,50 @@ class ModelActivity:
                     return copy.deepcopy(report)
         return None
 
+    def recent_provider_rate_limit(self, window_seconds: int = 600) -> dict | None:
+        """Latest failed provider turn caused by HTTP 429 / RateLimitError within the window.
+
+        Same source as /v1/llm/activity. /v1/models can keep answering 200 while every
+        real turn dies on a provider rate limit; health uses this to stay honest.
+        Returns {"error_class", "http_status", "at"} of the newest hit, else None.
+        """
+        try:
+            cutoff = time.time() - max(1, int(window_seconds))
+            with self._lock:
+                rows = [*self._items, *self._jobs]
+            best: tuple[float, dict] | None = None
+            for _uid, _cid, report in rows:
+                if report.get("status") != "failed":
+                    continue
+                why = _report_rate_limit(report)
+                if why is None:
+                    continue
+                ts = report.get("timestamp")
+                try:
+                    epoch = datetime.fromisoformat(str(ts)).timestamp()
+                except Exception:
+                    continue
+                if epoch < cutoff:
+                    continue
+                hit = {
+                    "error_class": report.get("error_class") or why,
+                    "http_status": 429 if why == "http_429" else None,
+                    "at": str(ts),
+                }
+                if best is None or epoch > best[0]:
+                    best = (epoch, hit)
+            return best[1] if best else None
+        except Exception:
+            return None
+
+
+def recent_provider_rate_limit(agent, window_seconds: int = 600) -> dict | None:
+    """Convenience wrapper: the /v1/llm/activity source for a given agent."""
+    try:
+        return activity_for(agent).recent_provider_rate_limit(window_seconds=window_seconds)
+    except Exception:
+        return None
+
 
 def activity_for(agent):
     # Initialized before calls for real agents; laziness supports lightweight test agents.
@@ -109,6 +153,20 @@ def activity_for(agent):
     if not isinstance(activity, ModelActivity):
         agent.model_activity = ModelActivity()
     return agent.model_activity
+
+
+_RATE_LIMIT_CLASS = re.compile(r"ratelimit|rate_limit|too.?many|429", re.IGNORECASE)
+
+
+def _report_rate_limit(report) -> str | None:
+    """Why this failed report is a provider rate limit, or None if it is not."""
+    for call in report.get("calls") or []:
+        if isinstance(call, dict) and call.get("http_status") == 429:
+            return "http_429"
+    error_class = str(report.get("error_class") or "")
+    if error_class and _RATE_LIMIT_CLASS.search(error_class):
+        return error_class
+    return None
 
 
 def snapshot():

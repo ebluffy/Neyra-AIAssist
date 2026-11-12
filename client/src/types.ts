@@ -58,13 +58,31 @@ export type LiveState = 'off' | 'idle' | 'armed' | 'listening' | 'thinking' | 's
 export const defaultVoice: VoiceSettings = { mode: 'ptt', vad_sensitivity: 0.5, end_silence_ms: 700, wake_threshold: 0.5, barge_in: 'off', input_device: '', output_device: '' };
 export function newProfile(): Profile { return { id: crypto.randomUUID(), name: 'Новый сервер', url: 'http://127.0.0.1:8787', session_id: crypto.randomUUID() }; }
 export function formatError(error: unknown): string {
-  // Only an explicit API error body identifies the failing log source. Native
-  // status-only errors have no such context and must use the generic wording.
-  if (error !== null && typeof error === 'object' && 'status' in error && error.status === 400) {
-    const body = 'error' in error ? error.error : undefined;
-    if (body !== null && typeof body === 'object' && 'code' in body && body.code === 'bad_request'
-      && 'message' in body && body.message === 'unknown log source') return 'Неизвестный источник логов (HTTP 400).';
-    return 'Неверный запрос (HTTP 400).';
+  if (error !== null && typeof error === 'object') {
+    const record = error as { status?: unknown; code?: unknown; message?: unknown };
+    let status = typeof record.status === 'number' ? record.status : undefined;
+    const code = typeof record.code === 'string' ? record.code : undefined;
+    const message = typeof record.message === 'string' ? record.message : undefined;
+    if (status === undefined && code) {
+      const match = /^http_(\d+)$/.exec(code);
+      if (match) status = Number(match[1]);
+    }
+    if (status !== undefined) {
+      if (status === 400) {
+        if (code === 'bad_request' && message === 'unknown log source') return 'Неизвестный источник логов (HTTP 400).';
+        return 'Неверный запрос (HTTP 400).';
+      }
+      if (status === 401) {
+        return 'Ошибка авторизации (HTTP 401): неверный токен или сессия отозвана.';
+      }
+      if (status === 403) {
+        return 'Доступ запрещён (HTTP 403): просмотр логов chat/audit требует прав maint+.';
+      }
+      if (status === 404) {
+        return 'Источник логов не найден (HTTP 404).';
+      }
+      return `Сервер вернул HTTP ${status}.`;
+    }
   }
   if (error === 'credential_store_unavailable') return 'Системное хранилище секретов недоступно. Запустите и разблокируйте Secret Service/keyring. Токен не сохранён в файл.';
   if (error === 'token_missing') return 'Сначала сохраните токен.';
@@ -75,17 +93,22 @@ export function formatError(error: unknown): string {
   }
   if (error === 'invalid_token') return 'Неверный токен.';
   if (typeof error === 'string') {
-    if (error === 'Сервер вернул HTTP 400' || error === 'HTTP 400') {
+    const httpCodeMatch = /^http_(\d+)$/.exec(error);
+    const httpStatus = httpCodeMatch ? Number(httpCodeMatch[1]) : undefined;
+    if (error === 'Сервер вернул HTTP 400' || error === 'HTTP 400' || httpStatus === 400) {
       return 'Неверный запрос (HTTP 400).';
     }
-    if (error === 'Сервер вернул HTTP 401' || error === 'HTTP 401') {
+    if (error === 'Сервер вернул HTTP 401' || error === 'HTTP 401' || httpStatus === 401) {
       return 'Ошибка авторизации (HTTP 401): неверный токен или сессия отозвана.';
     }
-    if (error === 'Сервер вернул HTTP 403' || error === 'HTTP 403') {
+    if (error === 'Сервер вернул HTTP 403' || error === 'HTTP 403' || httpStatus === 403) {
       return 'Доступ запрещён (HTTP 403): просмотр логов chat/audit требует прав maint+.';
     }
-    if (error === 'Сервер вернул HTTP 404' || error === 'HTTP 404') {
+    if (error === 'Сервер вернул HTTP 404' || error === 'HTTP 404' || httpStatus === 404) {
       return 'Источник логов не найден (HTTP 404).';
+    }
+    if (httpStatus !== undefined) {
+      return `Сервер вернул HTTP ${httpStatus}.`;
     }
     return error;
   }
