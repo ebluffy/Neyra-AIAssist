@@ -7,14 +7,6 @@ export const credentialsSchema = z.object({
 });
 // Never accept a privileged role from registration input.
 export const roleField = { type: ['admin', 'user'] as ('admin' | 'user')[], required: false, defaultValue: 'user', input: false } as const;
-// First admins come from the environment: registration never grants a privileged role.
-export function readAdminEmails(raw: string | undefined): string[] {
-  return (raw ?? '').split(',').map(item => item.trim().toLowerCase()).filter(Boolean);
-}
-export function resolveRole(email: string, admins: string[]): 'admin' | 'user' {
-  return admins.includes(email.trim().toLowerCase()) ? 'admin' : 'user';
-}
-
 export function authErrorText(code?: string): string {
   switch (code) {
     case 'INVALID_EMAIL_OR_PASSWORD': return 'Неверный email или пароль.';

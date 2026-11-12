@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authErrorText, credentialsSchema, readAdminEmails, resolveRole, roleField } from './auth-policy';
+import { authErrorText, credentialsSchema, roleField } from './auth-policy';
 import { parseUserInput } from 'better-auth/db';
 import { DEFAULT_ROLE } from '../db/schema';
 
@@ -16,16 +16,4 @@ it('Better Auth production parser overwrites injected admin at registration', ()
  expect(parseUserInput(options, {role:'admin'}, 'create').role).toBe('user');
  expect(parseUserInput(options, {}, 'create').role).toBe('user');
  expect(() => parseUserInput(options, {role:'admin'}, 'update')).toThrow('role is not allowed');
-});
-
-describe('admin bootstrap', () => {
-  it('parses a comma separated list, trims and lowercases', () => {
-    expect(readAdminEmails(' Boss@Example.com , second@example.com ')).toEqual(['boss@example.com', 'second@example.com']);
-  });
-  it('gives admin only to listed emails', () => {
-    const admins = readAdminEmails('boss@example.com');
-    expect(resolveRole('BOSS@example.com', admins)).toBe('admin');
-    expect(resolveRole('someone@example.com', admins)).toBe('user');
-    expect(resolveRole('boss@example.com', [])).toBe('user');
-  });
 });

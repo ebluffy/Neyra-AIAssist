@@ -2,7 +2,7 @@ import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { getDatabase } from './db';
 import { readAuthEnv } from './env';
-import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, readAdminEmails, resolveRole, roleField } from './auth-policy';
+import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, roleField } from './auth-policy';
 import * as schema from '../db/schema';
 function createAuth() {
   const env = readAuthEnv();
@@ -12,16 +12,9 @@ function createAuth() {
     database: drizzleAdapter(getDatabase().db, { provider: 'pg', schema }),
     emailAndPassword: { enabled: true, minPasswordLength: MIN_PASSWORD_LENGTH, maxPasswordLength: MAX_PASSWORD_LENGTH },
     user: { additionalFields: { role: roleField } },
-    databaseHooks: {
-      user: {
-        create: {
-          // The role is set by the server from ADMIN_EMAILS, never from the sign-up payload.
-          before: async (newUser) => ({
-            data: { ...newUser, role: resolveRole(String(newUser.email ?? ''), readAdminEmails(process.env.ADMIN_EMAILS)) },
-          }),
-        },
-      },
-    },
+    // No automatic promotion on sign-up: an e-mail is not proof of ownership, and an open
+    // registration would let a stranger claim a listed admin address. The first admin is
+    // granted from the server with scripts/grant-admin.mjs.
     session: { expiresIn: 60 * 60 * 24 * 30 },
   });
 }
