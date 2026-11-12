@@ -1817,7 +1817,6 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
     // Dropping the senders wakes any running quick command, which then reports "stopped".
     state.waiters.lock().map_err(lock_error)?.clear();
     if let Some(recording) = state.recording.lock().map_err(lock_error)?.take() {
-        let seq = recording.seq;
         {
             let mut hotkey = hotkey_state(state);
             hotkey.held = 0;
