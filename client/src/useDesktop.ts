@@ -370,7 +370,9 @@ export function useDesktop() {
           setError(message);
         }
         if (event.type === 'cancelled') {
-          cancelledSeq.current = captureSeq.current;
+          // The shell knows which capture it closed even when the window never saw it start.
+          const bound = typeof event.seq === 'number' ? event.seq : captureSeq.current;
+          if (typeof bound === 'number') cancelledSeq.current = Math.max(cancelledSeq.current ?? bound, bound);
           captureId.current += 1;
           captureStopping.current = true;
           captureIntent.current = 'cancel';

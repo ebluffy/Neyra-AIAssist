@@ -156,6 +156,9 @@ fn hotkey_state(state: &Desktop) -> std::sync::MutexGuard<'_, Hotkey> {
 }
 
 pub struct Desktop {
+    /// The window handle, so every path that closes a capture can announce it without
+    /// threading an AppHandle through the call chain.
+    app: tauri::AppHandle,
     root: PathBuf,
     settings: Mutex<Settings>,
     bridge: Mutex<Option<SocketSender>>,
@@ -1816,6 +1819,7 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
     // Dropping the senders wakes any running quick command, which then reports "stopped".
     state.waiters.lock().map_err(lock_error)?.clear();
     if let Some(recording) = state.recording.lock().map_err(lock_error)?.take() {
+        let seq = recording.seq;
         {
             let mut hotkey = hotkey_state(state);
             hotkey.held = 0;
@@ -1824,6 +1828,12 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
         std::thread::spawn(move || {
             let _ = recording.finish();
         });
+        // Every Stop closes the capture here, including paths whose caller does not emit
+        // anything: the window must know which capture ended, even one it never saw start.
+        let _ = state.app.emit(
+            "desktop-event",
+            json!({"type":"cancelled","scope":"all","seq":seq}),
+        );
     }
     let _ = send(&state.bridge, json!({"type":"stop"}));
     let _ = send(&state.voice, json!({"type":"stop"}));
@@ -2225,6 +2235,7 @@ pub fn run() {
                 }
             });
             app.manage(Desktop {
+                app: app.handle().clone(),
                 root,
                 settings: Mutex::new(settings),
                 bridge: Mutex::new(None),
