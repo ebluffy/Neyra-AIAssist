@@ -4,6 +4,7 @@ import React, { useState, useRef, type FormEvent, useEffect } from 'react';
 import Link from 'next/link';
 import { Button, Badge } from '@neyra/ui';
 import { ru } from '../../i18n';
+import { resolveChatId } from '../../../lib/chat-id';
 
 export interface ChatMessageItem {
   id: string;
@@ -25,6 +26,17 @@ export function ChatView({
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  // One thread id for the whole visible conversation: without it every message opened
+  // its own short-term-memory window on the core side.
+  const [chatId] = useState(() =>
+    resolveChatId(typeof window !== 'undefined' ? window.sessionStorage : null)
+  );
+
+  // Leaving the page must not keep the upstream WebSocket alive.
+  useEffect(() => () => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -69,7 +81,7 @@ export function ChatView({
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, chat_id: chatId }),
         signal: controller.signal,
       });
 
