@@ -5,6 +5,7 @@ Next.js 15 App Router, Better Auth, PostgreSQL 16, Drizzle. Ядро не выз
 
 ## Настройка при деплое
 1. Передать DATABASE_URL (postgresql URL), BETTER_AUTH_SECRET (случайный секрет минимум 32 символа) и BETTER_AUTH_URL (origin сайта) через окружение. Образец пустой, настоящие значения не коммитить.
+   Для чата нужны NEYRA_WS_URL, NEYRA_SERVICE_KEY (admin Bearer ядра) и NEYRA_IDENTITY_JWT_SECRET — тот же секрет, что в `.env` ядра; без них `/api/chat` отвечает 503. `devtools/deploy/neyra-web-env.sh` заполняет их из ядра идемпотентно; новый секрет ядро принимает только после перезапуска `neyra.service`.
 2. Если используется compose: отдельно задать POSTGRES_PASSWORD и тот же пароль в DATABASE_URL; `docker compose -f web/docker-compose.yml up -d`. Порт только 127.0.0.1:5432, данные в ignored web/data/pg.
 3. Из корня: `npm ci`, `npm run db:migrate -w @neyra/web` с DATABASE_URL в окружении, затем `npm run build`. Миграции — до обслуживания трафика; при существующей БД сначала проверить SQL и резервную копию.
 4. Запуск — standalone-сборка: `npm run build` кладёт её в `web/.next/standalone/`. Копировать надо **всё дерево целиком** (`node_modules/`, `package.json`, `web/`), иначе `server.js` не найдёт `next`: `standalone/` → `/opt/neyra/web/app/`, затем `web/.next/static/` → `/opt/neyra/web/app/web/.next/static/`, `web/public/` → `/opt/neyra/web/app/web/public/`, `scripts/` → `/opt/neyra/web/app/web/scripts/`. Запуск: `node server.js` из `/opt/neyra/web/app/web` (`next start` с `output: 'standalone'` не используется).

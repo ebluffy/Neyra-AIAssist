@@ -26,6 +26,9 @@ export PATH="$NODE_BIN:/tmp/opencode/node-v22.23.4-linux-x64/bin:$PATH"
 
 echo "== переменные окружения площадки"
 set -a; . "$ENV_FILE"; set +a
+for v in NEYRA_WS_URL NEYRA_SERVICE_KEY NEYRA_IDENTITY_JWT_SECRET; do
+  if [ -z "${!v:-}" ]; then echo "внимание: $v пуст — чат сайта вернёт 503" >&2; fi
+done
 
 ROOT="$(dirname "$SRC")"   # корень монорепо: здесь npm workspaces
 echo "== сборка из $ROOT"
