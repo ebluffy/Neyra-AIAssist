@@ -2454,10 +2454,19 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                                     }
                                 };
                                 if still_held {
-                                    let _ = handle.emit(
-                                        "desktop-event",
-                                        json!({"type":"recording","seq":seq}),
-                                    );
+                                    // Publish under the recording lock: Escape may stop this
+                                    // capture between deciding and emitting, and the UI must
+                                    // never see a recording for a capture that is already gone.
+                                    let slot = state.recording.lock();
+                                    // The guard stays alive across the emit: the capture cannot
+                                    // be taken away between this check and the announcement.
+                                    let alive = matches!(&slot, Ok(slot) if slot.as_ref().is_some_and(|r| r.seq == seq));
+                                    if alive {
+                                        let _ = handle.emit(
+                                            "desktop-event",
+                                            json!({"type":"recording","seq":seq}),
+                                        );
+                                    }
                                 } else {
                                     // Released while the device was opening: close the fresh
                                     // capture and report the turn, not a running capture.
