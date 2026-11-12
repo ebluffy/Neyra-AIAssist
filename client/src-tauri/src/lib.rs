@@ -1822,14 +1822,16 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
         let mut slot = state.recording.lock().map_err(lock_error)?;
         let taken = slot.take();
         let bound = state.capture_seq.load(Ordering::SeqCst).saturating_sub(1);
-        (taken, bound)
-    };
-    if let Some(recording) = closed {
-        {
+        if taken.is_some() {
+            // The ownership of the capture just taken is cleared in the same section: a capture
+            // that starts next cannot lose its own ownership to this Stop.
             let mut hotkey = hotkey_state(state);
             hotkey.held = 0;
             hotkey.active = 0;
         }
+        (taken, bound)
+    };
+    if let Some(recording) = closed {
         std::thread::spawn(move || {
             let _ = recording.finish();
         });
