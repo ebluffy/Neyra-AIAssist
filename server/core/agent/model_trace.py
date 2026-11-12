@@ -120,17 +120,34 @@ class ModelActivity:
                 why = _report_rate_limit(report)
                 if why is None:
                     continue
-                ts = report.get("timestamp")
-                try:
-                    epoch = datetime.fromisoformat(str(ts)).timestamp()
-                except Exception:
+                # The turn start is the wrong clock: a turn that ran for ten minutes and
+                # died with 429 a second ago is fresh, not stale. Prefer the end of the
+                # failing call, then the turn end, then the start as a last resort.
+                stamps = [str(v) for v in (report.get("ended_at"), report.get("timestamp")) if v]
+                for call in report.get("calls") or []:
+                    if not isinstance(call, dict) or call.get("status") != "failed":
+                        continue
+                    if not call.get("ended_at"):
+                        continue
+                    if call.get("http_status") == 429 or _RATE_LIMIT_CLASS.search(
+                        str(call.get("error_class") or "")
+                    ):
+                        stamps.append(str(call["ended_at"]))
+                moments: list[tuple[float, str]] = []
+                for value in stamps:
+                    try:
+                        moments.append((datetime.fromisoformat(value).timestamp(), value))
+                    except Exception:
+                        continue
+                if not moments:
                     continue
+                epoch, at = max(moments)
                 if epoch < cutoff:
                     continue
                 hit = {
                     "error_class": report.get("error_class") or why,
                     "http_status": 429 if why == "http_429" else None,
-                    "at": str(ts),
+                    "at": at,
                 }
                 if best is None or epoch > best[0]:
                     best = (epoch, hit)

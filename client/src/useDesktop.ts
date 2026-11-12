@@ -307,7 +307,7 @@ export function useDesktop() {
         // 'recording'. Since Desktop.recording is a single Mutex<Option<Recording>> slot in Rust, two record_start
         // calls cannot both succeed; one always returns AlreadyRecording. Thus, a 'recording' event can never
         // interleave with a successful UI beginRecording session.
-        if (event.type === 'recording') { captureTerminalError.current = null; captureId.current += 1; captureStopping.current = false; captureIntent.current = null; setRecording(true); setThinking(false); }
+        if (event.type === 'recording') { captureTerminalError.current = null; lastVoiceClipRequestId.current = null; captureId.current += 1; captureStopping.current = false; captureIntent.current = null; setRecording(true); setThinking(false); }
         if (event.type === 'transcribing') { setRecording(false); setThinking(true); setLiveState(state => state === 'off' ? state : 'thinking'); }
         if (event.type === 'speaking') { setThinking(false); setLiveState(state => state === 'off' ? state : 'speaking'); postNotice('Нейра говорит. Стоп прервёт озвучку.'); }
         if (event.type === 'live.started') { setLiveOpen(true); setMuted(false); setLiveState('idle'); }
@@ -528,6 +528,8 @@ export function useDesktop() {
   const decideDraft = (accepted: boolean, item: DraftEvent) => run(async () => { setDraft(undefined); if (accepted) { await invoke('draft_confirm', { draftId: item.draft_id }); postNotice('Команда сохранена на этом ПК', true); } else await invoke('draft_reject', { draftId: item.draft_id }); });
   const beginRecording = () => run(async () => {
     captureTerminalError.current = null;
+    // A clip of a previous turn must never look like this capture's own clip.
+    lastVoiceClipRequestId.current = null;
     const currentCapture = ++captureId.current;
     captureStopping.current = false;
     captureIntent.current = null;

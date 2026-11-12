@@ -786,6 +786,20 @@ describe('PTT deferred IPC lifecycle', () => {
     expect(app.thinking).toBe(false);
   });
 
+  it('does not reuse a clip from the previous capture for the next one', async () => {
+    await mount();
+    // Capture A produced a clip; capture B starts, so A's id must stop counting.
+    await event('voice.clip', { request_id: 'turn-A' });
+    const stop = defer('record_stop');
+    await act(async () => { await app.beginRecording(); });
+    let finishing!: Promise<void>;
+    await act(async () => { finishing = app.finishRecording(); });
+    await event('error', { code: 'turn_busy', request_id: 'turn-A' });
+    await act(async () => { stop.reject('turn_busy'); await finishing; });
+    expect(app.error).toBe('turn_busy');
+    expect(app.thinking).toBe(false);
+  });
+
   it.each(['empty_capture', 'turn_busy', 'microphone_unavailable', 'no_capture', 'voice_unavailable'])(
     'hotkey record_stop error %s clears recording and prevents 30s timer stop (AR-15)',
     async errorCode => {

@@ -62,6 +62,27 @@ class TestRecentProviderRateLimit:
                                          error_class="RateLimitError"))
         assert recent_provider_rate_limit(stub_agent) is None
 
+    def test_long_turn_that_failed_now_is_fresh(self, stub_agent):
+        """Окно считается по времени отказа, а не по времени старта хода (P3 ревью)."""
+        from core.agent.model_trace import recent_provider_rate_limit
+
+        now = datetime.now(timezone.utc)
+        report = _failed_report(minutes_ago=30, http_status=429,
+                                error_class="RateLimitError")
+        report["ended_at"] = (now - timedelta(minutes=1)).isoformat()
+        report["calls"][0]["ended_at"] = report["ended_at"]
+        _seed(stub_agent, report)
+        hit = recent_provider_rate_limit(stub_agent)
+        assert hit is not None
+        assert hit["at"] == report["ended_at"]
+
+    def test_stale_long_turn_without_failure_time_stays_ignored(self, stub_agent):
+        from core.agent.model_trace import recent_provider_rate_limit
+
+        _seed(stub_agent, _failed_report(minutes_ago=30, http_status=429,
+                                         error_class="RateLimitError"))
+        assert recent_provider_rate_limit(stub_agent) is None
+
     def test_completed_turn_and_unrelated_failure_are_ignored(self, stub_agent):
         from core.agent.model_trace import recent_provider_rate_limit
 
