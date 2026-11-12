@@ -175,9 +175,14 @@ pub struct Desktop {
     segments: Mutex<voice::Segments>,
     live: Mutex<Option<Live>>,
     live_run: AtomicU64,
-    /// True while the global PTT hotkey owns the running capture. The hotkey release stops only
-    /// its own capture, never one the window button started (AR-19).
-    hotkey_capture: AtomicBool,
+    /// True between an accepted PTT press and its release. Decided synchronously in the
+    /// shortcut callback, so a release during device opening is never lost (AR-19).
+    hotkey_pressed: AtomicBool,
+    /// True while the PTT hotkey owns a running capture; the window button path never sets it.
+    hotkey_started: AtomicBool,
+    /// Set when the key was released before the device finished opening: the start task stops
+    /// the fresh capture as soon as it exists instead of leaving the microphone open.
+    hotkey_stop_wanted: AtomicBool,
 }
 struct Live {
     capture: audio::LiveCapture,
@@ -1742,7 +1747,9 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
     // Dropping the senders wakes any running quick command, which then reports "stopped".
     state.waiters.lock().map_err(lock_error)?.clear();
     if let Some(recording) = state.recording.lock().map_err(lock_error)?.take() {
-        state.hotkey_capture.store(false, Ordering::SeqCst);
+        state.hotkey_started.store(false, Ordering::SeqCst);
+        state.hotkey_pressed.store(false, Ordering::SeqCst);
+        state.hotkey_stop_wanted.store(false, Ordering::SeqCst);
         std::thread::spawn(move || {
             let _ = recording.finish();
         });
@@ -1925,7 +1932,9 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
         .take()
         .ok_or(CaptureError::NoCapture)?;
     // Once the capture is closed, a later hotkey release must not try to stop it again (AR-19).
-    state.hotkey_capture.store(false, Ordering::SeqCst);
+    state.hotkey_started.store(false, Ordering::SeqCst);
+    state.hotkey_pressed.store(false, Ordering::SeqCst);
+    state.hotkey_stop_wanted.store(false, Ordering::SeqCst);
     let request_id = match start_turn_typed(&state) {
         Ok(id) => id,
         Err(error) => {
@@ -1977,7 +1986,9 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
 #[tauri::command]
 async fn record_cancel(state: State<'_, Desktop>) -> Result<(), String> {
     let recording = state.recording.lock().map_err(lock_error)?.take();
-    state.hotkey_capture.store(false, Ordering::SeqCst);
+    state.hotkey_started.store(false, Ordering::SeqCst);
+    state.hotkey_pressed.store(false, Ordering::SeqCst);
+    state.hotkey_stop_wanted.store(false, Ordering::SeqCst);
     if let Some(recording) = recording {
         tauri::async_runtime::spawn_blocking(move || {
             let _ = recording.finish();
@@ -2143,7 +2154,9 @@ pub fn run() {
                 segments: Mutex::new(voice::Segments::default()),
                 live: Mutex::new(None),
                 live_run: AtomicU64::new(0),
-                hotkey_capture: AtomicBool::new(false),
+                hotkey_pressed: AtomicBool::new(false),
+                hotkey_started: AtomicBool::new(false),
+                hotkey_stop_wanted: AtomicBool::new(false),
             });
             monitor_session(app.handle().clone());
             setup_shortcuts(app.handle());
@@ -2316,59 +2329,106 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
             } else if shortcut.key == Code::Space {
                 let handle = app.clone();
                 let pressed = event.state == ShortcutState::Pressed;
-                // Ownership is decided synchronously, before the async start opens the
-                // device: otherwise a release during that open sees no owner and leaves the
-                // microphone recording until the 30 s limit (AR-19).
                 let state = app.state::<Desktop>();
-                let owned = if pressed {
-                    let busy = state.recording.lock().map_or(true, |slot| slot.is_some());
-                    if busy {
-                        // A capture already runs (window button or this hotkey). A second start
-                        // would fail with already_recording and freeze the running capture, so
-                        // the press is ignored instead of reported (AR-19).
-                        false
-                    } else {
-                        state.hotkey_capture.store(true, Ordering::SeqCst);
-                        true
+                if pressed {
+                    // Auto-repeat and a second press during a hold are not new captures.
+                    if state.hotkey_pressed.swap(true, Ordering::SeqCst) {
+                        return;
                     }
+                    state.hotkey_stop_wanted.store(false, Ordering::SeqCst);
                 } else {
-                    // The window button owns this capture; the key release must not stop it.
-                    state.hotkey_capture.swap(false, Ordering::SeqCst)
-                };
-                if !owned {
-                    return;
+                    // The window button owns its capture; only the hotkey stops its own.
+                    if !state.hotkey_pressed.swap(false, Ordering::SeqCst) {
+                        return;
+                    }
+                    // While the device is still opening the start task stops the capture
+                    // itself; an already running capture is stopped below, as before.
+                    if !state.hotkey_started.load(Ordering::SeqCst) {
+                        state.hotkey_stop_wanted.store(true, Ordering::SeqCst);
+                        return;
+                    }
                 }
                 tauri::async_runtime::spawn(async move {
-                    let result = if pressed {
-                        record_start(handle.clone(), handle.state::<Desktop>()).await
-                    } else {
-                        record_stop(handle.clone(), handle.state::<Desktop>()).await
-                    };
+                    let state = handle.state::<Desktop>();
                     if pressed {
-                        let state = handle.state::<Desktop>();
-                        if result.is_ok() {
-                            // The key was released while the device was still opening: the stop
-                            // already ran (and found nothing), so stop the fresh capture now.
-                            if !state.hotkey_capture.load(Ordering::SeqCst) {
-                                let _ = record_stop(handle.clone(), handle.state::<Desktop>()).await;
+                        // The device may take a while to open; the shortcut callback itself
+                        // must never wait for it.
+                        let busy = state.recording.lock().map_or(true, |slot| slot.is_some());
+                        if busy {
+                            state.hotkey_pressed.store(false, Ordering::SeqCst);
+                            state.hotkey_stop_wanted.store(false, Ordering::SeqCst);
+                            return;
+                        }
+                        match record_start(handle.clone(), state).await {
+                            Ok(()) => {
+                                let state = handle.state::<Desktop>();
+                                state.hotkey_started.store(true, Ordering::SeqCst);
+                                if state.hotkey_stop_wanted.swap(false, Ordering::SeqCst) {
+                                    // The key was released during the open: close the fresh
+                                    // capture and report the turn, not a running capture.
+                                    let stopped =
+                                        record_stop(handle.clone(), handle.state::<Desktop>())
+                                            .await;
+                                    let state = handle.state::<Desktop>();
+                                    state.hotkey_started.store(false, Ordering::SeqCst);
+                                    match stopped {
+                                        Ok(()) => {
+                                            let _ = handle.emit(
+                                                "desktop-event",
+                                                json!({"type":"transcribing"}),
+                                            );
+                                        }
+                                        Err(error) => {
+                                            if error.code() != "no_capture" {
+                                                let _ = handle.emit(
+                                                    "desktop-event",
+                                                    json!({"type":"capture.failed","code":error.code(),"stage":"stop"}),
+                                                );
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    let _ = handle.emit(
+                                        "desktop-event",
+                                        json!({"type":"recording"}),
+                                    );
+                                }
                             }
-                        } else {
-                            // A failed start owns nothing: release must not report a stop error.
-                            state.hotkey_capture.store(false, Ordering::SeqCst);
+                            Err(error) => {
+                                let state = handle.state::<Desktop>();
+                                state.hotkey_pressed.store(false, Ordering::SeqCst);
+                                state.hotkey_stop_wanted.store(false, Ordering::SeqCst);
+                                state.hotkey_started.store(false, Ordering::SeqCst);
+                                let _ = handle.emit(
+                                    "desktop-event",
+                                    json!({"type":"capture.failed","code":error.code(),"stage":"start"}),
+                                );
+                            }
                         }
-                    }
-                    match result {
-                        Ok(()) => {
-                            let _ = handle.emit(
-                                "desktop-event",
-                                json!({"type":if pressed{"recording"}else{"transcribing"}}),
-                            );
-                        }
-                        Err(error) => {
-                            let _ = handle.emit(
-                                "desktop-event",
-                                json!({"type":"capture.failed","code":error.code(),"stage":if pressed{"start"}else{"stop"}}),
-                            );
+                    } else {
+                        match record_stop(handle.clone(), state).await {
+                            Ok(()) => {
+                                let state = handle.state::<Desktop>();
+                                state.hotkey_started.store(false, Ordering::SeqCst);
+                                let _ = handle.emit(
+                                    "desktop-event",
+                                    json!({"type":"transcribing"}),
+                                );
+                            }
+                            Err(error) => {
+                                let state = handle.state::<Desktop>();
+                                state.hotkey_started.store(false, Ordering::SeqCst);
+                                state.hotkey_pressed.store(false, Ordering::SeqCst);
+                                state.hotkey_stop_wanted.store(false, Ordering::SeqCst);
+                                // A release that finds nothing to stop already reported the
+                                // real reason (device error, busy turn): stay quiet (AR-19).
+                                if error.code() != "no_capture" {
+                                    let _ = handle.emit(
+                                        "desktop-event",
+                                        json!({"type":"capture.failed","code":error.code(),"stage":"stop"}),
+                                    );
+                                }
+                            }
                         }
                     }
                 });
