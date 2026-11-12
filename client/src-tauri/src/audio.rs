@@ -141,6 +141,18 @@ pub struct OpenedOutput {
     pub fallback_from: Option<String>,
 }
 
+/// The human-readable reason playback fell back to the system device (AR-18).
+fn fallback_message(requested: &str, seen: bool) -> String {
+    format!(
+        "выбранное устройство вывода '{requested}' {}, используется системное",
+        if seen {
+            "недоступно"
+        } else {
+            "не найдено"
+        }
+    )
+}
+
 pub fn open_output_stream(name: Option<&str>) -> Option<OpenedOutput> {
     let mut fallback_from = None;
     if let Some(target) = name {
@@ -166,14 +178,7 @@ pub fn open_output_stream(name: Option<&str>) -> Option<OpenedOutput> {
                 }
             }
             fallback_from = Some(trimmed.to_string());
-            warn_device_fallback(format!(
-                "выбранное устройство вывода '{trimmed}' {}, используется системное",
-                if saw_name {
-                    "недоступно"
-                } else {
-                    "не найдено"
-                }
-            ));
+            warn_device_fallback(fallback_message(trimmed, saw_name));
         }
     }
     let (stream, handle) = rodio::OutputStream::try_default().ok()?;
@@ -766,22 +771,18 @@ mod tests {
     }
 
     #[test]
-    fn open_output_stream_marks_missing_device_as_fallback() {
-        // A device name that cannot exist must be reported as a fallback, not opened
-        // silently. Machines without any output device at all yield None — tolerate.
-        if let Some(opened) = open_output_stream(Some("Neyra Missing Output XYZ")) {
-            assert_eq!(
-                opened.fallback_from.as_deref(),
-                Some("Neyra Missing Output XYZ"),
-                "a missing requested device must be flagged as a system-default fallback"
-            );
-        }
-        // No preference: never a fallback marker.
-        if let Some(opened) = open_output_stream(None) {
-            assert!(opened.fallback_from.is_none());
-        }
-        if let Some(opened) = open_output_stream(Some("   ")) {
-            assert!(opened.fallback_from.is_none());
-        }
+    fn fallback_message_names_the_reason() {
+        // AR-18: a fallback must be explainable to the user, and "not found" must be
+        // distinguishable from "found but unavailable". The message is pure, so this
+        // test never opens a real output stream: creating a WASAPI stream on a headless
+        // Windows runner kills the whole test binary.
+        assert_eq!(
+            fallback_message("Neyra Missing Output XYZ", false),
+            "выбранное устройство вывода 'Neyra Missing Output XYZ' не найдено, используется системное"
+        );
+        assert_eq!(
+            fallback_message("Speakers", true),
+            "выбранное устройство вывода 'Speakers' недоступно, используется системное"
+        );
     }
 }
