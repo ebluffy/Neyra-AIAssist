@@ -1761,7 +1761,7 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
     state.waiters.lock().map_err(lock_error)?.clear();
     if let Some(recording) = state.recording.lock().map_err(lock_error)?.take() {
         {
-            let mut hotkey = hotkey_state(&state);
+            let mut hotkey = hotkey_state(state);
             hotkey.held = 0;
             hotkey.active = 0;
             hotkey.stop_wanted = false;
