@@ -142,9 +142,10 @@ fn revoked_pending(root: &std::path::Path, profile_id: &str) -> bool {
 /// newer press that took over while the device was opening (AR-19).
 #[derive(Default)]
 struct Hotkey {
+    /// Press token still on the keyboard; 0 when nothing is held.
     held: u64,
+    /// Press token that owns the running capture; 0 when no capture is owned.
     active: u64,
-    stop_wanted: bool,
 }
 
 fn hotkey_state(state: &Desktop) -> std::sync::MutexGuard<'_, Hotkey> {
@@ -1764,7 +1765,6 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
             let mut hotkey = hotkey_state(state);
             hotkey.held = 0;
             hotkey.active = 0;
-            hotkey.stop_wanted = false;
         }
         std::thread::spawn(move || {
             let _ = recording.finish();
@@ -1952,7 +1952,6 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
         let mut hotkey = hotkey_state(&state);
         hotkey.held = 0;
         hotkey.active = 0;
-        hotkey.stop_wanted = false;
     }
     let request_id = match start_turn_typed(&state) {
         Ok(id) => id,
@@ -2009,7 +2008,6 @@ async fn record_cancel(state: State<'_, Desktop>) -> Result<(), String> {
         let mut hotkey = hotkey_state(&state);
         hotkey.held = 0;
         hotkey.active = 0;
-        hotkey.stop_wanted = false;
     }
     if let Some(recording) = recording {
         tauri::async_runtime::spawn_blocking(move || {
@@ -2359,7 +2357,6 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                     }
                     let token = state.hotkey_seq.fetch_add(1, Ordering::SeqCst);
                     hotkey.held = token;
-                    hotkey.stop_wanted = false;
                     token
                 } else {
                     let mut hotkey = hotkey_state(&state);
@@ -2371,7 +2368,6 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                     hotkey.held = 0;
                     if hotkey.active != token {
                         // The device is still opening: the start task stops the capture.
-                        hotkey.stop_wanted = true;
                         return;
                     }
                     token
@@ -2387,7 +2383,6 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                             // Only this press's ownership may be given up here.
                             if hotkey.held == token {
                                 hotkey.held = 0;
-                                hotkey.stop_wanted = false;
                             }
                             return;
                         }
@@ -2396,7 +2391,6 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                                 let state = handle.state::<Desktop>();
                                 let still_held = {
                                     let mut hotkey = hotkey_state(&state);
-                                    hotkey.stop_wanted = false;
                                     if hotkey.held == token {
                                         hotkey.active = token;
                                         true
@@ -2442,7 +2436,6 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                                     // A newer press may already own the state: never clear it.
                                     if hotkey.held == token {
                                         hotkey.held = 0;
-                                        hotkey.stop_wanted = false;
                                     }
                                 }
                                 let _ = handle.emit(
