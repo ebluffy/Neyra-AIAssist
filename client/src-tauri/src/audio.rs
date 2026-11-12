@@ -176,7 +176,7 @@ pub fn open_output_stream(name: Option<&str>) -> Option<OpenedOutput> {
             ));
         }
     }
-    let (stream, handle) = rodio::OutputStream::try_default()?;
+    let (stream, handle) = rodio::OutputStream::try_default().ok()?;
     Some(OpenedOutput {
         stream,
         handle,

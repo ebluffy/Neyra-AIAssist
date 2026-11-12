@@ -266,7 +266,12 @@ fn manifest(state: &Desktop, p: &Profile) -> Result<Value, String> {
 
 /// The capability document the server receives. Voice, capture, keyring and device settings stay
 /// on this machine, so they must never appear here (AR-17, guarded by a test).
-fn manifest_value(settings: &Settings, p: &Profile, tools: Vec<String>, commands: Value) -> Value {
+fn manifest_value(
+    settings: &Settings,
+    p: &Profile,
+    tools: Vec<String>,
+    commands: Vec<Value>,
+) -> Value {
     let platform = if cfg!(windows) {
         "windows"
     } else if cfg!(target_os = "macos") {
@@ -443,7 +448,6 @@ fn store_token(state: State<'_, Desktop>, profile_id: String, token: String) -> 
     storage::store_token(&storage::secret(&profile_id)?, &token)
 }
 
-#[tauri::command]
 /// The renderer may reach read-only GETs and the single POST restart. A query string on a
 /// mutating call is refused: nothing in the contract uses one, and it hides the real target
 /// (AR-4: `POST /v1/system/restart?...` used to pass the allowlist).
@@ -461,6 +465,7 @@ fn api_route_allowed(method: &str, path: &str) -> bool {
     )
 }
 
+#[tauri::command]
 async fn api(
     state: State<'_, Desktop>,
     profile_id: String,
@@ -3745,7 +3750,7 @@ mod tests {
             url: "http://127.0.0.1:8787".into(),
             session_id: "s1".into(),
         };
-        let value = manifest_value(&settings, &profile, vec!["files.read".into()], json!([]));
+        let value = manifest_value(&settings, &profile, vec!["files.read".into()], vec![]);
         let object = value.as_object().expect("manifest must stay an object");
         let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
         keys.sort_unstable();
