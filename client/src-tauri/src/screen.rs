@@ -416,10 +416,6 @@ impl ShotStore {
         self.clears.load(Ordering::SeqCst)
     }
 
-    pub fn shot_count(&self) -> usize {
-        self.shots.lock().map(|s| s.len()).unwrap_or(0)
-    }
-
     pub fn remember(&self, shot: Shot) {
         if let Ok(mut shots) = self.shots.lock() {
             // Only the newest screenshot of a session may be used: older pixels would map

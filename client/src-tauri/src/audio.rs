@@ -133,6 +133,9 @@ pub fn open_input_device(
 
 /// An opened output stream plus the reason the requested device was not used.
 pub struct OpenedOutput {
+    /// Kept alive for as long as playback uses this device: dropping the stream
+    /// closes the audio endpoint. Never read on purpose.
+    #[allow(dead_code)]
     pub stream: rodio::OutputStream,
     pub handle: rodio::OutputStreamHandle,
     /// The device the user asked for that could not be used; playback fell back
