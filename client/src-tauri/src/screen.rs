@@ -422,16 +422,24 @@ impl ShotStore {
         self.shots.lock().map(|s| s.len()).unwrap_or(0)
     }
 
-    pub fn remember(&self, shot: Shot) {
-        if let Ok(mut shots) = self.shots.lock() {
-            // Only the newest screenshot of a session may be used: older pixels would map
-            // clicks through a stale geometry.
-            shots.retain(|s| s.session != shot.session && s.created.elapsed() < SHOT_TTL);
-            if shots.len() >= 8 {
-                shots.pop_front();
-            }
-            shots.push_back(shot);
+    /// Stores the shot only if the store generation still matches `epoch`. The check and
+    /// the insert happen under the same lock, so a Stop cannot slip between them (AR-10).
+    /// Returns `false` when the store was cleared while the capture was in flight.
+    pub fn remember_if_unchanged(&self, shot: Shot, epoch: u64) -> bool {
+        let Ok(mut shots) = self.shots.lock() else {
+            return false;
+        };
+        if self.clears.load(Ordering::SeqCst) != epoch {
+            return false;
         }
+        // Only the newest screenshot of a session may be used: older pixels would map
+        // clicks through a stale geometry.
+        shots.retain(|s| s.session != shot.session && s.created.elapsed() < SHOT_TTL);
+        if shots.len() >= 8 {
+            shots.pop_front();
+        }
+        shots.push_back(shot);
+        true
     }
 
     pub fn find(&self, id: &str, session: &str) -> Result<Shot, String> {
@@ -547,20 +555,23 @@ pub fn capture_with<B: Backend + ?Sized>(
     if jpeg.len() >= 1_100_000 {
         return Err("Снимок слишком большой".into());
     }
-    if store.clear_epoch() != epoch {
-        // Stop dropped every stored shot while this capture was in flight; the id
-        // must not survive Stop by being remembered into the cleared store.
+    let id = uuid::Uuid::new_v4().to_string();
+    // Stop drops every stored shot while this capture is in flight; the id must not
+    // survive Stop by being remembered into the cleared store.
+    let stored = store.remember_if_unchanged(
+        Shot {
+            id: id.clone(),
+            session: session.to_string(),
+            created: Instant::now(),
+            image_w: w,
+            image_h: h,
+            area: frame.area,
+        },
+        epoch,
+    );
+    if !stored {
         return Err("Снимок отменён: управление остановлено".into());
     }
-    let id = uuid::Uuid::new_v4().to_string();
-    store.remember(Shot {
-        id: id.clone(),
-        session: session.to_string(),
-        created: Instant::now(),
-        image_w: w,
-        image_h: h,
-        area: frame.area,
-    });
     Ok(json!({
         "status": "ok",
         "screenshot_id": id,

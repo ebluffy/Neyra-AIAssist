@@ -1823,8 +1823,6 @@ async fn record_start(
     let meter_stop = started.meter_stop.clone();
     *recording = Some(started);
     drop(recording);
-    // A capture started from the window is not owned by the global PTT hotkey (AR-19).
-    state.hotkey_capture.store(false, Ordering::SeqCst);
     std::thread::spawn(move || {
         while !meter_stop.load(Ordering::Relaxed) {
             let db = level.load(Ordering::Relaxed) as f32 / 10.0;
@@ -2318,29 +2316,47 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
             } else if shortcut.key == Code::Space {
                 let handle = app.clone();
                 let pressed = event.state == ShortcutState::Pressed;
-                tauri::async_runtime::spawn(async move {
-                    let state = handle.state::<Desktop>();
-                    if pressed {
+                // Ownership is decided synchronously, before the async start opens the
+                // device: otherwise a release during that open sees no owner and leaves the
+                // microphone recording until the 30 s limit (AR-19).
+                let state = app.state::<Desktop>();
+                let owned = if pressed {
+                    let busy = state.recording.lock().map_or(true, |slot| slot.is_some());
+                    if busy {
                         // A capture already runs (window button or this hotkey). A second start
                         // would fail with already_recording and freeze the running capture, so
                         // the press is ignored instead of reported (AR-19).
-                        let busy = state.recording.lock().map_or(true, |slot| slot.is_some());
-                        if busy {
-                            return;
-                        }
-                    } else if !state.hotkey_capture.load(Ordering::SeqCst) {
-                        // The window button owns this capture; the key release must not stop it.
-                        return;
-                    }
-                    let result = if pressed {
-                        record_start(handle.clone(), state).await
+                        false
                     } else {
-                        record_stop(handle.clone(), state).await
+                        state.hotkey_capture.store(true, Ordering::SeqCst);
+                        true
+                    }
+                } else {
+                    // The window button owns this capture; the key release must not stop it.
+                    state.hotkey_capture.swap(false, Ordering::SeqCst)
+                };
+                if !owned {
+                    return;
+                }
+                tauri::async_runtime::spawn(async move {
+                    let result = if pressed {
+                        record_start(handle.clone(), handle.state::<Desktop>()).await
+                    } else {
+                        record_stop(handle.clone(), handle.state::<Desktop>()).await
                     };
-                    let state = handle.state::<Desktop>();
-                    state
-                        .hotkey_capture
-                        .store(pressed && result.is_ok(), Ordering::SeqCst);
+                    if pressed {
+                        let state = handle.state::<Desktop>();
+                        if result.is_ok() {
+                            // The key was released while the device was still opening: the stop
+                            // already ran (and found nothing), so stop the fresh capture now.
+                            if !state.hotkey_capture.load(Ordering::SeqCst) {
+                                let _ = record_stop(handle.clone(), handle.state::<Desktop>()).await;
+                            }
+                        } else {
+                            // A failed start owns nothing: release must not report a stop error.
+                            state.hotkey_capture.store(false, Ordering::SeqCst);
+                        }
+                    }
                     match result {
                         Ok(()) => {
                             let _ = handle.emit(
