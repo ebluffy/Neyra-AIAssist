@@ -16,4 +16,3 @@ jobs:
       - run: npm run typecheck
       - run: npx vitest run
       - run: npm run build -w @neyra/web
-      - run: npm run build -w @neyra/desktop

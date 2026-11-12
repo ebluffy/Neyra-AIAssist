@@ -1,10 +1,12 @@
-# Клиентский монорепо Neyra (P0)
-`packages/contracts` — zod-контракты без DOM.
-`packages/ui` — DOM-only React-примитивы и токены.
-`apps/web` — Next.js 15 App Router, заглушка входа и health.
-`apps/desktop` — Vite React shell без Tauri.
-`client/` и `server/` — существующие приложения, без изменений.
-Нужен Node.js 22; установка: `npm ci` в корне.
-Сборка обоих приложений: `npm run build`.
-Проверки: `npm test`, `npm run typecheck`, `npx tsc --build`.
-P1: Better Auth, Drizzle и PostgreSQL; в P0 их нет.
+# Монорепо Neyra
+
+Корень — `server/`, `web/`, `desktop/`, `mobile/`, `docs/`, `devtools/`, `packages/` (общий код), плюс корневые файлы.
+
+- `server/` — ядро (Python, FastAPI).
+- `web/` — сайт v2 (Next.js App Router, npm-workspace).
+- `desktop/` — приложение (Tauri + Vite). Пока лежит в `client/`: переименование после влития десктопного PR, чтобы не ломать его.
+- `mobile/` — задел на мобильный клиент.
+- `docs/` — документы, `devtools/` — служебные инструменты.
+- `packages/contracts` — DTO и zod-схемы для веба, десктопа и мобильного; `packages/ui` — DOM-only примитивы и токены.
+
+Сборка: `npm ci && npm run build`, тесты: `npm test`, типы: `npm run typecheck`.
