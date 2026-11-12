@@ -2018,7 +2018,7 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
             });
         }
     };
-    finish_ptt(
+    let outcome = finish_ptt(
         &state.current_turn,
         &request_id,
         async {
@@ -2053,7 +2053,26 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
             Ok(())
         },
     )
-    .await
+    .await;
+    // Announce the outcome here, where the number of the closed capture is known: a late
+    // result of an older capture must be filterable by the window (P2 review).
+    match &outcome {
+        Ok(()) => {
+            let _ = app.emit(
+                "desktop-event",
+                json!({"type":"transcribing","seq":capture_seq}),
+            );
+        }
+        Err(error) => {
+            if error.code() != "no_capture" {
+                let _ = app.emit(
+                    "desktop-event",
+                    json!({"type":"capture.failed","code":error.code(),"stage":"stop","seq":capture_seq}),
+                );
+            }
+        }
+    }
+    outcome
 }
 #[tauri::command]
 async fn record_cancel(state: State<'_, Desktop>) -> Result<(), String> {
@@ -2470,27 +2489,13 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                                 } else {
                                     // Released while the device was opening: close the fresh
                                     // capture and report the turn, not a running capture.
-                                    let stopped = record_stop(
+                                    // record_stop announces the outcome itself, with the
+                                    // number of the capture it closed.
+                                    let _ = record_stop(
                                         handle.clone(),
                                         handle.state::<Desktop>(),
                                     )
                                     .await;
-                                    match stopped {
-                                        Ok(()) => {
-                                            let _ = handle.emit(
-                                                "desktop-event",
-                                                json!({"type":"transcribing"}),
-                                            );
-                                        }
-                                        Err(error) => {
-                                            if error.code() != "no_capture" {
-                                                let _ = handle.emit(
-                                                    "desktop-event",
-                                                    json!({"type":"capture.failed","code":error.code(),"stage":"stop"}),
-                                                );
-                                            }
-                                        }
-                                    }
                                 }
                             }
                             Err(error) => {
@@ -2509,24 +2514,9 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                             }
                         }
                     } else {
-                        match record_stop(handle.clone(), state).await {
-                            Ok(()) => {
-                                let _ = handle.emit(
-                                    "desktop-event",
-                                    json!({"type":"transcribing"}),
-                                );
-                            }
-                            Err(error) => {
-                                // A release that finds nothing to stop already reported the
-                                // real reason (device error, busy turn): stay quiet (AR-19).
-                                if error.code() != "no_capture" {
-                                    let _ = handle.emit(
-                                        "desktop-event",
-                                        json!({"type":"capture.failed","code":error.code(),"stage":"stop"}),
-                                    );
-                                }
-                            }
-                        }
+                        // record_stop announces the outcome itself, with the capture number,
+                        // so a late result of an older capture stays filterable (AR-19, P2).
+                        let _ = record_stop(handle.clone(), state).await;
                     }
                 });
             }

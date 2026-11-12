@@ -29,7 +29,10 @@ const settings: Settings = {
   permissions: { enabled: false, apps: [], allow_web: false, web_domains: [], system: false, shell: false, files: false, fs_roots: [], screen: false, screen_auto: false, input: false },
 };
 
+let recordSeq = 0;
+
 beforeEach(() => {
+  recordSeq = 0;
   vi.useFakeTimers();
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('window', globalThis);
@@ -41,7 +44,7 @@ beforeEach(() => {
     if (command === 'save_settings') return args?.settings;
     if (command === 'list_chats') return [];
     if (command === 'pc_capabilities') return { available: false };
-    if (command === 'record_start') return 1;
+    if (command === 'record_start') return (recordSeq += 1);
     return {};
   });
 });
@@ -825,6 +828,19 @@ describe('PTT deferred IPC lifecycle', () => {
     await event('error', { code: 'turn_busy', request_id: 'turn-A' });
     await act(async () => { stop.reject('turn_busy'); await finishing; });
     expect(app.error).toBe('turn_busy');
+  });
+
+  it('ignores a late stop announcement of a capture that was replaced', async () => {
+    await mount();
+    await act(async () => { await app.beginRecording(); });          // capture 1
+    await event('cancelled', { scope: 'all' });                        // Stop while it runs
+    await act(async () => { await app.beginRecording(); });          // capture 2
+    // The stop of capture 1 finishes late and reports for the old capture.
+    await event('transcribing', { seq: 1 });
+    expect(app.recording).toBe(true);
+    await event('capture.failed', { stage: 'stop', code: 'empty_capture', seq: 1 });
+    expect(app.recording).toBe(true);
+    expect(app.thinking).toBe(false);
   });
 
   it.each(['empty_capture', 'turn_busy', 'microphone_unavailable', 'no_capture', 'voice_unavailable'])(

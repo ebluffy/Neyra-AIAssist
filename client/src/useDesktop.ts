@@ -98,6 +98,8 @@ export function useDesktop() {
   const lastVoiceClipRequestId = useRef<string | null>(null);
   // Capture number this window is committing: a clip of any other capture is not ours.
   const captureSeq = useRef<number | null>(null);
+  // A late stop announcement of an older capture must not touch the capture running now.
+  const staleCaptureEvent = (seq: unknown) => typeof seq === 'number' && typeof captureSeq.current === 'number' && seq < captureSeq.current;
   const keepLocal = useRef(false);
   const historyStamp = useRef(0);
   const savedSettings = useRef<Settings | undefined>(undefined);
@@ -312,7 +314,7 @@ export function useDesktop() {
         // calls cannot both succeed; one always returns AlreadyRecording. Thus, a 'recording' event can never
         // interleave with a successful UI beginRecording session.
         if (event.type === 'recording') { captureTerminalError.current = null; lastVoiceClipRequestId.current = null; captureSeq.current = typeof event.seq === 'number' ? event.seq : null; captureId.current += 1; captureStopping.current = false; captureIntent.current = null; setRecording(true); setThinking(false); }
-        if (event.type === 'transcribing') { setRecording(false); setThinking(true); setLiveState(state => state === 'off' ? state : 'thinking'); }
+        if (event.type === 'transcribing') { if (staleCaptureEvent(event.seq)) return; setRecording(false); setThinking(true); setLiveState(state => state === 'off' ? state : 'thinking'); }
         if (event.type === 'speaking') { setThinking(false); setLiveState(state => state === 'off' ? state : 'speaking'); postNotice('Нейра говорит. Стоп прервёт озвучку.'); }
         if (event.type === 'live.started') { setLiveOpen(true); setMuted(false); setLiveState('idle'); }
         if (event.type === 'live.stopped') { setLiveState('off'); setMicLevel(0); if (!muteHold.current) { setLiveOpen(false); setMuted(false); } }
@@ -346,6 +348,7 @@ export function useDesktop() {
           setLiveState(state => state === 'thinking' ? 'idle' : state);
         }
         if (event.type === 'capture.failed') {
+          if (staleCaptureEvent(event.seq)) return;
           const message = localErrorText(event.code ?? '') ?? formatError(event.code);
           // A failed shortcut start did not acquire or release the recording slot.
           if (event.stage === 'start') { setError(message); return; }
