@@ -41,6 +41,7 @@ beforeEach(() => {
     if (command === 'save_settings') return args?.settings;
     if (command === 'list_chats') return [];
     if (command === 'pc_capabilities') return { available: false };
+    if (command === 'record_start') return 1;
     return {};
   });
 });
@@ -545,7 +546,7 @@ describe('PTT deferred IPC lifecycle', () => {
       await mount();
       const ipcStop = defer();
       const pending = await startStop(path);
-      await event('voice.clip', { request_id: 'turn-1' });
+      await event('voice.clip', { request_id: 'turn-1', seq: 1 });
       await event('error', { code: 'voice_failed', request_id: 'turn-1' });
       await act(async () => { ipcStop.reject('old failure'); });
       await pending.settle();
@@ -775,7 +776,7 @@ describe('PTT deferred IPC lifecycle', () => {
 
   it('does not replace record_stop rejection when clip belongs to turn A and error belongs to turn B', async () => {
     await mount();
-    await event('voice.clip', { request_id: 'turn-A' });
+    await event('voice.clip', { request_id: 'turn-A', seq: 1 });
     const stop = defer('record_stop');
     await act(async () => { await app.beginRecording(); });
     let finishing!: Promise<void>;
@@ -789,7 +790,7 @@ describe('PTT deferred IPC lifecycle', () => {
   it('does not reuse a clip from the previous capture for the next one', async () => {
     await mount();
     // Capture A produced a clip; capture B starts, so A's id must stop counting.
-    await event('voice.clip', { request_id: 'turn-A' });
+    await event('voice.clip', { request_id: 'turn-A', seq: 1 });
     const stop = defer('record_stop');
     await act(async () => { await app.beginRecording(); });
     let finishing!: Promise<void>;
@@ -805,9 +806,22 @@ describe('PTT deferred IPC lifecycle', () => {
     const stop = defer('record_stop');
     // Capture B starts; the clip of the previous turn A arrives late, while B records.
     await act(async () => { await app.beginRecording(); });
-    await event('voice.clip', { request_id: 'turn-A' });
+    await event('voice.clip', { request_id: 'turn-A', seq: 1 });
     let finishing!: Promise<void>;
     await act(async () => { finishing = app.finishRecording(); });
+    await event('error', { code: 'turn_busy', request_id: 'turn-A' });
+    await act(async () => { stop.reject('turn_busy'); await finishing; });
+    expect(app.error).toBe('turn_busy');
+  });
+
+  it('rejects a clip of another capture that arrives during this commit', async () => {
+    await mount();
+    const stop = defer('record_stop');
+    await act(async () => { await app.beginRecording(); });
+    let finishing!: Promise<void>;
+    await act(async () => { finishing = app.finishRecording(); });
+    // Capture A (seq 2) hands its clip over while capture 1 is still committing.
+    await event('voice.clip', { request_id: 'turn-A', seq: 2 });
     await event('error', { code: 'turn_busy', request_id: 'turn-A' });
     await act(async () => { stop.reject('turn_busy'); await finishing; });
     expect(app.error).toBe('turn_busy');

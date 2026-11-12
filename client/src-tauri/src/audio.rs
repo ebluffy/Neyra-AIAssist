@@ -210,6 +210,9 @@ pub struct Recording {
     /// Latest input level, dBFS × 10, for the recording waveform.
     pub level: Arc<AtomicI32>,
     pub meter_stop: Arc<AtomicBool>,
+    /// Monotonic capture number assigned by the shell: a clip of an older capture must not be
+    /// mistaken for the capture the window is committing right now (NEW-4).
+    pub seq: u64,
 }
 
 fn note_level(level: &AtomicI32, data: &[f32]) {
@@ -318,6 +321,7 @@ impl Recording {
                 join,
                 level,
                 meter_stop,
+                seq: 0,
             }),
             Ok(Err(e)) => {
                 let _ = stop.send(());

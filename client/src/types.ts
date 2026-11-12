@@ -39,7 +39,7 @@ export const emptyAudioDevices: AudioDevices = {
 };
 // Native global-shortcut capture failure (ordinary player/server errors stay `error`).
 export interface CaptureFailedEvent { type: 'capture.failed'; code: string; stage: 'start' | 'stop' }
-export interface ServerEvent { type: string; request_id?: string; scope?: string; stage?: CaptureFailedEvent['stage']; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number; run?: number }
+export interface ServerEvent { type: string; request_id?: string; seq?: number; scope?: string; stage?: CaptureFailedEvent['stage']; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number; run?: number }
 /** Server routes wrap the payload as `{ok, trace_id, data}`. Rust returns that JSON unchanged. */
 export function unwrapApi<T>(body: unknown): T {
   if (body !== null && typeof body === 'object' && 'data' in body) {

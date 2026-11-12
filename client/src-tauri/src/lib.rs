@@ -197,6 +197,9 @@ pub struct Desktop {
     /// keep a lost press from clearing the ownership of a newer one (AR-19).
     hotkey: Mutex<Hotkey>,
     hotkey_seq: AtomicU64,
+    /// Monotonic capture counter handed to every successful record_start, so the window and
+    /// the clip can be correlated without guessing by commit state (NEW-4).
+    capture_seq: AtomicU64,
 }
 struct Live {
     capture: audio::LiveCapture,
@@ -1847,7 +1850,7 @@ fn disconnect(state: State<'_, Desktop>) -> Result<(), String> {
 async fn record_start(
     app: tauri::AppHandle,
     state: State<'_, Desktop>,
-) -> Result<(), CaptureError> {
+) -> Result<u64, CaptureError> {
     if state
         .current_turn
         .lock()
@@ -1888,7 +1891,9 @@ async fn record_start(
         s.voice.input_device.clone()
     };
     let dev_name = (!input_device.trim().is_empty()).then_some(input_device.as_str());
-    let started = audio::Recording::start(dev_name).map_err(CaptureError::Device)?;
+    let mut started = audio::Recording::start(dev_name).map_err(CaptureError::Device)?;
+    let seq = state.capture_seq.fetch_add(1, Ordering::SeqCst);
+    started.seq = seq;
     let level = started.level.clone();
     let meter_stop = started.meter_stop.clone();
     *recording = Some(started);
@@ -1900,7 +1905,7 @@ async fn record_start(
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     });
-    Ok(())
+    Ok(seq)
 }
 /// Capture failures with a stable code for the UI, independent of the Russian text.
 #[derive(Debug, PartialEq, Eq)]
@@ -1994,6 +1999,8 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
         .map_err(|e| CaptureError::internal(lock_error(e)))?
         .take()
         .ok_or(CaptureError::NoCapture)?;
+    // The clip carries the number of this very capture, not of whatever runs next (NEW-4).
+    let capture_seq = recording.seq;
     // Once the capture is closed, a later hotkey release must not try to stop it again (AR-19).
     {
         let mut hotkey = hotkey_state(&state);
@@ -2031,7 +2038,7 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
             let clip = base64::engine::general_purpose::STANDARD.encode(audio::wav_s16le_16k(&pcm));
             let _ = app.emit(
                 "desktop-event",
-                json!({"type":"voice.clip","audio":clip,"duration_ms":duration_ms,"request_id":request_id}),
+                json!({"type":"voice.clip","audio":clip,"duration_ms":duration_ms,"request_id":request_id,"seq":capture_seq}),
             );
             for chunk in pcm.chunks(32000) {
                 tx.send(Message::Binary(chunk.to_vec().into()))
@@ -2223,6 +2230,7 @@ pub fn run() {
                 live_run: AtomicU64::new(0),
                 hotkey: Mutex::new(Hotkey::default()),
                 hotkey_seq: AtomicU64::new(1),
+                capture_seq: AtomicU64::new(1),
             });
             monitor_session(app.handle().clone());
             setup_shortcuts(app.handle());
@@ -2434,7 +2442,7 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                             return;
                         }
                         match record_start(handle.clone(), state).await {
-                            Ok(()) => {
+                            Ok(seq) => {
                                 let state = handle.state::<Desktop>();
                                 let still_held = {
                                     let mut hotkey = hotkey_state(&state);
@@ -2448,7 +2456,7 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                                 if still_held {
                                     let _ = handle.emit(
                                         "desktop-event",
-                                        json!({"type":"recording"}),
+                                        json!({"type":"recording","seq":seq}),
                                     );
                                 } else {
                                     // Released while the device was opening: close the fresh

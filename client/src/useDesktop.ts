@@ -96,6 +96,8 @@ export function useDesktop() {
   const captureIntent = useRef<'commit' | 'cancel' | null>(null);
   const captureStarting = useRef(false);
   const lastVoiceClipRequestId = useRef<string | null>(null);
+  // Capture number this window is committing: a clip of any other capture is not ours.
+  const captureSeq = useRef<number | null>(null);
   const keepLocal = useRef(false);
   const historyStamp = useRef(0);
   const savedSettings = useRef<Settings | undefined>(undefined);
@@ -281,7 +283,7 @@ export function useDesktop() {
         if (event.type === 'voice.clip') {
           // Only the capture being committed right now owns its clip: a late clip of the
           // previous turn (Rust emits it after finish) must not become this capture's id.
-          if (captureStopping.current && captureIntent.current === 'commit' && typeof event.request_id === 'string' && event.request_id) {
+          if (captureStopping.current && captureIntent.current === 'commit' && typeof event.seq === 'number' && event.seq === captureSeq.current && typeof event.request_id === 'string' && event.request_id) {
             lastVoiceClipRequestId.current = event.request_id;
           }
           if (event.audio) {
@@ -309,7 +311,7 @@ export function useDesktop() {
         // 'recording'. Since Desktop.recording is a single Mutex<Option<Recording>> slot in Rust, two record_start
         // calls cannot both succeed; one always returns AlreadyRecording. Thus, a 'recording' event can never
         // interleave with a successful UI beginRecording session.
-        if (event.type === 'recording') { captureTerminalError.current = null; lastVoiceClipRequestId.current = null; captureId.current += 1; captureStopping.current = false; captureIntent.current = null; setRecording(true); setThinking(false); }
+        if (event.type === 'recording') { captureTerminalError.current = null; lastVoiceClipRequestId.current = null; captureSeq.current = typeof event.seq === 'number' ? event.seq : null; captureId.current += 1; captureStopping.current = false; captureIntent.current = null; setRecording(true); setThinking(false); }
         if (event.type === 'transcribing') { setRecording(false); setThinking(true); setLiveState(state => state === 'off' ? state : 'thinking'); }
         if (event.type === 'speaking') { setThinking(false); setLiveState(state => state === 'off' ? state : 'speaking'); postNotice('Нейра говорит. Стоп прервёт озвучку.'); }
         if (event.type === 'live.started') { setLiveOpen(true); setMuted(false); setLiveState('idle'); }
@@ -532,12 +534,15 @@ export function useDesktop() {
     captureTerminalError.current = null;
     // A clip of a previous turn must never look like this capture's own clip.
     lastVoiceClipRequestId.current = null;
+    captureSeq.current = null;
     const currentCapture = ++captureId.current;
     captureStopping.current = false;
     captureIntent.current = null;
     captureStarting.current = true;
     try {
-      await invoke('record_start');
+      const seq = await invoke<number>('record_start');
+      // The shell answers with the number of this capture; only its clip may be correlated.
+      captureSeq.current = typeof seq === 'number' ? seq : null;
     } catch (reason) {
       captureStarting.current = false;
       setRecording(false);
