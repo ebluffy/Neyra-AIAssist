@@ -99,7 +99,13 @@ export function useDesktop() {
   // Capture number this window is committing: a clip of any other capture is not ours.
   const captureSeq = useRef<number | null>(null);
   // A late stop announcement of an older capture must not touch the capture running now.
-  const staleCaptureEvent = (seq: unknown) => typeof seq === 'number' && typeof captureSeq.current === 'number' && seq < captureSeq.current;
+  // A numbered stop outcome belongs to some capture; never apply it to a capture that is
+  // still opening (its number is not known yet) or to one that was cancelled.
+  const staleCaptureEvent = (seq: unknown) => {
+    if (typeof seq !== 'number') return false;
+    if (captureStarting.current) return true;
+    return typeof captureSeq.current === 'number' && seq < captureSeq.current;
+  };
   const keepLocal = useRef(false);
   const historyStamp = useRef(0);
   const savedSettings = useRef<Settings | undefined>(undefined);
@@ -314,7 +320,7 @@ export function useDesktop() {
         // calls cannot both succeed; one always returns AlreadyRecording. Thus, a 'recording' event can never
         // interleave with a successful UI beginRecording session.
         if (event.type === 'recording') { captureTerminalError.current = null; lastVoiceClipRequestId.current = null; captureSeq.current = typeof event.seq === 'number' ? event.seq : null; captureId.current += 1; captureStopping.current = false; captureIntent.current = null; setRecording(true); setThinking(false); }
-        if (event.type === 'transcribing') { if (staleCaptureEvent(event.seq)) return; setRecording(false); setThinking(true); setLiveState(state => state === 'off' ? state : 'thinking'); }
+        if (event.type === 'transcribing') { if (staleCaptureEvent(event.seq) || captureIntent.current === 'cancel') return; setRecording(false); setThinking(true); setLiveState(state => state === 'off' ? state : 'thinking'); }
         if (event.type === 'speaking') { setThinking(false); setLiveState(state => state === 'off' ? state : 'speaking'); postNotice('Нейра говорит. Стоп прервёт озвучку.'); }
         if (event.type === 'live.started') { setLiveOpen(true); setMuted(false); setLiveState('idle'); }
         if (event.type === 'live.stopped') { setLiveState('off'); setMicLevel(0); if (!muteHold.current) { setLiveOpen(false); setMuted(false); } }

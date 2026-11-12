@@ -1992,6 +1992,24 @@ async fn finish_ptt(
 }
 
 #[tauri::command]
+/// Announce the outcome of closing a capture, tagged with its number so the window can drop a
+/// late result of an older capture. A capture that was never opened has nothing to report.
+fn announce_stop(app: &tauri::AppHandle, seq: u64, outcome: &Result<(), CaptureError>) {
+    match outcome {
+        Ok(()) => {
+            let _ = app.emit("desktop-event", json!({"type":"transcribing","seq":seq}));
+        }
+        Err(error) => {
+            if error.code() != "no_capture" {
+                let _ = app.emit(
+                    "desktop-event",
+                    json!({"type":"capture.failed","code":error.code(),"stage":"stop","seq":seq}),
+                );
+            }
+        }
+    }
+}
+
 async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), CaptureError> {
     let recording = state
         .recording
@@ -2012,10 +2030,14 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
         Err(error) => {
             // Dropping a live capture without finish() keeps the meter stream alive.
             let _ = tauri::async_runtime::spawn_blocking(move || recording.finish()).await;
-            return Err(match error {
+            // The capture is closed, so the window must hear about it even when the turn could
+            // not start: otherwise the UI keeps showing a recording that no longer exists.
+            let outcome = Err(match error {
                 TurnStartError::Busy => CaptureError::TurnBusy,
                 TurnStartError::Internal(message) => CaptureError::internal(message),
             });
+            announce_stop(&app, capture_seq, &outcome);
+            return outcome;
         }
     };
     let outcome = finish_ptt(
@@ -2056,22 +2078,7 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
     .await;
     // Announce the outcome here, where the number of the closed capture is known: a late
     // result of an older capture must be filterable by the window (P2 review).
-    match &outcome {
-        Ok(()) => {
-            let _ = app.emit(
-                "desktop-event",
-                json!({"type":"transcribing","seq":capture_seq}),
-            );
-        }
-        Err(error) => {
-            if error.code() != "no_capture" {
-                let _ = app.emit(
-                    "desktop-event",
-                    json!({"type":"capture.failed","code":error.code(),"stage":"stop","seq":capture_seq}),
-                );
-            }
-        }
-    }
+    announce_stop(&app, capture_seq, &outcome);
     outcome
 }
 #[tauri::command]

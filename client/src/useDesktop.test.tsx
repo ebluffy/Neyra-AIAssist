@@ -843,6 +843,27 @@ describe('PTT deferred IPC lifecycle', () => {
     expect(app.thinking).toBe(false);
   });
 
+  it('does not cancel a capture that is still opening when an old stop arrives', async () => {
+    await mount();
+    const start = defer('record_start');
+    let opening!: Promise<void>;
+    await act(async () => { opening = app.beginRecording(); });
+    // The stop of the previous capture (seq 1) lands while this one is still opening.
+    await event('capture.failed', { stage: 'stop', code: 'empty_capture', seq: 1 });
+    await act(async () => { start.resolve(); await opening; });
+    expect(app.recording).toBe(true);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_cancel')).toHaveLength(0);
+  });
+
+  it('does not revive processing when a stop outcome arrives after Stop', async () => {
+    await mount();
+    await act(async () => { await app.beginRecording(); });
+    await event('cancelled', { scope: 'all' });
+    await event('transcribing', { seq: 1 });
+    expect(app.thinking).toBe(false);
+    expect(app.recording).toBe(false);
+  });
+
   it.each(['empty_capture', 'turn_busy', 'microphone_unavailable', 'no_capture', 'voice_unavailable'])(
     'hotkey record_stop error %s clears recording and prevents 30s timer stop (AR-15)',
     async errorCode => {
