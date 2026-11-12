@@ -127,13 +127,16 @@ class MemoryHub:
             for scope in ("mood", "relations"):
                 self._generations[scope] = self._generations.get(scope, 0) + 1
 
-    def affect_for_account(self, discord_id):
-        # Account ID is authoritative; aliases/display names never select a relationship.
+    def affect_for_account(self, discord_id, person_id=None):
+        # A verified web identity names the person directly. Account ID is authoritative
+        # only when there is no signed identity; aliases/display names never select a relationship.
         with self.sqlite.lock:
+            if person_id:
+                return self.affect_snapshot(person_id if self.sqlite.get_person(person_id) else None)
             account = self.sqlite.get_account("discord", str(discord_id)) if discord_id else None
             return self.affect_snapshot(account["person_id"] if account else None)
 
-    def apply_affect_turn(self, *, turn_id, discord_id, text, generations):
+    def apply_affect_turn(self, *, turn_id, discord_id, text, generations, person_id=None):
         with self._write_lock, self.sqlite.lock:
             if generations != self.affect_generations():
                 return False
@@ -144,10 +147,14 @@ class MemoryHub:
             relations_on = feature_enabled(self.config, "memory.relations.enabled")
             if not (mood_on or relations_on):
                 return False
-            account = self.sqlite.get_account("discord", str(discord_id)) if discord_id else None
-            if discord_id and account is None and relations_on:
-                person = self.ensure_person_for_account(platform="discord", platform_user_id=str(discord_id))
-                account = {"person_id": person["id"]}
+            if person_id:
+                # Never mint a Discord card for a web identity: that would be a second person.
+                account = {"person_id": person_id} if self.sqlite.get_person(person_id) else None
+            else:
+                account = self.sqlite.get_account("discord", str(discord_id)) if discord_id else None
+                if discord_id and account is None and relations_on:
+                    person = self.ensure_person_for_account(platform="discord", platform_user_id=str(discord_id))
+                    account = {"person_id": person["id"]}
             return self.affect.apply_turn(turn_id=turn_id, person_id=account["person_id"] if account else None, text=text,
                                           mood_enabled=mood_on, relations_enabled=relations_on)
 

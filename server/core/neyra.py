@@ -766,6 +766,8 @@ class NeyraAgent:
             author_display_name = discord_context.current_user.display_name
             channel_id = discord_context.channel.id
         trace = TurnTrace(discord_user_id, channel_id, self.config)
+        # Only a verified web identity reaches here as person_id; keep it for history/affect writes.
+        trace.person_id = person_id or None
         hub = getattr(self, "memory_hub", None)
         if hub is not None:
             trace.affect_generations = await asyncio.to_thread(hub.affect_generations)
@@ -838,6 +840,8 @@ class NeyraAgent:
             author_display_name = discord_context.current_user.display_name
             channel_id = discord_context.channel.id
         trace = TurnTrace(discord_user_id, channel_id, self.config)
+        # Only a verified web identity reaches here as person_id; keep it for history/affect writes.
+        trace.person_id = person_id or None
         hub = getattr(self, "memory_hub", None)
         if hub is not None:
             trace.affect_generations = await asyncio.to_thread(hub.affect_generations)

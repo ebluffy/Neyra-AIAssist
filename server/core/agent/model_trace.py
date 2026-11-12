@@ -43,6 +43,8 @@ class TurnTrace:
     kind: str = "turn"
     parent_turn_id: str | None = None
     memory_owner_id: str | None = None
+    # Verified web identity, if this turn came from a signed request. Never client-supplied.
+    person_id: str | None = None
     affect_generations: dict | None = None
     talk_session: object | None = field(default=None, repr=False)
     conversation_gate: object | None = field(default=None, repr=False)

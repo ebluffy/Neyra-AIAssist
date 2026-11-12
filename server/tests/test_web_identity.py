@@ -219,3 +219,31 @@ def test_web_identity_owner_reaches_turn_prep(tmp_path):
         asyncio.run(run())
     finally:
         agent.memory_hub.close()
+
+
+def test_web_turn_keeps_affect_and_diary_on_signed_person(tmp_path):
+    """Отношения и дневник веб-пользователя не уезжают в discord-профиль."""
+    import asyncio
+
+    from tests.offline_support import offline_agent
+
+    agent = offline_agent(tmp_path / "web-affect")
+    agent.config["memory"]["diary_after_turn"] = True
+    hub = agent.memory_hub
+    pid = hub.ensure_person_for_account(platform="web", platform_user_id="site-9")["id"]
+
+    async def run():
+        out = await agent.chat("спасибо, ты классная", username="web@example.com",
+                               discord_user_id="site-9", channel_id="chat-9", person_id=pid)
+        assert out["text"]
+        while getattr(agent, "_background_jobs", None):
+            await asyncio.gather(*list(agent._background_jobs))
+
+    try:
+        asyncio.run(run())
+        assert hub.affect_snapshot(pid)["relation"] is not None
+        assert hub.find_person("", discord_id="site-9") is None
+        notes = hub.list_diary_notes(limit=5, owner_id=pid)
+        assert notes and notes[0]["meta"].get("person_id") == pid
+    finally:
+        hub.close()

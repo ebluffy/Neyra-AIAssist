@@ -252,7 +252,8 @@ async def prepare_turn(
     hub = getattr(agent, "memory_hub", None)
     if hub is not None:
         from core.memory.affect import talk_state
-        prep.affect_data = talk_state(await asyncio.to_thread(hub.affect_for_account, discord_user_id))
+        trusted_person_id = person_id or getattr(trace, "person_id", None)
+        prep.affect_data = talk_state(await asyncio.to_thread(hub.affect_for_account, discord_user_id, trusted_person_id))
     from core.agent.talk_messages import assistant_state_data
     state = assistant_state_data(prep)
     if state:
