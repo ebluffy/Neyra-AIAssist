@@ -1,3 +1,14 @@
-# Web P0
-Next.js 15 App Router + Tailwind; / → /login, /api/health. Форма отключена, запросов входа нет.
-P1: Better Auth, Drizzle, PostgreSQL, сессии и BFF; сейчас без БД и секретов.
+# Сайт — P1: аккаунты
+Next.js 15 App Router, Better Auth, PostgreSQL 16, Drizzle. Ядро не вызывается.
+`/login`, `/signup` — email/пароль (10–128 символов), `/` — сессия и выход; `/api/health` не зависит от БД.
+Роль в PostgreSQL enum `admin | user`, default `user`. Входные данные регистрации роль не задают (`input: false`); пароль хранит Better Auth в account как хеш.
+
+## Настройка при деплое
+1. Передать DATABASE_URL (postgresql URL), BETTER_AUTH_SECRET (случайный секрет минимум 32 символа) и BETTER_AUTH_URL (origin сайта) через окружение. Образец пустой, настоящие значения не коммитить.
+2. Если используется compose: отдельно задать POSTGRES_PASSWORD и тот же пароль в DATABASE_URL; `docker compose -f web/docker-compose.yml up -d`. Порт только 127.0.0.1:5432, данные в ignored web/data/pg.
+3. Из корня: `npm ci`, `npm run db:migrate -w @neyra/web` с DATABASE_URL в окружении, `npm run build`, затем запуск Next (`cd web && npx next start`). Миграции до обслуживания трафика; при существующей БД сначала проверить SQL и резервную копию.
+4. При изменении схемы: `npm run db:generate -w @neyra/web`; генерация SQL не требует DATABASE_URL или живой БД.
+
+Сборка без env и соединения с БД: auth, pool и env инициализируются только при запросе; главная страница динамическая. Без runtime env вход не работает. Не логировать конфигурацию с секретами.
+Email не подтверждается, почта не отправляется. Регистрация в этом срезе открыта, каждый новый аккаунт — user; approval/invite, админка, назначение admin, OAuth, восстановление пароля и остальные режимы регистрации — следующие задачи. Не заявляется полный паритет со всей спецификацией web-v2.
+Сессии 30 дней; CSRF/origin, cookie и хеширование — Better Auth. Для настоящего деплоя нужен HTTPS и корректный публичный origin/reverse proxy.
