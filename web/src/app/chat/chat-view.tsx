@@ -4,7 +4,7 @@ import React, { useState, useRef, type FormEvent, useEffect } from 'react';
 import Link from 'next/link';
 import { Button, Badge } from '@neyra/ui';
 import { ru } from '../../i18n';
-import { resolveChatId } from '../../../lib/chat-id';
+import { resolveChatId, resolveTabKey } from '../../../lib/chat-id';
 
 export interface ChatMessageItem {
   id: string;
@@ -27,10 +27,12 @@ export function ChatView({
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   // One thread id for the whole visible conversation: without it every message opened
-  // its own short-term-memory window on the core side.
-  const [chatId] = useState(() =>
-    resolveChatId(typeof window !== 'undefined' ? window.sessionStorage : null)
-  );
+  // its own short-term-memory window on the core side. The tab key keeps the thread on
+  // reload but gives a tab opened from this one its own conversation.
+  const [chatId] = useState(() => {
+    if (typeof window === 'undefined') return resolveChatId(null, 'ssr');
+    return resolveChatId(window.sessionStorage, resolveTabKey(window));
+  });
 
   // Leaving the page must not keep the upstream WebSocket alive.
   useEffect(() => () => {

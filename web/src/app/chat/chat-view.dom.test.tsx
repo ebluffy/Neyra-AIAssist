@@ -3,9 +3,10 @@ import React from 'react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ChatView } from './chat-view';
+import { resolveTabKey } from '../../../lib/chat-id';
 
 beforeAll(() => { Element.prototype.scrollIntoView = vi.fn(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); window.name = ''; });
 
 function sseResponse(): Response {
   const body = new ReadableStream<Uint8Array>({
@@ -36,7 +37,23 @@ describe('ChatView conversation', () => {
     expect(bodies).toHaveLength(2);
     expect(bodies[0].chat_id).toBeTruthy();
     expect(bodies[1].chat_id).toBe(bodies[0].chat_id);
-    expect(sessionStorage.getItem('neyra.chat_id')).toBe(bodies[0].chat_id);
+    expect(sessionStorage.getItem(`neyra.chat_id:${resolveTabKey(window)}`)).toBe(bodies[0].chat_id);
+  });
+
+  it('opens a new thread in a tab that inherited sessionStorage', async () => {
+    sessionStorage.setItem('neyra.chat_id:opener-tab', 'old-thread');
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => sseResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
+
+    const input = screen.getByPlaceholderText('Введите сообщение…');
+    fireEvent.change(input, { target: { value: 'новая вкладка' } });
+    fireEvent.submit(input.closest('form')!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.chat_id).toBeTruthy();
+    expect(body.chat_id).not.toBe('old-thread');
   });
 
   it('aborts the request when the page unmounts mid-answer', async () => {
