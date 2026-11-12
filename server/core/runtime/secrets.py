@@ -163,6 +163,19 @@ def apply_env_secrets(cfg: dict) -> None:
     dg = _s("DEEPGRAM_API_KEY")
     if dg:
         _inject_stt_provider_key("deepgram", dg)
+        voice = _as_dict(cfg.get("voice"))
+        tts_root = _as_dict(voice.get("tts"))
+        tts = None
+        if _tts_is_modality(tts_root):
+            tts = tts_root.setdefault("cloud", {})
+        elif _voice_is_is_local_shape(voice):
+            cloud = voice.setdefault("cloud", {})
+            if isinstance(cloud, dict):
+                tts = cloud.setdefault("tts", {})
+        if isinstance(tts, dict):
+            block = tts.setdefault("deepgram", {})
+            if isinstance(block, dict):
+                block["api_key"] = dg
 
     d = _s("DISCORD_TOKEN")
     if d:

@@ -9,14 +9,14 @@ Neyra is a stable core plus plugins under `server/modules/`.
 - `server/modules/discord/`: resident Discord plugin (text + music via Lavalink 4.x, `MUSIC_*` on the bus).
 - `server/modules/*`: other extensions via the Plugin SDK (`local_voice`, `000EXAMPLE`, …).
 - `server/config/*.yaml` + `server/config.yaml`: layered configuration; HTTP bind and dashboard settings in `server/config/server.yaml` (`api:`, `dashboard:`).
-- `client/`: Tauri 2 + React scaffold (Stage 3 product client; separate from `server/dashboard/`).
+- `client/`: Tauri 2 + React desktop app (Rust `src-tauri` + UI; front moves to `apps/desktop`).
 - `devtools/mcp_server/`: optional IDE MCP (not shipped with runtime).
 
 ## Data flow
 
 1. `server/main.py` loads `server/config.yaml` and layered files under `server/config/`.
 2. `server/core/plugins/config.py` merges `server/modules/<id>/config.yaml`.
-3. `server/core/secrets_loader.py` applies secrets from `server/.env`.
+3. `server/core/runtime/secrets.py` (`apply_env_secrets`) applies secrets from `server/.env`.
 4. `server/core/runtime/server.py` starts FastAPI (Control API) and resident plugins.
 5. Web dashboard, integrations, and the future Tauri client use `/v1` and `/v1/ws/*`.
 

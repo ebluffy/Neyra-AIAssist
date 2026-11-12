@@ -4,7 +4,7 @@
 
 # Neyra - AIAssist
 
-Modular personal AI assistant: local **Neyra Server** + planned Windows/Linux control client.
+Modular personal AI assistant: local **Neyra Server** + Windows/Linux desktop client.
 
 **Repository:** [github.com/ebluffy/Neyra-AIAssist](https://github.com/ebluffy/Neyra-AIAssist)
 
@@ -18,13 +18,13 @@ Modular personal AI assistant: local **Neyra Server** + planned Windows/Linux co
 - Plugins under `server/modules/` (`discord`, `local_voice`, template `000EXAMPLE`)
 - Server web dashboard in `server/dashboard/` (React + Vite + Tailwind; access-key gate)
 - Dev MCP in `devtools/mcp_server/` (Cursor debug; not part of runtime packages)
-- Product Windows/Linux client scaffold in `client/` (Tauri MVP after server completion; not implemented)
+- Desktop client in `client/` (Tauri 2 + React): Connect/Chat/Status/Modules, voice, tray; front moves to `apps/desktop` per ADR-0001
 
 ## Layout
 
 ```text
 server/          # core, modules, dashboard, config, scripts, data, logs
-client/          # Tauri control app (scaffold until Stage 3)
+client/          # Tauri desktop app (Rust src-tauri + React UI)
 devtools/        # MCP debug server
 docs/            # PLAN, config-keys, EN/RU guides, ADRs
 ```
@@ -53,9 +53,9 @@ Docker: `docker compose up --build` (root compose includes `server/`).
 | HTTP bind, public URL, dashboard | `server/config/server.yaml` (`api:`, `dashboard:`) |
 | Secrets | `server/.env` only |
 | Config keys and defaults | `server/config/*.example.yaml`; [configuration guide](docs/en/setup/config-reference.md) |
-| English service prompts and initial ru/en messages | `server/resources/`; [PLAN §14](docs/PLAN.md#14-единая-папка-текстов-и-промптов-первая-поставка-реализована) |
-| Assistant mood and per-person relationships | SQLite + dashboard; [PLAN §7.5](docs/PLAN.md#75-mood--relations-серверный-mvp-реализован-локально-live-приёмка-открыта) |
-| Optional Responses talk sessions and persona warmup | Settings → Речь; [PLAN §12](docs/PLAN.md#12-приоритет-аудит-системных-промптов-и-связей-моделей) |
+| English service prompts and initial ru/en messages | `server/resources/`; [PLAN §8.6](docs/PLAN.md#86-тексты-промпты-и-локализация) |
+| Assistant mood and per-person relationships | SQLite + dashboard; [PLAN §8.5](docs/PLAN.md#85-mood--relations-развитие) |
+| Optional Responses talk sessions and persona warmup | Settings → Речь; [PLAN §8.2](docs/PLAN.md#82-аудит-системных-промптов-и-связей-моделей) |
 
 Roadmap and open acceptance checks: [PLAN](docs/PLAN.md). Version history: [VERSION](docs/VERSION.md).
 
@@ -65,7 +65,7 @@ No legacy dual-read: use `llm.talk_model` / `llm.brain_model` / … with `provid
 
 SPA served by the Control API from `server/dashboard/dist`.
 
-- First visit: create an access key (≥ 8 characters, or hex-32). Hash stored with PBKDF2 in SQLite under `server/data/`.
+- First visit: create an access key (≥ 32 characters). Hash stored with PBKDF2 in SQLite under `server/data/`.
 - Later visits: login with that key. On non-loopback bind, initial setup is allowed only from a loopback client.
 - Separate from API Bearer tokens (`API_TOKEN` / viewer / maint).
 
@@ -86,15 +86,15 @@ Enable/disable only via `plugin.yaml`. Settings in `server/modules/<id>/config.y
 
 Plugin SDK: [HELP.md](server/modules/000EXAMPLE/HELP.md) · [HELP-RU.md](server/modules/000EXAMPLE/HELP-RU.md)
 
-## Client (Stage 3)
+## Client
 
-`client/` is scaffold only. Stage 3 adds Tauri 2 + React MVP (Connect / Chat / Status / Modules) and public host `https://neyra.owyx.site` via frp (home server → VPS). See [docs/PLAN.md](docs/PLAN.md) §3.
+`client/` is the Tauri 2 + React desktop app: Connect / Chat / Status / Modules screens, push-to-talk and live voice, tray, local permissions and the Rust `host bridge` executor (`client/src-tauri`). Today the UI lives in `client/src`; the front moves to `apps/desktop` on the shared kit ([ADR-0001](docs/ru/architecture/adr-0001-client-monorepo.md)). Windows and Linux are supported equally; public host `https://neyra.owyx.site` is reached via frp (home server → VPS). See [docs/PLAN.md](docs/PLAN.md) §7.
 
 ## Status vs roadmap
 
 | Done | Next |
 |------|------|
-| Layout 1b, config layers 1c, dual LLM 1d, Control API Wave 1, dashboard gate | Server completion, then Windows/Linux client; see PLAN |
+| Layout 1b, config layers 1c, dual LLM 1d, Control API Wave 1, dashboard gate | UI move to `apps/desktop` + hardware acceptance; see PLAN |
 
 ## Support
 

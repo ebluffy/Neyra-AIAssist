@@ -1,6 +1,7 @@
 title = "Neyra gitleaks"
 
 # Extend default rules — bare config without this disables all rules (AR-57).
-# Historical fake token from 640c57e is ignored via .gitleaksignore fingerprint (AR-71).
+# Fake fixtures in old commits are listed in .gitleaksignore. A path allowlist
+# would hide every future secret in those files, so it is not used here.
 [extend]
 useDefault = true

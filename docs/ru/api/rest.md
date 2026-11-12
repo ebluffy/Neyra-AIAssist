@@ -42,7 +42,7 @@ REST `data.model_trace` и финальный WS `done.model_trace` содерж
 System → события памяти. Admin delete/wipe API сохранены. Activity также
 включает отдельные background reports (`kind`, nullable `parent_turn_id`),
 тайминги и usage при наличии. Хранятся отдельно 200 ходов и 200 jobs; выдача
-activity объединяет их по времени. Подробнее — [PLAN §12: телеметрия](../../PLAN.md#память-проверка-работы-и-улучшения).
+activity объединяет их по времени. Подробнее — [PLAN §8.3: телеметрия](../../PLAN.md#83-память-проверка-работы-и-улучшения).
 
 - Env: `INTERNAL_API_*` → `API_*` (старт падает, если старые имена заданы; dual-read нет).
 - `POST /v1/plugins/{id}/reload|restart` — on_demand: hot re-import; resident: soft-restart ядра (`restart_scheduled`).
@@ -65,7 +65,7 @@ activity объединяет их по времени. Подробнее — [
 - `POST /v1/config/update`
 - `POST /v1/backup/run`
 - `GET /v1/backup/list` — локальные zip-архивы BackupManager + `last_restore_apply` (`applied`/`failed`)
-- `POST /v1/backup/restore` — `{ archive_name, confirm: "RESTORE" }` (admin); сначала проверка архива, затем `pre_restore` бэкап, затем staging + pending; живая память меняется только при старте ядра (soft-restart обязателен); логи не трогаются
+- `POST /v1/backup/restore` — `{ archive_name, confirm: "<archive_name>" }` (confirm обязан совпадать с именем архива) (admin); сначала проверка архива, затем `pre_restore` бэкап, затем staging + pending; живая память меняется только при старте ядра (soft-restart обязателен); логи не трогаются
 
 ## Plugins
 - `GET /v1/plugins`

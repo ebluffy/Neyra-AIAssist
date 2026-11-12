@@ -7,10 +7,17 @@ replaced at process start via ``apply_pending_restore`` (before Memory Hub opens
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
+import re
 import shutil
+import stat
+import tempfile
+import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +30,175 @@ PENDING_FLAG = "pending.json"
 PENDING_BLOCKED = "blocked.json"
 PENDING_MEMORY = "memory"
 LAST_APPLY_NAME = "last_restore_apply.json"
+# Candidate names tried per backup timestamp: neyra-backup-<ts>.zip and -1..-N.
+ARCHIVE_NAME_LIMIT = 10000
+# Staging directories and half-published archives older than this are crash leftovers.
+STALE_ARTIFACT_SECONDS = 3600
+# Process-local bookkeeping (AR-11): a BackupManager may be constructed while the
+# server is already running (reflection engine does this), so crash-leftover cleanup
+# must run at most once per backup directory per process and must never touch a
+# staging directory that a live backup/restore in this process is still using.
+_CLEANUP_LOCK = threading.Lock()
+_CLEANED_DIRS: set[Path] = set()
+_ACTIVE_STAGING: set[Path] = set()
+_ARCHIVE_NAME = re.compile(r"^neyra-backup-(\d{8}-\d{6})(?:-(\d+))?\.zip$")
+
+
+def _open_lock_file(path: Path) -> int:
+    """Open a persistent lock inode (never a symlink) and ensure byte zero exists."""
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError(f"lock path is not a regular file: {path}")
+    if os.fstat(fd).st_size == 0:
+        os.write(fd, b"\0")
+    return fd
+
+
+def _lock_fd(fd: int, *, blocking: bool) -> bool:
+    """Acquire an exclusive cross-process lock with stdlib POSIX/Windows backends."""
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+        try:
+            msvcrt.locking(fd, mode, 1)
+        except OSError as exc:
+            if not blocking and exc.errno in {errno.EACCES, errno.EDEADLK, errno.EAGAIN}:
+                return False
+            raise
+        return True
+
+    import fcntl
+
+    mode = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+    try:
+        fcntl.flock(fd, mode)
+    except BlockingIOError:
+        if blocking:
+            raise
+        return False
+    return True
+
+
+def _unlock_fd(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextmanager
+def _file_lock(path: Path, *, blocking: bool = True):
+    fd = _open_lock_file(path)
+    locked = False
+    try:
+        locked = _lock_fd(fd, blocking=blocking)
+        yield locked
+    finally:
+        if locked:
+            _unlock_fd(fd)
+        os.close(fd)
+
+
+def _dir_key(path: Path) -> Path:
+    """Stable identity for a backup directory, resolved when possible."""
+    try:
+        return path.resolve()
+    except OSError:
+        return path.absolute()
+
+
+def _staging_lock_path(path: Path) -> Path:
+    """Return the sibling lock path so Windows can remove stale staging safely."""
+    return path.parent / f".active-staging-{path.name}.lock"
+
+
+@contextmanager
+def _live_staging(path: Path):
+    """Mark a staging directory live in this process and across processes (AR-12)."""
+    key = _dir_key(path)
+    try:
+        with _file_lock(_staging_lock_path(path)):
+            with _CLEANUP_LOCK:
+                _ACTIVE_STAGING.add(key)
+            try:
+                yield
+            finally:
+                with _CLEANUP_LOCK:
+                    _ACTIVE_STAGING.discard(key)
+    finally:
+        # Release/close the descriptor before unlinking; Windows rejects unlinking an
+        # open lock file. Owners remove their staging directory before leaving this scope.
+        if not path.exists():
+            try:
+                _staging_lock_path(path).unlink()
+            except FileNotFoundError:
+                pass
+
+
+@contextmanager
+def _live_temporary_directory(parent: Path, prefix: str):
+    """Remove a staging directory before releasing and unlinking its marker lock."""
+    path = Path(tempfile.mkdtemp(dir=str(parent), prefix=prefix))
+    with _live_staging(path):
+        try:
+            yield path
+        finally:
+            shutil.rmtree(path)
+
+
+
+def _archive_sort_key(name: str) -> tuple[str, int]:
+    """Order archives by timestamp, then by the numeric collision suffix.
+
+    Plain string ordering puts ``-10`` before ``-2`` and the base name after ``-1``.
+    """
+    match = _ARCHIVE_NAME.match(name)
+    if match is None:
+        return ("", -1)
+    return (match.group(1), int(match.group(2) or 0))
+
+
+def _atomic_publish_archive(src_zip: Path, target_zip: Path) -> None:
+    """Atomically place src_zip at target_zip without overwriting an existing file.
+
+    The fallback for filesystems without hardlinks copies to a unique temporary file
+    first so that a half-written file never appears under a name that ``list_backups``
+    and ``restore`` accept, and parallel backups cannot share one partial file.
+    """
+    publish_lock = target_zip.parent / ".neyra-backup-publish.lock"
+    try:
+        with _file_lock(publish_lock):
+            if target_zip.exists():
+                raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target_zip))
+            os.link(src_zip, target_zip)
+        return
+    except FileExistsError:
+        raise
+    except (OSError, NotImplementedError):
+        pass
+
+    with _live_temporary_directory(target_zip.parent, ".tmp_archive_staging-") as staging_root:
+        part = staging_root / "archive.zip.part"
+        with open(part, "xb") as dst_f, open(src_zip, "rb") as src_f:
+            shutil.copyfileobj(src_f, dst_f)
+            dst_f.flush()
+            os.fsync(dst_f.fileno())
+        # Serialize the final existence check and rename across processes. The target
+        # name is not visible until the complete archive is atomically published.
+        with _file_lock(publish_lock):
+            if target_zip.exists():
+                raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target_zip))
+            os.replace(part, target_zip)
 
 
 class SqliteRollbackError(RuntimeError):
@@ -49,6 +225,82 @@ class BackupManager:
         if chroma.is_absolute():
             self.sources = [chroma.parent, Path("./logs")]
         self.external_adapter: ExternalStorageAdapter | None = build_external_storage_adapter(self.config)
+        self._cleanup_leftovers_once()
+
+    def _cleanup_leftovers_once(self) -> None:
+        """Remove crash leftovers once per process for this backup dir (AR-11).
+
+        ``BackupManager`` is also constructed mid-run (``reflection/engine.py``), so
+        repeating cleanup on every construction risks deleting a staging directory
+        that another backup is still writing: a long copy keeps its files growing
+        while the directory mtime stays old. Cleanup therefore runs on first use of
+        the directory in this process only, and skips directories registered as live.
+        """
+        key = _dir_key(self.local_dir)
+        with _CLEANUP_LOCK:
+            if key in _CLEANED_DIRS:
+                return
+            _CLEANED_DIRS.add(key)
+        self.cleanup_stale_artifacts()
+
+    def cleanup_stale_artifacts(self, max_age_seconds: float = STALE_ARTIFACT_SECONDS) -> None:
+        """Remove staging dirs and partial archives left behind by a crash.
+
+        Only entries older than ``max_age_seconds`` are touched, so a concurrent
+        backup or restore keeps its own live staging directory. Staging directories
+        registered by a live run in this process are never removed, even when their
+        mtime is old.
+        """
+        cutoff = time.time() - max_age_seconds
+        try:
+            entries = list(self.local_dir.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            return
+        with _CLEANUP_LOCK:
+            live = set(_ACTIVE_STAGING)
+        for entry in entries:
+            name = entry.name
+            leftover = (
+                name.startswith(".tmp_backup_staging-")
+                or name.startswith(".tmp_restore-")
+                or name.startswith(".tmp_archive_staging-")
+                or (name.startswith(".active-staging-") and name.endswith(".lock"))
+                or name.startswith(".part-")
+                or name.endswith(".part")
+            )
+            if not leftover:
+                continue
+            if _dir_key(entry) in live:
+                continue
+            try:
+                if entry.stat().st_mtime > cutoff:
+                    continue
+                if name.startswith(".active-staging-") and name.endswith(".lock"):
+                    staging_name = name[len(".active-staging-") : -len(".lock")]
+                    if (self.local_dir / staging_name).exists():
+                        continue
+                    remove_marker = False
+                    with _file_lock(entry, blocking=False) as locked:
+                        remove_marker = locked and not (self.local_dir / staging_name).exists()
+                    if remove_marker:
+                        entry.unlink(missing_ok=True)
+                    continue
+                if entry.is_dir():
+                    marker = _staging_lock_path(entry)
+                    if marker.exists():
+                        with _file_lock(marker, blocking=False) as locked:
+                            if not locked:
+                                continue
+                            # Hold the cross-process lock through deletion. The marker
+                            # is a sibling, so Windows can remove the directory too.
+                            shutil.rmtree(entry)
+                        marker.unlink(missing_ok=True)
+                    else:
+                        shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink()
+            except OSError as e:
+                logger.warning("could not remove stale backup artifact %s: %s", entry, e)
 
     def _pending_root(self) -> Path:
         return Path("./") / PENDING_DIR_NAME
@@ -61,89 +313,106 @@ class BackupManager:
         return out
 
     def run_backup(self, reason: str = "manual") -> dict:
+        self.local_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        archive_base = self.local_dir / f"neyra-backup-{ts}"
-        tmp_root = Path("./.tmp_backup_staging")
-        if tmp_root.exists():
-            shutil.rmtree(tmp_root, ignore_errors=True)
-        tmp_root.mkdir(parents=True, exist_ok=True)
-        # Always store the memory tree as archive "memory/" (AR-42), regardless of folder name.
-        for p in self.sources:
-            if not p.exists():
-                continue
-            if p.name == "logs" or str(p).replace("\\", "/").endswith("/logs"):
-                dst = tmp_root / "logs"
-            else:
-                dst = tmp_root / "memory"
-            if p.is_dir():
-                # AR-59: never copy live Hub .db / -wal / -shm into memory/ —
-                # sqlite backup API overlay is the authoritative consistent snapshot.
-                basenames: set[str] = set()
-                for sp in self._sqlite_paths():
-                    basenames.add(sp.name)
-                    if not sp.name.endswith(("-wal", "-shm")):
-                        basenames.add(sp.name + "-wal")
-                        basenames.add(sp.name + "-shm")
 
-                def _ignore(_dir: str, names: list[str]) -> set[str]:
-                    return {n for n in names if n in basenames}
+        with _live_temporary_directory(self.local_dir, ".tmp_backup_staging-") as staging_root:
+            tmp_root = staging_root / "content"
+            tmp_root.mkdir(parents=True, exist_ok=True)
 
-                shutil.copytree(p, dst, dirs_exist_ok=True, ignore=_ignore)
-            else:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(p, dst)
-        # Ensure Hub SQLite via sqlite3 backup API (consistent snapshot; not copy2 of live WAL).
-        # Never open -wal/-shm as databases — connect/close can delete sidecar files.
-        # Use mode=ro so a failed probe cannot mutate live WAL.
-        mem_dir = tmp_root / "data" / "memory"
-        mem_dir.mkdir(parents=True, exist_ok=True)
-        copied_db: list[str] = []
-        import sqlite3
+            # Always store the memory tree as archive "memory/" (AR-42), regardless of folder name.
+            for p in self.sources:
+                if not p.exists():
+                    continue
+                if p.name == "logs" or str(p).replace("\\", "/").endswith("/logs"):
+                    dst = tmp_root / "logs"
+                else:
+                    dst = tmp_root / "memory"
+                if p.is_dir():
+                    # AR-59: never copy live Hub .db / -wal / -shm into memory/ —
+                    # sqlite backup API overlay is the authoritative consistent snapshot.
+                    basenames: set[str] = set()
+                    for sp in self._sqlite_paths():
+                        basenames.add(sp.name)
+                        if not sp.name.endswith(("-wal", "-shm")):
+                            basenames.add(sp.name + "-wal")
+                            basenames.add(sp.name + "-shm")
 
-        for p in self._sqlite_paths():
-            if not (p.exists() and p.is_file()):
-                continue
-            if p.name.endswith("-wal") or p.name.endswith("-shm"):
-                continue
-            dst = mem_dir / p.name
-            try:
-                uri = f"file:{p.resolve().as_posix()}?mode=ro"
-                src_conn = sqlite3.connect(uri, uri=True, timeout=30)
+                    def _ignore(_dir: str, names: list[str]) -> set[str]:
+                        return {n for n in names if n in basenames}
+
+                    shutil.copytree(p, dst, dirs_exist_ok=True, ignore=_ignore)
+                else:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(p, dst)
+            # Ensure Hub SQLite via sqlite3 backup API (consistent snapshot; not copy2 of live WAL).
+            # Never open -wal/-shm as databases — connect/close can delete sidecar files.
+            # Use mode=ro so a failed probe cannot mutate live WAL.
+            mem_dir = tmp_root / "data" / "memory"
+            mem_dir.mkdir(parents=True, exist_ok=True)
+            copied_db: list[str] = []
+            import sqlite3
+
+            for p in self._sqlite_paths():
+                if not (p.exists() and p.is_file()):
+                    continue
+                if p.name.endswith("-wal") or p.name.endswith("-shm"):
+                    continue
+                dst = mem_dir / p.name
                 try:
-                    dst_conn = sqlite3.connect(str(dst))
+                    uri = f"file:{p.resolve().as_posix()}?mode=ro"
+                    src_conn = sqlite3.connect(uri, uri=True, timeout=30)
                     try:
-                        src_conn.backup(dst_conn)
+                        dst_conn = sqlite3.connect(str(dst))
+                        try:
+                            src_conn.backup(dst_conn)
+                        finally:
+                            dst_conn.close()
                     finally:
-                        dst_conn.close()
-                finally:
-                    src_conn.close()
-                copied_db.append(p.name)
-                # API snapshot is consistent — do not copy live -wal/-shm.
-            except Exception as e:
-                logger.warning("sqlite backup API failed for %s (%s); falling back to copy2", p.name, e)
-                shutil.copy2(p, dst)
-                copied_db.append(p.name)
-                for suffix in ("-wal", "-shm"):
-                    side = Path(str(p) + suffix)
-                    if side.exists() and side.is_file():
-                        shutil.copy2(side, mem_dir / side.name)
-                        copied_db.append(side.name)
-        mem = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
-        chroma = Path(str(mem.get("chroma_db_path") or "./data/memory/chroma_db"))
-        manifest = {
-            "reason": reason,
-            "sqlite_files": copied_db,
-            "sqlite_path": str(mem.get("sqlite_path") or "./data/memory/neyra_memory.db"),
-            "chroma_db_path": str(chroma),
-            "memory_archive_dir": "memory",
-            "rag_write_mode": mem.get("rag_write_mode"),
-        }
-        (tmp_root / "backup_manifest.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        zip_path = Path(shutil.make_archive(str(archive_base), "zip", root_dir=str(tmp_root)))
-        shutil.rmtree(tmp_root, ignore_errors=True)
+                        src_conn.close()
+                    copied_db.append(p.name)
+                    # API snapshot is consistent — do not copy live -wal/-shm.
+                except Exception as e:
+                    logger.warning("sqlite backup API failed for %s (%s); falling back to copy2", p.name, e)
+                    shutil.copy2(p, dst)
+                    copied_db.append(p.name)
+                    for suffix in ("-wal", "-shm"):
+                        side = Path(str(p) + suffix)
+                        if side.exists() and side.is_file():
+                            shutil.copy2(side, mem_dir / side.name)
+                            copied_db.append(side.name)
+            mem = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
+            chroma = Path(str(mem.get("chroma_db_path") or "./data/memory/chroma_db"))
+            manifest = {
+                "reason": reason,
+                "sqlite_files": copied_db,
+                "sqlite_path": str(mem.get("sqlite_path") or "./data/memory/neyra_memory.db"),
+                "chroma_db_path": str(chroma),
+                "memory_archive_dir": "memory",
+                "rag_write_mode": mem.get("rag_write_mode"),
+            }
+            (tmp_root / "backup_manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temp_zip = Path(shutil.make_archive(str(staging_root / "archive"), "zip", root_dir=str(tmp_root)))
+
+            target_path: Path | None = None
+            candidates = [self.local_dir / f"neyra-backup-{ts}.zip"]
+            candidates.extend(self.local_dir / f"neyra-backup-{ts}-{i}.zip" for i in range(1, ARCHIVE_NAME_LIMIT))
+            for cand in candidates:
+                try:
+                    _atomic_publish_archive(temp_zip, cand)
+                    target_path = cand
+                    break
+                except FileExistsError:
+                    continue
+
+            if target_path is None:
+                raise RuntimeError(f"could not allocate unique backup archive name for timestamp {ts}")
+
+            zip_path = target_path
+
         external_ref = None
         if self.external_adapter is not None:
             try:
@@ -163,7 +432,11 @@ class BackupManager:
         rows: list[dict] = []
         if not self.local_dir.is_dir():
             return rows
-        for p in sorted(self.local_dir.glob("neyra-backup-*.zip"), key=lambda x: x.name, reverse=True):
+        for p in sorted(
+            self.local_dir.glob("neyra-backup-*.zip"),
+            key=lambda x: _archive_sort_key(x.name),
+            reverse=True,
+        ):
             if not p.is_file():
                 continue
             st = p.stat()
@@ -479,11 +752,7 @@ class BackupManager:
         mem_dst = self._memory_root()
         self._assert_safe_memory_dst(mem_dst)
 
-        unpack_root = Path("./.tmp_restore")
-        if unpack_root.exists():
-            shutil.rmtree(unpack_root, ignore_errors=True)
-        unpack_root.mkdir(parents=True, exist_ok=True)
-        try:
+        with _live_temporary_directory(self.local_dir, ".tmp_restore-") as unpack_root:
             shutil.unpack_archive(str(src), str(unpack_root), "zip")
             built = self._build_memory_staging(unpack_root, unpack_root / ".neyra_memory_staging")
             if built is None:
@@ -515,8 +784,6 @@ class BackupManager:
                 "applied": False,
                 "created_at": created_at,
             }
-        finally:
-            shutil.rmtree(unpack_root, ignore_errors=True)
 
     def _write_pending_blocked(
         self,

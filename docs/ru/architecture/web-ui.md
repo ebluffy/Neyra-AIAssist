@@ -1,5 +1,7 @@
 # Web UI (дашборд на React)
 
+> **Устаревает:** продуктовый веб переходит на собственный клиент v2 — см. [web-v2.md](web-v2.md). Этот документ описывает текущий ops-dashboard до миграции.
+
 Дашборд — SPA на **React + Vite + Tailwind CSS**, раздаётся тем же процессом FastAPI, что и ядро (из корня репо: `python server/main.py`, или из `server/` cwd: `python main.py`). Исходники — `server/dashboard/src/`, сборка — `server/dashboard/dist`.
 
 HTTP-стек живёт в **`server/core/api/`** (Control API), это не модуль-плагин. Bind, публичный URL и поведение дашборда — в **`server/config/server.yaml`** (`api:`, `dashboard:`).
@@ -12,21 +14,25 @@ HTTP-стек живёт в **`server/core/api/`** (Control API), это не м
 
 Перед любой страницей дашборда SPA проверяет **ключ доступа**:
 
-1. **Первый визит** (ключ ещё не задан): создайте ключ (минимум **32** символа; удобный вариант — «Сгенерировать hex (32)»). На сервере хранится хеш **PBKDF2** в `server/data/dashboard_auth.sqlite`.
+1. **Первый визит** (ключ ещё не задан): создайте ключ (минимум **32** символа; удобный вариант — «Сгенерировать (64 hex)»). На сервере хранится хеш **PBKDF2** в `server/data/dashboard_auth.sqlite`.
 2. **Повторные визиты:** вход тем же ключом. После login SPA держит **session token** в **`sessionStorage`** (хеши сессий также в SQLite — переживают рестарт процесса).
 3. **`POST /v1/dashboard/auth/setup`** разрешён только пока ключ не задан. Без Bearer — только с консольного loopback (нет CF/X-Real); с публичного края — primary `API_TOKEN`.
 4. Login/setup выдаёт **`session_token`**; SPA шлёт его как Bearer (admin). Сырой ключ **не** принимается как Bearer. Logout отзывает session.
 5. Если session истекла или отозвана, любой `/v1/*` с **401** очищает session и возвращает на экран входа (без «залипших» ошибок на экранах).
 
+Сессия живёт 12 часов. Login и rotate отзывают все прежние сессии, поэтому после входа на одном устройстве другая вкладка или второй браузер получит 401 и вернётся на экран входа — это ожидаемо.
+
 ## Разделы UI
 
 | Nav | Route | Назначение |
 |-----|-------|------------|
-| Статус | `/status` | health, models, balance, soft-restart (`/dashboard` → redirect) |
+| Статус | `/status` | health, models, balance, soft-restart (`/` и `/home` → redirect) |
 | Модули | `/modules` | list/toggle/config/invoke/reload/restart (`/plugins` → redirect; API всё ещё `/v1/plugins`) |
 | Память | `/memory` | stats, people, diary, search, LTM |
 | Система | `/system` | meta, backup, DLQ summary |
+| Бэкапы | `/backups` | вкладка «backup» экрана «Система» |
 | Вебхуки | `/webhooks` | routes, deliveries, DLQ |
+| 404 | `*` | NotFoundScreen |
 | Настройки | `/settings` | доступ (rotate / logout-all), тема/плотность, `GET/POST` runtime config (allowlist) |
 | API Docs | `/api-docs` | Swagger / ReDoc / Markdown, оглавление |
 

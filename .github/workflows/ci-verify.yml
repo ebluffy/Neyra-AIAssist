@@ -13,6 +13,30 @@ permissions:
   contents: read
 
 jobs:
+  offline-control-api-smoke:
+    name: Offline server → Control API → Node client
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Install offline smoke dependencies
+        run: |
+          grep -E '^(fastapi|uvicorn|httpx|pyyaml|python-multipart)([<>=!~]|$)' server/requirements.txt |
+            python -m pip install -r /dev/stdin websockets
+          npm ci --prefix client
+      - name: Smoke HTTPS + WSS on loopback (mock agent, no services)
+        run: |
+          python devtools/smoke_control_api.py
+          python -m unittest discover -s devtools -p test_smoke_control_api.py
+
   layout:
     name: Layout & tree
     runs-on: ubuntu-latest
@@ -168,10 +192,13 @@ jobs:
           pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart
       - name: Run pytest
         run: cd server && pytest -q
+      - name: Performance report offline tests
+        run: python -m unittest discover -s devtools -p 'test_perf_report.py'
 
   dashboard:
     name: Dashboard lint/typecheck/test/build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: server/dashboard
@@ -195,7 +222,16 @@ jobs:
         run: npm run test -- --run
       - name: Build
         run: npm run build
+      - name: Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install Playwright Chromium
+        timeout-minutes: 5
         run: npx playwright install --with-deps chromium
       - name: E2E smoke
         run: |

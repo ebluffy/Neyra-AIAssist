@@ -5,8 +5,8 @@
 - HTTP API: `/v1/*`
 - WebSocket:
 
-  - `/v1/ws/chat`
-  - `/v1/ws/audio`
+  - `/v1/ws/chat` — рабочий канал чата.
+  - `/v1/ws/audio` — **канал-заглушка**: сокет принимает аудио и отвечает `transcript.interim`/`transcript.final`, но текст распознавания — литерал `[stub] received N chunks / M bytes`, настоящего STT за ним нет, а `/v1/meta` отдаёт `ws_audio_stub: true` (`server/core/api/app.py:4308-4390`). Рабочее аудио идёт через `/v1/desktop/voice`; не публикуйте `/v1/ws/audio` как рабочий канал.
 
 ## Локальная разработка
 

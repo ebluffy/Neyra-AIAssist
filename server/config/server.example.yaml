@@ -37,6 +37,11 @@ api:
   audit_log_enabled: true
   audit_log_path: "./logs/api_audit.jsonl"
 
+  # EN: Stable desktop owner namespace for /v1/desktop/* (history/memory). Survives API token rotation.
+  #     Distinct values isolate owners; default "admin" is fine for a personal assistant.
+  # RU: Стабильный владелец десктоп-сессий (история/память). Не зависит от значения API-токена.
+  # desktop_owner_id: "admin"
+
   # EN: Allow POST /v1/debug/lifecycle (stop/restart process). Prefer POST /v1/system/restart (maint+).
   # RU: Разрешить debug lifecycle. Предпочтительнее POST /v1/system/restart (maint+).
   debug_lifecycle_enabled: false
