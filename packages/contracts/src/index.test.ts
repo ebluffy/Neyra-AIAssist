@@ -10,3 +10,13 @@ it('bounds memory recall', () => { expect(MemoryRecallRequestSchema.parse({}).li
 it('requires both texts for memory write', () => { expect(MemoryWriteRequestSchema.safeParse({user_text:'x',assistant_text:'y'}).success).toBe(true); expect(MemoryWriteRequestSchema.safeParse({user_text:'x'}).success).toBe(false); });
 it('validates desktop IDs and tools', () => { const m={device_id:uuid,session_id:uuid,name:'PC',platform:'linux-x11'}; expect(DesktopManifestSchema.safeParse(m).success).toBe(true); expect(DesktopManifestSchema.safeParse({...m,tools:['shell']}).success).toBe(false); });
 it('distinguishes capture stages and clip correlation', () => { expect(CaptureEventSchema.safeParse({type:'capture.failed',code:'busy',stage:'start'}).success).toBe(true); expect(CaptureEventSchema.safeParse({type:'capture.failed',code:'busy',stage:'other'}).success).toBe(false); expect(CaptureEventSchema.safeParse({type:'voice.clip',audio:'x',duration_ms:100,request_id:uuid}).success).toBe(true); });
+
+it('keeps the capture number of a failed stop', () => {
+  const parsed = CaptureEventSchema.parse({ type: 'capture.failed', code: 'busy', stage: 'stop', seq: 3 });
+  expect(parsed).toMatchObject({ seq: 3 });
+});
+
+it('does not accept the REST-only platform field on the WS chat', () => {
+  expect(WsChatMessageSchema.safeParse({ type: 'chat', text: 'x', platform: 'web' }).success).toBe(false);
+  expect(WsChatMessageSchema.safeParse({ type: 'chat', text: 'x', username: 'u' }).success).toBe(true);
+});
