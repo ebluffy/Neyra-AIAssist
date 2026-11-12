@@ -279,7 +279,9 @@ export function useDesktop() {
         }
         if (event.type === 'devices') setDevices(event.devices ?? []);
         if (event.type === 'voice.clip') {
-          if (typeof event.request_id === 'string' && event.request_id) {
+          // Only the capture being committed right now owns its clip: a late clip of the
+          // previous turn (Rust emits it after finish) must not become this capture's id.
+          if (captureStopping.current && captureIntent.current === 'commit' && typeof event.request_id === 'string' && event.request_id) {
             lastVoiceClipRequestId.current = event.request_id;
           }
           if (event.audio) {

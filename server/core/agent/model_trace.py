@@ -121,9 +121,10 @@ class ModelActivity:
                 if why is None:
                     continue
                 # The turn start is the wrong clock: a turn that ran for ten minutes and
-                # died with 429 a second ago is fresh, not stale. Prefer the end of the
-                # failing call, then the turn end, then the start as a last resort.
-                stamps = [str(v) for v in (report.get("ended_at"), report.get("timestamp")) if v]
+                # died with 429 a second ago is fresh, not stale. Use the end of the failed
+                # rate-limit call itself; the turn end and start are only a fallback, so a
+                # later unrelated failure cannot make an old 429 look fresh.
+                stamps: list[str] = []
                 for call in report.get("calls") or []:
                     if not isinstance(call, dict) or call.get("status") != "failed":
                         continue
@@ -133,6 +134,12 @@ class ModelActivity:
                         str(call.get("error_class") or "")
                     ):
                         stamps.append(str(call["ended_at"]))
+                if not stamps:
+                    stamps = [
+                        str(value)
+                        for value in (report.get("ended_at"), report.get("timestamp"))
+                        if value
+                    ]
                 moments: list[tuple[float, str]] = []
                 for value in stamps:
                     try:

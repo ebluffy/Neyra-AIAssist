@@ -76,6 +76,20 @@ class TestRecentProviderRateLimit:
         assert hit is not None
         assert hit["at"] == report["ended_at"]
 
+    def test_old_rate_limit_is_not_refreshed_by_a_later_turn_end(self, stub_agent):
+        """Время берётся у самого rate-limit-вызова, а не у конца хода (P3 ревью)."""
+        from core.agent.model_trace import recent_provider_rate_limit
+
+        now = datetime.now(timezone.utc)
+        report = _failed_report(minutes_ago=40, http_status=429,
+                                error_class="RateLimitError")
+        report["ended_at"] = now.isoformat()
+        report["calls"][0]["ended_at"] = (now - timedelta(minutes=20)).isoformat()
+        report["calls"].append({"status": "failed", "error_class": "TimeoutError",
+                                "ended_at": now.isoformat()})
+        _seed(stub_agent, report)
+        assert recent_provider_rate_limit(stub_agent) is None
+
     def test_stale_long_turn_without_failure_time_stays_ignored(self, stub_agent):
         from core.agent.model_trace import recent_provider_rate_limit
 
