@@ -277,3 +277,14 @@ def test_first_signed_turn_provisions_web_person(tmp_path, api_config, stub_moni
         assert agent.memory_hub.find_person("", discord_id="web-user-1") is None
     finally:
         agent.memory_hub.close()
+
+
+def test_provisioning_failure_is_reported(client, stub_agent, auth_headers):
+    """Сбой хранилища личности — явный 503, а не тихий ход без карточки."""
+    from unittest.mock import MagicMock
+
+    stub_agent.memory_hub = MagicMock()
+    stub_agent.memory_hub.ensure_person_for_account = MagicMock(side_effect=RuntimeError("storage down"))
+    response = client.get('/v1/web/me', headers=headers(auth_headers))
+    assert response.status_code == 503
+    assert response.json()['error']['code'] == 'identity_storage_unavailable'

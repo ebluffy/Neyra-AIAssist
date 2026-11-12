@@ -1588,7 +1588,14 @@ def build_app(
                     if scope["type"] == "websocket":
                         from starlette.websockets import WebSocket as StarletteWebSocket
 
-                        await StarletteWebSocket(scope, receive, send).close(code=1011)
+                        socket = StarletteWebSocket(scope, receive, send)
+                        if "websocket.http.response" in scope.get("extensions", {}):
+                            await socket.send_denial_response(JSONResponse(
+                                status_code=503, content={"ok": False, "error": {"code": "identity_storage_unavailable", "message": "Identity storage unavailable"}},
+                            ))
+                        else:
+                            # No denial extension: the handshake fails before accept (client sees 403).
+                            await socket.close(code=1011)
                     else:
                         tid = _trace_id(Request(scope, receive))
                         response = JSONResponse(
