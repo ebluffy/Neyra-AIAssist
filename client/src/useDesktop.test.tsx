@@ -864,6 +864,16 @@ describe('PTT deferred IPC lifecycle', () => {
     expect(app.recording).toBe(false);
   });
 
+  it('accepts the transcribing of a new short tap after a Stop', async () => {
+    await mount();
+    await act(async () => { await app.beginRecording(); });          // capture 1
+    await event('cancelled', { scope: 'all' });
+    // A short hotkey tap never announces recording, so its outcome carries a new number only.
+    await event('transcribing', { seq: 2 });
+    expect(app.thinking).toBe(true);
+    expect(app.recording).toBe(false);
+  });
+
   it.each(['empty_capture', 'turn_busy', 'microphone_unavailable', 'no_capture', 'voice_unavailable'])(
     'hotkey record_stop error %s clears recording and prevents 30s timer stop (AR-15)',
     async errorCode => {

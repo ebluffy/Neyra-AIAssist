@@ -409,7 +409,10 @@ pub(crate) fn apply_settings(
         },
     )?;
     if changed {
+        // Permissions changed: a running capture is closed here, so the window must learn
+        // about it instead of keeping a recording that no longer exists.
         stop_inner(state)?;
+        let _ = app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}));
         if screen_changed {
             screen::reset();
         }
@@ -1020,6 +1023,8 @@ fn reply_audio(app: &tauri::AppHandle, packet: &Value) -> bool {
         character::emit_mouth(app, &bytes);
         if state.player.segment(generation, number, bytes).is_err() {
             let _ = stop_inner(&state);
+            // Playback died and the capture was closed with it: end it in the window too.
+            let _ = app.emit("desktop-event", json!({"type":"cancelled","scope":"all"}));
             let _ = app.emit(
                 "desktop-event",
                 json!({"type":"error","code":"audio_backpressure"}),
