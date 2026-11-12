@@ -675,8 +675,15 @@ class NeyraAgent:
         return handle_websearch_trigger(self.tools, text)
 
     def _resolve_internal_user_id(
-        self, discord_user_id: Optional[str], username: Optional[str]
+        self,
+        discord_user_id: Optional[str],
+        username: Optional[str],
+        person_id: Optional[str] = None,
     ) -> str:
+        # A signed web identity already carries the canonical person_id: use it as is,
+        # otherwise the web user would appear as a second person (discord/console).
+        if person_id:
+            return person_id
         rid = self.identity.resolve_from_discord(discord_user_id)
         if rid:
             return rid
@@ -734,6 +741,7 @@ class NeyraAgent:
         author_display_name: Optional[str] = None,
         avatar_url: Optional[str] = None,
         discord_context: DiscordContext | None = None,
+        person_id: Optional[str] = None,
     ) -> dict:
         """
         Основной метод чата.
@@ -763,7 +771,7 @@ class NeyraAgent:
             trace.affect_generations = await asyncio.to_thread(hub.affect_generations)
         token = ACTIVE_TRACE.set(trace)
         try:
-            await self._enter_talk_session(trace, discord_user_id, username, channel_id, discord_context)
+            await self._enter_talk_session(trace, discord_user_id, username, channel_id, discord_context, person_id)
             out = await run_chat(
                 self, user_message=user_message, username=username,
                 discord_user_id=discord_user_id, vision_images=vision_images,
@@ -805,6 +813,7 @@ class NeyraAgent:
         author_display_name: Optional[str] = None,
         avatar_url: Optional[str] = None,
         discord_context: DiscordContext | None = None,
+        person_id: Optional[str] = None,
     ):
         """
         Стриминговый чат — yield'ит токены сразу как модель их генерирует.
@@ -840,7 +849,7 @@ class NeyraAgent:
             discord_context=discord_context,
         )
         try:
-            await self._enter_talk_session(trace, discord_user_id, username, channel_id, discord_context)
+            await self._enter_talk_session(trace, discord_user_id, username, channel_id, discord_context, person_id)
             async for chunk in stream:
                 if chunk.get("type") in ("done", "error"):
                     if trace.talk_session is not None and chunk["type"] == "done":
@@ -872,14 +881,14 @@ class NeyraAgent:
                     finish(self, trace, "cancelled")
                 ACTIVE_TRACE.reset(token)
 
-    async def _enter_talk_session(self, trace, user_id, username, channel_id, discord_context=None):
+    async def _enter_talk_session(self, trace, user_id, username, channel_id, discord_context=None, person_id=None):
         from core.agent.talk_sessions import ENABLED, sessions_for
         from core.agent.conversation_scope import conversation_scope
         from core.runtime.features import feature_enabled
         trace.queue_wait_ms = 0.0
         if not user_id:
             return
-        owner = self._resolve_internal_user_id(user_id, username)
+        owner = self._resolve_internal_user_id(user_id, username, person_id)
         trace.memory_owner_id = owner
         scope = trace.conversation_scope = conversation_scope(owner, channel_id, discord_context)
         enabled = feature_enabled(self.config, ENABLED)

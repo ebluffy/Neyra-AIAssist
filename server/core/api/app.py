@@ -1598,6 +1598,7 @@ def build_app(
     @app.post("/v1/chat")
     async def v1_chat(body: ChatRequest, request: Request, _role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
+        web_identity = getattr(request.state, "web_identity", None)
         out = await agent.chat(
             user_message=body.text,
             username=body.username or "api_user",
@@ -1605,6 +1606,7 @@ def build_app(
             channel_id=body.channel_id,
             author_display_name=body.author_display_name,
             avatar_url=body.avatar_url,
+            person_id=web_identity.person_id if web_identity is not None else None,
             **({"discord_context": body.discord_context} if body.discord_context is not None else {}),
         )
         return {"ok": True, "trace_id": trace_id, "data": out}
@@ -4353,6 +4355,7 @@ def build_app(
             ws_disp = parsed.author_display_name or parsed.display_name
             ws_author_disp = str(ws_disp).strip() if ws_disp else None
 
+            ws_identity = websocket.scope.get("state", {}).get("web_identity")
             try:
                 async for chunk in agent.chat_stream(
                     text,
@@ -4360,6 +4363,7 @@ def build_app(
                     discord_user_id=platform_user_id,
                     channel_id=channel_id,
                     author_display_name=ws_author_disp,
+                    person_id=getattr(ws_identity, "person_id", None),
                     **({"discord_context": parsed.discord_context} if parsed.discord_context is not None else {}),
                 ):
                     if chunk.get("type") == "token":

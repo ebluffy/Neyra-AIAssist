@@ -166,3 +166,18 @@ def test_identity_cannot_use_anonymous_console_exception(client, api_config, aut
         api_config['api'][key] = ''
     assert client.get('/v1/meta').status_code == 200
     assert client.get('/v1/web/me', headers=headers(auth_headers)).status_code == 401
+
+
+def test_signed_identity_wins_over_platform_fallback():
+    """Память веб-пользователя идёт по person_id из подписанного токена."""
+    from types import SimpleNamespace
+
+    from core.neyra import NeyraAgent
+    from core.runtime.identity import UnifiedIdentityMapper
+
+    stub = SimpleNamespace(identity=UnifiedIdentityMapper)
+    resolve = NeyraAgent._resolve_internal_user_id.__get__(stub, NeyraAgent)
+    person = "11111111-1111-4111-8111-111111111111"
+    discord = UnifiedIdentityMapper.resolve_from_discord("discord-42")
+    assert resolve("discord-42", "someone") == discord
+    assert resolve("discord-42", "someone", person) == person
