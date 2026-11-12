@@ -175,6 +175,9 @@ pub struct Desktop {
     segments: Mutex<voice::Segments>,
     live: Mutex<Option<Live>>,
     live_run: AtomicU64,
+    /// True while the global PTT hotkey owns the running capture. The hotkey release stops only
+    /// its own capture, never one the window button started (AR-19).
+    hotkey_capture: AtomicBool,
 }
 struct Live {
     capture: audio::LiveCapture,
@@ -247,6 +250,23 @@ fn server_url(profile: &Profile, path: &str) -> Result<url::Url, String> {
 
 fn manifest(state: &Desktop, p: &Profile) -> Result<Value, String> {
     let s = state.settings.lock().map_err(lock_error)?;
+    // Runtime-only: names, trigger texts and tool names. Never arguments, paths or regexes.
+    let command_info = state
+        .commands
+        .lock()
+        .map(|c| commands::manifest_info(c.entries()))
+        .unwrap_or_default();
+    let tools = if state.screen_locked.load(Ordering::SeqCst) {
+        vec![]
+    } else {
+        policy::capabilities(&s.permissions)
+    };
+    Ok(manifest_value(&s, p, tools, command_info))
+}
+
+/// The capability document the server receives. Voice, capture, keyring and device settings stay
+/// on this machine, so they must never appear here (AR-17, guarded by a test).
+fn manifest_value(settings: &Settings, p: &Profile, tools: Vec<String>, commands: Value) -> Value {
     let platform = if cfg!(windows) {
         "windows"
     } else if cfg!(target_os = "macos") {
@@ -256,15 +276,7 @@ fn manifest(state: &Desktop, p: &Profile) -> Result<Value, String> {
     } else {
         "linux-x11"
     };
-    // Runtime-only: names, trigger texts and tool names. Never arguments, paths or regexes.
-    let command_info = state
-        .commands
-        .lock()
-        .map(|c| commands::manifest_info(c.entries()))
-        .unwrap_or_default();
-    Ok(
-        json!({"protocol":"neyra.desktop.v1","device_id":s.device_id,"session_id":p.session_id,"name":s.device_name,"platform":platform,"tools":if state.screen_locked.load(Ordering::SeqCst){vec![]}else{policy::capabilities(&s.permissions)},"commands":command_info,"features":["command_drafts"]}),
-    )
+    json!({"protocol":"neyra.desktop.v1","device_id":settings.device_id,"session_id":p.session_id,"name":settings.device_name,"platform":platform,"tools":tools,"commands":commands,"features":["command_drafts"]})
 }
 
 #[tauri::command]
@@ -432,21 +444,30 @@ fn store_token(state: State<'_, Desktop>, profile_id: String, token: String) -> 
 }
 
 #[tauri::command]
+/// The renderer may reach read-only GETs and the single POST restart. A query string on a
+/// mutating call is refused: nothing in the contract uses one, and it hides the real target
+/// (AR-4: `POST /v1/system/restart?...` used to pass the allowlist).
+fn api_route_allowed(method: &str, path: &str) -> bool {
+    if !method.eq_ignore_ascii_case("GET") && path.contains('?') {
+        return false;
+    }
+    let route_path = path.split_once('?').map(|(p, _)| p).unwrap_or(path);
+    matches!(
+        (method, route_path),
+        (
+            "GET",
+            "/v1/health" | "/v1/status" | "/v1/plugins" | "/openapi.json" | "/v1/logs"
+        ) | ("POST", "/v1/system/restart")
+    )
+}
+
 async fn api(
     state: State<'_, Desktop>,
     profile_id: String,
     path: String,
     method: String,
 ) -> Result<Value, String> {
-    let route_path = path.split_once('?').map(|(p, _)| p).unwrap_or(&path);
-    let allowed = matches!(
-        (method.as_str(), route_path),
-        (
-            "GET",
-            "/v1/health" | "/v1/status" | "/v1/plugins" | "/openapi.json" | "/v1/logs"
-        ) | ("POST", "/v1/system/restart")
-    );
-    if !allowed {
+    if !api_route_allowed(&method, &path) {
         return Err("API-действие недоступно".into());
     }
 
@@ -1716,6 +1737,7 @@ fn stop_inner_locked(state: &Desktop) -> Result<(), String> {
     // Dropping the senders wakes any running quick command, which then reports "stopped".
     state.waiters.lock().map_err(lock_error)?.clear();
     if let Some(recording) = state.recording.lock().map_err(lock_error)?.take() {
+        state.hotkey_capture.store(false, Ordering::SeqCst);
         std::thread::spawn(move || {
             let _ = recording.finish();
         });
@@ -1796,6 +1818,8 @@ async fn record_start(
     let meter_stop = started.meter_stop.clone();
     *recording = Some(started);
     drop(recording);
+    // A capture started from the window is not owned by the global PTT hotkey (AR-19).
+    state.hotkey_capture.store(false, Ordering::SeqCst);
     std::thread::spawn(move || {
         while !meter_stop.load(Ordering::Relaxed) {
             let db = level.load(Ordering::Relaxed) as f32 / 10.0;
@@ -1897,6 +1921,8 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
         .map_err(|e| CaptureError::internal(lock_error(e)))?
         .take()
         .ok_or(CaptureError::NoCapture)?;
+    // Once the capture is closed, a later hotkey release must not try to stop it again (AR-19).
+    state.hotkey_capture.store(false, Ordering::SeqCst);
     let request_id = match start_turn_typed(&state) {
         Ok(id) => id,
         Err(error) => {
@@ -1948,6 +1974,7 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
 #[tauri::command]
 async fn record_cancel(state: State<'_, Desktop>) -> Result<(), String> {
     let recording = state.recording.lock().map_err(lock_error)?.take();
+    state.hotkey_capture.store(false, Ordering::SeqCst);
     if let Some(recording) = recording {
         tauri::async_runtime::spawn_blocking(move || {
             let _ = recording.finish();
@@ -1957,8 +1984,12 @@ async fn record_cancel(state: State<'_, Desktop>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn audio_devices() -> audio::AudioDevices {
-    audio::list_audio_devices()
+async fn audio_devices() -> Result<audio::AudioDevices, String> {
+    // cpal enumeration blocks on the OS audio server; keep it off the main thread so the window,
+    // PTT and the 30 s limit keep responding while the list loads (AR-20).
+    tauri::async_runtime::spawn_blocking(audio::list_audio_devices)
+        .await
+        .map_err(|_| "Не удалось получить список устройств".to_string())
 }
 
 #[tauri::command]
@@ -2109,6 +2140,7 @@ pub fn run() {
                 segments: Mutex::new(voice::Segments::default()),
                 live: Mutex::new(None),
                 live_run: AtomicU64::new(0),
+                hotkey_capture: AtomicBool::new(false),
             });
             monitor_session(app.handle().clone());
             setup_shortcuts(app.handle());
@@ -2283,11 +2315,27 @@ fn setup_shortcuts(app: &tauri::AppHandle) {
                 let pressed = event.state == ShortcutState::Pressed;
                 tauri::async_runtime::spawn(async move {
                     let state = handle.state::<Desktop>();
+                    if pressed {
+                        // A capture already runs (window button or this hotkey). A second start
+                        // would fail with already_recording and freeze the running capture, so
+                        // the press is ignored instead of reported (AR-19).
+                        let busy = state.recording.lock().map_or(true, |slot| slot.is_some());
+                        if busy {
+                            return;
+                        }
+                    } else if !state.hotkey_capture.load(Ordering::SeqCst) {
+                        // The window button owns this capture; the key release must not stop it.
+                        return;
+                    }
                     let result = if pressed {
                         record_start(handle.clone(), state).await
                     } else {
                         record_stop(handle.clone(), state).await
                     };
+                    let state = handle.state::<Desktop>();
+                    state
+                        .hotkey_capture
+                        .store(pressed && result.is_ok(), Ordering::SeqCst);
                     match result {
                         Ok(()) => {
                             let _ = handle.emit(
@@ -3670,6 +3718,55 @@ mod tests {
             assert!(
                 server_url(&p, "/v1/logs?source=system").is_err(),
                 "Expected error for {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn api_allowlist_refuses_query_on_mutating_calls() {
+        assert!(api_route_allowed(
+            "GET",
+            "/v1/logs?source=plugin%3Atelegram&tail=500"
+        ));
+        assert!(api_route_allowed("GET", "/v1/health"));
+        assert!(api_route_allowed("POST", "/v1/system/restart"));
+        assert!(!api_route_allowed("POST", "/v1/system/restart?now=1"));
+        assert!(!api_route_allowed("POST", "/v1/logs"));
+        assert!(!api_route_allowed("GET", "/v1/memory"));
+        assert!(!api_route_allowed("GET", "/v1/system/restart"));
+    }
+
+    #[test]
+    fn manifest_never_exposes_voice_or_device_settings() {
+        let settings = Settings::default();
+        let profile = Profile {
+            id: "p1".into(),
+            name: "Test".into(),
+            url: "http://127.0.0.1:8787".into(),
+            session_id: "s1".into(),
+        };
+        let value = manifest_value(&settings, &profile, vec!["files.read".into()], json!([]));
+        let object = value.as_object().expect("manifest must stay an object");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "commands",
+                "device_id",
+                "features",
+                "name",
+                "platform",
+                "protocol",
+                "session_id",
+                "tools"
+            ]
+        );
+        let text = value.to_string();
+        for forbidden in ["voice", "input_device", "output_device", "keyring", "token"] {
+            assert!(
+                !text.contains(forbidden),
+                "{forbidden} must never reach the server manifest"
             );
         }
     }

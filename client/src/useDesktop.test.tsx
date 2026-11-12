@@ -731,6 +731,31 @@ describe('PTT deferred IPC lifecycle', () => {
     },
   );
 
+  it.each(['manual', 'limit'])('keeps UI capture stoppable after a rejected foreign hotkey start: %s', async path => {
+    await mount();
+    await act(async () => { await app.beginRecording(); });
+    await event('capture.failed', { stage: 'start', code: 'already_recording' });
+    expect(app.recording).toBe(true);
+    if (path === 'manual') await act(async () => { await app.finishRecording(); });
+    else await tick(30000);
+    expect(ipc.invoke.mock.calls.filter(([name]) => name === 'record_stop')).toHaveLength(1);
+  });
+
+  it.each(['manual', 'opening'])('shows capture rejection instead of an unrelated player error: %s', async path => {
+    await mount();
+    const start = path === 'opening' ? defer('record_start') : null;
+    const stop = defer('record_stop');
+    let starting!: Promise<void>;
+    await act(async () => { starting = app.beginRecording(); if (!start) await starting; });
+    let finishing!: Promise<void>;
+    await act(async () => { finishing = app.finishRecording(); });
+    if (start) await act(async () => { start.resolve(); });
+    await event('error', { source: 'player', code: 'audio_unavailable' });
+    await act(async () => { stop.reject('Запись пустая'); await starting; await finishing; });
+    expect(app.error).toBe('Запись пустая');
+    expect(app.thinking).toBe(false);
+  });
+
   it.each(['empty_capture', 'turn_busy', 'microphone_unavailable', 'no_capture', 'voice_unavailable'])(
     'hotkey record_stop error %s clears recording and prevents 30s timer stop (AR-15)',
     async errorCode => {

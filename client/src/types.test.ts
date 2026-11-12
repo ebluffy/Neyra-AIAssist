@@ -71,3 +71,14 @@ describe('overlay capability labels', () => {
     expect(capabilityLabel('other')).toBe('неизвестно');
   });
 });
+
+describe('HTTP error context', () => {
+  it.each(['HTTP 400', 'Сервер вернул HTTP 400'])('does not label a generic %s as a log error', error => {
+    expect(formatError(error)).toBe('Неверный запрос (HTTP 400).');
+  });
+});
+
+it('uses the actual API log error body, not just its status', () => {
+  expect(formatError({ status: 400, error: { code: 'bad_request', message: 'unknown log source' } })).toBe('Неизвестный источник логов (HTTP 400).');
+  expect(formatError({ status: 400, error: { code: 'bad_request', message: 'invalid settings' } })).toBe('Неверный запрос (HTTP 400).');
+});

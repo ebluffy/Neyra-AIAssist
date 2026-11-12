@@ -185,12 +185,11 @@ export function ServerLogsViewer({ profileId, plugins }: { profileId: string; pl
           <p className="path">
             Файл: {logData.path || logData.source} {!logData.exists && '(файл ещё не создан на сервере)'}
           </p>
-          {source.startsWith('plugin:') &&
-            (logData.path.endsWith('system.log') || logData.source !== source) && (
-              <p className="hint" role="status">
-                Собственный лог модуля отсутствует на сервере; показан системный лог.
-              </p>
-            )}
+          {source.startsWith('plugin:') && logData.path.endsWith('system.log') && (
+            <p className="hint" role="status">
+              Собственный лог модуля отсутствует на сервере; показан системный лог.
+            </p>
+          )}
           {logData.text.trim().length === 0 ? (
             <p className="hint" role="status">
               Лог пуст.

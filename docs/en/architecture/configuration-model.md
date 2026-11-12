@@ -9,9 +9,10 @@
 
 ## Merge order
 
-1. Load `server/config.yaml` and layered YAML from `server/config/`.
-2. `merge_plugin_configs(...)` merges plugin configs.
-3. `apply_env_secrets(...)` overlays secrets from the environment.
+1. Layer files `server/config/*.yaml` (`LAYER_FILES`) load first, in list order; a later layer overrides an earlier one.
+2. The root `server/config.yaml` is applied **on top of** the layers: it overrides `config/*.yaml`, not the other way around (`core/runtime/config_loader.py:103-131`). Deep keys in the root (`llm:`, `memory:` and so on) count as legacy — startup logs a warning naming the layer they belong to.
+3. `merge_plugin_configs(...)` merges plugin configs.
+4. `apply_env_secrets(...)` overlays secrets from the environment.
 
 ## Rules
 

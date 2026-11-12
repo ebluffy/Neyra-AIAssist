@@ -446,6 +446,9 @@ fn close_overlay(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL) {
         let _ = window.close();
     }
+    // A closed (or disabled) overlay has no live refusal: a fresh open re-evaluates
+    // click-through from scratch instead of inheriting a stale "no".
+    CLICK_THROUGH_REFUSED.store(false, Ordering::SeqCst);
 }
 
 pub trait WindowActions {
@@ -473,6 +476,7 @@ pub fn apply_window_properties<W: WindowActions + ?Sized>(
     window.set_always_on_top(target.always_on_top)?;
     if let Err(err) = window.set_ignore_cursor_events(target.click_through) {
         // Degrade in place: never destroy a visible window because a platform call was refused.
+        CLICK_THROUGH_REFUSED.store(true, Ordering::SeqCst);
         if let Some(prev) = previous {
             if let Err(rb_err) = window.set_always_on_top(prev.always_on_top) {
                 return Err(format!("{err}. Откат поверх окон не удался ({rb_err})"));
@@ -480,6 +484,7 @@ pub fn apply_window_properties<W: WindowActions + ?Sized>(
         }
         return Err(err);
     }
+    CLICK_THROUGH_REFUSED.store(false, Ordering::SeqCst);
     Ok(())
 }
 
@@ -548,21 +553,41 @@ fn load_for_panel(root: &Path) -> (CharacterSettings, Option<String>) {
     }
 }
 
-fn previous_or_backup(root: &Path) -> CharacterSettings {
+fn previous_or_backup(root: &Path) -> Result<CharacterSettings, String> {
     match load(root) {
-        Ok(previous) => previous,
+        Ok(previous) => Ok(previous),
         Err(error) => {
             // Keep the user's broken file next to the fixed one before overwriting it.
+            // The backup must never be best-effort: without it the broken file would be
+            // overwritten with no copy, and an older backup must never be clobbered.
             let path = root.join(SETTINGS_FILE);
             if path.is_file() {
-                let _ = fs::copy(&path, root.join(format!("{SETTINGS_FILE}.bak")));
+                let backup = root.join(format!("{SETTINGS_FILE}.bak"));
+                if backup.exists() {
+                    let message = format!(
+                        "Настройки повреждены ({error}), а резервная копия уже существует \
+                         ({}). Файл не изменён: удалите старую копию вручную, чтобы сохранить \
+                         новые настройки.",
+                        backup.display()
+                    );
+                    crate::logs::log(root, "warn", &message);
+                    return Err(message);
+                }
+                fs::copy(&path, &backup).map_err(|copy_error| {
+                    let message = format!(
+                        "Настройки повреждены ({error}) и не удалось создать резервную \
+                         копию ({copy_error}). Файл не изменён."
+                    );
+                    crate::logs::log(root, "warn", &message);
+                    message
+                })?;
             }
             crate::logs::log(
                 root,
                 "warn",
                 &format!("character settings were broken, backed up before overwrite: {error}"),
             );
-            CharacterSettings::default()
+            Ok(CharacterSettings::default())
         }
     }
 }
@@ -639,7 +664,7 @@ pub fn character_save(app: tauri::AppHandle, settings: CharacterSettings) -> Res
         }
     }
 
-    let previous = previous_or_backup(&root);
+    let previous = previous_or_backup(&root)?;
     let window = app.get_webview_window(LABEL);
     save_character_settings_orchestrated(
         window.as_ref(),
@@ -813,7 +838,7 @@ mod tests {
         assert_eq!(panel, CharacterSettings::default());
         assert!(error.unwrap().contains("Повреждены настройки персонажа"));
 
-        let previous = previous_or_backup(&root);
+        let previous = previous_or_backup(&root).unwrap();
         assert_eq!(previous, CharacterSettings::default());
         assert_eq!(
             fs::read(root.join(format!("{SETTINGS_FILE}.bak"))).unwrap(),
@@ -823,6 +848,53 @@ mod tests {
         save(&root, &CharacterSettings::default()).unwrap();
         assert!(load(&root).is_ok(), "a valid save must repair the panel");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn existing_backup_is_never_overwritten_and_repair_aborts() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("settings")).unwrap();
+        fs::write(root.join(SETTINGS_FILE), b"{broken round two").unwrap();
+        let backup = root.join(format!("{SETTINGS_FILE}.bak"));
+        fs::write(&backup, b"the original backup").unwrap();
+
+        let err = previous_or_backup(&root).unwrap_err();
+        assert!(
+            err.contains("резервная копия уже существует"),
+            "save must refuse to run without a backup, got: {err}"
+        );
+        assert_eq!(
+            fs::read(root.join(SETTINGS_FILE)).unwrap(),
+            b"{broken round two"
+        );
+        assert_eq!(
+            fs::read(&backup).unwrap(),
+            b"the original backup",
+            "an older backup must survive a later broken save"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refused_click_through_flag_tracks_apply_outcome() {
+        CLICK_THROUGH_REFUSED.store(true, Ordering::SeqCst);
+        let healthy = MockWindowActions::default();
+        apply_window_properties(&healthy, &CharacterSettings::default(), None).unwrap();
+        assert!(
+            !CLICK_THROUGH_REFUSED.load(Ordering::SeqCst),
+            "a successful apply clears the refusal note"
+        );
+
+        let failing = MockWindowActions {
+            fail_click_through: std::cell::Cell::new(true),
+            ..Default::default()
+        };
+        apply_window_properties(&failing, &CharacterSettings::default(), None).unwrap_err();
+        assert!(
+            CLICK_THROUGH_REFUSED.load(Ordering::SeqCst),
+            "a refused click-through must be recorded, not hidden"
+        );
+        CLICK_THROUGH_REFUSED.store(false, Ordering::SeqCst);
     }
 
     fn glb(json: &str) -> Vec<u8> {

@@ -58,6 +58,14 @@ export type LiveState = 'off' | 'idle' | 'armed' | 'listening' | 'thinking' | 's
 export const defaultVoice: VoiceSettings = { mode: 'ptt', vad_sensitivity: 0.5, end_silence_ms: 700, wake_threshold: 0.5, barge_in: 'off', input_device: '', output_device: '' };
 export function newProfile(): Profile { return { id: crypto.randomUUID(), name: 'Новый сервер', url: 'http://127.0.0.1:8787', session_id: crypto.randomUUID() }; }
 export function formatError(error: unknown): string {
+  // Only an explicit API error body identifies the failing log source. Native
+  // status-only errors have no such context and must use the generic wording.
+  if (error !== null && typeof error === 'object' && 'status' in error && error.status === 400) {
+    const body = 'error' in error ? error.error : undefined;
+    if (body !== null && typeof body === 'object' && 'code' in body && body.code === 'bad_request'
+      && 'message' in body && body.message === 'unknown log source') return 'Неизвестный источник логов (HTTP 400).';
+    return 'Неверный запрос (HTTP 400).';
+  }
   if (error === 'credential_store_unavailable') return 'Системное хранилище секретов недоступно. Запустите и разблокируйте Secret Service/keyring. Токен не сохранён в файл.';
   if (error === 'token_missing') return 'Сначала сохраните токен.';
   if (typeof error === 'string' && error.startsWith('export_contains_token:')) {
@@ -68,7 +76,7 @@ export function formatError(error: unknown): string {
   if (error === 'invalid_token') return 'Неверный токен.';
   if (typeof error === 'string') {
     if (error === 'Сервер вернул HTTP 400' || error === 'HTTP 400') {
-      return 'Неизвестный источник логов или неверный запрос (HTTP 400).';
+      return 'Неверный запрос (HTTP 400).';
     }
     if (error === 'Сервер вернул HTTP 401' || error === 'HTTP 401') {
       return 'Ошибка авторизации (HTTP 401): неверный токен или сессия отозвана.';

@@ -264,7 +264,7 @@ describe('ServerLogsViewer component and production flow', () => {
     }
   });
 
-  it('maps HTTP 400 unknown log source to user-friendly message (P3.4)', async () => {
+  it('maps status-only HTTP 400 to a generic request error', async () => {
     ipc.invoke.mockRejectedValueOnce('Сервер вернул HTTP 400');
 
     await act(async () => {
@@ -272,7 +272,7 @@ describe('ServerLogsViewer component and production flow', () => {
     });
 
     const alert = root!.root.findByProps({ role: 'alert' });
-    expect(alert.children.join('')).toContain('Неизвестный источник логов или неверный запрос (HTTP 400).');
+    expect(alert.children.join('')).toContain('Неверный запрос (HTTP 400).');
   });
 
   it('fetches logs on mount for active profile and renders output safely', async () => {

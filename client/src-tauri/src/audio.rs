@@ -5,6 +5,15 @@ use std::sync::{
     mpsc, Arc, Mutex,
 };
 
+/// A device the user asked for was skipped and the system default is used instead.
+/// Written to the app log (visible in the in-app log viewer), not only to stderr.
+fn warn_device_fallback(message: String) {
+    eprintln!("Neyra audio: {message}");
+    if let Ok(root) = crate::storage::data_root() {
+        crate::logs::log(&root, "warn", &message);
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct AudioDevices {
     pub input_devices: Vec<String>,
@@ -100,44 +109,79 @@ pub fn open_input_device(
             }
         }
     }
-    select_input_device(
-        name,
+    let requested = name
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let (device, config) = select_input_device(
+        requested.as_deref(),
         available,
         |dev| dev.default_input_config().map_err(|e| e.to_string()),
         || host.default_input_device(),
-    )
+    )?;
+    if let Some(requested) = requested {
+        // A name mismatch means select_input_device fell back to the system default.
+        let fell_back = device.name().map(|n| n != requested).unwrap_or(true);
+        if fell_back {
+            warn_device_fallback(format!(
+                "выбранный микрофон '{requested}' недоступен, используется системное устройство"
+            ));
+        }
+    }
+    Ok((device, config))
 }
 
-pub fn open_output_stream(
-    name: Option<&str>,
-) -> Option<(rodio::OutputStream, rodio::OutputStreamHandle)> {
+/// An opened output stream plus the reason the requested device was not used.
+pub struct OpenedOutput {
+    pub stream: rodio::OutputStream,
+    pub handle: rodio::OutputStreamHandle,
+    /// The device the user asked for that could not be used; playback fell back
+    /// to the system default. `None` when the requested device (or no preference)
+    /// was honoured.
+    pub fallback_from: Option<String>,
+}
+
+pub fn open_output_stream(name: Option<&str>) -> Option<OpenedOutput> {
+    let mut fallback_from = None;
     if let Some(target) = name {
         let trimmed = target.trim();
         if !trimmed.is_empty() {
             let host = cpal::default_host();
+            let mut saw_name = false;
             if let Ok(devices) = host.output_devices() {
                 for dev in devices {
                     if let Ok(dev_name) = dev.name() {
                         if dev_name == trimmed {
-                            if let Ok(stream) = rodio::OutputStream::try_from_device(&dev) {
-                                return Some(stream);
+                            saw_name = true;
+                            if let Ok((stream, handle)) = rodio::OutputStream::try_from_device(&dev)
+                            {
+                                return Some(OpenedOutput {
+                                    stream,
+                                    handle,
+                                    fallback_from: None,
+                                });
                             }
-                            eprintln!(
-                                "Neyra audio: выбранное устройство вывода '{}' \
-                                 недоступно, fallback на системное",
-                                trimmed
-                            );
                         }
                     }
                 }
             }
-            eprintln!(
-                "Neyra audio: выбранное устройство вывода '{}' не найдено, fallback на системное",
-                trimmed
-            );
+            fallback_from = Some(trimmed.to_string());
+            warn_device_fallback(format!(
+                "выбранное устройство вывода '{trimmed}' {}, используется системное",
+                if saw_name {
+                    "недоступно"
+                } else {
+                    "не найдено"
+                }
+            ));
         }
     }
-    rodio::OutputStream::try_default().ok()
+    let (stream, handle) = rodio::OutputStream::try_default()?;
+    Some(OpenedOutput {
+        stream,
+        handle,
+        fallback_from,
+    })
 }
 
 pub struct Recording {
@@ -424,6 +468,22 @@ enum Command {
     Done(u64),
 }
 
+/// Re-creates a sink on a (possibly new) device and re-appends every phrase that is
+/// queued or playing, so switching the output device mid-reply loses no audio.
+/// The current phrase restarts from its beginning on the new device.
+fn rebuild_sink(
+    handle: &rodio::OutputStreamHandle,
+    inflight: &std::collections::VecDeque<(u64, Vec<u8>)>,
+) -> Option<rodio::Sink> {
+    let sink = rodio::Sink::try_new(handle).ok()?;
+    for (_, bytes) in inflight {
+        if let Ok(source) = rodio::Decoder::new(std::io::Cursor::new(bytes.clone())) {
+            sink.append(source);
+        }
+    }
+    Some(sink)
+}
+
 /// Sequential playback of reply segments. A newer `generation` (Stop, barge-in) drops
 /// everything queued or playing. At most `QUEUE` segments wait; more is a protocol error.
 pub struct Player {
@@ -441,11 +501,16 @@ impl Player {
         let playing = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = playing.clone();
         std::thread::spawn(move || {
-            let mut output: Option<(rodio::OutputStream, rodio::OutputStreamHandle)> = None;
+            let mut output: Option<OpenedOutput> = None;
             let mut last_dev: Option<String> = None;
             let mut sink: Option<rodio::Sink> = None;
             let mut owner = 0u64;
             let mut queued: std::collections::VecDeque<u64> = Default::default();
+            // Audio bytes behind every `queued` seq: lets a device switch carry the
+            // already queued (and the currently playing) phrases to the new device.
+            let mut inflight: std::collections::VecDeque<(u64, Vec<u8>)> = Default::default();
+            // Requested device names whose fallback notice was already shown.
+            let mut fallback_reported: Option<String> = None;
             let mut done = false;
             loop {
                 let current = generation.load(Ordering::SeqCst);
@@ -454,6 +519,7 @@ impl Player {
                         s.stop();
                     }
                     queued.clear();
+                    inflight.clear();
                     done = false;
                     owner = current;
                     flag.store(false, Ordering::SeqCst);
@@ -461,6 +527,7 @@ impl Player {
                 if let Some(s) = &sink {
                     while queued.len() > s.len() {
                         if let Some(seq) = queued.pop_front() {
+                            inflight.pop_front();
                             notify(PlayerEvent::Played(seq));
                         }
                     }
@@ -487,24 +554,49 @@ impl Player {
                             }
                         });
                         if output.is_none() || last_dev != current_dev {
+                            let device_changed = sink.is_some() && last_dev != current_dev;
+                            let reopened = open_output_stream(current_dev.as_deref());
+                            if let Some(from) =
+                                reopened.as_ref().and_then(|o| o.fallback_from.clone())
+                            {
+                                if fallback_reported.as_deref() != Some(from.as_str()) {
+                                    fallback_reported = Some(from);
+                                    // A distinct code so the UI can say "switched to the system
+                                    // device" instead of a generic audio failure (AR-18).
+                                    notify(PlayerEvent::Error("audio_fallback"));
+                                }
+                            }
                             sink = None;
-                            output = open_output_stream(current_dev.as_deref());
+                            output = reopened;
                             last_dev = current_dev.clone();
+                            if device_changed {
+                                // Carry the queued phrases over instead of dropping them.
+                                if let Some(opened) = &output {
+                                    sink = rebuild_sink(&opened.handle, &inflight);
+                                }
+                            }
                         }
-                        let Some((_, handle)) = &output else {
+                        let Some(opened) = &output else {
                             notify(PlayerEvent::Error("audio_unavailable"));
                             continue;
                         };
                         if sink.is_none() {
-                            sink = rodio::Sink::try_new(handle).ok();
+                            sink = rebuild_sink(&opened.handle, &inflight);
                             if sink.is_none() && current_dev.is_some() {
-                                eprintln!(
-                                    "Neyra audio: устройство вывода отключено или \
-                                     недоступно, fallback на системное"
+                                warn_device_fallback(
+                                    "устройство вывода отключено или недоступно, \
+                                     используется системное"
+                                        .into(),
                                 );
-                                output = rodio::OutputStream::try_default().ok();
-                                if let Some((_, def_handle)) = &output {
-                                    sink = rodio::Sink::try_new(def_handle).ok();
+                                output = rodio::OutputStream::try_default().ok().map(
+                                    |(stream, handle)| OpenedOutput {
+                                        stream,
+                                        handle,
+                                        fallback_from: None,
+                                    },
+                                );
+                                if let Some(opened) = &output {
+                                    sink = rebuild_sink(&opened.handle, &inflight);
                                 }
                             }
                             if sink.is_some() {
@@ -512,14 +604,16 @@ impl Player {
                                 notify(PlayerEvent::Started);
                             }
                         }
-                        let (Some(s), Ok(source)) =
-                            (&sink, rodio::Decoder::new(std::io::Cursor::new(bytes)))
-                        else {
+                        let (Some(s), Ok(source)) = (
+                            &sink,
+                            rodio::Decoder::new(std::io::Cursor::new(bytes.clone())),
+                        ) else {
                             notify(PlayerEvent::Error("audio_invalid"));
                             continue;
                         };
                         s.append(source);
                         queued.push_back(seq);
+                        inflight.push_back((seq, bytes));
                     }
                     Command::Done(gen) if gen == owner => {
                         if sink.is_none() {
@@ -669,5 +763,25 @@ mod tests {
         // returning either Ok((dev, cfg)) or Err(message).
         let _ = open_input_device(Some("Nonexistent Mic"));
         let _ = open_input_device(None);
+    }
+
+    #[test]
+    fn open_output_stream_marks_missing_device_as_fallback() {
+        // A device name that cannot exist must be reported as a fallback, not opened
+        // silently. Machines without any output device at all yield None — tolerate.
+        if let Some(opened) = open_output_stream(Some("Neyra Missing Output XYZ")) {
+            assert_eq!(
+                opened.fallback_from.as_deref(),
+                Some("Neyra Missing Output XYZ"),
+                "a missing requested device must be flagged as a system-default fallback"
+            );
+        }
+        // No preference: never a fallback marker.
+        if let Some(opened) = open_output_stream(None) {
+            assert!(opened.fallback_from.is_none());
+        }
+        if let Some(opened) = open_output_stream(Some("   ")) {
+            assert!(opened.fallback_from.is_none());
+        }
     }
 }

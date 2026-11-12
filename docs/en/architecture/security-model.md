@@ -5,11 +5,15 @@
 - Neyra Control API (`server/core/api`) binds to `127.0.0.1` by default. Treat anything non-local as hostile unless locked down.
 - **Wave 1 auth policy (intentional):** if **none** of `API_TOKEN` / `API_KEY` / `API_VIEWER_TOKEN` / `API_MAINT_TOKEN` are set, role is `anon` and may call any endpoint **only while bind is loopback**. Non-loopback bind without tokens → process refuses to start (`assert_api_bind_safe`). Requiring tokens even on localhost is a later hardening option, not Wave 1.
 - When tokens are set: `viewer` reads; `maint+` soft-restart; `admin` chat/mutate. Prefer least privilege.
+- **Desktop bridge:** `/v1/desktop/bridge` and `/v1/desktop/voice` accept only `Authorization: Bearer` with role `admin`; the anonymous loopback access the rest of the API grants is **not** available to them (`server/core/desktop/routes.py:57-67`, refusal is close 1008). Desktop spends LLM/audio and controls PCs, so it sits outside the general Wave 1 policy.
+- **Fail-closed without tokens:** when `API_TOKEN` / `API_KEY` / `API_VIEWER_TOKEN` / `API_MAINT_TOKEN` are all empty, startup fails not only on a non-loopback bind but also when `api.public_base_url` is set — even while bound to `127.0.0.1` (`server/core/api/app.py:283-300`).
 - **Dashboard UI gate:** separate access key (PBKDF2 hash in `server/data/dashboard_auth.sqlite`, minimum **32** characters on setup). First-time `POST /v1/dashboard/auth/setup` is open only while the key is unset; without Bearer it requires a **console-local** loopback peer with **no** `CF-Connecting-IP` / `X-Real-IP`; from the public edge only primary `API_TOKEN` (not viewer/maint). Login/setup returns a short-lived **session token** (SPA keeps it in `sessionStorage`); `_resolve_role` accepts that session as **admin** alongside `API_TOKEN` / viewer / maint. Failed logins are rate-limited per client IP.
 
 Dashboard login and rotate share an in-process failed-key counter per IP: five failures in a sliding 300-second window, then 429 **before** key verification, even for a correct key. Existing sessions remain valid during lockout. Restarting the process resets the counter.
 
 `POST /v1/dashboard/auth/rotate` requires a valid dashboard-session Bearer plus `current_key` / `new_key`; it revokes old sessions and returns a replacement in `data.session_token`, with `trace_id` and `data.rotated: true`. A wrong current key must not clear the tab's session. Logout requires a valid session; repeating logout with a revoked token returns 401. Logout-all accepts an admin API token or a valid dashboard session.
+
+A dashboard session lives 12 hours (`_SESSION_TTL_SECONDS` in `server/core/api/dashboard_auth.py:21`). Both login and rotate delete every earlier session (`dashboard_auth.py:194-206`), so after a sign-in or a key rotation another tab or device gets 401 and returns to the sign-in screen — that is expected, not a fault.
 
 ## Secrets
 

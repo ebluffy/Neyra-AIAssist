@@ -3,7 +3,7 @@ use serde_json::{json, Map, Value};
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
     time::{Duration, Instant},
@@ -391,6 +391,10 @@ pub struct Shot {
 
 pub struct ShotStore {
     shots: Mutex<VecDeque<Shot>>,
+    /// Bumped by every `clear()` (Stop). A capture that started before a clear must
+    /// not repopulate the store afterwards: its id would survive Stop while the
+    /// client believes the screen state was dropped.
+    clears: AtomicU64,
 }
 
 impl Default for ShotStore {
@@ -403,7 +407,17 @@ impl ShotStore {
     pub const fn new() -> Self {
         Self {
             shots: Mutex::new(VecDeque::new()),
+            clears: AtomicU64::new(0),
         }
+    }
+
+    /// The store generation: changes on every `clear()`.
+    pub fn clear_epoch(&self) -> u64 {
+        self.clears.load(Ordering::SeqCst)
+    }
+
+    pub fn shot_count(&self) -> usize {
+        self.shots.lock().map(|s| s.len()).unwrap_or(0)
     }
 
     pub fn remember(&self, shot: Shot) {
@@ -428,6 +442,7 @@ impl ShotStore {
     }
 
     pub fn clear(&self) {
+        self.clears.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut shots) = self.shots.lock() {
             shots.clear();
         }
@@ -509,6 +524,7 @@ pub fn capture_with<B: Backend + ?Sized>(
     window: Option<&str>,
     session: &str,
 ) -> Result<Value, String> {
+    let epoch = store.clear_epoch();
     store.forget_session(session);
     let frame = backend.capture(window)?;
     if frame.rgb.len() != (frame.width * frame.height * 3) as usize {
@@ -528,6 +544,11 @@ pub fn capture_with<B: Backend + ?Sized>(
     }
     if jpeg.len() >= 1_100_000 {
         return Err("Снимок слишком большой".into());
+    }
+    if store.clear_epoch() != epoch {
+        // Stop dropped every stored shot while this capture was in flight; the id
+        // must not survive Stop by being remembered into the cleared store.
+        return Err("Снимок отменён: управление остановлено".into());
     }
     let id = uuid::Uuid::new_v4().to_string();
     store.remember(Shot {
@@ -1741,6 +1762,9 @@ mod tests {
         held_keys: Vec<&'static str>,
         cancel_after: Option<(usize, std::sync::Arc<AtomicBool>)>,
         fail_capture: bool,
+        /// When set, `capture` clears this store mid-flight — models Stop arriving
+        /// while a screenshot is being taken.
+        clear_store_mid_capture: Option<std::sync::Arc<ShotStore>>,
     }
     impl Mock {
         fn note(&mut self, s: String) {
@@ -1756,6 +1780,9 @@ mod tests {
         fn capture(&mut self, _: Option<&str>) -> Result<Frame, String> {
             if self.fail_capture {
                 return Err("Сбой захвата".into());
+            }
+            if let Some(store) = &self.clear_store_mid_capture {
+                store.clear();
             }
             // 2560x1440 physical desktop starting at x=-1920 (second monitor on the left).
             Ok(Frame {
@@ -1905,6 +1932,35 @@ mod tests {
 
         assert!(store.find(&id1, "clear-s1").is_err());
         assert!(store.find(&id2, "clear-s2").is_err());
+    }
+
+    #[test]
+    fn capture_spanning_clear_does_not_repopulate_store() {
+        // A capture started before Stop must not put its id into the cleared store.
+        let store = std::sync::Arc::new(ShotStore::new());
+        let mut m = Mock {
+            clear_store_mid_capture: Some(store.clone()),
+            ..Default::default()
+        };
+        let result = capture_with(&store, &mut m, None, "stop-mid-capture");
+        let message = result.unwrap_err();
+        assert!(
+            message.contains("отменён"),
+            "the caller must see a cancellation, got: {message}"
+        );
+        assert_eq!(
+            store.shot_count(),
+            0,
+            "the store must stay empty after Stop"
+        );
+
+        // A fresh capture after Stop works on the new epoch and is not lost.
+        let mut m = Mock::default();
+        let id = capture_with(&store, &mut m, None, "after-stop").unwrap()["screenshot_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(store.find(&id, "after-stop").is_ok());
     }
 
     #[test]

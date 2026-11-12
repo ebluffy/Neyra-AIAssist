@@ -16,6 +16,7 @@ const PROCESSING_NOTICES = ['Распознаю речь…', 'Запись за
 // so a server error that happens to start with "audio_" is still shown as a server error.
 const LOCAL_AUDIO_ERRORS: Record<string, string> = {
   audio_unavailable: 'Проверьте аудиоустройство.',
+  audio_fallback: 'Выбранное устройство вывода недоступно — звук идёт через системное.',
   audio_backpressure: 'Очередь озвучки переполнена, ответ показан текстом.',
   audio_invalid: 'Не удалось воспроизвести ответ, текст показан в чате.',
   microphone_unavailable: 'Проверьте микрофон и его разрешение в системе.',
@@ -86,7 +87,7 @@ export function useDesktop() {
   const chatTurn = useRef<{ id: string; ipcPending: boolean; terminal: boolean } | null>(null);
   const liveRun = useRef(0);
   const liveEpoch = useRef(0);
-  const captureEpoch = useRef(0);
+  const captureTerminalError = useRef<string | null>(null);
   const captureId = useRef(0);
   const captureStopping = useRef(false);
   // Only the code that really ends a capture sets it: release commits, Stop/cancel
@@ -123,7 +124,7 @@ export function useDesktop() {
       if (captureId.current !== capture || (captureIntent.current as 'commit' | 'cancel' | null) === 'cancel') return;
       setThinking(false);
       clearProcessingNotice();
-      setError(current => current || formatError(reason));
+      setError(captureTerminalError.current ?? formatError(reason));
     } finally {
       if (captureId.current === capture) setRecording(false);
     }
@@ -260,7 +261,6 @@ export function useDesktop() {
             chatTurn.current.terminal = true;
             if (!chatTurn.current.ipcPending) chatTurn.current = null;
           }
-          captureEpoch.current += 1;
           setLastTrace(event.model_trace);
           setMessages(list => {
             const requestId = event.source === 'bridge' ? event.request_id : undefined;
@@ -301,9 +301,9 @@ export function useDesktop() {
         // 'recording'. Since Desktop.recording is a single Mutex<Option<Recording>> slot in Rust, two record_start
         // calls cannot both succeed; one always returns AlreadyRecording. Thus, a 'recording' event can never
         // interleave with a successful UI beginRecording session.
-        if (event.type === 'recording') { captureEpoch.current += 1; captureId.current += 1; captureStopping.current = false; captureIntent.current = null; setRecording(true); setThinking(false); }
+        if (event.type === 'recording') { captureTerminalError.current = null; captureId.current += 1; captureStopping.current = false; captureIntent.current = null; setRecording(true); setThinking(false); }
         if (event.type === 'transcribing') { setRecording(false); setThinking(true); setLiveState(state => state === 'off' ? state : 'thinking'); }
-        if (event.type === 'speaking') { captureEpoch.current += 1; setThinking(false); setLiveState(state => state === 'off' ? state : 'speaking'); postNotice('Нейра говорит. Стоп прервёт озвучку.'); }
+        if (event.type === 'speaking') { setThinking(false); setLiveState(state => state === 'off' ? state : 'speaking'); postNotice('Нейра говорит. Стоп прервёт озвучку.'); }
         if (event.type === 'live.started') { setLiveOpen(true); setMuted(false); setLiveState('idle'); }
         if (event.type === 'live.stopped') { setLiveState('off'); setMicLevel(0); if (!muteHold.current) { setLiveOpen(false); setMuted(false); } }
         if (event.type === 'live.idle') setLiveState(state => state === 'off' ? state : 'idle');
@@ -316,7 +316,6 @@ export function useDesktop() {
         if (event.type === 'voice.conversion') { const text = conversionNotice(event.status, event.code); if (text) postNotice(text, true); }
         if (event.type === 'disconnected') {
           chatTurn.current = null;
-          captureEpoch.current += 1;
           captureId.current += 1;
           captureStopping.current = true;
           captureIntent.current = 'cancel';
@@ -327,24 +326,26 @@ export function useDesktop() {
         if (event.type === 'error') {
           // A failed player/wake/previous answer is not this capture's stop: keeping
           // captureStopping here froze PTT and the 30s limit while the mic kept running.
-          captureEpoch.current += 1;
           const code = typeof event.code === 'string' && event.code ? event.code : 'ошибка';
           const message = localErrorText(code) ?? `Сервер: ${code}. Повторите попытку.`;
+          if (captureIntent.current === 'commit' && (event.source === 'voice' || code === 'voice_failed')) captureTerminalError.current = message;
           setError(message);
           if (affectsText) { chatTurn.current = null; setThinking(false); tokenBatch.reset(); }
           setLiveState(state => state === 'thinking' ? 'idle' : state);
         }
         if (event.type === 'capture.failed') {
-          captureEpoch.current += 1;
+          const message = localErrorText(event.code ?? '') ?? formatError(event.code);
+          // A failed shortcut start did not acquire or release the recording slot.
+          if (event.stage === 'start') { setError(message); return; }
+          captureTerminalError.current = message;
           captureId.current += 1;
           captureStopping.current = true;
           captureIntent.current = 'cancel';
           setRecording(false); setThinking(false);
           clearProcessingNotice();
-          setError(localErrorText(event.code ?? '') ?? formatError(event.code));
+          setError(message);
         }
         if (event.type === 'cancelled') {
-          captureEpoch.current += 1;
           captureId.current += 1;
           captureStopping.current = true;
           captureIntent.current = 'cancel';
@@ -365,7 +366,7 @@ export function useDesktop() {
       listen<DraftEvent>('command-draft', ({ payload }) => { setDraft(payload); setMenuOpen(false); setSheet(null); setHistoryOpen(false); }),
       listen<{ reason: string }>('command-draft-invalid', ({ payload }) => setError(`Черновик команды отклонён: ${payload.reason}`)),
     ];
-    return () => { mounted = false; chatTurn.current = null; captureEpoch.current += 1; tokenBatch.dispose(); for (const listener of listeners) void listener.then(unlisten => unlisten()); };
+    return () => { mounted = false; chatTurn.current = null; tokenBatch.dispose(); for (const listener of listeners) void listener.then(unlisten => unlisten()); };
   }, [tokenBatch]);
 
   useEffect(() => {
@@ -401,7 +402,7 @@ export function useDesktop() {
   const patchProfile = (patch: Partial<Profile>) => { if (settings && profile) setSettings({ ...settings, profiles: settings.profiles.map(item => item.id === profileId ? { ...item, ...patch } : item) }); };
   const request = async <T,>(path: string, method = 'GET') => unwrapApi<T>(await invoke<unknown>('api', { profileId, path, method }));
   const rememberLive = (runId: unknown) => { if (typeof runId === 'number') liveRun.current = runId; };
-  const stop = () => run(async () => { chatTurn.current = null; captureEpoch.current += 1; captureId.current += 1; captureStopping.current = true; captureIntent.current = 'cancel'; setRecording(false); setThinking(false); tokenBatch.reset(); liveEpoch.current += 1; await invoke('stop'); setHostCall(undefined); setActive(false); setThinking(false); setRecording(false); muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); });
+  const stop = () => run(async () => { chatTurn.current = null; captureId.current += 1; captureStopping.current = true; captureIntent.current = 'cancel'; setRecording(false); setThinking(false); tokenBatch.reset(); liveEpoch.current += 1; await invoke('stop'); setHostCall(undefined); setActive(false); setThinking(false); setRecording(false); muteHold.current = false; setLiveOpen(false); setMuted(false); setLiveState('off'); });
   const saveVoice = (patch: Partial<VoiceSettings>) => run(async () => {
     const disk = savedSettings.current;
     if (!settings || !disk) return;
@@ -444,7 +445,7 @@ export function useDesktop() {
     }
     else { muteHold.current = true; await invoke('live_stop'); setMuted(true); setMicLevel(0); postNotice('Микрофон на паузе'); }
   });
-  const endLive = () => run(async () => { chatTurn.current = null; captureEpoch.current += 1; captureId.current += 1; captureStopping.current = true; captureIntent.current = 'cancel'; setRecording(false); setThinking(false); tokenBatch.reset(); liveEpoch.current += 1; muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
+  const endLive = () => run(async () => { chatTurn.current = null; captureId.current += 1; captureStopping.current = true; captureIntent.current = 'cancel'; setRecording(false); setThinking(false); tokenBatch.reset(); liveEpoch.current += 1; muteHold.current = false; await invoke('live_stop'); await invoke('stop'); setLiveOpen(false); setMuted(false); setMicLevel(0); setThinking(false); setLiveState('off'); postNotice('Разговор завершён'); });
   const settingsForServer = (current: Settings): Settings => {
     if (!profile) return current;
     const active = threads.find(item => item.id === activeId);
@@ -471,7 +472,7 @@ export function useDesktop() {
     setRetry(0); setConnectionWanted(profile.id);
     if (!preserve) setMessages([]);
   });
-  const disconnect = () => run(async () => { chatTurn.current = null; captureEpoch.current += 1; captureId.current += 1; captureStopping.current = true; captureIntent.current = 'cancel'; setRecording(false); setThinking(false); tokenBatch.reset(); setConnectionWanted(''); keepLocal.current = false; await invoke('disconnect'); setConnected(false); setThinking(false); setDevices([]); setTarget(''); });
+  const disconnect = () => run(async () => { chatTurn.current = null; captureId.current += 1; captureStopping.current = true; captureIntent.current = 'cancel'; setRecording(false); setThinking(false); tokenBatch.reset(); setConnectionWanted(''); keepLocal.current = false; await invoke('disconnect'); setConnected(false); setThinking(false); setDevices([]); setTarget(''); });
   const sendContent = (value: string) => {
     // A ref also guards two submissions in the same render and pending quick commands.
     if (chatTurn.current || !value.trim()) return Promise.resolve();
@@ -518,7 +519,7 @@ export function useDesktop() {
   };
   const decideDraft = (accepted: boolean, item: DraftEvent) => run(async () => { setDraft(undefined); if (accepted) { await invoke('draft_confirm', { draftId: item.draft_id }); postNotice('Команда сохранена на этом ПК', true); } else await invoke('draft_reject', { draftId: item.draft_id }); });
   const beginRecording = () => run(async () => {
-    captureEpoch.current += 1;
+    captureTerminalError.current = null;
     const currentCapture = ++captureId.current;
     captureStopping.current = false;
     captureIntent.current = null;
@@ -560,12 +561,11 @@ export function useDesktop() {
       setRecording(false);
       setThinking(false);
       clearProcessingNotice();
-      setError(current => current || formatError(reason));
+      setError(captureTerminalError.current ?? formatError(reason));
     }
   });
   const finishRecording = () => run(() => finishCapture());
   const cancelRecording = () => run(async () => {
-    captureEpoch.current += 1;
     const capture = captureId.current;
     captureStopping.current = true;
     captureIntent.current = 'cancel';

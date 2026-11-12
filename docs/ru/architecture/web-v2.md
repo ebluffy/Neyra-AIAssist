@@ -196,7 +196,7 @@ PostgreSQL, схема `public`, миграции — Drizzle.
 4. Ядро проверяет подпись, срок и `iss`, затем вызывает `UnifiedIdentityMapper.resolve(platform='web', platform_user_id=<sub>)`. `person_id` — uuid5 от ключа `web:<sub>` внутри ядра; литеральная строка `web:<uuid>` в БД не хранится.
 5. Ошибка проверки — 401, без доверия к заголовкам. Fail-closed.
 
-Заголовки `X-Neyra-*` без валидного JWT игнорируются. Снаружи ядро отдаёт только `/v1/desktop/*`; `/v1/chat`, `/v1/ws/chat` и `/v1/memory/*` доступны лишь из docker-сети/loopback.
+Заголовки `X-Neyra-*` без валидного JWT игнорируются. Само ядро не фильтрует источник запроса: `/v1/chat`, `/v1/ws/chat` и `/v1/memory/*` защищены только токенами ролей (`viewer` / `maint+` / `admin`), а не сетью. Снаружи публикуется только `/v1/desktop/*`; остальное закрывает reverse proxy (`deny` на краю), см. [api-reverse-proxy](../ops/api-reverse-proxy.md) и раздел про деплой ниже.
 
 ## 9. Чат
 

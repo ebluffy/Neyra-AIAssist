@@ -136,3 +136,7 @@ Trailing slash у `proxy_pass` под `/api/` снимает префикс `/ap
 - Uvicorn: `proxy_headers=False` (peer = TCP; клиентский IP только через CF/X-Real в `resolve_client_ip`).
 - Ключ доступа дашборда задан до публикации SPA (см. [web-ui](../architecture/web-ui.md)).
 - Smoke WebSocket: `wss://neyra.owyx.site/api/v1/ws/chat` доходит до Control API.
+
+## После P6 (веб v2) схема меняется
+
+Документ выше описывает текущую схему, где `/` — старый dashboard. В этапе P6 ([`docs/ru/architecture/web-v2.md`](../architecture/web-v2.md) §13, D14) маршруты на краю становятся такими: `/` → web-клиент, `/v1/desktop/*` → ядро, `/legacy/*` → старый dashboard до паритета, а `/v1/chat`, `/v1/ws/chat` и `/v1/memory/*` закрыты `deny` снаружи. Откат — вернуть `/` на старый dashboard, оставив web запущенным для диагностики.
