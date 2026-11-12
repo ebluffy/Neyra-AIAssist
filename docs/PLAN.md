@@ -194,6 +194,7 @@ CI и headless-прогоны не подтверждают работу на р
 - [ ] **LTM и провайдеры.** `/v1/memory/long` отдаёт агрегат `person_facts`, отдельного LTM-просмотра нет; CRUD провайдеров в API отсутствует (`app.py:3695`). Решить: расширять ядро или срезать из v1.
 - [ ] **`GET /v1/web/me`** и scope по `person_id` в `/v1/memory/*` — новый серверный код.
 - [x] **Путь в репозитории.** Зафиксирован `apps/web` (ADR-0001); D21 и §14 спеки поправлены, противоречие «`web/` против `apps/web`» снято.
+- [ ] **Стек веба.** Спека (D3) требует Next.js + Better Auth + PostgreSQL + Drizzle; ADR-0001 описывает `apps/web` на общем ките с `createBrowserRouter`, а нынешний dashboard — Vite + react-router. Это разные архитектуры, выбирать до P0. Рекомендация: оставить Next.js (готовые сессии, OAuth, роли, ORM — иначе писать руками), `packages/ui` использовать как библиотеку компонентов, а строку ADR про `createBrowserRouter` заменить на «Next App Router для веба, Vite SPA для `apps/desktop`».
 
 ### 6.3. Этапы P0–P6
 

@@ -27,7 +27,7 @@
    - `packages/contracts` — zod-схемы HTTP/WSS и desktop-моста;
    - `apps/web` — нынешний дашборд и веб-клиент;
    - `apps/desktop` — фронт Tauri на том же ките.
-2. **Rust не трогаем.** `client/src-tauri` (cpal, PTT-хоткеи, keyring, updater, `overlay.html`) остаётся, IPC-контракт тот же. Аппаратная приёмка (keyring, трей, хоткеи, микрофон) делается один раз и не зависит от UI.
+2. **Rust не трогаем.** `client/src-tauri` (cpal, PTT-хоткеи, keyring, updater) и `client/overlay.html` остаётся, IPC-контракт тот же. Аппаратная приёмка (keyring, трей, хоткеи, микрофон) делается один раз и не зависит от UI.
 3. **Оверлей и окно персонажа — отдельные webview** со своим минимальным бандлом (three-vrm). В общий SPA их не тащим.
 4. **Роутер:** `createBrowserRouter` для веба и hash/memory-вариант для Tauri, иначе под `tauri://` маршруты поедут.
 5. **Адаптер платформы:** PTT, keyring, устройства ввода и screen capture в браузере недоступны. Это показывается как «только в приложении», а не прячется.

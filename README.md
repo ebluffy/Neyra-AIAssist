@@ -4,7 +4,7 @@
 
 # Neyra - AIAssist
 
-Modular personal AI assistant: local **Neyra Server** + planned Windows/Linux control client.
+Modular personal AI assistant: local **Neyra Server** + Windows/Linux desktop client.
 
 **Repository:** [github.com/ebluffy/Neyra-AIAssist](https://github.com/ebluffy/Neyra-AIAssist)
 
@@ -18,13 +18,13 @@ Modular personal AI assistant: local **Neyra Server** + planned Windows/Linux co
 - Plugins under `server/modules/` (`discord`, `local_voice`, template `000EXAMPLE`)
 - Server web dashboard in `server/dashboard/` (React + Vite + Tailwind; access-key gate)
 - Dev MCP in `devtools/mcp_server/` (Cursor debug; not part of runtime packages)
-- Product Windows/Linux client scaffold in `client/` (Tauri MVP after server completion; not implemented)
+- Desktop client in `client/` (Tauri 2 + React): Connect/Chat/Status/Modules, voice, tray; front moves to `apps/desktop` per ADR-0001
 
 ## Layout
 
 ```text
 server/          # core, modules, dashboard, config, scripts, data, logs
-client/          # Tauri control app (scaffold until Stage 3)
+client/          # Tauri desktop app (Rust src-tauri + React UI)
 devtools/        # MCP debug server
 docs/            # PLAN, config-keys, EN/RU guides, ADRs
 ```
@@ -65,7 +65,7 @@ No legacy dual-read: use `llm.talk_model` / `llm.brain_model` / … with `provid
 
 SPA served by the Control API from `server/dashboard/dist`.
 
-- First visit: create an access key (≥ 8 characters, or hex-32). Hash stored with PBKDF2 in SQLite under `server/data/`.
+- First visit: create an access key (≥ 32 characters). Hash stored with PBKDF2 in SQLite under `server/data/`.
 - Later visits: login with that key. On non-loopback bind, initial setup is allowed only from a loopback client.
 - Separate from API Bearer tokens (`API_TOKEN` / viewer / maint).
 
@@ -94,7 +94,7 @@ Plugin SDK: [HELP.md](server/modules/000EXAMPLE/HELP.md) · [HELP-RU.md](server/
 
 | Done | Next |
 |------|------|
-| Layout 1b, config layers 1c, dual LLM 1d, Control API Wave 1, dashboard gate | Server completion, then Windows/Linux client; see PLAN |
+| Layout 1b, config layers 1c, dual LLM 1d, Control API Wave 1, dashboard gate | UI move to `apps/desktop` + hardware acceptance; see PLAN |
 
 ## Support
 

@@ -1,6 +1,6 @@
 # §8.1/§9/§8.2/§8.4/§8.7: серверная приёмка для клиента
 
-Родитель: [PR #36](https://github.com/ebluffy/Neyra-AIAssist/pull/36), база `fec9a2f1476e2a937c09554f6995d1e81048c1ea`.
+Родитель: [PR #70](https://github.com/ebluffy/Neyra-AIAssist/pull/70); исходная задача — [PR #36](https://github.com/ebluffy/Neyra-AIAssist/pull/36), база `fec9a2f1476e2a937c09554f6995d1e81048c1ea`.
 Источник: [PLAN.md](../PLAN.md), [приёмка владельца](https://github.com/ebluffy/Neyra-AIAssist/pull/36#issuecomment-6619352121).
 
 Приоритет и порядок: Параллельно 01–02; внешние интеграции отдельно.

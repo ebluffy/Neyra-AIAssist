@@ -2,7 +2,7 @@
 
 React + Vite + Tailwind SPA under `server/dashboard/`. Production build goes to `dist/` and is served by the Control API (`server/core/api/`) together with `/v1`.
 
-This is the **server** web UI (ops fallback). The product Windows app lives in `client/` and must not reuse this package.
+This is the **server** ops web UI and fallback: it is retired after the web v2 parity (D14). The desktop app lives in `client/`; its front moves to `apps/desktop` on the shared kit `packages/ui` (ADR-0001).
 
 ## Access-key gate
 

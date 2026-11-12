@@ -14,7 +14,7 @@ HTTP-стек живёт в **`server/core/api/`** (Control API), это не м
 
 Перед любой страницей дашборда SPA проверяет **ключ доступа**:
 
-1. **Первый визит** (ключ ещё не задан): создайте ключ (минимум **32** символа; удобный вариант — «Сгенерировать hex (32)»). На сервере хранится хеш **PBKDF2** в `server/data/dashboard_auth.sqlite`.
+1. **Первый визит** (ключ ещё не задан): создайте ключ (минимум **32** символа; удобный вариант — «Сгенерировать (64 hex)»). На сервере хранится хеш **PBKDF2** в `server/data/dashboard_auth.sqlite`.
 2. **Повторные визиты:** вход тем же ключом. После login SPA держит **session token** в **`sessionStorage`** (хеши сессий также в SQLite — переживают рестарт процесса).
 3. **`POST /v1/dashboard/auth/setup`** разрешён только пока ключ не задан. Без Bearer — только с консольного loopback (нет CF/X-Real); с публичного края — primary `API_TOKEN`.
 4. Login/setup выдаёт **`session_token`**; SPA шлёт его как Bearer (admin). Сырой ключ **не** принимается как Bearer. Logout отзывает session.
@@ -24,11 +24,13 @@ HTTP-стек живёт в **`server/core/api/`** (Control API), это не м
 
 | Nav | Route | Назначение |
 |-----|-------|------------|
-| Статус | `/status` | health, models, balance, soft-restart (`/dashboard` → redirect) |
+| Статус | `/status` | health, models, balance, soft-restart (`/` и `/home` → redirect) |
 | Модули | `/modules` | list/toggle/config/invoke/reload/restart (`/plugins` → redirect; API всё ещё `/v1/plugins`) |
 | Память | `/memory` | stats, people, diary, search, LTM |
 | Система | `/system` | meta, backup, DLQ summary |
+| Бэкапы | `/backups` | вкладка «backup» экрана «Система» |
 | Вебхуки | `/webhooks` | routes, deliveries, DLQ |
+| 404 | `*` | NotFoundScreen |
 | Настройки | `/settings` | доступ (rotate / logout-all), тема/плотность, `GET/POST` runtime config (allowlist) |
 | API Docs | `/api-docs` | Swagger / ReDoc / Markdown, оглавление |
 

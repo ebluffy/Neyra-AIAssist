@@ -105,4 +105,4 @@ GLM/Qwen/DeepSeek/Luna/Sol, без настоящей persona, Discord и пол
 памяти. Они не закрывают качество моделей, длительные сессии, production-copy
 migration, Discord/GIF/music/browsermcp или billing. Ранее наблюдались пустые
 ответы Luna; внешняя нестабильность остаётся в PLAN. Windows/Linux клиент
-остаётся scaffold. Деплой и live-приёмка выполняются по отдельной команде.
+— реализован (Tauri 2 + React, 233 UI-теста); фронт переезжает в `apps/desktop` по ADR-0001. Деплой и live-приёмка выполняются по отдельной команде.

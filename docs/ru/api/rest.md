@@ -65,7 +65,7 @@ activity объединяет их по времени. Подробнее — [
 - `POST /v1/config/update`
 - `POST /v1/backup/run`
 - `GET /v1/backup/list` — локальные zip-архивы BackupManager + `last_restore_apply` (`applied`/`failed`)
-- `POST /v1/backup/restore` — `{ archive_name, confirm: "RESTORE" }` (admin); сначала проверка архива, затем `pre_restore` бэкап, затем staging + pending; живая память меняется только при старте ядра (soft-restart обязателен); логи не трогаются
+- `POST /v1/backup/restore` — `{ archive_name, confirm: "<archive_name>" }` (confirm обязан совпадать с именем архива) (admin); сначала проверка архива, затем `pre_restore` бэкап, затем staging + pending; живая память меняется только при старте ядра (soft-restart обязателен); логи не трогаются
 
 ## Plugins
 - `GET /v1/plugins`

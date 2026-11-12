@@ -4,7 +4,7 @@
 
 # Neyra - AIAssist
 
-Модульный персональный ИИ-ассистент: локальный **Neyra Server** и опциональный Windows-клиент управления.
+Модульный персональный ИИ-ассистент: локальный **Neyra Server** и десктоп-клиент для Windows/Linux.
 
 **Репозиторий:** [github.com/ebluffy/Neyra-AIAssist](https://github.com/ebluffy/Neyra-AIAssist)
 
@@ -18,13 +18,13 @@
 - Плагины в `server/modules/` (`discord`, `local_voice`, шаблон `000EXAMPLE`)
 - Веб-дашборд сервера в `server/dashboard/` (React + Vite + Tailwind; gate по access key)
 - Dev MCP в `devtools/mcp_server/` (отладка в Cursor; не часть runtime-пакетов)
-- Продуктовый Windows-клиент — scaffold в `client/` (MVP = Этап 3)
+- Десктоп-клиент в `client/` (Tauri 2 + React): Connect/Chat/Status/Modules, голос, трей; фронт переезжает в `apps/desktop` по ADR-0001
 
 ## Структура
 
 ```text
 server/          # ядро, модули, dashboard, конфиг, скрипты, data, logs
-client/          # Tauri control app (scaffold до Этапа 3)
+client/          # Tauri desktop app (Rust src-tauri + React UI)
 devtools/        # MCP debug-сервер
 docs/            # PLAN, config-keys, EN/RU гайды, ADR
 ```
@@ -62,7 +62,7 @@ Docker: `docker compose up --build`.
 
 SPA раздаётся Control API из `server/dashboard/dist`.
 
-- Первый визит: создать access key (≥ 8 символов или hex-32). Хеш PBKDF2 в SQLite под `server/data/`.
+- Первый визит: создать access key (≥ 32 символов). Хеш PBKDF2 в SQLite под `server/data/`.
 - Далее — логин. При bind не на loopback первичная настройка только с loopback-клиента.
 - Отдельно от API Bearer (`API_TOKEN` / viewer / maint).
 
@@ -86,7 +86,7 @@ SDK: [HELP-RU.md](server/modules/000EXAMPLE/HELP-RU.md) · [HELP.md](server/modu
 
 | Закрыто | Дальше |
 |---------|--------|
-| 1b layout, 1c конфиг, 1d dual LLM, Stage 2 API Wave 1, dashboard gate | Этап 3 клиент + хостинг домена |
+| 1b layout, 1c конфиг, 1d dual LLM, Stage 2 API Wave 1, dashboard gate | Переезд UI в `apps/desktop` + приёмка |
 
 ## Поддержка
 

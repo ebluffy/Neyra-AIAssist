@@ -1,6 +1,6 @@
 # §7.9, шаг 5: live voice, wake word и конверсия
 
-Родитель: [PR #36](https://github.com/ebluffy/Neyra-AIAssist/pull/36), база `fec9a2f1476e2a937c09554f6995d1e81048c1ea`.
+Родитель: [PR #70](https://github.com/ebluffy/Neyra-AIAssist/pull/70); исходная задача — [PR #36](https://github.com/ebluffy/Neyra-AIAssist/pull/36), база `fec9a2f1476e2a937c09554f6995d1e81048c1ea`.
 Источник: [PLAN.md](../PLAN.md), [приёмка владельца](https://github.com/ebluffy/Neyra-AIAssist/pull/36#issuecomment-6619352121).
 
 Приоритет и порядок: После 02.
@@ -15,12 +15,12 @@
 - [ ] Результаты воспроизводимы: SHA, ОС, тип пакета, шаги и фактическое поведение. CI, симуляция и проверка реального оборудования указаны отдельно.
 - [ ] Уточнить PLAN только по факту проверок; §0 и §11.2 оставить без изменений.
 
-Этот PR содержит документ объёма и часть реализации (см. «Сделано в этом PR»); аппаратная и живая приёмка остаются за владельцем. Merge возможен только в ветку PR #36 после отдельной проверки.
+Этот PR содержит документ объёма и часть реализации (см. «Сделано в этом PR»); аппаратная и живая приёмка остаются за владельцем. Ветка #36 закрыта как superseded: работа и приёмка идут в PR #70.
 
 ## Сделано в этом PR
 
 - `audio.ack` принимается только для реально отправленных сегментов (`acked < seq <= sent`), `sent` — монотонный максимум по отправленным `audio.segment`, состояние сбрасывается на `commit`. Раньше клиент мог одним ack с огромным `seq` закрыть окно backpressure.
-- Тест `test_live_voice_ack_out_of_range_and_window_backpressure` падает без правки (проверено откатом `routes.py`); тест `test_commit_resets_acked_window_for_the_next_turn` падает, если убрать сброс `acked`/`sent` на `commit`. Полный offline pytest — 723 passed.
+- Тест `test_live_voice_ack_out_of_range_and_window_backpressure` падает без правки (проверено откатом `routes.py`); тест `test_commit_resets_acked_window_for_the_next_turn` падает, если убрать сброс `acked`/`sent` на `commit`. Полный offline pytest — 756 passed.
 
 ## Остаётся за владельцем
 
