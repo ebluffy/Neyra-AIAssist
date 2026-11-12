@@ -1,0 +1,173 @@
+import { EventEmitter } from 'node:events';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { POST } from './route';
+import { verifyIdentityToken } from '../../../../lib/identity';
+import { getAuth } from '../../../../lib/auth';
+
+const factory = vi.hoisted(() => ({ create: vi.fn() }));
+vi.mock('../../../../lib/auth', () => ({ getAuth: vi.fn() }));
+vi.mock('ws', () => ({ default: class {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  constructor(url: string, options: unknown) { return factory.create(url, options); }
+} }));
+
+type FakeSocket = EventEmitter & {
+  readyState: number;
+  send: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn>;
+  terminate: ReturnType<typeof vi.fn>;
+};
+
+describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
+  const jwtSecret = 'public-test-fixture-at-least-32-characters-long';
+  let socket: FakeSocket;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv('NEYRA_WS_URL', 'wss://core.test');
+    vi.stubEnv('NEYRA_SERVICE_KEY', 'public-test-service-key');
+    vi.stubEnv('NEYRA_IDENTITY_JWT_SECRET', jwtSecret);
+    socket = new EventEmitter() as FakeSocket;
+    socket.readyState = 0;
+    socket.send = vi.fn((_data, callback) => callback?.());
+    socket.close = vi.fn(() => { socket.readyState = 3; socket.emit('close', 1000); });
+    socket.terminate = vi.fn(() => { socket.readyState = 3; socket.emit('close', 1006); });
+    factory.create.mockReset().mockReturnValue(socket);
+    vi.mocked(getAuth).mockReturnValue({ api: { getSession: vi.fn().mockResolvedValue({
+      user: { id: 'usr-42', name: 'Алиса', email: 'alice@example.test', role: 'admin' },
+    }) } } as unknown as ReturnType<typeof getAuth>);
+  });
+  afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
+
+  function request(signal?: AbortSignal, body: unknown = { text: 'Привет!', chat_id: 'chat-1', model: 'not-supported-by-core' }) {
+    return new Request('http://localhost/api/chat', { method: 'POST', body: JSON.stringify(body), signal });
+  }
+  function message(event: unknown) { socket.emit('message', Buffer.from(JSON.stringify(event)), false); }
+  async function connecting(signal?: AbortSignal) {
+    const pending = POST(request(signal));
+    await vi.waitFor(() => expect(factory.create).toHaveBeenCalledTimes(1));
+    return { pending };
+  }
+  async function hello(signal?: AbortSignal) {
+    const { pending } = await connecting(signal);
+    socket.readyState = 1;
+    socket.emit('open');
+    expect(socket.send).not.toHaveBeenCalled();
+    message({ type: 'hello', protocol: 'neyra.ws.chat.v1' });
+    return pending;
+  }
+
+  it('returns 401 without a session and never connects to core', async () => {
+    vi.mocked(getAuth).mockReturnValue({ api: { getSession: vi.fn().mockResolvedValue(null) } } as unknown as ReturnType<typeof getAuth>);
+    expect((await POST(request())).status).toBe(401);
+    expect(factory.create).not.toHaveBeenCalled();
+  });
+  it('keeps empty-text validation before transport', async () => {
+    expect((await POST(request(undefined, {text:'   '}))).status).toBe(400);
+    expect(factory.create).not.toHaveBeenCalled();
+  });
+  it('converts hello → token → token → done to SSE, sends exactly the core WS payload and signed headers', async () => {
+    const response = await hello();
+    const [url, options] = factory.create.mock.calls[0];
+    expect(url).toBe('wss://core.test/v1/ws/chat');
+    expect(options.headers.Authorization).toBe('Bearer public-test-service-key');
+    const { payload } = await verifyIdentityToken(options.headers['X-Neyra-Identity'], jwtSecret);
+    expect(payload).toMatchObject({sub:'usr-42',role:'admin',name:'Алиса',chat_id:'chat-1',task:'chat'});
+    expect(socket.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(socket.send.mock.calls[0][0])).toEqual({type:'chat',text:'Привет!',username:'alice@example.test',platform_user_id:'usr-42',channel_id:'chat-1'});
+    const events = [{type:'token',text:'Привет, '}, {type:'token',text:'мир!'}, {type:'done',text:'Привет, мир!',sounds:[],model_trace:{id:'trace'}}];
+    message({type:'pong'});
+    for (const event of events) message(event);
+    message({type:'token',text:'late'});
+    socket.emit('error', new Error('late error'));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(response.headers.get('cache-control')).toContain('no-cache');
+    expect(response.headers.get('x-accel-buffering')).toBe('no');
+    expect(await response.text()).toBe(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join(''));
+    expect(socket.close).toHaveBeenCalledOnce();
+  });
+  it.each(['chat_error', 'idle_timeout'])('forwards %s as SSE error and closes both sides', async code => {
+    const response = await hello();
+    const event = {type:'error',code,message:'Ошибка ядра'};
+    message(event);
+    expect(await response.text()).toBe(`data: ${JSON.stringify(event)}\n\n`);
+    expect(socket.close).toHaveBeenCalledOnce();
+  });
+  it('aborts a connecting socket when the request is cancelled', async () => {
+    const controller = new AbortController();
+    const { pending } = await connecting(controller.signal);
+    controller.abort();
+    expect((await pending).status).toBe(499);
+    expect(socket.terminate).toHaveBeenCalledOnce();
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+  it('aborts the WS and ends an active SSE stream on request.signal', async () => {
+    const controller = new AbortController();
+    const response = await hello(controller.signal);
+    controller.abort();
+    message({type:'token',text:'late'});
+    expect(await response.text()).toBe('');
+    expect(socket.terminate).toHaveBeenCalledOnce();
+  });
+  it('cancels WS when the response reader cancels', async () => {
+    const response = await hello();
+    await response.body!.cancel();
+    expect(socket.terminate).toHaveBeenCalledOnce();
+    message({type:'token',text:'late'});
+  });
+  it('never opens a socket for a request already aborted', async () => {
+    const controller = new AbortController(); controller.abort();
+    expect((await POST(request(controller.signal))).status).toBe(499);
+    expect(factory.create).not.toHaveBeenCalled();
+  });
+  it('returns a safe 502 on a rejected WebSocket upgrade', async () => {
+    const { pending } = await connecting();
+    socket.emit('error', new Error('Unexpected server response: 401 SECRET'));
+    const response = await pending;
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain('SECRET');
+    expect(socket.terminate).toHaveBeenCalledOnce();
+  });
+  it('returns 502 on synchronous connection failure', async () => {
+    factory.create.mockImplementation(() => { throw new Error('bad connection'); });
+    expect((await POST(request())).status).toBe(502);
+  });
+  it('returns 504 if a connected core never sends hello', async () => {
+    vi.useFakeTimers();
+    const { pending } = await connecting();
+    socket.readyState = 1; socket.emit('open');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect((await pending).status).toBe(504);
+    expect(socket.terminate).toHaveBeenCalledOnce();
+  });
+  it('returns 502 if core closes before hello', async () => {
+    const { pending } = await connecting();
+    socket.readyState = 3; socket.emit('close');
+    expect((await pending).status).toBe(502);
+  });
+  it('emits an SSE error for an unexpected close after hello', async () => {
+    const response = await hello();
+    socket.readyState = 3; socket.emit('close');
+    expect(await response.text()).toContain('"code":"core_disconnected"');
+  });
+  it('handles send callback failure as terminal SSE error', async () => {
+    socket.send.mockImplementation((_data, callback) => callback(new Error('send failed')));
+    const response = await hello();
+    expect(await response.text()).toContain('"code":"core_unavailable"');
+    expect(socket.terminate).toHaveBeenCalledOnce();
+  });
+  it('handles malformed frames after hello as terminal SSE errors', async () => {
+    const response = await hello();
+    socket.emit('message', Buffer.from('not json'), false);
+    expect(await response.text()).toContain('"code":"core_protocol_error"');
+    expect(socket.terminate).toHaveBeenCalledOnce();
+  });
+  it('rejects missing service key and invalid WS configuration before connection', async () => {
+    vi.stubEnv('NEYRA_SERVICE_KEY', '');
+    expect((await POST(request())).status).toBe(500);
+    vi.stubEnv('NEYRA_SERVICE_KEY', 'fixture'); vi.stubEnv('NEYRA_WS_URL', 'https://core.test');
+    expect((await POST(request())).status).toBe(500);
+    expect(factory.create).not.toHaveBeenCalled();
+  });
+});

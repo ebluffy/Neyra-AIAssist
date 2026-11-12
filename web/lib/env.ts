@@ -20,3 +20,13 @@ export function readAuthEnv(env: Environment = process.env) {
   } catch { throw new Error('Задайте BETTER_AUTH_URL — HTTP(S) origin сайта.'); }
   return { databaseUrl, secret, baseURL: baseURL! };
 }
+export function readChatEnv(env: Environment = process.env) {
+  const wsUrl = (env.NEYRA_WS_URL || 'ws://127.0.0.1:8787').replace(/\/+$/, '');
+  try {
+    const url = new URL(wsUrl);
+    if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
+  } catch { throw new Error('NEYRA_WS_URL должна быть корректным WS(S) URL ядра.'); }
+  const serviceKey = env.NEYRA_SERVICE_KEY || '';
+  const jwtSecret = env.NEYRA_IDENTITY_JWT_SECRET || '';
+  return { wsUrl, serviceKey, jwtSecret };
+}

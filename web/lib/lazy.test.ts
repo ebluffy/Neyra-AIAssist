@@ -7,8 +7,11 @@ it('imports database/auth/route without env, pool creation, or connections', asy
  try {
   const { getDatabase } = await import('./db');
   const { getAuth } = await import('./auth');
-  const route = await import('../src/app/api/auth/[...all]/route');
-  expect(route.GET).toBeTypeOf('function'); expect(pool).not.toHaveBeenCalled();
+  const authRoute = await import('../src/app/api/auth/[...all]/route');
+  const chatRoute = await import('../src/app/api/chat/route');
+  expect(authRoute.GET).toBeTypeOf('function');
+  expect(chatRoute.POST).toBeTypeOf('function');
+  expect(pool).not.toHaveBeenCalled();
   expect(() => getDatabase()).toThrow('DATABASE_URL'); expect(() => getAuth()).toThrow('DATABASE_URL');
   expect(pool).not.toHaveBeenCalled();
  } finally { vi.unstubAllEnvs(); vi.doUnmock('pg'); vi.resetModules(); }

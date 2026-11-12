@@ -18,6 +18,16 @@ export const WsChatEventSchema = z.discriminatedUnion('type', [
  z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string(), model_trace: z.unknown().optional() })
 ]);
 export type WsChatEvent = z.infer<typeof WsChatEventSchema>;
+export const SseChatEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string().optional() }),
+  z.object({ type: z.literal('thinking'), text: z.string().optional(), trace_id: z.string().optional() }),
+  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), thoughts: z.string().optional(), model_trace: z.unknown().optional(), trace_id: z.string().optional() }),
+  z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string().optional(), model_trace: z.unknown().optional() }),
+]);
+export type SseChatEvent = z.infer<typeof SseChatEventSchema>;
+export const ChatSseEventSchema = SseChatEventSchema;
+export type ChatSseEvent = SseChatEvent;
+
 export const MemorySearchRequestSchema = z.object({ query: z.string().min(1).max(1200), top_k: z.number().int().min(1).max(20).default(3), user_id: z.string().max(120).optional() }).strict();
 export const MemoryRecallRequestSchema = z.object({ limit: z.number().int().min(1).max(200).default(20), offset: z.number().int().min(0).max(100000).default(0), user_id: z.string().max(120).optional(), channel_id: z.string().max(120).optional(), newest_first: z.boolean().default(true) }).strict();
 export const MemoryWriteRequestSchema = z.object({ user_text: z.string().min(1).max(6000), assistant_text: z.string().min(1).max(6000), username: z.string().max(120).optional(), platform_user_id: z.string().max(120).optional() }).strict();
