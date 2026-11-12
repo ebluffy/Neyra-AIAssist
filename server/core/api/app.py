@@ -41,6 +41,7 @@ from core.api.client_ip import resolve_client_ip as _resolve_client_ip_pure
 from core.api.log_redaction import install_log_filters
 from core.api.request_context import get_trace_id, resolve_trace_id, set_trace_id
 from core.api.security_headers import SecurityHeadersMiddleware
+from core.api.web_identity import InvalidWebIdentity, verify_web_identity
 from core.neyra import NeyraAgent
 from core.runtime.features import FEATURE_DEFAULTS
 from core.runtime.backup import BackupManager
@@ -1520,6 +1521,55 @@ def build_app(
                 return
             await self.app(scope, receive, send)
 
+    class _WebIdentityASGI:
+        def __init__(self, app_):
+            self.app = app_
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] not in ("http", "websocket"):
+                await self.app(scope, receive, send)
+                return
+            tokens = [value for key, value in scope.get("headers", []) if key.lower() == b"x-neyra-identity"]
+            if tokens:
+                from starlette.requests import HTTPConnection
+
+                connection = HTTPConnection(scope)
+                try:
+                    if len(tokens) != 1:
+                        raise InvalidWebIdentity()
+                    identity = verify_web_identity(tokens[0].decode("ascii"))
+                    # A signed identity supplements service authentication; it never
+                    # enables the console-local anonymous path or replaces a bearer.
+                    api_role = _resolve_role(connection.headers.get("authorization"), config,
+                                             getattr(app.state, "dashboard_auth", None))
+                    if api_role == "anon":
+                        raise InvalidWebIdentity()
+                except (InvalidWebIdentity, ApiError, UnicodeError):
+                    if scope["type"] == "websocket":
+                        from starlette.websockets import WebSocket as StarletteWebSocket
+
+                        socket = StarletteWebSocket(scope, receive, send)
+                        if "websocket.http.response" in scope.get("extensions", {}):
+                            await socket.send_denial_response(JSONResponse(
+                                status_code=401, content={"ok": False, "error": {"code": "invalid_web_identity", "message": "Invalid web identity"}},
+                            ))
+                        else:
+                            await socket.close(code=1008)
+                    else:
+                        request = Request(scope, receive)
+                        tid = _trace_id(request)
+                        response = JSONResponse(
+                            status_code=401,
+                            content=_err_payload(tid, "invalid_web_identity", "Invalid web identity"),
+                            headers={"x-trace-id": tid},
+                        )
+                        await response(scope, receive, send)
+                    return
+                scope.setdefault("state", {})["web_identity"] = identity
+            await self.app(scope, receive, send)
+
+    app.add_middleware(_WebIdentityASGI)
+
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(_TraceDocsASGI)
     app.add_middleware(_RateLimitASGI)
@@ -1530,6 +1580,20 @@ def build_app(
         if extra:
             row.update(extra)
         _audit_file_append(config, root, row)
+
+    @app.get("/v1/web/me")
+    async def v1_web_me(request: Request, _: str = Depends(dep_viewer)):
+        identity = getattr(request.state, "web_identity", None)
+        if identity is None:
+            raise ApiError("web_identity_required", "Web identity required", 401)
+        return {"ok": True, "trace_id": _trace_id(request), "data": {
+            "person_id": identity.person_id, "role": identity.role,
+            "name": identity.name, "user_id": identity.user_id,
+        }}
+
+    def _memory_user_id(request: Request, supplied: Optional[str]) -> Optional[str]:
+        identity = getattr(request.state, "web_identity", None)
+        return identity.person_id if identity is not None else (supplied or "").strip() or None
 
     @app.post("/v1/chat")
     async def v1_chat(body: ChatRequest, request: Request, _role: str = Depends(dep_admin)):
@@ -1568,7 +1632,7 @@ def build_app(
     @app.post("/v1/memory/search")
     async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_maint)):
         trace_id = _trace_id(request)
-        uid = (body.user_id or "").strip() or None
+        uid = _memory_user_id(request, body.user_id)
         if not uid:
             raise ApiError(
                 "memory_search_user_required",
@@ -1589,7 +1653,7 @@ def build_app(
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
-        uid = (body.user_id or "").strip() or None
+        uid = _memory_user_id(request, body.user_id)
         cid = (body.channel_id or "").strip() or None
         if not uid and not cid:
             raise ApiError(
