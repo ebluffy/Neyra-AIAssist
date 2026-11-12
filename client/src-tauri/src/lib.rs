@@ -2035,20 +2035,24 @@ fn announce_stop(app: &tauri::AppHandle, seq: u64, outcome: &Result<(), CaptureE
 
 #[tauri::command]
 async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), CaptureError> {
-    let recording = state
-        .recording
-        .lock()
-        .map_err(|e| CaptureError::internal(lock_error(e)))?
-        .take()
-        .ok_or(CaptureError::NoCapture)?;
+    let recording = {
+        let mut slot = state
+            .recording
+            .lock()
+            .map_err(|e| CaptureError::internal(lock_error(e)))?;
+        let taken = slot.take();
+        if taken.is_some() {
+            // Closing the capture and dropping its hotkey ownership happen in one section: a
+            // capture that starts next must keep its own ownership (AR-19).
+            let mut hotkey = hotkey_state(&state);
+            hotkey.held = 0;
+            hotkey.active = 0;
+        }
+        taken
+    }
+    .ok_or(CaptureError::NoCapture)?;
     // The clip carries the number of this very capture, not of whatever runs next (NEW-4).
     let capture_seq = recording.seq;
-    // Once the capture is closed, a later hotkey release must not try to stop it again (AR-19).
-    {
-        let mut hotkey = hotkey_state(&state);
-        hotkey.held = 0;
-        hotkey.active = 0;
-    }
     let request_id = match start_turn_typed(&state) {
         Ok(id) => id,
         Err(error) => {
@@ -2107,12 +2111,16 @@ async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result
 }
 #[tauri::command]
 async fn record_cancel(state: State<'_, Desktop>) -> Result<(), String> {
-    let recording = state.recording.lock().map_err(lock_error)?.take();
-    {
-        let mut hotkey = hotkey_state(&state);
-        hotkey.held = 0;
-        hotkey.active = 0;
-    }
+    let recording = {
+        let mut slot = state.recording.lock().map_err(lock_error)?;
+        let taken = slot.take();
+        if taken.is_some() {
+            let mut hotkey = hotkey_state(&state);
+            hotkey.held = 0;
+            hotkey.active = 0;
+        }
+        taken
+    };
     if let Some(recording) = recording {
         tauri::async_runtime::spawn_blocking(move || {
             let _ = recording.finish();
