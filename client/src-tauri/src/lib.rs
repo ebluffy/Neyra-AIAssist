@@ -1991,7 +1991,6 @@ async fn finish_ptt(
     result
 }
 
-#[tauri::command]
 /// Announce the outcome of closing a capture, tagged with its number so the window can drop a
 /// late result of an older capture. A capture that was never opened has nothing to report.
 fn announce_stop(app: &tauri::AppHandle, seq: u64, outcome: &Result<(), CaptureError>) {
@@ -2010,6 +2009,7 @@ fn announce_stop(app: &tauri::AppHandle, seq: u64, outcome: &Result<(), CaptureE
     }
 }
 
+#[tauri::command]
 async fn record_stop(app: tauri::AppHandle, state: State<'_, Desktop>) -> Result<(), CaptureError> {
     let recording = state
         .recording
