@@ -190,13 +190,15 @@ PostgreSQL, схема `public`, миграции — Drizzle.
 
 Веб — единственный источник идентичности для веб-чата.
 
-1. Web подписывает короткоживущий JWT (HS256, TTL 60 с) секретом `NEYRA_IDENTITY_JWT_SECRET`.
+1. Web подписывает короткоживущий JWT (HS256, TTL 60 с) секретом `NEYRA_IDENTITY_JWT_SECRET` (не менее 32 байт UTF-8). Ожидаемый issuer ядро читает из `NEYRA_IDENTITY_JWT_ISSUER`; сайт передаёт точно это значение в `iss`. Оба параметра обязательны для identity-запросов, дефолтных значений нет.
 2. Запрос к ядру: `Authorization: Bearer <service-key>` + `X-Neyra-Identity: <jwt>`.
-3. Claims: `sub` (web user id), `role`, `name`, `chat_id`, `message_id`, `task`, `iat`, `exp`.
-4. Ядро проверяет подпись, срок и `iss`, затем вызывает `UnifiedIdentityMapper.resolve(platform='web', platform_user_id=<sub>)`. `person_id` — uuid5 от ключа `web:<sub>` внутри ядра; литеральная строка `web:<uuid>` в БД не хранится.
+3. Claims: `iss`, `sub` (web user id), `role`, `name`, `chat_id`, `message_id`, `task`, `iat`, `exp`.
+4. Ядро проверяет подпись, срок и `iss`, затем вызывает `UnifiedIdentityMapper.resolve(platform='web', platform_user_id=<sub>)`. `person_id` новой карточки — uuid5 от ключа `web:<sub>`. Если аккаунт уже привязан к карточке (в том числе после `merge_people`), используется её текущий `person_id`, а не исходный хэш. Литеральная строка `web:<uuid>` в БД не хранится.
 5. Ошибка проверки — 401, без доверия к заголовкам. Fail-closed.
 
-Заголовки `X-Neyra-*` без валидного JWT игнорируются. Само ядро не фильтрует источник запроса: `/v1/chat`, `/v1/ws/chat` и `/v1/memory/*` защищены только токенами ролей (`viewer` / `maint+` / `admin`), а не сетью. Снаружи публикуется только `/v1/desktop/*`; остальное закрывает reverse proxy (`deny` на краю), см. [api-reverse-proxy](../ops/api-reverse-proxy.md) и раздел про деплой ниже.
+Отсутствие `X-Neyra-Identity` сохраняет старые API-пути. Присутствующий, но невалидный identity-JWT отклоняется с 401; его claims не используются. Само ядро не фильтрует источник запроса: `/v1/chat`, `/v1/ws/chat` и `/v1/memory/*` защищены только токенами ролей (`viewer` / `maint+` / `admin`), а не сетью. Снаружи публикуется только `/v1/desktop/*`; остальное закрывает reverse proxy (`deny` на краю), см. [api-reverse-proxy](../ops/api-reverse-proxy.md) и раздел про деплой ниже.
+
+Для подписанного `role=user` memory API работает по allowlist: `POST /v1/memory/search`, `POST /v1/memory/chat/recall` с принудительным владельцем и `GET /v1/memory/people/{person_id}` только своей карточки. Остальные `/v1/memory/*`, включая списки, глобальные stats/affect/short/long/diary и все мутации, возвращают 403. Подписанный `admin` и старые API-клиенты сохраняют прежние ops-маршруты в пределах роли bearer-токена. Подписанная роль не повышает привилегии service key.
 
 ## 9. Чат
 
@@ -343,7 +345,7 @@ UPLOAD_DIR=/data/uploads
 | # | Что | Зачем | Приоритет |
 |---|---|---|---|
 | 1 | Проверка `X-Neyra-Identity` на `/v1/chat`, `/v1/ws/chat`, `/v1/memory/*`, `/v1/desktop/*` | Доверие к вебу | P1 |
-| 2 | `GET /v1/web/me`: `person_id`, роль, лимиты по JWT | Web кеширует в `memory_map` | P1 |
+| 2 | `GET /v1/web/me`: `person_id`, `user_id`, роль, имя; `limits: null` (персональные лимиты пока не реализованы) | Web кеширует в `memory_map` | P1 |
 | 3 | Поле `platform` в `WsChatMessage` | Иначе WS-ход не отличает web от Discord | P1 |
 | 4 | Поле `model` в `ChatRequest`/`WsChatMessage` и override модели в `agent.chat` | Смена модели по ходу чата | P1 |
 | 5 | Контракт вложений: `attachments[]` (`kind`, `path`/`url`, `mime`, `text?`) + маршрутизация в vision/STT/извлечение текста | Сейчас `extra="forbid"`, вложения дают 422 | P1 |

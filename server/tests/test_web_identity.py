@@ -11,9 +11,16 @@ from core.runtime.identity import UnifiedIdentityMapper
 TEST_SECRET = 'web-identity-test-fixture-not-a-real-secret-000000000000000000000000'
 
 
+def identity_hub():
+    hub = MagicMock()
+    hub.sqlite.get_account.return_value = None
+    hub.ensure_person_for_account.return_value = {'id': UnifiedIdentityMapper.resolve('web', 'web-user-1')}
+    return hub
+
+
 def claims(**changes):
     now = int(time.time())
-    return {"sub": "web-user-1", "role": "user", "name": "Тест", "chat_id": "chat-1",
+    return {"iss": "test-neyra-web", "sub": "web-user-1", "role": "user", "name": "Тест", "chat_id": "chat-1",
             "message_id": "message-1", "task": "chat", "iat": now, "exp": now + 60, **changes}
 
 
@@ -24,6 +31,7 @@ def token(payload=None, *, key=TEST_SECRET, algorithm='HS256'):
 @pytest.fixture(autouse=True)
 def identity_env(monkeypatch):
     monkeypatch.setenv('NEYRA_IDENTITY_JWT_SECRET', TEST_SECRET)
+    monkeypatch.setenv('NEYRA_IDENTITY_JWT_ISSUER', 'test-neyra-web')
 
 
 def headers(auth_headers, signed=None, role='maint'):
@@ -35,7 +43,7 @@ def test_me_uses_production_mapper(client, auth_headers):
     assert response.status_code == 200
     assert response.json()['data'] == {
         'person_id': UnifiedIdentityMapper.resolve('web', 'web-user-1'),
-        'role': 'user', 'name': 'Тест', 'user_id': 'web-user-1',
+        'role': 'user', 'name': 'Тест', 'user_id': 'web-user-1', 'limits': None,
     }
 
 
@@ -94,7 +102,7 @@ def test_identity_does_not_elevate_api_token_role(client, auth_headers):
 @pytest.mark.parametrize('use_hub', [True, False])
 @pytest.mark.parametrize('supplied', ['victim-id', None])
 def test_semantic_search_cannot_spoof_owner(client, auth_headers, stub_agent, use_hub, supplied):
-    hub = MagicMock()
+    hub = identity_hub()
     hub.search_semantic.return_value = []
     stub_agent.memory_hub = hub if use_hub else None
     stub_agent.long_memory.search.return_value = []
@@ -111,7 +119,7 @@ def test_semantic_search_cannot_spoof_owner(client, auth_headers, stub_agent, us
 
 @pytest.mark.parametrize('supplied', ['victim-id', None])
 def test_chat_recall_forces_owner_even_with_other_channel(client, auth_headers, stub_agent, supplied):
-    hub = stub_agent.memory_hub = MagicMock()
+    hub = stub_agent.memory_hub = identity_hub()
     hub.list_chat.return_value = []
     body = {'channel_id': 'other-channel', 'limit': 3, 'offset': 2, 'newest_first': False}
     if supplied is not None:
@@ -123,7 +131,7 @@ def test_chat_recall_forces_owner_even_with_other_channel(client, auth_headers, 
 
 
 def test_absent_identity_preserves_legacy_memory_filters(client, auth_headers, stub_agent):
-    hub = stub_agent.memory_hub = MagicMock()
+    hub = stub_agent.memory_hub = identity_hub()
     hub.search_semantic.return_value = []
     hub.list_chat.return_value = []
     h = auth_headers['maint']
@@ -136,7 +144,7 @@ def test_absent_identity_preserves_legacy_memory_filters(client, auth_headers, s
 
 
 def test_bad_identity_stops_memory_before_backend(client, auth_headers, stub_agent):
-    hub = stub_agent.memory_hub = MagicMock()
+    hub = stub_agent.memory_hub = identity_hub()
     response = client.post('/v1/memory/search', json={'query': 'q', 'user_id': 'victim'}, headers=headers(auth_headers, 'broken'))
     assert response.status_code == 401
     hub.search_semantic.assert_not_called()
@@ -283,7 +291,7 @@ def test_provisioning_failure_is_reported(client, stub_agent, auth_headers):
     """Сбой хранилища личности — явный 503, а не тихий ход без карточки."""
     from unittest.mock import MagicMock
 
-    stub_agent.memory_hub = MagicMock()
+    stub_agent.memory_hub = identity_hub()
     stub_agent.memory_hub.ensure_person_for_account = MagicMock(side_effect=RuntimeError("storage down"))
     response = client.get('/v1/web/me', headers=headers(auth_headers))
     assert response.status_code == 503

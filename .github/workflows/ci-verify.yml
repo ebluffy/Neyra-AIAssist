@@ -153,7 +153,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install API verify deps
-        run: pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart PyJWT
+        run: pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart PyJWT==2.15.1
       - name: compileall
         run: python -m compileall -q server
       - name: Check layered config regression
@@ -189,7 +189,7 @@ jobs:
       - name: Install deps
         run: |
           pip install -q -r server/requirements-dev.txt
-          pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart PyJWT
+          pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart PyJWT==2.15.1
       - name: Run pytest
         run: cd server && pytest -q
       - name: Performance report offline tests
@@ -235,7 +235,7 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: E2E smoke
         run: |
-          python -m pip install -q -r ../requirements-dev.txt pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart PyJWT
+          python -m pip install -q -r ../requirements-dev.txt pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart PyJWT==2.15.1
           npm run test:e2e
 
   secrets:

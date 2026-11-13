@@ -1527,19 +1527,42 @@ def build_app(
 
         @staticmethod
         def _provision(agent_, identity):
-            """Create the web person on the trusted boundary, never a Discord card.
+            """Read account ownership first (including admin merges); write only on first contact."""
+            from dataclasses import replace
 
-            The signed ``sub`` is the account key, so the row id equals the person_id
-            the token carries; first-turn relations/diary then have an owner.
-            """
             hub = getattr(agent_, "memory_hub", None)
             if hub is None:
-                return
-            hub.ensure_person_for_account(
-                platform="web",
-                platform_user_id=identity.user_id,
-                display_name=(identity.name or "").strip() or None,
-            )
+                return identity
+            account = hub.sqlite.get_account("web", identity.user_id)
+            if account is not None:
+                person_id = account.get("person_id")
+            else:
+                row = hub.ensure_person_for_account(
+                    platform="web", platform_user_id=identity.user_id,
+                    display_name=(identity.name or "").strip() or None,
+                )
+                person_id = row.get("id")
+            if not isinstance(person_id, str) or not person_id.strip():
+                raise RuntimeError("Invalid web account owner")
+            return replace(identity, person_id=person_id)
+
+        @staticmethod
+        async def _deny(scope, receive, send, status, code, message):
+            from starlette.requests import HTTPConnection
+
+            tid = _trace_id(HTTPConnection(scope))
+            response = JSONResponse(status_code=status, content=_err_payload(tid, code, message),
+                                    headers={"x-trace-id": tid})
+            if scope["type"] == "websocket":
+                from starlette.websockets import WebSocket as StarletteWebSocket
+
+                socket = StarletteWebSocket(scope, receive, send)
+                if "websocket.http.response" in scope.get("extensions", {}):
+                    await socket.send_denial_response(response)
+                else:
+                    await socket.close(code=1011 if status >= 500 else 1008)
+            else:
+                await response(scope, receive, send)
 
         async def __call__(self, scope, receive, send):
             if scope["type"] not in ("http", "websocket"):
@@ -1554,58 +1577,38 @@ def build_app(
                     if len(tokens) != 1:
                         raise InvalidWebIdentity()
                     identity = verify_web_identity(tokens[0].decode("ascii"))
-                    # A signed identity supplements service authentication; it never
-                    # enables the console-local anonymous path or replaces a bearer.
-                    api_role = _resolve_role(connection.headers.get("authorization"), config,
-                                             getattr(app.state, "dashboard_auth", None))
+                    dash = getattr(app.state, "dashboard_auth", None)
+                    authorization = connection.headers.get("authorization")
+                    if scope["type"] == "websocket":
+                        api_role = _require_ws_auth(connection.query_params.get("token"), authorization, config, dash)
+                    else:
+                        api_role = _resolve_role(authorization, config, dash)
                     if api_role == "anon":
                         raise InvalidWebIdentity()
                 except (InvalidWebIdentity, ApiError, UnicodeError):
-                    if scope["type"] == "websocket":
-                        from starlette.websockets import WebSocket as StarletteWebSocket
-
-                        socket = StarletteWebSocket(scope, receive, send)
-                        if "websocket.http.response" in scope.get("extensions", {}):
-                            await socket.send_denial_response(JSONResponse(
-                                status_code=401, content={"ok": False, "error": {"code": "invalid_web_identity", "message": "Invalid web identity"}},
-                            ))
-                        else:
-                            await socket.close(code=1008)
-                    else:
-                        request = Request(scope, receive)
-                        tid = _trace_id(request)
-                        response = JSONResponse(
-                            status_code=401,
-                            content=_err_payload(tid, "invalid_web_identity", "Invalid web identity"),
-                            headers={"x-trace-id": tid},
-                        )
-                        await response(scope, receive, send)
+                    await self._deny(scope, receive, send, 401, "invalid_web_identity", "Invalid web identity")
                     return
                 try:
-                    await asyncio.to_thread(self._provision, agent, identity)
+                    identity = await asyncio.to_thread(self._provision, agent, identity)
                 except Exception:
                     logger.exception("web person provisioning failed")
-                    if scope["type"] == "websocket":
-                        from starlette.websockets import WebSocket as StarletteWebSocket
-
-                        socket = StarletteWebSocket(scope, receive, send)
-                        if "websocket.http.response" in scope.get("extensions", {}):
-                            await socket.send_denial_response(JSONResponse(
-                                status_code=503, content={"ok": False, "error": {"code": "identity_storage_unavailable", "message": "Identity storage unavailable"}},
-                            ))
-                        else:
-                            # No denial extension: the handshake fails before accept (client sees 403).
-                            await socket.close(code=1011)
-                    else:
-                        tid = _trace_id(Request(scope, receive))
-                        response = JSONResponse(
-                            status_code=503,
-                            content=_err_payload(tid, "identity_storage_unavailable", "Identity storage unavailable"),
-                            headers={"x-trace-id": tid},
-                        )
-                        await response(scope, receive, send)
+                    await self._deny(scope, receive, send, 503, "identity_storage_unavailable", "Identity storage unavailable")
                     return
                 scope.setdefault("state", {})["web_identity"] = identity
+                # Default-deny every memory route for a signed user, including future
+                # routes and mutations carried by an admin service key. Only explicitly
+                # scoped reads are allowed; JWT admins and legacy callers retain ops API.
+                from starlette._utils import get_route_path
+
+                path = get_route_path(scope).rstrip("/")
+                if identity.role == "user" and (path == "/v1/memory" or path.startswith("/v1/memory/")):
+                    allowed = (scope["type"] == "http" and (
+                        (scope.get("method") == "POST" and path in ("/v1/memory/search", "/v1/memory/chat/recall"))
+                        or (scope.get("method") == "GET" and path == f"/v1/memory/people/{identity.person_id}")
+                    ))
+                    if not allowed:
+                        await self._deny(scope, receive, send, 403, "web_memory_forbidden", "Memory access forbidden")
+                        return
             await self.app(scope, receive, send)
 
     app.add_middleware(_WebIdentityASGI)
@@ -1628,7 +1631,7 @@ def build_app(
             raise ApiError("web_identity_required", "Web identity required", 401)
         return {"ok": True, "trace_id": _trace_id(request), "data": {
             "person_id": identity.person_id, "role": identity.role,
-            "name": identity.name, "user_id": identity.user_id,
+            "name": identity.name, "user_id": identity.user_id, "limits": None,
         }}
 
     def _memory_user_id(request: Request, supplied: Optional[str]) -> Optional[str]:
@@ -1641,13 +1644,13 @@ def build_app(
         web_identity = getattr(request.state, "web_identity", None)
         out = await agent.chat(
             user_message=body.text,
-            username=body.username or "api_user",
-            discord_user_id=body.platform_user_id,
+            username=web_identity.person_id if web_identity is not None else body.username or "api_user",
+            discord_user_id=None if web_identity is not None else body.platform_user_id,
             channel_id=body.channel_id,
-            author_display_name=body.author_display_name,
-            avatar_url=body.avatar_url,
+            author_display_name=web_identity.name if web_identity is not None else body.author_display_name,
+            avatar_url=None if web_identity is not None else body.avatar_url,
             person_id=web_identity.person_id if web_identity is not None else None,
-            **({"discord_context": body.discord_context} if body.discord_context is not None else {}),
+            **({"discord_context": body.discord_context} if web_identity is None and body.discord_context is not None else {}),
         )
         return {"ok": True, "trace_id": trace_id, "data": out}
 
@@ -4399,12 +4402,12 @@ def build_app(
             try:
                 async for chunk in agent.chat_stream(
                     text,
-                    username=username,
-                    discord_user_id=platform_user_id,
+                    username=ws_identity.person_id if ws_identity is not None else username,
+                    discord_user_id=None if ws_identity is not None else platform_user_id,
                     channel_id=channel_id,
-                    author_display_name=ws_author_disp,
+                    author_display_name=ws_identity.name if ws_identity is not None else ws_author_disp,
                     person_id=getattr(ws_identity, "person_id", None),
-                    **({"discord_context": parsed.discord_context} if parsed.discord_context is not None else {}),
+                    **({"discord_context": parsed.discord_context} if ws_identity is None and parsed.discord_context is not None else {}),
                 ):
                     if chunk.get("type") == "token":
                         await websocket.send_json(

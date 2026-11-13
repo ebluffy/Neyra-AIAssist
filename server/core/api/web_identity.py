@@ -23,13 +23,18 @@ class WebIdentity:
 
 def verify_web_identity(token: str) -> WebIdentity:
     secret = os.environ.get("NEYRA_IDENTITY_JWT_SECRET", "")
-    if not secret or not secret.strip() or not token or len(token) > 8192:
+    issuer = os.environ.get("NEYRA_IDENTITY_JWT_ISSUER", "").strip()
+    try:
+        strong_secret = len(secret.encode("utf-8")) >= 32 and bool(secret.strip())
+    except UnicodeError:
+        strong_secret = False
+    if not strong_secret or not issuer or not token or len(token) > 8192:
         raise InvalidWebIdentity()
     try:
         # Fixed allowlist; never choose an algorithm/key from untrusted JWT headers.
         decoded = jwt.decode_complete(
-            token, secret, algorithms=["HS256"],
-            options={"require": ["sub", "iat", "exp", "role", "name"]},
+            token, secret, algorithms=["HS256"], issuer=issuer,
+            options={"require": ["iss", "sub", "iat", "exp", "role", "name"]},
         )
         header, claims = decoded["header"], decoded["payload"]
         if "crit" in header or "b64" in header:

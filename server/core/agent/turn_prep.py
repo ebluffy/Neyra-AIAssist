@@ -138,9 +138,9 @@ async def prepare_turn(
     mentioned = agent._detect_mentioned_names(user_message)
     if discord_context is not None and getattr(agent, "memory_hub", None) is not None:
         from core.agent.people_context import known_discord_mentions
-        for person_id in known_discord_mentions(agent.memory_hub, discord_context):
-            if person_id not in mentioned:
-                mentioned.append(person_id)
+        for mentioned_pid in known_discord_mentions(agent.memory_hub, discord_context):
+            if mentioned_pid not in mentioned:
+                mentioned.append(mentioned_pid)
     if username or discord_user_id:
         person = agent.memory_hub.find_person(username or "", discord_id=discord_user_id)
         if person and person["id"] not in mentioned:
