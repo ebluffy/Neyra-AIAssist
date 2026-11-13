@@ -717,9 +717,12 @@ export function AppSidebar({
                 <Link
                   href="/settings"
                   role="menuitem"
-                  onClick={() => {
+                  onClick={(event) => {
                     setProfileMenuOpen(false);
-                    if (onOpenSettings) onOpenSettings();
+                    if (onOpenSettings) {
+                      event.preventDefault();
+                      onOpenSettings();
+                    }
                   }}
                   className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left"
                 >
