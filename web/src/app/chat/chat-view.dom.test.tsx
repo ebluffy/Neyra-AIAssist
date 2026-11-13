@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ChatView } from './chat-view';
 import { TextField } from '../../components/ui';
 import { resolveTabKey } from '../../../lib/chat-id';
@@ -195,10 +195,11 @@ describe('ChatView conversation', () => {
     fireEvent.click(userCard);
 
     // Profile menu should open
-    expect(screen.getByRole('menu', { name: 'Меню профиля' })).toBeTruthy();
-    expect(screen.getByText('Настройки')).toBeTruthy();
-    expect(screen.getByText('Админ-панель')).toBeTruthy();
-    expect(screen.getByText(ru.signOut)).toBeTruthy();
+    const menu = screen.getByRole('menu', { name: 'Меню профиля' });
+    expect(menu).toBeTruthy();
+    expect(within(menu).getByText('Настройки')).toBeTruthy();
+    expect(within(menu).getByText('Админ-панель')).toBeTruthy();
+    expect(within(menu).getByText(ru.signOut)).toBeTruthy();
   });
 
   it('preserves full thread title for CSS truncation and does not slice without ellipsis (§2)', async () => {
