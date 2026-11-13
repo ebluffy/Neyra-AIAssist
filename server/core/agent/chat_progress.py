@@ -1,30 +1,43 @@
-"""Public progress/usage allowlist, independent of operator model traces."""
+"""Public context counters: actual provider inputs and configured context windows."""
 PHASES = {'retrieval': 'Собираю контекст…', 'plan': 'Думаю…', 'answer': 'Формулирую ответ…'}
-USAGE_KEYS = ('prompt_tokens', 'completion_tokens', 'context_limit', 'context_used')
+LANES = ('talk', 'brain', 'memory', 'vision')
 
 
-def public_usage(value):
-    if not isinstance(value, dict):
-        return None
-    if not all(type(value.get(key)) is int and value[key] >= 0 for key in USAGE_KEYS):
-        return None
-    if value['context_limit'] <= 0:
-        return None
-    return {key: value[key] for key in USAGE_KEYS}
+def lane_inputs(report):
+    """Latest successful request per lane; never include traces or failed retries."""
+    result = {}
+    for call in (report or {}).get('calls', []):
+        lane = call.get('lane')
+        if lane not in LANES or call.get('status') != 'completed':
+            continue
+        usage = call.get('usage') or {}
+        used = usage.get('input_tokens', usage.get('prompt_tokens'))
+        # A newer successful call without usage invalidates the earlier reading.
+        result.pop(lane, None)
+        if type(used) is int and used >= 0:
+            result[lane] = used
+    return result
 
 
-def collect_provider_usage(payload, collected):
-    """Only reported response metadata: never consult model config or estimate tokens."""
-    metadata = getattr(payload, 'response_metadata', None) or {}
-    direct = getattr(payload, 'usage_metadata', None)
-    sources = [metadata] if isinstance(metadata, dict) else []
-    if isinstance(metadata, dict):
-        sources += [metadata.get(k) for k in ('usage', 'token_usage', 'usage_metadata')]
-    sources += [direct]
-    aliases = {'input_tokens': 'prompt_tokens', 'output_tokens': 'completion_tokens'}
-    for source in sources:
-        if isinstance(source, dict):
-            for key, value in source.items():
-                key = aliases.get(key, key)
-                if key in USAGE_KEYS and type(value) is int and value >= 0:
-                    collected[key] = value
+def context_usage(config, inputs=None):
+    """No estimates/default capacities. Unknown fields are absent, never zero.
+
+    There is no percentage-based automatic compression policy in this core;
+    threshold_messages is not a percentage and must not be exposed as one.
+    """
+    llm = config.get('llm') or {}
+    lanes = {}
+    for lane in LANES:
+        entry = {}
+        limit = (llm.get(lane + '_model') or {}).get('context_window')
+        if type(limit) is int and limit > 0:
+            entry['limit'] = limit
+        used = (inputs or {}).get(lane)
+        if type(used) is int and used >= 0:
+            entry['used'] = used
+        lanes[lane] = entry
+    total = {}
+    for field in ('used', 'limit'):
+        if all(field in entry for entry in lanes.values()):
+            total[field] = sum(entry[field] for entry in lanes.values())
+    return {'total': total, 'lanes': lanes}

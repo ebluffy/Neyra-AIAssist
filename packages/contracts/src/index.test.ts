@@ -47,11 +47,11 @@ it('validates chat SSE events (token, done, error, thinking) with strict whiteli
 
 
 it('validates public done usage or its absence and never accepts model_trace', () => {
- const usage = {prompt_tokens:10,completion_tokens:2,context_limit:100,context_used:12};
+ const usage = {total:{limit:400},lanes:{talk:{used:10,limit:100},brain:{limit:100},memory:{limit:100},vision:{limit:100}}};
  expect(SseChatEventSchema.parse({type:'done',text:'ok',usage})).toMatchObject({usage});
  expect(SseChatEventSchema.parse({type:'done',text:'ok'})).not.toHaveProperty('usage');
  expect(SseChatEventSchema.safeParse({type:'done',text:'ok',usage:{prompt_tokens:10}}).success).toBe(false);
- expect(SseChatEventSchema.safeParse({type:'done',text:'ok',usage:{...usage,prompt_tokens:1.5}}).success).toBe(false);
+ expect(SseChatEventSchema.safeParse({type:'done',text:'ok',usage:{...usage,lanes:{...usage.lanes,talk:{used:1.5}}}}).success).toBe(false);
  expect(WsChatEventSchema.safeParse({type:'done',text:'ok',trace_id:'t',usage}).success).toBe(true);
  expect(WsChatEventSchema.safeParse({type:'done',text:'ok',trace_id:'t',model_trace:{secret:true}}).success).toBe(false);
 });
@@ -61,4 +61,12 @@ it('validates real phases and owner-bound attachment references', () => {
  const file={id:'a'.repeat(32),kind:'file',mime:'text/plain',name:'a.txt',size:1};
  expect(WsChatMessageSchema.safeParse({type:'chat',text:'x',attachments:[file]}).success).toBe(true);
  expect(WsChatMessageSchema.safeParse({type:'chat',text:'x',attachments:Array(5).fill(file)}).success).toBe(false);
+});
+it('accepts unknown lane readings without fabricating zeros or a threshold', () => {
+ const usage = {total:{},lanes:{talk:{},brain:{},memory:{},vision:{}}};
+ expect(SseChatEventSchema.parse({type:'done',text:'ok',usage})).toMatchObject({usage});
+ for (const invalid of [-1, 1.5, true]) {
+  expect(SseChatEventSchema.safeParse({type:'done',text:'ok',usage:{...usage,lanes:{...usage.lanes,memory:{used:invalid}}}}).success).toBe(false);
+ }
+ expect(SseChatEventSchema.safeParse({type:'done',text:'ok',usage:{...usage,total:{threshold_pct:101}}}).success).toBe(false);
 });

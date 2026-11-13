@@ -1647,6 +1647,19 @@ def build_app(
             raise ApiError("unauthorized", "Нужна авторизация владельца вложения.", 401)
         return "api:" + hashlib.sha256(authorization.encode()).hexdigest()
 
+    # Bounded, process-local last-turn readings, scoped exactly like attachments.
+    # No shared person/channel lookup: a caller cannot select another owner's data.
+    from collections import OrderedDict
+    context_readings = OrderedDict()
+
+    @app.get("/v1/context/limits")
+    async def v1_context_limits(request: Request, channel_id: str = Query(min_length=1, max_length=120),
+                                _: str = Depends(dep_admin)):
+        from core.agent.chat_progress import context_usage
+        inputs = context_readings.get((_attachment_owner(request), channel_id), {})
+        return {"ok": True, "trace_id": _trace_id(request),
+                "data": context_usage(agent.config, inputs)}
+
     @app.post("/v1/attachments")
     async def v1_attachments(request: Request, _: str = Depends(dep_admin)):
         from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -4496,14 +4509,20 @@ def build_app(
                             {"type": "token", "text": chunk.get("text", ""), "trace_id": trace_id}
                         )
                     elif chunk.get("type") == "done":
-                        from core.agent.chat_progress import public_usage
-                        usage = public_usage(chunk.get("usage"))
+                        from core.agent.chat_progress import context_usage, lane_inputs
+                        inputs = lane_inputs(chunk.get("model_trace"))
+                        key = (_attachment_owner(websocket), channel_id)
+                        context_readings[key] = inputs
+                        context_readings.move_to_end(key)
+                        if len(context_readings) > 256:
+                            context_readings.popitem(last=False)
+                        usage = context_usage(agent.config, inputs)
                         await websocket.send_json(
                             {
                                 "type": "done",
                                 "text": chunk.get("text", ""),
                                 "sounds": chunk.get("sounds", []),
-                                **({"usage": usage} if usage is not None else {}),
+                                "usage": usage,
                                 "trace_id": trace_id,
                             }
                         )

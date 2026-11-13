@@ -165,7 +165,6 @@ async def iter_chat_stream(
         )
         final_messages_used = messages
 
-        provider_usage = {}
         raw_response = ""
         context_exceeded = False
         clip_visible = responses_output_exceeds_visible(agent, stream_llm, prep.lyrics_mode)
@@ -180,7 +179,6 @@ async def iter_chat_stream(
         def reset_hidden_attempt():
             nonlocal raw_response, plan_state, reasoning_filter, raw_chunk_count, used_model_name
             raw_response = ""
-            provider_usage.clear()
             plan_state = agent._init_micro_plan_state()
             reasoning_filter = ReasoningFilter()
             raw_chunk_count = 0
@@ -222,8 +220,6 @@ async def iter_chat_stream(
 
             async with aclosing(stream_iter):
                 async for chunk in stream_iter:
-                    from core.agent.chat_progress import collect_provider_usage
-                    collect_provider_usage(chunk, provider_usage)
                     if used_model_name is None:
                         used_model_name = agent._extract_model_name(chunk)
                     token = chunk.content if hasattr(chunk, "content") else str(chunk)
@@ -309,7 +305,6 @@ async def iter_chat_stream(
                 )
                 final_messages_used = messages_retry
                 raw_response = ""
-                provider_usage.clear()
                 plan_state = agent._init_micro_plan_state()
                 reasoning_filter = ReasoningFilter()
                 try:
@@ -388,10 +383,7 @@ async def iter_chat_stream(
         log_micro_plan_metrics(agent)
         logger.debug("Стрим завершён | sounds=%s | len=%s", sounds, len(clean_text))
 
-        from core.agent.chat_progress import public_usage
-        usage = public_usage(provider_usage)
         yield {
-            **({"usage": usage} if usage is not None else {}),
             "type": "done",
             "text": clean_text,
             "sounds": sounds,

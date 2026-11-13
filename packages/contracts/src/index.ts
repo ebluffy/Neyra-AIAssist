@@ -4,7 +4,9 @@ const identity = { username: z.string().max(120).optional(), platform_user_id: z
 export const AttachmentSchema = z.object({ id: z.string().regex(/^[a-f0-9]{32}$/), kind: z.enum(['image', 'file']), mime: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/pdf', 'text/plain', 'text/markdown']), name: z.string().min(1).refine(value => [...value].length <= 200), size: z.number().int().min(1).max(8 * 1024 * 1024) }).strict();
 export const StoredAttachmentSchema = AttachmentSchema;
 export type StoredAttachment = z.infer<typeof StoredAttachmentSchema>;
-export const ChatUsageSchema = z.object({ prompt_tokens: z.number().int().nonnegative(), completion_tokens: z.number().int().nonnegative(), context_limit: z.number().int().positive(), context_used: z.number().int().nonnegative() }).strict();
+export const ContextLaneSchema = z.object({ used: z.number().int().nonnegative().optional(), limit: z.number().int().positive().optional() }).strict();
+export const ChatUsageSchema = z.object({ total: ContextLaneSchema.extend({ threshold_pct: z.number().min(0).max(100).optional() }).strict(), lanes: z.object({ talk: ContextLaneSchema, brain: ContextLaneSchema, memory: ContextLaneSchema, vision: ContextLaneSchema }).strict() }).strict();
+export const ContextLimitsSchema = ChatUsageSchema;
 export type ChatUsage = z.infer<typeof ChatUsageSchema>;
 export const ChatPhaseEventSchema = z.object({ type: z.literal('phase'), phase: z.enum(['retrieval', 'plan', 'answer']), label: z.string().min(1) }).strict();
 

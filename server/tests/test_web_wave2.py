@@ -37,8 +37,9 @@ def turn(http, auth_headers, attachments=None):
     {'prompt_tokens':10,'completion_tokens':2,'context_limit':100,'context_used':12},
     {'input_tokens':10,'output_tokens':2,'context_limit':100,'context_used':12},
     {'prompt_tokens':10.5,'completion_tokens':2,'context_limit':100,'context_used':12}])
-def test_done_usage_only_has_reported_complete_integers(real_api, auth_headers, reported):
+def test_done_lane_usage_uses_provider_inputs_and_config_limits(real_api, auth_headers, reported):
     http, agent = real_api
+    agent.config['llm'] = {lane+'_model': {'context_window':100} for lane in ('talk','brain','memory','vision')}
     async def stream(messages):
         yield AIMessageChunk(content='answer')
         yield AIMessageChunk(content='', response_metadata={'usage': reported, 'private_provider_field':'NEVER_PUBLIC'})
@@ -46,10 +47,14 @@ def test_done_usage_only_has_reported_complete_integers(real_api, auth_headers, 
     events = turn(http, auth_headers)
     assert events[-1]['type'] == 'done'
     assert all('model_trace' not in event for event in events)
-    if reported and type(reported.get('prompt_tokens', reported.get('input_tokens'))) is int and 'context_limit' in reported:
-        assert events[-1]['usage'] == {'prompt_tokens':10,'completion_tokens':2,'context_limit':100,'context_used':12}
+    usage = events[-1]['usage']
+    assert usage['total'] == {'limit':400}
+    assert all(lane['limit']==100 for lane in usage['lanes'].values())
+    if reported and type(reported.get('prompt_tokens', reported.get('input_tokens'))) is int:
+        assert usage['lanes']['talk']['used'] == 10
     else:
-        assert 'usage' not in events[-1]
+        assert 'used' not in usage['lanes']['talk']
+    assert all('used' not in usage['lanes'][lane] for lane in ('brain','memory','vision'))
     assert 'NEVER_PUBLIC' not in str(events)
     assert [e['phase'] for e in events if e['type']=='phase'] == ['retrieval','plan','answer']
     assert all(e['label'] for e in events if e['type']=='phase')
@@ -69,7 +74,7 @@ def test_hidden_retry_does_not_duplicate_phases_or_reuse_old_usage(real_api, aut
     events = turn(http, auth_headers)
     assert attempts == 2
     assert [e['phase'] for e in events if e['type']=='phase'] == ['retrieval','plan','answer']
-    assert 'usage' not in events[-1]
+    assert 'used' not in events[-1]['usage']['lanes']['talk']
 
 
 def test_ws_filters_duplicate_phase_and_trace(client, auth_headers, stub_agent):
@@ -215,3 +220,45 @@ def test_chunked_upload_has_an_overall_body_limit(real_api, auth_headers):
     response = http.post('/v1/attachments', content=content(),
         headers={**headers(auth_headers, role='admin'), 'Content-Type':'multipart/form-data; boundary='+boundary})
     assert response.status_code == 413
+
+
+def test_context_limits_private_readings_and_live_config(real_api, auth_headers):
+    http, agent = real_api
+    agent.config['llm'] = {lane+'_model': {'context_window':100} for lane in ('talk','brain','memory','vision')}
+    path = '/v1/context/limits?channel_id=chat-1'
+    assert http.get(path).status_code == 401
+    assert http.get(path, headers=auth_headers['viewer']).status_code == 403
+    own = headers(auth_headers, role='admin')
+    before = http.get(path, headers=own).json()['data']
+    assert before['total'] == {'limit':400}
+    assert 'used' not in before['lanes']['talk']
+    async def stream(messages):
+        yield AIMessageChunk(content='answer', response_metadata={'usage':{'prompt_tokens':17,'completion_tokens':4}})
+    agent.llm_talk.astream = stream
+    done = turn(http, auth_headers)[-1]
+    assert http.get(path, headers=own).json()['data'] == done['usage']
+    assert done['usage']['lanes']['talk'] == {'limit':100,'used':17}
+    other = headers(auth_headers, token(claims(sub='another-web-user')), role='admin')
+    assert 'used' not in http.get(path, headers=other).json()['data']['lanes']['talk']
+    assert 'used' not in http.get('/v1/context/limits?channel_id=another', headers=own).json()['data']['lanes']['talk']
+    agent.config['llm']['talk_model']['context_window'] = 200
+    assert http.get(path, headers=own).json()['data']['lanes']['talk']['limit']==200
+    assert 'threshold_pct' not in done['usage']['total']
+
+
+def test_lane_readings_last_success_no_failed_retry_or_fabricated_total():
+    from core.agent.chat_progress import lane_inputs, context_usage
+    calls = [
+        {'lane':'talk','status':'completed','usage':{'input_tokens':12}},
+        {'lane':'brain','status':'completed','usage':{'input_tokens':9}},
+        {'lane':'memory','status':'completed','usage':{'input_tokens':0}},
+        {'lane':'vision','status':'completed','usage':{'input_tokens':3}},
+        {'lane':'talk','status':'failed','usage':{'input_tokens':999}},
+    ]
+    config={'llm':{lane+'_model':{'context_window':100} for lane in ('talk','brain','memory','vision')}}
+    assert context_usage(config, lane_inputs({'calls':calls}))['total']=={'used':24,'limit':400}
+    calls.append({'lane':'talk','status':'completed','usage':None})
+    inputs=lane_inputs({'calls':calls})
+    assert 'talk' not in inputs
+    assert 'used' not in context_usage(config,inputs)['total']
+    assert context_usage({}, {}) == {'total':{},'lanes':dict.fromkeys(('talk','brain','memory','vision'),{})}
