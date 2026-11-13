@@ -2,16 +2,16 @@
 # Обновление установленного ядра Neyra из рабочей копии. Запуск только root,
 # сервис должен быть остановлен:
 #   sudo systemctl stop neyra.service
-#   sudo bash /tmp/opencode/update-core.sh [путь к server]
+#   sudo bash devtools/deploy/update-core.sh [путь к server]
 #   sudo systemctl start neyra.service
 #
-# Проверка без изменений: DRY=1 bash /tmp/opencode/update-core.sh
+# Проверка без изменений: DRY=1 bash devtools/deploy/update-core.sh
 # Скрипт делает полный бэкап /opt/neyra/server (код, .venv, data, config, .env),
 # обновляет код и зависимости, проверяет pip check/imports/compileall и при
 # любой ошибке сам откатывается целиком. Сервис не запускает и не перезапускает.
 set -euo pipefail
 
-SRC=${1:-/var/lib/openbot/OpenBot/Shared/NeyraWork/wt-identity/server}
+SRC=${1:-$(cd "$(dirname "$0")/../../server" && pwd)}
 DEST_RAW=${DEST:-/opt/neyra/server}
 SERVICE=${SERVICE:-neyra.service}
 DRY=${DRY:-0}
@@ -69,7 +69,7 @@ done
 nested_link=$(find "$DEST/data" "$DEST/config" -type l -print -quit 2>/dev/null || true)
 [ -z "$nested_link" ] || die "в data/config есть симлинк $nested_link — полный снимок невозможен"
 
-HEAD=$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown)
+HEAD=$(git -C "$SRC" -c safe.directory="*" rev-parse HEAD 2>/dev/null || echo unknown)
 echo "источник: $SRC ($HEAD)"
 echo "назначение: $DEST"
 if service_idle; then

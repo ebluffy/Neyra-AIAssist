@@ -16,3 +16,36 @@ jobs:
       - run: npm run typecheck
       - run: npx vitest run
       - run: npm run build -w @neyra/web
+  db-verify:
+    # AR-6: миграции и вход на настоящем PostgreSQL 16, только временная база CI.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: neyra
+          POSTGRES_PASSWORD: neyra
+          POSTGRES_DB: neyra_web
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U neyra -d neyra_web"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://neyra:neyra@127.0.0.1:5432/neyra_web
+      BETTER_AUTH_SECRET: ci-integration-secret-0123456789abcdef
+      BETTER_AUTH_URL: http://localhost:3000
+      AUTH_INTEGRATION_DATABASE_URL: postgres://neyra:neyra@127.0.0.1:5432/neyra_web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Миграции на настоящем PostgreSQL 16
+        run: npm run db:migrate -w @neyra/web
+      - name: Интеграционный тест входа (signup/login/session/role/grant/rate-limit)
+        run: npx vitest run web/lib/auth.integration.test.ts
