@@ -476,6 +476,45 @@
   transition: transform 180ms ease-out;
 }
 
+.memberSearch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 8px 0;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-subtle);
+}
+.memberSearch:focus-within {
+  border-color: var(--accent);
+}
+.memberSearch input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+}
+.memberSearch button {
+  border: 0;
+  background: transparent;
+  color: var(--text-subtle);
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+}
+.memberEmpty {
+  padding: 20px 8px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-subtle);
+}
+
 .memberList {
   flex: 1;
   overflow-y: auto;

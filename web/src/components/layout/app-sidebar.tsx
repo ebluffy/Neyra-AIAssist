@@ -174,6 +174,24 @@ export function AppSidebar({
     };
   }, [isMobile, mobileOpen, onCloseMobile]);
 
+  // Cmd/Ctrl+K focuses chat search from anywhere on the page.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') return;
+      event.preventDefault();
+      if (collapsed) {
+        setCollapsed(false);
+        try {
+          window.localStorage.setItem('neyra:sidebar-collapsed', '0');
+        } catch {}
+      }
+      setActiveTab('chats');
+      window.setTimeout(() => searchInputRef.current?.focus(), 0);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [collapsed]);
+
   // Read notes from localStorage
   useEffect(() => {
     try {

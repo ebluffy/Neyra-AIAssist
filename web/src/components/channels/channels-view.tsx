@@ -9,6 +9,7 @@ import {
   Menu,
   MessageSquare,
   RefreshCw,
+  Search,
   Users,
   X,
 } from 'lucide-react';
@@ -259,6 +260,7 @@ function GuildContent({ guild, detail }: { guild: Guild; detail: GuildDetail }) 
     () => typeof window === 'undefined' || window.innerWidth >= 1024
   );
   const [mode, setMode] = useState<HistoryViewMode>('turns');
+  const [memberQuery, setMemberQuery] = useState('');
   const membersToggleRef = useRef<HTMLButtonElement | null>(null);
 
   // Load catalog members
@@ -358,6 +360,16 @@ function GuildContent({ guild, detail }: { guild: Guild; detail: GuildDetail }) 
   }
   // Sort active members descending by message count
   activeMembers.sort((a, b) => b.messageCount - a.messageCount);
+
+  const memberFilter = memberQuery.trim().toLowerCase();
+  const matchesMember = (member: Member) => {
+    if (!memberFilter) return true;
+    return [member.display_name, member.username, member.discord_id]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(memberFilter));
+  };
+  const shownActive = activeMembers.filter(matchesMember);
+  const shownOther = otherMembers.filter(matchesMember);
 
   function handleSelectChannel(chId: string) {
     setChannel(chId);
@@ -505,15 +517,31 @@ function GuildContent({ guild, detail }: { guild: Guild; detail: GuildDetail }) 
           />
         </div>
 
+        <div className={s.memberSearch}>
+          <Search size={13} aria-hidden="true" />
+          <input
+            type="search"
+            value={memberQuery}
+            onChange={(event) => setMemberQuery(event.target.value)}
+            placeholder="Найти участника…"
+            aria-label="Поиск участника"
+          />
+          {memberQuery && (
+            <button type="button" aria-label="Очистить поиск участника" onClick={() => setMemberQuery('')}>
+              <X size={12} />
+            </button>
+          )}
+        </div>
+
         <div className={s.memberList}>
           {/* Section 1: Писали Нейре */}
-          {activeMembers.length > 0 && (
+          {shownActive.length > 0 && (
             <div>
               <h3 className={s.memberSectionTitle}>
-                Писали Нейре — {activeMembers.length}
+                Писали Нейре — {shownActive.length}
               </h3>
               <div className="space-y-0.5">
-                {activeMembers.map((member) => (
+                {shownActive.map((member) => (
                   <button
                     type="button"
                     key={member.discord_id}
@@ -546,10 +574,10 @@ function GuildContent({ guild, detail }: { guild: Guild; detail: GuildDetail }) 
           {/* Section 2: Остальные участники */}
           <div>
             <h3 className={s.memberSectionTitle}>
-              Остальные участники — {otherMembers.length}
+              Остальные участники — {shownOther.length}
             </h3>
             <div className="space-y-0.5">
-              {otherMembers.map((member) => (
+              {shownOther.map((member) => (
                 <MemberCard
                   key={member.discord_id}
                   member={member}
@@ -558,6 +586,10 @@ function GuildContent({ guild, detail }: { guild: Guild; detail: GuildDetail }) 
               ))}
             </div>
           </div>
+
+          {!shownActive.length && !shownOther.length && (
+            <p className={s.memberEmpty}>Никого не нашли. Попробуйте другой запрос.</p>
+          )}
 
           {catalog.data?.available !== false &&
             catalog.data?.items.length === 200 &&

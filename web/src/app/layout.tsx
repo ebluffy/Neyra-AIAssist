@@ -19,6 +19,14 @@ export const metadata = {
   description: 'Персональный AI-ассистент',
 };
 
+// Мобильная клавиатура должна сжимать контент, а не прокручивать страницу.
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover' as const,
+  interactiveWidget: 'resizes-content' as const,
+};
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ru" className={`${inter.variable} ${jetbrainsMono.variable}`}>

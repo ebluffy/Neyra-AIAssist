@@ -62,6 +62,12 @@ export const invite = pgTable('invite', {
   // Отзыв админом: строка остаётся в списке, но инвайт недействителен.
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
 });
+// Настройки сайта, управляемые админом (пока — режим регистрации).
+export const siteSetting = pgTable('site_setting', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
 // Журнал действий админки. Пишется только сервером; строки переживают удаление аккаунта.
 export const adminAudit = pgTable('admin_audit', {
   id: text('id').primaryKey(),
@@ -83,3 +89,4 @@ export type Account = typeof account.$inferSelect;
 export type Verification = typeof verification.$inferSelect;
 export type Invite = typeof invite.$inferSelect;
 export type AdminAudit = typeof adminAudit.$inferSelect;
+export type SiteSetting = typeof siteSetting.$inferSelect;
