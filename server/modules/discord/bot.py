@@ -315,6 +315,8 @@ class NeyraDiscordBot(discord.Client):
         self._music_waiters: dict[str, asyncio.Future] = {}
         self._music_timeout_s: float = float(disc_cfg.get("music_result_timeout_seconds", 25.0))
         self._proactive_channel_id = parse_snowflake((disc_cfg.get("proactive") or {}).get("channel_id")) if isinstance(disc_cfg.get("proactive"), dict) else None
+        # Non-blocking Discord catalog writer (guilds/channels/members); started on ready.
+        self._catalog = None
 
         self.agent.event_bus.subscribe(MUSIC_RESULT, self._on_music_result)
 
@@ -563,9 +565,137 @@ class NeyraDiscordBot(discord.Client):
             if request_id:
                 self._music_waiters.pop(request_id, None)
 
+    # --- Discord catalog (guilds/channels/members) ---------------------------
+    # Gateway handlers only enqueue; SQLite writes happen in a background task so
+    # a locked database never stalls the bot.
+
+    def _catalog_store(self):
+        hub = getattr(self.agent, "memory_hub", None)
+        return getattr(hub, "sqlite", None) if hub is not None else None
+
+    def _setup_catalog(self) -> None:
+        if self._catalog is not None:
+            return
+        store = self._catalog_store()
+        if store is None:
+            logger.info("Discord catalog: memory hub unavailable, catalog disabled")
+            return
+        try:
+            from core.memory.discord_catalog import DiscordCatalogWriter
+
+            self._catalog = DiscordCatalogWriter(store)
+            self._catalog.start()
+        except Exception:
+            logger.exception("Discord catalog: writer failed to start")
+
+    def _queue_guild(self, guild) -> None:
+        if self._catalog is None or guild is None:
+            return
+        icon = getattr(guild, "icon", None)
+        me = getattr(guild, "me", None)
+        joined = getattr(me, "joined_at", None) if me is not None else None
+        self._catalog.submit(
+            "guild",
+            guild_id=str(guild.id),
+            name=getattr(guild, "name", None),
+            icon_url=str(icon.url) if icon is not None else None,
+            description=getattr(guild, "description", None),
+            joined_at=joined.isoformat() if joined else None,
+        )
+
+    def _queue_channel(self, channel) -> None:
+        if self._catalog is None or channel is None:
+            return
+        guild = getattr(channel, "guild", None)
+        if guild is None:
+            return
+        parent = getattr(channel, "parent_id", None)
+        self._catalog.submit(
+            "channel",
+            channel_id=str(channel.id),
+            guild_id=str(guild.id),
+            name=getattr(channel, "name", None),
+            channel_type=str(getattr(channel, "type", "")),
+            parent_id=str(parent) if parent else None,
+        )
+
+    def _queue_member(self, member, *, removed: bool = False) -> None:
+        if self._catalog is None or member is None:
+            return
+        guild = getattr(member, "guild", None)
+        if guild is None:
+            return
+        if removed:
+            self._catalog.submit("member_remove", guild_id=str(guild.id), discord_id=str(member.id))
+            return
+        self._catalog.submit(
+            "member",
+            guild_id=str(guild.id),
+            discord_id=str(member.id),
+            username=getattr(member, "name", None),
+            display_name=getattr(member, "display_name", None),
+            is_bot=bool(getattr(member, "bot", False)),
+        )
+
+    async def _sync_catalog(self) -> None:
+        """Queue every guild, channel and cached member once after login."""
+        if self._catalog is None:
+            return
+        queued = 0
+        try:
+            for guild in list(self.guilds):
+                self._queue_guild(guild)
+                for channel in getattr(guild, "channels", []) or []:
+                    self._queue_channel(channel)
+                    queued += 1
+                for member in getattr(guild, "members", []) or []:
+                    self._queue_member(member)
+                    queued += 1
+            logger.info("Discord catalog: initial sync queued | guilds=%s items=%s", len(self.guilds), queued)
+        except Exception:
+            logger.exception("Discord catalog: initial sync failed")
+
+    async def on_guild_join(self, guild):
+        self._queue_guild(guild)
+        for channel in getattr(guild, "channels", []) or []:
+            self._queue_channel(channel)
+        for member in getattr(guild, "members", []) or []:
+            self._queue_member(member)
+
+    async def on_guild_channel_create(self, channel):
+        self._queue_channel(channel)
+
+    async def on_guild_channel_update(self, before, after):
+        self._queue_channel(after)
+
+    async def on_guild_channel_delete(self, channel):
+        if self._catalog is not None and getattr(channel, "guild", None) is not None:
+            self._catalog.submit("channel_delete", channel_id=str(channel.id))
+
+    async def on_member_join(self, member):
+        self._queue_member(member)
+
+    async def on_member_update(self, before, after):
+        self._queue_member(after)
+
+    async def on_member_remove(self, member):
+        self._queue_member(member, removed=True)
+
+    async def close(self):
+        if self._catalog is not None:
+            try:
+                await self._catalog.stop()
+            except Exception:
+                logger.exception("Discord catalog: stop failed")
+            self._catalog = None
+        await super().close()
+
     async def on_ready(self):
         # Shared runtime handle for in-process music + other Discord-adjacent plugins.
         self.agent.discord_client = self
+        self._setup_catalog()
+        if self._catalog is not None:
+            asyncio.create_task(self._sync_catalog(), name="neyra-discord-catalog-sync")
         await self.change_presence(
             activity=discord.Activity(type=discord.ActivityType.listening, name="текст и музыка · Нейра")
         )

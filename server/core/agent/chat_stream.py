@@ -18,6 +18,7 @@ from core.agent.reply_pipeline import (
     visible_token_budget,
 )
 from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
+from core.agent.chat_log import origin_from_discord_context
 from core.agent.turn_finalize import finalize_successful_turn
 from core.agent.turn_prep import prepare_turn
 
@@ -54,6 +55,7 @@ async def iter_chat_stream(
             lyrics_marker=lyrics_marker,
             source="chat_stream",
             person_id=person_id,
+            origin=origin_from_discord_context(discord_context),
         )
         if fp is not None:
             if progress:
@@ -379,6 +381,7 @@ async def iter_chat_stream(
             saved_facts=prep.saved_facts,
             source="chat_stream",
             stm_trimmed=context_exceeded,
+            origin=origin_from_discord_context(discord_context),
         )
         log_micro_plan_metrics(agent)
         logger.debug("Стрим завершён | sounds=%s | len=%s", sounds, len(clean_text))

@@ -15,6 +15,7 @@ from core.agent.reply_pipeline import (
     visible_token_budget,
 )
 from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
+from core.agent.chat_log import origin_from_discord_context
 from core.agent.turn_finalize import finalize_successful_turn
 from core.agent.turn_prep import prepare_turn
 
@@ -50,6 +51,7 @@ async def run_chat(
             lyrics_marker=lyrics_marker,
             source="chat",
             person_id=person_id,
+            origin=origin_from_discord_context(discord_context),
         )
         if fp is not None:
             return fp
@@ -195,6 +197,7 @@ async def run_chat(
             saved_facts=prep.saved_facts,
             source="chat",
             stm_trimmed=False,
+            origin=origin_from_discord_context(discord_context),
         )
         log_micro_plan_metrics(agent)
         return {

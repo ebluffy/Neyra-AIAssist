@@ -4141,6 +4141,136 @@ def build_app(
         data = await asyncio.to_thread(read_tail, path, lines, extra_secrets=extra)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
+    def _discord_catalog_store():
+        """Memory Hub SQLite if it exists; None on agents without memory (tests, early boot)."""
+        hub = getattr(agent, "memory_hub", None)
+        return getattr(hub, "sqlite", None) if hub is not None else None
+
+    def _iso_filter(value: Optional[str], field: str) -> Optional[str]:
+        if value is None or not str(value).strip():
+            return None
+        raw = str(value).strip()
+        try:
+            datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception as e:
+            raise ApiError("bad_request", f"{field}: ожидается ISO-время", 400) from e
+        return raw
+
+    @app.get("/v1/admin/discord/guilds")
+    async def v1_admin_discord_guilds(
+        request: Request,
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        _: str = Depends(dep_admin),
+    ):
+        """Known Discord guilds with channel and member counts (admin only)."""
+        from core.memory.discord_catalog import list_guilds
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        if store is None:
+            data = {"items": [], "total": 0, "limit": limit, "offset": offset, "available": False}
+        else:
+            data = {**list_guilds(store, limit=limit, offset=offset), "available": True}
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/guilds/{guild_id}")
+    async def v1_admin_discord_guild(
+        guild_id: str,
+        request: Request,
+        member_limit: int = Query(200, ge=1, le=500),
+        _: str = Depends(dep_admin),
+    ):
+        """One guild with channels and known members (admin only)."""
+        from core.memory.discord_catalog import get_guild
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        data = get_guild(store, guild_id, member_limit=member_limit) if store is not None else None
+        if data is None:
+            raise ApiError("not_found", "Сервер не найден в каталоге.", 404)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/members")
+    async def v1_admin_discord_members(
+        request: Request,
+        guild_id: Optional[str] = Query(default=None, max_length=120),
+        q: Optional[str] = Query(default=None, max_length=120),
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        _: str = Depends(dep_admin),
+    ):
+        """Known guild members with optional search (admin only)."""
+        from core.memory.discord_catalog import list_members
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        if store is None:
+            data = {"items": [], "total": 0, "limit": limit, "offset": offset, "available": False}
+        else:
+            data = {**list_members(store, guild_id=guild_id, q=q, limit=limit, offset=offset), "available": True}
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/users/{person_id}/stats")
+    async def v1_admin_discord_user_stats(
+        person_id: str,
+        request: Request,
+        days: int = Query(30, ge=1, le=365),
+        _: str = Depends(dep_admin),
+    ):
+        """How often a person talked to Neyra: messages, turns, channels, last days."""
+        from core.memory.discord_catalog import person_stats
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        if store is None:
+            data = {"person_id": person_id, "messages": 0, "turns": 0, "channels": [],
+                    "first_contact": None, "last_contact": None, "days": [], "available": False}
+        else:
+            data = {**person_stats(store, person_id, days=days), "available": True}
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/messages")
+    async def v1_admin_discord_messages(
+        request: Request,
+        guild_id: Optional[str] = Query(default=None, max_length=120),
+        channel_id: Optional[str] = Query(default=None, max_length=120),
+        person_id: Optional[str] = Query(default=None, max_length=120),
+        date_from: Optional[str] = Query(default=None, alias="from", max_length=40),
+        date_to: Optional[str] = Query(default=None, alias="to", max_length=40),
+        q: Optional[str] = Query(default=None, max_length=200),
+        cursor: Optional[int] = Query(default=None, ge=0),
+        limit: int = Query(50, ge=1, le=200),
+        _: str = Depends(dep_admin),
+    ):
+        """Dialog history from chat_log with filters and an id cursor (admin only)."""
+        from core.memory.discord_catalog import list_messages
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        since = _iso_filter(date_from, "from")
+        until = _iso_filter(date_to, "to")
+        if since and until and since > until:
+            raise ApiError("bad_request", "from: начало позже конца", 400)
+        if store is None:
+            data = {"items": [], "total": 0, "limit": limit, "next_cursor": None, "available": False}
+        else:
+            data = {
+                **list_messages(
+                    store,
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    person_id=person_id,
+                    date_from=since,
+                    date_to=until,
+                    q=q,
+                    cursor=cursor,
+                    limit=limit,
+                ),
+                "available": True,
+            }
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
     @app.post("/v1/backup/run")
     async def v1_backup_run(request: Request, api_role: str = Depends(dep_maint)):
         trace_id = _trace_id(request)

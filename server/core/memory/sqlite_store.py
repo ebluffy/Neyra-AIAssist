@@ -70,6 +70,11 @@ class SqliteStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        # Unicode-aware lower(): SQLite LIKE/lower() fold ASCII only, so Cyrillic
+        # admin search would be case-sensitive without this helper.
+        self._conn.create_function(
+            "py_lower", 1, lambda value: value.lower() if isinstance(value, str) else value, deterministic=True
+        )
         self.migrate()
 
     @property
@@ -264,8 +269,9 @@ class SqliteStore:
                         """
                         INSERT INTO chat_log(
                             ts, role, user_id, display_name, channel_id, source,
-                            text, turn_id, latency_ms, emotion, mood, meta
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            text, turn_id, latency_ms, emotion, mood, meta,
+                            platform, guild_id, native_message_id, native_created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             to_utc_iso(row.get("ts")) if row.get("ts") else _now_iso(),
@@ -280,6 +286,10 @@ class SqliteStore:
                             row.get("emotion"),
                             row.get("mood"),
                             meta,
+                            row.get("platform"),
+                            row.get("guild_id"),
+                            row.get("native_message_id"),
+                            to_utc_iso(row.get("native_created_at")) if row.get("native_created_at") else None,
                         ),
                     )
                     ids.append(int(cur.lastrowid))
