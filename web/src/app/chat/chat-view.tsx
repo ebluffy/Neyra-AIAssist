@@ -15,6 +15,9 @@ import {
   LogOut,
   MessageSquare,
   PanelLeft,
+  PanelRight,
+  Pin,
+  PinOff,
   Plus,
   RefreshCw,
   Settings,
@@ -30,6 +33,14 @@ import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id'
 import { SettingsDialog } from '../../components/settings-dialog';
 import { ChannelsNav } from '../../components/channels/channels-nav';
 import { AppSidebar } from '../../components/layout/app-sidebar';
+import { ThreadPanel, type ThreadPanelTab } from '../../components/chat/thread-panel';
+import {
+  playModalOpenSound,
+  playModalCloseSound,
+  playButtonClickSound,
+  isUiSoundsEnabled,
+  setUiSoundsEnabled,
+} from '../../lib/ui-sounds';
 import { ru } from '../../i18n';
 
 export interface ChatMessageAttachment {
@@ -91,12 +102,18 @@ export interface ChatViewProps {
   user: { id: string; email?: string | null; name?: string | null; role?: string | null };
   initialMessages?: ChatMessageItem[];
   initialUsage?: ContextUsage | null;
+  initialThreadPanelOpen?: boolean;
+  initialThreadPanelTab?: ThreadPanelTab;
+  initialPinnedMessageIds?: string[];
 }
 
 export function ChatView({
   user,
   initialMessages,
   initialUsage,
+  initialThreadPanelOpen,
+  initialThreadPanelTab,
+  initialPinnedMessageIds,
 }: ChatViewProps) {
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessageItem[]>(() => {
@@ -123,6 +140,19 @@ export function ChatView({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  // Wave 5 Step 2: Thread Panel states
+  const [threadPanelOpen, setThreadPanelOpen] = useState(initialThreadPanelOpen ?? false);
+  const panelToggleRef = useRef<HTMLButtonElement | null>(null);
+  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
+  const [uiSoundsEnabled, setUiSoundsEnabledState] = useState(true);
+  const [compactViewEnabled, setCompactViewEnabled] = useState(false);
+  const [pinnedMessageIds, setPinnedMessageIds] = useState<string[]>(() => {
+    if (initialPinnedMessageIds && initialPinnedMessageIds.length > 0) return initialPinnedMessageIds;
+    return [];
+  });
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [panelInitialTab, setPanelInitialTab] = useState<ThreadPanelTab>(initialThreadPanelTab || 'about');
+
   // V2 UI states
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
@@ -133,8 +163,23 @@ export function ChatView({
   useEffect(() => {
     try {
       setSidebarCollapsed(window.localStorage.getItem('neyra:sidebar-collapsed') === '1');
+      if (initialThreadPanelOpen === undefined) {
+        const savedPanelOpen = window.localStorage.getItem('neyra:thread-panel-open');
+        if (savedPanelOpen !== null) {
+          setThreadPanelOpen(savedPanelOpen === '1');
+        }
+      }
+      const savedAutoScroll = window.localStorage.getItem('neyra:autoscroll');
+      if (savedAutoScroll !== null) {
+        setAutoScrollEnabled(savedAutoScroll !== '0');
+      }
+      setUiSoundsEnabledState(isUiSoundsEnabled());
+      const savedCompact = window.localStorage.getItem('neyra:compact-view');
+      if (savedCompact !== null) {
+        setCompactViewEnabled(savedCompact === '1');
+      }
     } catch {}
-  }, []);
+  }, [initialThreadPanelOpen]);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -152,75 +197,20 @@ export function ChatView({
     return resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
   });
 
-  // Support mock state from URL for screenshot testing
+  // Load pinned messages whenever chatId or user.id changes
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    const mockState = params.get('mockState');
-    if (!mockState) return;
-
-    if (mockState === 'streaming') {
-      setMessages([
-        { id: 'u1', role: 'user', content: 'Расскажи о возможностях Нейры' },
-        { id: 'a1', role: 'assistant', content: '', pending: true },
-      ]);
-      setStreaming(true);
-      setThinking(true);
-    } else if (mockState === 'error') {
-      setMessages([
-        { id: 'u1', role: 'user', content: 'Проверь состояние сервисов' },
-        {
-          id: 'a1',
-          role: 'assistant',
-          content: '',
-          error: 'Лимит запросов к модели исчерпан (провайдер временно ограничил доступ: OpenAIRateLimitError).',
-        },
-      ]);
-    } else if (mockState === 'profile-user') {
-      setProfileMenuOpen(true);
-    } else if (mockState === 'profile-admin') {
-      setProfileMenuOpen(true);
-    } else if (mockState === 'attachments-menu') {
-      setAttachMenuOpen(true);
-    } else if (mockState === 'chips') {
-      setAttachments([
-        { id: 'att-1', name: 'report-2026.pdf', size: 1250000, isImage: false },
-        { id: 'att-2', name: 'architecture.png', size: 450000, isImage: true },
-      ]);
-    } else if (mockState === 'context') {
-      setUsage({
-        prompt_tokens: 138600,
-        completion_tokens: 1240,
-        context_limit: 1000000,
-        context_used: 139840,
-        lanes: {
-          brain: { used: 60000, limit: 500000 },
-          talk: { used: 50000, limit: 250000 },
-          vision: { used: 15000, limit: 150000 },
-          memory: { used: 14840, limit: 100000 },
-        },
-      });
-    } else if (mockState === 'context-policy-off') {
-      setUsage({
-        prompt_tokens: 138600,
-        completion_tokens: 1240,
-        context_limit: 1000000,
-        context_used: 139840,
-        policy: {
-          compaction_enabled: false,
-          mode: 'off',
-        },
-        lanes: {
-          brain: { used: 60000, limit: 500000 },
-          talk: { used: 50000, limit: 250000 },
-          vision: { used: 15000, limit: 150000 },
-          memory: { used: 14840, limit: 100000 },
-        },
-      });
-    } else if (mockState === 'drawer') {
-      setSidebarOpen(true);
+    if (initialPinnedMessageIds !== undefined) return;
+    if (typeof window === 'undefined' || !chatId || !user?.id) {
+      setPinnedMessageIds([]);
+      return;
     }
-  }, []);
+    try {
+      const raw = window.localStorage.getItem(`neyra:pinned-messages:${user.id}:${chatId}`);
+      setPinnedMessageIds(raw ? JSON.parse(raw) : []);
+    } catch {
+      setPinnedMessageIds([]);
+    }
+  }, [chatId, user?.id, initialPinnedMessageIds]);
 
   // Leave page cancels active upstream connection
   useEffect(() => () => {
@@ -270,10 +260,10 @@ export function ChatView({
 
   // Auto-scroll when new messages arrive if near bottom
   useEffect(() => {
-    if (!showScrollDown) {
+    if (autoScrollEnabled && !showScrollDown) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, thinking, showScrollDown]);
+  }, [messages, thinking, showScrollDown, autoScrollEnabled]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -350,8 +340,17 @@ export function ChatView({
       } else {
         setMessages([]);
       }
+      const rawPins = window.localStorage.getItem(`neyra:pinned-messages:${user.id}:${targetThreadId}`);
+      setPinnedMessageIds(rawPins ? JSON.parse(rawPins) : []);
+      const rawThreads = window.localStorage.getItem(`neyra:threads:${user.id}`);
+      if (rawThreads) {
+        const list = JSON.parse(rawThreads);
+        const targetThread = list.find((t: any) => t.id === targetThreadId);
+        setCustomTitle(targetThread ? targetThread.title : null);
+      }
     } catch {
       setMessages([]);
+      setPinnedMessageIds([]);
     }
     setSidebarOpen(false);
     if (textareaRef.current) {
@@ -362,6 +361,7 @@ export function ChatView({
   const deleteThread = (targetThreadId: string) => {
     try {
       window.localStorage.removeItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
+      window.localStorage.removeItem(`neyra:pinned-messages:${user.id}:${targetThreadId}`);
       const raw = window.localStorage.getItem(`neyra:threads:${user.id}`);
       if (raw) {
         const list = JSON.parse(raw);
@@ -385,6 +385,8 @@ export function ChatView({
         : resetChatId(window.sessionStorage, resolveTabKey(window), user.id);
     setChatId(newId);
     setMessages([]);
+    setPinnedMessageIds([]);
+    setCustomTitle(null);
     setThinking(false);
     setStreaming(false);
     setSidebarOpen(false);
@@ -394,6 +396,120 @@ export function ChatView({
       textareaRef.current.focus();
     }
   };
+
+  const handleToggleThreadPanel = () => {
+    setThreadPanelOpen((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem('neyra:thread-panel-open', next ? '1' : '0');
+      } catch {}
+      if (next) {
+        playModalOpenSound();
+      } else {
+        playModalCloseSound();
+      }
+      return next;
+    });
+  };
+
+  const handleCloseThreadPanel = () => {
+    setThreadPanelOpen(false);
+    try {
+      window.localStorage.setItem('neyra:thread-panel-open', '0');
+    } catch {}
+    playModalCloseSound();
+    panelToggleRef.current?.focus();
+  };
+
+  const handleTogglePinMessage = (msgId: string) => {
+    setPinnedMessageIds((prev) => {
+      const isPinned = prev.includes(msgId);
+      const next = isPinned ? prev.filter((id) => id !== msgId) : [...prev, msgId];
+      try {
+        window.localStorage.setItem(`neyra:pinned-messages:${user.id}:${chatId}`, JSON.stringify(next));
+      } catch {}
+      playButtonClickSound();
+      return next;
+    });
+  };
+
+  const handleJumpToMessage = (msgId: string) => {
+    const el = document.getElementById(`message-${msgId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setHighlightedMessageId(msgId);
+      setTimeout(() => {
+        setHighlightedMessageId(null);
+      }, 1500);
+    }
+  };
+
+  const handleRenameThread = (newTitle: string) => {
+    const trimmed = newTitle.trim();
+    if (!trimmed) return;
+    setCustomTitle(trimmed);
+    try {
+      const threadsKey = `neyra:threads:${user.id}`;
+      const rawThreads = window.localStorage.getItem(threadsKey);
+      if (rawThreads) {
+        let list: { id: string; title: string; updatedAt: string }[] = JSON.parse(rawThreads);
+        const idx = list.findIndex((t) => t.id === chatId);
+        if (idx >= 0) {
+          list[idx] = { ...list[idx], title: trimmed, updatedAt: new Date().toISOString() };
+          window.localStorage.setItem(threadsKey, JSON.stringify(list));
+        }
+      }
+    } catch {}
+  };
+
+  const handleClearThread = () => {
+    setMessages([]);
+    setPinnedMessageIds([]);
+    try {
+      window.localStorage.removeItem(`neyra:thread-messages:${user.id}:${chatId}`);
+      window.localStorage.removeItem(`neyra:pinned-messages:${user.id}:${chatId}`);
+      const threadsKey = `neyra:threads:${user.id}`;
+      const rawThreads = window.localStorage.getItem(threadsKey);
+      if (rawThreads) {
+        const list = JSON.parse(rawThreads);
+        const filtered = list.filter((t: any) => t.id !== chatId);
+        window.localStorage.setItem(threadsKey, JSON.stringify(filtered));
+      }
+    } catch {}
+    playButtonClickSound();
+  };
+
+  const handleToggleAutoScroll = (enabled: boolean) => {
+    setAutoScrollEnabled(enabled);
+    try {
+      window.localStorage.setItem('neyra:autoscroll', enabled ? '1' : '0');
+    } catch {}
+  };
+
+  const handleToggleUiSounds = (enabled: boolean) => {
+    setUiSoundsEnabledState(enabled);
+    setUiSoundsEnabled(enabled);
+  };
+
+  const handleToggleCompactView = (enabled: boolean) => {
+    setCompactViewEnabled(enabled);
+    try {
+      window.localStorage.setItem('neyra:compact-view', enabled ? '1' : '0');
+    } catch {}
+  };
+
+  // Close thread panel on Escape key and return focus to toggle button
+  useEffect(() => {
+    if (!threadPanelOpen) return;
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        handleCloseThreadPanel();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [threadPanelOpen]);
 
   const stopGeneration = () => {
     if (abortControllerRef.current) {
@@ -773,7 +889,30 @@ export function ChatView({
             </h1>
           </div>
 
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] text-xs text-[var(--text-muted)] border border-[var(--border)]">
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--success)]" />
+              <span>Neyra AI</span>
+            </span>
+            <IconButton
+              ref={panelToggleRef}
+              type="button"
+              aria-label="Панель треда"
+              tooltip="Панель треда"
+              aria-expanded={threadPanelOpen}
+              icon={<PanelRight size={18} />}
+              variant={threadPanelOpen ? 'secondary' : 'ghost'}
+              size="md"
+              className={`shrink-0 ${threadPanelOpen ? 'text-[var(--text)] bg-[var(--surface-3)]' : 'text-[var(--text-muted)]'}`}
+              onClick={handleToggleThreadPanel}
+            />
+          </div>
         </header>
+
+        {/* Content Area with Split Layout for Right Thread Panel */}
+        <div className="flex-1 flex flex-row min-h-0 overflow-hidden relative">
+          {/* Main Feed Column */}
+          <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden relative">
 
         {/* Messages Feed (max 720px column) (§3) */}
         <div
@@ -799,11 +938,16 @@ export function ChatView({
             {messages.map(msg => (
               <div
                 key={msg.id}
-                className={`flex flex-col w-full ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
+                id={`message-${msg.id}`}
+                className={`flex flex-col w-full ${msg.role === 'user' ? 'items-end' : 'items-start'} ${
+                  highlightedMessageId === msg.id
+                    ? 'ring-2 ring-[var(--accent)] bg-[var(--surface-2)]/70 rounded-[var(--radius)] p-2.5 transition-all duration-300'
+                    : 'transition-all duration-300'
+                }`}
               >
                 {msg.role === 'user' ? (
                   // User Message (§3: surface-2 bubble, right, max 78%)
-                  <div className="flex flex-col items-end max-w-[78%]">
+                  <div className="flex flex-col items-end max-w-[78%] group/usermsg">
                     <div className="rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] px-3.5 py-2.5 text-[15px] leading-[24px] text-[var(--text)] whitespace-pre-wrap">
                       {msg.content}
                       {msg.attachments && msg.attachments.length > 0 && (
@@ -820,6 +964,35 @@ export function ChatView({
                           ))}
                         </div>
                       )}
+                    </div>
+                    <div className="flex items-center gap-1 mt-1 opacity-0 group-hover/usermsg:opacity-100 focus-within:opacity-100 transition-opacity">
+                      <button
+                        type="button"
+                        onClick={() => handleTogglePinMessage(msg.id)}
+                        aria-label={pinnedMessageIds.includes(msg.id) ? 'Открепить сообщение' : 'Закрепить сообщение'}
+                        title={pinnedMessageIds.includes(msg.id) ? 'Открепить' : 'Закрепить'}
+                        className={`flex items-center gap-1 text-[11px] p-1 rounded hover:bg-[var(--surface-3)] cursor-pointer ${
+                          pinnedMessageIds.includes(msg.id)
+                            ? 'text-[var(--text)] font-medium opacity-100'
+                            : 'text-[var(--text-subtle)] hover:text-[var(--text)]'
+                        }`}
+                      >
+                        {pinnedMessageIds.includes(msg.id) ? <PinOff size={12} /> : <Pin size={12} />}
+                        <span>{pinnedMessageIds.includes(msg.id) ? 'Открепить' : 'Закрепить'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyMessage(msg.id, msg.content)}
+                        aria-label={copiedMessageId === msg.id ? 'Скопировано' : 'Скопировать сообщение'}
+                        className="text-[var(--text-subtle)] hover:text-[var(--text)] flex items-center gap-1 text-[11px] p-1 rounded hover:bg-[var(--surface-3)] cursor-pointer"
+                      >
+                        {copiedMessageId === msg.id ? (
+                          <Check size={12} className="text-[var(--success)]" />
+                        ) : (
+                          <Copy size={12} />
+                        )}
+                        <span>{copiedMessageId === msg.id ? 'Скопировано' : 'Копировать'}</span>
+                      </button>
                     </div>
                   </div>
                 ) : msg.error ? (
@@ -883,21 +1056,39 @@ export function ChatView({
                         ) : null}
                         <span>{ru.assistantRole}</span>
                       </div>
-                      {msg.content && (
-                        <button
-                          type="button"
-                          onClick={() => handleCopyMessage(msg.id, msg.content)}
-                          aria-label={copiedMessageId === msg.id ? 'Скопировано' : 'Скопировать ответ'}
-                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity text-[var(--text-subtle)] hover:text-[var(--text)] flex items-center gap-1 text-[11px] p-1 rounded hover:bg-[var(--surface-3)] cursor-pointer"
-                        >
-                          {copiedMessageId === msg.id ? (
-                            <Check size={12} className="text-[var(--success)]" />
-                          ) : (
-                            <Copy size={12} />
-                          )}
-                          <span>{copiedMessageId === msg.id ? 'Скопировано' : 'Копировать'}</span>
-                        </button>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        {msg.content && (
+                          <button
+                            type="button"
+                            onClick={() => handleTogglePinMessage(msg.id)}
+                            aria-label={pinnedMessageIds.includes(msg.id) ? 'Открепить сообщение' : 'Закрепить сообщение'}
+                            title={pinnedMessageIds.includes(msg.id) ? 'Открепить' : 'Закрепить'}
+                            className={`opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity flex items-center gap-1 text-[11px] p-1 rounded hover:bg-[var(--surface-3)] cursor-pointer ${
+                              pinnedMessageIds.includes(msg.id)
+                                ? 'opacity-100 text-[var(--text)] font-medium'
+                                : 'text-[var(--text-subtle)] hover:text-[var(--text)]'
+                            }`}
+                          >
+                            {pinnedMessageIds.includes(msg.id) ? <PinOff size={12} /> : <Pin size={12} />}
+                            <span>{pinnedMessageIds.includes(msg.id) ? 'Открепить' : 'Закрепить'}</span>
+                          </button>
+                        )}
+                        {msg.content && (
+                          <button
+                            type="button"
+                            onClick={() => handleCopyMessage(msg.id, msg.content)}
+                            aria-label={copiedMessageId === msg.id ? 'Скопировано' : 'Скопировать ответ'}
+                            className="opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity text-[var(--text-subtle)] hover:text-[var(--text)] flex items-center gap-1 text-[11px] p-1 rounded hover:bg-[var(--surface-3)] cursor-pointer"
+                          >
+                            {copiedMessageId === msg.id ? (
+                              <Check size={12} className="text-[var(--success)]" />
+                            ) : (
+                              <Copy size={12} />
+                            )}
+                            <span>{copiedMessageId === msg.id ? 'Скопировано' : 'Копировать'}</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <div className="text-[15px] leading-[24px] text-[var(--text)] w-full">
@@ -1141,6 +1332,29 @@ export function ChatView({
           </div>
         </footer>
       </div>
+
+      {/* Right Thread Panel (320px column on desktop / overlay on mobile) */}
+      <ThreadPanel
+        open={threadPanelOpen}
+        onClose={handleCloseThreadPanel}
+        threadId={chatId}
+        threadTitle={threadTitle}
+        messages={messages}
+        pinnedMessageIds={pinnedMessageIds}
+        onTogglePinMessage={handleTogglePinMessage}
+        onJumpToMessage={handleJumpToMessage}
+        onRenameThread={handleRenameThread}
+        onClearThread={handleClearThread}
+        autoScroll={autoScrollEnabled}
+        onToggleAutoScroll={handleToggleAutoScroll}
+        uiSounds={uiSoundsEnabled}
+        onToggleUiSounds={handleToggleUiSounds}
+        compactView={compactViewEnabled}
+        onToggleCompactView={handleToggleCompactView}
+        initialTab={panelInitialTab}
+      />
+    </div>
+  </div>
 
       <SettingsDialog
         open={settingsOpen}
