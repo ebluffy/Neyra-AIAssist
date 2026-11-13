@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 
 const SAFE_ERROR_MESSAGES: Record<string, string> = {
   core_timeout: 'Ядро Нейры не ответило вовремя. Попробуйте позже.',
-  core_unavailable: 'Ядро Нейры недоступно. Попробуйте позже.',
+  core_unavailable: 'Сервис Нейры временно недоступен. Попробуйте повторить запрос позже.',
   core_disconnected: 'Ядро Нейры закрыло соединение до завершения ответа.',
   core_protocol_error: 'Ошибка протокола ядра Нейры.',
   rate_limited: 'Слишком много запросов. Попробуйте позже.',

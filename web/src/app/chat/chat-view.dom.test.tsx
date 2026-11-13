@@ -3,6 +3,7 @@ import React from 'react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ChatView } from './chat-view';
+import { TextField } from '../../components/ui';
 import { resolveTabKey } from '../../../lib/chat-id';
 import { ru } from '../../i18n';
 
@@ -130,5 +131,18 @@ describe('ChatView conversation', () => {
     await waitFor(() => expect(screen.getByText('Нейра думает…')).toBeTruthy());
     view.unmount();
     await waitFor(() => expect(aborted).toBe(true));
+  });
+});
+
+describe('TextField layout integrity', () => {
+  it('keeps label text and required asterisk together in one wrapper element', () => {
+    render(<TextField label="Email" required />);
+    const labelText = screen.getByText('Email');
+    const star = screen.getByText('*');
+    expect(labelText).toBeTruthy();
+    expect(star).toBeTruthy();
+    // Must share the same parent wrapper so grid on label does not split them across rows
+    expect(star.parentElement).toBe(labelText.parentElement);
+    expect(labelText.closest('label')?.className).toContain('flex');
   });
 });

@@ -17,8 +17,15 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(
 
     return (
       <div className="flex flex-col gap-1.5 w-full text-left">
-        <label htmlFor={inputId} className="text-xs font-medium text-[var(--text-muted)] select-none">
-          {label} {required && <span className="text-[var(--accent)]" aria-hidden="true">*</span>}
+        <label htmlFor={inputId} className="flex items-baseline gap-1 text-xs font-medium text-[var(--text-muted)] select-none">
+          <span className="inline-flex items-baseline gap-1">
+            <span>{label}</span>
+            {required && (
+              <span className="text-[var(--accent)] font-semibold" aria-hidden="true">
+                *
+              </span>
+            )}
+          </span>
         </label>
         <input
           ref={ref}

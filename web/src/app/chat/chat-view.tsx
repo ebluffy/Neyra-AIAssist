@@ -181,7 +181,10 @@ export function ChatView({
       });
 
       if (!response.ok) {
-        let errDesc = `Ошибка сервера (HTTP ${response.status})`;
+        let errDesc =
+          response.status === 502 || response.status === 503
+            ? 'Сервис Нейры временно недоступен. Попробуйте повторить запрос позже.'
+            : `Ошибка сервера (HTTP ${response.status})`;
         try {
           const errData = await response.json();
           if (errData?.message) errDesc = errData.message;
@@ -405,28 +408,31 @@ export function ChatView({
       {/* Main Column */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
         {/* Header 56px (§3) */}
-        <header className="h-14 min-h-[56px] border-b border-[var(--border)] bg-[var(--bg)] px-4 flex items-center justify-between z-20">
-          <div className="flex items-center gap-3 min-w-0">
+        <header className="h-14 min-h-[56px] border-b border-[var(--border)] bg-[var(--bg)] px-3 sm:px-4 flex items-center justify-between gap-2 z-20">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 mr-2">
             <IconButton
               type="button"
               aria-label="Открыть меню"
               icon={<PanelLeft size={18} />}
               variant="ghost"
               size="md"
-              className="lg:hidden text-[var(--text-muted)]"
+              className="lg:hidden text-[var(--text-muted)] shrink-0"
               onClick={() => setSidebarOpen(true)}
             />
-            <h1 className="text-[15px] font-medium text-[var(--text)] truncate">
+            <h1 className="text-[15px] font-medium text-[var(--text)] truncate min-w-0">
               {threadTitle}
             </h1>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             <Link
               href="/"
-              className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors inline-flex items-center gap-1"
+              className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors inline-flex items-center gap-1 shrink-0 whitespace-nowrap"
+              aria-label={ru.toHome}
+              title={ru.toHome}
             >
-              {ru.toHome}
+              <span aria-hidden="true" className="shrink-0 text-sm">←</span>
+              <span className="hidden sm:inline">На главную</span>
             </Link>
           </div>
         </header>
