@@ -24,3 +24,5 @@ fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic
 73a7006b96f283a202ff00c170a53769d04d754e:client/src-tauri/src/storage.rs:generic-api-key:1084
 # CI-only secret of the throwaway Postgres in db-verify (commit c5d124c); tip marks it gitleaks:allow.
 c5d124cdbd4321506ed1544c6c1ef43e21020883:.github/workflows/web-verify.yml:generic-api-key:38
+# Fake sample string in invite.test.ts of commit ced7aa8 (not a secret); renamed in 0d34265.
+ced7aa840d2850a55042050aeca164adadac3bb5:web/lib/invite.test.ts:generic-api-key:6
