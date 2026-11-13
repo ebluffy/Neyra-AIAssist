@@ -13,6 +13,7 @@ import {
 } from './login-throttle';
 import { checkInvite, consumeInvite, readInviteToken } from './invite';
 import { findBannedByEmail, touchLastLogin } from './admin-users';
+import { getRegistrationMode } from './site-settings';
 import * as schema from '../db/schema';
 
 // Ссылка сброса пароля живёт до первого запроса админа (2 минуты): письма сайт
@@ -117,7 +118,18 @@ function createAuth() {
           return;
         }
         if (ctx.path === '/sign-up/email') {
-          // AR-2: регистрация только по одноразовому инвайту. Проверка на сервере,
+          // Режим регистрации задаёт админ в site_setting: invite | open | closed.
+          // При недоступной БД getRegistrationMode не бросает и отдаёт безопасный
+          // fallback (env INVITE_REQUIRED, иначе invite).
+          const mode = await getRegistrationMode();
+          if (mode === 'closed') {
+            return ctx.json({ message: 'Регистрация закрыта администратором Нейры.' }, { status: 403 });
+          }
+          if (mode === 'open') {
+            // Открытая регистрация: инвайт не требуется и не расходуется.
+            return;
+          }
+          // AR-2: режим invite — одноразовый токен. Проверка на сервере,
           // до обработки better-auth: без инвайта, с чужим, потраченным или
           // просроченным аккаунт не создаётся.
           let body: unknown = null;
