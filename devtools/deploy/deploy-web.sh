@@ -1,32 +1,30 @@
 #!/usr/bin/env bash
 # Сборка, миграции и выкладка сайта Neyra. Root не нужен:
-# перезапуск юнита разрешён узким правилом sudoers из neyra-web-setup.sh.
+# перезапуск юнита и дамп базы разрешены узкими правилами sudoers из neyra-web-setup.sh.
 #
-# Использование: bash /tmp/opencode/deploy-web.sh [путь к web]
-# По умолчанию берётся ветка чата (P2), если её worktree есть, иначе P1.
+# Использование: bash devtools/deploy/deploy-web.sh [путь к web]
+# По умолчанию берётся web/ из checkout'а, в котором лежит этот скрипт.
 set -euo pipefail
 
-DEFAULT_SRC=/var/lib/openbot/OpenBot/Shared/NeyraWork/wt-web2/web
-[ -d "$DEFAULT_SRC" ] || DEFAULT_SRC=/var/lib/openbot/OpenBot/Shared/NeyraWork/wt-p1/web
+DEFAULT_SRC="$(cd "$(dirname "$0")/../../web" && pwd)"
 SRC="${1:-$DEFAULT_SRC}"
 DST=/opt/neyra/web/app
 ENV_FILE=/opt/neyra/web/.env
 NODE_BIN=/opt/neyra/web/node/bin
 
 if [ ! -x "$NODE_BIN/node" ]; then
-  echo "Нет Node 22 в $NODE_BIN — сначала выполни: sudo bash /tmp/opencode/neyra-web-setup.sh"
+  echo "Нет Node 22 в $NODE_BIN — сначала выполни: sudo bash devtools/deploy/neyra-web-setup.sh https://example.test"
   exit 1
 fi
 if [ ! -f "$ENV_FILE" ]; then
-  echo "Нет $ENV_FILE — сначала выполни: sudo bash /tmp/opencode/neyra-web-setup.sh"
+  echo "Нет $ENV_FILE — сначала выполни: sudo bash devtools/deploy/neyra-web-setup.sh https://example.test"
   exit 1
 fi
 
-export PATH="$NODE_BIN:/tmp/opencode/node-v22.23.4-linux-x64/bin:$PATH"
+export PATH="$NODE_BIN:$PATH"
 
 echo "== переменные окружения площадки"
 ENV_LOADER="$(dirname "$0")/env-load.py"
-[ -f "$ENV_LOADER" ] || ENV_LOADER=/tmp/opencode/env-load.py
 [ -f "$ENV_LOADER" ] || { echo "нет env-load.py рядом со скриптом" >&2; exit 1; }
 TMP_ENV=$(mktemp)
 trap 'rm -f "$TMP_ENV"' EXIT
@@ -40,14 +38,43 @@ for v in NEYRA_WS_URL NEYRA_SERVICE_KEY NEYRA_IDENTITY_JWT_SECRET; do
 done
 
 ROOT="$(dirname "$SRC")"   # корень монорепо: здесь npm workspaces
+# Собираем в чистой копии: без локальных node_modules/.next и незакоммиченных артефактов.
+BUILD_DIR="${BUILD_DIR:-$(mktemp -d /tmp/neyra-web-build.XXXXXX)}"
+trap 'rm -rf "$BUILD_DIR" "$TMP_ENV"' EXIT
+if [ "$(realpath "$ROOT")" != "$(realpath -m "$BUILD_DIR")" ]; then
+  echo "== чистая копия исходников в $BUILD_DIR"
+  rm -rf "$BUILD_DIR"
+  mkdir -p "$BUILD_DIR"
+  rsync -a --exclude node_modules --exclude .next --exclude .git "$ROOT"/ "$BUILD_DIR"/
+  SRC="$BUILD_DIR/${SRC#"$ROOT"/}"
+  ROOT="$BUILD_DIR"
+fi
 echo "== сборка из $ROOT"
 cd "$ROOT"
-npm ci --no-audit --no-fund
+npm ci --include=dev --no-audit --no-fund
 npm run build
 
 cd "$SRC"                  # web/
 STAGE=.next/standalone
 [ -f "$STAGE/web/server.js" ] || { echo "Нет $STAGE/web/server.js — проверь output: 'standalone'"; exit 1; }
+
+echo "== резервная копия базы перед миграциями"
+BACKUP_DIR=/opt/neyra/web/backups
+mkdir -p "$BACKUP_DIR"
+DUMP="$BACKUP_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
+# pg_dump только из контейнера (клиента на хосте нет); вывод — на хост в $DUMP.
+if ! sudo -n docker compose -f /opt/neyra/web/docker-compose.yml exec -T db pg_dump -U neyra -d neyra_web -Fc > "$DUMP" 2>/dev/null; then
+  echo "pg_dump не выполнился — миграции отменены, база не тронута" >&2
+  rm -f "$DUMP"
+  exit 1
+fi
+if [ ! -s "$DUMP" ]; then
+  echo "дамп пуст — миграции отменены, база не тронута" >&2
+  rm -f "$DUMP"
+  exit 1
+fi
+ls -1t "$BACKUP_DIR"/pre-migrate-*.dump | tail -n +11 | xargs -r rm -f
+echo "дамп: $DUMP"
 
 echo "== миграции базы сайта"
 npx drizzle-kit migrate
