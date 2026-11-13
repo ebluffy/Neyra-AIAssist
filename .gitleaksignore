@@ -26,3 +26,8 @@ fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic
 c5d124cdbd4321506ed1544c6c1ef43e21020883:.github/workflows/web-verify.yml:generic-api-key:38
 # Fake sample string in invite.test.ts of commit ced7aa8 (not a secret); renamed in 0d34265.
 ced7aa840d2850a55042050aeca164adadac3bb5:web/lib/invite.test.ts:generic-api-key:6
+# Fake .env fixtures in test_neyra_web_env.py of commit ab180e3 (not secrets); marked gitleaks:allow in ef6555b.
+ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:generic-api-key:57
+ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:generic-api-key:85
+ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:generic-api-key:111
+ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:generic-api-key:139
