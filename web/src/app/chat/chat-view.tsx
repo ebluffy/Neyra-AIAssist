@@ -132,10 +132,27 @@ export function ChatView({
         context_limit: 1000000,
         context_used: 139840,
         lanes: {
-          brain: { used: 60000, limit: 500000, threshold_pct: 80 },
-          talk: { used: 50000, limit: 250000, threshold_pct: 80 },
-          vision: { used: 15000, limit: 150000, threshold_pct: 80 },
-          memory: { used: 14840, limit: 100000, threshold_pct: 80 },
+          brain: { used: 60000, limit: 500000 },
+          talk: { used: 50000, limit: 250000 },
+          vision: { used: 15000, limit: 150000 },
+          memory: { used: 14840, limit: 100000 },
+        },
+      });
+    } else if (mockState === 'context-policy-off') {
+      setUsage({
+        prompt_tokens: 138600,
+        completion_tokens: 1240,
+        context_limit: 1000000,
+        context_used: 139840,
+        policy: {
+          compaction_enabled: false,
+          mode: 'off',
+        },
+        lanes: {
+          brain: { used: 60000, limit: 500000 },
+          talk: { used: 50000, limit: 250000 },
+          vision: { used: 15000, limit: 150000 },
+          memory: { used: 14840, limit: 100000 },
         },
       });
     } else if (mockState === 'drawer') {

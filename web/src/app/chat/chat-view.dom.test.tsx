@@ -227,8 +227,8 @@ describe('ChatView conversation', () => {
     expect(screen.queryByRole('button', { name: /контекст диалога/i })).toBeNull();
     view1.unmount();
 
-    // 2. Render with initialUsage
-    render(
+    // 2. Render with initialUsage (without policy)
+    const view2 = render(
       <ChatView
         user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }}
         initialUsage={{
@@ -237,10 +237,10 @@ describe('ChatView conversation', () => {
           context_limit: 1000000,
           context_used: 120000,
           lanes: {
-            brain: { used: 50000, limit: 500000, threshold_pct: 80 },
-            talk: { used: 40000, limit: 250000, threshold_pct: 80 },
-            vision: { used: 15000, limit: 150000, threshold_pct: 80 },
-            memory: { used: 15000, limit: 100000, threshold_pct: 80 },
+            brain: { used: 50000, limit: 500000 },
+            talk: { used: 40000, limit: 250000 },
+            vision: { used: 15000, limit: 150000 },
+            memory: { used: 15000, limit: 100000 },
           },
         }}
       />
@@ -254,6 +254,30 @@ describe('ChatView conversation', () => {
     fireEvent.click(indicatorBtn);
     expect(screen.getByText('Лейны контекста')).toBeTruthy();
     expect(screen.queryByText('Сжать сейчас')).toBeNull();
+    expect(screen.queryByText(/автосжати/i)).toBeNull();
+    view2.unmount();
+
+    // 3. Render with compaction_enabled=false policy
+    render(
+      <ChatView
+        user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }}
+        initialUsage={{
+          prompt_tokens: 100000,
+          completion_tokens: 20000,
+          context_limit: 1000000,
+          context_used: 120000,
+          policy: { compaction_enabled: false },
+          lanes: {
+            brain: { used: 50000, limit: 500000 },
+            talk: { used: 40000, limit: 250000 },
+            vision: { used: 15000, limit: 150000 },
+            memory: { used: 15000, limit: 100000 },
+          },
+        }}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /контекст диалога/i }));
+    expect(screen.getByText('Автосжатие выключено')).toBeTruthy();
   });
 });
 

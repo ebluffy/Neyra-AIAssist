@@ -6,7 +6,13 @@ import { Sparkles, Plus } from 'lucide-react';
 export interface ContextLaneUsage {
   used: number;
   limit: number;
-  threshold_pct: number;
+  threshold_pct?: number;
+}
+
+export interface ContextPolicy {
+  compaction_enabled?: boolean;
+  mode?: 'messages' | 'off' | string;
+  threshold_messages?: number;
 }
 
 export interface ContextUsage {
@@ -14,6 +20,7 @@ export interface ContextUsage {
   completion_tokens: number;
   context_limit: number;
   context_used: number;
+  policy?: ContextPolicy;
   lanes?: {
     brain?: ContextLaneUsage;
     talk?: ContextLaneUsage;
@@ -71,6 +78,7 @@ export function ContextIndicator({ usage, onNewChat, className = '' }: ContextIn
   const used = Math.max(0, usage.context_used);
   const limit = usage.context_limit;
   const percentage = Math.min(100, Math.round((used / limit) * 100));
+  // Visual highlight heuristic only (per developer guidance, >= 80% marks as high usage)
   const isHigh = percentage >= 80;
 
   // Resolve lane usages (provided by kernel or calculated proportionally)
@@ -80,30 +88,46 @@ export function ContextIndicator({ usage, onNewChat, className = '' }: ContextIn
       label: 'Рассуждения (Brain)',
       used: usage.lanes?.brain?.used ?? Math.round(used * 0.45),
       limit: usage.lanes?.brain?.limit ?? Math.round(limit * 0.5),
-      threshold: usage.lanes?.brain?.threshold_pct ?? 80,
+      threshold: usage.lanes?.brain?.threshold_pct,
     },
     {
       key: 'talk',
       label: 'Диалог (Talk)',
       used: usage.lanes?.talk?.used ?? Math.round(used * 0.35),
       limit: usage.lanes?.talk?.limit ?? Math.round(limit * 0.25),
-      threshold: usage.lanes?.talk?.threshold_pct ?? 80,
+      threshold: usage.lanes?.talk?.threshold_pct,
     },
     {
       key: 'vision',
       label: 'Изображения (Vision)',
       used: usage.lanes?.vision?.used ?? Math.round(used * 0.1),
       limit: usage.lanes?.vision?.limit ?? Math.round(limit * 0.15),
-      threshold: usage.lanes?.vision?.threshold_pct ?? 80,
+      threshold: usage.lanes?.vision?.threshold_pct,
     },
     {
       key: 'memory',
       label: 'Память (Memory)',
       used: usage.lanes?.memory?.used ?? Math.round(used * 0.1),
       limit: usage.lanes?.memory?.limit ?? Math.round(limit * 0.1),
-      threshold: usage.lanes?.memory?.threshold_pct ?? 80,
+      threshold: usage.lanes?.memory?.threshold_pct,
     },
   ];
+
+  // Derive policy / auto-compaction text without hardcoded numbers
+  let policyText: string | null = null;
+  if (usage.policy) {
+    if (usage.policy.compaction_enabled === false || usage.policy.mode === 'off') {
+      policyText = 'Автосжатие выключено';
+    } else if (usage.policy.threshold_messages && usage.policy.threshold_messages > 0) {
+      policyText = `Автосжатие: после ${usage.policy.threshold_messages} сообщений`;
+    }
+  } else {
+    // If no policy, check if any lane has an explicit threshold_pct from the kernel
+    const explicitThreshold = lanes.find(l => typeof l.threshold === 'number')?.threshold;
+    if (typeof explicitThreshold === 'number') {
+      policyText = `Автосжатие при пороге ${explicitThreshold}%`;
+    }
+  }
 
   return (
     <div
@@ -174,7 +198,7 @@ export function ContextIndicator({ usage, onNewChat, className = '' }: ContextIn
             </div>
             {lanes.map(lane => {
               const lanePct = lane.limit > 0 ? Math.min(100, Math.round((lane.used / lane.limit) * 100)) : 0;
-              const laneHigh = lanePct >= lane.threshold;
+              const laneHigh = typeof lane.threshold === 'number' ? lanePct >= lane.threshold : lanePct >= 80;
 
               return (
                 <div key={lane.key} className="space-y-1">
@@ -193,31 +217,37 @@ export function ContextIndicator({ usage, onNewChat, className = '' }: ContextIn
                         style={{ width: `${lanePct}%` }}
                       />
                     </div>
-                    <span className="text-[10px] text-[var(--text-subtle)] shrink-0">
-                      порог {lane.threshold}%
-                    </span>
+                    {typeof lane.threshold === 'number' && (
+                      <span className="text-[10px] text-[var(--text-subtle)] shrink-0">
+                        порог {lane.threshold}%
+                      </span>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
 
-          <div className="border-t border-[var(--border)] pt-2.5 flex items-center justify-between text-[11px] text-[var(--text-muted)]">
-            <span>Автосжатие при пороге 80%</span>
-            {onNewChat && (
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false);
-                  onNewChat();
-                }}
-                className="inline-flex items-center gap-1 text-[var(--accent)] hover:underline cursor-pointer"
-              >
-                <Plus size={12} />
-                <span>Новый чат</span>
-              </button>
-            )}
-          </div>
+          {(policyText || onNewChat) && (
+            <div className={`border-t border-[var(--border)] pt-2.5 flex items-center text-[11px] text-[var(--text-muted)] ${
+              policyText && onNewChat ? 'justify-between' : policyText ? 'justify-start' : 'justify-end'
+            }`}>
+              {policyText && <span>{policyText}</span>}
+              {onNewChat && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    onNewChat();
+                  }}
+                  className="inline-flex items-center gap-1 text-[var(--accent)] hover:underline cursor-pointer"
+                >
+                  <Plus size={12} />
+                  <span>Новый чат</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

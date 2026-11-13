@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { ContextIndicator, formatTokenCount } from './ContextIndicator';
+
+afterEach(() => {
+  cleanup();
+});
 
 describe('ContextIndicator', () => {
   it('formats token count correctly', () => {
@@ -20,7 +24,7 @@ describe('ContextIndicator', () => {
     expect(c2.firstChild).toBeNull();
   });
 
-  it('renders percentage and opens popover with lanes breakdown and no manual compact button', () => {
+  it('renders popover without auto-compaction string when neither policy nor threshold_pct is provided', () => {
     const onNewChat = vi.fn();
 
     render(
@@ -31,10 +35,10 @@ describe('ContextIndicator', () => {
           context_used: 138_600,
           context_limit: 1_000_000,
           lanes: {
-            brain: { used: 60_000, limit: 500_000, threshold_pct: 80 },
-            talk: { used: 50_000, limit: 250_000, threshold_pct: 80 },
-            vision: { used: 15_000, limit: 150_000, threshold_pct: 80 },
-            memory: { used: 13_600, limit: 100_000, threshold_pct: 80 },
+            brain: { used: 60_000, limit: 500_000 },
+            talk: { used: 50_000, limit: 250_000 },
+            vision: { used: 15_000, limit: 150_000 },
+            memory: { used: 13_600, limit: 100_000 },
           },
         }}
         onNewChat={onNewChat}
@@ -57,12 +61,68 @@ describe('ContextIndicator', () => {
     expect(screen.getByText('Изображения (Vision)')).toBeTruthy();
     expect(screen.getByText('Память (Memory)')).toBeTruthy();
 
-    // Manual compact button must NOT exist
+    // No hardcoded 80% or auto-compaction string when absent in usage/policy
+    expect(screen.queryByText(/порог/i)).toBeNull();
+    expect(screen.queryByText(/автосжати/i)).toBeNull();
     expect(screen.queryByText('Сжать сейчас')).toBeNull();
 
-    // New chat action exists
+    // New chat button is present
     const newChatBtn = screen.getByText('Новый чат');
     fireEvent.click(newChatBtn);
     expect(onNewChat).toHaveBeenCalledOnce();
+  });
+
+  it('renders "Автосжатие выключено" when policy compaction_enabled is false or mode is off', () => {
+    render(
+      <ContextIndicator
+        usage={{
+          prompt_tokens: 100_000,
+          completion_tokens: 38_600,
+          context_used: 138_600,
+          context_limit: 1_000_000,
+          policy: {
+            compaction_enabled: false,
+            mode: 'off',
+          },
+          lanes: {
+            brain: { used: 60_000, limit: 500_000 },
+            talk: { used: 50_000, limit: 250_000 },
+            vision: { used: 15_000, limit: 150_000 },
+            memory: { used: 13_600, limit: 100_000 },
+          },
+        }}
+      />
+    );
+
+    // Open popover
+    fireEvent.click(screen.getByRole('button', { name: /контекст диалога/i }));
+
+    expect(screen.getByText('Автосжатие выключено')).toBeTruthy();
+    expect(screen.queryByText(/порог/i)).toBeNull();
+  });
+
+  it('renders explicit lane threshold when provided from kernel', () => {
+    render(
+      <ContextIndicator
+        usage={{
+          prompt_tokens: 100_000,
+          completion_tokens: 38_600,
+          context_used: 138_600,
+          context_limit: 1_000_000,
+          lanes: {
+            brain: { used: 60_000, limit: 500_000, threshold_pct: 75 },
+            talk: { used: 50_000, limit: 250_000 },
+            vision: { used: 15_000, limit: 150_000 },
+            memory: { used: 13_600, limit: 100_000 },
+          },
+        }}
+      />
+    );
+
+    // Open popover
+    fireEvent.click(screen.getByRole('button', { name: /контекст диалога/i }));
+
+    expect(screen.getByText('порог 75%')).toBeTruthy();
+    expect(screen.getByText('Автосжатие при пороге 75%')).toBeTruthy();
   });
 });
