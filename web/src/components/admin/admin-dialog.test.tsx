@@ -157,6 +157,19 @@ describe('AdminDialog', () => {
           json: async () => sampleUsers,
         };
       }
+      if (urlStr.includes('/api/admin/settings')) {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body || '{}'));
+          return {
+            ok: true,
+            json: async () => ({ ok: true, data: { registration_mode: body.registration_mode } }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { registration_mode: 'invite' } }),
+        };
+      }
       if (urlStr.includes('/api/admin/invites')) {
         if (init?.method === 'POST') {
           return {
@@ -426,5 +439,25 @@ describe('AdminDialog', () => {
     // Admin Dialog should open!
     expect(await screen.findByRole('dialog', { name: /Админ-панель/ })).toBeDefined();
     expect(screen.getByText('Обзор состояния')).toBeDefined();
+  });
+
+  it('switches registration mode via PUT /api/admin/settings', async () => {
+    render(<AdminDialog open={true} onClose={vi.fn()} user={adminUser} initialSection="access" />);
+
+    expect(await screen.findByText('Режим регистрации')).toBeDefined();
+    const openBtn = screen.getByRole('button', { name: /Открытая/ });
+    fireEvent.click(openBtn);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/admin/settings',
+        expect.objectContaining({
+          method: 'PUT',
+          body: JSON.stringify({ registration_mode: 'open' }),
+        })
+      );
+    });
+
+    expect(await screen.findByText('Сохранено')).toBeDefined();
   });
 });

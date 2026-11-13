@@ -1195,16 +1195,24 @@ function AccessSection() {
   // User actions
   const [actionPendingId, setActionPendingId] = useState<string | null>(null);
 
+  // Registration mode
+  const [registrationMode, setRegistrationModeState] = useState<'invite' | 'open' | 'closed'>('invite');
+  const [savingRegMode, setSavingRegMode] = useState(false);
+  const [regModeError, setRegModeError] = useState<string | null>(null);
+  const [regModeSaved, setRegModeSaved] = useState(false);
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [uRes, iRes] = await Promise.all([
+      const [uRes, iRes, sRes] = await Promise.all([
         fetch('/api/admin/users'),
         fetch('/api/admin/invites'),
+        fetch('/api/admin/settings'),
       ]);
       const uJson = await uRes.json().catch(() => null);
       const iJson = await iRes.json().catch(() => null);
+      const sJson = await sRes.json().catch(() => null);
 
       if (uJson?.items) setUsers(uJson.items);
       else if (Array.isArray(uJson?.data?.items)) setUsers(uJson.data.items);
@@ -1213,6 +1221,11 @@ function AccessSection() {
       if (iJson?.items) setInvites(iJson.items);
       else if (Array.isArray(iJson?.data?.items)) setInvites(iJson.data.items);
       else if (Array.isArray(iJson)) setInvites(iJson);
+
+      const mode = sJson?.data?.registration_mode ?? sJson?.registration_mode;
+      if (mode === 'invite' || mode === 'open' || mode === 'closed') {
+        setRegistrationModeState(mode);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось загрузить данные доступа.');
     } finally {
@@ -1292,6 +1305,33 @@ function AccessSection() {
     navigator.clipboard?.writeText(createdInviteUrl).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleSetRegistrationMode = async (mode: 'invite' | 'open' | 'closed') => {
+    if (savingRegMode || mode === registrationMode) return;
+    setSavingRegMode(true);
+    setRegModeError(null);
+    setRegModeSaved(false);
+    try {
+      const res = await fetch('/api/admin/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ registration_mode: mode }),
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok) {
+        const nextMode = data?.data?.registration_mode ?? data?.registration_mode ?? mode;
+        setRegistrationModeState(nextMode);
+        setRegModeSaved(true);
+        setTimeout(() => setRegModeSaved(false), 2500);
+      } else {
+        setRegModeError(data?.message || 'Не удалось обновить режим регистрации');
+      }
+    } catch (e) {
+      setRegModeError(e instanceof Error ? e.message : 'Ошибка соединения');
+    } finally {
+      setSavingRegMode(false);
+    }
   };
 
   const filteredUsers = users.filter((u) => {
@@ -1509,19 +1549,71 @@ function AccessSection() {
         </div>
       )}
 
-      {/* Registration Mode Note */}
-      <div className="p-3.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] flex items-start gap-3 text-xs">
-        <Shield size={16} className="text-[var(--text-subtle)] shrink-0 mt-0.5" />
-        <div className="space-y-0.5">
+      {/* Registration Mode Selector */}
+      <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-[var(--text)]">Режим регистрации</span>
-            <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-[var(--border)] bg-[var(--surface-3)] text-[var(--text-muted)]">
-              Скоро
-            </span>
+            <Shield size={16} className="text-[var(--text-muted)] shrink-0" />
+            <div>
+              <h4 className="text-xs font-semibold text-[var(--text)]">Режим регистрации</h4>
+              <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                Политика создания новых учётных записей в системе
+              </p>
+            </div>
           </div>
-          <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
-            Переключение политики регистрации (открытая, по инвайтам, закрытая) разрабатывается в API /api/admin/settings.
-          </p>
+          {regModeSaved && (
+            <span className="inline-flex items-center gap-1 text-[11px] text-[var(--success)] font-medium">
+              <Check size={12} /> Сохранено
+            </span>
+          )}
+          {regModeError && (
+            <span className="inline-flex items-center gap-1 text-[11px] text-[var(--danger)]">
+              <AlertCircle size={12} /> {regModeError}
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+          {[
+            {
+              id: 'invite',
+              label: 'Только по инвайтам',
+              desc: 'Регистрация только по действующей ссылке',
+            },
+            {
+              id: 'open',
+              label: 'Открытая',
+              desc: 'Любой пользователь может зарегистрироваться',
+            },
+            {
+              id: 'closed',
+              label: 'Закрыта',
+              desc: 'Новые регистрации запрещены',
+            },
+          ].map((item) => {
+            const active = registrationMode === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                disabled={savingRegMode}
+                onClick={() => void handleSetRegistrationMode(item.id as 'invite' | 'open' | 'closed')}
+                className={`p-3 text-left rounded-[var(--radius-sm)] border transition-all cursor-pointer ${
+                  active
+                    ? 'border-[var(--accent)] bg-[var(--surface-3)] ring-1 ring-[var(--accent)]/30'
+                    : 'border-[var(--border)] bg-[var(--surface-2)]/60 hover:bg-[var(--surface-2)] text-[var(--text-muted)]'
+                } ${savingRegMode ? 'opacity-60 pointer-events-none' : ''}`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className={`text-xs font-medium ${active ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}`}>
+                    {item.label}
+                  </span>
+                  {active && <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />}
+                </div>
+                <p className="text-[10px] text-[var(--text-subtle)] mt-1">{item.desc}</p>
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>
