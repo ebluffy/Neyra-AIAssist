@@ -329,6 +329,89 @@ describe('ChatView conversation', () => {
 
     unmount();
   });
+
+  it('opens and closes right thread panel via header button and remembers open state in localStorage', () => {
+    const userId = 'u-panel-test';
+    const { unmount } = render(
+      <ChatView user={{ id: userId, email: 'panel@example.com', name: 'Панель', role: 'user' }} />
+    );
+
+    const toggleBtn = screen.getByRole('button', { name: 'Панель треда' });
+    expect(toggleBtn).toBeTruthy();
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('false');
+
+    // Click to open panel
+    fireEvent.click(toggleBtn);
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('true');
+    expect(window.localStorage.getItem('neyra:thread-panel-open')).toBe('1');
+    expect(screen.getByTestId('thread-panel')).toBeTruthy();
+    expect(screen.getByText('Панель треда')).toBeTruthy();
+
+    // Close via close button in panel
+    const closeBtn = screen.getByRole('button', { name: 'Закрыть панель треда' });
+    fireEvent.click(closeBtn);
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('false');
+    expect(window.localStorage.getItem('neyra:thread-panel-open')).toBe('0');
+
+    unmount();
+
+    // Remount with localStorage = '1' -> panel is open initially
+    window.localStorage.setItem('neyra:thread-panel-open', '1');
+    const remount = render(
+      <ChatView user={{ id: userId, email: 'panel@example.com', name: 'Панель', role: 'user' }} />
+    );
+    const remountToggleBtn = screen.getByRole('button', { name: 'Панель треда' });
+    expect(remountToggleBtn.getAttribute('aria-expanded')).toBe('true');
+
+    // Close on Escape key
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(remountToggleBtn.getAttribute('aria-expanded')).toBe('false');
+    expect(window.localStorage.getItem('neyra:thread-panel-open')).toBe('0');
+
+    remount.unmount();
+  });
+
+  it('pins message from message action button and syncs to localStorage and thread panel', () => {
+    const userId = 'u-pin-test';
+    const threadId = 'th-pin-1';
+    const tabKey = resolveTabKey(window);
+    sessionStorage.setItem(`neyra.chat_id:${userId}:${tabKey}`, threadId);
+
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${threadId}`,
+      JSON.stringify([
+        { id: 'm-pinned-1', role: 'assistant', content: 'Ответ с важной информацией' },
+      ])
+    );
+
+    const { unmount } = render(
+      <ChatView user={{ id: userId, email: 'pin@example.com', name: 'Пин', role: 'user' }} />
+    );
+
+    // Message is rendered
+    expect(screen.getByText('Ответ с важной информацией')).toBeTruthy();
+
+    // Pin button on message
+    const pinBtn = screen.getByRole('button', { name: 'Закрепить сообщение' });
+    expect(pinBtn).toBeTruthy();
+    fireEvent.click(pinBtn);
+
+    // Stored in localStorage
+    const savedPins = JSON.parse(window.localStorage.getItem(`neyra:pinned-messages:${userId}:${threadId}`) || '[]');
+    expect(savedPins).toContain('m-pinned-1');
+
+    // Button label now indicates unpin
+    expect(screen.getByRole('button', { name: 'Открепить сообщение' })).toBeTruthy();
+
+    // Open thread panel and switch to pinned tab
+    fireEvent.click(screen.getByRole('button', { name: 'Панель треда' }));
+    fireEvent.click(screen.getByRole('tab', { name: /Закреплённые/ }));
+
+    // Message snippet is shown in pinned list inside panel
+    expect(screen.getAllByText('Ответ с важной информацией').length).toBeGreaterThanOrEqual(2);
+
+    unmount();
+  });
 });
 
 describe('TextField layout integrity', () => {
