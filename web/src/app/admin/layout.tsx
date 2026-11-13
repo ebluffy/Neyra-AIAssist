@@ -11,7 +11,7 @@ export default async function AdminLayout({ children }: { children: ReactNode })
   if (!user) notFound();
   return (
     <div className="min-h-screen">
-      <AdminNav email={user.email} />
+      <AdminNav name={user.name} email={user.email} />
       <main className="mx-auto max-w-[1200px] px-4 py-6 lg:px-8">{children}</main>
     </div>
   );

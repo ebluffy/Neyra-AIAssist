@@ -106,6 +106,6 @@ export function formatDuration(seconds: number | null | undefined): string {
 }
 
 // Классы таблиц в одном месте, чтобы страницы не расходились по стилю.
-export const tableClass = 'w-full border-collapse text-sm';
+export const tableClass = 'w-full min-w-[720px] border-collapse text-sm';
 export const thClass = 'border-b border-[var(--border)] px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--muted)]';
 export const tdClass = 'border-b border-[var(--border)] px-3 py-2 align-middle';
