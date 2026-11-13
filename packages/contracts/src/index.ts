@@ -2,7 +2,7 @@ import { z } from 'zod';
 const identity = { username: z.string().max(120).optional(), platform_user_id: z.string().max(120).optional(), channel_id: z.string().max(120).optional(), author_display_name: z.string().max(120).optional(), platform: z.string().max(40).optional() };
 // Target v2 contract (§9/§15). model/attachments/stop require P1 core support.
 export const AttachmentSchema = z.object({ kind: z.enum(['image', 'file', 'audio', 'text']), path: z.string().optional(), url: z.string().url().optional(), mime: z.string().min(1), text: z.string().optional() }).strict().refine(v => !!(v.path || v.url || v.text), 'Attachment requires a source');
-export const ChatRequestSchema = z.object({ text: z.string().min(1).max(6000), ...identity, model: z.string().min(1).optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
+export const ChatRequestSchema = z.object({ text: z.string().min(1).max(6000), chat_id: z.string().uuid().optional(), ...identity, model: z.string().min(1).optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 export const ChatMessageSchema = z.object({ id: z.union([z.string(), z.number()]).optional(), turn_id: z.string().optional(), request_id: z.string().uuid().optional(), role: z.enum(['user', 'assistant', 'system']), content: z.string(), model: z.string().optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
@@ -14,19 +14,18 @@ export const WsChatEventSchema = z.discriminatedUnion('type', [
  z.object({ type: z.literal('hello'), trace_id: z.string(), protocol: z.literal('neyra.ws.chat.v1'), role: z.string(), ping_interval_seconds: z.number(), idle_timeout_seconds: z.number(), reconnect: z.literal('open_new_socket') }),
  z.object({ type: z.literal('pong'), ts: z.string(), trace_id: z.string() }),
  z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string() }),
+ z.object({ type: z.literal('thinking'), text: z.string().optional(), trace_id: z.string().optional() }),
  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), model_trace: z.unknown().optional(), trace_id: z.string() }),
  z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string(), model_trace: z.unknown().optional() })
 ]);
 export type WsChatEvent = z.infer<typeof WsChatEventSchema>;
 export const SseChatEventSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string().optional() }),
-  z.object({ type: z.literal('thinking'), text: z.string().optional(), trace_id: z.string().optional() }),
-  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), thoughts: z.string().optional(), model_trace: z.unknown().optional(), trace_id: z.string().optional() }),
-  z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string().optional(), model_trace: z.unknown().optional() }),
+  z.object({ type: z.literal('token'), text: z.string() }).strict(),
+  z.object({ type: z.literal('thinking'), text: z.string().optional() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string() }).strict(),
+  z.object({ type: z.literal('error'), code: z.string(), message: z.string() }).strict(),
 ]);
 export type SseChatEvent = z.infer<typeof SseChatEventSchema>;
-export const ChatSseEventSchema = SseChatEventSchema;
-export type ChatSseEvent = SseChatEvent;
 
 export const MemorySearchRequestSchema = z.object({ query: z.string().min(1).max(1200), top_k: z.number().int().min(1).max(20).default(3), user_id: z.string().max(120).optional() }).strict();
 export const MemoryRecallRequestSchema = z.object({ limit: z.number().int().min(1).max(200).default(20), offset: z.number().int().min(0).max(100000).default(0), user_id: z.string().max(120).optional(), channel_id: z.string().max(120).optional(), newest_first: z.boolean().default(true) }).strict();

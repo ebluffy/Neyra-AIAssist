@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   buildIdentityClaims,
   signIdentityJwt,
@@ -14,8 +14,17 @@ describe('web/lib/identity', () => {
     email: 'test@example.com',
   };
   const secret = 'super-secret-key-at-least-32-chars-long!';
+  const defaultIssuer = 'neyra-web';
 
-  it('builds identity claims with 60s TTL and correct fields (§8)', () => {
+  beforeEach(() => {
+    vi.stubEnv('NEYRA_IDENTITY_JWT_ISSUER', defaultIssuer);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('builds identity claims with 60s TTL, iss, and correct fields (§8)', () => {
     const fixedNow = 1700000000;
     const claims = buildIdentityClaims(dummyUser, {
       chat_id: 'chat-42',
@@ -24,6 +33,7 @@ describe('web/lib/identity', () => {
       now: fixedNow,
     });
 
+    expect(claims.iss).toBe('neyra-web');
     expect(claims.sub).toBe('user-uuid-1234');
     expect(claims.role).toBe('admin');
     expect(claims.name).toBe('Тестовый Пользователь');
@@ -33,6 +43,13 @@ describe('web/lib/identity', () => {
     expect(claims.iat).toBe(fixedNow);
     expect(claims.exp).toBe(fixedNow + 60);
     expect(claims.exp - claims.iat).toBe(60);
+  });
+
+  it('requires NEYRA_IDENTITY_JWT_ISSUER to build claims', () => {
+    vi.stubEnv('NEYRA_IDENTITY_JWT_ISSUER', '');
+    expect(() => buildIdentityClaims(dummyUser)).toThrow(
+      'Идентификатор эмитента NEYRA_IDENTITY_JWT_ISSUER обязателен'
+    );
   });
 
   it('generates random UUIDs for chat_id and message_id if omitted', () => {
@@ -87,11 +104,42 @@ describe('web/lib/identity', () => {
       currentDate: new Date(fixedNow * 1000),
     });
     expect(protectedHeader.alg).toBe('HS256');
+    expect(payload.iss).toBe('neyra-web');
     expect(payload.sub).toBe(dummyUser.id);
     expect(payload.role).toBe(dummyUser.role);
     expect(payload.name).toBe(dummyUser.name);
     expect(payload.chat_id).toBe('chat-abc');
     expect(payload.task).toBe('dialog');
     expect(payload.exp).toBe(1700000060);
+  });
+
+  it('rejects verification if token issuer is missing or does not match expected issuer', async () => {
+    const fixedNow = 1700000000;
+    const token = await createIdentityToken(dummyUser, secret, {
+      issuer: 'custom-issuer',
+      now: fixedNow,
+    });
+
+    // Matches custom-issuer
+    const verified = await verifyIdentityToken(token, secret, {
+      issuer: 'custom-issuer',
+      currentDate: new Date(fixedNow * 1000),
+    });
+    expect(verified.payload.iss).toBe('custom-issuer');
+
+    // Mismatched expected issuer rejects
+    await expect(
+      verifyIdentityToken(token, secret, {
+        issuer: 'different-issuer',
+        currentDate: new Date(fixedNow * 1000),
+      })
+    ).rejects.toThrow();
+
+    // Default env issuer when token has custom-issuer rejects
+    await expect(
+      verifyIdentityToken(token, secret, {
+        currentDate: new Date(fixedNow * 1000),
+      })
+    ).rejects.toThrow();
   });
 });

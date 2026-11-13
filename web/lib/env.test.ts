@@ -7,15 +7,29 @@ it('requires secret and public origin only at runtime', () => {
  expect(() => readAuthEnv({DATABASE_URL:'postgres://localhost/test',BETTER_AUTH_SECRET:'x'.repeat(32),BETTER_AUTH_URL:'https://example.test/path'})).toThrow('BETTER_AUTH_URL');
  expect(readAuthEnv({DATABASE_URL:'postgres://localhost/test',BETTER_AUTH_SECRET:'x'.repeat(32),BETTER_AUTH_URL:'https://example.test'}).baseURL).toBe('https://example.test');
 });
-it('reads chat environment with safe defaults', () => {
-  const env = readChatEnv({});
-  expect(env.wsUrl).toBe('ws://127.0.0.1:8787');
-  expect(env.serviceKey).toBe('');
-  expect(env.jwtSecret).toBe('');
-  const custom = readChatEnv({ NEYRA_WS_URL: 'wss://core.internal:9000/', NEYRA_SERVICE_KEY: 'sk', NEYRA_IDENTITY_JWT_SECRET: 'sec' });
+it('reads chat environment with valid secret and issuer', () => {
+  const secret = 'a'.repeat(32);
+  const custom = readChatEnv({
+    NEYRA_WS_URL: 'wss://core.internal:9000/',
+    NEYRA_SERVICE_KEY: 'sk',
+    NEYRA_IDENTITY_JWT_SECRET: secret,
+    NEYRA_IDENTITY_JWT_ISSUER: 'neyra-web',
+  });
   expect(custom.wsUrl).toBe('wss://core.internal:9000');
   expect(custom.serviceKey).toBe('sk');
-  expect(custom.jwtSecret).toBe('sec');
+  expect(custom.jwtSecret).toBe(secret);
+  expect(custom.jwtIssuer).toBe('neyra-web');
+});
+
+it('requires NEYRA_IDENTITY_JWT_SECRET of at least 32 characters', () => {
+  expect(() => readChatEnv({})).toThrow('NEYRA_IDENTITY_JWT_SECRET длиной не менее 32 символов');
+  expect(() => readChatEnv({ NEYRA_IDENTITY_JWT_SECRET: 'too-short' })).toThrow('NEYRA_IDENTITY_JWT_SECRET длиной не менее 32 символов');
+});
+
+it('requires NEYRA_IDENTITY_JWT_ISSUER to be non-empty', () => {
+  const secret = 'a'.repeat(32);
+  expect(() => readChatEnv({ NEYRA_IDENTITY_JWT_SECRET: secret })).toThrow('NEYRA_IDENTITY_JWT_ISSUER');
+  expect(() => readChatEnv({ NEYRA_IDENTITY_JWT_SECRET: secret, NEYRA_IDENTITY_JWT_ISSUER: '   ' })).toThrow('NEYRA_IDENTITY_JWT_ISSUER');
 });
 
 it('rejects HTTP, embedded credentials and query in core WS URL', () => {

@@ -2,3 +2,128 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  color-scheme: dark;
+
+  /* Поверхность (§2) */
+  --bg: #08090a;
+  --surface: #101113;
+  --surface-2: #16181b;
+  --surface-3: #1d2024;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  /* Текст (§2) */
+  --text: #e9eaec;
+  --text-muted: #9a9fa6;
+  --text-subtle: #6b7178;
+
+  /* Сигнал (§2) */
+  --accent: #e4b15c;
+  --accent-hover: #eec27c;
+  --accent-ink: #1a1207;
+  --accent-quiet: rgba(228, 177, 92, 0.12);
+
+  /* Статусы (§2) */
+  --danger: #e5686b;
+  --danger-quiet: rgba(229, 104, 107, 0.12);
+  --success: #58b98a;
+
+  /* Типографика (§2) */
+  --font-sans: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: var(--font-mono-jetbrains), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --text-xs: 12px;
+  --leading-xs: 16px;
+  --text-sm: 13px;
+  --leading-sm: 20px;
+  --text-base: 15px;
+  --leading-base: 24px;
+  --text-lg: 18px;
+  --leading-lg: 26px;
+  --text-xl: 22px;
+  --leading-xl: 30px;
+  --text-2xl: 32px;
+  --leading-2xl: 40px;
+  --text-3xl: 44px;
+  --leading-3xl: 52px;
+
+  /* Геометрия (§2) */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-full: 999px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Движение (§2) */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur: 160ms;
+
+  /* Слой (§2) */
+  --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
+
+  /* Совместимость с @neyra/ui токенами */
+  --background: var(--bg);
+  --foreground: var(--text);
+  --muted: var(--text-muted);
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.content-column {
+  max-width: 720px;
+  margin-inline: auto;
+  padding-inline: 24px;
+}
+
+@media (max-width: 640px) {
+  .content-column {
+    padding-inline: 16px;
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-subtle);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

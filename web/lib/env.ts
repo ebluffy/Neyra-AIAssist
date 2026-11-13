@@ -27,6 +27,13 @@ export function readChatEnv(env: Environment = process.env) {
     if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
   } catch { throw new Error('NEYRA_WS_URL должна быть корректным WS(S) URL ядра.'); }
   const serviceKey = env.NEYRA_SERVICE_KEY || '';
-  const jwtSecret = env.NEYRA_IDENTITY_JWT_SECRET || '';
-  return { wsUrl, serviceKey, jwtSecret };
+  const jwtSecret = env.NEYRA_IDENTITY_JWT_SECRET;
+  if (!jwtSecret || jwtSecret.length < 32) {
+    throw new Error('Задайте NEYRA_IDENTITY_JWT_SECRET длиной не менее 32 символов.');
+  }
+  const jwtIssuer = env.NEYRA_IDENTITY_JWT_ISSUER;
+  if (!jwtIssuer || !jwtIssuer.trim()) {
+    throw new Error('Задайте NEYRA_IDENTITY_JWT_ISSUER — эмитент токена идентичности.');
+  }
+  return { wsUrl, serviceKey, jwtSecret, jwtIssuer: jwtIssuer.trim() };
 }

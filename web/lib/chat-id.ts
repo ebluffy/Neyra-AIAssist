@@ -1,7 +1,8 @@
-/** Идентификатор диалога для STM ядра: один на вкладку, переживает перезагрузку. */
+/** Идентификатор диалога для STM ядра: один на вкладку, привязан к пользователю. */
 export interface ChatIdStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem?(key: string): void;
 }
 
 /** Окно, у которого можно прочитать и записать window.name. */
@@ -33,15 +34,42 @@ export function resolveTabKey(win: TabNameWindow | null, makeId: () => string = 
   return id;
 }
 
+export function buildChatStorageKey(userId: string | null | undefined, tabKey: string): string {
+  const user = userId && userId.trim() ? userId.trim() : 'anon';
+  return `${CHAT_ID_KEY}:${user}:${tabKey}`;
+}
+
 export function resolveChatId(
   storage: ChatIdStorage | null,
   tabKey: string,
+  userId?: string | null,
   makeId: () => string = () => crypto.randomUUID(),
 ): string {
-  const key = `${CHAT_ID_KEY}:${tabKey}`;
+  const key = buildChatStorageKey(userId, tabKey);
   const saved = storage ? storage.getItem(key) : null;
   if (saved && saved.trim()) return saved;
   const id = makeId();
   storage?.setItem(key, id);
   return id;
+}
+
+export function resetChatId(
+  storage: ChatIdStorage | null,
+  tabKey: string,
+  userId?: string | null,
+  makeId: () => string = () => crypto.randomUUID(),
+): string {
+  const key = buildChatStorageKey(userId, tabKey);
+  const id = makeId();
+  storage?.setItem(key, id);
+  return id;
+}
+
+export function clearChatId(
+  storage: ChatIdStorage | null,
+  tabKey: string,
+  userId?: string | null,
+): void {
+  const key = buildChatStorageKey(userId, tabKey);
+  storage?.removeItem?.(key);
 }
