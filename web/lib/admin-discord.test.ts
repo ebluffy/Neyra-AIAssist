@@ -6,6 +6,8 @@ import {
   buildCoreQuery,
   discordCoreStatus,
   discordFailure,
+  discordPersonMap,
+  fillDiscordPersonIds,
   readDiscordGuild,
   readDiscordMessages,
 } from './admin-discord';
@@ -86,6 +88,40 @@ describe('core calls', () => {
     }));
     await readDiscordMessages('?guild_id=g1&cursor=42&limit=10');
     expect(url).toBe('http://core.test/v1/admin/discord/messages?guild_id=g1&cursor=42&limit=10');
+  });
+});
+
+describe('discord person links', () => {
+  it('maps discord ids from person accounts and keeps a member id when it is already set', async () => {
+    vi.stubEnv('NEYRA_API_URL', 'http://core.test');
+    vi.stubEnv('NEYRA_SERVICE_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      ok: true,
+      data: {
+        people: [
+          { id: 'p1', discord_ids: ['d1'], accounts: [{ platform: 'discord', platform_user_id: 'd2', person_id: 'p1' }] },
+          { id: 'p2', discord_ids: [], accounts: [{ platform: 'web', platform_user_id: 'd1', person_id: 'p2' }] },
+        ],
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })));
+
+    const map = await discordPersonMap();
+    expect(map.get('d1')).toBe('p1');
+    expect(map.get('d2')).toBe('p1');
+
+    const filled = fillDiscordPersonIds([
+      { guild_id: 'g', discord_id: 'd1', person_id: null, username: 'a', display_name: 'A', is_bot: 0, first_seen: '', last_seen: '' },
+      { guild_id: 'g', discord_id: 'd2', person_id: 'explicit', username: 'b', display_name: 'B', is_bot: 0, first_seen: '', last_seen: '' },
+      { guild_id: 'g', discord_id: 'd3', person_id: null, username: 'c', display_name: 'C', is_bot: 0, first_seen: '', last_seen: '' },
+    ], map);
+    expect(filled.map((member) => member.person_id)).toEqual(['p1', 'explicit', null]);
+  });
+
+  it('returns an empty map when the core is unavailable', async () => {
+    vi.stubEnv('NEYRA_API_URL', '');
+    vi.stubEnv('NEYRA_SERVICE_KEY', '');
+    const map = await discordPersonMap();
+    expect(map.size).toBe(0);
   });
 });
 

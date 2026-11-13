@@ -191,6 +191,46 @@ export interface DiscordPersonStats {
   available: boolean;
 }
 
+interface PeopleResponse {
+  people?: Array<{
+    id?: string;
+    discord_ids?: string[];
+    accounts?: Array<{ platform?: string; platform_user_id?: string; person_id?: string }>;
+  }>;
+}
+
+// Каталог серверов не пишет связь с памятью: сопоставляем Discord ID с person_id
+// по аккаунтам памяти, иначе карточка человека не может показать статистику.
+export async function discordPersonMap(): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  const result = await coreGet<PeopleResponse>('/v1/memory/people?limit=500', { timeoutMs: 5000 });
+  if (result.state !== 'ok' || !result.data) return map;
+  for (const person of result.data.people ?? []) {
+    const personId = person.id;
+    if (!personId) continue;
+    for (const discordId of person.discord_ids ?? []) {
+      if (discordId) map.set(discordId, personId);
+    }
+    for (const account of person.accounts ?? []) {
+      if (account.platform === 'discord' && account.platform_user_id) {
+        map.set(account.platform_user_id, account.person_id || personId);
+      }
+    }
+  }
+  return map;
+}
+
+export function fillDiscordPersonIds(
+  members: DiscordMemberRow[],
+  map: Map<string, string>,
+): DiscordMemberRow[] {
+  return members.map((member) => (
+    member.person_id || !map.has(member.discord_id)
+      ? member
+      : { ...member, person_id: map.get(member.discord_id) ?? null }
+  ));
+}
+
 export function readDiscordGuilds(query: string): Promise<CoreResult<DiscordGuildPage>> {
   return coreGet<DiscordGuildPage>(`/v1/admin/discord/guilds${query}`, { timeoutMs: 5000 });
 }

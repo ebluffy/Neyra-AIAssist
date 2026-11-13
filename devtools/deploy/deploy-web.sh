@@ -58,26 +58,40 @@ cd "$SRC"                  # web/
 STAGE=.next/standalone
 [ -f "$STAGE/web/server.js" ] || { echo "Нет $STAGE/web/server.js — проверь output: 'standalone'"; exit 1; }
 
+if [ "${SKIP_DB_MIGRATIONS:-0}" = "1" ]; then
+  echo "== миграции и дамп базы пропущены (SKIP_DB_MIGRATIONS=1)"
+  echo "   допустимо только для веток без изменений web/drizzle; агентам без доступа к docker иначе выкладка недоступна"
+else
+
 echo "== резервная копия базы перед миграциями"
-BACKUP_DIR=/opt/neyra/web/backups
-mkdir -p "$BACKUP_DIR"
-DUMP="$BACKUP_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
-# pg_dump только из контейнера (клиента на хосте нет); вывод — на хост в $DUMP.
-if ! sudo -n docker compose -f /opt/neyra/web/docker-compose.yml exec -T db pg_dump -U neyra -d neyra_web -Fc > "$DUMP" 2>/dev/null; then
-  echo "pg_dump не выполнился — миграции отменены, база не тронута" >&2
-  rm -f "$DUMP"
-  exit 1
+# Штатный путь: узкий root-хелпер openbot-admin db-dump (docker-сокет только у root).
+DUMP_INFO="$(sudo -n openbot-admin db-dump 2>/dev/null || true)"
+DUMP_PATH="$(printf '%s\n' "$DUMP_INFO" | sed -n 's/^path=//p')"
+if [ -n "$DUMP_PATH" ] && [ -s "$DUMP_PATH" ]; then
+  echo "дамп: $DUMP_PATH ($(printf '%s\n' "$DUMP_INFO" | sed -n 's/^size=//p') байт)"
+else
+  # Запасной путь для площадок без хелпера: pg_dump из контейнера.
+  BACKUP_DIR=/opt/neyra/web/backups
+  mkdir -p "$BACKUP_DIR"
+  DUMP="$BACKUP_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
+  if ! sudo -n docker compose -f /opt/neyra/web/docker-compose.yml exec -T db pg_dump -U neyra -d neyra_web -Fc > "$DUMP" 2>/dev/null; then
+    echo "pg_dump не выполнился — миграции отменены, база не тронута" >&2
+    rm -f "$DUMP"
+    exit 1
+  fi
+  if [ ! -s "$DUMP" ]; then
+    echo "дамп пуст — миграции отменены, база не тронута" >&2
+    rm -f "$DUMP"
+    exit 1
+  fi
+  ls -1t "$BACKUP_DIR"/pre-migrate-*.dump | tail -n +11 | xargs -r rm -f
+  echo "дамп: $DUMP"
 fi
-if [ ! -s "$DUMP" ]; then
-  echo "дамп пуст — миграции отменены, база не тронута" >&2
-  rm -f "$DUMP"
-  exit 1
-fi
-ls -1t "$BACKUP_DIR"/pre-migrate-*.dump | tail -n +11 | xargs -r rm -f
-echo "дамп: $DUMP"
 
 echo "== миграции базы сайта"
 npx drizzle-kit migrate
+
+fi
 
 echo "== выкладка в $DST"
 # Копируем всё дерево standalone: рядом с web/ лежат node_modules (next, pg).

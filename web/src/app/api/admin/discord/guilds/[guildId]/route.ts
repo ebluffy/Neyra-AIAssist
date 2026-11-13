@@ -3,6 +3,8 @@ import {
   GUILD_DETAIL_SPEC,
   buildCoreQuery,
   discordFailure,
+  discordPersonMap,
+  fillDiscordPersonIds,
   readDiscordGuild,
 } from '../../../../../../../lib/admin-discord';
 import { jsonError, jsonOk } from '../../../../../../../lib/admin-http';
@@ -21,7 +23,15 @@ export async function GET(request: Request, context: { params: Promise<{ guildId
   const parsed = buildCoreQuery(new URL(request.url).searchParams, GUILD_DETAIL_SPEC);
   if (!parsed.ok) return jsonError(400, 'bad_request', parsed.message);
 
-  const result = await readDiscordGuild(id, parsed.query);
+  const [result, people] = await Promise.all([
+    readDiscordGuild(id, parsed.query),
+    discordPersonMap(),
+  ]);
   if (result.state !== 'ok') return discordFailure(result, 'Ядро не отдало сервер.');
-  return jsonOk(result.data ?? {});
+  const data = result.data;
+  if (!data) return jsonOk({});
+  return jsonOk({
+    ...data,
+    members: fillDiscordPersonIds(data.members ?? [], people),
+  });
 }

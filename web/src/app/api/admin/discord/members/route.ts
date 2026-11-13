@@ -3,6 +3,8 @@ import {
   MEMBER_SPEC,
   buildCoreQuery,
   discordFailure,
+  discordPersonMap,
+  fillDiscordPersonIds,
   readDiscordMembers,
 } from '../../../../../../lib/admin-discord';
 import { jsonError, jsonOk } from '../../../../../../lib/admin-http';
@@ -17,7 +19,15 @@ export async function GET(request: Request) {
   const parsed = buildCoreQuery(new URL(request.url).searchParams, MEMBER_SPEC);
   if (!parsed.ok) return jsonError(400, 'bad_request', parsed.message);
 
-  const result = await readDiscordMembers(parsed.query);
+  const [result, people] = await Promise.all([
+    readDiscordMembers(parsed.query),
+    discordPersonMap(),
+  ]);
   if (result.state !== 'ok') return discordFailure(result, 'Ядро не отдало участников.');
-  return jsonOk(result.data ?? {});
+  const data = result.data;
+  if (!data) return jsonOk({});
+  return jsonOk({
+    ...data,
+    items: fillDiscordPersonIds(data.items ?? [], people),
+  });
 }
