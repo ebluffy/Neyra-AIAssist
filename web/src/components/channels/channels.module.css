@@ -461,6 +461,10 @@
 }
 
 /* Members Sidebar (Right column in Guild) */
+.membersColumn[data-open="false"] {
+  display: none;
+}
+
 .membersColumn {
   width: 240px;
   flex-shrink: 0;
@@ -805,6 +809,7 @@
 /* Mobile & Tablet Responsiveness */
 @media (max-width: 1024px) {
   .membersColumn {
+    display: flex;
     position: fixed;
     inset: 0 0 0 auto;
     z-index: 45;

@@ -347,7 +347,7 @@ function GuildContent({ guild, detail }: { guild: Guild; detail: GuildDetail }) 
 
   const selectedChannelName = channel
     ? detail.channels.find((c) => c.id === channel)?.name
-      ? `#${detail.channels.find((c) => c.id === channel)!.name}`
+      ? detail.channels.find((c) => c.id === channel)!.name
       : channelLabel(channel)
     : 'Вся история';
 
