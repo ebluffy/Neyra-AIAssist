@@ -88,6 +88,9 @@ export function AppSidebar({
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const profileTriggerRef = useRef<HTMLButtonElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const asideRef = useRef<HTMLElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
 
   const userId = user?.id || 'guest';
   const notesStorageKey = `neyra:notes:${userId}`;
@@ -99,6 +102,56 @@ export function AppSidebar({
       setCollapsed(window.localStorage.getItem('neyra:sidebar-collapsed') === '1');
     } catch {}
   }, []);
+
+  // Mobile breakpoint: closed drawer must not keep focusable links.
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(max-width: 1023px)');
+    const sync = () => setIsMobile(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+
+  // Focus inside the open mobile drawer, trap Tab and restore focus on close.
+  useEffect(() => {
+    if (!isMobile || !mobileOpen) return;
+    const node = asideRef.current;
+    if (!node) return;
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+    const focusables = () =>
+      Array.from(
+        node.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input, textarea, select, [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter((element) => element.getClientRects().length > 0);
+
+    focusables()[0]?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCloseMobile?.();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const list = focusables();
+      if (!list.length) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      previousFocusRef.current?.focus?.();
+    };
+  }, [isMobile, mobileOpen, onCloseMobile]);
 
   // Read notes from localStorage
   useEffect(() => {
@@ -158,18 +211,17 @@ export function AppSidebar({
 
   function handleDeleteThread(e: React.MouseEvent, threadId: string) {
     e.stopPropagation();
+    const updated = threads.filter((t) => t.id !== threadId);
+    try {
+      window.localStorage.setItem(threadsStorageKey, JSON.stringify(updated));
+      window.localStorage.removeItem(`neyra:thread-messages:${userId}:${threadId}`);
+      window.localStorage.removeItem(`neyra:pinned-messages:${userId}:${threadId}`);
+    } catch {}
+    setThreads(updated);
     if (onDeleteThread) {
       onDeleteThread(threadId);
-    } else {
-      const updated = threads.filter((t) => t.id !== threadId);
-      try {
-        window.localStorage.setItem(threadsStorageKey, JSON.stringify(updated));
-        window.localStorage.removeItem(`neyra:thread-messages:${userId}:${threadId}`);
-      } catch {}
-      setThreads(updated);
-      if (activeThreadId === threadId) {
-        onNewChat?.();
-      }
+    } else if (activeThreadId === threadId) {
+      onNewChat?.();
     }
   }
 
@@ -304,6 +356,9 @@ export function AppSidebar({
 
       {/* Main Sidebar Shell */}
       <aside
+        ref={asideRef}
+        inert={isMobile && !mobileOpen}
+        aria-hidden={isMobile && !mobileOpen ? true : undefined}
         className={`fixed lg:static z-50 inset-y-0 left-0 bg-[var(--surface)] border-r border-[var(--border)] flex flex-col justify-between transition-[transform,width] duration-150 ease-out select-none ${
           mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
         } ${collapsed ? 'w-[264px] lg:w-[64px]' : 'w-[264px]'}`}
@@ -381,7 +436,15 @@ export function AppSidebar({
                 aria-haspopup="menu"
                 aria-expanded={profileMenuOpen}
                 aria-label="Меню профиля пользователя"
-                onClick={() => setProfileMenuOpen((prev) => !prev)}
+                onClick={() => {
+                  if (collapsed) {
+                    setCollapsed(false);
+                    try {
+                      window.localStorage.setItem('neyra:sidebar-collapsed', '0');
+                    } catch {}
+                  }
+                  setProfileMenuOpen(true);
+                }}
                 className="rounded-full p-0.5 hover:ring-2 hover:ring-[var(--border-strong)] transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               >
                 <Avatar name={user?.name} email={user?.email} size={28} />

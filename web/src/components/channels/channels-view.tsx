@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -255,8 +255,11 @@ function GuildContent({ guild, detail }: { guild: Guild; detail: GuildDetail }) 
   const [selected, setSelected] = useState<Member | null>(null);
   const [offset, setOffset] = useState(0);
   const [members, setMembers] = useState<Member[]>([]);
-  const [membersPanelOpen, setMembersPanelOpen] = useState(true);
+  const [membersPanelOpen, setMembersPanelOpen] = useState(
+    () => typeof window === 'undefined' || window.innerWidth >= 1024
+  );
   const [mode, setMode] = useState<HistoryViewMode>('turns');
+  const membersToggleRef = useRef<HTMLButtonElement | null>(null);
 
   // Load catalog members
   const catalog = useCatalog<Catalog<Member>>(
@@ -281,6 +284,19 @@ function GuildContent({ guild, detail }: { guild: Guild; detail: GuildDetail }) 
   );
 
   const knownMembers = members.length ? members : detail.members;
+
+  // Esc closes the mobile participants panel and returns focus to its toggle.
+  useEffect(() => {
+    if (!membersPanelOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMembersPanelOpen(false);
+        membersToggleRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [membersPanelOpen]);
 
   // Filter channels: ONLY show channels where activity.channels has messages > 0!
   const activeChannelMap = new Map<string, number>();
@@ -444,6 +460,7 @@ function GuildContent({ guild, detail }: { guild: Guild; detail: GuildDetail }) 
 
           {/* Toggle button for right members panel */}
           <IconButton
+            ref={membersToggleRef}
             aria-label="Участники сервера"
             tooltip="Список участников"
             icon={<Users size={16} />}
@@ -541,6 +558,20 @@ function GuildContent({ guild, detail }: { guild: Guild; detail: GuildDetail }) 
               ))}
             </div>
           </div>
+
+          {catalog.data?.available !== false &&
+            catalog.data?.items.length === 200 &&
+            (catalog.data.total == null || knownMembers.length < catalog.data.total) && (
+              <div className={s.pager}>
+                <Button
+                  variant="secondary"
+                  disabled={catalog.loading}
+                  onClick={() => setOffset((value) => value + 200)}
+                >
+                  {catalog.loading ? 'Загрузка…' : 'Загрузить участников'}
+                </Button>
+              </div>
+            )}
         </div>
       </aside>
 
