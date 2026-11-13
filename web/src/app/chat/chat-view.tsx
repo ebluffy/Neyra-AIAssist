@@ -28,6 +28,7 @@ import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIn
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
 import { SettingsDialog } from '../../components/settings-dialog';
+import { ChannelsNav } from '../../components/channels/channels-nav';
 import { ru } from '../../i18n';
 
 export interface ChatMessageAttachment {
@@ -677,6 +678,7 @@ export function ChatView({
               size="md"
               onClick={startNewChat}
             />
+            <ChannelsNav role={user.role} compact />
             <IconButton
               aria-label="Настройки"
               tooltip="Настройки"
@@ -729,6 +731,8 @@ export function ChatView({
             <Plus size={15} className="text-[var(--text-muted)]" />
             <span>{ru.newChat}</span>
           </Button>
+
+          <ChannelsNav role={user.role} />
 
           {/* Chat threads list */}
           <div className="pt-2 space-y-1">
