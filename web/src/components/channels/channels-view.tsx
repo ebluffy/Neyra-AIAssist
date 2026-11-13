@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { buildChatStorageKey, resolveTabKey } from '../../../lib/chat-id';
 import { AppSidebar, type AppSidebarUser } from '../layout/app-sidebar';
 import { Button, IconButton } from '../ui';
 import {
@@ -114,6 +115,12 @@ export function ChannelsView({
         user={currentUser}
         mobileOpen={mobileSidebarOpen}
         onCloseMobile={() => setMobileSidebarOpen(false)}
+        onSelectThread={(threadId) => {
+          try {
+            window.sessionStorage.setItem(buildChatStorageKey(currentUser.id, resolveTabKey(window)), threadId);
+          } catch {}
+          router.push('/chat');
+        }}
       />
 
       <div className={s.mainLayout}>
