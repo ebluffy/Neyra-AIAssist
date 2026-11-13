@@ -1,5 +1,5 @@
 import { it, expect } from 'vitest';
-import { readDatabaseUrl, readAuthEnv, readChatEnv } from './env';
+import { readDatabaseUrl, readAuthEnv, readChatEnv, readAuthConfig } from './env';
 it('reports missing database URL without leaking values', () => { expect(() => readDatabaseUrl({})).toThrow('Не задана DATABASE_URL'); });
 it('accepts PostgreSQL and rejects other protocols', () => { expect(readDatabaseUrl({ DATABASE_URL: 'postgresql://localhost/test' })).toBe('postgresql://localhost/test'); expect(() => readDatabaseUrl({DATABASE_URL:'https://localhost'})).toThrow('PostgreSQL URL'); });
 it('requires secret and public origin only at runtime', () => {
@@ -36,4 +36,19 @@ it('rejects HTTP, embedded credentials and query in core WS URL', () => {
   for (const url of ['https://core.test', 'ws://user:password@core.test', 'ws://core.test?token=x']) {
     expect(() => readChatEnv({ NEYRA_WS_URL: url })).toThrow('NEYRA_WS_URL');
   }
+});
+
+it('reads auth configuration with fallback to password when discord is not configured', () => {
+  expect(readAuthConfig({})).toEqual({ authMode: 'password', inviteRequired: false, discordAvailable: false });
+  expect(readAuthConfig({ AUTH_MODE: 'discord' })).toEqual({ authMode: 'password', inviteRequired: false, discordAvailable: false });
+  expect(readAuthConfig({ AUTH_MODE: 'discord', DISCORD_ENABLED: 'true', INVITE_REQUIRED: 'true' })).toEqual({
+    authMode: 'discord',
+    inviteRequired: true,
+    discordAvailable: true,
+  });
+  expect(readAuthConfig({ AUTH_MODE: 'both', DISCORD_CLIENT_ID: 'cid', DISCORD_CLIENT_SECRET: 'csec' })).toEqual({
+    authMode: 'both',
+    inviteRequired: false,
+    discordAvailable: true,
+  });
 });

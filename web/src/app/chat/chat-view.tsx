@@ -8,47 +8,81 @@ import {
   ArrowUp,
   Copy,
   Check,
+  FileText,
+  Image as ImageIcon,
   LogOut,
   MessageSquare,
+  MoreVertical,
   PanelLeft,
   Plus,
   RefreshCw,
+  Settings,
+  Shield,
   Square,
   X,
 } from 'lucide-react';
 import { SseChatEventSchema } from '@neyra/contracts';
-import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage } from '../../components/ui';
+import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, type ContextUsage } from '../../components/ui';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
 import { ru } from '../../i18n';
+
+export interface ChatMessageAttachment {
+  id: string;
+  name: string;
+  size: number;
+  isImage: boolean;
+}
 
 export interface ChatMessageItem {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   pending?: boolean;
+  error?: string | null;
+  isRetrying?: boolean;
+  attachments?: ChatMessageAttachment[];
+}
+
+export interface ChatViewProps {
+  user: { id: string; email?: string | null; name?: string | null; role?: string | null };
+  initialMessages?: ChatMessageItem[];
+  initialUsage?: ContextUsage | null;
 }
 
 export function ChatView({
   user,
-}: {
-  user: { id: string; email?: string | null; name?: string | null; role?: string | null };
-}) {
+  initialMessages,
+  initialUsage,
+}: ChatViewProps) {
   const router = useRouter();
-  const [messages, setMessages] = useState<ChatMessageItem[]>([]);
+  const [messages, setMessages] = useState<ChatMessageItem[]>(() => initialMessages || []);
   const [input, setInput] = useState('');
   const [thinking, setThinking] = useState(false);
   const [streaming, setStreaming] = useState(false);
-  const [error, setError] = useState('');
   const [lastUserMessage, setLastUserMessage] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showScrollDown, setShowScrollDown] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
+  // V2 UI states
+  const [threadMenuOpen, setThreadMenuOpen] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [attachments, setAttachments] = useState<ChatMessageAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<ContextUsage | null>(() => initialUsage || null);
+
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  const threadMenuRef = useRef<HTMLDivElement | null>(null);
+  const attachMenuRef = useRef<HTMLDivElement | null>(null);
+  const profileTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   // Tab-scoped and user-bound chat id (§3, AR-1, AR-11)
   const [chatId, setChatId] = useState(() => {
@@ -56,19 +90,89 @@ export function ChatView({
     return resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
   });
 
+  // Support mock state from URL for screenshot testing
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const mockState = params.get('mockState');
+    if (!mockState) return;
+
+    if (mockState === 'streaming') {
+      setMessages([
+        { id: 'u1', role: 'user', content: 'Расскажи о возможностях Нейры' },
+        { id: 'a1', role: 'assistant', content: '', pending: true },
+      ]);
+      setStreaming(true);
+      setThinking(true);
+    } else if (mockState === 'error') {
+      setMessages([
+        { id: 'u1', role: 'user', content: 'Проверь состояние сервисов' },
+        {
+          id: 'a1',
+          role: 'assistant',
+          content: '',
+          error: 'Сервис Нейры временно недоступен. Попробуйте повторить запрос позже.',
+        },
+      ]);
+    } else if (mockState === 'profile-user') {
+      setProfileMenuOpen(true);
+    } else if (mockState === 'profile-admin') {
+      setProfileMenuOpen(true);
+    } else if (mockState === 'attachments-menu') {
+      setAttachMenuOpen(true);
+    } else if (mockState === 'chips') {
+      setAttachments([
+        { id: 'att-1', name: 'report-2026.pdf', size: 1250000, isImage: false },
+        { id: 'att-2', name: 'architecture.png', size: 450000, isImage: true },
+      ]);
+    } else if (mockState === 'context') {
+      setUsage({
+        prompt_tokens: 138600,
+        completion_tokens: 1240,
+        context_limit: 1000000,
+        context_used: 139840,
+      });
+    } else if (mockState === 'drawer') {
+      setSidebarOpen(true);
+    }
+  }, []);
+
   // Leave page cancels active upstream connection
   useEffect(() => () => {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
   }, []);
 
-  // Close sidebar on Escape key
+  // Keyboard navigation & global close on Escape
   useEffect(() => {
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') setSidebarOpen(false);
+      if (e.key === 'Escape') {
+        setSidebarOpen(false);
+        setThreadMenuOpen(false);
+        setProfileMenuOpen(false);
+        setAttachMenuOpen(false);
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Close menus on outside click
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (profileMenuRef.current && !profileMenuRef.current.contains(target) && !profileTriggerRef.current?.contains(target)) {
+        setProfileMenuOpen(false);
+      }
+      if (threadMenuRef.current && !threadMenuRef.current.contains(target)) {
+        setThreadMenuOpen(false);
+      }
+      if (attachMenuRef.current && !attachMenuRef.current.contains(target)) {
+        setAttachMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, []);
 
   // Scroll detection for "Вниз" floating pill
@@ -115,10 +219,12 @@ export function ChatView({
         : resetChatId(window.sessionStorage, resolveTabKey(window), user.id);
     setChatId(newId);
     setMessages([]);
-    setError('');
     setThinking(false);
     setStreaming(false);
     setSidebarOpen(false);
+    setThreadMenuOpen(false);
+    setAttachments([]);
+    setAttachmentError(null);
     if (textareaRef.current) {
       textareaRef.current.focus();
     }
@@ -148,23 +254,55 @@ export function ChatView({
     }
   };
 
-  const sendMessage = async (textToSend: string) => {
-    const text = textToSend.trim();
-    if (!text || streaming) return;
+  // Attachment handling (§3.2: limit 4 files, 8MB each)
+  const handleFilesSelected = (files: FileList | null, isImage: boolean) => {
+    setAttachMenuOpen(false);
+    if (!files || files.length === 0) return;
 
-    setError('');
-    setInput('');
-    setLastUserMessage(text);
+    setAttachmentError(null);
+    const maxFiles = 4;
+    const maxSizeBytes = 8 * 1024 * 1024; // 8 MB
 
-    const userMsgId = crypto.randomUUID();
-    const assistantMsgId = crypto.randomUUID();
+    if (attachments.length + files.length > maxFiles) {
+      setAttachmentError(`Максимум ${maxFiles} файла(ов).`);
+      return;
+    }
 
-    setMessages(prev => [
-      ...prev,
-      { id: userMsgId, role: 'user', content: text },
-      { id: assistantMsgId, role: 'assistant', content: '', pending: true },
-    ]);
+    const newAttachments: ChatMessageAttachment[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file.size > maxSizeBytes) {
+        setAttachmentError(`Файл «${file.name}» превышает лимит 8 МБ.`);
+        return;
+      }
+      newAttachments.push({
+        id: crypto.randomUUID(),
+        name: file.name,
+        size: file.size,
+        isImage: isImage || file.type.startsWith('image/'),
+      });
+    }
 
+    setAttachments(prev => [...prev, ...newAttachments]);
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments(prev => prev.filter(a => a.id !== id));
+    setAttachmentError(null);
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} Б`;
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} КБ`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+  };
+
+  // Helper to execute SSE request
+  const executeChatRequest = async (
+    textToSend: string,
+    targetAssistantMsgId: string,
+    currentAttachments: ChatMessageAttachment[]
+  ) => {
     setThinking(true);
     setStreaming(true);
 
@@ -176,7 +314,11 @@ export function ChatView({
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, chat_id: chatId }),
+        body: JSON.stringify({
+          text: textToSend,
+          chat_id: chatId,
+          attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
+        }),
         signal: controller.signal,
       });
 
@@ -192,14 +334,24 @@ export function ChatView({
         } catch {
           // non-JSON error
         }
-        setError(errDesc);
-        setMessages(prev => prev.filter(m => m.id !== assistantMsgId));
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === targetAssistantMsgId
+              ? { ...m, pending: false, error: errDesc, isRetrying: false }
+              : m
+          )
+        );
         return;
       }
 
       if (!response.body) {
-        setError('Сервер не вернул поток ответа.');
-        setMessages(prev => prev.filter(m => m.id !== assistantMsgId));
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === targetAssistantMsgId
+              ? { ...m, pending: false, error: 'Сервер не вернул поток ответа.', isRetrying: false }
+              : m
+          )
+        );
         return;
       }
 
@@ -233,7 +385,9 @@ export function ChatView({
               const updatedText = assistantText;
               setMessages(prev =>
                 prev.map(m =>
-                  m.id === assistantMsgId ? { ...m, content: updatedText } : m
+                  m.id === targetAssistantMsgId
+                    ? { ...m, content: updatedText, error: null, isRetrying: false, pending: true }
+                    : m
                 )
               );
             } else if (event.type === 'thinking') {
@@ -244,24 +398,26 @@ export function ChatView({
                 assistantText = event.text;
                 setMessages(prev =>
                   prev.map(m =>
-                    m.id === assistantMsgId
-                      ? { ...m, content: event.text, pending: false }
+                    m.id === targetAssistantMsgId
+                      ? { ...m, content: event.text, pending: false, error: null, isRetrying: false }
                       : m
                   )
                 );
               }
+              // Extract usage if present in rawEvent
+              if (rawEvent.usage && typeof rawEvent.usage === 'object') {
+                setUsage(rawEvent.usage);
+              }
             } else if (event.type === 'error') {
               setThinking(false);
-              setError(event.message || 'Ошибка обработки запроса.');
-              if (!assistantText) {
-                setMessages(prev => prev.filter(m => m.id !== assistantMsgId));
-              } else {
-                setMessages(prev =>
-                  prev.map(m =>
-                    m.id === assistantMsgId ? { ...m, pending: false } : m
-                  )
-                );
-              }
+              const errMsg = event.message || 'Ошибка обработки запроса.';
+              setMessages(prev =>
+                prev.map(m =>
+                  m.id === targetAssistantMsgId
+                    ? { ...m, pending: false, error: errMsg, isRetrying: false }
+                    : m
+                )
+              );
             }
           } catch {
             // Ignore non-json fragments
@@ -270,22 +426,95 @@ export function ChatView({
       }
 
       setMessages(prev =>
-        prev.map(m => (m.id === assistantMsgId ? { ...m, pending: false } : m))
+        prev.map(m =>
+          m.id === targetAssistantMsgId
+            ? { ...m, pending: false, isRetrying: false }
+            : m
+        )
       );
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
         // Stopped by user
       } else {
-        setError(ru.networkError);
-        if (!assistantText) {
-          setMessages(prev => prev.filter(m => m.id !== assistantMsgId));
-        }
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === targetAssistantMsgId
+              ? { ...m, pending: false, error: ru.networkError, isRetrying: false }
+              : m
+          )
+        );
       }
     } finally {
       setStreaming(false);
       setThinking(false);
       abortControllerRef.current = null;
     }
+  };
+
+  const sendMessage = async (textToSend: string) => {
+    const text = textToSend.trim();
+    if (!text || streaming) return;
+
+    setInput('');
+    setLastUserMessage(text);
+    const activeAttachments = [...attachments];
+    setAttachments([]);
+    setAttachmentError(null);
+
+    const userMsgId = crypto.randomUUID();
+    const assistantMsgId = crypto.randomUUID();
+
+    setMessages(prev => [
+      ...prev,
+      { id: userMsgId, role: 'user', content: text, attachments: activeAttachments },
+      { id: assistantMsgId, role: 'assistant', content: '', pending: true },
+    ]);
+
+    await executeChatRequest(text, assistantMsgId, activeAttachments);
+  };
+
+  // V2 Retry flow (§4.1): Reuses existing exchange, shows spinner in error block, no duplicate user message
+  const handleRetry = async (assistantMsgId: string) => {
+    if (streaming) return;
+
+    const assistantIndex = messages.findIndex(m => m.id === assistantMsgId);
+    if (assistantIndex === -1) return;
+
+    // Find preceding user message
+    let userText = lastUserMessage;
+    let userAttachments: ChatMessageAttachment[] = [];
+    for (let i = assistantIndex - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        userText = messages[i].content;
+        userAttachments = messages[i].attachments || [];
+        break;
+      }
+    }
+
+    if (!userText) return;
+
+    // Mark assistant message as retrying with spinner
+    setMessages(prev =>
+      prev.map(m =>
+        m.id === assistantMsgId
+          ? { ...m, isRetrying: true, content: '' }
+          : m
+      )
+    );
+
+    await executeChatRequest(userText, assistantMsgId, userAttachments);
+  };
+
+  // V2 Delete exchange (§4.1): Removes error and its preceding user message
+  const handleDeleteExchange = (assistantMsgId: string) => {
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.id === assistantMsgId);
+      if (idx === -1) return prev;
+      if (idx > 0 && prev[idx - 1].role === 'user') {
+        return prev.filter((_, i) => i !== idx && i !== idx - 1);
+      }
+      return prev.filter(m => m.id !== assistantMsgId);
+    });
   };
 
   const handleSubmit = (e: FormEvent) => {
@@ -307,6 +536,30 @@ export function ChatView({
       router.refresh();
     } catch {
       router.replace('/login');
+    }
+  };
+
+  // Keyboard navigation for profile menu
+  const handleProfileMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setProfileMenuOpen(false);
+      profileTriggerRef.current?.focus();
+      return;
+    }
+    const items = profileMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]');
+    if (!items || items.length === 0) return;
+
+    const currentIndex = Array.from(items).indexOf(document.activeElement as HTMLElement);
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIndex = currentIndex < items.length - 1 ? currentIndex + 1 : 0;
+      items[nextIndex]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIndex = currentIndex > 0 ? currentIndex - 1 : items.length - 1;
+      items[prevIndex]?.focus();
     }
   };
 
@@ -336,10 +589,10 @@ export function ChatView({
         {/* Top: Logo & New Chat button */}
         <div className="p-4 space-y-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
+            <Link href="/" className="flex items-center gap-2.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] rounded-[var(--radius-sm)]">
               <NeyraLogo size={24} />
               <span className="text-[16px] font-semibold tracking-tight text-[var(--text)]">Neyra</span>
-            </div>
+            </Link>
             <IconButton
               aria-label="Закрыть панель"
               icon={<X size={16} />}
@@ -361,7 +614,7 @@ export function ChatView({
             <span>{ru.newChat}</span>
           </Button>
 
-          {/* Chat threads list (§3) */}
+          {/* Chat threads list */}
           <div className="pt-2 space-y-1">
             <div className="text-[11px] font-medium text-[var(--text-subtle)] px-2 pb-1 uppercase tracking-wider">
               Диалог
@@ -373,41 +626,94 @@ export function ChatView({
           </div>
         </div>
 
-        {/* Bottom: User Card (§3) */}
-        <div className="p-3 border-t border-[var(--border)] bg-[var(--surface)] flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <Avatar name={user.name} email={user.email} size={24} />
-            <div className="min-w-0 flex flex-col">
-              <span className="text-xs font-medium text-[var(--text)] truncate">
-                {user.name || user.email?.split('@')[0]}
-              </span>
-              <span className="text-[11px] text-[var(--text-muted)] truncate">
-                {user.email}
-              </span>
-            </div>
-            {user.role && (
-              <span className="text-[10px] text-[var(--text-subtle)] border border-[var(--border)] rounded px-1.5 py-0.2 shrink-0">
-                {user.role}
-              </span>
-            )}
-          </div>
-
-          <IconButton
+        {/* Bottom: User Card & Profile Popover (§5.1) */}
+        <div className="relative p-3 border-t border-[var(--border)] bg-[var(--surface)]">
+          <button
+            ref={profileTriggerRef}
             type="button"
-            aria-label={ru.signOut}
-            icon={<LogOut size={15} />}
-            variant="ghost"
-            size="sm"
-            onClick={handleSignOut}
-            title={ru.signOut}
-            className="text-[var(--text-muted)] hover:text-[var(--text)] shrink-0"
-          />
+            aria-haspopup="menu"
+            aria-expanded={profileMenuOpen}
+            aria-label="Меню профиля пользователя"
+            onClick={() => setProfileMenuOpen(prev => !prev)}
+            className="w-full flex items-center justify-between gap-2 p-1.5 -m-1.5 rounded-[var(--radius-sm)] hover:bg-[var(--surface-2)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Avatar name={user.name} email={user.email} size={26} />
+              <div className="min-w-0 flex flex-col">
+                <span className="text-xs font-medium text-[var(--text)] truncate">
+                  {user.name || user.email?.split('@')[0]}
+                </span>
+                <span className="text-[11px] text-[var(--text-muted)] truncate">
+                  {user.email}
+                </span>
+              </div>
+            </div>
+            <span className="text-[10px] text-[var(--text-subtle)] border border-[var(--border)] rounded px-1.5 py-0.5 shrink-0">
+              {user.role === 'admin' ? 'Администратор' : 'Пользователь'}
+            </span>
+          </button>
+
+          {/* Popover Menu (§5.1) */}
+          {profileMenuOpen && (
+            <div
+              ref={profileMenuRef}
+              role="menu"
+              aria-label="Меню профиля"
+              tabIndex={-1}
+              onKeyDown={handleProfileMenuKeyDown}
+              className="absolute bottom-full left-3 right-3 mb-2 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-strong)] shadow-panel p-1.5 z-50 text-xs flex flex-col gap-0.5"
+            >
+              <div className="px-2.5 py-2 border-b border-[var(--border)] mb-1">
+                <div className="font-medium text-[var(--text)] truncate">{user.name || user.email?.split('@')[0]}</div>
+                <div className="text-[11px] text-[var(--text-muted)] truncate">{user.email}</div>
+                <div className="mt-1.5">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
+                    {user.role === 'admin' ? 'Администратор' : 'Пользователь'}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                role="menuitem"
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+                onClick={() => setProfileMenuOpen(false)}
+              >
+                <Settings size={14} className="text-[var(--text-muted)]" />
+                <span>Настройки</span>
+              </button>
+
+              {user.role === 'admin' && (
+                <Link
+                  href="/admin"
+                  role="menuitem"
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+                  onClick={() => setProfileMenuOpen(false)}
+                >
+                  <Shield size={14} className="text-[var(--accent)]" />
+                  <span>Админ-панель</span>
+                </Link>
+              )}
+
+              <div className="border-t border-[var(--border)] my-1" />
+
+              <button
+                type="button"
+                role="menuitem"
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+                onClick={handleSignOut}
+              >
+                <LogOut size={14} />
+                <span>{ru.signOut}</span>
+              </button>
+            </div>
+          )}
         </div>
       </aside>
 
       {/* Main Column */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
-        {/* Header 56px (§3) */}
+        {/* Header 56px (§2: No «← На главную», mobile menu on right with «Новый чат») */}
         <header className="h-14 min-h-[56px] border-b border-[var(--border)] bg-[var(--bg)] px-3 sm:px-4 flex items-center justify-between gap-2 z-20">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 mr-2">
             <IconButton
@@ -424,16 +730,35 @@ export function ChatView({
             </h1>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
-            <Link
-              href="/"
-              className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors inline-flex items-center gap-1 shrink-0 whitespace-nowrap"
-              aria-label={ru.toHome}
-              title={ru.toHome}
-            >
-              <span aria-hidden="true" className="shrink-0 text-sm">←</span>
-              <span className="hidden sm:inline">На главную</span>
-            </Link>
+          {/* Right Header: Thread Menu with «⋮» (§2.2) */}
+          <div className="relative shrink-0" ref={threadMenuRef}>
+            <IconButton
+              type="button"
+              aria-label="Опции диалога"
+              icon={<MoreVertical size={18} />}
+              variant="ghost"
+              size="md"
+              onClick={() => setThreadMenuOpen(prev => !prev)}
+              className="text-[var(--text-muted)] hover:text-[var(--text)]"
+            />
+
+            {threadMenuOpen && (
+              <div
+                role="menu"
+                aria-label="Опции диалога"
+                className="absolute right-0 top-full mt-1.5 w-40 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-strong)] shadow-panel p-1 z-50 text-xs flex flex-col"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
+                  onClick={startNewChat}
+                >
+                  <Plus size={14} className="text-[var(--accent)]" />
+                  <span>{ru.newChat}</span>
+                </button>
+              </div>
+            )}
           </div>
         </header>
 
@@ -444,7 +769,7 @@ export function ChatView({
           aria-label="Сообщения чата"
         >
           <div className="content-column space-y-6">
-            {/* Empty State (§3) */}
+            {/* Empty State */}
             {messages.length === 0 && (
               <div className="flex flex-col items-center justify-center text-center pt-16 md:pt-24 pb-8 select-none">
                 <NeyraLogo size={40} />
@@ -483,13 +808,65 @@ export function ChatView({
                     </span>
                     <div className="rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] px-3.5 py-2.5 text-[15px] leading-[24px] text-[var(--text)] whitespace-pre-wrap">
                       {msg.content}
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-[var(--border)] flex flex-wrap gap-1.5">
+                          {msg.attachments.map(att => (
+                            <span
+                              key={att.id}
+                              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius-sm)] bg-[var(--surface-3)] text-xs text-[var(--text-muted)]"
+                            >
+                              {att.isImage ? <ImageIcon size={12} /> : <FileText size={12} />}
+                              <span>{att.name}</span>
+                              <span className="text-[10px] text-[var(--text-subtle)]">({formatFileSize(att.size)})</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : msg.error ? (
+                  // V2 Failed Exchange Error Block (§4.1: single exchange, Retry + Delete)
+                  <div
+                    role="alert"
+                    className="w-full rounded-[var(--radius)] border border-[var(--danger)] bg-[var(--danger-quiet)] p-3.5 text-xs text-[var(--danger)] flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span>{msg.error}</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button
+                        type="button"
+                        variant="danger"
+                        size="sm"
+                        disabled={msg.isRetrying || streaming}
+                        onClick={() => handleRetry(msg.id)}
+                        className="h-7 text-[11px] px-2.5 gap-1.5"
+                      >
+                        <RefreshCw size={11} className={msg.isRetrying ? 'animate-spin' : ''} />
+                        <span>{msg.isRetrying ? 'Повторяю…' : 'Повторить'}</span>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={msg.isRetrying || streaming}
+                        onClick={() => handleDeleteExchange(msg.id)}
+                        className="h-7 text-[11px] px-2 text-[var(--text-muted)] hover:text-[var(--danger)]"
+                      >
+                        Удалить
+                      </Button>
                     </div>
                   </div>
                 ) : (
                   // Assistant Message (§3: NO bubble, article typography, full width)
                   <div className="w-full flex flex-col group relative">
                     <div className="text-[12px] font-medium text-[var(--text-subtle)] mb-1 select-none flex items-center justify-between">
-                      <span>{ru.assistantRole}</span>
+                      <div className="flex items-center gap-1.5">
+                        {msg.pending && !msg.content ? (
+                          <NeyraLogo size={16} className="avatar-thinking" />
+                        ) : null}
+                        <span>{ru.assistantRole}</span>
+                      </div>
                       {msg.content && (
                         <button
                           type="button"
@@ -519,22 +896,28 @@ export function ChatView({
                           )}
                         </>
                       ) : msg.pending ? (
-                        // Thinking 3-dots indicator (§3)
+                        // V2 Thinking 3-dots indicator with real bounce animation (§4.3, §4.5)
                         <div
-                          className="flex items-center gap-1.5 py-2 text-[var(--text-subtle)]"
+                          className="flex items-center gap-2 py-2 text-[var(--text-subtle)] select-none"
                           role="status"
-                          aria-label={ru.thinking}
+                          aria-label="Нейра думает…"
                         >
-                          <span className="sr-only">{ru.thinking}</span>
-                          <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
-                          <span
-                            className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse"
-                            style={{ animationDelay: '150ms' }}
-                          />
-                          <span
-                            className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse"
-                            style={{ animationDelay: '300ms' }}
-                          />
+                          <span className="sr-only">Нейра думает…</span>
+                          <span className="text-[13px] text-[var(--text-muted)] font-medium">Думаю…</span>
+                          <div className="flex items-center gap-1">
+                            <span
+                              className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] dot-bounce"
+                              style={{ animationDelay: '0ms' }}
+                            />
+                            <span
+                              className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] dot-bounce"
+                              style={{ animationDelay: '120ms' }}
+                            />
+                            <span
+                              className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] dot-bounce"
+                              style={{ animationDelay: '240ms' }}
+                            />
+                          </div>
                         </div>
                       ) : null}
                     </div>
@@ -543,34 +926,11 @@ export function ChatView({
               </div>
             ))}
 
-            {/* Error Banner (§3) */}
-            {error && (
-              <div
-                role="alert"
-                className="rounded-[var(--radius)] border border-[var(--danger)] bg-[var(--danger-quiet)] p-3.5 text-xs text-[var(--danger)] flex items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-2">
-                  <span>{error}</span>
-                </div>
-                {lastUserMessage && !streaming && (
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => sendMessage(lastUserMessage)}
-                    className="shrink-0 h-7 text-[11px] px-2.5 gap-1"
-                  >
-                    <RefreshCw size={11} />
-                    <span>Повторить</span>
-                  </Button>
-                )}
-              </div>
-            )}
-
             <div ref={messagesEndRef} />
           </div>
         </div>
 
-        {/* Scroll down floating pill (§3) */}
+        {/* Scroll down floating pill */}
         {showScrollDown && (
           <button
             type="button"
@@ -585,53 +945,173 @@ export function ChatView({
 
         {/* Sticky Composer (§3) */}
         <footer className="sticky bottom-0 z-20 bg-[var(--bg)]/90 backdrop-blur-md pt-2 pb-4 px-4 border-t border-transparent">
-          <div className="content-column">
+          <div className="content-column space-y-2">
+            {/* Optional Context Indicator (§5.2) */}
+            {usage && (
+              <div className="flex justify-end pr-1">
+                <ContextIndicator usage={usage} onNewChat={startNewChat} />
+              </div>
+            )}
+
             <form onSubmit={handleSubmit} className="flex flex-col">
-              <div className="relative rounded-[var(--radius-lg)] bg-[var(--surface-2)] border border-[var(--border)] p-2.5 pl-4 shadow-panel focus-within:border-[var(--accent)] transition-colors flex items-end gap-2">
-                <textarea
-                  ref={textareaRef}
-                  value={input}
-                  onChange={e => setInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder={ru.placeholder}
-                  disabled={streaming}
-                  rows={1}
-                  aria-label="Сообщение"
-                  className="flex-1 bg-transparent border-0 outline-none resize-none text-[15px] leading-[24px] text-[var(--text)] placeholder-[var(--text-subtle)] max-h-36 min-h-[24px] p-0 focus:ring-0"
-                />
+              {/* Hidden file inputs (§3.2) */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={e => handleFilesSelected(e.target.files, false)}
+              />
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={e => handleFilesSelected(e.target.files, true)}
+              />
 
-                {streaming ? (
-                  <IconButton
+              {/* Attachment error banner */}
+              {attachmentError && (
+                <div className="mb-1.5 px-3 py-1.5 text-xs text-[var(--danger)] bg-[var(--danger-quiet)] border border-[var(--danger)] rounded-[var(--radius-sm)] flex items-center justify-between">
+                  <span>{attachmentError}</span>
+                  <button
                     type="button"
-                    aria-label={ru.stop}
-                    icon={<Square size={13} className="text-[var(--danger)] fill-current" />}
-                    variant="secondary"
-                    size="md"
-                    rounded
-                    onClick={stopGeneration}
-                    className="shrink-0 bg-[var(--surface-3)] border-transparent hover:bg-[var(--surface-3)]"
-                  />
-                ) : (
-                  <IconButton
-                    type="submit"
-                    aria-label={ru.send}
-                    disabled={!input.trim()}
-                    icon={<ArrowUp size={16} />}
-                    variant={input.trim() ? 'primary' : 'ghost'}
-                    size="md"
-                    rounded
-                    className={`shrink-0 transition-colors ${
-                      input.trim()
-                        ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
-                        : 'bg-[var(--surface-3)] text-[var(--text-subtle)]'
-                    }`}
-                  />
+                    onClick={() => setAttachmentError(null)}
+                    className="text-[var(--danger)] hover:opacity-80"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              )}
+
+              {/* Composer container */}
+              <div className="relative rounded-[var(--radius-lg)] bg-[var(--surface-2)] border border-[var(--border)] p-2.5 shadow-panel focus-within:border-[var(--accent)] transition-colors flex flex-col gap-2">
+                {/* File chips row (§3.2) */}
+                {attachments.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 pb-2 border-b border-[var(--border)]">
+                    {attachments.map(att => (
+                      <div
+                        key={att.id}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[var(--radius-sm)] bg-[var(--surface-3)] border border-[var(--border)] text-xs text-[var(--text)] group"
+                      >
+                        {att.isImage ? (
+                          <ImageIcon size={13} className="text-[var(--accent)] shrink-0" />
+                        ) : (
+                          <FileText size={13} className="text-[var(--text-muted)] shrink-0" />
+                        )}
+                        <span className="truncate max-w-[140px] font-medium">{att.name}</span>
+                        <span className="text-[10px] text-[var(--text-subtle)]">
+                          {formatFileSize(att.size)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(att.id)}
+                          aria-label={`Удалить ${att.name}`}
+                          className="text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors ml-0.5 cursor-pointer"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 )}
+
+                {/* Input row: Attach button + Textarea + Send button */}
+                <div className="flex items-end gap-2">
+                  {/* Plus button & Attachment popover (§3.2) */}
+                  <div className="relative shrink-0" ref={attachMenuRef}>
+                    <IconButton
+                      type="button"
+                      aria-label="Прикрепить файл"
+                      title="Прикрепить файл"
+                      icon={<Plus size={16} />}
+                      variant="ghost"
+                      size="md"
+                      rounded
+                      disabled={streaming}
+                      onClick={() => setAttachMenuOpen(prev => !prev)}
+                      className="text-[var(--text-muted)] hover:text-[var(--text)] bg-[var(--surface-3)]"
+                    />
+
+                    {attachMenuOpen && (
+                      <div
+                        role="menu"
+                        aria-label="Прикрепить"
+                        className="absolute bottom-full left-0 mb-2 w-36 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-strong)] shadow-panel p-1 z-50 text-xs flex flex-col gap-0.5"
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
+                          onClick={() => fileInputRef.current?.click()}
+                        >
+                          <FileText size={14} className="text-[var(--text-muted)]" />
+                          <span>Файл</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
+                          onClick={() => imageInputRef.current?.click()}
+                        >
+                          <ImageIcon size={14} className="text-[var(--accent)]" />
+                          <span>Изображение</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Textarea without inner focus ring (§3.1) */}
+                  <textarea
+                    ref={textareaRef}
+                    value={input}
+                    onChange={e => setInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder={ru.placeholder}
+                    disabled={streaming}
+                    rows={1}
+                    aria-label="Сообщение"
+                    className="flex-1 bg-transparent border-0 outline-none resize-none text-[15px] leading-[24px] text-[var(--text)] placeholder-[var(--text-subtle)] max-h-36 min-h-[24px] p-0 focus:outline-none focus:ring-0 focus-visible:outline-none"
+                  />
+
+                  {/* Stop or Send button (§3.3) */}
+                  {streaming ? (
+                    <IconButton
+                      type="button"
+                      aria-label={ru.stop}
+                      icon={<Square size={13} className="text-[var(--danger)] fill-current" />}
+                      variant="secondary"
+                      size="md"
+                      rounded
+                      onClick={stopGeneration}
+                      className="shrink-0 bg-[var(--surface-3)] border-transparent hover:bg-[var(--surface-3)]"
+                    />
+                  ) : (
+                    <IconButton
+                      type="submit"
+                      aria-label={ru.send}
+                      disabled={!input.trim() && attachments.length === 0}
+                      icon={<ArrowUp size={16} />}
+                      variant={input.trim() || attachments.length > 0 ? 'primary' : 'ghost'}
+                      size="md"
+                      rounded
+                      className={`shrink-0 transition-colors ${
+                        input.trim() || attachments.length > 0
+                          ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
+                          : 'bg-[var(--surface-3)] text-[var(--text-subtle)]'
+                      }`}
+                    />
+                  )}
+                </div>
               </div>
 
-              <div className="text-[11px] text-[var(--text-subtle)] text-center mt-1.5 select-none">
-                Enter — отправить, Shift+Enter — новая строка
-              </div>
+              {/* Hint: only visible when chat is empty (§3.4) */}
+              {messages.length === 0 && (
+                <div className="text-[11px] text-[var(--text-subtle)] text-center mt-1.5 select-none">
+                  Enter — отправить, Shift+Enter — новая строка
+                </div>
+              )}
             </form>
           </div>
         </footer>

@@ -14,11 +14,11 @@ vi.mock('next/navigation', () => ({
 beforeAll(() => { Element.prototype.scrollIntoView = vi.fn(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); window.name = ''; });
 
-function sseResponse(): Response {
+function sseResponse(tokenText = 'привет'): Response {
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode('data: {"type":"token","text":"привет"}\n\n'));
-      controller.enqueue(new TextEncoder().encode('data: {"type":"done","text":"привет"}\n\n'));
+      controller.enqueue(new TextEncoder().encode(`data: {"type":"token","text":"${tokenText}"}\n\n`));
+      controller.enqueue(new TextEncoder().encode(`data: {"type":"done","text":"${tokenText}"}\n\n`));
       controller.close();
     },
   });
@@ -82,10 +82,66 @@ describe('ChatView conversation', () => {
     fireEvent.submit(input.closest('form')!);
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Сервер перегружен'));
-    // Assistant message bubble should be removed, leaving only the user message
+    // Assistant message bubble should not render header/content, leaving only user message and alert block
     expect(screen.queryByText('…')).toBeNull();
     expect(screen.queryByText('Нейра')).toBeNull();
     expect(screen.getByText('Вы')).toBeTruthy();
+  });
+
+  it('retrying failed exchange reuses chat_id and replaces error block without adding duplicate user message (§4.1)', async () => {
+    let callCount = 0;
+    const fetchMock = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1) return sseErrorResponse('Сбой сети');
+      return sseResponse('Успешный ответ после повтора');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
+    const input = screen.getByPlaceholderText(ru.placeholder);
+    fireEvent.change(input, { target: { value: 'запрос на повтор' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.getByText('Сбой сети')).toBeTruthy();
+
+    // Verify there is only 1 user message
+    const userBadges = screen.getAllByText('Вы');
+    expect(userBadges).toHaveLength(1);
+
+    // Click "Повторить"
+    const retryBtn = screen.getByText('Повторить');
+    fireEvent.click(retryBtn);
+
+    // Check successful response replaced the error block
+    await waitFor(() => expect(screen.getByText('Успешный ответ после повтора')).toBeTruthy());
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    // There must still be exactly ONE user message block (no duplicate!)
+    const userBadgesAfter = screen.getAllByText('Вы');
+    expect(userBadgesAfter).toHaveLength(1);
+    expect(screen.getAllByText('запрос на повтор').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('deleting failed exchange removes both error alert and user message (§4.1)', async () => {
+    const fetchMock = vi.fn(async () => sseErrorResponse('Неисправимая ошибка'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
+    const input = screen.getByPlaceholderText(ru.placeholder);
+    fireEvent.change(input, { target: { value: 'ошибочное сообщение' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.getAllByText('ошибочное сообщение').length).toBeGreaterThanOrEqual(1);
+
+    // Click "Удалить"
+    const deleteBtn = screen.getByText('Удалить');
+    fireEvent.click(deleteBtn);
+
+    // Both error alert and user message should be gone
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.queryByText('ошибочное сообщение')).toBeNull();
   });
 
   it('clicking "Новый чат" resets messages and issues a fresh chat_id (AR-12)', async () => {
@@ -131,6 +187,19 @@ describe('ChatView conversation', () => {
     await waitFor(() => expect(screen.getByText('Нейра думает…')).toBeTruthy());
     view.unmount();
     await waitFor(() => expect(aborted).toBe(true));
+  });
+
+  it('renders profile popover with user role and settings when user card is clicked (§5.1)', async () => {
+    render(<ChatView user={{ id: 'u1', email: 'admin@example.com', name: 'Admin', role: 'admin' }} />);
+
+    const userCard = screen.getByLabelText('Меню профиля пользователя');
+    fireEvent.click(userCard);
+
+    // Profile menu should open
+    expect(screen.getByRole('menu', { name: 'Меню профиля' })).toBeTruthy();
+    expect(screen.getByText('Настройки')).toBeTruthy();
+    expect(screen.getByText('Админ-панель')).toBeTruthy();
+    expect(screen.getByText(ru.signOut)).toBeTruthy();
   });
 });
 

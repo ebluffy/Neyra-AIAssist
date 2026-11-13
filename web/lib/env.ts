@@ -37,3 +37,27 @@ export function readChatEnv(env: Environment = process.env) {
   }
   return { wsUrl, serviceKey, jwtSecret, jwtIssuer: jwtIssuer.trim() };
 }
+
+export type AuthMode = 'password' | 'discord' | 'both';
+
+export interface AuthConfig {
+  authMode: AuthMode;
+  inviteRequired: boolean;
+  discordAvailable: boolean;
+}
+
+export function readAuthConfig(env: Environment = process.env): AuthConfig {
+  const rawMode = env.AUTH_MODE?.toLowerCase();
+  const authMode: AuthMode =
+    rawMode === 'discord' ? 'discord' : rawMode === 'both' ? 'both' : 'password';
+  const inviteRequired = env.INVITE_REQUIRED === 'true';
+  const discordAvailable = !!(
+    (env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET) ||
+    env.DISCORD_ENABLED === 'true'
+  );
+  return {
+    authMode: discordAvailable ? authMode : 'password',
+    inviteRequired,
+    discordAvailable,
+  };
+}
