@@ -221,15 +221,19 @@ export function ChatView({
   // Keyboard navigation & global close on Escape
   useEffect(() => {
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setSidebarOpen(false);
+      if (e.key !== 'Escape') return;
+      // Esc принадлежит верхнему слою: модалка настроек/админки, затем меню.
+      if (document.querySelector('[role="dialog"][aria-modal="true"], dialog[open]')) return;
+      if (profileMenuOpen) {
         setProfileMenuOpen(false);
-        setAttachMenuOpen(false);
+        return;
       }
+      setSidebarOpen(false);
+      setAttachMenuOpen(false);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [profileMenuOpen]);
 
   // Close menus on outside click
   useEffect(() => {
@@ -502,14 +506,16 @@ export function ChatView({
   useEffect(() => {
     if (!threadPanelOpen) return;
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        handleCloseThreadPanel();
-      }
+      if (e.key !== 'Escape') return;
+      // Верхний слой (настройки/админка) закрывает сам себя; панель не трогаем.
+      if (document.querySelector('[role="dialog"][aria-modal="true"], dialog[open]')) return;
+      if (profileMenuOpen) return;
+      e.stopPropagation();
+      handleCloseThreadPanel();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [threadPanelOpen]);
+  }, [threadPanelOpen, profileMenuOpen]);
 
   const stopGeneration = () => {
     if (abortControllerRef.current) {

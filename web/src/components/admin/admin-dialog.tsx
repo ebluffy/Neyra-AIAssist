@@ -997,12 +997,12 @@ function IntegrationsSection() {
               <span>Провайдеры моделей</span>
             </h4>
             <StatusPill tone={activeProviders.length > 0 ? 'ok' : 'warn'}>
-              {activeProviders.length} подключено
+              {activeProviders.length} в конфиге
             </StatusPill>
           </div>
 
           <div className="space-y-2">
-            <p className="text-xs text-[var(--text-muted)]">Активные провайдеры ядра:</p>
+            <p className="text-xs text-[var(--text-muted)]">Провайдеры в конфиге ядра:</p>
             <div className="flex flex-wrap gap-1.5">
               {activeProviders.length > 0 ? (
                 activeProviders.map((name) => (
