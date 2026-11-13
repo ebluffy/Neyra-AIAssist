@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Обновление установленного ядра Neyra из рабочей копии. Запуск только root,
-# сервис должен быть уже остановлен:
+# сервис должен быть остановлен:
 #   sudo systemctl stop neyra.service
 #   sudo bash /tmp/opencode/update-core.sh [путь к server]
 #   sudo systemctl start neyra.service
@@ -12,11 +12,10 @@
 set -euo pipefail
 
 SRC=${1:-/var/lib/openbot/OpenBot/Shared/NeyraWork/wt-identity/server}
-DEST=${DEST:-/opt/neyra/server}
+DEST_RAW=${DEST:-/opt/neyra/server}
 SERVICE=${SERVICE:-neyra.service}
 DRY=${DRY:-0}
 TS=$(date +%Y%m%d-%H%M%S)
-BACKUP="/opt/neyra/server.pre-update-$TS"
 
 EXCLUDES=(
   --exclude '.venv'
@@ -34,19 +33,41 @@ EXCLUDES=(
 
 die() { echo "ОШИБКА: $*" >&2; exit 1; }
 
+service_idle() {
+  # Разрешаем только подтверждённый inactive/failed без ожидающих jobs.
+  local active sub jobs
+  active=$(systemctl show -p ActiveState --value "$SERVICE" 2>/dev/null) || return 1
+  sub=$(systemctl show -p SubState --value "$SERVICE" 2>/dev/null) || return 1
+  jobs=$(systemctl list-jobs "$SERVICE" --no-legend --plain 2>/dev/null) || return 1
+  [ -z "$jobs" ] || return 1
+  case "$active" in
+    inactive|failed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 [ -f "$SRC/main.py" ] || die "нет $SRC/main.py — неверный путь исходников"
+command -v rsync >/dev/null || die "нужен rsync"
+[ -d "$DEST_RAW" ] || die "нет $DEST_RAW"
+DEST=$(realpath -e "$DEST_RAW" 2>/dev/null) || die "не удалось разрешить путь $DEST_RAW"
 [ -f "$DEST/main.py" ] && [ -f "$DEST/core/api/app.py" ] && [ -x "$DEST/.venv/bin/python" ] \
   || die "$DEST не похож на установленное ядро (main.py, core/api/app.py, .venv)"
-[ "$(realpath "$DEST")" != "/" ] || die "DEST не может быть корнем"
-[ "$(realpath "$SRC")" != "$(realpath "$DEST")" ] || die "SRC и DEST совпадают"
-command -v rsync >/dev/null || die "нужен rsync"
+[ "$DEST" != "/" ] || die "DEST не может быть корнем"
+[ "$(realpath "$SRC")" != "$DEST" ] || die "SRC и DEST совпадают"
+for sub in .venv data config models backups logs; do
+  [ ! -L "$DEST/$sub" ] || die "$DEST/$sub — символьная ссылка: полный снимок невозможен, замени на каталог"
+done
 
 HEAD=$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown)
-STATE=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
 echo "источник: $SRC ($HEAD)"
 echo "назначение: $DEST"
-echo "сервис $SERVICE: ${STATE:-unknown}"
-[ "$STATE" != "active" ] || echo "внимание: сервис работает; для применения его нужно остановить"
+if service_idle; then
+  echo "сервис $SERVICE: остановлен или failed без jobs"
+elif [ "$DRY" = 1 ]; then
+  echo "внимание: сервис $SERVICE не в подтверждённом inactive/failed — для применения его нужно остановить"
+else
+  die "сервис $SERVICE не в подтверждённом inactive/failed (или systemctl недоступен): останови его и проверь systemctl status"
+fi
 
 if [ "$DRY" = 1 ]; then
   echo "== проверка (ничего не меняю)"
@@ -54,19 +75,35 @@ if [ "$DRY" = 1 ]; then
   count=$(rsync -an --itemize-changes "${EXCLUDES[@]}" "$SRC/" "$DEST/" | grep -c '^[<>ch]' || true)
   echo "изменений кода: $count"
   echo "размер полного бэкапа: $(du -sh "$DEST" 2>/dev/null | cut -f1)"
+  echo "свободно на $(df -P "$DEST" | awk 'NR==2 {print $6}'): $(df -Ph "$DEST" | awk 'NR==2 {print $4}')"
   echo "для применения: sudo systemctl stop $SERVICE && sudo bash $0 $SRC"
   exit 0
 fi
 
 [ "$(id -u)" = 0 ] || die "нужен root: sudo bash $0 $SRC"
-[ "$STATE" != "active" ] || die "сначала останови сервис: systemctl stop $SERVICE"
-if pgrep -f "$DEST/main.py" >/dev/null 2>&1; then die "процесс $DEST/main.py ещё работает"; fi
+[ "$(realpath "$DEST")" != "$(realpath "$SRC")" ] || die "SRC и DEST совпадают"
+service_idle || die "перед обновлением сервис $SERVICE должен быть inactive/failed без jobs"
+
+"$DEST/.venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
+  || die "в $DEST/.venv Python старше 3.11"
+
+NEED_BYTES=$(du -sb "$DEST" | cut -f1)
+AVAIL_BYTES=$(df -PB1 "$DEST" | awk 'NR==2 {print $4}')
+[ "$AVAIL_BYTES" -gt $((NEED_BYTES + NEED_BYTES / 10 + 1073741824)) ] \
+  || die "мало места для полного бэкапа: нужно ~$((NEED_BYTES / 1073741824 + 1)) ГиБ"
+NEED_INODES=$(find "$DEST" | wc -l)
+AVAIL_INODES=$(df -Pi "$DEST" | awk 'NR==2 {print $4}')
+[ "$AVAIL_INODES" -gt $((NEED_INODES + NEED_INODES / 10)) ] \
+  || die "мало inode для полного бэкапа"
+
+BACKUP="/opt/neyra/server.pre-update-$TS"
 [ ! -e "$BACKUP" ] || die "бэкап $BACKUP уже существует"
 
 umask 077
+service_idle || die "сервис $SERVICE запустился между проверками — обновление отменено"
 echo "== 1/6 полный бэкап в $BACKUP"
 cp -a --reflink=auto "$DEST" "$BACKUP" || { rm -rf "$BACKUP"; die "не удалось скопировать $DEST"; }
-[ -f "$BACKUP/main.py" ] && [ -x "$BACKUP/.venv/bin/python" ] || die "бэкап неполный: $BACKUP"
+[ -f "$BACKUP/main.py" ] && [ -x "$BACKUP/.venv/bin/python" ] || { rm -rf "$BACKUP"; die "бэкап неполный: $BACKUP"; }
 chmod 700 "$BACKUP"
 
 restore() {
@@ -104,8 +141,12 @@ rm -rf "$SMOKE_DATA"
 
 cat <<EOF
 ядро обновлено и проверено, сервис НЕ запущен.
-Запустить: sudo systemctl start neyra.service
-Проверить: systemctl is-active neyra.service && curl -fsS http://127.0.0.1:8787/v1/health/live
+Запустить: sudo systemctl start $SERVICE
+Проверить: systemctl is-active $SERVICE && curl -fsS http://127.0.0.1:8787/v1/health/live
 Бэкап до обновления (код, .venv, data, config, .env): $BACKUP
+
+ВНИМАНИЕ: откат ниже вернёт и данные к моменту бэкапа — всё, что новое ядро
+запишет после запуска (память, база, файлы), будет потеряно. Если эти данные
+нужны, сначала сохрани их отдельно.
 Откат: sudo systemctl stop $SERVICE && sudo rsync -a --delete "$BACKUP/" "$DEST/" && sudo systemctl start $SERVICE
 EOF
