@@ -41,9 +41,10 @@ function discordProvider() {
       clientId,
       clientSecret,
       scope: ['identify', 'email'],
-      // Сайт закрыт инвайтами: через Discord пускаем только тех, кто уже заведён
-      // (совпадение email привяжет аккаунт). При открытой регистрации вход создаёт профиль.
-      disableImplicitSignUp: process.env.INVITE_REQUIRED === 'true',
+      // Discord — только вход для уже заведённых аккаунтов: OAuth не создаёт
+      // пользователя в обход проверки режима регистрации (closed/invite).
+      // Новые аккаунты заводятся через email по инвайту или в открытом режиме.
+      disableImplicitSignUp: true,
       // Discord отдаёт email: null для аккаунтов, заведённых только по телефону.
       // Заглушка не адрес для писем, а стабильный идентификатор внутри .invalid.
       mapProfileToUser: (profile: { id: string; email?: string | null }) => ({
