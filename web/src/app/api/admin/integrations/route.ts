@@ -1,6 +1,7 @@
 import { requireAdmin } from '../../../../../lib/admin-guard';
 import { readAdminConfig } from '../../../../../lib/admin-config';
 import { coreGet, type CoreHealth } from '../../../../../lib/core-admin';
+import { readAuthConfig } from '../../../../../lib/env';
 import { jsonError, jsonOk } from '../../../../../lib/admin-http';
 
 export const runtime = 'nodejs';
@@ -25,7 +26,13 @@ export async function GET(request: Request) {
     );
   }
 
+  const authConfig = readAuthConfig();
   return jsonOk({
+    auth: {
+      mode: authConfig.authMode,
+      discord_available: authConfig.discordAvailable,
+      invite_required: authConfig.inviteRequired,
+    },
     discord: {
       configured: Boolean(process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET),
       client_id_present: Boolean(process.env.DISCORD_CLIENT_ID),
