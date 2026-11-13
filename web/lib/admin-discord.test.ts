@@ -8,6 +8,7 @@ import {
   discordFailure,
   discordPersonMap,
   fillDiscordPersonIds,
+  readDiscordActivity,
   readDiscordGuild,
   readDiscordMessages,
 } from './admin-discord';
@@ -88,6 +89,60 @@ describe('core calls', () => {
     }));
     await readDiscordMessages('?guild_id=g1&cursor=42&limit=10');
     expect(url).toBe('http://core.test/v1/admin/discord/messages?guild_id=g1&cursor=42&limit=10');
+  });
+});
+
+describe('discord activity', () => {
+  it('counts only dialogs per channel and people, and pages until the cursor ends', async () => {
+    vi.stubEnv('NEYRA_API_URL', 'http://core.test');
+    vi.stubEnv('NEYRA_SERVICE_KEY', 'test-key');
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (target: string | URL | Request) => {
+      const url = String(target);
+      urls.push(url);
+      const second = url.includes('cursor=100');
+      const page = second
+        ? { items: [{ id: 99, ts: '2026-11-12T10:00:00Z', role: 'user', person_id: 'p2', channel_id: 'c2' }], total: 3, limit: 200, next_cursor: null, available: true }
+        : { items: [
+            { id: 100, ts: '2026-11-13T10:00:00Z', role: 'user', person_id: 'p1', channel_id: 'c1' },
+            { id: 101, ts: '2026-11-13T10:01:00Z', role: 'assistant', person_id: 'p1', channel_id: 'c1' },
+            { id: 102, ts: '2026-11-13T10:02:00Z', role: 'model_trace', person_id: 'p1', channel_id: 'c1' },
+          ], total: 3, limit: 200, next_cursor: 100, available: true };
+      return new Response(JSON.stringify({ ok: true, data: page }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+
+    const result = await readDiscordActivity();
+    expect(result.state).toBe('ok');
+    const data = result.data;
+    expect(data?.scanned).toBe(4);
+    expect(data?.channels).toEqual([
+      { channel_id: 'c1', messages: 2, last_ts: '2026-11-13T10:01:00Z' },
+      { channel_id: 'c2', messages: 1, last_ts: '2026-11-12T10:00:00Z' },
+    ]);
+    expect(data?.people).toEqual([
+      { person_id: 'p1', messages: 1, last_ts: '2026-11-13T10:00:00Z' },
+      { person_id: 'p2', messages: 1, last_ts: '2026-11-12T10:00:00Z' },
+    ]);
+    expect(urls.some((url) => url.includes('cursor=100'))).toBe(true);
+  });
+
+  it('limits a guild to its own channels', async () => {
+    vi.stubEnv('NEYRA_API_URL', 'http://core.test');
+    vi.stubEnv('NEYRA_SERVICE_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (target: string | URL | Request) => {
+      const url = String(target);
+      if (url.includes('/guilds/g1')) {
+        return new Response(JSON.stringify({ ok: true, data: { guild: { id: 'g1' }, channels: [{ id: 'c1' }], members: [], counts: { channels: 1, members: 0 } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ ok: true, data: { items: [
+        { id: 1, ts: '2026-11-13T10:00:00Z', role: 'user', person_id: 'p1', channel_id: 'c1' },
+        { id: 2, ts: '2026-11-13T10:01:00Z', role: 'user', person_id: 'p2', channel_id: 'c9' },
+      ], total: 2, limit: 200, next_cursor: null, available: true } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+
+    const result = await readDiscordActivity('g1');
+    expect(result.data?.channels.map((channel) => channel.channel_id)).toEqual(['c1']);
+    expect(result.data?.people.map((person) => person.person_id)).toEqual(['p1']);
   });
 });
 

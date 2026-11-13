@@ -231,6 +231,108 @@ export function fillDiscordPersonIds(
   ));
 }
 
+export interface DiscordActivityChannel {
+  channel_id: string;
+  messages: number;
+  last_ts: string | null;
+}
+
+export interface DiscordActivityPerson {
+  person_id: string;
+  messages: number;
+  last_ts: string | null;
+}
+
+export interface DiscordActivity {
+  available: boolean;
+  channels: DiscordActivityChannel[];
+  people: DiscordActivityPerson[];
+  scanned: number;
+  truncated: boolean;
+}
+
+const ACTIVITY_PAGE_LIMIT = 200;
+const ACTIVITY_MAX_PAGES = 25;
+
+// Какие каналы реально содержат диалоги и кто в них писал. Нужно для списка
+// «только каналы с историей» и порядка участников в правой панели.
+export async function readDiscordActivity(guildId?: string): Promise<CoreResult<DiscordActivity>> {
+  let allowedChannels: Set<string> | null = null;
+  if (guildId) {
+    const guild = await readDiscordGuild(guildId, '?member_limit=1');
+    if (guild.state !== 'ok') {
+      return { state: guild.state, data: null, status: guild.status, message: guild.message };
+    }
+    allowedChannels = new Set((guild.data?.channels ?? []).map((channel) => channel.id));
+    // Сервер без каналов: истории в нём быть не может.
+    if (!allowedChannels.size) {
+      return {
+        state: 'ok',
+        data: { available: true, channels: [], people: [], scanned: 0, truncated: false },
+        status: 200,
+      };
+    }
+  }
+
+  const channels = new Map<string, DiscordActivityChannel>();
+  const people = new Map<string, DiscordActivityPerson>();
+  let cursor: number | null = null;
+  let scanned = 0;
+  let pages = 0;
+  let truncated = false;
+
+  while (pages < ACTIVITY_MAX_PAGES) {
+    const query = new URLSearchParams({ limit: String(ACTIVITY_PAGE_LIMIT) });
+    if (cursor !== null) query.set('cursor', String(cursor));
+    const page = await readDiscordMessages(`?${query.toString()}`);
+    if (page.state !== 'ok' || !page.data) {
+      return { state: page.state, data: null, status: page.status, message: page.message };
+    }
+    if (page.data.available === false) {
+      return {
+        state: 'ok',
+        data: { available: false, channels: [], people: [], scanned, truncated },
+        status: 200,
+      };
+    }
+    const items = page.data.items ?? [];
+    pages += 1;
+    scanned += items.length;
+    for (const item of items) {
+      if (item.role !== 'user' && item.role !== 'assistant') continue;
+      if (allowedChannels && (!item.channel_id || !allowedChannels.has(item.channel_id))) continue;
+      const channelId = item.channel_id || '';
+      if (channelId) {
+        const current = channels.get(channelId) ?? { channel_id: channelId, messages: 0, last_ts: null };
+        current.messages += 1;
+        if (!current.last_ts || item.ts > current.last_ts) current.last_ts = item.ts;
+        channels.set(channelId, current);
+      }
+      if (item.role === 'user' && item.person_id) {
+        const current = people.get(item.person_id) ?? { person_id: item.person_id, messages: 0, last_ts: null };
+        current.messages += 1;
+        if (!current.last_ts || item.ts > current.last_ts) current.last_ts = item.ts;
+        people.set(item.person_id, current);
+      }
+    }
+    cursor = page.data.next_cursor ?? null;
+    if (cursor === null || !items.length) break;
+    if (pages === ACTIVITY_MAX_PAGES) truncated = true;
+  }
+
+  return {
+    state: 'ok',
+    data: {
+      available: true,
+      channels: Array.from(channels.values()).sort((a, b) => b.messages - a.messages),
+      people: Array.from(people.values()).sort((a, b) => b.messages - a.messages),
+      scanned,
+      truncated,
+    },
+    status: 200,
+  };
+}
+
 export function readDiscordGuilds(query: string): Promise<CoreResult<DiscordGuildPage>> {
   return coreGet<DiscordGuildPage>(`/v1/admin/discord/guilds${query}`, { timeoutMs: 5000 });
 }
