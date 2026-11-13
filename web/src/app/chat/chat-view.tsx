@@ -637,7 +637,7 @@ export function ChatView({
     : ru.chat);
 
   return (
-    <div className="relative flex h-screen w-full bg-[var(--bg)] text-[var(--text)] overflow-hidden">
+    <div className="relative flex h-dvh min-h-0 w-full bg-[var(--bg)] text-[var(--text)] overflow-hidden">
       <AmbientBackground />
       {/* Mobile Drawer Backdrop (< 900px) */}
       {sidebarOpen && (
@@ -829,7 +829,7 @@ export function ChatView({
       {/* Main Column */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
         {/* Header 56px (§2: No «← На главную», mobile menu on right with «Новый чат») */}
-        <header className="h-14 min-h-[56px] border-b border-[var(--border)] bg-[var(--bg)] px-3 sm:px-4 flex items-center justify-between gap-2 z-20">
+        <header className="h-14 min-h-[56px] border-b border-[var(--border)] bg-[var(--bg)] px-3 sm:px-4 flex items-center justify-between gap-2 z-20 pt-[env(safe-area-inset-top)]">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 mr-2">
             <IconButton
               type="button"
@@ -1036,7 +1036,7 @@ export function ChatView({
         )}
 
         {/* Sticky Composer (§3) */}
-        <footer className="sticky bottom-0 z-20 bg-[var(--bg)]/90 backdrop-blur-md pt-2 pb-4 px-4 border-t border-transparent">
+        <footer className="sticky bottom-0 z-20 bg-[var(--bg)]/90 backdrop-blur-md pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] px-4 border-t border-transparent">
           <div className="content-column space-y-2">
             {/* Optional Context Indicator (§5.2) */}
             {usage && (

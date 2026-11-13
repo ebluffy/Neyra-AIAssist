@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Bell, BookOpen, KeyRound, Mic, Palette, Sparkles, User, X } from 'lucide-react';
 import { IconButton, NeyraLogo } from './ui';
 
@@ -78,6 +78,7 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: (nex
 
 export function SettingsDialog({ open, onClose, user, onSignOut }: SettingsDialogProps) {
   const [section, setSection] = useState<SectionId>('profile');
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const [particles, setParticles] = useState(true);
   const [cursorRing, setCursorRing] = useState(true);
 
@@ -89,11 +90,38 @@ export function SettingsDialog({ open, onClose, user, onSignOut }: SettingsDialo
 
   useEffect(() => {
     if (!open) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    panelRef.current?.focus();
+
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') {
+        onClose();
+        return;
+      }
+      // Фокус не уходит за пределы диалога.
+      if (event.key !== 'Tab' || !panelRef.current) return;
+      const focusable = panelRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
+      previouslyFocused?.focus?.();
+    };
   }, [open, onClose]);
 
   if (!open) return null;
@@ -102,9 +130,11 @@ export function SettingsDialog({ open, onClose, user, onSignOut }: SettingsDialo
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-6">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm animate-fade" onClick={onClose} aria-hidden="true" />
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label="Настройки"
+        tabIndex={-1}
         className="relative w-full max-w-[880px] h-[min(640px,88vh)] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border-strong)] bg-[var(--surface)] shadow-panel animate-dialog flex flex-col sm:flex-row"
       >
         {/* Левая навигация */}
