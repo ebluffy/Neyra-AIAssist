@@ -43,6 +43,21 @@ function grant(email: string, revoke = false): string {
   ], { env: { ...process.env }, encoding: 'utf-8' }).trim();
 }
 
+function repoRoot(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+}
+
+async function sql(query: string, params: unknown[] = []): Promise<unknown> {
+  const { Client } = await import('pg');
+  const client = new Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 5000 });
+  await client.connect();
+  try {
+    return await client.query(query, params);
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
 describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
   const password = 'correct-horse-22';
 
@@ -118,6 +133,50 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
     expect(otherUp.response.status).toBe(200);
     const otherTry = await call('/sign-in/email', { email: other, password: 'wrong-password' }, undefined, '192.0.2.99');
     expect(otherTry.response.status).toBe(401);
+  });
+
+  it('регистрация только по инвайту: без него, чужой, просроченный — отказ (AR-2)', async () => {
+    // Без инвайта аккаунт не создаётся.
+    const noInvite = await call('/sign-up/email', { email: uniqueEmail('no-invite'), password, name: 'X' }, undefined, '203.0.113.50');
+    expect(noInvite.response.status).toBe(403);
+    expect(JSON.stringify(noInvite.json)).toContain('инвайт');
+    // Неизвестный токен.
+    const unknown = await call('/sign-up/email', { email: uniqueEmail('bad-invite'), password, name: 'X', invite: 'нет-такого-токена' }, undefined, '203.0.113.51');
+    expect(unknown.response.status).toBe(403);
+    // Просроченный инвайт (expires_at в прошлом).
+    const { createHash, randomUUID } = await import('node:crypto');
+    const expiredToken = 'expired-token-0123456789abcdef';
+    await sql('insert into "invite" (id, token_hash, expires_at) values ($1, $2, $3)',
+      [randomUUID(), createHash('sha256').update(expiredToken, 'utf8').digest('hex'), new Date(Date.now() - 60_000).toISOString()]);
+    const expired = await call('/sign-up/email', { email: uniqueEmail('expired'), password, name: 'X', invite: expiredToken }, undefined, '203.0.113.52');
+    expect(expired.response.status).toBe(403);
+  });
+
+  it('валидный инвайт создаёт user, тратится одноразово и запоминает used_by/used_at (AR-2)', async () => {
+    const { createHash } = await import('node:crypto');
+    const output = execFileSync(process.execPath, [join(repoRoot(), 'web/scripts/invite-create.mjs'), '--by', 'admin@example.test'],
+      { env: { ...process.env, BETTER_AUTH_URL: BASE }, encoding: 'utf-8' });
+    const match = output.match(/\/signup\?invite=(\S+)$/m);
+    expect(match, output).toBeTruthy();
+    const token = match![1];
+    const email = uniqueEmail('invited');
+
+    const up = await call('/sign-up/email', { email, password, name: 'Invited', invite: token }, undefined, '203.0.113.60');
+    expect(up.response.status, `signup: ${JSON.stringify(up.json)}`).toBe(200);
+    const session = await getSession(up.setCookie!.split(';')[0]);
+    expect(session.json.user.email).toBe(email);
+    expect(session.json.user.role).toBe('user');
+
+    // Инвайт потрачен: used_by/used_at стоят.
+    const { rows } = await sql('select used_by, used_at from "invite" where token_hash = $1',
+      [createHash('sha256').update(token, 'utf8').digest('hex')]) as { rows: { used_by: string | null; used_at: string | null }[] };
+    expect(rows).toHaveLength(1);
+    expect(rows[0].used_by).toBe(email);
+    expect(rows[0].used_at).toBeTruthy();
+
+    // Повторное использование — отказ.
+    const reuse = await call('/sign-up/email', { email: uniqueEmail('reuse'), password, name: 'R', invite: token }, undefined, '203.0.113.61');
+    expect(reuse.response.status).toBe(403);
   });
 
   afterAll(async () => {

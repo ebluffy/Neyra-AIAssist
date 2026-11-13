@@ -45,6 +45,16 @@ export const verification = pgTable('verification', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
 }, table => [index('verification_identifier_idx').on(table.identifier)]);
+// Одноразовые инвайты на регистрацию (AR-2): хранится только хэш токена.
+export const invite = pgTable('invite', {
+  id: text('id').primaryKey(),
+  tokenHash: text('token_hash').notNull().unique(),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  usedBy: text('used_by'),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+});
 export const userRelations = relations(user, ({ many }) => ({ sessions: many(session), accounts: many(account) }));
 export const sessionRelations = relations(session, ({ one }) => ({ user: one(user, { fields: [session.userId], references: [user.id] }) }));
 export const accountRelations = relations(account, ({ one }) => ({ user: one(user, { fields: [account.userId], references: [user.id] }) }));
@@ -53,3 +63,4 @@ export type NewUser = typeof user.$inferInsert;
 export type Session = typeof session.$inferSelect;
 export type Account = typeof account.$inferSelect;
 export type Verification = typeof verification.$inferSelect;
+export type Invite = typeof invite.$inferSelect;

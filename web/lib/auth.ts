@@ -11,6 +11,7 @@ import {
   readEmail,
   readFailures,
 } from './login-throttle';
+import { checkInvite, consumeInvite, readInviteToken } from './invite';
 import * as schema from '../db/schema';
 
 function createAuth() {
@@ -42,33 +43,69 @@ function createAuth() {
       ipAddress: { ipAddressHeaders: ['x-real-ip'] },
     },
     hooks: {
-      // Block the N+1 failed attempt for the same account even from another address.
       before: createAuthMiddleware(async (ctx) => {
-        if (ctx.path !== '/sign-in/email' || !ctx.request) return;
-        const email = await readEmail(ctx.request);
-        if (!email) return;
-        signInEmail.set(ctx.request, email);
-        if ((await readFailures(email)) >= FAILED_LOGIN_MAX_ATTEMPTS) {
-          return ctx.json(
-            { message: 'Слишком много неудачных попыток входа. Попробуйте позже.' },
-            { status: 429 },
-          );
+        if (!ctx.request) return;
+        if (ctx.path === '/sign-in/email') {
+          // Block the N+1 failed attempt for the same account even from another address.
+          const email = await readEmail(ctx.request);
+          if (!email) return;
+          signInEmail.set(ctx.request, email);
+          if ((await readFailures(email)) >= FAILED_LOGIN_MAX_ATTEMPTS) {
+            return ctx.json(
+              { message: 'Слишком много неудачных попыток входа. Попробуйте позже.' },
+              { status: 429 },
+            );
+          }
+          return;
+        }
+        if (ctx.path === '/sign-up/email') {
+          // AR-2: регистрация только по одноразовому инвайту. Проверка на сервере,
+          // до обработки better-auth: без инвайта, с чужим, потраченным или
+          // просроченным аккаунт не создаётся.
+          let body: unknown = null;
+          try { body = await ctx.request.clone().json(); } catch { /* не JSON — endpoint сам ответит 400 */ }
+          const email = (body as { email?: unknown } | null)?.email;
+          const inviteToken = readInviteToken(body);
+          if (typeof email === 'string' && email.trim()) {
+            signUpInvite.set(ctx.request, { invite: inviteToken ?? '', email: email.trim().toLowerCase() });
+          }
+          if (!inviteToken) {
+            return ctx.json({ message: 'Регистрация на сайте — только по инвайту. Обратитесь к администратору Нейры.' }, { status: 403 });
+          }
+          const verdict = await checkInvite(inviteToken);
+          if (verdict !== 'ok') {
+            const message = verdict === 'error'
+              ? 'Не удалось проверить инвайт. Попробуйте позже.'
+              : 'Инвайт недействителен, уже использован или истёк. Запросите новый.';
+            return ctx.json({ message }, { status: 403 });
+          }
         }
       }),
-      // Count failures, reset on success. On error `returned` is the APIError
-      // thrown by the endpoint (has statusCode); on success it is the body object.
       after: createAuthMiddleware(async (ctx) => {
-        if (ctx.path !== '/sign-in/email' || !ctx.request) return;
-        const email = signInEmail.get(ctx.request);
-        signInEmail.delete(ctx.request);
-        if (!email) return;
+        if (!ctx.request) return;
         const returned = (ctx.context as { returned?: unknown }).returned;
         const statusCode = returned && typeof returned === 'object' && 'statusCode' in returned
           ? (returned as { statusCode?: number }).statusCode
           : undefined;
-        if (statusCode === 429) return; // already throttled; do not stack counters
-        if (statusCode === undefined) await clearFailures(email); // success body
-        else if (statusCode === 401) await noteFailure(email);
+        if (ctx.path === '/sign-in/email') {
+          // Count failures, reset on success. On error `returned` is the APIError
+          // thrown by the endpoint (has statusCode); on success it is the body object.
+          const email = signInEmail.get(ctx.request);
+          signInEmail.delete(ctx.request);
+          if (!email) return;
+          if (statusCode === 429) return; // already throttled; do not stack counters
+          if (statusCode === undefined) await clearFailures(email); // success body
+          else if (statusCode === 401) await noteFailure(email);
+          return;
+        }
+        if (ctx.path === '/sign-up/email') {
+          // Успешная регистрация тратит инвайт атомарно (used_by/used_at).
+          const pending = signUpInvite.get(ctx.request);
+          signUpInvite.delete(ctx.request);
+          if (!pending?.invite) return;
+          if (statusCode !== undefined) return; // регистрация не прошла — инвайт не тратим
+          await consumeInvite(pending.invite, pending.email);
+        }
       }),
     },
   });
@@ -79,3 +116,5 @@ export function getAuth() { return auth ??= createAuth(); }
 // Email from the request body is captured in the before hook: by the after hook
 // the body stream is already consumed by the endpoint, so it is carried per-request.
 const signInEmail = new WeakMap<Request, string>();
+// Same idea for invite-only sign-up: invite token and email ride the request object.
+const signUpInvite = new WeakMap<Request, { invite: string; email: string }>();
