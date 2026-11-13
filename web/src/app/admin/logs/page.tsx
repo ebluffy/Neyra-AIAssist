@@ -1,5 +1,6 @@
 import { listAudit, parseAuditQuery } from '../../../../lib/admin-audit';
 import { coreGet } from '../../../../lib/core-admin';
+import { LogTail } from '../../../components/admin/log-tail';
 import { Card, EmptyState, PageHeader, StatusPill, formatDate, tableClass, tdClass, thClass } from '../../../components/admin/ui';
 
 export const dynamic = 'force-dynamic';
@@ -149,6 +150,10 @@ export default async function AdminLogsPage({ searchParams }: {
             </table>
           </div>
         )}
+      </Card>
+
+      <Card title="Хвост лога ядра" description="Последние строки системного лога. Секреты маскирует ядро; путь к файлу не отдаётся.">
+        <LogTail lines={200} />
       </Card>
     </div>
   );

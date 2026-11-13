@@ -10,6 +10,8 @@ import { POST as resetPasswordLink } from '../src/app/api/admin/users/[id]/reset
 import { GET as listInvites, POST as createInviteRoute } from '../src/app/api/admin/invites/route';
 import { DELETE as revokeInviteRoute } from '../src/app/api/admin/invites/[id]/route';
 import { GET as listLogs } from '../src/app/api/admin/logs/route';
+import { GET as getCoreConfig, PUT as putCoreConfig } from '../src/app/api/admin/config/route';
+import { GET as getLogTail } from '../src/app/api/admin/logs/tail/route';
 
 const RUN = Boolean(process.env.AUTH_INTEGRATION_DATABASE_URL);
 const BASE = 'http://localhost:3000';
@@ -269,5 +271,24 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     const self = await deleteUser(adminRequest(`/api/admin/users/${state.adminId}`, state.adminCookie, { method: 'DELETE' }),
       { params: Promise.resolve({ id: state.adminId }) });
     expect(self.status).toBe(409);
+  });
+
+  it('закрывает настройки ядра и хвост лога от гостя и обычного пользователя', async () => {
+    expect((await getCoreConfig(adminRequest('/api/admin/config'))).status).toBe(401);
+    expect((await getCoreConfig(adminRequest('/api/admin/config', state.memberCookie))).status).toBe(403);
+    expect((await getLogTail(adminRequest('/api/admin/logs/tail?lines=10'))).status).toBe(401);
+    expect((await getLogTail(adminRequest('/api/admin/logs/tail?lines=10', state.memberCookie))).status).toBe(403);
+
+    const memberWrite = await putCoreConfig(adminRequest('/api/admin/config', state.memberCookie, {
+      method: 'PUT',
+      body: JSON.stringify({ updates: { 'llm.talk_model.model': 'member-model' } }),
+    }));
+    expect(memberWrite.status).toBe(403);
+
+    const invalid = await putCoreConfig(adminRequest('/api/admin/config', state.adminCookie, {
+      method: 'PUT',
+      body: JSON.stringify({ updates: {} }),
+    }));
+    expect(invalid.status).toBe(400);
   });
 });

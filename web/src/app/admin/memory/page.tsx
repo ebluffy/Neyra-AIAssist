@@ -1,5 +1,7 @@
 import { coreGet } from '../../../../lib/core-admin';
+import { readAdminConfig } from '../../../../lib/admin-config';
 import { ExportPeople } from '../../../components/admin/export-button';
+import { MemoryLimitsForm } from '../../../components/admin/memory-limits-form';
 import { Card, EmptyState, PageHeader, Stat, StatusPill, tableClass, tdClass, thClass } from '../../../components/admin/ui';
 
 export const dynamic = 'force-dynamic';
@@ -31,10 +33,12 @@ export default async function AdminMemoryPage({ searchParams }: {
 }) {
   const params = await searchParams;
   const q = (typeof params.q === 'string' ? params.q : '').trim().slice(0, 120);
-  const [people, stats] = await Promise.all([
+  const [people, stats, configResult] = await Promise.all([
     coreGet<MemoryPeople>('/v1/memory/people?limit=500', { timeoutMs: 5000 }),
     coreGet<MemoryStats>('/v1/memory/stats', { timeoutMs: 4000 }),
+    readAdminConfig(),
   ]);
+  const config = configResult.state === 'ok' ? configResult.data : null;
   const rows = people.state === 'ok' ? people.data?.people ?? [] : [];
   const needle = q.toLowerCase();
   const filtered = needle
@@ -58,6 +62,17 @@ export default async function AdminMemoryPage({ searchParams }: {
         <Stat label="Долгая память" value={stats.state === 'ok' ? stats.data?.long_memory_records ?? '—' : '—'} hint="записей" />
         <Stat label="Короткая память" value={stats.state === 'ok' ? stats.data?.short_memory_size ?? '—' : '—'} hint="сообщений в контексте" />
       </div>
+
+      <Card
+        title="Лимиты и автосжатие"
+        description={config ? 'Сохранение идёт в конфиг ядра. Лимиты памяти применяются после перезапуска.' : configResult.message ?? 'Ядро не отдало конфиг.'}
+      >
+        {config ? (
+          <MemoryLimitsForm limits={config.memory.limits} autocompact={config.memory.autocompact} />
+        ) : (
+          <EmptyState title="Настройки недоступны" text="Проверьте подключение ядра и ключ сайта." />
+        )}
+      </Card>
 
       <Card>
         <form method="get" className="mb-4 flex flex-wrap items-end gap-2">

@@ -8,6 +8,8 @@ export interface CoreResult<T> {
   state: CoreState;
   data: T | null;
   message?: string;
+  /** HTTP status from the core, when it answered. Kept so routes can map 400 vs 5xx. */
+  status?: number;
 }
 
 export interface CoreEnv {
@@ -43,7 +45,7 @@ interface CoreRequest {
 }
 
 async function request<T>(
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PUT',
   path: string,
   options: CoreRequest & { body?: unknown } = {},
 ): Promise<CoreResult<T>> {
@@ -63,18 +65,29 @@ async function request<T>(
       cache: 'no-store',
     });
     if (response.status === 401 || response.status === 403) {
-      return { state: 'unauthorized', data: null, message: `Ядро отклонило ключ сайта (${response.status}).` };
+      return {
+        state: 'unauthorized',
+        data: null,
+        status: response.status,
+        message: `Ядро отклонило ключ сайта (${response.status}).`,
+      };
     }
     const payload = await response.json().catch(() => null) as { ok?: boolean; data?: unknown; error?: { message?: string } } | null;
     if (!response.ok) {
       return {
         state: 'error',
         data: null,
+        status: response.status,
         message: payload?.error?.message ?? `Ядро ответило ${response.status}.`,
       };
     }
     if (payload && payload.ok === false) {
-      return { state: 'error', data: null, message: payload.error?.message ?? 'Ядро вернуло ошибку.' };
+      return {
+        state: 'error',
+        data: null,
+        status: response.status,
+        message: payload.error?.message ?? 'Ядро вернуло ошибку.',
+      };
     }
     const data = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
     return { state: 'ok', data: (data ?? null) as T };
@@ -92,6 +105,10 @@ export function coreGet<T>(path: string, options: CoreRequest = {}): Promise<Cor
 
 export function corePost<T>(path: string, body: unknown, options: CoreRequest = {}): Promise<CoreResult<T>> {
   return request<T>('POST', path, { ...options, body });
+}
+
+export function corePut<T>(path: string, body: unknown, options: CoreRequest = {}): Promise<CoreResult<T>> {
+  return request<T>('PUT', path, { ...options, body });
 }
 
 export interface CoreHealth {
