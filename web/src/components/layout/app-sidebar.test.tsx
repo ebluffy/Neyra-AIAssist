@@ -78,7 +78,7 @@ describe('AppSidebar', () => {
 
     // Search query with no matches
     fireEvent.change(searchInput, { target: { value: 'Несуществующий' } });
-    expect(screen.getByText('Чаты не найдены')).toBeDefined();
+    expect(screen.getByText('Ничего не найдено')).toBeDefined();
   });
 
   it('manages user notes in localStorage scoped to user.id', async () => {

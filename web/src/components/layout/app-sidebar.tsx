@@ -517,8 +517,12 @@ export function AppSidebar({
                 <div className="flex-1 overflow-y-auto space-y-0.5 pr-0.5" aria-label="Список чатов">
                   {filteredThreads.length === 0 ? (
                     <div className="py-8 text-center text-xs text-[var(--text-subtle)]">
-                      <p className="font-medium text-[var(--text-muted)]">Чаты не найдены</p>
-                      <p className="mt-1 text-[11px]">Попробуйте другой запрос</p>
+                      <p className="font-medium text-[var(--text-muted)]">
+                        {query ? 'Ничего не найдено' : 'Пока нет чатов'}
+                      </p>
+                      <p className="mt-1 text-[11px]">
+                        {query ? 'Попробуйте другой запрос' : 'Начните диалог — он появится здесь'}
+                      </p>
                     </div>
                   ) : (
                     filteredThreads.map((thread) => {
