@@ -1,5 +1,5 @@
 import { requireAdmin } from '../../../../../lib/admin-guard';
-import { coreGet, type CoreHealth, type CoreMeta } from '../../../../../lib/core-admin';
+import { coreGet, coreGetReady, type CoreHealth, type CoreMeta } from '../../../../../lib/core-admin';
 import { readBackups, readDiskUsage } from '../../../../../lib/admin-system';
 import { jsonOk } from '../../../../../lib/admin-http';
 
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
   if (!auth.ok) return auth.response;
   const [health, ready, meta, disk, backups] = await Promise.all([
     coreGet<CoreHealth>('/v1/health', { timeoutMs: 4000 }),
-    coreGet<ReadyReport>('/v1/health/ready', { timeoutMs: 4000 }),
+    coreGetReady<ReadyReport>('/v1/health/ready', { timeoutMs: 4000 }),
     coreGet<CoreMeta>('/v1/meta', { timeoutMs: 3000 }),
     readDiskUsage(),
     readBackups(process.env.NEYRA_BACKUP_DIR),

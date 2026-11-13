@@ -1,4 +1,4 @@
-import { coreGet, type CoreHealth, type CoreMeta } from '../../../../lib/core-admin';
+import { coreGet, coreGetReady, type CoreHealth, type CoreMeta } from '../../../../lib/core-admin';
 import { readBackups, readDiskUsage } from '../../../../lib/admin-system';
 import { describeDegradedReason } from '../../../../lib/core-status';
 import { RestartCore } from '../../../components/admin/restart-core';
@@ -15,7 +15,7 @@ interface ReadyReport {
 export default async function AdminSystemPage() {
   const [health, ready, meta, disk, backups, history] = await Promise.all([
     coreGet<CoreHealth>('/v1/health', { timeoutMs: 4000 }),
-    coreGet<ReadyReport>('/v1/health/ready', { timeoutMs: 4000 }),
+    coreGetReady<ReadyReport>('/v1/health/ready', { timeoutMs: 4000 }),
     coreGet<CoreMeta>('/v1/meta', { timeoutMs: 3000 }),
     readDiskUsage(),
     readBackups(process.env.NEYRA_BACKUP_DIR),
@@ -72,7 +72,7 @@ export default async function AdminSystemPage() {
                     </li>
                   ))}
                 </ul>
-              ) : <p className="text-xs text-[var(--text-muted)]">Ядро не вернуло список проверок.</p>}
+              ) : null}
               {Array.isArray(health.data?.llm_providers) && health.data.llm_providers.length > 0 && (
                 <p className="text-xs text-[var(--text-muted)]">Провайдеры: {health.data.llm_providers.join(', ')}</p>
               )}
