@@ -124,7 +124,7 @@ export function ThreadPanel({
           : undefined,
     },
     { id: 'voice', label: 'Голос', icon: <Mic size={14} /> },
-    { id: 'settings', label: 'Настройки треда', icon: <Settings size={14} /> },
+    { id: 'settings', label: 'Настройки', ariaLabel: 'Настройки треда', icon: <Settings size={14} /> },
   ];
 
   const handleTabKeyDown = (e: React.KeyboardEvent, index: number) => {
@@ -216,6 +216,7 @@ export function ThreadPanel({
                 }}
                 id={`thread-panel-tab-${tab.id}`}
                 role="tab"
+                aria-label={tab.ariaLabel}
                 aria-selected={isSelected}
                 aria-controls={`thread-panel-panel-${tab.id}`}
                 tabIndex={isSelected ? 0 : -1}
