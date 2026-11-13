@@ -157,6 +157,37 @@ describe('AppSidebar', () => {
     expect(onCloseMobile).toHaveBeenCalledTimes(2);
   });
 
+  it('selects and deletes threads from the sidebar thread list', async () => {
+    const onSelectThread = vi.fn();
+    const onDeleteThread = vi.fn();
+    const threads = [
+      { id: 'th-1', title: 'Обсуждение Docker', updatedAt: '2026-01-02' },
+      { id: 'th-2', title: 'Вопрос по Python', updatedAt: '2026-01-01' },
+    ];
+    window.localStorage.setItem(`neyra:threads:${adminUser.id}`, JSON.stringify(threads));
+
+    render(
+      <AppSidebar
+        activeSection="chat"
+        user={adminUser}
+        activeThreadId="th-1"
+        onSelectThread={onSelectThread}
+        onDeleteThread={onDeleteThread}
+      />
+    );
+
+    expect(await screen.findByText('Обсуждение Docker')).toBeDefined();
+
+    // Select thread th-2
+    fireEvent.click(screen.getByText('Вопрос по Python'));
+    expect(onSelectThread).toHaveBeenCalledWith('th-2');
+
+    // Delete thread th-1
+    const deleteBtn = screen.getByRole('button', { name: 'Удалить Обсуждение Docker' });
+    fireEvent.click(deleteBtn);
+    expect(onDeleteThread).toHaveBeenCalledWith('th-1');
+  });
+
   it('opens and closes user profile menu popover', () => {
     const onOpenSettings = vi.fn();
     render(<AppSidebar activeSection="chat" user={adminUser} onOpenSettings={onOpenSettings} />);

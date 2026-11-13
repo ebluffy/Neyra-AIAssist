@@ -49,22 +49,26 @@ export interface AppSidebarProps {
   activeSection: 'chat' | 'channels' | 'settings' | 'admin';
   user?: AppSidebarUser | null;
   threadTitle?: string | null;
+  activeThreadId?: string | null;
   onNewChat?: () => void;
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
   onOpenSettings?: () => void;
   onSelectThread?: (threadId: string) => void;
+  onDeleteThread?: (threadId: string) => void;
 }
 
 export function AppSidebar({
   activeSection,
   user,
   threadTitle,
+  activeThreadId,
   onNewChat,
   mobileOpen = false,
   onCloseMobile,
   onOpenSettings,
   onSelectThread,
+  onDeleteThread,
 }: AppSidebarProps) {
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
@@ -116,19 +120,21 @@ export function AppSidebar({
       const raw = window.localStorage.getItem(threadsStorageKey);
       let list: ChatThreadItem[] = raw ? JSON.parse(raw) : [];
 
-      // If threadTitle is provided and not default/empty
+      // If activeThreadId and threadTitle are provided and not default/empty
       if (threadTitle && threadTitle !== ru.chat) {
-        const existingIdx = list.findIndex((t) => t.id === 'current' || t.title === threadTitle);
+        const targetId = activeThreadId || 'current';
+        const existingIdx = list.findIndex((t) => t.id === targetId || (targetId === 'current' && t.title === threadTitle));
         if (existingIdx >= 0) {
           list[existingIdx] = {
             ...list[existingIdx],
+            id: targetId,
             title: threadTitle,
             updatedAt: new Date().toISOString(),
           };
         } else {
           list = [
             {
-              id: 'current',
+              id: targetId,
               title: threadTitle,
               updatedAt: new Date().toISOString(),
             },
@@ -136,9 +142,9 @@ export function AppSidebar({
           ];
         }
         window.localStorage.setItem(threadsStorageKey, JSON.stringify(list));
-      } else {
-        // When chat is empty / reset, remove unsaved 'current' thread
-        list = list.filter((t) => t.id !== 'current');
+      } else if (threadTitle === ru.chat) {
+        // When chat is reset to default empty title, remove unsaved synthetic 'current' thread and empty active thread
+        list = list.filter((t) => t.id !== 'current' && (!activeThreadId || t.id !== activeThreadId));
         try {
           window.localStorage.setItem(threadsStorageKey, JSON.stringify(list));
         } catch {}
@@ -148,7 +154,24 @@ export function AppSidebar({
     } catch {
       setThreads([]);
     }
-  }, [threadsStorageKey, threadTitle]);
+  }, [threadsStorageKey, threadTitle, activeThreadId]);
+
+  function handleDeleteThread(e: React.MouseEvent, threadId: string) {
+    e.stopPropagation();
+    if (onDeleteThread) {
+      onDeleteThread(threadId);
+    } else {
+      const updated = threads.filter((t) => t.id !== threadId);
+      try {
+        window.localStorage.setItem(threadsStorageKey, JSON.stringify(updated));
+        window.localStorage.removeItem(`neyra:thread-messages:${userId}:${threadId}`);
+      } catch {}
+      setThreads(updated);
+      if (activeThreadId === threadId) {
+        onNewChat?.();
+      }
+    }
+  }
 
   function toggleCollapse() {
     setCollapsed((prev) => {
@@ -501,25 +524,40 @@ export function AppSidebar({
                     filteredThreads.map((thread) => {
                       const isActive =
                         activeSection === 'chat' &&
-                        (thread.title === threadTitle || thread.id === 'current');
+                        (activeThreadId
+                          ? thread.id === activeThreadId
+                          : (thread.title === threadTitle || thread.id === 'current'));
                       return (
-                        <button
+                        <div
                           key={thread.id}
-                          type="button"
-                          onClick={() => {
-                            if (onSelectThread) onSelectThread(thread.id);
-                            else if (activeSection !== 'chat') router.push('/chat');
-                            onCloseMobile?.();
-                          }}
-                          className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-[var(--radius-sm)] text-xs transition-colors text-left cursor-pointer ${
+                          className={`group relative flex items-center justify-between rounded-[var(--radius-sm)] transition-colors ${
                             isActive
                               ? 'bg-[var(--surface-3)] text-[var(--text)] border-l-2 border-[var(--accent)] font-medium'
                               : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'
                           }`}
                         >
-                          <MessageSquare size={13} className="shrink-0 text-[var(--text-muted)]" />
-                          <span className="truncate flex-1">{thread.title}</span>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onSelectThread) onSelectThread(thread.id);
+                              else if (activeSection !== 'chat') router.push('/chat');
+                              onCloseMobile?.();
+                            }}
+                            className="flex-1 min-w-0 flex items-center gap-2 px-2.5 py-2 text-xs text-left cursor-pointer"
+                          >
+                            <MessageSquare size={13} className="shrink-0 text-[var(--text-muted)]" />
+                            <span className="truncate flex-1">{thread.title}</span>
+                          </button>
+                          <IconButton
+                            aria-label={`Удалить ${thread.title}`}
+                            tooltip="Удалить тред"
+                            icon={<Trash2 size={12} />}
+                            variant="ghost"
+                            size="sm"
+                            className="w-6 h-6 mr-1 opacity-0 group-hover:opacity-70 hover:opacity-100 hover:text-[var(--danger)] transition-opacity"
+                            onClick={(e) => handleDeleteThread(e, thread.id)}
+                          />
+                        </div>
                       );
                     })
                   )}

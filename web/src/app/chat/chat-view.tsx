@@ -99,7 +99,18 @@ export function ChatView({
   initialUsage,
 }: ChatViewProps) {
   const router = useRouter();
-  const [messages, setMessages] = useState<ChatMessageItem[]>(() => initialMessages || []);
+  const [messages, setMessages] = useState<ChatMessageItem[]>(() => {
+    if (initialMessages && initialMessages.length > 0) return initialMessages;
+    if (typeof window === 'undefined') return [];
+    try {
+      const currentTabChatId = resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
+      const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${currentTabChatId}`);
+      if (raw) {
+        return JSON.parse(raw);
+      }
+    } catch {}
+    return [];
+  });
   const [input, setInput] = useState('');
   const [thinking, setThinking] = useState(false);
   const [streaming, setStreaming] = useState(false);
@@ -276,6 +287,91 @@ export function ChatView({
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     setShowScrollDown(false);
+  };
+
+  // Sync messages & thread list to localStorage per user (§3, AR-12)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !chatId || !user?.id) return;
+    const threadsKey = `neyra:threads:${user.id}`;
+    const msgsKey = `neyra:thread-messages:${user.id}:${chatId}`;
+
+    try {
+      if (messages.length > 0) {
+        // Save thread messages
+        window.localStorage.setItem(msgsKey, JSON.stringify(messages));
+
+        // Derive thread title from first user message
+        const firstUser = messages.find((m) => m.role === 'user')?.content.trim();
+        const derivedTitle = customTitle || (firstUser ? firstUser.split('\n')[0].slice(0, 80) : 'Диалог');
+
+        const rawThreads = window.localStorage.getItem(threadsKey);
+        let list: { id: string; title: string; updatedAt: string }[] = rawThreads ? JSON.parse(rawThreads) : [];
+        const existingIdx = list.findIndex((t) => t.id === chatId);
+        if (existingIdx >= 0) {
+          list[existingIdx] = {
+            ...list[existingIdx],
+            title: derivedTitle,
+            updatedAt: new Date().toISOString(),
+          };
+        } else {
+          list = [
+            {
+              id: chatId,
+              title: derivedTitle,
+              updatedAt: new Date().toISOString(),
+            },
+            ...list,
+          ];
+        }
+        window.localStorage.setItem(threadsKey, JSON.stringify(list));
+      } else {
+        // When messages are empty (new chat or deleted exchange)
+        window.localStorage.removeItem(msgsKey);
+        const rawThreads = window.localStorage.getItem(threadsKey);
+        if (rawThreads) {
+          const list: { id: string; title: string }[] = JSON.parse(rawThreads);
+          const filtered = list.filter((t) => t.id !== chatId);
+          window.localStorage.setItem(threadsKey, JSON.stringify(filtered));
+        }
+      }
+    } catch {}
+  }, [messages, chatId, user?.id, customTitle]);
+
+  const switchThread = (targetThreadId: string) => {
+    if (streaming) {
+      stopGeneration();
+    }
+    setChatId(targetThreadId);
+    try {
+      sessionStorage.setItem(`neyra.chat_id:${user.id}:${resolveTabKey(window)}`, targetThreadId);
+      const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
+      if (raw) {
+        setMessages(JSON.parse(raw));
+      } else {
+        setMessages([]);
+      }
+    } catch {
+      setMessages([]);
+    }
+    setSidebarOpen(false);
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  };
+
+  const deleteThread = (targetThreadId: string) => {
+    try {
+      window.localStorage.removeItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
+      const raw = window.localStorage.getItem(`neyra:threads:${user.id}`);
+      if (raw) {
+        const list = JSON.parse(raw);
+        const filtered = list.filter((t: { id: string }) => t.id !== targetThreadId);
+        window.localStorage.setItem(`neyra:threads:${user.id}`, JSON.stringify(filtered));
+      }
+    } catch {}
+    if (chatId === targetThreadId) {
+      startNewChat();
+    }
   };
 
   const startNewChat = () => {
@@ -645,7 +741,10 @@ export function ChatView({
         activeSection="chat"
         user={user}
         threadTitle={threadTitle}
+        activeThreadId={chatId}
         onNewChat={startNewChat}
+        onSelectThread={switchThread}
+        onDeleteThread={deleteThread}
         mobileOpen={sidebarOpen}
         onCloseMobile={() => setSidebarOpen(false)}
         onOpenSettings={() => setSettingsOpen(true)}
