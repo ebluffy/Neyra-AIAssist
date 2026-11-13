@@ -41,6 +41,7 @@ from core.api.client_ip import resolve_client_ip as _resolve_client_ip_pure
 from core.api.log_redaction import install_log_filters
 from core.api.request_context import get_trace_id, resolve_trace_id, set_trace_id
 from core.api.security_headers import SecurityHeadersMiddleware
+from core.api.web_identity import InvalidWebIdentity, verify_web_identity
 from core.neyra import NeyraAgent
 from core.runtime.features import FEATURE_DEFAULTS
 from core.runtime.backup import BackupManager
@@ -649,6 +650,14 @@ class DashboardRotateRequest(_ApiBody):
     new_key: str = Field(min_length=MIN_KEY_LEN, max_length=256)
 
 
+class StoredAttachment(_ApiBody):
+    id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    kind: Literal['image', 'file']
+    mime: Literal['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/pdf', 'text/plain', 'text/markdown']
+    name: str = Field(min_length=1, max_length=200)
+    size: int = Field(strict=True, gt=0, le=8 * 1024 * 1024)
+
+
 class WsChatMessage(_ApiBody):
     type: Literal["ping", "chat"]
     text: str = Field(default="", max_length=6000)
@@ -658,6 +667,7 @@ class WsChatMessage(_ApiBody):
     author_display_name: Optional[str] = Field(default=None, max_length=120)
     display_name: Optional[str] = Field(default=None, max_length=120)
     discord_context: DiscordContext | None = None
+    attachments: list[StoredAttachment] = Field(default_factory=list, max_length=4)
 
 
 def _utc_now() -> str:
@@ -1520,6 +1530,98 @@ def build_app(
                 return
             await self.app(scope, receive, send)
 
+    class _WebIdentityASGI:
+        def __init__(self, app_):
+            self.app = app_
+
+        @staticmethod
+        def _provision(agent_, identity):
+            """Read account ownership first (including admin merges); write only on first contact."""
+            from dataclasses import replace
+
+            hub = getattr(agent_, "memory_hub", None)
+            if hub is None:
+                return identity
+            account = hub.sqlite.get_account("web", identity.user_id)
+            if account is not None:
+                person_id = account.get("person_id")
+            else:
+                row = hub.ensure_person_for_account(
+                    platform="web", platform_user_id=identity.user_id,
+                    display_name=(identity.name or "").strip() or None,
+                )
+                person_id = row.get("id")
+            if not isinstance(person_id, str) or not person_id.strip():
+                raise RuntimeError("Invalid web account owner")
+            return replace(identity, person_id=person_id)
+
+        @staticmethod
+        async def _deny(scope, receive, send, status, code, message):
+            from starlette.requests import HTTPConnection
+
+            tid = _trace_id(HTTPConnection(scope))
+            response = JSONResponse(status_code=status, content=_err_payload(tid, code, message),
+                                    headers={"x-trace-id": tid})
+            if scope["type"] == "websocket":
+                from starlette.websockets import WebSocket as StarletteWebSocket
+
+                socket = StarletteWebSocket(scope, receive, send)
+                if "websocket.http.response" in scope.get("extensions", {}):
+                    await socket.send_denial_response(response)
+                else:
+                    await socket.close(code=1011 if status >= 500 else 1008)
+            else:
+                await response(scope, receive, send)
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] not in ("http", "websocket"):
+                await self.app(scope, receive, send)
+                return
+            tokens = [value for key, value in scope.get("headers", []) if key.lower() == b"x-neyra-identity"]
+            if tokens:
+                from starlette.requests import HTTPConnection
+
+                connection = HTTPConnection(scope)
+                try:
+                    if len(tokens) != 1:
+                        raise InvalidWebIdentity()
+                    identity = verify_web_identity(tokens[0].decode("ascii"))
+                    dash = getattr(app.state, "dashboard_auth", None)
+                    authorization = connection.headers.get("authorization")
+                    if scope["type"] == "websocket":
+                        api_role = _require_ws_auth(connection.query_params.get("token"), authorization, config, dash)
+                    else:
+                        api_role = _resolve_role(authorization, config, dash)
+                    if api_role == "anon":
+                        raise InvalidWebIdentity()
+                except (InvalidWebIdentity, ApiError, UnicodeError):
+                    await self._deny(scope, receive, send, 401, "invalid_web_identity", "Invalid web identity")
+                    return
+                try:
+                    identity = await asyncio.to_thread(self._provision, agent, identity)
+                except Exception:
+                    logger.exception("web person provisioning failed")
+                    await self._deny(scope, receive, send, 503, "identity_storage_unavailable", "Identity storage unavailable")
+                    return
+                scope.setdefault("state", {})["web_identity"] = identity
+                # Default-deny every memory route for a signed user, including future
+                # routes and mutations carried by an admin service key. Only explicitly
+                # scoped reads are allowed; JWT admins and legacy callers retain ops API.
+                from starlette._utils import get_route_path
+
+                path = get_route_path(scope).rstrip("/")
+                if identity.role == "user" and (path == "/v1/memory" or path.startswith("/v1/memory/")):
+                    allowed = (scope["type"] == "http" and (
+                        (scope.get("method") == "POST" and path in ("/v1/memory/search", "/v1/memory/chat/recall"))
+                        or (scope.get("method") == "GET" and path == f"/v1/memory/people/{identity.person_id}")
+                    ))
+                    if not allowed:
+                        await self._deny(scope, receive, send, 403, "web_memory_forbidden", "Memory access forbidden")
+                        return
+            await self.app(scope, receive, send)
+
+    app.add_middleware(_WebIdentityASGI)
+
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(_TraceDocsASGI)
     app.add_middleware(_RateLimitASGI)
@@ -1531,17 +1633,104 @@ def build_app(
             row.update(extra)
         _audit_file_append(config, root, row)
 
+    from core.api.attachments import AttachmentError, AttachmentStore, MAX_FILE_SIZE, MAX_FILES
+    attachment_store = AttachmentStore(resolve_data_dir(root, config) / "attachments")
+
+    def _attachment_owner(connection):
+        identity = getattr(connection.state, "web_identity", None)
+        if identity is not None:
+            return "web:" + identity.user_id
+        authorization = connection.headers.get("authorization", "")
+        if not authorization and connection.scope["type"] == "websocket" and connection.query_params.get("token"):
+            authorization = "Bearer " + connection.query_params["token"]
+        if not api_tokens_configured(config) or not authorization.startswith("Bearer "):
+            raise ApiError("unauthorized", "Нужна авторизация владельца вложения.", 401)
+        return "api:" + hashlib.sha256(authorization.encode()).hexdigest()
+
+    # Bounded, process-local last-turn readings, scoped exactly like attachments.
+    # No shared person/channel lookup: a caller cannot select another owner's data.
+    from collections import OrderedDict
+    context_readings = OrderedDict()
+
+    @app.get("/v1/context/limits")
+    async def v1_context_limits(request: Request, channel_id: str = Query(min_length=1, max_length=120),
+                                _: str = Depends(dep_admin)):
+        from core.agent.chat_progress import context_usage, context_policy
+        inputs = context_readings.get((_attachment_owner(request), channel_id), {})
+        return {"ok": True, "trace_id": _trace_id(request),
+                "data": {**context_usage(agent.config, inputs), "policy": context_policy(agent.config)}}
+
+    @app.post("/v1/attachments")
+    async def v1_attachments(request: Request, _: str = Depends(dep_admin)):
+        from starlette.datastructures import UploadFile as StarletteUploadFile
+        from starlette.exceptions import HTTPException
+        from starlette.formparsers import MultiPartException
+
+        owner = _attachment_owner(request)
+        max_body = MAX_FILES * MAX_FILE_SIZE + 64 * 1024
+        overflow = False
+        received = 0
+        async def bounded_receive():
+            nonlocal received, overflow
+            message = await request.receive()
+            received += len(message.get("body", b""))
+            if received > max_body:
+                overflow = True
+                # Multipart parser closes its temporary files on MultiPartException.
+                raise MultiPartException("attachment body limit")
+            return message
+        bounded = Request(request.scope, bounded_receive)
+        try:
+            async with bounded.form(max_files=MAX_FILES, max_fields=1, max_part_size=MAX_FILE_SIZE) as form:
+                channel = form.get("channel_id")
+                if not isinstance(channel, str) or not channel.strip() or len(channel) > 120:
+                    raise AttachmentError("attachment_channel", "Укажите канал вложения.")
+                files = form.getlist("files")
+                if not 1 <= len(files) <= MAX_FILES or any(not isinstance(f, StarletteUploadFile) for f in files):
+                    raise AttachmentError("attachment_count", "Можно прикрепить от 1 до 4 файлов.")
+                payloads = [(f.filename or 'file', f.content_type or '', await f.read(MAX_FILE_SIZE + 1)) for f in files]
+                saved = await asyncio.to_thread(attachment_store.save_batch, owner, channel.strip(), payloads)
+        except AttachmentError as error:
+            raise ApiError(error.code, error.message, error.status)
+        except HTTPException:
+            raise ApiError("attachment_size" if overflow else "invalid_multipart", "Превышен лимит загрузки." if overflow else "Неверный multipart или больше 4 файлов.", 413 if overflow else 400)
+        return {"ok": True, "trace_id": _trace_id(request), "data": {"attachments": saved}}
+
+    @app.get("/v1/attachments/{attachment_id}")
+    async def v1_attachment(attachment_id: str, request: Request, channel_id: str = Query(min_length=1, max_length=120), _: str = Depends(dep_admin)):
+        try:
+            meta, path = await asyncio.to_thread(attachment_store.load, attachment_id, _attachment_owner(request), channel_id)
+        except AttachmentError as error:
+            raise ApiError(error.code, error.message, error.status)
+        return FileResponse(path, media_type=meta['mime'], filename=meta['name'])
+
+    @app.get("/v1/web/me")
+    async def v1_web_me(request: Request, _: str = Depends(dep_viewer)):
+        identity = getattr(request.state, "web_identity", None)
+        if identity is None:
+            raise ApiError("web_identity_required", "Web identity required", 401)
+        return {"ok": True, "trace_id": _trace_id(request), "data": {
+            "person_id": identity.person_id, "role": identity.role,
+            "name": identity.name, "user_id": identity.user_id, "limits": None,
+        }}
+
+    def _memory_user_id(request: Request, supplied: Optional[str]) -> Optional[str]:
+        identity = getattr(request.state, "web_identity", None)
+        return identity.person_id if identity is not None else (supplied or "").strip() or None
+
     @app.post("/v1/chat")
     async def v1_chat(body: ChatRequest, request: Request, _role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
+        web_identity = getattr(request.state, "web_identity", None)
         out = await agent.chat(
             user_message=body.text,
-            username=body.username or "api_user",
-            discord_user_id=body.platform_user_id,
+            username=web_identity.person_id if web_identity is not None else body.username or "api_user",
+            discord_user_id=None if web_identity is not None else body.platform_user_id,
             channel_id=body.channel_id,
-            author_display_name=body.author_display_name,
-            avatar_url=body.avatar_url,
-            **({"discord_context": body.discord_context} if body.discord_context is not None else {}),
+            author_display_name=web_identity.name if web_identity is not None else body.author_display_name,
+            avatar_url=None if web_identity is not None else body.avatar_url,
+            person_id=web_identity.person_id if web_identity is not None else None,
+            **({"discord_context": body.discord_context} if web_identity is None and body.discord_context is not None else {}),
         )
         return {"ok": True, "trace_id": trace_id, "data": out}
 
@@ -1568,7 +1757,7 @@ def build_app(
     @app.post("/v1/memory/search")
     async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_maint)):
         trace_id = _trace_id(request)
-        uid = (body.user_id or "").strip() or None
+        uid = _memory_user_id(request, body.user_id)
         if not uid:
             raise ApiError(
                 "memory_search_user_required",
@@ -1589,7 +1778,7 @@ def build_app(
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
-        uid = (body.user_id or "").strip() or None
+        uid = _memory_user_id(request, body.user_id)
         cid = (body.channel_id or "").strip() or None
         if not uid and not cid:
             raise ApiError(
@@ -4289,32 +4478,57 @@ def build_app(
             ws_disp = parsed.author_display_name or parsed.display_name
             ws_author_disp = str(ws_disp).strip() if ws_disp else None
 
+            ws_identity = websocket.scope.get("state", {}).get("web_identity")
+            try:
+                vision_images, attachment_text = await asyncio.to_thread(
+                    attachment_store.resolve_for_chat, parsed.attachments, _attachment_owner(websocket), channel_id,
+                ) if parsed.attachments else (None, '')
+            except (AttachmentError, ApiError) as error:
+                await websocket.send_json({"type": "error", "code": error.code, "message": error.message, "trace_id": trace_id})
+                continue
+            phases = set()
             try:
                 async for chunk in agent.chat_stream(
-                    text,
-                    username=username,
-                    discord_user_id=platform_user_id,
+                    text + attachment_text,
+                    vision_images=vision_images, progress=True,
+                    username=ws_identity.person_id if ws_identity is not None else username,
+                    discord_user_id=None if ws_identity is not None else platform_user_id,
                     channel_id=channel_id,
-                    author_display_name=ws_author_disp,
-                    **({"discord_context": parsed.discord_context} if parsed.discord_context is not None else {}),
+                    author_display_name=ws_identity.name if ws_identity is not None else ws_author_disp,
+                    person_id=getattr(ws_identity, "person_id", None),
+                    **({"discord_context": parsed.discord_context} if ws_identity is None and parsed.discord_context is not None else {}),
                 ):
-                    if chunk.get("type") == "token":
+                    if chunk.get("type") == "phase":
+                        from core.agent.chat_progress import PHASES
+                        phase = chunk.get("phase")
+                        if phase in PHASES and phase not in phases:
+                            phases.add(phase)
+                            await websocket.send_json({"type": "phase", "phase": phase, "label": PHASES[phase]})
+                    elif chunk.get("type") == "token":
                         await websocket.send_json(
                             {"type": "token", "text": chunk.get("text", ""), "trace_id": trace_id}
                         )
                     elif chunk.get("type") == "done":
+                        from core.agent.chat_progress import context_usage, lane_inputs
+                        inputs = lane_inputs(chunk.get("model_trace"))
+                        key = (_attachment_owner(websocket), channel_id)
+                        context_readings[key] = inputs
+                        context_readings.move_to_end(key)
+                        if len(context_readings) > 256:
+                            context_readings.popitem(last=False)
+                        usage = context_usage(agent.config, inputs)
                         await websocket.send_json(
                             {
                                 "type": "done",
                                 "text": chunk.get("text", ""),
                                 "sounds": chunk.get("sounds", []),
-                                "model_trace": chunk.get("model_trace"),
+                                "usage": usage,
                                 "trace_id": trace_id,
                             }
                         )
                     elif chunk.get("type") == "error":
                         await websocket.send_json(
-                            {"type": "error", "code": "chat_error", "message": public_chat_error(chunk), "model_trace": chunk.get("model_trace"), "trace_id": trace_id}
+                            {"type": "error", "code": "chat_error", "message": public_chat_error(chunk), "trace_id": trace_id}
                         )
             except WebSocketDisconnect:
                 break

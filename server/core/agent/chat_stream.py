@@ -36,6 +36,8 @@ async def iter_chat_stream(
     lyrics_marker: str,
     avatar_url: Optional[str] = None,
     discord_context=None,
+    person_id: Optional[str] = None,
+    progress: bool = False,
 ) -> AsyncIterator[dict]:
     """Yield token/error/done chunks for streaming chat."""
     try:
@@ -51,8 +53,11 @@ async def iter_chat_stream(
             vision_images=vision_images,
             lyrics_marker=lyrics_marker,
             source="chat_stream",
+            person_id=person_id,
         )
         if fp is not None:
+            if progress:
+                yield {"type": "phase", "phase": "answer"}
             text = str(fp.get("text") or "")
             if text:
                 yield {"type": "token", "text": text}
@@ -71,6 +76,8 @@ async def iter_chat_stream(
             raise
         logger.warning("fast_path (stream) failed (soft, continue brain): %s", fp_e)
 
+    if progress:
+        yield {"type": "phase", "phase": "retrieval"}
     prep = await prepare_turn(
         agent,
         user_message=user_message,
@@ -83,6 +90,7 @@ async def iter_chat_stream(
         log_lane="stream",
         avatar_url=avatar_url,
         discord_context=discord_context,
+        person_id=person_id,
     )
     try:
         try:
@@ -101,6 +109,8 @@ async def iter_chat_stream(
         except Exception as thr_e:
             logger.warning("session_archive stm_threshold failed (soft): %s", thr_e)
 
+        if progress:
+            yield {"type": "phase", "phase": "plan"}
         caption_ok = (prep.attached_caption or "").strip()
         try:
             brain_context = await agent._run_brain_tool_phase(
@@ -131,6 +141,8 @@ async def iter_chat_stream(
             }
             return
 
+        if progress:
+            yield {"type": "phase", "phase": "answer"}
         system_prompt = build_talk_system_prompt(agent, prep, brain_context=brain_context)
         stream_llm = agent.llm_talk
         if prep.lyrics_mode:

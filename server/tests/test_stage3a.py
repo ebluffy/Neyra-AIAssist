@@ -240,7 +240,7 @@ def test_rest_ws_context_and_trace_roundtrip(tmp_path):
             while True:
                 chunk = ws.receive_json()
                 if chunk["type"] == "done":
-                    assert chunk["model_trace"]["calls"]
+                    assert "model_trace" not in chunk
                     break
         activity = client.get("/v1/llm/activity", headers=headers).json()["data"]["items"]
         assert len(activity) == 2
