@@ -1,6 +1,7 @@
 import { requireAdmin } from '../../../../../lib/admin-guard';
 import { coreGet } from '../../../../../lib/core-admin';
 import { jsonOk } from '../../../../../lib/admin-http';
+import { accountLabels, discordLabels, personAliases, personIdLabel, personTitle } from '../../../../../lib/admin-memory';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -53,10 +54,11 @@ export async function GET(request: Request) {
     message: people.message ?? stats.message ?? null,
     people: filtered.slice(0, 200).map(person => ({
       id: person.id ?? '',
-      displayName: person.display_name ?? '',
-      names: person.names ?? [],
-      accounts: person.accounts ?? [],
-      discordIds: person.discord_ids ?? [],
+      idLabel: personIdLabel(person),
+      displayName: personTitle(person),
+      names: personAliases(person),
+      accounts: accountLabels(person.accounts),
+      discordIds: discordLabels(person),
     })),
     counts: {
       matched: filtered.length,

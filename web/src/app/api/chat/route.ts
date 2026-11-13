@@ -23,8 +23,13 @@ const SAFE_ERROR_MESSAGES: Record<string, string> = {
   model_unavailable: 'Модель временно недоступна.',
   context_length_exceeded: 'Превышена максимальная длина контекста диалога.',
   chat_error: 'Ошибка при обработке сообщения в ядре.',
+  provider_rate_limit: 'Провайдер моделей ограничил запросы. Попробуйте позже — лимит сбрасывается автоматически.',
   idle_timeout: 'Превышено время ожидания ответа ядра.',
 };
+
+// Только эти коды ядра несут публичный текст, который можно показать как есть.
+// Для остальных сообщение ядра может содержать внутренние детали — заменяем.
+const USER_FACING_CORE_CODES = new Set(['provider_rate_limit', 'brain_unavailable']);
 
 function getSafeErrorMessage(code: string): string {
   return SAFE_ERROR_MESSAGES[code] || 'Ошибка при обработке сообщения в ядре.';
@@ -292,7 +297,12 @@ export async function POST(request: Request) {
         finish();
       } else if (event.type === 'error') {
         const rawCode = typeof event.code === 'string' && event.code ? event.code : 'core_error';
-        const safeMessage = getSafeErrorMessage(rawCode);
+        // Ядро уже отдаёт публичную причину (например, лимит провайдера). Не заменяем
+        // её общим текстом; общий — только когда причина не пришла.
+        const coreMessage = typeof event.message === 'string' ? event.message.trim().slice(0, 500) : '';
+        const safeMessage = USER_FACING_CORE_CODES.has(rawCode) && coreMessage
+          ? coreMessage
+          : getSafeErrorMessage(rawCode);
         const sanitized = SseChatEventSchema.parse({
           type: 'error',
           code: rawCode,

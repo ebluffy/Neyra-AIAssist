@@ -1,6 +1,8 @@
 import { coreGet, type CoreHealth, type CoreMeta } from '../../../../lib/core-admin';
 import { readBackups, readDiskUsage } from '../../../../lib/admin-system';
+import { describeDegradedReason } from '../../../../lib/core-status';
 import { RestartCore } from '../../../components/admin/restart-core';
+import { WarmupSessions } from '../../../components/admin/warmup-sessions';
 import { Card, EmptyState, PageHeader, Stat, StatusPill, formatBytes, formatDate, formatDuration, tableClass, tdClass, thClass } from '../../../components/admin/ui';
 
 export const dynamic = 'force-dynamic';
@@ -11,13 +13,15 @@ interface ReadyReport {
 }
 
 export default async function AdminSystemPage() {
-  const [health, ready, meta, disk, backups] = await Promise.all([
+  const [health, ready, meta, disk, backups, history] = await Promise.all([
     coreGet<CoreHealth>('/v1/health', { timeoutMs: 4000 }),
     coreGet<ReadyReport>('/v1/health/ready', { timeoutMs: 4000 }),
     coreGet<CoreMeta>('/v1/meta', { timeoutMs: 3000 }),
     readDiskUsage(),
     readBackups(process.env.NEYRA_BACKUP_DIR),
+    coreGet<{ points?: Array<{ timestamp?: string; ok?: boolean }> }>('/v1/health/history?hours=24', { timeoutMs: 4000 }),
   ]);
+  const points = (history.state === 'ok' ? history.data?.points ?? [] : []).slice(-12).reverse();
 
   // Честное определение статуса ядра: ok / degraded / down
   const coreTone = health.state !== 'ok' ? 'error' : (health.data?.ok ? 'ok' : 'warn');
@@ -49,12 +53,12 @@ export default async function AdminSystemPage() {
                   версия {health.data?.version ?? health.data?.api_version ?? '—'} · uptime {formatDuration(health.data?.uptime_seconds)}
                 </span>
               </div>
-              {health.data?.degraded_reason && (
+              {health.data?.degraded_reason ? (
                 <div className="rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] p-2.5 text-xs text-[var(--text-muted)] leading-relaxed">
                   <span className="font-medium text-[var(--text)] block mb-0.5">Причина деградации:</span>
-                  {health.data.degraded_reason}
+                  {describeDegradedReason(health.data.degraded_reason)}
                 </div>
-              )}
+              ) : null}
               {Array.isArray(health.data?.checks) && health.data.checks.length > 0 ? (
                 <ul className="space-y-1 text-sm">
                   {health.data.checks.map((check, index) => (
@@ -137,6 +141,25 @@ export default async function AdminSystemPage() {
           )}
         </Card>
       </div>
+
+      <Card title="История здоровья" description={history.state === 'ok' ? 'GET /v1/health/history?hours=24, последние 12 точек.' : history.message ?? 'Ядро не отдало историю.'}>
+        {points.length === 0 ? (
+          <p className="text-xs text-[var(--muted)]">Точек пока нет: ядро пишет историю раз в интервал проверки.</p>
+        ) : (
+          <ul className="space-y-1 text-sm">
+            {points.map((point, index) => (
+              <li key={`${point.timestamp ?? 'point'}-${index}`} className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-1.5 last:border-0">
+                <span className="text-xs text-[var(--muted)]">{formatDate(point.timestamp ?? null)}</span>
+                <StatusPill tone={point.ok ? 'ok' : 'error'}>{point.ok ? 'ок' : 'сбой'}</StatusPill>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      <Card title="Сессии Responses" description="Прогрев поднимает сессии заранее, чтобы первый ответ не ждал.">
+        <WarmupSessions />
+      </Card>
 
       <Card title="Перезапуск" description="Ядро — мягкая остановка через API. Сайт перезапускается deploy-скриптом на сервере.">
         <RestartCore />
