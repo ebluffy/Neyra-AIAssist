@@ -378,7 +378,7 @@ interface SystemData {
     commit?: string | null;
     uptimeSeconds?: number;
     disk?: { freeBytes: number; totalBytes: number };
-    backups?: { count: number; items: string[] };
+    backups?: { configured: boolean; items: Array<{ name: string; size: number; modifiedAt: string }> };
   };
   core?: {
     health?: { state: string; message?: string | null; data?: { ok?: boolean; version?: string; uptime_seconds?: number } };
@@ -548,7 +548,7 @@ function OverviewSection({ onNavigate }: { onNavigate: (section: AdminSection) =
             <div className="flex justify-between py-1">
               <span className="text-[var(--text-muted)]">Резервные копии</span>
               <span className="font-mono text-[var(--text)]">
-                {system?.site?.backups ? `${system.site.backups.count} файлов` : '—'}
+                {system?.site?.backups ? `${system.site.backups.items.length} файлов` : '—'}
               </span>
             </div>
           </div>
@@ -1079,11 +1079,11 @@ function IntegrationsSection() {
 
           {/* Secrets status pill list */}
           <div className="pt-2 border-t border-[var(--border)] space-y-1.5">
-            <span className="text-[11px] text-[var(--text-muted)] block">Секреты провайдеров:</span>
-            <div className="grid grid-cols-2 gap-2 text-xs">
+            <span className="text-[11px] text-[var(--text-muted)] block">Ключи и секреты окружения:</span>
+            <div className="grid grid-cols-1 gap-1.5 text-xs">
               {Object.entries(secrets).map(([secKey, secStatus]) => (
                 <div key={secKey} className="flex items-center justify-between p-1.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)]">
-                  <span className="font-mono text-[10px] text-[var(--text)] truncate">{secKey}</span>
+                  <span className="font-mono text-[10px] text-[var(--text)] truncate" title={secKey}>{secKey}</span>
                   <StatusPill tone={secStatus === 'set' ? 'ok' : 'muted'}>
                     {secStatus === 'set' ? 'настроен' : 'не задан'}
                   </StatusPill>
@@ -1122,7 +1122,7 @@ function IntegrationsSection() {
                 ))}
               </ul>
             ) : (
-              <p className="text-xs text-[var(--text-muted)]">Серверы MCP не настроены в ядре.</p>
+              <p className="text-xs text-[var(--text-muted)]">Ядро не отдало список MCP-серверов. Возможно, они не загружены при старте.</p>
             )}
 
             <div className="rounded-[var(--radius-sm)] p-2.5 bg-[var(--surface-2)] border border-[var(--border)] text-[11px] text-[var(--text-subtle)] leading-relaxed">
@@ -1759,16 +1759,18 @@ function SystemSection() {
         <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
           <h4 className="text-xs font-semibold text-[var(--text)]">Резервные копии</h4>
           <span className="text-[11px] text-[var(--text-muted)]">
-            {system?.site?.backups ? `${system.site.backups.count} шт.` : '—'}
+            {system?.site?.backups ? `${system.site.backups.items.length} шт.` : '—'}
           </span>
         </div>
 
         {Array.isArray(system?.site?.backups?.items) && system.site.backups.items.length > 0 ? (
           <ul className="space-y-1 text-xs">
             {system.site.backups.items.map((file) => (
-              <li key={file} className="flex items-center justify-between py-1 border-b border-[var(--border)] last:border-0">
-                <span className="font-mono text-[var(--text)] truncate">{file}</span>
-                <span className="text-[10px] text-[var(--text-subtle)]">архив</span>
+              <li key={file.name} className="flex items-center justify-between gap-3 py-1 border-b border-[var(--border)] last:border-0">
+                <span className="font-mono text-[var(--text)] truncate">{file.name}</span>
+                <span className="shrink-0 text-[10px] text-[var(--text-subtle)]">
+                  {formatBytes(file.size)} · {file.modifiedAt.slice(0, 10)}
+                </span>
               </li>
             ))}
           </ul>
