@@ -106,7 +106,7 @@ export function ThreadPanel({
   }, [threadTitle]);
 
   // Keyboard navigation for tablist (ArrowLeft, ArrowRight, Home, End)
-  const tabList: { id: ThreadPanelTab; label: string; icon: React.ReactNode; badge?: number }[] = [
+  const tabList: { id: ThreadPanelTab; label: string; icon: React.ReactNode; badge?: number; ariaLabel?: string }[] = [
     { id: 'about', label: 'О диалоге', icon: <Info size={14} /> },
     {
       id: 'pinned',
