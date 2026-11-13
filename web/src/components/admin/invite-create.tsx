@@ -29,19 +29,24 @@ export function InviteCreate() {
       const response = await fetch('/api/admin/invites', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ttlSeconds: Number(ttl) }),
+        body: JSON.stringify({ ttlHours: Math.max(1, Math.round(Number(ttl) / 3600)) }),
       });
       const payload = await response.json().catch(() => null) as {
         ok?: boolean;
         message?: string;
         link?: string;
+        url?: string;
+        expiresAt?: string;
         invite?: { expiresAt?: string };
+        data?: { url?: string; link?: string; expiresAt?: string };
       } | null;
-      if (!response.ok || !payload?.link) {
+      const created = payload?.data ?? payload;
+      const inviteLink = created?.url ?? created?.link ?? payload?.url ?? payload?.link;
+      if (!response.ok || !inviteLink) {
         throw new Error(payload?.message ?? 'Не удалось создать приглашение.');
       }
-      setLink(payload.link);
-      setExpiresAt(payload.invite?.expiresAt ?? null);
+      setLink(inviteLink);
+      setExpiresAt(created?.expiresAt ?? payload?.invite?.expiresAt ?? null);
       router.refresh();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось создать приглашение.');
