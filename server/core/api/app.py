@@ -4671,8 +4671,23 @@ def build_app(
                             }
                         )
                     elif chunk.get("type") == "error":
+                        code = str(chunk.get("code") or "chat_error").strip() or "chat_error"
+                        message = str(chunk.get("text") or "").strip() or public_chat_error(chunk)
+                        # A provider rate limit is a different story from a generic failure:
+                        # the chat should name the limit, not "не удалось подготовить ответ".
+                        try:
+                            from core.agent.model_trace import recent_provider_rate_limit
+
+                            rate_limit = recent_provider_rate_limit(agent)
+                        except Exception:
+                            rate_limit = None
+                        if rate_limit:
+                            from core.agent.public_errors import provider_rate_limit_message
+
+                            code = "provider_rate_limit"
+                            message = provider_rate_limit_message()
                         await websocket.send_json(
-                            {"type": "error", "code": "chat_error", "message": public_chat_error(chunk), "trace_id": trace_id}
+                            {"type": "error", "code": code, "message": message, "trace_id": trace_id}
                         )
             except WebSocketDisconnect:
                 break
