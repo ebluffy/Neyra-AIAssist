@@ -6,16 +6,20 @@ import React, { useEffect, useRef, useState } from 'react';
 // идущее за курсором. Всё на transform/opacity, отключается при prefers-reduced-motion.
 // Позиции точек фиксированы, чтобы серверный и клиентский рендер совпадали.
 const DOTS = [
-  { left: '8%', top: '18%', size: 2, delay: '0s', duration: '26s' },
-  { left: '22%', top: '72%', size: 1.5, delay: '-6s', duration: '32s' },
-  { left: '37%', top: '12%', size: 1.5, delay: '-12s', duration: '28s' },
-  { left: '54%', top: '64%', size: 2, delay: '-3s', duration: '34s' },
-  { left: '68%', top: '26%', size: 1.5, delay: '-18s', duration: '30s' },
-  { left: '81%', top: '78%', size: 2, delay: '-9s', duration: '36s' },
-  { left: '91%', top: '40%', size: 1.5, delay: '-22s', duration: '27s' },
-  { left: '14%', top: '48%', size: 1.5, delay: '-15s', duration: '33s' },
-  { left: '63%', top: '88%', size: 1.5, delay: '-5s', duration: '31s' },
-  { left: '45%', top: '36%', size: 1.5, delay: '-25s', duration: '29s' },
+  { left: '8%', top: '18%', size: 3, delay: '0s', duration: '22s' },
+  { left: '22%', top: '72%', size: 2, delay: '-6s', duration: '28s' },
+  { left: '37%', top: '12%', size: 2.5, delay: '-12s', duration: '24s' },
+  { left: '54%', top: '64%', size: 3, delay: '-3s', duration: '30s' },
+  { left: '68%', top: '26%', size: 2, delay: '-18s', duration: '26s' },
+  { left: '81%', top: '78%', size: 3, delay: '-9s', duration: '32s' },
+  { left: '91%', top: '40%', size: 2, delay: '-22s', duration: '23s' },
+  { left: '14%', top: '48%', size: 2.5, delay: '-15s', duration: '29s' },
+  { left: '63%', top: '88%', size: 2, delay: '-5s', duration: '27s' },
+  { left: '45%', top: '36%', size: 2.5, delay: '-25s', duration: '25s' },
+  { left: '30%', top: '90%', size: 2, delay: '-11s', duration: '31s' },
+  { left: '76%', top: '8%', size: 2.5, delay: '-2s', duration: '21s' },
+  { left: '58%', top: '50%', size: 2, delay: '-20s', duration: '33s' },
+  { left: '96%', top: '66%', size: 2, delay: '-13s', duration: '24s' },
 ];
 
 function flag(key: string, fallback: boolean): boolean {

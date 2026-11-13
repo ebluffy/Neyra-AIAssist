@@ -25,6 +25,6 @@ describe('ChatView component', () => {
     expect(html).toContain('aria-label="Прикрепить файл"');
     // Волна 4: меню «⋮» в шапке убрано, вместо него переключатель боковой панели.
     expect(html).not.toContain('aria-label="Опции диалога"');
-    expect(html).toContain('aria-label="Скрыть панель"');
+    expect(html).toContain('aria-label="Свернуть панель"');
   });
 });

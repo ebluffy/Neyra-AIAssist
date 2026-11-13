@@ -650,26 +650,73 @@ export function ChatView({
 
       {/* Sidebar (264px) (§3) */}
       <aside
-        className={`relative z-10 fixed lg:static inset-y-0 left-0 z-50 w-[264px] bg-[var(--surface)] border-r border-[var(--border)] flex flex-col justify-between transition-transform duration-150 ease-out select-none ${
+        className={`relative z-10 fixed lg:static inset-y-0 left-0 z-50 bg-[var(--surface)] border-r border-[var(--border)] flex flex-col justify-between transition-[transform,width] duration-150 ease-out select-none ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-        } ${sidebarCollapsed ? 'lg:hidden' : ''}`}
+        } ${sidebarCollapsed ? 'w-[264px] lg:w-[64px]' : 'w-[264px]'}`}
         aria-label="Боковая панель"
       >
+        {/* Рейл: только иконки, без названий */}
+        {sidebarCollapsed && (
+          <div className="hidden lg:flex flex-col items-center gap-1.5 p-2">
+            <IconButton
+              aria-label="Развернуть панель"
+              tooltip="Развернуть панель"
+              icon={<PanelLeft size={16} />}
+              variant="ghost"
+              size="md"
+              onClick={() => {
+                setSidebarCollapsed(false);
+                try { window.localStorage.setItem('neyra:sidebar-collapsed', '0'); } catch {}
+              }}
+            />
+            <IconButton
+              aria-label={ru.newChat}
+              tooltip={ru.newChat}
+              icon={<Plus size={16} />}
+              variant="secondary"
+              size="md"
+              onClick={startNewChat}
+            />
+            <IconButton
+              aria-label="Настройки"
+              tooltip="Настройки"
+              icon={<Settings size={16} />}
+              variant="ghost"
+              size="md"
+              onClick={() => setSettingsOpen(true)}
+            />
+          </div>
+        )}
+
         {/* Top: Logo & New Chat button */}
-        <div className="p-4 space-y-4">
+        <div className={`p-4 space-y-4 ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
           <div className="flex items-center justify-between">
             <Link href="/" className="flex items-center gap-2.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] rounded-[var(--radius-sm)]">
               <NeyraLogo size={24} />
               <span className="text-[16px] font-semibold tracking-tight text-[var(--text)]">Neyra</span>
             </Link>
-            <IconButton
-              aria-label="Закрыть панель"
-              icon={<X size={16} />}
-              variant="ghost"
-              size="sm"
-              className="lg:hidden"
-              onClick={() => setSidebarOpen(false)}
-            />
+            <span className="flex items-center gap-1">
+              <IconButton
+                aria-label="Свернуть панель"
+                tooltip="Свернуть панель"
+                icon={<PanelLeft size={15} />}
+                variant="ghost"
+                size="sm"
+                className="hidden lg:inline-flex"
+                onClick={() => {
+                  setSidebarCollapsed(true);
+                  try { window.localStorage.setItem('neyra:sidebar-collapsed', '1'); } catch {}
+                }}
+              />
+              <IconButton
+                aria-label="Закрыть панель"
+                icon={<X size={16} />}
+                variant="ghost"
+                size="sm"
+                className="lg:hidden"
+                onClick={() => setSidebarOpen(false)}
+              />
+            </span>
           </div>
 
           <Button
@@ -696,7 +743,7 @@ export function ChatView({
         </div>
 
         {/* Bottom: User Card & Profile Popover (§5.1) */}
-        <div className="relative p-3 border-t border-[var(--border)] bg-[var(--surface)]">
+        <div className={`relative border-t border-[var(--border)] bg-[var(--surface)] ${sidebarCollapsed ? 'lg:p-2' : 'p-3'}`}>
           <button
             ref={profileTriggerRef}
             type="button"
@@ -704,17 +751,19 @@ export function ChatView({
             aria-expanded={profileMenuOpen}
             aria-label="Меню профиля пользователя"
             onClick={() => setProfileMenuOpen(prev => !prev)}
-            className="w-full flex items-center justify-between gap-2 p-1.5 -m-1.5 rounded-[var(--radius-sm)] hover:bg-[var(--surface-2)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+            className={`w-full flex items-center gap-2 p-1.5 -m-1.5 rounded-[var(--radius-sm)] hover:bg-[var(--surface-2)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] ${
+              sidebarCollapsed ? 'lg:justify-center lg:p-0 lg:m-0' : 'justify-between'
+            }`}
           >
             <div className="flex items-center gap-2 min-w-0">
               <Avatar name={user.name} email={user.email} size={26} />
-              <div className="min-w-0 flex flex-col">
+              <div className={`min-w-0 flex flex-col ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
                 <span className="text-xs font-medium text-[var(--text)] truncate">
                   {user.name && user.name !== user.email ? user.name : user.email}
                 </span>
               </div>
             </div>
-            <span className="text-[10px] text-[var(--text-subtle)] border border-[var(--border)] rounded px-1.5 py-0.5 shrink-0">
+            <span className={`text-[10px] text-[var(--text-subtle)] border border-[var(--border)] rounded px-1.5 py-0.5 shrink-0 ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
               {user.role === 'admin' ? 'Администратор' : 'Пользователь'}
             </span>
           </button>
@@ -784,23 +833,13 @@ export function ChatView({
           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 mr-2">
             <IconButton
               type="button"
-              aria-label={sidebarCollapsed ? 'Показать панель' : 'Скрыть панель'}
-              tooltip={sidebarCollapsed ? 'Показать панель' : 'Скрыть панель'}
+              aria-label="Открыть панель"
+              tooltip="Открыть панель"
               icon={<PanelLeft size={18} />}
               variant="ghost"
               size="md"
-              className="text-[var(--text-muted)] shrink-0"
-              onClick={() => {
-                if (typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches) {
-                  setSidebarCollapsed(prev => {
-                    const next = !prev;
-                    try { window.localStorage.setItem('neyra:sidebar-collapsed', next ? '1' : '0'); } catch {}
-                    return next;
-                  });
-                } else {
-                  setSidebarOpen(true);
-                }
-              }}
+              className="lg:hidden text-[var(--text-muted)] shrink-0"
+              onClick={() => setSidebarOpen(true)}
             />
             <h1
               className="text-[15px] font-medium text-[var(--text)] truncate min-w-0 max-w-[260px] sm:max-w-[400px] md:max-w-xl"
