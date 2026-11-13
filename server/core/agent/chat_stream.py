@@ -37,6 +37,7 @@ async def iter_chat_stream(
     avatar_url: Optional[str] = None,
     discord_context=None,
     person_id: Optional[str] = None,
+    progress: bool = False,
 ) -> AsyncIterator[dict]:
     """Yield token/error/done chunks for streaming chat."""
     try:
@@ -55,6 +56,8 @@ async def iter_chat_stream(
             person_id=person_id,
         )
         if fp is not None:
+            if progress:
+                yield {"type": "phase", "phase": "answer"}
             text = str(fp.get("text") or "")
             if text:
                 yield {"type": "token", "text": text}
@@ -73,6 +76,8 @@ async def iter_chat_stream(
             raise
         logger.warning("fast_path (stream) failed (soft, continue brain): %s", fp_e)
 
+    if progress:
+        yield {"type": "phase", "phase": "retrieval"}
     prep = await prepare_turn(
         agent,
         user_message=user_message,
@@ -104,6 +109,8 @@ async def iter_chat_stream(
         except Exception as thr_e:
             logger.warning("session_archive stm_threshold failed (soft): %s", thr_e)
 
+        if progress:
+            yield {"type": "phase", "phase": "plan"}
         caption_ok = (prep.attached_caption or "").strip()
         try:
             brain_context = await agent._run_brain_tool_phase(
@@ -134,6 +141,8 @@ async def iter_chat_stream(
             }
             return
 
+        if progress:
+            yield {"type": "phase", "phase": "answer"}
         system_prompt = build_talk_system_prompt(agent, prep, brain_context=brain_context)
         stream_llm = agent.llm_talk
         if prep.lyrics_mode:
@@ -156,6 +165,7 @@ async def iter_chat_stream(
         )
         final_messages_used = messages
 
+        provider_usage = {}
         raw_response = ""
         context_exceeded = False
         clip_visible = responses_output_exceeds_visible(agent, stream_llm, prep.lyrics_mode)
@@ -170,6 +180,7 @@ async def iter_chat_stream(
         def reset_hidden_attempt():
             nonlocal raw_response, plan_state, reasoning_filter, raw_chunk_count, used_model_name
             raw_response = ""
+            provider_usage.clear()
             plan_state = agent._init_micro_plan_state()
             reasoning_filter = ReasoningFilter()
             raw_chunk_count = 0
@@ -211,6 +222,8 @@ async def iter_chat_stream(
 
             async with aclosing(stream_iter):
                 async for chunk in stream_iter:
+                    from core.agent.chat_progress import collect_provider_usage
+                    collect_provider_usage(chunk, provider_usage)
                     if used_model_name is None:
                         used_model_name = agent._extract_model_name(chunk)
                     token = chunk.content if hasattr(chunk, "content") else str(chunk)
@@ -296,6 +309,7 @@ async def iter_chat_stream(
                 )
                 final_messages_used = messages_retry
                 raw_response = ""
+                provider_usage.clear()
                 plan_state = agent._init_micro_plan_state()
                 reasoning_filter = ReasoningFilter()
                 try:
@@ -374,7 +388,10 @@ async def iter_chat_stream(
         log_micro_plan_metrics(agent)
         logger.debug("Стрим завершён | sounds=%s | len=%s", sounds, len(clean_text))
 
+        from core.agent.chat_progress import public_usage
+        usage = public_usage(provider_usage)
         yield {
+            **({"usage": usage} if usage is not None else {}),
             "type": "done",
             "text": clean_text,
             "sounds": sounds,

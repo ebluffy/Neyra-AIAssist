@@ -31,6 +31,7 @@ python-dotenv>=1.0.0
 # ── Utils ────────────────────────────────────────────────────
 python-dateutil>=2.9.0
 rich>=13.0.0
+pypdf==6.21.4  # Bounded PDF attachment extraction worker
 Pillow>=10.0.0  # сжатие картинок для vision (до 1024×768 и т.п.)
 
 # ── Discord Text Bot (+ voice for music / Lavalink) ─────────────────────────

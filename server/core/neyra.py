@@ -817,6 +817,7 @@ class NeyraAgent:
         avatar_url: Optional[str] = None,
         discord_context: DiscordContext | None = None,
         person_id: Optional[str] = None,
+        progress: bool = False,
     ):
         """
         Стриминговый чат — yield'ит токены сразу как модель их генерирует.
@@ -852,7 +853,7 @@ class NeyraAgent:
             channel_id=channel_id, author_display_name=author_display_name,
             lyrics_marker=LYRICS_REQUEST_MARKER, avatar_url=avatar_url,
             discord_context=discord_context,
-            person_id=person_id,
+            person_id=person_id, progress=progress,
         )
         try:
             await self._enter_talk_session(trace, discord_user_id, username, channel_id, discord_context, person_id)

@@ -650,6 +650,14 @@ class DashboardRotateRequest(_ApiBody):
     new_key: str = Field(min_length=MIN_KEY_LEN, max_length=256)
 
 
+class StoredAttachment(_ApiBody):
+    id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    kind: Literal['image', 'file']
+    mime: Literal['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/pdf', 'text/plain', 'text/markdown']
+    name: str = Field(min_length=1, max_length=200)
+    size: int = Field(strict=True, gt=0, le=8 * 1024 * 1024)
+
+
 class WsChatMessage(_ApiBody):
     type: Literal["ping", "chat"]
     text: str = Field(default="", max_length=6000)
@@ -659,6 +667,7 @@ class WsChatMessage(_ApiBody):
     author_display_name: Optional[str] = Field(default=None, max_length=120)
     display_name: Optional[str] = Field(default=None, max_length=120)
     discord_context: DiscordContext | None = None
+    attachments: list[StoredAttachment] = Field(default_factory=list, max_length=4)
 
 
 def _utc_now() -> str:
@@ -1623,6 +1632,64 @@ def build_app(
         if extra:
             row.update(extra)
         _audit_file_append(config, root, row)
+
+    from core.api.attachments import AttachmentError, AttachmentStore, MAX_FILE_SIZE, MAX_FILES
+    attachment_store = AttachmentStore(resolve_data_dir(root, config) / "attachments")
+
+    def _attachment_owner(connection):
+        identity = getattr(connection.state, "web_identity", None)
+        if identity is not None:
+            return "web:" + identity.user_id
+        authorization = connection.headers.get("authorization", "")
+        if not authorization and connection.scope["type"] == "websocket" and connection.query_params.get("token"):
+            authorization = "Bearer " + connection.query_params["token"]
+        if not api_tokens_configured(config) or not authorization.startswith("Bearer "):
+            raise ApiError("unauthorized", "Нужна авторизация владельца вложения.", 401)
+        return "api:" + hashlib.sha256(authorization.encode()).hexdigest()
+
+    @app.post("/v1/attachments")
+    async def v1_attachments(request: Request, _: str = Depends(dep_admin)):
+        from starlette.datastructures import UploadFile as StarletteUploadFile
+        from starlette.exceptions import HTTPException
+        from starlette.formparsers import MultiPartException
+
+        owner = _attachment_owner(request)
+        max_body = MAX_FILES * MAX_FILE_SIZE + 64 * 1024
+        overflow = False
+        received = 0
+        async def bounded_receive():
+            nonlocal received, overflow
+            message = await request.receive()
+            received += len(message.get("body", b""))
+            if received > max_body:
+                overflow = True
+                # Multipart parser closes its temporary files on MultiPartException.
+                raise MultiPartException("attachment body limit")
+            return message
+        bounded = Request(request.scope, bounded_receive)
+        try:
+            async with bounded.form(max_files=MAX_FILES, max_fields=1, max_part_size=MAX_FILE_SIZE) as form:
+                channel = form.get("channel_id")
+                if not isinstance(channel, str) or not channel.strip() or len(channel) > 120:
+                    raise AttachmentError("attachment_channel", "Укажите канал вложения.")
+                files = form.getlist("files")
+                if not 1 <= len(files) <= MAX_FILES or any(not isinstance(f, StarletteUploadFile) for f in files):
+                    raise AttachmentError("attachment_count", "Можно прикрепить от 1 до 4 файлов.")
+                payloads = [(f.filename or 'file', f.content_type or '', await f.read(MAX_FILE_SIZE + 1)) for f in files]
+                saved = await asyncio.to_thread(attachment_store.save_batch, owner, channel.strip(), payloads)
+        except AttachmentError as error:
+            raise ApiError(error.code, error.message, error.status)
+        except HTTPException:
+            raise ApiError("attachment_size" if overflow else "invalid_multipart", "Превышен лимит загрузки." if overflow else "Неверный multipart или больше 4 файлов.", 413 if overflow else 400)
+        return {"ok": True, "trace_id": _trace_id(request), "data": {"attachments": saved}}
+
+    @app.get("/v1/attachments/{attachment_id}")
+    async def v1_attachment(attachment_id: str, request: Request, channel_id: str = Query(min_length=1, max_length=120), _: str = Depends(dep_admin)):
+        try:
+            meta, path = await asyncio.to_thread(attachment_store.load, attachment_id, _attachment_owner(request), channel_id)
+        except AttachmentError as error:
+            raise ApiError(error.code, error.message, error.status)
+        return FileResponse(path, media_type=meta['mime'], filename=meta['name'])
 
     @app.get("/v1/web/me")
     async def v1_web_me(request: Request, _: str = Depends(dep_viewer)):
@@ -4400,8 +4467,17 @@ def build_app(
 
             ws_identity = websocket.scope.get("state", {}).get("web_identity")
             try:
+                vision_images, attachment_text = await asyncio.to_thread(
+                    attachment_store.resolve_for_chat, parsed.attachments, _attachment_owner(websocket), channel_id,
+                ) if parsed.attachments else (None, '')
+            except (AttachmentError, ApiError) as error:
+                await websocket.send_json({"type": "error", "code": error.code, "message": error.message, "trace_id": trace_id})
+                continue
+            phases = set()
+            try:
                 async for chunk in agent.chat_stream(
-                    text,
+                    text + attachment_text,
+                    vision_images=vision_images, progress=True,
                     username=ws_identity.person_id if ws_identity is not None else username,
                     discord_user_id=None if ws_identity is not None else platform_user_id,
                     channel_id=channel_id,
@@ -4409,23 +4485,31 @@ def build_app(
                     person_id=getattr(ws_identity, "person_id", None),
                     **({"discord_context": parsed.discord_context} if ws_identity is None and parsed.discord_context is not None else {}),
                 ):
-                    if chunk.get("type") == "token":
+                    if chunk.get("type") == "phase":
+                        from core.agent.chat_progress import PHASES
+                        phase = chunk.get("phase")
+                        if phase in PHASES and phase not in phases:
+                            phases.add(phase)
+                            await websocket.send_json({"type": "phase", "phase": phase, "label": PHASES[phase]})
+                    elif chunk.get("type") == "token":
                         await websocket.send_json(
                             {"type": "token", "text": chunk.get("text", ""), "trace_id": trace_id}
                         )
                     elif chunk.get("type") == "done":
+                        from core.agent.chat_progress import public_usage
+                        usage = public_usage(chunk.get("usage"))
                         await websocket.send_json(
                             {
                                 "type": "done",
                                 "text": chunk.get("text", ""),
                                 "sounds": chunk.get("sounds", []),
-                                "model_trace": chunk.get("model_trace"),
+                                **({"usage": usage} if usage is not None else {}),
                                 "trace_id": trace_id,
                             }
                         )
                     elif chunk.get("type") == "error":
                         await websocket.send_json(
-                            {"type": "error", "code": "chat_error", "message": public_chat_error(chunk), "model_trace": chunk.get("model_trace"), "trace_id": trace_id}
+                            {"type": "error", "code": "chat_error", "message": public_chat_error(chunk), "trace_id": trace_id}
                         )
             except WebSocketDisconnect:
                 break
