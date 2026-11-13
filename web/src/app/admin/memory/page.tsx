@@ -1,4 +1,5 @@
 import { coreGet } from '../../../../lib/core-admin';
+import { ExportPeople } from '../../../components/admin/export-button';
 import { Card, EmptyState, PageHeader, Stat, StatusPill, tableClass, tdClass, thClass } from '../../../components/admin/ui';
 
 export const dynamic = 'force-dynamic';
@@ -106,10 +107,19 @@ export default async function AdminMemoryPage({ searchParams }: {
             </table>
           </div>
         )}
-        <p className="mt-3 flex items-center gap-2 text-xs text-[var(--muted)]">
-          <StatusPill tone="muted">только чтение</StatusPill>
-          Найдено: {filtered.length} из {rows.length} загруженных (ядро отдаёт до 500).
-        </p>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--muted)]">
+          <span className="flex items-center gap-2">
+            <StatusPill tone="muted">только чтение</StatusPill>
+            Найдено: {filtered.length} из {rows.length} загруженных (ядро отдаёт до 500).
+          </span>
+          <ExportPeople people={filtered.slice(0, 200).map(person => ({
+            id: person.id ?? '',
+            displayName: person.display_name ?? '',
+            names: person.names ?? [],
+            accounts: person.accounts ?? [],
+            discordIds: person.discord_ids ?? [],
+          }))} />
+        </div>
       </Card>
     </div>
   );
