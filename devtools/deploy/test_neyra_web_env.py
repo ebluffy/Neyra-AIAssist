@@ -54,9 +54,9 @@ def test_issuer_defaults_to_neyra_web_in_both_envs(tmp_path: Path) -> None:
         tmp_path,
         "web",
         "DATABASE_URL='postgres://x'\n"
-        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n",
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n",  # gitleaks:allow — фиктивная фикстура теста
     )
-    core = make_env(tmp_path, "core", "API_TOKEN='core-service-key'\n")
+    core = make_env(tmp_path, "core", "API_TOKEN='core-service-key'\n")  # gitleaks:allow — фиктивная фикстура теста
 
     first = run_sync(tmp_path, web, core)
     assert first.returncode == 0, first.stderr
@@ -82,14 +82,14 @@ def test_existing_matching_issuer_is_not_rewritten(tmp_path: Path) -> None:
         tmp_path,
         "web",
         "DATABASE_URL='postgres://x'\n"
-        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"  # gitleaks:allow — фиктивная фикстура теста
         "NEYRA_IDENTITY_JWT_ISSUER='custom-issuer'\n",
     )
     core = make_env(
         tmp_path,
         "core",
-        "API_TOKEN='core-service-key'\n"
-        "NEYRA_IDENTITY_JWT_SECRET='shared-secret-0123456789abcdef0123456789abcd'\n"
+        "API_TOKEN='core-service-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "NEYRA_IDENTITY_JWT_SECRET='shared-secret-0123456789abcdef0123456789abcd'\n"  # gitleaks:allow — фиктивная фикстура теста
         "NEYRA_IDENTITY_JWT_ISSUER='custom-issuer'\n",
     )
     result = run_sync(tmp_path, web, core)
@@ -108,14 +108,14 @@ def test_mismatched_web_issuer_is_brought_to_core_with_warning(tmp_path: Path) -
         tmp_path,
         "web",
         "DATABASE_URL='postgres://x'\n"
-        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"  # gitleaks:allow — фиктивная фикстура теста
         "NEYRA_IDENTITY_JWT_ISSUER='old-issuer'\n",
     )
     core = make_env(
         tmp_path,
         "core",
-        "API_TOKEN='core-service-key'\n"
-        "NEYRA_IDENTITY_JWT_SECRET='shared-secret-0123456789abcdef0123456789abcd'\n"
+        "API_TOKEN='core-service-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "NEYRA_IDENTITY_JWT_SECRET='shared-secret-0123456789abcdef0123456789abcd'\n"  # gitleaks:allow — фиктивная фикстура теста
         "NEYRA_IDENTITY_JWT_ISSUER='core-issuer'\n",
     )
 
@@ -136,10 +136,10 @@ def test_web_only_issuer_is_adopted_by_core(tmp_path: Path) -> None:
         tmp_path,
         "web",
         "DATABASE_URL='postgres://x'\n"
-        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"  # gitleaks:allow — фиктивная фикстура теста
         "NEYRA_IDENTITY_JWT_ISSUER='web-issuer'\n",
     )
-    core = make_env(tmp_path, "core", "API_TOKEN='core-service-key'\n")
+    core = make_env(tmp_path, "core", "API_TOKEN='core-service-key'\n")  # gitleaks:allow — фиктивная фикстура теста
 
     result = run_sync(tmp_path, web, core)
     assert result.returncode == 0, result.stderr
