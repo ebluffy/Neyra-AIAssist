@@ -12,6 +12,11 @@ import { DELETE as revokeInviteRoute } from '../src/app/api/admin/invites/[id]/r
 import { GET as listLogs } from '../src/app/api/admin/logs/route';
 import { GET as getCoreConfig, PUT as putCoreConfig } from '../src/app/api/admin/config/route';
 import { GET as getLogTail } from '../src/app/api/admin/logs/tail/route';
+import { GET as discordGuilds } from '../src/app/api/admin/discord/guilds/route';
+import { GET as discordGuild } from '../src/app/api/admin/discord/guilds/[guildId]/route';
+import { GET as discordMembers } from '../src/app/api/admin/discord/members/route';
+import { GET as discordUserStats } from '../src/app/api/admin/discord/users/[personId]/stats/route';
+import { GET as discordMessages } from '../src/app/api/admin/discord/messages/route';
 
 const RUN = Boolean(process.env.AUTH_INTEGRATION_DATABASE_URL);
 const BASE = 'http://localhost:3000';
@@ -291,5 +296,30 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
       body: JSON.stringify({ updates: {} }),
     }));
     expect(invalid.status).toBe(400);
+  });
+
+  it('закрывает каталог Discord от гостя и обычного пользователя', async () => {
+    const guildParams = { params: Promise.resolve({ guildId: 'g1' }) };
+    const statsParams = { params: Promise.resolve({ personId: 'p1' }) };
+    const calls: Array<[string, Promise<Response>]> = [
+      ['guilds', discordGuilds(adminRequest('/api/admin/discord/guilds'))],
+      ['guild', discordGuild(adminRequest('/api/admin/discord/guilds/g1'), guildParams)],
+      ['members', discordMembers(adminRequest('/api/admin/discord/members'))],
+      ['stats', discordUserStats(adminRequest('/api/admin/discord/users/p1/stats'), statsParams)],
+      ['messages', discordMessages(adminRequest('/api/admin/discord/messages'))],
+    ];
+    for (const [name, pending] of calls) {
+      expect((await pending).status, name).toBe(401);
+    }
+    const memberCalls: Array<[string, Promise<Response>]> = [
+      ['guilds', discordGuilds(adminRequest('/api/admin/discord/guilds', state.memberCookie))],
+      ['guild', discordGuild(adminRequest('/api/admin/discord/guilds/g1', state.memberCookie), guildParams)],
+      ['members', discordMembers(adminRequest('/api/admin/discord/members', state.memberCookie))],
+      ['stats', discordUserStats(adminRequest('/api/admin/discord/users/p1/stats', state.memberCookie), statsParams)],
+      ['messages', discordMessages(adminRequest('/api/admin/discord/messages', state.memberCookie))],
+    ];
+    for (const [name, pending] of memberCalls) {
+      expect((await pending).status, name).toBe(403);
+    }
   });
 });
