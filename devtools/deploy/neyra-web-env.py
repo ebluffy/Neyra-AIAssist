@@ -3,6 +3,9 @@
 
 Идемпотентно. Секреты (service key, identity secret) всегда приводятся к значениям
 ядра; URL заполняются только если пусты, чтобы не затирать явную настройку.
+Identity-issuer — одно значение для ядра и сайта: по умолчанию "neyra-web";
+уже заданное непустое не перезаписывается, расхождение сайта с ядром
+приводится к значению ядра с предупреждением.
 Коды выхода: 0 — всё связано; 2 — частично (чат не готов), 1 — фатальная ошибка.
 """
 from __future__ import annotations
@@ -19,6 +22,7 @@ from env_parse import parse_env, read_env  # noqa: E402
 WEB_ENV = Path(os.environ.get("WEB", "/opt/neyra/web")) / ".env"
 CORE_DIR = Path(os.environ.get("CORE", "/opt/neyra/server"))
 CORE_ENV = CORE_DIR / ".env"
+DEFAULT_ISSUER = "neyra-web"
 
 def serialize(key: str, value: str) -> str:
     # Одинарные кавычки понимают и systemd EnvironmentFile, и dotenv; shell-раскрытия нет.
@@ -86,6 +90,8 @@ def main() -> int:
 
     service_key = (core.get("API_TOKEN") or core.get("API_KEY") or "").strip()
     identity_secret = (core.get("NEYRA_IDENTITY_JWT_SECRET") or "").strip()
+    core_issuer = (core.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip()
+    web_issuer = (web.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip()
     core_ok = CORE_ENV.is_file()
 
     status = 0
@@ -97,8 +103,38 @@ def main() -> int:
             print(f"нет {CORE_ENV}: секрет identity записан только сайту, чат не заработает", file=sys.stderr)
             status = 2
 
-    port = core_port()
     updates: dict[str, str] = {}
+    # Issuer (#73): ядро требует NEYRA_IDENTITY_JWT_ISSUER без дефолта, сайт подписывает
+    # iss ровно им. Одно значение на оба .env: заданное непустое не трогаем, при
+    # расхождении сайта с ядром приводим сайт к ядру (сайт обязан совпадать).
+    if not core_issuer and not web_issuer:
+        core_issuer = DEFAULT_ISSUER
+        web_issuer = DEFAULT_ISSUER
+        if core_ok:
+            core_changed = True
+        else:
+            print(f"нет {CORE_ENV}: issuer '{DEFAULT_ISSUER}' записан только сайту", file=sys.stderr)
+            status = 2
+        updates["NEYRA_IDENTITY_JWT_ISSUER"] = web_issuer
+    elif not core_issuer:
+        # В ядре пусто, у сайта задано — одно значение на двоих: перенимаем сайтовское.
+        core_issuer = web_issuer
+        if core_ok:
+            core_changed = True
+        else:
+            print(f"нет {CORE_ENV}: issuer сайта не записан ядру", file=sys.stderr)
+            status = 2
+    elif not web_issuer:
+        updates["NEYRA_IDENTITY_JWT_ISSUER"] = core_issuer
+    elif web_issuer != core_issuer:
+        print(
+            f"внимание: issuer сайта отличается от ядра — сайт приведён к '{core_issuer}'",
+            file=sys.stderr,
+        )
+        updates["NEYRA_IDENTITY_JWT_ISSUER"] = core_issuer
+        web_issuer = core_issuer
+
+    port = core_port()
     for key, value in (("NEYRA_WS_URL", f"ws://127.0.0.1:{port}"),
                        ("NEYRA_API_URL", f"http://127.0.0.1:{port}")):
         if not (web.get(key) or "").strip():
@@ -117,8 +153,14 @@ def main() -> int:
             raise ValueError(f"{key}: значение не переживает запись в .env")
 
     if core_changed:
-        write_atomic(CORE_ENV, {"NEYRA_IDENTITY_JWT_SECRET": identity_secret})
-        print(f"секрет identity добавлен в {CORE_ENV} (значение не печатаю)")
+        core_updates = {}
+        if not (core.get("NEYRA_IDENTITY_JWT_SECRET") or "").strip():
+            core_updates["NEYRA_IDENTITY_JWT_SECRET"] = identity_secret
+        if (core.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip() != core_issuer:
+            core_updates["NEYRA_IDENTITY_JWT_ISSUER"] = core_issuer
+        if core_updates:
+            write_atomic(CORE_ENV, core_updates)
+            print(f"identity (секрет/issuer) добавлен в {CORE_ENV} (значения не печатаю)")
     if updates:
         write_atomic(WEB_ENV, updates)
 

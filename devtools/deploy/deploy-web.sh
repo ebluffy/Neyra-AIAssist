@@ -33,7 +33,7 @@ if ! python3 "$ENV_LOADER" "$ENV_FILE" > "$TMP_ENV"; then
   exit 1
 fi
 while IFS= read -r -d '' kv; do export "$kv"; done < "$TMP_ENV"
-for v in NEYRA_WS_URL NEYRA_SERVICE_KEY NEYRA_IDENTITY_JWT_SECRET; do
+for v in NEYRA_WS_URL NEYRA_SERVICE_KEY NEYRA_IDENTITY_JWT_SECRET NEYRA_IDENTITY_JWT_ISSUER; do
   if [ -z "${!v:-}" ]; then echo "внимание: $v пуст — чат сайта вернёт 503" >&2; fi
 done
 
