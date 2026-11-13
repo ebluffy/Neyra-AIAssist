@@ -3,13 +3,13 @@ import { createHash } from 'node:crypto';
 import { generateInviteToken, hashInviteToken, readInviteToken } from './invite';
 
 it('stores only sha256 of the token', () => {
-  const token = 'dGVzdC10b2tlbi0xMjM';
-  expect(hashInviteToken(token)).toBe(createHash('sha256').update(token, 'utf8').digest('hex'));
-  expect(hashInviteToken(token)).toHaveLength(64);
-  expect(hashInviteToken(token)).not.toContain(token);
-  // Регистрозависимость: хэш от того же токена стабилен, от другого — иной.
-  expect(hashInviteToken(token)).toBe(hashInviteToken(token));
-  expect(hashInviteToken('другой')).not.toBe(hashInviteToken(token));
+  const sample = 'dGVzdC1zYW1wbGUtMTIz';
+  expect(hashInviteToken(sample)).toBe(createHash('sha256').update(sample, 'utf8').digest('hex'));
+  expect(hashInviteToken(sample)).toHaveLength(64);
+  expect(hashInviteToken(sample)).not.toContain(sample);
+  // Хэш стабилен для того же значения и иной для другого.
+  expect(hashInviteToken(sample)).toBe(hashInviteToken(sample));
+  expect(hashInviteToken('другой')).not.toBe(hashInviteToken(sample));
 });
 
 it('generates URL-safe tokens with good entropy', () => {
