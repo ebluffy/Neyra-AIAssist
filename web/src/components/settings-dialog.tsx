@@ -68,8 +68,8 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: (nex
       }`}
     >
       <span
-        className={`absolute top-0.5 h-3.5 w-3.5 rounded-full transition-transform duration-150 ${
-          checked ? 'translate-x-[18px] bg-[var(--accent-ink)]' : 'translate-x-0.5 bg-[var(--text-muted)]'
+        className={`absolute left-0.5 top-0.5 h-3.5 w-3.5 rounded-full transition-transform duration-150 ${
+          checked ? 'translate-x-[18px] bg-[var(--accent-ink)]' : 'translate-x-0 bg-[var(--text-muted)]'
         }`}
       />
     </button>

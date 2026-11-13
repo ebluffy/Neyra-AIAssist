@@ -28,17 +28,17 @@ function Switch({
       aria-checked={checked}
       aria-label={label}
       onClick={() => onChange(!checked)}
-      className={`relative h-7 w-12 rounded-full border transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] ${
+      className={`relative h-7 w-12 shrink-0 rounded-full border p-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] ${
         checked
           ? 'bg-[var(--accent)] border-[var(--accent)]'
           : 'bg-[var(--surface-3)] border-[var(--border-strong)]'
       }`}
     >
       <span
-        className={`absolute top-1 h-5 w-5 rounded-full transition-transform duration-150 ${
+        className={`absolute left-1 top-1 h-5 w-5 rounded-full transition-transform duration-150 ${
           checked
             ? 'translate-x-[22px] bg-[var(--accent-ink)]'
-            : 'translate-x-1 bg-[var(--text-muted)]'
+            : 'translate-x-0 bg-[var(--text-muted)]'
         }`}
       />
     </button>
