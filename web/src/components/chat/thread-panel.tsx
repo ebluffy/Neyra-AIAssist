@@ -124,7 +124,7 @@ export function ThreadPanel({
           : undefined,
     },
     { id: 'voice', label: 'Голос', icon: <Mic size={14} /> },
-    { id: 'settings', label: 'Настройки треда', icon: <Settings size={14} /> },
+    { id: 'settings', label: 'Настройки', icon: <Settings size={14} /> },
   ];
 
   const handleTabKeyDown = (e: React.KeyboardEvent, index: number) => {
@@ -203,7 +203,7 @@ export function ThreadPanel({
         <div
           role="tablist"
           aria-label="Вкладки панели треда"
-          className="flex items-center border-b border-[var(--border)] bg-[var(--surface-2)]/50 px-2 py-1 gap-1 overflow-x-auto no-scrollbar shrink-0"
+          className="flex flex-wrap items-center border-b border-[var(--border)] bg-[var(--surface-2)]/50 px-2 py-1 gap-1 shrink-0"
         >
           {tabList.map((tab, idx) => {
             const isSelected = activeTab === tab.id;
