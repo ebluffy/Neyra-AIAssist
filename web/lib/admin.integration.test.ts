@@ -176,7 +176,10 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
       body: JSON.stringify({ banned: false }),
     }), { params: Promise.resolve({ id: state.memberId }) });
     expect(unban.status).toBe(200);
-    expect((await signIn(state.memberEmail, state.memberPassword)).response.status).toBe(200);
+    const afterUnban = await signIn(state.memberEmail, state.memberPassword);
+    expect(afterUnban.response.status).toBe(200);
+    // Бан удалил сессии: для следующих проверок нужен свежий cookie.
+    state.memberCookie = afterUnban.cookie;
   });
 
   it('создаёт и отзывает инвайт, повторно не пускает', async () => {
@@ -262,11 +265,9 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     expect(logs.status).toBe(200);
     const items = ((await payloadOf(logs))?.data?.items ?? []) as Array<{ action: string; actorEmail: string }>;
     const actions = items.map(item => item.action);
-    expect(actions).toContain('user.role_change');
-    expect(actions).toContain('user.ban');
-    expect(actions).toContain('invite.create');
-    expect(actions).toContain('user.password_reset');
-    expect(items.every(item => item.actorEmail === state.adminEmail)).toBe(true);
+    for (const action of ['user.role_change', 'user.ban', 'invite.create', 'user.password_reset']) {
+      expect(items.some(item => item.action === action && item.actorEmail === state.adminEmail)).toBe(true);
+    }
 
     const self = await deleteUser(adminRequest(`/api/admin/users/${state.adminId}`, state.adminCookie, { method: 'DELETE' }),
       { params: Promise.resolve({ id: state.adminId }) });

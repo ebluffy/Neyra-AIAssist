@@ -51,10 +51,12 @@ export function ModelsForm({ lanes, providers }: { lanes: Record<string, LaneCon
       [`llm.${lane}_model.provider`]: form.provider,
       [`llm.${lane}_model.model`]: form.model.trim(),
     };
+    // talk ограничивает видимый ответ через reply_max_tokens, max_tokens там не читается.
+    const maxTokensField = lane === 'talk' ? 'reply_max_tokens' : 'max_tokens';
     const numbers: Array<[string, string]> = [
       ['temperature', form.temperature],
       ['context_window', form.context_window],
-      ['max_tokens', form.max_tokens],
+      [maxTokensField, form.max_tokens],
     ];
     for (const [field, raw] of numbers) {
       if (!raw.trim()) continue;
