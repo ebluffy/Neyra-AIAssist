@@ -2,7 +2,8 @@ import { z } from 'zod';
 const identity = { username: z.string().max(120).optional(), platform_user_id: z.string().max(120).optional(), channel_id: z.string().max(120).optional(), author_display_name: z.string().max(120).optional(), platform: z.string().max(40).optional() };
 // Target v2 contract (§9/§15). model/attachments/stop require P1 core support.
 export const AttachmentSchema = z.object({ kind: z.enum(['image', 'file', 'audio', 'text']), path: z.string().optional(), url: z.string().url().optional(), mime: z.string().min(1), text: z.string().optional() }).strict().refine(v => !!(v.path || v.url || v.text), 'Attachment requires a source');
-export const ChatRequestSchema = z.object({ text: z.string().min(1).max(6000), chat_id: z.string().uuid().optional(), ...identity, model: z.string().min(1).optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
+// Личность пользователя подписывает BFF из сессии; клиент не может её прислать.
+export const ChatRequestSchema = z.object({ text: z.string().min(1).max(6000), chat_id: z.string().uuid().optional(), model: z.string().min(1).optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 export const ChatMessageSchema = z.object({ id: z.union([z.string(), z.number()]).optional(), turn_id: z.string().optional(), request_id: z.string().uuid().optional(), role: z.enum(['user', 'assistant', 'system']), content: z.string(), model: z.string().optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;

@@ -1,5 +1,8 @@
 name: Client monorepo verify
-on: [push, pull_request]
+on:
+  push:
+    branches: [main, reform/neyra-v2]
+  pull_request:
 permissions:
   contents: read
 jobs:

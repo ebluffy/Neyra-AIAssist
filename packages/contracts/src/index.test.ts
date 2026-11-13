@@ -7,6 +7,8 @@ it('validates chat text, chat_id UUID, and forbids unknown keys', () => {
   expect(ChatRequestSchema.safeParse({ text: 'hello', chat_id: 'not-a-uuid' }).success).toBe(false);
   expect(ChatRequestSchema.safeParse({ text: 'a'.repeat(6001) }).success).toBe(false);
   expect(ChatRequestSchema.safeParse({ text: '', extra: true }).success).toBe(false);
+  expect(ChatRequestSchema.safeParse({ text: 'hello', platform_user_id: 'spoof' }).success).toBe(false);
+  expect(ChatRequestSchema.safeParse({ text: 'hello', username: 'spoof' }).success).toBe(false);
 });
 it('validates message role and identity', () => { expect(ChatMessageSchema.safeParse({role:'user',content:'x',request_id:uuid}).success).toBe(true); expect(ChatMessageSchema.safeParse({role:'tool',content:'x'}).success).toBe(false); });
 it('supports target v2 attachments and stop', () => { expect(WsChatMessageSchema.safeParse({type:'stop'}).success).toBe(true); expect(ChatRequestSchema.safeParse({text:'x',attachments:[{kind:'image',mime:'image/png'}]}).success).toBe(false); });
