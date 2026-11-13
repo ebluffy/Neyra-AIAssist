@@ -8,6 +8,7 @@ import { Button, TextField, NeyraLogo } from './ui';
 import { signIn, signUp } from '../../lib/auth-client';
 import { credentialsSchema, authErrorText } from '../../lib/auth-policy';
 import type { AuthConfig } from '../../lib/env';
+import type { RegistrationMode } from '../../lib/registration-mode';
 import { ru } from '../i18n';
 
 function DiscordIcon({ size = 18 }: { size?: number }) {
@@ -23,9 +24,11 @@ export interface AuthFormProps {
   config?: AuthConfig;
   initialError?: string;
   invite?: string;
+  // Режим из site_setting (сервер): invite | open | closed.
+  registrationMode?: RegistrationMode;
 }
 
-export function AuthForm({ mode, config, initialError = '', invite = '' }: AuthFormProps) {
+export function AuthForm({ mode, config, initialError = '', invite = '', registrationMode }: AuthFormProps) {
   const router = useRouter();
   const [error, setError] = useState(initialError);
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string; inviteCode?: string }>({});
@@ -53,7 +56,11 @@ export function AuthForm({ mode, config, initialError = '', invite = '' }: AuthF
   }, []);
 
   const authMode = config?.authMode ?? 'password';
-  const inviteRequired = config?.inviteRequired ?? false;
+  // Явный режим из БД важнее env; без него — прежнее поведение по INVITE_REQUIRED.
+  const inviteRequired = registrationMode
+    ? registrationMode === 'invite'
+    : (config?.inviteRequired ?? false);
+  const signupAllowed = registrationMode ? registrationMode !== 'closed' : true;
   const discordAvailable = config?.discordAvailable ?? false;
 
   const showDiscord = discordAvailable && (authMode === 'discord' || authMode === 'both');
@@ -96,7 +103,7 @@ export function AuthForm({ mode, config, initialError = '', invite = '' }: AuthF
     }
 
     const token = inviteCode.trim();
-    if (mode === 'signup' && (inviteRequired || !hasAppliedInvite) && !token) {
+    if (mode === 'signup' && inviteRequired && !hasAppliedInvite && !token) {
       nextFieldErrors.inviteCode = ru.inviteRequired;
     }
 
@@ -161,7 +168,7 @@ export function AuthForm({ mode, config, initialError = '', invite = '' }: AuthF
         </div>
 
         {/* Contract #72: Info note on signup — neutral monochrome styling */}
-        {mode === 'signup' && (
+        {mode === 'signup' && inviteRequired && (
           hasAppliedInvite ? (
             <div className="flex items-start gap-2.5 rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--surface-2)] p-3 text-xs text-[var(--text)] leading-relaxed">
               <CheckCircle2 size={16} strokeWidth={1.5} className="text-[var(--text-muted)] shrink-0 mt-0.5" />
@@ -242,7 +249,7 @@ export function AuthForm({ mode, config, initialError = '', invite = '' }: AuthF
             />
 
             {/* Contract #72: show invite field only when NOT applied from URL */}
-            {mode === 'signup' && !hasAppliedInvite && (
+            {mode === 'signup' && inviteRequired && !hasAppliedInvite && (
               <TextField
                 label={ru.inviteCode}
                 name="invite"
@@ -264,7 +271,7 @@ export function AuthForm({ mode, config, initialError = '', invite = '' }: AuthF
         )}
 
         {/* Bottom link: Only show when registration is permitted by mode (spec §1.5) */}
-        {!isDiscordOnly && (
+        {!isDiscordOnly && (mode !== 'login' || signupAllowed) && (
           <div className="text-center pt-2">
             <span className="text-[13px] text-[var(--text-muted)]">
               {mode === 'login' ? 'Нет аккаунта? ' : 'Уже есть аккаунт? '}

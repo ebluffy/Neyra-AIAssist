@@ -1,5 +1,6 @@
 import { AuthForm } from '../../components/auth-form';
 import { readAuthConfig, type AuthConfig } from '../../../lib/env';
+import { getRegistrationMode } from '../../../lib/site-settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,5 +16,7 @@ export default async function Login({
     inviteRequired: params?.invite === 'true' || config.inviteRequired,
     discordAvailable: params?.mode === 'discord' || params?.mode === 'both' ? true : config.discordAvailable,
   };
-  return <AuthForm mode="login" config={effectiveConfig} />;
+  // Ссылку «Регистрация» прячем, когда регистрация закрыта админом.
+  const registrationMode = await getRegistrationMode();
+  return <AuthForm mode="login" config={effectiveConfig} registrationMode={registrationMode} />;
 }

@@ -17,6 +17,7 @@ import { GET as discordGuild } from '../src/app/api/admin/discord/guilds/[guildI
 import { GET as discordMembers } from '../src/app/api/admin/discord/members/route';
 import { GET as discordUserStats } from '../src/app/api/admin/discord/users/[personId]/stats/route';
 import { GET as discordMessages } from '../src/app/api/admin/discord/messages/route';
+import { GET as getSettings, PUT as putSettings } from '../src/app/api/admin/settings/route';
 
 const RUN = Boolean(process.env.AUTH_INTEGRATION_DATABASE_URL);
 const BASE = 'http://localhost:3000';
@@ -296,6 +297,55 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
       body: JSON.stringify({ updates: {} }),
     }));
     expect(invalid.status).toBe(400);
+  });
+
+  it('режим регистрации: админ меняет, хук регистрации слушается', async () => {
+    expect((await getSettings(adminRequest('/api/admin/settings'))).status).toBe(401);
+    expect((await getSettings(adminRequest('/api/admin/settings', state.memberCookie))).status).toBe(403);
+
+    const initial = await getSettings(adminRequest('/api/admin/settings', state.adminCookie));
+    expect(initial.status).toBe(200);
+    expect((await payloadOf(initial))?.data?.registration_mode).toBe('invite');
+
+    const setMode = async (mode: string) => putSettings(adminRequest('/api/admin/settings', state.adminCookie, {
+      method: 'PUT',
+      body: JSON.stringify({ registration_mode: mode }),
+    }));
+
+    try {
+      expect((await setMode('everyone')).status).toBe(400);
+
+      const open = await setMode('open');
+      expect(open.status).toBe(200);
+      expect((await payloadOf(open))?.data?.registration_mode).toBe('open');
+      const openSignup = await authCall('/sign-up/email', {
+        email: uniqueEmail('open-mode'), password: 'open-mode-password-1', name: 'open',
+      });
+      expect(openSignup.response.status).toBe(200);
+
+      expect((await setMode('closed')).status).toBe(200);
+      const closedSignup = await authCall('/sign-up/email', {
+        email: uniqueEmail('closed-mode'), password: 'closed-mode-password-1', name: 'closed', invite: makeInvite(),
+      });
+      expect(closedSignup.response.status).toBe(403);
+      expect(String(closedSignup.json?.message ?? '')).toContain('закрыта');
+
+      expect((await setMode('invite')).status).toBe(200);
+      const withoutInvite = await authCall('/sign-up/email', {
+        email: uniqueEmail('invite-mode-no'), password: 'invite-mode-password-1', name: 'no',
+      });
+      expect(withoutInvite.response.status).toBe(403);
+      const withInvite = await authCall('/sign-up/email', {
+        email: uniqueEmail('invite-mode-yes'), password: 'invite-mode-password-1', name: 'yes', invite: makeInvite(),
+      });
+      expect(withInvite.response.status).toBe(200);
+
+      const logs = await listLogs(adminRequest('/api/admin/logs?limit=100&period=all', state.adminCookie));
+      const items = ((await payloadOf(logs))?.data?.items ?? []) as Array<{ action: string; actorEmail: string }>;
+      expect(items.some(item => item.action === 'settings.write' && item.actorEmail === state.adminEmail)).toBe(true);
+    } finally {
+      await setMode('invite');
+    }
   });
 
   it('закрывает каталог Discord от гостя и обычного пользователя', async () => {
