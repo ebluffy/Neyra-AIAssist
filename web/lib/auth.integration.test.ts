@@ -80,17 +80,22 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
   });
 
   it('IP rate limit: попытка N+1 с того же адреса даёт 429 (AR-4)', async () => {
-    const email = uniqueEmail('ip-limit');
-    const up = await call('/sign-up/email', { email, password, name: 'IP' }, undefined, '198.51.100.1');
-    expect(up.response.status).toBe(200);
+    // Каждая попытка — свой аккаунт (по одной неудаче на счётчике),
+    // чтобы сработало именно правило по IP, а не счётчик по аккаунту.
     for (let attempt = 1; attempt <= 5; attempt++) {
+      const email = uniqueEmail(`ip-${attempt}`);
+      const up = await call('/sign-up/email', { email, password, name: 'IP' }, undefined, '198.51.100.1');
+      expect(up.response.status).toBe(200);
       const r = await call('/sign-in/email', { email, password: 'wrong-password' }, undefined, '198.51.100.1');
       expect(r.response.status, `attempt ${attempt}`).toBe(401);
     }
-    const sixth = await call('/sign-in/email', { email, password: 'wrong-password' }, undefined, '198.51.100.1');
+    const sixthEmail = uniqueEmail('ip-6');
+    const sixthUp = await call('/sign-up/email', { email: sixthEmail, password, name: 'IP' }, undefined, '198.51.100.1');
+    expect(sixthUp.response.status).toBe(200);
+    const sixth = await call('/sign-in/email', { email: sixthEmail, password: 'wrong-password' }, undefined, '198.51.100.1');
     expect(sixth.response.status).toBe(429);
     // Другой адрес снова получает честный ответ, а не блокировку чужого счётчика.
-    const other = await call('/sign-in/email', { email, password: 'wrong-password' }, undefined, '198.51.100.2');
+    const other = await call('/sign-in/email', { email: sixthEmail, password: 'wrong-password' }, undefined, '198.51.100.2');
     expect(other.response.status).toBe(401);
   });
 
