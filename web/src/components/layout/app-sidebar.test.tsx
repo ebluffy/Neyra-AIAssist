@@ -202,4 +202,12 @@ describe('AppSidebar', () => {
     fireEvent.click(settingsItem);
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
+
+  it('applies fixed positioning on mobile and static on desktop to avoid document flow shift', () => {
+    render(<AppSidebar activeSection="chat" user={normalUser} mobileOpen={false} />);
+    const aside = screen.getByLabelText('Боковая панель навигации');
+    expect(aside.classList.contains('fixed')).toBe(true);
+    expect(aside.classList.contains('lg:static')).toBe(true);
+    expect(aside.classList.contains('relative')).toBe(false);
+  });
 });

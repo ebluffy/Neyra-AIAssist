@@ -304,7 +304,7 @@ export function AppSidebar({
 
       {/* Main Sidebar Shell */}
       <aside
-        className={`relative z-50 fixed lg:static inset-y-0 left-0 bg-[var(--surface)] border-r border-[var(--border)] flex flex-col justify-between transition-[transform,width] duration-150 ease-out select-none ${
+        className={`fixed lg:static z-50 inset-y-0 left-0 bg-[var(--surface)] border-r border-[var(--border)] flex flex-col justify-between transition-[transform,width] duration-150 ease-out select-none ${
           mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
         } ${collapsed ? 'w-[264px] lg:w-[64px]' : 'w-[264px]'}`}
         aria-label="Боковая панель навигации"
