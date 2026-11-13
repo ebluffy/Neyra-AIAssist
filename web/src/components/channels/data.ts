@@ -42,4 +42,14 @@ export function periodStart(period: string) {
   const midnight = Date.UTC(shifted.getUTCFullYear(),shifted.getUTCMonth(),shifted.getUTCDate()) - 3 * 3600_000;
   return new Date(period === 'today' ? midnight : now.getTime() - Number(period)*86400_000).toISOString();
 }
-export const channelLabel = (id: string | null) => !id ? 'Канал неизвестен' : id.startsWith('web:') ? `веб · ${id.slice(4)}` : id;
+export const channelLabel = (id: string | null) => !id ? 'Канал неизвестен' : id.startsWith('web:') ? 'веб-чат' : id;
+
+// Ядро пишет в текст пользователя служебный префикс автора. В истории он лишний.
+const AUTHOR_PREFIX = /^\s*\[author_id:\s*[^\]]*\]\s*/i;
+const USER_PREFIX = /^\s*\[Пользователь[^\]]*\]:\s*/i;
+
+export function cleanMessageText(text: string): string {
+  let value = text.replace(AUTHOR_PREFIX, '');
+  value = value.replace(USER_PREFIX, '');
+  return value.trim() ? value : text;
+}

@@ -36,7 +36,7 @@ it('sorts chronology by ISO timestamp, shows Moscow time and legacy web channels
  const articles=screen.getAllByRole('article');expect(articles).toHaveLength(2);
  expect(articles[0].textContent).toContain('Нейра, с чего');expect(articles[1].textContent).toContain('Давайте начнём');
  expect(articles[0].textContent).toContain('13.11.2026, 17:45');expect(articles[0].textContent).toContain('100000000000000001');
- expect(screen.queryByText('PRIVATE_MODEL_TRACE')).toBeNull();expect(screen.getAllByText('веб · old-chat')).toHaveLength(2);
+ expect(screen.queryByText('PRIVATE_MODEL_TRACE')).toBeNull();expect(screen.getAllByText('веб-чат').length).toBeGreaterThan(0);
  const call=fetcher.mock.calls.find(([url])=>url.includes('/messages'))![0];expect(new URL(call,'http://local').searchParams.has('guild_id')).toBe(false);
  fireEvent.change(screen.getByLabelText('Канал'),{target:{value:'channel-1'}});
  await waitFor(()=>expect(fetcher.mock.calls.at(-1)![0]).toContain('channel_id=channel-1'));

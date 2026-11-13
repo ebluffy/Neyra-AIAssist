@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useState } from 'react';
 import { Avatar, Button } from '../ui';
-import { api, channelLabel, moscowDate, periodStart, read, type Channel, type Guild, type Member, type Message, type Catalog } from './data';
+import { api, channelLabel, cleanMessageText, moscowDate, periodStart, read, type Channel, type Guild, type Member, type Message, type Catalog } from './data';
 import { useCatalog } from './use-catalog';
 import { Empty, Failure, Loading, Unavailable } from './shared';
 import s from './channels.module.css';
@@ -61,8 +61,8 @@ function Timeline({filters}:{filters:Filters}) {
   }
   return <>
     {!items.length ? <Empty title="Сообщений пока нет" text="Попробуйте другой канал, участника или период."/> : <div className={s.history} aria-label="Хронология сообщений">{items.map(item=><article key={item.id} className={s.message}>
-      <div className={s.author}><Avatar name={item.role==='assistant'?'Нейра':item.display_name || item.discord_username} size={28}/><div className={s.authorText}><span className={s.memberName}>{item.role==='assistant'?'Нейра':item.display_name || item.discord_username || 'Без имени'}</span>{item.discord_username&&<div className={s.username}>{item.discord_username.replace(/^@/,'')}</div>}{item.discord_id&&<div className={s.id}>{item.discord_id}</div>}<div className={s.messageChannel}>{channelLabel(item.channel_id)}</div></div></div>
-      <div><div className={`${s.body} ${item.role==='user'?s.userBody:''}`}>{item.text}</div><time className={s.time} dateTime={item.ts}>{moscowDate(item.ts)}</time></div>
+      <div className={s.author}><Avatar name={item.role==='assistant'?'Нейра':item.display_name || item.discord_username} size={28}/><div className={s.authorText}><span className={s.memberName}>{item.role==='assistant'?'Нейра':item.display_name || item.discord_username || 'Без имени'}</span>{item.role==='user'&&item.discord_username&&<div className={s.username}>{item.discord_username.replace(/^@/,'')}</div>}{item.role==='user'&&item.discord_id&&<div className={s.id}>{item.discord_id}</div>}<div className={s.messageChannel}>{channelLabel(item.channel_id)}</div></div></div>
+      <div><div className={`${s.body} ${item.role==='user'?s.userBody:''}`}>{item.role==='user'?cleanMessageText(item.text):item.text}</div><time className={s.time} dateTime={item.ts}>{moscowDate(item.ts)}</time></div>
     </article>)}</div>}
     {error&&<Failure message={error} retry={more}/>}
     {next!=null&&<div className={s.pager}><Button variant="secondary" disabled={loadingMore} onClick={more}>{loadingMore?'Загрузка…':'Загрузить ещё'}</Button></div>}
