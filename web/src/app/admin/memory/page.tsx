@@ -2,6 +2,7 @@ import { coreGet } from '../../../../lib/core-admin';
 import { readAdminConfig } from '../../../../lib/admin-config';
 import { ExportPeople } from '../../../components/admin/export-button';
 import { MemoryLimitsForm } from '../../../components/admin/memory-limits-form';
+import { accountLabels, discordLabels, personAliases, personIdLabel, personTitle } from '../../../../lib/admin-memory';
 import { Card, EmptyState, PageHeader, Stat, StatusPill, tableClass, tdClass, thClass } from '../../../components/admin/ui';
 
 export const dynamic = 'force-dynamic';
@@ -10,7 +11,7 @@ interface MemoryPerson {
   id?: string;
   display_name?: string;
   names?: string[];
-  accounts?: string[];
+  accounts?: Array<string | { platform?: string; handle?: string | null; platform_user_id?: string | null }>;
   discord_ids?: string[];
 }
 
@@ -107,17 +108,20 @@ export default async function AdminMemoryPage({ searchParams }: {
                 </tr>
               </thead>
               <tbody>
-                {filtered.slice(0, 200).map(person => (
-                  <tr key={person.id ?? person.display_name}>
-                    <td className={tdClass}>
-                      <span className="block text-sm">{person.display_name || '—'}</span>
-                      <span className="font-mono text-xs text-[var(--muted)]">{person.id ?? ''}</span>
-                    </td>
-                    <td className={`${tdClass} text-xs`}>{(person.names ?? []).join(', ') || '—'}</td>
-                    <td className={`${tdClass} text-xs`}>{(person.accounts ?? []).join(', ') || '—'}</td>
-                    <td className={`${tdClass} text-xs`}>{(person.discord_ids ?? []).join(', ') || '—'}</td>
-                  </tr>
-                ))}
+                {filtered.slice(0, 200).map(person => {
+                  const idLabel = personIdLabel(person);
+                  return (
+                    <tr key={person.id ?? personTitle(person)}>
+                      <td className={tdClass}>
+                        <span className="block text-sm">{personTitle(person)}</span>
+                        {idLabel && <span className="block font-mono text-xs text-[var(--muted)]">{idLabel}</span>}
+                      </td>
+                      <td className={`${tdClass} text-xs`}>{personAliases(person).join(', ') || '—'}</td>
+                      <td className={`${tdClass} text-xs`}>{accountLabels(person.accounts).join(', ') || '—'}</td>
+                      <td className={`${tdClass} text-xs`}>{discordLabels(person).join(', ') || '—'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -129,10 +133,10 @@ export default async function AdminMemoryPage({ searchParams }: {
           </span>
           <ExportPeople people={filtered.slice(0, 200).map(person => ({
             id: person.id ?? '',
-            displayName: person.display_name ?? '',
-            names: person.names ?? [],
-            accounts: person.accounts ?? [],
-            discordIds: person.discord_ids ?? [],
+            displayName: personTitle(person),
+            names: personAliases(person),
+            accounts: accountLabels(person.accounts),
+            discordIds: discordLabels(person),
           }))} />
         </div>
       </Card>

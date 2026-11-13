@@ -1,5 +1,6 @@
 import { coreGet, type CoreHealth, type CoreMeta } from '../../../../lib/core-admin';
 import { readBackups, readDiskUsage } from '../../../../lib/admin-system';
+import { describeDegradedReason } from '../../../../lib/core-status';
 import { RestartCore } from '../../../components/admin/restart-core';
 import { WarmupSessions } from '../../../components/admin/warmup-sessions';
 import { Card, EmptyState, PageHeader, Stat, StatusPill, formatBytes, formatDate, formatDuration, tableClass, tdClass, thClass } from '../../../components/admin/ui';
@@ -48,7 +49,9 @@ export default async function AdminSystemPage() {
                   версия {health.data?.version ?? health.data?.api_version ?? '—'} · uptime {formatDuration(health.data?.uptime_seconds)}
                 </span>
               </div>
-              {health.data?.degraded_reason && <p className="text-xs text-amber-300">{health.data.degraded_reason}</p>}
+              {health.data?.degraded_reason
+                ? <p className="text-xs text-amber-300">{describeDegradedReason(health.data.degraded_reason)}</p>
+                : null}
               {Array.isArray(health.data?.checks) && health.data.checks.length > 0 ? (
                 <ul className="space-y-1 text-sm">
                   {health.data.checks.map((check, index) => (

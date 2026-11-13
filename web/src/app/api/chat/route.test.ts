@@ -161,6 +161,35 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     expect(socket.close).toHaveBeenCalledOnce();
   });
 
+  it('passes the core provider rate-limit reason through (wave 3)', async () => {
+    const response = await hello();
+    message({
+      type: 'error',
+      code: 'provider_rate_limit',
+      message: 'Провайдер моделей ограничил запросы (429). Попробуйте позже — лимит сбрасывается автоматически.',
+      model_trace: { raw: 'trace_info' },
+    });
+
+    const responseText = await response.text();
+    expect(responseText).toContain('"code":"provider_rate_limit"');
+    expect(responseText).toContain('429');
+    expect(responseText).not.toContain('model_trace');
+    expect(responseText).not.toContain('trace_info');
+  });
+
+  it('keeps the generic text for codes outside the user-facing list', async () => {
+    const response = await hello();
+    message({
+      type: 'error',
+      code: 'internal_chat_error',
+      message: 'RAW_DATABASE_EXCEPTION: /opt/neyra/core.py line 42',
+    });
+
+    const responseText = await response.text();
+    expect(responseText).not.toContain('RAW_DATABASE_EXCEPTION');
+    expect(responseText).toContain('"message":"Ошибка при обработке сообщения в ядре."');
+  });
+
   it('triggers core_timeout on 30s silence after hello (AR-3)', async () => {
     vi.useFakeTimers();
     const response = await hello();
