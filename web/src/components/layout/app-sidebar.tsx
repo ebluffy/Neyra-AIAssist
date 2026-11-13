@@ -4,6 +4,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
+  Check,
+  Edit2,
+  FileText,
   Hash,
   LogOut,
   MessageSquare,
@@ -12,17 +15,34 @@ import {
   Search,
   Settings,
   Shield,
+  StickyNote,
+  Trash2,
   X,
 } from 'lucide-react';
 import { Avatar, Button, IconButton, NeyraLogo } from '../ui';
 import { resetChatId, resolveTabKey } from '../../../lib/chat-id';
 import { signOut } from '../../../lib/auth-client';
+import { ru } from '../../i18n';
 
 export interface AppSidebarUser {
   id: string;
   name?: string | null;
   email?: string | null;
   role?: string | null;
+}
+
+export interface ChatThreadItem {
+  id: string;
+  title: string;
+  lastMessage?: string;
+  updatedAt?: string;
+}
+
+export interface UserNote {
+  id: string;
+  title: string;
+  content: string;
+  updatedAt: string;
 }
 
 export interface AppSidebarProps {
@@ -32,6 +52,8 @@ export interface AppSidebarProps {
   onNewChat?: () => void;
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
+  onOpenSettings?: () => void;
+  onSelectThread?: (threadId: string) => void;
 }
 
 export function AppSidebar({
@@ -41,18 +63,92 @@ export function AppSidebar({
   onNewChat,
   mobileOpen = false,
   onCloseMobile,
+  onOpenSettings,
+  onSelectThread,
 }: AppSidebarProps) {
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'chats' | 'notes'>('chats');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Threads state
+  const [threads, setThreads] = useState<ChatThreadItem[]>([]);
+
+  // Notes state
+  const [notes, setNotes] = useState<UserNote[]>([]);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [noteTitleInput, setNoteTitleInput] = useState('');
+  const [noteContentInput, setNoteContentInput] = useState('');
+
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const profileTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
+  const userId = user?.id || 'guest';
+  const notesStorageKey = `neyra:notes:${userId}`;
+  const threadsStorageKey = `neyra:threads:${userId}`;
+
+  // Read collapsed state from localStorage
   useEffect(() => {
     try {
       setCollapsed(window.localStorage.getItem('neyra:sidebar-collapsed') === '1');
     } catch {}
   }, []);
+
+  // Read notes from localStorage
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(notesStorageKey);
+      if (raw) {
+        setNotes(JSON.parse(raw));
+      } else {
+        setNotes([]);
+      }
+    } catch {
+      setNotes([]);
+    }
+  }, [notesStorageKey]);
+
+  // Read & sync threads from localStorage
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(threadsStorageKey);
+      let list: ChatThreadItem[] = raw ? JSON.parse(raw) : [];
+
+      // If threadTitle is provided and not default/empty
+      if (threadTitle && threadTitle !== ru.chat) {
+        const existingIdx = list.findIndex((t) => t.id === 'current' || t.title === threadTitle);
+        if (existingIdx >= 0) {
+          list[existingIdx] = {
+            ...list[existingIdx],
+            title: threadTitle,
+            updatedAt: new Date().toISOString(),
+          };
+        } else {
+          list = [
+            {
+              id: 'current',
+              title: threadTitle,
+              updatedAt: new Date().toISOString(),
+            },
+            ...list,
+          ];
+        }
+        window.localStorage.setItem(threadsStorageKey, JSON.stringify(list));
+      } else {
+        // When chat is empty / reset, remove unsaved 'current' thread
+        list = list.filter((t) => t.id !== 'current');
+        try {
+          window.localStorage.setItem(threadsStorageKey, JSON.stringify(list));
+        } catch {}
+      }
+
+      setThreads(list);
+    } catch {
+      setThreads([]);
+    }
+  }, [threadsStorageKey, threadTitle]);
 
   function toggleCollapse() {
     setCollapsed((prev) => {
@@ -64,7 +160,7 @@ export function AppSidebar({
     });
   }
 
-  // Close profile menu on outside click or Esc
+  // Keyboard shortcut & outside click handler for profile menu and mobile drawer
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (
@@ -77,20 +173,22 @@ export function AppSidebar({
       }
     }
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape' && profileMenuOpen) {
-        setProfileMenuOpen(false);
-        profileTriggerRef.current?.focus();
+      if (event.key === 'Escape') {
+        if (profileMenuOpen) {
+          setProfileMenuOpen(false);
+          profileTriggerRef.current?.focus();
+        } else if (mobileOpen && onCloseMobile) {
+          onCloseMobile();
+        }
       }
     }
-    if (profileMenuOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-      document.addEventListener('keydown', handleKeyDown);
-    }
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [profileMenuOpen]);
+  }, [profileMenuOpen, mobileOpen, onCloseMobile]);
 
   function handleStartNewChat() {
     if (onNewChat) {
@@ -106,14 +204,75 @@ export function AppSidebar({
     onCloseMobile?.();
   }
 
+  // Notes operations
+  function saveNotesToStorage(updated: UserNote[]) {
+    setNotes(updated);
+    try {
+      window.localStorage.setItem(notesStorageKey, JSON.stringify(updated));
+    } catch {}
+  }
+
+  function handleCreateNote() {
+    const newNote: UserNote = {
+      id: `note-${Date.now()}`,
+      title: 'Новая заметка',
+      content: '',
+      updatedAt: new Date().toISOString(),
+    };
+    const updated = [newNote, ...notes];
+    saveNotesToStorage(updated);
+    startEditingNote(newNote);
+  }
+
+  function startEditingNote(note: UserNote) {
+    setEditingNoteId(note.id);
+    setNoteTitleInput(note.title);
+    setNoteContentInput(note.content);
+  }
+
+  function handleSaveEditingNote() {
+    if (!editingNoteId) return;
+    const updated = notes.map((n) =>
+      n.id === editingNoteId
+        ? {
+            ...n,
+            title: noteTitleInput.trim() || 'Без названия',
+            content: noteContentInput.trim(),
+            updatedAt: new Date().toISOString(),
+          }
+        : n
+    );
+    saveNotesToStorage(updated);
+    setEditingNoteId(null);
+  }
+
+  function handleDeleteNote(noteId: string) {
+    const updated = notes.filter((n) => n.id !== noteId);
+    saveNotesToStorage(updated);
+    if (editingNoteId === noteId) {
+      setEditingNoteId(null);
+    }
+  }
+
   const isAdmin = user?.role === 'admin';
   const displayName = user?.name && user.name !== user.email ? user.name : user?.email || 'Пользователь';
+
+  // Filter threads by search query
+  const query = searchQuery.trim().toLowerCase();
+  const filteredThreads = threads.filter((t) => {
+    if (!query) return true;
+    return (
+      t.title.toLowerCase().includes(query) ||
+      (t.lastMessage && t.lastMessage.toLowerCase().includes(query))
+    );
+  });
 
   return (
     <>
       {/* Mobile Backdrop */}
       {mobileOpen && (
         <div
+          role="presentation"
           className="fixed inset-0 z-40 bg-black/60 lg:hidden backdrop-blur-sm transition-opacity"
           onClick={onCloseMobile}
           aria-hidden="true"
@@ -127,7 +286,7 @@ export function AppSidebar({
         } ${collapsed ? 'w-[264px] lg:w-[64px]' : 'w-[264px]'}`}
         aria-label="Боковая панель навигации"
       >
-        {/* COLLAPSED RAIL (Desktop only, when collapsed) */}
+        {/* COLLAPSED RAIL (Desktop only, 64px) */}
         {collapsed && (
           <div className="hidden lg:flex flex-col items-center justify-between h-full py-3 px-2">
             <div className="flex flex-col items-center gap-2">
@@ -151,14 +310,28 @@ export function AppSidebar({
                 aria-label="Чаты"
                 tooltip="Чаты"
                 icon={<MessageSquare size={16} />}
-                variant={activeSection === 'chat' ? 'secondary' : 'ghost'}
+                variant={activeSection === 'chat' && activeTab === 'chats' ? 'secondary' : 'ghost'}
                 size="md"
-                onClick={() => router.push('/chat')}
+                onClick={() => {
+                  setActiveTab('chats');
+                  if (activeSection !== 'chat') router.push('/chat');
+                }}
+              />
+              <IconButton
+                aria-label="Заметки"
+                tooltip="Заметки"
+                icon={<StickyNote size={16} />}
+                variant={activeTab === 'notes' ? 'secondary' : 'ghost'}
+                size="md"
+                onClick={() => {
+                  setActiveTab('notes');
+                  toggleCollapse();
+                }}
               />
               {isAdmin && (
                 <IconButton
                   aria-label="Каналы"
-                  tooltip="Каналы"
+                  tooltip="Каналы (Discord)"
                   icon={<Hash size={16} />}
                   variant={activeSection === 'channels' ? 'secondary' : 'ghost'}
                   size="md"
@@ -174,14 +347,17 @@ export function AppSidebar({
                 icon={<Settings size={16} />}
                 variant={activeSection === 'settings' ? 'secondary' : 'ghost'}
                 size="md"
-                onClick={() => router.push('/settings')}
+                onClick={() => {
+                  if (onOpenSettings) onOpenSettings();
+                  else router.push('/settings');
+                }}
               />
               <button
                 ref={profileTriggerRef}
                 type="button"
                 aria-haspopup="menu"
                 aria-expanded={profileMenuOpen}
-                aria-label="Профиль"
+                aria-label="Меню профиля пользователя"
                 onClick={() => setProfileMenuOpen((prev) => !prev)}
                 className="rounded-full p-0.5 hover:ring-2 hover:ring-[var(--border-strong)] transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               >
@@ -192,11 +368,11 @@ export function AppSidebar({
         )}
 
         {/* EXPANDED SIDEBAR (or Mobile drawer) */}
-        <div className={`flex flex-col justify-between h-full ${collapsed ? 'lg:hidden' : ''}`}>
-          {/* Top Section: Header & Actions */}
-          <div className="p-3.5 space-y-4">
+        <div className={`flex flex-col justify-between h-full min-h-0 ${collapsed ? 'lg:hidden' : ''}`}>
+          {/* Top Section */}
+          <div className="p-3.5 space-y-3.5 flex-1 min-h-0 flex flex-col">
             {/* Logo row */}
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between shrink-0">
               <Link
                 href="/"
                 className="flex items-center gap-2.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] rounded-[var(--radius-sm)] px-1 py-0.5"
@@ -225,61 +401,244 @@ export function AppSidebar({
               </div>
             </div>
 
-            {/* New Chat Button */}
+            {/* Action Button: Новый чат */}
             <Button
               variant="secondary"
-              className="w-full justify-start gap-2 h-9 text-xs font-medium"
+              className="w-full justify-start gap-2 h-9 text-xs font-medium shrink-0"
               onClick={handleStartNewChat}
             >
-              <Plus size={15} className="shrink-0" />
-              <span>Новый чат</span>
+              <Plus size={15} className="shrink-0 text-[var(--text-muted)]" />
+              <span>{ru.newChat}</span>
             </Button>
 
-            {/* Nav list */}
-            <nav className="space-y-1" aria-label="Основные разделы">
-              <Link
-                href="/chat"
-                className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors ${
-                  activeSection === 'chat'
-                    ? 'bg-[var(--surface-3)] text-[var(--text)] font-semibold'
-                    : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'
-                }`}
-              >
-                <MessageSquare size={15} className="shrink-0" />
-                <span>Чаты</span>
-              </Link>
+            {/* Navigation Tabs: Чаты / Заметки / Каналы */}
+            <div className="space-y-1 shrink-0">
+              <div className="grid grid-cols-2 gap-1 p-1 bg-[var(--surface-2)] rounded-[var(--radius-sm)] border border-[var(--border)]">
+                <button
+                  type="button"
+                  aria-selected={activeTab === 'chats'}
+                  onClick={() => {
+                    setActiveTab('chats');
+                    if (activeSection !== 'chat') router.push('/chat');
+                  }}
+                  className={`flex items-center justify-center gap-1.5 py-1 text-xs font-medium rounded-[calc(var(--radius-sm)-2px)] transition-colors cursor-pointer ${
+                    activeTab === 'chats'
+                      ? 'bg-[var(--surface-3)] text-[var(--text)] shadow-sm'
+                      : 'text-[var(--text-muted)] hover:text-[var(--text)]'
+                  }`}
+                >
+                  <MessageSquare size={13} className="shrink-0" />
+                  <span>Чаты</span>
+                </button>
+                <button
+                  type="button"
+                  aria-selected={activeTab === 'notes'}
+                  onClick={() => setActiveTab('notes')}
+                  className={`flex items-center justify-center gap-1.5 py-1 text-xs font-medium rounded-[calc(var(--radius-sm)-2px)] transition-colors cursor-pointer ${
+                    activeTab === 'notes'
+                      ? 'bg-[var(--surface-3)] text-[var(--text)] shadow-sm'
+                      : 'text-[var(--text-muted)] hover:text-[var(--text)]'
+                  }`}
+                >
+                  <StickyNote size={13} className="shrink-0" />
+                  <span>Заметки</span>
+                </button>
+              </div>
 
               {isAdmin && (
                 <Link
                   href="/channels"
-                  className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors ${
+                  className={`flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors ${
                     activeSection === 'channels'
                       ? 'bg-[var(--surface-3)] text-[var(--text)] font-semibold'
                       : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'
                   }`}
                 >
-                  <Hash size={15} className="shrink-0" />
+                  <Hash size={14} className="shrink-0" />
                   <span>Каналы (Discord)</span>
                 </Link>
               )}
-            </nav>
+            </div>
 
-            {/* Thread Info (if present in chat) */}
-            {threadTitle && (
-              <div className="pt-2 border-t border-[var(--border)]">
-                <div className="px-1 mb-1.5 text-[11px] font-medium text-[var(--text-subtle)]">
-                  Текущий диалог
+            {/* Content Area: Either CHATS or NOTES */}
+            {activeTab === 'chats' ? (
+              <div className="flex-1 min-h-0 flex flex-col space-y-2">
+                {/* Search input */}
+                <div className="relative shrink-0">
+                  <Search
+                    size={13}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-subtle)] pointer-events-none"
+                  />
+                  <input
+                    ref={searchInputRef}
+                    type="search"
+                    aria-label="Поиск по чатам"
+                    placeholder="Поиск по чатам…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)] text-xs pl-7 pr-7 py-1.5 text-[var(--text)] placeholder-[var(--text-subtle)] outline-none focus:border-[var(--accent)]"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      aria-label="Очистить поиск"
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--text-subtle)] hover:text-[var(--text)] p-0.5"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
                 </div>
-                <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] text-[var(--text)] border-l-2 border-[var(--accent)] text-xs font-medium truncate cursor-default">
-                  <MessageSquare size={13} className="shrink-0 text-[var(--text-muted)]" />
-                  <span className="truncate">{threadTitle}</span>
+
+                {/* Threads list */}
+                <div className="flex-1 overflow-y-auto space-y-0.5 pr-0.5" aria-label="Список чатов">
+                  {filteredThreads.length === 0 ? (
+                    <div className="py-8 text-center text-xs text-[var(--text-subtle)]">
+                      <p className="font-medium text-[var(--text-muted)]">Чаты не найдены</p>
+                      <p className="mt-1 text-[11px]">Попробуйте другой запрос</p>
+                    </div>
+                  ) : (
+                    filteredThreads.map((thread) => {
+                      const isActive =
+                        activeSection === 'chat' &&
+                        (thread.title === threadTitle || thread.id === 'current');
+                      return (
+                        <button
+                          key={thread.id}
+                          type="button"
+                          onClick={() => {
+                            if (onSelectThread) onSelectThread(thread.id);
+                            else if (activeSection !== 'chat') router.push('/chat');
+                            onCloseMobile?.();
+                          }}
+                          className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-[var(--radius-sm)] text-xs transition-colors text-left cursor-pointer ${
+                            isActive
+                              ? 'bg-[var(--surface-3)] text-[var(--text)] border-l-2 border-[var(--accent)] font-medium'
+                              : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'
+                          }`}
+                        >
+                          <MessageSquare size={13} className="shrink-0 text-[var(--text-muted)]" />
+                          <span className="truncate flex-1">{thread.title}</span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* NOTES SECTION */
+              <div className="flex-1 min-h-0 flex flex-col space-y-2">
+                <div className="flex items-center justify-between shrink-0 px-0.5">
+                  <div>
+                    <h3 className="text-xs font-semibold text-[var(--text)]">Заметки</h3>
+                    <p className="text-[10px] text-[var(--text-subtle)]">Хранятся в этом браузере</p>
+                  </div>
+                  <IconButton
+                    aria-label="Добавить заметку"
+                    tooltip="Создать заметку"
+                    icon={<Plus size={14} />}
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleCreateNote}
+                  />
+                </div>
+
+                {/* Inline Note Editor */}
+                {editingNoteId && (
+                  <div className="bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)] p-2.5 space-y-2 shrink-0 animate-in fade-in duration-150">
+                    <input
+                      type="text"
+                      aria-label="Заголовок заметки"
+                      placeholder="Заголовок…"
+                      value={noteTitleInput}
+                      onChange={(e) => setNoteTitleInput(e.target.value)}
+                      className="w-full bg-[var(--surface-3)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] font-medium outline-none focus:border-[var(--accent)]"
+                    />
+                    <textarea
+                      aria-label="Текст заметки"
+                      placeholder="Текст заметки…"
+                      rows={3}
+                      value={noteContentInput}
+                      onChange={(e) => setNoteContentInput(e.target.value)}
+                      className="w-full bg-[var(--surface-3)] border border-[var(--border)] rounded p-2 text-xs text-[var(--text)] resize-none outline-none focus:border-[var(--accent)]"
+                    />
+                    <div className="flex justify-end gap-1.5">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setEditingNoteId(null)}
+                      >
+                        Отмена
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={handleSaveEditingNote}
+                      >
+                        <Check size={12} className="mr-1" />
+                        Сохранить
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Notes List */}
+                <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5" aria-label="Список заметок">
+                  {notes.length === 0 ? (
+                    <div className="py-8 text-center text-xs text-[var(--text-subtle)]">
+                      <StickyNote size={20} className="mx-auto mb-2 opacity-30" />
+                      <p className="font-medium text-[var(--text-muted)]">Заметок пока нет</p>
+                      <p className="mt-1 text-[11px]">Нажмите «+», чтобы создать заметку</p>
+                    </div>
+                  ) : (
+                    notes.map((note) => (
+                      <div
+                        key={note.id}
+                        className="group relative p-2 rounded-[var(--radius-sm)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--border)] transition-colors text-left"
+                      >
+                        <div className="flex items-start justify-between gap-1">
+                          <button
+                            type="button"
+                            onClick={() => startEditingNote(note)}
+                            className="font-medium text-xs text-[var(--text)] truncate text-left flex-1 hover:underline cursor-pointer"
+                          >
+                            {note.title}
+                          </button>
+                          <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity">
+                            <IconButton
+                              aria-label="Редактировать заметку"
+                              tooltip="Редактировать"
+                              icon={<Edit2 size={12} />}
+                              size="sm"
+                              className="w-6 h-6"
+                              onClick={() => startEditingNote(note)}
+                            />
+                            <IconButton
+                              aria-label="Удалить заметку"
+                              tooltip="Удалить"
+                              icon={<Trash2 size={12} />}
+                              variant="danger"
+                              size="sm"
+                              className="w-6 h-6"
+                              onClick={() => handleDeleteNote(note.id)}
+                            />
+                          </div>
+                        </div>
+                        {note.content && (
+                          <p className="text-[11px] text-[var(--text-muted)] line-clamp-2 mt-1 whitespace-pre-wrap">
+                            {note.content}
+                          </p>
+                        )}
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             )}
           </div>
 
-          {/* Bottom Section: Profile & Popover */}
-          <div className="relative border-t border-[var(--border)] p-3 bg-[var(--surface)]">
+          {/* Bottom Section: User Profile & Popover */}
+          <div className="relative border-t border-[var(--border)] p-3 bg-[var(--surface)] shrink-0">
             <button
               ref={profileTriggerRef}
               type="button"
@@ -316,7 +675,10 @@ export function AppSidebar({
                 <Link
                   href="/settings"
                   role="menuitem"
-                  onClick={() => setProfileMenuOpen(false)}
+                  onClick={() => {
+                    setProfileMenuOpen(false);
+                    if (onOpenSettings) onOpenSettings();
+                  }}
                   className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left"
                 >
                   <Settings size={14} className="shrink-0" />
@@ -331,7 +693,7 @@ export function AppSidebar({
                     className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left"
                   >
                     <Shield size={14} className="shrink-0" />
-                    <span>Панель управления</span>
+                    <span>Админ-панель</span>
                   </Link>
                 )}
 
@@ -346,7 +708,7 @@ export function AppSidebar({
                   className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors text-left cursor-pointer"
                 >
                   <LogOut size={14} className="shrink-0" />
-                  <span>Выйти</span>
+                  <span>{ru.signOut}</span>
                 </button>
               </div>
             )}
