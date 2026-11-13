@@ -378,7 +378,7 @@ interface SystemData {
     commit?: string | null;
     uptimeSeconds?: number;
     disk?: { freeBytes: number; totalBytes: number };
-    backups?: { configured: boolean; items: Array<{ name: string; size: number; modifiedAt: string }> };
+    backups?: { configured: boolean; items: Array<string | { name: string; size?: number; modifiedAt?: string }> };
   };
   core?: {
     health?: { state: string; message?: string | null; data?: { ok?: boolean; version?: string; uptime_seconds?: number } };
@@ -1765,14 +1765,19 @@ function SystemSection() {
 
         {Array.isArray(system?.site?.backups?.items) && system.site.backups.items.length > 0 ? (
           <ul className="space-y-1 text-xs">
-            {system.site.backups.items.map((file) => (
-              <li key={file.name} className="flex items-center justify-between gap-3 py-1 border-b border-[var(--border)] last:border-0">
-                <span className="font-mono text-[var(--text)] truncate">{file.name}</span>
-                <span className="shrink-0 text-[10px] text-[var(--text-subtle)]">
-                  {formatBytes(file.size)} · {file.modifiedAt.slice(0, 10)}
-                </span>
-              </li>
-            ))}
+            {system.site.backups.items.map((file, index) => {
+              const name = typeof file === 'string' ? file : file.name;
+              const size = typeof file === 'string' ? null : file.size ?? null;
+              const modified = typeof file === 'string' ? null : file.modifiedAt ?? null;
+              return (
+                <li key={`${name}-${index}`} className="flex items-center justify-between gap-3 py-1 border-b border-[var(--border)] last:border-0">
+                  <span className="font-mono text-[var(--text)] truncate">{name}</span>
+                  <span className="shrink-0 text-[10px] text-[var(--text-subtle)]">
+                    {size != null ? formatBytes(size) : 'архив'}{modified ? ` · ${modified.slice(0, 10)}` : ''}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         ) : (
           <p className="text-xs text-[var(--text-muted)]">Файлов резервных копий пока нет.</p>
