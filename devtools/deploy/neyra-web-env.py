@@ -8,40 +8,17 @@
 from __future__ import annotations
 
 import os
-import re
 import secrets
-import stat
 import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from env_parse import read_env  # noqa: E402
+
 WEB_ENV = Path(os.environ.get("WEB", "/opt/neyra/web")) / ".env"
 CORE_DIR = Path(os.environ.get("CORE", "/opt/neyra/server"))
 CORE_ENV = CORE_DIR / ".env"
-
-SECRET_KEYS = ("NEYRA_SERVICE_KEY", "NEYRA_IDENTITY_JWT_SECRET")
-URL_KEYS = ("NEYRA_WS_URL", "NEYRA_API_URL")
-
-
-def parse_env(path: Path) -> dict[str, str]:
-    """dotenv-подобный разбор: последнее присваивание побеждает, кавычки снимаются."""
-    values: dict[str, str] = {}
-    if not path.is_file():
-        return values
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
-            continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            value = value[1:-1]
-        values[key] = value
-    return values
-
 
 def serialize(key: str, value: str) -> str:
     # Одинарные кавычки понимают и systemd EnvironmentFile, и dotenv; shell-раскрытия нет.
@@ -51,7 +28,7 @@ def serialize(key: str, value: str) -> str:
 
 
 def write_atomic(path: Path, updates: dict[str, str]) -> None:
-    """Заменить/добавить ключи, убрать их дубли, сохранить владельца и права."""
+    """Заменить/добавить ключи, убрать дубли, сохранить владельца; права 0600."""
     lines: list[str] = []
     if path.is_file():
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -73,12 +50,9 @@ def write_atomic(path: Path, updates: dict[str, str]) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(tmp, stat.S_IMODE(st.st_mode) if st else 0o600)
+        os.chmod(tmp, 0o600)
         if st is not None and hasattr(os, "chown"):
-            try:
-                os.chown(tmp, st.st_uid, st.st_gid)
-            except PermissionError:
-                pass
+            os.chown(tmp, st.st_uid, st.st_gid)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -107,8 +81,8 @@ def main() -> int:
         print(f"нет {WEB_ENV} — сначала запусти neyra-web-setup.sh", file=sys.stderr)
         return 1
 
-    web = parse_env(WEB_ENV)
-    core = parse_env(CORE_ENV)
+    web = read_env(WEB_ENV)
+    core = read_env(CORE_ENV) if CORE_ENV.is_file() else {}
 
     service_key = (core.get("API_TOKEN") or core.get("API_KEY") or "").strip()
     identity_secret = (core.get("NEYRA_IDENTITY_JWT_SECRET") or "").strip()

@@ -6,30 +6,26 @@
 """
 from __future__ import annotations
 
-import re
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from env_parse import EnvFormatError, read_env  # noqa: E402
 
 
 def main() -> int:
     path = sys.argv[1]
     out = sys.stdout.buffer
     try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
-                    continue
-                value = value.strip()
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-                    value = value[1:-1]
-                out.write(f"{key}={value}".encode("utf-8") + b"\0")
+        values = read_env(path)
     except OSError as exc:
         print(f"не прочитал {path}: {exc}", file=sys.stderr)
         return 1
+    except EnvFormatError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 1
+    for key, value in values.items():
+        out.write(f"{key}={value}".encode("utf-8") + b"\0")
     return 0
 
 
