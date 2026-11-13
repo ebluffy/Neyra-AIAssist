@@ -599,6 +599,10 @@ class ConfigUpdateRequest(_ApiBody):
     updates: dict[str, Any] = Field(default_factory=dict)
 
 
+class AdminConfigPutRequest(_ApiBody):
+    updates: dict[str, Any] = Field(default_factory=dict)
+
+
 class PluginStateUpdateRequest(_ApiBody):
     enabled: bool
 
@@ -3996,6 +4000,146 @@ def build_app(
                 "llm_rebound": llm_rebound,
             },
         }
+
+    @app.get("/v1/config")
+    async def v1_admin_config(request: Request, _: str = Depends(dep_admin)):
+        """Read-only config snapshot for the admin panel. Secrets are flags only."""
+        from core.agent.chat_progress import context_policy
+        from core.llm.profile import (
+            resolve_role_provider,
+            resolved_brain_model,
+            resolved_memory_model,
+            resolved_talk_model,
+            resolved_vision_model_id,
+        )
+        from core.runtime.admin_config import admin_config_snapshot
+
+        trace_id = _trace_id(request)
+        resolvers = {
+            "talk": resolved_talk_model,
+            "brain": resolved_brain_model,
+            "memory": resolved_memory_model,
+            "vision": resolved_vision_model_id,
+        }
+        resolved: dict[str, str] = {}
+        for lane, resolver in resolvers.items():
+            provider = resolve_role_provider(config, f"{lane}_model")
+            try:
+                resolved[lane] = str(resolver(config, provider))
+            except Exception:
+                resolved[lane] = ""
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": admin_config_snapshot(
+                config,
+                version=API_VERSION,
+                uptime_seconds=int(max(0, time.time() - _PROCESS_STARTED_AT)),
+                policy=context_policy(config),
+                resolved_models=resolved,
+            ),
+        }
+
+    @app.put("/v1/config")
+    async def v1_admin_config_put(
+        body: AdminConfigPutRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Write allowlisted fields: validate → persist (tmp+rename, .bak) → apply."""
+        from core.runtime.admin_config import (
+            AdminConfigError,
+            requires_restart_fields,
+            validate_admin_updates,
+        )
+        from core.runtime.config_loader import persist_allowlisted_updates
+
+        trace_id = _trace_id(request)
+        try:
+            updates = validate_admin_updates(
+                body.updates,
+                config,
+                configured_llm_providers(config),
+            )
+        except AdminConfigError as e:
+            raise ApiError(e.code, e.message, e.status)
+
+        restart_fields = requires_restart_fields(updates)
+        rollback = {path: _config_get_path(config, path) for path in updates}
+        try:
+            persisted = persist_allowlisted_updates(root, updates, keep_backup=True)
+        except Exception as e:
+            logger.exception("Failed to persist admin config | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Не удалось записать конфиг на диск.", 500) from e
+
+        for path, value in updates.items():
+            _safe_set(config, path, value)
+
+        llm_rebound = False
+        if any(path.startswith("llm.") for path in updates):
+            try:
+                agent._setup_llm()
+                llm_rebound = True
+            except Exception as e:
+                logger.exception("LLM rebind after admin config write failed | trace_id=%s", trace_id)
+                for path, old in rollback.items():
+                    if old is not None:
+                        _safe_set(config, path, old)
+                raise ApiError(
+                    "llm_rebind_failed",
+                    "Сохранено на диск, но LLM-клиенты не пересобраны; нужен рестарт ядра.",
+                    500,
+                ) from e
+            from core.agent.talk_sessions import sessions_for
+
+            manager = sessions_for(agent)
+            manager.invalidate()
+            manager.start_warmup()
+
+        _audit(
+            "config_write",
+            trace_id,
+            api_role,
+            {"keys": sorted(updates), "requires_restart": bool(restart_fields)},
+        )
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "applied": updates,
+                "persisted": persisted,
+                "backups": [f"{rel}.bak" for rel in persisted],
+                "requires_restart": bool(restart_fields),
+                "restart_fields": restart_fields,
+                "llm_rebound": llm_rebound,
+            },
+        }
+
+    @app.get("/v1/logs/tail")
+    async def v1_logs_tail(
+        request: Request,
+        lines: int = Query(200, ge=1, le=1000),
+        _: str = Depends(dep_admin),
+    ):
+        """Last lines of the core system log with secrets masked (admin only)."""
+        from core.api.log_tail import read_tail
+        from core.runtime.admin_config import secret_values
+
+        trace_id = _trace_id(request)
+        logging_cfg = config.get("logging") if isinstance(config.get("logging"), dict) else {}
+        rel = str(logging_cfg.get("system_log", "./logs/system.log")).strip()
+        path = Path(rel)
+        if not path.is_absolute():
+            path = root / path
+        # API tokens live in config, not env: mask them in the tail as well.
+        api_cfg = config.get("api") if isinstance(config.get("api"), dict) else {}
+        config_secrets = [
+            str(api_cfg.get(key) or "").strip()
+            for key in ("token", "viewer_token", "maint_token", "webhook_inbound_secret")
+        ]
+        extra = [value for value in [*secret_values(), *config_secrets] if len(value) >= 8]
+        data = await asyncio.to_thread(read_tail, path, lines, extra_secrets=extra)
+        return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.post("/v1/backup/run")
     async def v1_backup_run(request: Request, api_role: str = Depends(dep_maint)):
