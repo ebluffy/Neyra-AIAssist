@@ -11,7 +11,8 @@ export async function readDiskUsage(path = '/'): Promise<DiskUsage | null> {
     const info = await statfs(path);
     return {
       totalBytes: Number(info.blocks) * Number(info.bsize),
-      freeBytes: Number(info.bfree) * Number(info.bsize),
+      // bavail — сколько реально доступно процессу сайта; bfree включает зарезерв root.
+      freeBytes: Number(info.bavail ?? info.bfree) * Number(info.bsize),
     };
   } catch {
     return null;
