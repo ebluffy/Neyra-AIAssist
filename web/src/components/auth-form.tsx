@@ -55,8 +55,8 @@ export function AuthForm({ mode, config, initialError = '', invite = '' }: AuthF
   const inviteRequired = config?.inviteRequired ?? false;
   const discordAvailable = config?.discordAvailable ?? false;
 
-  const showDiscord = discordAvailable && (authMode === 'discord' || authMode === 'both');
-  const isDiscordOnly = showDiscord && authMode === 'discord';
+  const showDiscord = authMode === 'discord' || (authMode === 'both' && discordAvailable);
+  const isDiscordOnly = authMode === 'discord';
 
   // Contract #72: if invite link is provided, token is applied and input is hidden
   const hasAppliedInvite = !!invite || (typeof window !== 'undefined' && !!new URLSearchParams(window.location.search).get('invite'));
@@ -183,18 +183,29 @@ export function AuthForm({ mode, config, initialError = '', invite = '' }: AuthF
 
         {/* Discord login button */}
         {showDiscord && (
-          <div className="space-y-4">
+          <div className="space-y-3">
             <Button
               type="button"
               variant="secondary"
               size="lg"
+              disabled={!discordAvailable || discordPending}
               loading={discordPending}
               onClick={handleDiscordSignIn}
-              className="w-full flex items-center justify-center gap-2.5 bg-[#5865F2] hover:bg-[#4752C4] text-white border-transparent cursor-pointer shadow-sm"
+              className={`w-full flex items-center justify-center gap-2.5 text-white border-transparent shadow-sm ${
+                discordAvailable
+                  ? 'bg-[#5865F2] hover:bg-[#4752C4] cursor-pointer'
+                  : 'bg-[#5865F2]/60 cursor-not-allowed opacity-75'
+              }`}
             >
               <DiscordIcon size={18} />
               <span>Войти через Discord</span>
             </Button>
+
+            {!discordAvailable && (
+              <p className="text-[11px] text-[var(--text-subtle)] text-center">
+                OAuth-клиент Discord ещё не настроен на сервере
+              </p>
+            )}
 
             {authMode === 'both' && (
               <div className="relative my-4 select-none">

@@ -20,8 +20,7 @@ describe('ContextIndicator', () => {
     expect(c2.firstChild).toBeNull();
   });
 
-  it('renders percentage and opens popover with actions when usage is present', () => {
-    const onCompact = vi.fn();
+  it('renders percentage and opens popover with lanes breakdown and no manual compact button', () => {
     const onNewChat = vi.fn();
 
     render(
@@ -31,8 +30,13 @@ describe('ContextIndicator', () => {
           completion_tokens: 38_600,
           context_used: 138_600,
           context_limit: 1_000_000,
+          lanes: {
+            brain: { used: 60_000, limit: 500_000, threshold_pct: 80 },
+            talk: { used: 50_000, limit: 250_000, threshold_pct: 80 },
+            vision: { used: 15_000, limit: 150_000, threshold_pct: 80 },
+            memory: { used: 13_600, limit: 100_000, threshold_pct: 80 },
+          },
         }}
-        onCompact={onCompact}
         onNewChat={onNewChat}
       />
     );
@@ -43,13 +47,22 @@ describe('ContextIndicator', () => {
     // Open popover
     fireEvent.click(screen.getByRole('button', { name: /контекст диалога/i }));
 
-    expect(screen.getByText('Заполненность контекста')).toBeTruthy();
-    expect(screen.getByText('138,6 тыс.')).toBeTruthy();
-    expect(screen.getByText('из 1 млн токенов')).toBeTruthy();
-    expect(screen.getByText('Контекст сжимается автоматически при 80%')).toBeTruthy();
+    expect(screen.getByText('Контекст диалога')).toBeTruthy();
+    expect(screen.getByText('138,6 тыс. из 1 млн токенов')).toBeTruthy();
+    expect(screen.getByText('Лейны контекста')).toBeTruthy();
 
-    // Click "Сжать сейчас"
-    fireEvent.click(screen.getByText('Сжать сейчас'));
-    expect(onCompact).toHaveBeenCalledOnce();
+    // Lanes present
+    expect(screen.getByText('Рассуждения (Brain)')).toBeTruthy();
+    expect(screen.getByText('Диалог (Talk)')).toBeTruthy();
+    expect(screen.getByText('Изображения (Vision)')).toBeTruthy();
+    expect(screen.getByText('Память (Memory)')).toBeTruthy();
+
+    // Manual compact button must NOT exist
+    expect(screen.queryByText('Сжать сейчас')).toBeNull();
+
+    // New chat action exists
+    const newChatBtn = screen.getByText('Новый чат');
+    fireEvent.click(newChatBtn);
+    expect(onNewChat).toHaveBeenCalledOnce();
   });
 });

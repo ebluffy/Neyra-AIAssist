@@ -1,18 +1,29 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Sparkles, Plus, Minimize2 } from 'lucide-react';
+import { Sparkles, Plus } from 'lucide-react';
+
+export interface ContextLaneUsage {
+  used: number;
+  limit: number;
+  threshold_pct: number;
+}
 
 export interface ContextUsage {
   prompt_tokens: number;
   completion_tokens: number;
   context_limit: number;
   context_used: number;
+  lanes?: {
+    brain?: ContextLaneUsage;
+    talk?: ContextLaneUsage;
+    vision?: ContextLaneUsage;
+    memory?: ContextLaneUsage;
+  };
 }
 
 export interface ContextIndicatorProps {
   usage?: ContextUsage | null;
-  onCompact?: () => void;
   onNewChat?: () => void;
   className?: string;
 }
@@ -29,7 +40,7 @@ export function formatTokenCount(num: number): string {
   return num.toLocaleString('ru-RU');
 }
 
-export function ContextIndicator({ usage, onCompact, onNewChat, className = '' }: ContextIndicatorProps) {
+export function ContextIndicator({ usage, onNewChat, className = '' }: ContextIndicatorProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -62,8 +73,45 @@ export function ContextIndicator({ usage, onCompact, onNewChat, className = '' }
   const percentage = Math.min(100, Math.round((used / limit) * 100));
   const isHigh = percentage >= 80;
 
+  // Resolve lane usages (provided by kernel or calculated proportionally)
+  const lanes = [
+    {
+      key: 'brain',
+      label: 'Рассуждения (Brain)',
+      used: usage.lanes?.brain?.used ?? Math.round(used * 0.45),
+      limit: usage.lanes?.brain?.limit ?? Math.round(limit * 0.5),
+      threshold: usage.lanes?.brain?.threshold_pct ?? 80,
+    },
+    {
+      key: 'talk',
+      label: 'Диалог (Talk)',
+      used: usage.lanes?.talk?.used ?? Math.round(used * 0.35),
+      limit: usage.lanes?.talk?.limit ?? Math.round(limit * 0.25),
+      threshold: usage.lanes?.talk?.threshold_pct ?? 80,
+    },
+    {
+      key: 'vision',
+      label: 'Изображения (Vision)',
+      used: usage.lanes?.vision?.used ?? Math.round(used * 0.1),
+      limit: usage.lanes?.vision?.limit ?? Math.round(limit * 0.15),
+      threshold: usage.lanes?.vision?.threshold_pct ?? 80,
+    },
+    {
+      key: 'memory',
+      label: 'Память (Memory)',
+      used: usage.lanes?.memory?.used ?? Math.round(used * 0.1),
+      limit: usage.lanes?.memory?.limit ?? Math.round(limit * 0.1),
+      threshold: usage.lanes?.memory?.threshold_pct ?? 80,
+    },
+  ];
+
   return (
-    <div ref={containerRef} className={`relative inline-block ${className}`}>
+    <div
+      ref={containerRef}
+      className={`relative inline-block ${className}`}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
       {/* Pill button */}
       <button
         type="button"
@@ -71,7 +119,7 @@ export function ContextIndicator({ usage, onCompact, onNewChat, className = '' }
         aria-expanded={open}
         aria-label={`Контекст диалога: ${percentage}% использовано`}
         onClick={() => setOpen(!open)}
-        className="inline-flex items-center gap-2 px-2.5 py-1 rounded-[var(--radius-full)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--border)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors select-none cursor-pointer"
+        className="inline-flex items-center gap-2 px-2.5 py-1 rounded-[var(--radius-full)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--border)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
       >
         <span className="flex items-center gap-1.5">
           <Sparkles size={12} className={isHigh ? 'text-[var(--danger)]' : 'text-[var(--accent)]'} />
@@ -87,20 +135,27 @@ export function ContextIndicator({ usage, onCompact, onNewChat, className = '' }
         </span>
       </button>
 
-      {/* Popover */}
+      {/* Popover on hover/click with lane breakdown */}
       {open && (
         <div
           role="dialog"
           aria-label="Сведения о контексте"
-          className="absolute right-0 bottom-full mb-2 w-72 rounded-[var(--radius-lg)] bg-[var(--surface-2)] border border-[var(--border-strong)] p-3.5 shadow-panel z-40 text-left space-y-3"
+          className="absolute right-0 bottom-full mb-2 w-80 rounded-[var(--radius-lg)] bg-[var(--surface-2)] border border-[var(--border-strong)] p-3.5 shadow-panel z-40 text-left space-y-3.5"
         >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-[var(--text)]">Заполненность контекста</span>
-            <span className={`text-xs font-semibold ${isHigh ? 'text-[var(--danger)]' : 'text-[var(--accent)]'}`}>
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
+            <div>
+              <span className="text-xs font-semibold text-[var(--text)]">Контекст диалога</span>
+              <div className="text-[11px] text-[var(--text-subtle)] mt-0.5">
+                {formatTokenCount(used)} из {formatTokenCount(limit)} токенов
+              </div>
+            </div>
+            <span className={`text-xs font-semibold px-2 py-0.5 rounded ${isHigh ? 'bg-[var(--danger-quiet)] text-[var(--danger)]' : 'bg-[var(--accent-quiet)] text-[var(--accent)]'}`}>
               {percentage}%
             </span>
           </div>
 
+          {/* Overall progress bar */}
           <div className="space-y-1">
             <div className="w-full h-2 bg-[var(--surface-3)] rounded-full overflow-hidden flex" aria-hidden="true">
               <div
@@ -110,40 +165,58 @@ export function ContextIndicator({ usage, onCompact, onNewChat, className = '' }
                 style={{ width: `${percentage}%` }}
               />
             </div>
-            <div className="flex justify-between text-[11px] text-[var(--text-subtle)]">
-              <span>{formatTokenCount(used)}</span>
-              <span>из {formatTokenCount(limit)} токенов</span>
-            </div>
           </div>
 
-          <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
-            Контекст сжимается автоматически при 80%
-          </p>
+          {/* Lanes breakdown: brain / talk / vision / memory */}
+          <div className="space-y-2.5 pt-1">
+            <div className="text-[11px] font-medium text-[var(--text-subtle)] uppercase tracking-wider">
+              Лейны контекста
+            </div>
+            {lanes.map(lane => {
+              const lanePct = lane.limit > 0 ? Math.min(100, Math.round((lane.used / lane.limit) * 100)) : 0;
+              const laneHigh = lanePct >= lane.threshold;
 
-          <div className="border-t border-[var(--border)] pt-2 space-y-1">
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                onCompact?.();
-              }}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
-            >
-              <Minimize2 size={13} className="text-[var(--accent)]" />
-              <span>Сжать сейчас</span>
-            </button>
+              return (
+                <div key={lane.key} className="space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-[var(--text)] font-medium">{lane.label}</span>
+                    <span className="text-[11px] text-[var(--text-muted)]">
+                      {formatTokenCount(lane.used)} / {formatTokenCount(lane.limit)} ({lanePct}%)
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 bg-[var(--surface-3)] rounded-full overflow-hidden flex" aria-hidden="true">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          laneHigh ? 'bg-[var(--danger)]' : 'bg-[var(--accent)]'
+                        }`}
+                        style={{ width: `${lanePct}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] text-[var(--text-subtle)] shrink-0">
+                      порог {lane.threshold}%
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                onNewChat?.();
-              }}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
-            >
-              <Plus size={13} className="text-[var(--text-muted)]" />
-              <span>Новый чат</span>
-            </button>
+          <div className="border-t border-[var(--border)] pt-2.5 flex items-center justify-between text-[11px] text-[var(--text-muted)]">
+            <span>Автосжатие при пороге 80%</span>
+            {onNewChat && (
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  onNewChat();
+                }}
+                className="inline-flex items-center gap-1 text-[var(--accent)] hover:underline cursor-pointer"
+              >
+                <Plus size={12} />
+                <span>Новый чат</span>
+              </button>
+            )}
           </div>
         </div>
       )}
