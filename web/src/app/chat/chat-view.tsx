@@ -102,12 +102,18 @@ export interface ChatViewProps {
   user: { id: string; email?: string | null; name?: string | null; role?: string | null };
   initialMessages?: ChatMessageItem[];
   initialUsage?: ContextUsage | null;
+  initialThreadPanelOpen?: boolean;
+  initialThreadPanelTab?: ThreadPanelTab;
+  initialPinnedMessageIds?: string[];
 }
 
 export function ChatView({
   user,
   initialMessages,
   initialUsage,
+  initialThreadPanelOpen,
+  initialThreadPanelTab,
+  initialPinnedMessageIds,
 }: ChatViewProps) {
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessageItem[]>(() => {
@@ -135,14 +141,17 @@ export function ChatView({
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Wave 5 Step 2: Thread Panel states
-  const [threadPanelOpen, setThreadPanelOpen] = useState(false);
+  const [threadPanelOpen, setThreadPanelOpen] = useState(initialThreadPanelOpen ?? false);
   const panelToggleRef = useRef<HTMLButtonElement | null>(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [uiSoundsEnabled, setUiSoundsEnabledState] = useState(true);
   const [compactViewEnabled, setCompactViewEnabled] = useState(false);
-  const [pinnedMessageIds, setPinnedMessageIds] = useState<string[]>([]);
+  const [pinnedMessageIds, setPinnedMessageIds] = useState<string[]>(() => {
+    if (initialPinnedMessageIds && initialPinnedMessageIds.length > 0) return initialPinnedMessageIds;
+    return [];
+  });
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
-  const [panelInitialTab, setPanelInitialTab] = useState<ThreadPanelTab>('about');
+  const [panelInitialTab, setPanelInitialTab] = useState<ThreadPanelTab>(initialThreadPanelTab || 'about');
 
   // V2 UI states
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -154,9 +163,11 @@ export function ChatView({
   useEffect(() => {
     try {
       setSidebarCollapsed(window.localStorage.getItem('neyra:sidebar-collapsed') === '1');
-      const savedPanelOpen = window.localStorage.getItem('neyra:thread-panel-open');
-      if (savedPanelOpen !== null) {
-        setThreadPanelOpen(savedPanelOpen === '1');
+      if (initialThreadPanelOpen === undefined) {
+        const savedPanelOpen = window.localStorage.getItem('neyra:thread-panel-open');
+        if (savedPanelOpen !== null) {
+          setThreadPanelOpen(savedPanelOpen === '1');
+        }
       }
       const savedAutoScroll = window.localStorage.getItem('neyra:autoscroll');
       if (savedAutoScroll !== null) {
@@ -168,7 +179,7 @@ export function ChatView({
         setCompactViewEnabled(savedCompact === '1');
       }
     } catch {}
-  }, []);
+  }, [initialThreadPanelOpen]);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -188,6 +199,7 @@ export function ChatView({
 
   // Load pinned messages whenever chatId or user.id changes
   useEffect(() => {
+    if (initialPinnedMessageIds !== undefined) return;
     if (typeof window === 'undefined' || !chatId || !user?.id) {
       setPinnedMessageIds([]);
       return;
@@ -198,116 +210,7 @@ export function ChatView({
     } catch {
       setPinnedMessageIds([]);
     }
-  }, [chatId, user?.id]);
-
-  // Support mock state from URL for screenshot testing
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    const mockState = params.get('mockState');
-    if (!mockState) return;
-
-    if (mockState === 'streaming') {
-      setMessages([
-        { id: 'u1', role: 'user', content: 'Расскажи о возможностях Нейры' },
-        { id: 'a1', role: 'assistant', content: '', pending: true },
-      ]);
-      setStreaming(true);
-      setThinking(true);
-    } else if (mockState === 'error') {
-      setMessages([
-        { id: 'u1', role: 'user', content: 'Проверь состояние сервисов' },
-        {
-          id: 'a1',
-          role: 'assistant',
-          content: '',
-          error: 'Лимит запросов к модели исчерпан (провайдер временно ограничил доступ: OpenAIRateLimitError).',
-        },
-      ]);
-    } else if (mockState === 'profile-user') {
-      setProfileMenuOpen(true);
-    } else if (mockState === 'profile-admin') {
-      setProfileMenuOpen(true);
-    } else if (mockState === 'attachments-menu') {
-      setAttachMenuOpen(true);
-    } else if (mockState === 'chips') {
-      setAttachments([
-        { id: 'att-1', name: 'report-2026.pdf', size: 1250000, isImage: false },
-        { id: 'att-2', name: 'architecture.png', size: 450000, isImage: true },
-      ]);
-    } else if (mockState === 'context') {
-      setUsage({
-        prompt_tokens: 138600,
-        completion_tokens: 1240,
-        context_limit: 1000000,
-        context_used: 139840,
-        lanes: {
-          brain: { used: 60000, limit: 500000 },
-          talk: { used: 50000, limit: 250000 },
-          vision: { used: 15000, limit: 150000 },
-          memory: { used: 14840, limit: 100000 },
-        },
-      });
-    } else if (mockState === 'context-policy-off') {
-      setUsage({
-        prompt_tokens: 138600,
-        completion_tokens: 1240,
-        context_limit: 1000000,
-        context_used: 139840,
-        policy: {
-          compaction_enabled: false,
-          mode: 'off',
-        },
-        lanes: {
-          brain: { used: 60000, limit: 500000 },
-          talk: { used: 50000, limit: 250000 },
-          vision: { used: 15000, limit: 150000 },
-          memory: { used: 14840, limit: 100000 },
-        },
-      });
-    } else if (mockState === 'drawer') {
-      setSidebarOpen(true);
-    } else if (mockState.startsWith('panel-')) {
-      const sample = [
-        {
-          id: 'u-docker-1',
-          role: 'user' as const,
-          content: 'Привет! Помоги настроить Docker контейнер для микросервиса с сохранением логов.',
-          attachments: [
-            { id: 'att-1', name: 'docker-compose.yml', size: 2450, isImage: false },
-            { id: 'att-2', name: 'service-diagram.png', size: 184500, isImage: true },
-          ],
-        },
-        {
-          id: 'a-docker-1',
-          role: 'assistant' as const,
-          content: 'Конечно! Вот конфигурация docker-compose с настроенными сетями и томом для персистентного хранения логов.',
-        },
-        {
-          id: 'u-docker-2',
-          role: 'user' as const,
-          content: 'Как проверить статус контейнера после запуска?',
-        },
-        {
-          id: 'a-docker-2',
-          role: 'assistant' as const,
-          content: 'Выполните команду docker compose ps или docker compose logs -f для отслеживания вывода в реальном времени.',
-        },
-      ];
-      setMessages(sample);
-      setPinnedMessageIds(['a-docker-1']);
-      if (mockState === 'panel-closed') {
-        setThreadPanelOpen(false);
-      } else {
-        setThreadPanelOpen(true);
-        if (mockState === 'panel-pinned') setPanelInitialTab('pinned');
-        else if (mockState === 'panel-attachments') setPanelInitialTab('attachments');
-        else if (mockState === 'panel-voice') setPanelInitialTab('voice');
-        else if (mockState === 'panel-settings') setPanelInitialTab('settings');
-        else setPanelInitialTab('about');
-      }
-    }
-  }, []);
+  }, [chatId, user?.id, initialPinnedMessageIds]);
 
   // Leave page cancels active upstream connection
   useEffect(() => () => {
