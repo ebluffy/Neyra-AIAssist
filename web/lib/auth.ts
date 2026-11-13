@@ -29,6 +29,29 @@ export function takeResetLink(email: string): string | null {
   return entry.url;
 }
 
+// Discord OAuth: ключи приходят из env стенда. Если их нет — провайдер не включается
+// вовсе, чтобы кнопка на входе не вела в никуда.
+function discordProvider() {
+  const clientId = process.env.DISCORD_CLIENT_ID?.trim();
+  const clientSecret = process.env.DISCORD_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) return {};
+  return {
+    discord: {
+      clientId,
+      clientSecret,
+      scope: ['identify', 'email'],
+      // Сайт закрыт инвайтами: через Discord пускаем только тех, кто уже заведён
+      // (совпадение email привяжет аккаунт). При открытой регистрации вход создаёт профиль.
+      disableImplicitSignUp: process.env.INVITE_REQUIRED === 'true',
+      // Discord отдаёт email: null для аккаунтов, заведённых только по телефону.
+      // Заглушка не адрес для писем, а стабильный идентификатор внутри .invalid.
+      mapProfileToUser: (profile: { id: string; email?: string | null }) => ({
+        email: profile.email ?? `${profile.id}@discord.placeholder.invalid`,
+      }),
+    },
+  };
+}
+
 function createAuth() {
   const env = readAuthEnv();
   return betterAuth({
@@ -48,6 +71,10 @@ function createAuth() {
       },
     },
     user: { additionalFields: { role: roleField } },
+    socialProviders: discordProvider(),
+    // Discord считаем доверенным провайдером: при совпадении подтверждённого email
+    // вход привязывается к существующему профилю, а не создаёт второй.
+    account: { accountLinking: { enabled: true, trustedProviders: ['discord'] } },
     // No automatic promotion on sign-up: an e-mail is not proof of ownership, and an open
     // registration would let a stranger claim a listed admin address. The first admin is
     // granted from the server with scripts/grant-admin.mjs.
