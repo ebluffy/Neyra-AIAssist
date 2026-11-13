@@ -1,7 +1,6 @@
-// AR-6: вход и роли на настоящем PostgreSQL (включается только в CI job с AUTH_INTEGRATION_DATABASE_URL).
-// Покрывает: регистрацию, вход, getSession, роль user, повторный email, выход,
-// admin:grant/--revoke, rate limit по IP (попытка N+1 → 429) и счётчик неудачных
-// входов по аккаунту (AR-4). Без сети: auth.handler вызывается в процессе.
+// AR-6 + AR-2 + AR-4: вход, роли и инвайты на настоящем PostgreSQL
+// (включается только в CI job с AUTH_INTEGRATION_DATABASE_URL). Без сети:
+// auth.handler вызывается в процессе, инвайты создаются через CLI-скрипт.
 import { afterAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +11,19 @@ const BASE = 'http://localhost:3000';
 
 function uniqueEmail(tag: string): string {
   return `${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.test`.toLowerCase();
+}
+
+function repoRoot(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+}
+
+// Инвайт через настоящий CLI (AR-2): печатает одноразовую ссылку.
+function makeInvite(): string {
+  const output = execFileSync(process.execPath, [join(repoRoot(), 'web/scripts/invite-create.mjs')],
+    { env: { ...process.env, BETTER_AUTH_URL: BASE }, encoding: 'utf-8' });
+  const match = output.match(/\/signup\?invite=(\S+)$/m);
+  if (!match) throw new Error(`no invite in output: ${output}`);
+  return match[1];
 }
 
 async function call(path: string, body: Record<string, unknown>, cookie?: string, ip = '203.0.113.10') {
@@ -36,15 +48,17 @@ async function getSession(cookie: string) {
   return { response, json: await response.json().catch(() => null) };
 }
 
-function grant(email: string, revoke = false): string {
-  const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-  return execFileSync(process.execPath, [
-    join(root, 'web/scripts/grant-admin.mjs'), email, ...(revoke ? ['--revoke'] : []),
-  ], { env: { ...process.env }, encoding: 'utf-8' }).trim();
+// Регистрация с валидным инвайтом (сервер отклоняет signup без него, AR-2).
+async function signUp(email: string, ip: string, name = 'CI') {
+  return call('/sign-up/email', { email, password: PASSWORD, name, invite: makeInvite() }, undefined, ip);
 }
 
-function repoRoot(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const PASSWORD = 'correct-horse-22';
+
+function grant(email: string, revoke = false): string {
+  return execFileSync(process.execPath, [
+    join(repoRoot(), 'web/scripts/grant-admin.mjs'), email, ...(revoke ? ['--revoke'] : []),
+  ], { env: { ...process.env }, encoding: 'utf-8' }).trim();
 }
 
 async function sql(query: string, params: unknown[] = []): Promise<unknown> {
@@ -58,12 +72,10 @@ async function sql(query: string, params: unknown[] = []): Promise<unknown> {
   }
 }
 
-describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
-  const password = 'correct-horse-22';
-
+describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6, AR-2, AR-4)', () => {
   it('signup → session → user role → duplicate email → sign-out → sign-in → grant/revoke', async () => {
     const email = uniqueEmail('flow');
-    const up = await call('/sign-up/email', { email, password, name: 'CI User' });
+    const up = await signUp(email, '203.0.113.11', 'CI User');
     expect(up.response.status, `signup: ${JSON.stringify(up.json)}`).toBe(200);
     expect(up.setCookie).toBeTruthy();
     const cookie = up.setCookie!.split(';')[0];
@@ -73,7 +85,8 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
     expect(session.json.user.email).toBe(email);
     expect(session.json.user.role).toBe('user');
 
-    const dup = await call('/sign-up/email', { email, password, name: 'CI User' });
+    // Повторный email: новый инвайт, ошибка именно дубля, а не инвайта.
+    const dup = await signUp(email, '203.0.113.12', 'CI User');
     expect(dup.response.status).toBeGreaterThanOrEqual(400);
     expect(JSON.stringify(dup.json)).toContain('USER_ALREADY_EXISTS');
 
@@ -82,7 +95,7 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
     const afterOut = await getSession(cookie);
     expect(afterOut.json?.user ?? null).toBeNull();
 
-    const backIn = await call('/sign-in/email', { email, password });
+    const backIn = await call('/sign-in/email', { email, password: PASSWORD });
     expect(backIn.response.status, `sign-in: ${JSON.stringify(backIn.json)}`).toBe(200);
     const role = await getSession(backIn.setCookie!.split(';')[0]);
     expect(role.json.user.role).toBe('user');
@@ -95,22 +108,21 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
   });
 
   it('IP rate limit: попытка N+1 с того же адреса даёт 429 (AR-4)', async () => {
-    // Каждая попытка — свой аккаунт (по одной неудаче на счётчике),
-    // чтобы сработало именно правило по IP, а не счётчик по аккаунту.
-    // Регистрации идут с разных адресов: на /sign-up/email действует
-    // собственный лимит 5/мин на IP.
+    // Каждая попытка — свой аккаунт и свой инвайт (по одной неудаче на счётчике),
+    // чтобы сработало именно правило по IP. Регистрации с разных адресов:
+    // на /sign-up/email действует собственный лимит 5/мин на IP.
     for (let attempt = 1; attempt <= 5; attempt++) {
       const email = uniqueEmail(`ip-${attempt}`);
-      const up = await call('/sign-up/email', { email, password, name: 'IP' }, undefined, `198.51.100.${10 + attempt}`);
+      const up = await signUp(email, `198.51.100.${10 + attempt}`, 'IP');
       expect(up.response.status).toBe(200);
       const r = await call('/sign-in/email', { email, password: 'wrong-password' }, undefined, '198.51.100.1');
       expect(r.response.status, `attempt ${attempt}`).toBe(401);
     }
     const sixthEmail = uniqueEmail('ip-6');
-    const sixthUp = await call('/sign-up/email', { email: sixthEmail, password, name: 'IP' }, undefined, '198.51.100.20');
-    expect(sixthUp.response.status).toBe(200);
-    const sixth = await call('/sign-in/email', { email: sixthEmail, password: 'wrong-password' }, undefined, '198.51.100.1');
-    expect(sixth.response.status).toBe(429);
+    const sixth = await signUp(sixthEmail, '198.51.100.20', 'IP');
+    expect(sixth.response.status).toBe(200);
+    const blocked = await call('/sign-in/email', { email: sixthEmail, password: 'wrong-password' }, undefined, '198.51.100.1');
+    expect(blocked.response.status).toBe(429);
     // Другой адрес снова получает честный ответ, а не блокировку чужого счётчика.
     const other = await call('/sign-in/email', { email: sixthEmail, password: 'wrong-password' }, undefined, '198.51.100.2');
     expect(other.response.status).toBe(401);
@@ -118,7 +130,7 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
 
   it('счётчик по аккаунту: после 5 неудач с разных IP вход блокируется для этого email (AR-4)', async () => {
     const email = uniqueEmail('acct-limit');
-    const up = await call('/sign-up/email', { email, password, name: 'Acct' }, undefined, '192.0.2.1');
+    const up = await signUp(email, '192.0.2.1', 'Acct');
     expect(up.response.status).toBe(200);
     for (let attempt = 1; attempt <= 5; attempt++) {
       const r = await call('/sign-in/email', { email, password: 'wrong-password' }, undefined, `192.0.2.${attempt}`);
@@ -129,7 +141,7 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
     expect(sixth.response.status).toBe(429);
     // Другой аккаунт с того же адреса не затронт.
     const other = uniqueEmail('acct-other');
-    const otherUp = await call('/sign-up/email', { email: other, password, name: 'Other' }, undefined, '192.0.2.99');
+    const otherUp = await signUp(other, '192.0.2.99', 'Other');
     expect(otherUp.response.status).toBe(200);
     const otherTry = await call('/sign-in/email', { email: other, password: 'wrong-password' }, undefined, '192.0.2.99');
     expect(otherTry.response.status).toBe(401);
@@ -137,18 +149,18 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
 
   it('регистрация только по инвайту: без него, чужой, просроченный — отказ (AR-2)', async () => {
     // Без инвайта аккаунт не создаётся.
-    const noInvite = await call('/sign-up/email', { email: uniqueEmail('no-invite'), password, name: 'X' }, undefined, '203.0.113.50');
+    const noInvite = await call('/sign-up/email', { email: uniqueEmail('no-invite'), password: PASSWORD, name: 'X' }, undefined, '203.0.113.50');
     expect(noInvite.response.status).toBe(403);
     expect(JSON.stringify(noInvite.json)).toContain('инвайт');
     // Неизвестный токен.
-    const unknown = await call('/sign-up/email', { email: uniqueEmail('bad-invite'), password, name: 'X', invite: 'нет-такого-токена' }, undefined, '203.0.113.51');
+    const unknown = await call('/sign-up/email', { email: uniqueEmail('bad-invite'), password: PASSWORD, name: 'X', invite: 'нет-такого-токена' }, undefined, '203.0.113.51');
     expect(unknown.response.status).toBe(403);
     // Просроченный инвайт (expires_at в прошлом).
     const { createHash, randomUUID } = await import('node:crypto');
     const expiredToken = 'expired-token-0123456789abcdef';
     await sql('insert into "invite" (id, token_hash, expires_at) values ($1, $2, $3)',
       [randomUUID(), createHash('sha256').update(expiredToken, 'utf8').digest('hex'), new Date(Date.now() - 60_000).toISOString()]);
-    const expired = await call('/sign-up/email', { email: uniqueEmail('expired'), password, name: 'X', invite: expiredToken }, undefined, '203.0.113.52');
+    const expired = await call('/sign-up/email', { email: uniqueEmail('expired'), password: PASSWORD, name: 'X', invite: expiredToken }, undefined, '203.0.113.52');
     expect(expired.response.status).toBe(403);
   });
 
@@ -161,7 +173,7 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
     const token = match![1];
     const email = uniqueEmail('invited');
 
-    const up = await call('/sign-up/email', { email, password, name: 'Invited', invite: token }, undefined, '203.0.113.60');
+    const up = await call('/sign-up/email', { email, password: PASSWORD, name: 'Invited', invite: token }, undefined, '203.0.113.60');
     expect(up.response.status, `signup: ${JSON.stringify(up.json)}`).toBe(200);
     const session = await getSession(up.setCookie!.split(';')[0]);
     expect(session.json.user.email).toBe(email);
@@ -175,7 +187,7 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6)', () => {
     expect(rows[0].used_at).toBeTruthy();
 
     // Повторное использование — отказ.
-    const reuse = await call('/sign-up/email', { email: uniqueEmail('reuse'), password, name: 'R', invite: token }, undefined, '203.0.113.61');
+    const reuse = await call('/sign-up/email', { email: uniqueEmail('reuse'), password: PASSWORD, name: 'R', invite: token }, undefined, '203.0.113.61');
     expect(reuse.response.status).toBe(403);
   });
 
