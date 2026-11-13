@@ -3,7 +3,7 @@ import { countUsers } from '../../../lib/admin-users';
 import { countInvites } from '../../../lib/admin-invites';
 import { countAuditSince } from '../../../lib/admin-audit';
 import { coreGet, coreGetReady } from '../../../lib/core-admin';
-import { describeCoreHealth, describeReady, type HealthReport, type ReadyReport } from '../../../lib/core-status';
+import { describeCoreHealth, describeReady, reasonText, type HealthReport, type ReadyReport } from '../../../lib/core-status';
 import { Card, PageHeader, Stat, StatusPill, formatDuration, formatDate } from '../../components/admin/ui';
 
 export const dynamic = 'force-dynamic';
@@ -78,7 +78,7 @@ export default async function AdminOverview() {
               <li key={`${check.name ?? 'check'}-${index}`} className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-1.5 last:border-0">
                 <span>{check.name ?? 'проверка'}</span>
                 <span className="flex items-center gap-2 text-xs text-[var(--muted)]">
-                  {check.reason && <span>{check.reason}</span>}
+                  {reasonText(check.reason) && <span>{reasonText(check.reason)}</span>}
                   {typeof check.ms === 'number' && <span>{check.ms} мс</span>}
                   <StatusPill tone={check.ok ? 'ok' : 'error'}>{check.ok ? 'ок' : 'сбой'}</StatusPill>
                 </span>

@@ -1,6 +1,6 @@
 import { coreGet, coreGetReady, type CoreHealth, type CoreMeta } from '../../../../lib/core-admin';
 import { readBackups, readDiskUsage } from '../../../../lib/admin-system';
-import { describeDegradedReason } from '../../../../lib/core-status';
+import { describeDegradedReason, reasonText } from '../../../../lib/core-status';
 import { RestartCore } from '../../../components/admin/restart-core';
 import { WarmupSessions } from '../../../components/admin/warmup-sessions';
 import { Card, EmptyState, PageHeader, Stat, StatusPill, formatBytes, formatDate, formatDuration, tableClass, tdClass, thClass } from '../../../components/admin/ui';
@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 
 interface ReadyReport {
   ok?: boolean;
-  checks?: Array<{ name?: string; ok?: boolean; reason?: string }>;
+  checks?: Array<{ name?: string; ok?: boolean; reason?: unknown }>;
 }
 
 export default async function AdminSystemPage() {
@@ -65,7 +65,7 @@ export default async function AdminSystemPage() {
                     <li key={`${check.name ?? 'check'}-${index}`} className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-1.5 last:border-0">
                       <span>{check.name ?? 'проверка'}</span>
                       <span className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-                        {check.reason && <span>{check.reason}</span>}
+                        {reasonText(check.reason) && <span>{reasonText(check.reason)}</span>}
                         {typeof check.ms === 'number' && <span>{check.ms} мс</span>}
                         <StatusPill tone={check.ok ? 'ok' : 'error'}>{check.ok ? 'ок' : 'сбой'}</StatusPill>
                       </span>
@@ -91,7 +91,7 @@ export default async function AdminSystemPage() {
                 <li key={`${check.name ?? 'ready'}-${index}`} className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-1.5 last:border-0">
                   <span>{check.name ?? 'проверка'}</span>
                   <span className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-                    {check.reason && <span>{check.reason}</span>}
+                    {reasonText(check.reason) && <span>{reasonText(check.reason)}</span>}
                     <StatusPill tone={check.ok ? 'ok' : 'error'}>{check.ok ? 'ок' : 'сбой'}</StatusPill>
                   </span>
                 </li>

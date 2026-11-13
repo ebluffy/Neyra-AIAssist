@@ -123,3 +123,10 @@ export function describeReady(result: CoreResult<ReadyReport>): ReadyView {
     reason: ready ? null : failed.map(check => `${check.name ?? 'проверка'}: ${check.reason ?? 'сбой'}`).join('; '),
   };
 }
+
+/** Причина проверки приходит и строкой, и объектом {error_class,...}. В JSX нужен текст. */
+export function reasonText(reason: unknown): string {
+  if (typeof reason === 'string') return reason.trim();
+  if (!reason || typeof reason !== 'object') return '';
+  return describeDegradedReason(reason);
+}
