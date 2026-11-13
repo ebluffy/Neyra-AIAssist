@@ -201,6 +201,60 @@ describe('ChatView conversation', () => {
     expect(screen.getByText('Админ-панель')).toBeTruthy();
     expect(screen.getByText(ru.signOut)).toBeTruthy();
   });
+
+  it('preserves full thread title for CSS truncation and does not slice without ellipsis (§2)', async () => {
+    const longPrompt = 'Расскажи про архитектуру и принципы работы распределённой системы';
+    const fetchMock = vi.fn(async () => sseResponse('готово'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
+    const input = screen.getByPlaceholderText(ru.placeholder);
+    fireEvent.change(input, { target: { value: longPrompt } });
+    fireEvent.submit(input.closest('form')!);
+
+    await waitFor(() => expect(screen.getByText('готово')).toBeTruthy());
+
+    // The header h1 should retain the full string (or first line) and have truncate class, not be hard-sliced at 32 chars
+    const headerTitle = screen.getByRole('heading', { level: 1 });
+    expect(headerTitle.textContent).toBe(longPrompt);
+    expect(headerTitle.className).toContain('truncate');
+    expect(headerTitle.className).toContain('min-w-0');
+  });
+
+  it('hides ContextIndicator when usage is absent and displays it without manual compact button when provided (§5.2)', async () => {
+    // 1. Initial render without usage
+    const view1 = render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
+    expect(screen.queryByRole('button', { name: /контекст диалога/i })).toBeNull();
+    view1.unmount();
+
+    // 2. Render with initialUsage
+    render(
+      <ChatView
+        user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }}
+        initialUsage={{
+          prompt_tokens: 100000,
+          completion_tokens: 20000,
+          context_limit: 1000000,
+          context_used: 120000,
+          lanes: {
+            brain: { used: 50000, limit: 500000, threshold_pct: 80 },
+            talk: { used: 40000, limit: 250000, threshold_pct: 80 },
+            vision: { used: 15000, limit: 150000, threshold_pct: 80 },
+            memory: { used: 15000, limit: 100000, threshold_pct: 80 },
+          },
+        }}
+      />
+    );
+
+    const indicatorBtn = screen.getByRole('button', { name: /контекст диалога/i });
+    expect(indicatorBtn).toBeTruthy();
+    expect(indicatorBtn.textContent).toContain('12%');
+
+    // Open popover
+    fireEvent.click(indicatorBtn);
+    expect(screen.getByText('Лейны контекста')).toBeTruthy();
+    expect(screen.queryByText('Сжать сейчас')).toBeNull();
+  });
 });
 
 describe('TextField layout integrity', () => {

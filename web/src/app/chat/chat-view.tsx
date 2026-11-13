@@ -131,6 +131,12 @@ export function ChatView({
         completion_tokens: 1240,
         context_limit: 1000000,
         context_used: 139840,
+        lanes: {
+          brain: { used: 60000, limit: 500000, threshold_pct: 80 },
+          talk: { used: 50000, limit: 250000, threshold_pct: 80 },
+          vision: { used: 15000, limit: 150000, threshold_pct: 80 },
+          memory: { used: 14840, limit: 100000, threshold_pct: 80 },
+        },
       });
     } else if (mockState === 'drawer') {
       setSidebarOpen(true);
@@ -563,9 +569,10 @@ export function ChatView({
     }
   };
 
-  // Derive thread title for header
+  // Derive thread title for header (truncated via CSS)
+  const firstUserMsg = messages.find(m => m.role === 'user')?.content.trim();
   const threadTitle = messages.length > 0
-    ? messages.find(m => m.role === 'user')?.content.slice(0, 32) || 'Диалог'
+    ? (firstUserMsg ? firstUserMsg.split('\n')[0] : 'Диалог')
     : ru.chat;
 
   return (
@@ -725,7 +732,10 @@ export function ChatView({
               className="lg:hidden text-[var(--text-muted)] shrink-0"
               onClick={() => setSidebarOpen(true)}
             />
-            <h1 className="text-[15px] font-medium text-[var(--text)] truncate min-w-0">
+            <h1
+              className="text-[15px] font-medium text-[var(--text)] truncate min-w-0 max-w-[260px] sm:max-w-[400px] md:max-w-xl"
+              title={threadTitle}
+            >
               {threadTitle}
             </h1>
           </div>
