@@ -41,9 +41,17 @@ service_idle() {
   jobs=$(systemctl list-jobs "$SERVICE" --no-legend --plain 2>/dev/null) || return 1
   [ -z "$jobs" ] || return 1
   case "$active" in
-    inactive|failed) return 0 ;;
+    inactive|failed) ;;
     *) return 1 ;;
   esac
+  case "$sub" in
+    dead|failed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+core_process_running() {
+  pgrep -f "$DEST/main.py" >/dev/null 2>&1
 }
 
 [ -f "$SRC/main.py" ] || die "нет $SRC/main.py — неверный путь исходников"
@@ -54,20 +62,27 @@ DEST=$(realpath -e "$DEST_RAW" 2>/dev/null) || die "не удалось разр
   || die "$DEST не похож на установленное ядро (main.py, core/api/app.py, .venv)"
 [ "$DEST" != "/" ] || die "DEST не может быть корнем"
 [ "$(realpath "$SRC")" != "$DEST" ] || die "SRC и DEST совпадают"
-for sub in .venv data config models backups logs; do
-  [ ! -L "$DEST/$sub" ] || die "$DEST/$sub — символьная ссылка: полный снимок невозможен, замени на каталог"
+for name in .venv data config models backups logs .env config.yaml; do
+  [ ! -L "$DEST/$name" ] || die "$DEST/$name — символьная ссылка: полный снимок и откат невозможны, замени на обычный путь"
 done
+# Вложенные ссылки в данных/конфиге не копируются содержимым, а остаются ссылками.
+nested_link=$(find "$DEST/data" "$DEST/config" -type l -print -quit 2>/dev/null || true)
+[ -z "$nested_link" ] || die "в data/config есть симлинк $nested_link — полный снимок невозможен"
 
 HEAD=$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown)
 echo "источник: $SRC ($HEAD)"
 echo "назначение: $DEST"
 if service_idle; then
   echo "сервис $SERVICE: остановлен или failed без jobs"
+  core_process_running && echo "внимание: найден процесс $DEST/main.py — для применения его нужно остановить"
 elif [ "$DRY" = 1 ]; then
   echo "внимание: сервис $SERVICE не в подтверждённом inactive/failed — для применения его нужно остановить"
 else
   die "сервис $SERVICE не в подтверждённом inactive/failed (или systemctl недоступен): останови его и проверь systemctl status"
 fi
+
+BACKUP_PARENT=${BACKUP_ROOT:-/opt/neyra}
+[ -d "$BACKUP_PARENT" ] || die "нет каталога для бэкапа: $BACKUP_PARENT"
 
 if [ "$DRY" = 1 ]; then
   echo "== проверка (ничего не меняю)"
@@ -75,32 +90,34 @@ if [ "$DRY" = 1 ]; then
   count=$(rsync -an --itemize-changes "${EXCLUDES[@]}" "$SRC/" "$DEST/" | grep -c '^[<>ch]' || true)
   echo "изменений кода: $count"
   echo "размер полного бэкапа: $(du -sh "$DEST" 2>/dev/null | cut -f1)"
-  echo "свободно на $(df -P "$DEST" | awk 'NR==2 {print $6}'): $(df -Ph "$DEST" | awk 'NR==2 {print $4}')"
+  echo "свободно под бэкап на $(df -P "$BACKUP_PARENT" | awk 'NR==2 {print $6}'): $(df -Ph "$BACKUP_PARENT" | awk 'NR==2 {print $4}')"
   echo "для применения: sudo systemctl stop $SERVICE && sudo bash $0 $SRC"
   exit 0
 fi
 
 [ "$(id -u)" = 0 ] || die "нужен root: sudo bash $0 $SRC"
-[ "$(realpath "$DEST")" != "$(realpath "$SRC")" ] || die "SRC и DEST совпадают"
 service_idle || die "перед обновлением сервис $SERVICE должен быть inactive/failed без jobs"
+core_process_running && die "найден живой процесс $DEST/main.py — останови его, иначе SQLite-снимок несогласован"
 
 "$DEST/.venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
   || die "в $DEST/.venv Python старше 3.11"
 
-NEED_BYTES=$(du -sb "$DEST" | cut -f1)
-AVAIL_BYTES=$(df -PB1 "$DEST" | awk 'NR==2 {print $4}')
-[ "$AVAIL_BYTES" -gt $((NEED_BYTES + NEED_BYTES / 10 + 1073741824)) ] \
-  || die "мало места для полного бэкапа: нужно ~$((NEED_BYTES / 1073741824 + 1)) ГиБ"
-NEED_INODES=$(find "$DEST" | wc -l)
-AVAIL_INODES=$(df -Pi "$DEST" | awk 'NR==2 {print $4}')
-[ "$AVAIL_INODES" -gt $((NEED_INODES + NEED_INODES / 10)) ] \
-  || die "мало inode для полного бэкапа"
-
-BACKUP="/opt/neyra/server.pre-update-$TS"
+BACKUP="$BACKUP_PARENT/server.pre-update-$TS"
 [ ! -e "$BACKUP" ] || die "бэкап $BACKUP уже существует"
+
+NEED_BYTES=$(du -sb "$DEST" | cut -f1)
+AVAIL_BYTES=$(df -PB1 "$BACKUP_PARENT" | awk 'NR==2 {print $4}')
+RESERVE=$((NEED_BYTES / 5 + 1073741824))
+[ "$AVAIL_BYTES" -gt $((NEED_BYTES + RESERVE)) ] \
+  || die "мало места под бэкап в $BACKUP_PARENT: нужно ~$(( (NEED_BYTES + RESERVE) / 1073741824 + 1 )) ГиБ"
+NEED_INODES=$(find "$DEST" | wc -l)
+AVAIL_INODES=$(df -Pi "$BACKUP_PARENT" | awk 'NR==2 {print $4}')
+[ "$AVAIL_INODES" -gt $((NEED_INODES + NEED_INODES / 10)) ] \
+  || die "мало inode под бэкап в $BACKUP_PARENT"
 
 umask 077
 service_idle || die "сервис $SERVICE запустился между проверками — обновление отменено"
+core_process_running && die "процесс $DEST/main.py появился между проверками — обновление отменено"
 echo "== 1/6 полный бэкап в $BACKUP"
 cp -a --reflink=auto "$DEST" "$BACKUP" || { rm -rf "$BACKUP"; die "не удалось скопировать $DEST"; }
 [ -f "$BACKUP/main.py" ] && [ -x "$BACKUP/.venv/bin/python" ] || { rm -rf "$BACKUP"; die "бэкап неполный: $BACKUP"; }
