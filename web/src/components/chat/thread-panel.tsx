@@ -124,7 +124,7 @@ export function ThreadPanel({
           : undefined,
     },
     { id: 'voice', label: 'Голос', icon: <Mic size={14} /> },
-    { id: 'settings', label: 'Настройки', icon: <Settings size={14} /> },
+    { id: 'settings', label: 'Настройки треда', icon: <Settings size={14} /> },
   ];
 
   const handleTabKeyDown = (e: React.KeyboardEvent, index: number) => {
