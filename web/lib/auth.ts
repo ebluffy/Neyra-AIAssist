@@ -55,17 +55,20 @@ function createAuth() {
           );
         }
       }),
-      // Count failures, reset on success. `returned` is the endpoint's Response.
+      // Count failures, reset on success. On error `returned` is the APIError
+      // thrown by the endpoint (has statusCode); on success it is the body object.
       after: createAuthMiddleware(async (ctx) => {
         if (ctx.path !== '/sign-in/email' || !ctx.request) return;
         const email = signInEmail.get(ctx.request);
         signInEmail.delete(ctx.request);
         if (!email) return;
         const returned = (ctx.context as { returned?: unknown }).returned;
-        const status = returned instanceof Response ? returned.status : 200;
-        if (status === 429) return; // already throttled; do not stack counters
-        if (status >= 200 && status < 300) await clearFailures(email);
-        else if (status === 401) await noteFailure(email);
+        const statusCode = returned && typeof returned === 'object' && 'statusCode' in returned
+          ? (returned as { statusCode?: number }).statusCode
+          : undefined;
+        if (statusCode === 429) return; // already throttled; do not stack counters
+        if (statusCode === undefined) await clearFailures(email); // success body
+        else if (statusCode === 401) await noteFailure(email);
       }),
     },
   });
