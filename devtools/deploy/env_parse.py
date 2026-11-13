@@ -50,6 +50,8 @@ def parse_env(text: str, source: str = ".env") -> dict[str, str]:
             continue
         if re.search(r"\s#", value):
             raise EnvFormatError(f"{where}: inline-комментарий не поддерживается, вынеси его на отдельную строку")
+        if "\\" in value:
+            raise EnvFormatError(f"{where}: обратный слэш не поддерживается, запиши значение без escape")
         values[key] = value
     return values
 

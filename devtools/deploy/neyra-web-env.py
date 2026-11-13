@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from env_parse import read_env  # noqa: E402
+from env_parse import parse_env, read_env  # noqa: E402
 
 WEB_ENV = Path(os.environ.get("WEB", "/opt/neyra/web")) / ".env"
 CORE_DIR = Path(os.environ.get("CORE", "/opt/neyra/server"))
@@ -92,11 +92,8 @@ def main() -> int:
     core_changed = False
     if not identity_secret:
         identity_secret = secrets.token_hex(32)
-        if core_ok:
-            write_atomic(CORE_ENV, {"NEYRA_IDENTITY_JWT_SECRET": identity_secret})
-            core_changed = True
-            print(f"секрет identity добавлен в {CORE_ENV} (значение не печатаю)")
-        else:
+        core_changed = core_ok
+        if not core_ok:
             print(f"нет {CORE_ENV}: секрет identity записан только сайту, чат не заработает", file=sys.stderr)
             status = 2
 
@@ -114,6 +111,14 @@ def main() -> int:
     else:
         print(f"внимание: в {CORE_ENV} нет API_TOKEN/API_KEY — впиши NEYRA_SERVICE_KEY вручную", file=sys.stderr)
         status = 2
+    # Всё, что пишем, обязано читаться тем же парсером: иначе loader отвергнет файл.
+    for key, value in updates.items():
+        if parse_env(serialize(key, value)).get(key) != value:
+            raise ValueError(f"{key}: значение не переживает запись в .env")
+
+    if core_changed:
+        write_atomic(CORE_ENV, {"NEYRA_IDENTITY_JWT_SECRET": identity_secret})
+        print(f"секрет identity добавлен в {CORE_ENV} (значение не печатаю)")
     if updates:
         write_atomic(WEB_ENV, updates)
 
