@@ -15,6 +15,7 @@ it('maps auth errors to Russian without exposing server messages', () => {
   expect(authErrorText('RATE_LIMITED')).toBe('Слишком много попыток. Попробуйте через 15 минут.');
   expect(authErrorText('INVALID_INVITE_CODE')).toBe('Недействительный или уже использованный код приглашения.');
   expect(authErrorText('SQL_SECRET')).toBe('Не удалось выполнить запрос. Попробуйте позже.');
+  expect(authErrorText('INVITE_EXPIRED', 'Срок действия приглашения истёк.')).toBe('Срок действия приглашения истёк.');
 });
 
 it('validates invite code format', () => {

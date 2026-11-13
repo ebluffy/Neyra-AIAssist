@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button, TextField, NeyraLogo } from './ui';
 import { signIn, signUp } from '../../lib/auth-client';
-import { credentialsSchema, inviteCodeSchema, authErrorText } from '../../lib/auth-policy';
+import { credentialsSchema, authErrorText } from '../../lib/auth-policy';
 import type { AuthConfig } from '../../lib/env';
 import { ru } from '../i18n';
 
@@ -21,14 +21,16 @@ export interface AuthFormProps {
   mode: 'login' | 'signup';
   config?: AuthConfig;
   initialError?: string;
+  invite?: string;
 }
 
-export function AuthForm({ mode, config, initialError = '' }: AuthFormProps) {
+export function AuthForm({ mode, config, initialError = '', invite = '' }: AuthFormProps) {
   const router = useRouter();
   const [error, setError] = useState(initialError);
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string; inviteCode?: string }>({});
   const [pending, setPending] = useState(false);
   const [discordPending, setDiscordPending] = useState(false);
+  const [inviteCode, setInviteCode] = useState(invite);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -38,6 +40,14 @@ export function AuthForm({ mode, config, initialError = '' }: AuthFormProps) {
       setError('Слишком много попыток. Пожалуйста, подождите 15 минут.');
     } else if (mockErr === 'invalid') {
       setError('Неверный адрес почты или пароль.');
+    } else if (mockErr === 'expired') {
+      setError('Срок действия приглашения истёк.');
+    } else if (mockErr === 'used') {
+      setError('Недействительный или уже использованный код приглашения.');
+    }
+    const urlInvite = params.get('invite');
+    if (urlInvite) {
+      setInviteCode(urlInvite);
     }
   }, []);
 
@@ -48,12 +58,14 @@ export function AuthForm({ mode, config, initialError = '' }: AuthFormProps) {
   const showDiscord = discordAvailable && (authMode === 'discord' || authMode === 'both');
   const isDiscordOnly = showDiscord && authMode === 'discord';
 
+  // Contract #72: if invite link is provided, token is applied and input is hidden
+  const hasAppliedInvite = !!invite || (typeof window !== 'undefined' && !!new URLSearchParams(window.location.search).get('invite'));
+
   async function handleDiscordSignIn() {
     if (discordPending) return;
     setDiscordPending(true);
     setError('');
     try {
-      // Better-auth social login via Discord
       await signIn.social({
         provider: 'discord',
         callbackURL: '/',
@@ -71,11 +83,8 @@ export function AuthForm({ mode, config, initialError = '' }: AuthFormProps) {
     const form = new FormData(event.currentTarget);
     const email = form.get('email');
     const password = form.get('password');
-    const rawInviteCode = form.get('inviteCode');
 
     const parsedCreds = credentialsSchema.safeParse({ email, password });
-    let inviteCode: string | undefined;
-
     const nextFieldErrors: { email?: string; password?: string; inviteCode?: string } = {};
 
     if (!parsedCreds.success) {
@@ -85,13 +94,9 @@ export function AuthForm({ mode, config, initialError = '' }: AuthFormProps) {
       }
     }
 
-    if (mode === 'signup' && inviteRequired) {
-      const parsedInvite = inviteCodeSchema.safeParse(rawInviteCode);
-      if (!parsedInvite.success) {
-        nextFieldErrors.inviteCode = 'Введите корректный код приглашения (не менее 4 символов).';
-      } else {
-        inviteCode = parsedInvite.data;
-      }
+    const token = inviteCode.trim();
+    if (mode === 'signup' && (inviteRequired || !hasAppliedInvite) && !token) {
+      nextFieldErrors.inviteCode = ru.inviteRequired;
     }
 
     if (Object.keys(nextFieldErrors).length > 0) {
@@ -109,17 +114,19 @@ export function AuthForm({ mode, config, initialError = '' }: AuthFormProps) {
     setPending(true);
 
     try {
+      // Contract #72: pass token via `invite` property in request body
       const result =
         mode === 'signup'
           ? await signUp.email({
               ...parsedCreds.data,
               name: parsedCreds.data.email,
-              ...(inviteCode ? { invite_code: inviteCode } : {}),
-            })
+              invite: token,
+            } as Parameters<typeof signUp.email>[0])
           : await signIn.email(parsedCreds.data);
 
       if (result.error) {
-        setError(authErrorText(result.error.code));
+        // Display server-sent error message verbatim (e.g. 403 on expired or used invite)
+        setError(authErrorText(result.error.code, result.error.message));
         return;
       }
       router.replace('/');
@@ -146,9 +153,24 @@ export function AuthForm({ mode, config, initialError = '' }: AuthFormProps) {
               ? isDiscordOnly
                 ? 'Вход в аккаунт через Discord'
                 : 'Введите email и пароль для продолжения'
-              : 'Создайте новый аккаунт для доступа'}
+              : hasAppliedInvite
+                ? 'Задайте учетные данные для регистрации'
+                : 'Создайте новый аккаунт для доступа'}
           </p>
         </div>
+
+        {/* Contract #72: Info note on signup */}
+        {mode === 'signup' && (
+          hasAppliedInvite ? (
+            <div className="rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--accent-quiet)] p-3 text-xs text-[var(--accent)] leading-relaxed">
+              {ru.inviteApplied}
+            </div>
+          ) : (
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-2)] p-3 text-xs text-[var(--text-muted)] leading-relaxed">
+              {ru.inviteOnly}
+            </div>
+          )
+        )}
 
         {error && (
           <div
@@ -215,17 +237,19 @@ export function AuthForm({ mode, config, initialError = '' }: AuthFormProps) {
               hint={mode === 'signup' ? 'Не менее 10 символов' : undefined}
             />
 
-            {mode === 'signup' && inviteRequired && (
+            {/* Contract #72: show invite field only when NOT applied from URL */}
+            {mode === 'signup' && !hasAppliedInvite && (
               <TextField
-                label="Код приглашения"
-                name="inviteCode"
+                label={ru.inviteCode}
+                name="invite"
                 type="text"
                 autoComplete="off"
                 required
                 disabled={pending}
                 placeholder="NEYRA-XXXX"
+                value={inviteCode}
+                onChange={e => setInviteCode(e.target.value)}
                 error={fieldErrors.inviteCode}
-                hint="Требуется действующий код приглашения"
               />
             )}
 

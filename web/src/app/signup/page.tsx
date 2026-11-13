@@ -12,8 +12,14 @@ export default async function Signup({
   const config = readAuthConfig();
   const effectiveConfig: AuthConfig = {
     authMode: (params?.mode as any) || config.authMode,
-    inviteRequired: params?.invite === 'true' || config.inviteRequired,
+    inviteRequired: true,
     discordAvailable: params?.mode === 'discord' || params?.mode === 'both' ? true : config.discordAvailable,
   };
-  return <AuthForm mode="signup" config={effectiveConfig} />;
+  return (
+    <AuthForm
+      mode="signup"
+      config={effectiveConfig}
+      invite={typeof params?.invite === 'string' ? params.invite : ''}
+    />
+  );
 }

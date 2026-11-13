@@ -8,7 +8,7 @@ export const credentialsSchema = z.object({
 export const inviteCodeSchema = z.string().trim().min(4, 'Код приглашения должен содержать не менее 4 символов.');
 // Never accept a privileged role from registration input.
 export const roleField = { type: ['admin', 'user'] as ('admin' | 'user')[], required: false, defaultValue: 'user', input: false } as const;
-export function authErrorText(code?: string): string {
+export function authErrorText(code?: string, message?: string): string {
   switch (code) {
     case 'INVALID_EMAIL_OR_PASSWORD': return 'Неверный email или пароль.';
     case 'USER_ALREADY_EXISTS': case 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL': return 'Аккаунт с таким email уже существует.';
@@ -22,6 +22,6 @@ export function authErrorText(code?: string): string {
       return 'Недействительный или уже использованный код приглашения.';
     case 'INVITE_CODE_REQUIRED':
       return 'Для регистрации требуется код приглашения.';
-    default: return 'Не удалось выполнить запрос. Попробуйте позже.';
+    default: return message?.trim() || 'Не удалось выполнить запрос. Попробуйте позже.';
   }
 }
