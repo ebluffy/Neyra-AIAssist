@@ -71,7 +71,7 @@ export default async function AdminLogsPage({ searchParams }: {
               {Object.entries(actionLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           </label>
-          <button type="submit" className="rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm hover:bg-white/5">
+          <button type="submit" className="rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm bg-[var(--surface-2)] text-[var(--text)] hover:bg-[var(--surface-3)] font-medium">
             Показать
           </button>
         </form>

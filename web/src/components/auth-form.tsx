@@ -3,6 +3,7 @@
 import React, { useState, useEffect, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { CheckCircle2, Ticket } from 'lucide-react';
 import { Button, TextField, NeyraLogo } from './ui';
 import { signIn, signUp } from '../../lib/auth-client';
 import { credentialsSchema, authErrorText } from '../../lib/auth-policy';
@@ -159,15 +160,17 @@ export function AuthForm({ mode, config, initialError = '', invite = '' }: AuthF
           </p>
         </div>
 
-        {/* Contract #72: Info note on signup */}
+        {/* Contract #72: Info note on signup — neutral monochrome styling */}
         {mode === 'signup' && (
           hasAppliedInvite ? (
-            <div className="rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--accent-quiet)] p-3 text-xs text-[var(--accent)] leading-relaxed">
-              {ru.inviteApplied}
+            <div className="flex items-start gap-2.5 rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--surface-2)] p-3 text-xs text-[var(--text)] leading-relaxed">
+              <CheckCircle2 size={16} strokeWidth={1.5} className="text-[var(--text-muted)] shrink-0 mt-0.5" />
+              <span>{ru.inviteApplied}</span>
             </div>
           ) : (
-            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-2)] p-3 text-xs text-[var(--text-muted)] leading-relaxed">
-              {ru.inviteOnly}
+            <div className="flex items-start gap-2.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-2)] p-3 text-xs text-[var(--text-muted)] leading-relaxed">
+              <Ticket size={16} strokeWidth={1.5} className="text-[var(--text-subtle)] shrink-0 mt-0.5" />
+              <span>{ru.inviteOnly}</span>
             </div>
           )
         )}
@@ -268,7 +271,7 @@ export function AuthForm({ mode, config, initialError = '', invite = '' }: AuthF
             </span>
             <Link
               href={mode === 'login' ? '/signup' : '/login'}
-              className="text-[13px] text-[var(--accent)] font-medium hover:underline underline-offset-[3px] transition-all"
+              className="text-[13px] text-[var(--text)] font-medium hover:underline underline-offset-[3px] transition-all"
             >
               {mode === 'login' ? ru.signup : ru.login}
             </Link>

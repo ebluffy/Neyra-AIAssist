@@ -19,6 +19,10 @@ export default async function AdminSystemPage() {
     readBackups(process.env.NEYRA_BACKUP_DIR),
   ]);
 
+  // Честное определение статуса ядра: ok / degraded / down
+  const coreTone = health.state !== 'ok' ? 'error' : (health.data?.ok ? 'ok' : 'warn');
+  const coreLabel = health.state !== 'ok' ? 'недоступно' : (health.data?.ok ? 'в норме' : 'деградировало');
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -29,8 +33,8 @@ export default async function AdminSystemPage() {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Uptime сайта" value={formatDuration(process.uptime())} hint="процесс Next" />
         <Stat label="Диск свободно" value={disk ? formatBytes(disk.freeBytes) : '—'} hint={disk ? `из ${formatBytes(disk.totalBytes)}` : 'не удалось прочитать'} />
-        <Stat label="Версия сайта" value={process.env.NEYRA_WEB_VERSION ?? '—'} hint="задаётся сборкой" />
-        <Stat label="Коммит" value={process.env.NEYRA_COMMIT ? process.env.NEYRA_COMMIT.slice(0, 12) : '—'} hint="если сборка сообщает" />
+        <Stat label="Версия сайта" value={process.env.NEYRA_WEB_VERSION ?? 'не задано в .env'} hint="NEYRA_WEB_VERSION" />
+        <Stat label="Коммит" value={process.env.NEYRA_COMMIT ? process.env.NEYRA_COMMIT.slice(0, 12) : 'не задано в .env'} hint="NEYRA_COMMIT" />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -40,18 +44,23 @@ export default async function AdminSystemPage() {
           ) : (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
-                <StatusPill tone={health.data?.ok ? 'ok' : 'warn'}>{health.data?.ok ? 'в норме' : 'деградировало'}</StatusPill>
-                <span className="text-xs text-[var(--muted)]">
+                <StatusPill tone={coreTone}>{coreLabel}</StatusPill>
+                <span className="text-xs text-[var(--text-muted)]">
                   версия {health.data?.version ?? health.data?.api_version ?? '—'} · uptime {formatDuration(health.data?.uptime_seconds)}
                 </span>
               </div>
-              {health.data?.degraded_reason && <p className="text-xs text-amber-300">{health.data.degraded_reason}</p>}
+              {health.data?.degraded_reason && (
+                <div className="rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] p-2.5 text-xs text-[var(--text-muted)] leading-relaxed">
+                  <span className="font-medium text-[var(--text)] block mb-0.5">Причина деградации:</span>
+                  {health.data.degraded_reason}
+                </div>
+              )}
               {Array.isArray(health.data?.checks) && health.data.checks.length > 0 ? (
                 <ul className="space-y-1 text-sm">
                   {health.data.checks.map((check, index) => (
                     <li key={`${check.name ?? 'check'}-${index}`} className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-1.5 last:border-0">
                       <span>{check.name ?? 'проверка'}</span>
-                      <span className="flex items-center gap-2 text-xs text-[var(--muted)]">
+                      <span className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
                         {check.reason && <span>{check.reason}</span>}
                         {typeof check.ms === 'number' && <span>{check.ms} мс</span>}
                         <StatusPill tone={check.ok ? 'ok' : 'error'}>{check.ok ? 'ок' : 'сбой'}</StatusPill>
@@ -59,9 +68,9 @@ export default async function AdminSystemPage() {
                     </li>
                   ))}
                 </ul>
-              ) : <p className="text-xs text-[var(--muted)]">Ядро не вернуло список проверок.</p>}
+              ) : <p className="text-xs text-[var(--text-muted)]">Ядро не вернуло список проверок.</p>}
               {Array.isArray(health.data?.llm_providers) && health.data.llm_providers.length > 0 && (
-                <p className="text-xs text-[var(--muted)]">Провайдеры: {health.data.llm_providers.join(', ')}</p>
+                <p className="text-xs text-[var(--text-muted)]">Провайдеры: {health.data.llm_providers.join(', ')}</p>
               )}
             </div>
           )}
@@ -69,15 +78,15 @@ export default async function AdminSystemPage() {
 
         <Card title="Готовность" description={ready.state === 'ok' ? 'GET /v1/health/ready' : ready.message ?? ''}>
           {ready.state !== 'ok' ? (
-            <p className="text-xs text-[var(--muted)]">{ready.message ?? 'Ядро не ответило.'}</p>
+            <p className="text-xs text-[var(--text-muted)]">{ready.message ?? 'Ядро не ответило.'}</p>
           ) : (ready.data?.checks ?? []).length === 0 ? (
-            <p className="text-xs text-[var(--muted)]">Проверок нет.</p>
+            <p className="text-xs text-[var(--text-muted)]">Проверок нет.</p>
           ) : (
             <ul className="space-y-1 text-sm">
               {(ready.data?.checks ?? []).map((check, index) => (
                 <li key={`${check.name ?? 'ready'}-${index}`} className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-1.5 last:border-0">
                   <span>{check.name ?? 'проверка'}</span>
-                  <span className="flex items-center gap-2 text-xs text-[var(--muted)]">
+                  <span className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
                     {check.reason && <span>{check.reason}</span>}
                     <StatusPill tone={check.ok ? 'ok' : 'error'}>{check.ok ? 'ок' : 'сбой'}</StatusPill>
                   </span>
@@ -89,33 +98,37 @@ export default async function AdminSystemPage() {
 
         <Card title="Метаданные ядра" description={meta.state === 'ok' ? 'GET /v1/meta' : meta.message ?? ''}>
           {meta.state !== 'ok' ? (
-            <p className="text-xs text-[var(--muted)]">{meta.message ?? 'Ядро не ответило.'}</p>
+            <p className="text-xs text-[var(--text-muted)]">{meta.message ?? 'Ядро не ответило.'}</p>
           ) : (
             <dl className="grid gap-1 text-sm">
-              <div className="flex justify-between gap-3"><dt className="text-[var(--muted)]">API</dt><dd className="font-mono text-xs">{meta.data?.api_version ?? '—'}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-[var(--muted)]">Публичный адрес</dt><dd className="font-mono text-xs">{meta.data?.public_url ?? '—'}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-[var(--muted)]">Сайт</dt><dd className="font-mono text-xs">{meta.data?.dashboard_url ?? '—'}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-[var(--text-muted)]">API</dt><dd className="font-mono text-xs">{meta.data?.api_version ?? '—'}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-[var(--text-muted)]">Публичный адрес</dt><dd className="font-mono text-xs">{meta.data?.public_url ?? '—'}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-[var(--text-muted)]">Сайт</dt><dd className="font-mono text-xs">{meta.data?.dashboard_url ?? '—'}</dd></div>
             </dl>
           )}
         </Card>
 
         <Card title="Бэкапы" description="Создание бэкапа — только по согласованию на сервере; панель его не запускает.">
           {!backups.configured ? (
-            <p className="text-xs text-[var(--muted)]">NEYRA_BACKUP_DIR не задан — список бэкапов недоступен.</p>
+            <p className="text-xs text-[var(--text-muted)]">NEYRA_BACKUP_DIR не задан — список бэкапов недоступен.</p>
           ) : backups.items.length === 0 ? (
-            <p className="text-xs text-[var(--muted)]">В каталоге бэкапов пусто или он недоступен на чтение.</p>
+            <p className="text-xs text-[var(--text-muted)]">В каталоге бэкапов пусто или он недоступен на чтение.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className={tableClass}>
                 <thead>
-                  <tr><th className={thClass}>Файл</th><th className={thClass}>Размер</th><th className={thClass}>Изменён</th></tr>
+                  <tr>
+                    <th className={thClass}>Файл</th>
+                    <th className={thClass}>Размер</th>
+                    <th className={thClass}>Изменён</th>
+                  </tr>
                 </thead>
                 <tbody>
                   {backups.items.slice(0, 20).map(item => (
-                    <tr key={item.name}>
+                    <tr key={item.name} className="hover:bg-[var(--surface-2)]">
                       <td className={`${tdClass} font-mono text-xs`}>{item.name}</td>
                       <td className={`${tdClass} text-xs`}>{formatBytes(item.size)}</td>
-                      <td className={`${tdClass} whitespace-nowrap text-xs text-[var(--muted)]`}>{formatDate(item.modifiedAt)}</td>
+                      <td className={`${tdClass} whitespace-nowrap text-xs text-[var(--text-muted)]`}>{formatDate(item.modifiedAt)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -127,7 +140,7 @@ export default async function AdminSystemPage() {
 
       <Card title="Перезапуск" description="Ядро — мягкая остановка через API. Сайт перезапускается deploy-скриптом на сервере.">
         <RestartCore />
-        <p className="mt-3 text-xs text-[var(--muted)]">
+        <p className="mt-3 text-xs text-[var(--text-subtle)] leading-relaxed">
           Перезапуск сайта с панели недоступен: у пользователя сайта нет доступа к systemd. Раздел вернётся, когда появится отдельный сервис управления.
         </p>
       </Card>

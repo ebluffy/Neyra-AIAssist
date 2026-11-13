@@ -1,4 +1,7 @@
-import React, { type ButtonHTMLAttributes, forwardRef } from 'react';
+'use client';
+
+import React, { type ButtonHTMLAttributes, forwardRef, type ReactNode } from 'react';
+import { Tooltip } from './Tooltip';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 export type ButtonSize = 'sm' | 'md' | 'lg';
@@ -7,12 +10,13 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
   loading?: boolean;
+  tooltip?: ReactNode;
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ variant = 'primary', size = 'md', loading = false, disabled, className = '', children, type = 'button', ...props }, ref) => {
+  ({ variant = 'primary', size = 'md', loading = false, disabled, className = '', children, type = 'button', tooltip, ...props }, ref) => {
     const baseClasses =
-      'inline-flex items-center justify-center font-medium transition-all select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]';
+      'inline-flex items-center justify-center font-medium transition-transform select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]';
 
     const variantClasses = {
       primary:
@@ -33,7 +37,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
 
     const stateClasses = disabled || loading ? 'opacity-40 cursor-default pointer-events-none' : 'cursor-pointer';
 
-    return (
+    const btn = (
       <button
         ref={ref}
         type={type}
@@ -60,6 +64,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         {children}
       </button>
     );
+
+    if (tooltip) {
+      return <Tooltip content={tooltip}>{btn}</Tooltip>;
+    }
+    return btn;
   }
 );
 

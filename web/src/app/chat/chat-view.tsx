@@ -8,8 +8,10 @@ import {
   ArrowUp,
   Copy,
   Check,
+  Edit2,
   FileText,
   Image as ImageIcon,
+  Link as LinkIcon,
   LogOut,
   MessageSquare,
   MoreVertical,
@@ -19,6 +21,7 @@ import {
   Settings,
   Shield,
   Square,
+  Trash2,
   X,
 } from 'lucide-react';
 import { SseChatEventSchema } from '@neyra/contracts';
@@ -44,6 +47,44 @@ export interface ChatMessageItem {
   attachments?: ChatMessageAttachment[];
 }
 
+
+function humanizeErrorMessage(rawError?: string | null): { message: string; hint?: string } {
+  if (!rawError) return { message: 'Произошла ошибка при обработке запроса.' };
+  const lower = rawError.toLowerCase();
+  if (lower.includes('rate_limit') || lower.includes('ratelimit') || lower.includes('429') || lower.includes('лимит') || lower.includes('openai') || lower.includes('quota')) {
+    return {
+      message: 'Модель упёрлась в лимит провайдера — попробуйте позже.',
+      hint: 'Сброс суточного лимита обычно происходит в 03:00 МСК.',
+    };
+  }
+  if (lower.includes('context') || lower.includes('контекст') || lower.includes('length')) {
+    return {
+      message: 'Запрос слишком длинный для контекста модели.',
+      hint: 'Попробуйте сократить текст или начать новый диалог.',
+    };
+  }
+  if (lower.includes('timeout') || lower.includes('таймаут') || lower.includes('не ответило вовремя')) {
+    return {
+      message: 'Ядро Нейры не ответило вовремя.',
+      hint: 'Попробуйте повторить запрос через несколько секунд.',
+    };
+  }
+  if (lower.includes('unavailable') || lower.includes('недоступен') || lower.includes('connect')) {
+    return {
+      message: 'Провайдер или сервис модели временно недоступен.',
+      hint: 'Попробуйте повторить запрос чуть позже.',
+    };
+  }
+  // Незнакомую причину показываем как есть: ядро уже отдаёт наружу только
+  // безопасные формулировки (сырой текст провайдера фильтруется на сервере).
+  const text = rawError.trim().slice(0, 240);
+  if (text) return { message: text };
+  return {
+    message: 'Не удалось подготовить ответ. Попробуйте ещё раз.',
+    hint: 'Если ошибка повторяется, проверьте состояние ядра в админке.',
+  };
+}
+
 export interface ChatViewProps {
   user: { id: string; email?: string | null; name?: string | null; role?: string | null };
   initialMessages?: ChatMessageItem[];
@@ -64,6 +105,8 @@ export function ChatView({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showScrollDown, setShowScrollDown] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [threadLinkCopied, setThreadLinkCopied] = useState(false);
+  const [customTitle, setCustomTitle] = useState<string | null>(null);
 
   // V2 UI states
   const [threadMenuOpen, setThreadMenuOpen] = useState(false);
@@ -111,7 +154,7 @@ export function ChatView({
           id: 'a1',
           role: 'assistant',
           content: '',
-          error: 'Сервис Нейры временно недоступен. Попробуйте повторить запрос позже.',
+          error: 'Лимит запросов к модели исчерпан (провайдер временно ограничил доступ: OpenAIRateLimitError).',
         },
       ]);
     } else if (mockState === 'profile-user') {
@@ -588,9 +631,9 @@ export function ChatView({
 
   // Derive thread title for header (truncated via CSS)
   const firstUserMsg = messages.find(m => m.role === 'user')?.content.trim();
-  const threadTitle = messages.length > 0
+  const threadTitle = customTitle || (messages.length > 0
     ? (firstUserMsg ? firstUserMsg.split('\n')[0] : 'Диалог')
-    : ru.chat;
+    : ru.chat);
 
   return (
     <div className="flex h-screen w-full bg-[var(--bg)] text-[var(--text)] overflow-hidden">
@@ -640,11 +683,11 @@ export function ChatView({
 
           {/* Chat threads list */}
           <div className="pt-2 space-y-1">
-            <div className="text-[11px] font-medium text-[var(--text-subtle)] px-2 pb-1 uppercase tracking-wider">
-              Диалог
+            <div className="text-xs font-normal text-[var(--text-muted)] px-2 pb-1">
+              Текущий диалог
             </div>
-            <div className="flex items-center gap-2.5 h-[34px] px-2.5 rounded-[var(--radius-sm)] bg-[var(--accent-quiet)] text-[var(--text)] border-l-2 border-[var(--accent)] text-[13px] font-medium truncate cursor-default">
-              <MessageSquare size={14} className="text-[var(--accent)] shrink-0" />
+            <div className="flex items-center gap-2.5 h-[34px] px-2.5 rounded-[var(--radius-sm)] bg-[var(--surface-3)] text-[var(--text)] border-l-2 border-[var(--accent)] text-[13px] font-medium truncate cursor-default">
+              <MessageSquare size={14} className="text-[var(--text)] shrink-0" />
               <span className="truncate">{threadTitle}</span>
             </div>
           </div>
@@ -665,10 +708,7 @@ export function ChatView({
               <Avatar name={user.name} email={user.email} size={26} />
               <div className="min-w-0 flex flex-col">
                 <span className="text-xs font-medium text-[var(--text)] truncate">
-                  {user.name || user.email?.split('@')[0]}
-                </span>
-                <span className="text-[11px] text-[var(--text-muted)] truncate">
-                  {user.email}
+                  {user.name && user.name !== user.email ? user.name : user.email}
                 </span>
               </div>
             </div>
@@ -697,15 +737,15 @@ export function ChatView({
                 </div>
               </div>
 
-              <button
-                type="button"
+              <Link
+                href="/settings"
                 role="menuitem"
                 className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
                 onClick={() => setProfileMenuOpen(false)}
               >
                 <Settings size={14} className="text-[var(--text-muted)]" />
                 <span>Настройки</span>
-              </button>
+              </Link>
 
               {user.role === 'admin' && (
                 <Link
@@ -773,16 +813,61 @@ export function ChatView({
               <div
                 role="menu"
                 aria-label="Опции диалога"
-                className="absolute right-0 top-full mt-1.5 w-40 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-strong)] shadow-panel p-1 z-50 text-xs flex flex-col"
+                className="absolute right-0 top-full mt-1.5 w-48 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-strong)] shadow-panel p-1 z-50 text-xs flex flex-col gap-0.5"
               >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
+                  onClick={() => {
+                    const next = window.prompt('Новое название диалога:', threadTitle);
+                    if (next && next.trim()) setCustomTitle(next.trim());
+                    setThreadMenuOpen(false);
+                  }}
+                >
+                  <Edit2 size={13} className="text-[var(--text-muted)]" />
+                  <span>Переименовать</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
+                  onClick={async () => {
+                    if (typeof window !== 'undefined') {
+                      await navigator.clipboard.writeText(window.location.href);
+                      setThreadLinkCopied(true);
+                      setTimeout(() => setThreadLinkCopied(false), 2000);
+                    }
+                    setThreadMenuOpen(false);
+                  }}
+                >
+                  {threadLinkCopied ? <Check size={13} className="text-[var(--accent)]" /> : <LinkIcon size={13} className="text-[var(--text-muted)]" />}
+                  <span>{threadLinkCopied ? 'Ссылка скопирована' : 'Скопировать ссылку'}</span>
+                </button>
                 <button
                   type="button"
                   role="menuitem"
                   className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
                   onClick={startNewChat}
                 >
-                  <Plus size={14} className="text-[var(--accent)]" />
+                  <Plus size={13} className="text-[var(--accent)]" />
                   <span>{ru.newChat}</span>
+                </button>
+                <div className="my-1 border-t border-[var(--border)]" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors text-left cursor-pointer"
+                  onClick={() => {
+                    if (window.confirm('Очистить сообщения этого диалога?')) {
+                      setMessages([]);
+                      setCustomTitle(null);
+                    }
+                    setThreadMenuOpen(false);
+                  }}
+                >
+                  <Trash2 size={13} />
+                  <span>Удалить диалог</span>
                 </button>
               </div>
             )}
@@ -852,38 +937,56 @@ export function ChatView({
                     </div>
                   </div>
                 ) : msg.error ? (
-                  // V2 Failed Exchange Error Block (§4.1: single exchange, Retry + Delete)
-                  <div
-                    role="alert"
-                    className="w-full rounded-[var(--radius)] border border-[var(--danger)] bg-[var(--danger-quiet)] p-3.5 text-xs text-[var(--danger)] flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span>{msg.error}</span>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Button
-                        type="button"
-                        variant="danger"
-                        size="sm"
-                        disabled={msg.isRetrying || streaming}
-                        onClick={() => handleRetry(msg.id)}
-                        className="h-7 text-[11px] px-2.5 gap-1.5"
+                  // Failed Exchange Error Block: humanized message + icon buttons with tooltips
+                  (() => {
+                    const parsed = humanizeErrorMessage(msg.error);
+                    return (
+                      <div
+                        role="alert"
+                        className="w-full rounded-[var(--radius)] border border-[var(--danger)] bg-[var(--danger-quiet)] p-3.5 text-xs text-[var(--danger)] flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                       >
-                        <RefreshCw size={11} className={msg.isRetrying ? 'animate-spin' : ''} />
-                        <span>{msg.isRetrying ? 'Повторяю…' : 'Повторить'}</span>
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        disabled={msg.isRetrying || streaming}
-                        onClick={() => handleDeleteExchange(msg.id)}
-                        className="h-7 text-[11px] px-2 text-[var(--text-muted)] hover:text-[var(--danger)]"
-                      >
-                        Удалить
-                      </Button>
-                    </div>
-                  </div>
+                        <div className="flex flex-col gap-1 min-w-0">
+                          <span className="font-medium text-[var(--danger)] leading-relaxed">{parsed.message}</span>
+                          {parsed.hint && (
+                            <span className="text-[11px] text-[var(--text-muted)] font-normal">{parsed.hint}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                          <IconButton
+                            type="button"
+                            aria-label="Повторить"
+                            tooltip={msg.isRetrying ? 'Повторяю…' : 'Повторить'}
+                            icon={
+                              <span className="flex items-center">
+                                <RefreshCw size={14} className={msg.isRetrying ? 'animate-spin' : ''} />
+                                <span className="sr-only">Повторить</span>
+                              </span>
+                            }
+                            variant="secondary"
+                            size="sm"
+                            disabled={msg.isRetrying || streaming}
+                            onClick={() => handleRetry(msg.id)}
+                          />
+                          <IconButton
+                            type="button"
+                            aria-label="Удалить"
+                            tooltip="Удалить"
+                            icon={
+                              <span className="flex items-center">
+                                <Trash2 size={14} />
+                                <span className="sr-only">Удалить</span>
+                              </span>
+                            }
+                            variant="ghost"
+                            size="sm"
+                            disabled={msg.isRetrying || streaming}
+                            onClick={() => handleDeleteExchange(msg.id)}
+                            className="text-[var(--danger)] hover:bg-[var(--danger-quiet)]"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()
                 ) : (
                   // Assistant Message (§3: NO bubble, article typography, full width)
                   <div className="w-full flex flex-col group relative">

@@ -6,31 +6,31 @@
 :root {
   color-scheme: dark;
 
-  /* Поверхность (§2) */
-  --bg: #08090a;
-  --surface: #101113;
-  --surface-2: #16181b;
-  --surface-3: #1d2024;
-  --border: rgba(255, 255, 255, 0.07);
-  --border-strong: rgba(255, 255, 255, 0.14);
+  /* Поверхность — глубокий монохром (чёрный база) */
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --surface-2: #121212;
+  --surface-3: #1a1a1a;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
 
-  /* Текст (§2) */
-  --text: #e9eaec;
-  --text-muted: #9a9fa6;
-  --text-subtle: #6b7178;
+  /* Текст — строгая нейтральная шкала */
+  --text: #f4f4f5;
+  --text-muted: #a1a1aa;
+  --text-subtle: #71717a;
 
-  /* Сигнал (§2) */
-  --accent: #e4b15c;
-  --accent-hover: #eec27c;
-  --accent-ink: #1a1207;
-  --accent-quiet: rgba(228, 177, 92, 0.12);
+  /* Сигнал — монохромный (белый акцент) */
+  --accent: #ffffff;
+  --accent-hover: #e4e4e7;
+  --accent-ink: #000000;
+  --accent-quiet: rgba(255, 255, 255, 0.08);
 
-  /* Статусы (§2) */
-  --danger: #e5686b;
-  --danger-quiet: rgba(229, 104, 107, 0.12);
-  --success: #58b98a;
+  /* Статусы — строгие, только красный для реальной ошибки */
+  --danger: #ef4444;
+  --danger-quiet: rgba(239, 68, 68, 0.12);
+  --success: #e4e4e7;
 
-  /* Типографика (§2) */
+  /* Типографика */
   --font-sans: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: var(--font-mono-jetbrains), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --text-xs: 12px;
@@ -48,7 +48,7 @@
   --text-3xl: 44px;
   --leading-3xl: 52px;
 
-  /* Геометрия (§2) */
+  /* Геометрия */
   --radius-sm: 6px;
   --radius: 10px;
   --radius-lg: 14px;
@@ -63,13 +63,13 @@
   --space-8: 32px;
   --space-10: 40px;
 
-  /* Движение (§2) */
+  /* Движение: только transform/opacity, 120-160ms ease-out */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --dur-fast: 120ms;
   --dur: 160ms;
 
-  /* Слой (§2) */
-  --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
+  /* Слой */
+  --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 8px 24px rgba(0, 0, 0, 0.6);
 
   /* Совместимость с @neyra/ui токенами */
   --background: var(--bg);
@@ -132,6 +132,12 @@ textarea:focus-visible {
     animation: none !important;
     opacity: 0.85 !important;
   }
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .content-column {
@@ -160,13 +166,4 @@ textarea:focus-visible {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-subtle);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, ::before, ::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
 }

@@ -65,7 +65,7 @@ export default async function AdminMemoryPage({ searchParams }: {
             Поиск по людям
             <input name="q" defaultValue={q} placeholder="имя, аккаунт, discord id" className={fieldClass} />
           </label>
-          <button type="submit" className="rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm hover:bg-white/5">
+          <button type="submit" className="rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm bg-[var(--surface-2)] text-[var(--text)] hover:bg-[var(--surface-3)] font-medium">
             Найти
           </button>
         </form>

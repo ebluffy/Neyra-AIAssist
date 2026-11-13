@@ -1,10 +1,9 @@
 'use client';
 
 import { useState } from 'react';
+import { RotateCw } from 'lucide-react';
 import { Dialog } from './dialog';
-
-const buttonClass = 'rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm hover:bg-white/5 disabled:opacity-40';
-const dangerClass = 'rounded-[var(--radius)] border border-red-500/50 px-3 py-1.5 text-sm text-red-300 hover:bg-red-500/10 disabled:opacity-40';
+import { Button } from '../ui';
 
 export function RestartCore() {
   const [open, setOpen] = useState(false);
@@ -36,20 +35,25 @@ export function RestartCore() {
 
   return (
     <div className="space-y-2">
-      <button type="button" className={dangerClass} onClick={() => setOpen(true)}>Перезапустить ядро</button>
-      {message && <p role="status" className="text-xs text-emerald-300">{message}</p>}
-      {error && !open && <p role="alert" className="text-xs text-red-300">{error}</p>}
+      <Button variant="danger" size="md" onClick={() => setOpen(true)}>
+        <RotateCw size={14} className="mr-1.5" />
+        <span>Перезапустить ядро</span>
+      </Button>
+      {message && <p role="status" className="text-xs text-[var(--text)] bg-[var(--surface-3)] p-2 rounded-[var(--radius-sm)] border border-[var(--border)]">{message}</p>}
+      {error && !open && <p role="alert" className="text-xs text-[var(--danger)]">{error}</p>}
       <Dialog open={open} title="Перезапустить ядро Нейры?" onClose={() => setOpen(false)}>
-        <p className="text-[var(--muted)]">
+        <p className="text-[var(--text-muted)] leading-relaxed">
           Ядро мягко остановится, systemd или docker поднимет его снова. Чат на несколько секунд станет недоступен.
           Действие попадёт в журнал.
         </p>
-        {error && <p role="alert" className="mt-2 text-xs text-red-300">{error}</p>}
-        <div className="mt-4 flex justify-end gap-2">
-          <button type="button" className={buttonClass} onClick={() => setOpen(false)}>Отмена</button>
-          <button type="button" className={dangerClass} disabled={pending} onClick={restart}>
+        {error && <p role="alert" className="mt-2 text-xs text-[var(--danger)]">{error}</p>}
+        <div className="mt-5 flex justify-end gap-2.5">
+          <Button variant="secondary" size="sm" onClick={() => setOpen(false)}>
+            Отмена
+          </Button>
+          <Button variant="danger" size="sm" disabled={pending} loading={pending} onClick={restart}>
             {pending ? 'Перезапускаю…' : 'Перезапустить'}
-          </button>
+          </Button>
         </div>
       </Dialog>
     </div>
