@@ -27,6 +27,7 @@ import { SseChatEventSchema } from '@neyra/contracts';
 import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, type ContextUsage } from '../../components/ui';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
+import { SettingsDialog } from '../../components/settings-dialog';
 import { ru } from '../../i18n';
 
 export interface ChatMessageAttachment {
@@ -107,6 +108,7 @@ export function ChatView({
   const [customTitle, setCustomTitle] = useState<string | null>(null);
   // Десктоп: сайдбар можно свернуть, чтобы чат занимал всё окно (§ волна 4).
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // V2 UI states
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -737,15 +739,15 @@ export function ChatView({
                 </div>
               </div>
 
-              <Link
-                href="/settings"
+              <button
+                type="button"
                 role="menuitem"
-                className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
-                onClick={() => setProfileMenuOpen(false)}
+                className="flex w-full items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+                onClick={() => { setProfileMenuOpen(false); setSettingsOpen(true); }}
               >
                 <Settings size={14} className="text-[var(--text-muted)]" />
                 <span>Настройки</span>
-              </Link>
+              </button>
 
               {user.role === 'admin' && (
                 <Link
@@ -1176,6 +1178,13 @@ export function ChatView({
           </div>
         </footer>
       </div>
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        user={user}
+        onSignOut={handleSignOut}
+      />
     </div>
   );
 }

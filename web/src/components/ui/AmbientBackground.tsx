@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 // Лёгкий фон: редкие белые точки, которые медленно плывут, и мягкое пятно света,
 // идущее за курсором. Всё на transform/opacity, отключается при prefers-reduced-motion.
@@ -18,15 +18,33 @@ const DOTS = [
   { left: '45%', top: '36%', size: 1.5, delay: '-25s', duration: '29s' },
 ];
 
+function flag(key: string, fallback: boolean): boolean {
+  if (typeof window === 'undefined') return fallback;
+  const raw = window.localStorage.getItem(key);
+  return raw === null ? fallback : raw === '1';
+}
+
 export function AmbientBackground() {
   const glowRef = useRef<HTMLDivElement | null>(null);
   const ringRef = useRef<HTMLDivElement | null>(null);
+  const [particles, setParticles] = useState(true);
+  const [ring, setRing] = useState(true);
+
+  useEffect(() => {
+    const sync = () => {
+      setParticles(flag('neyra:bg-particles', true));
+      setRing(flag('neyra:cursor-ring', true));
+    };
+    sync();
+    window.addEventListener('neyra:appearance', sync);
+    return () => window.removeEventListener('neyra:appearance', sync);
+  }, []);
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return;
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const coarse = window.matchMedia('(pointer: coarse)').matches;
-    if (reduce || coarse) return;
+    if (reduce || coarse || !ring) return;
 
     let frame = 0;
     const onMove = (event: PointerEvent) => {
@@ -57,12 +75,12 @@ export function AmbientBackground() {
       document.removeEventListener('pointerleave', onLeave);
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, []);
+  }, [ring]);
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
       <div ref={glowRef} className="ambient-glow" />
-      {DOTS.map((dot, index) => (
+      {particles && DOTS.map((dot, index) => (
         <span
           key={index}
           className="ambient-dot"
@@ -76,7 +94,7 @@ export function AmbientBackground() {
           }}
         />
       ))}
-      <div ref={ringRef} className="ambient-ring" data-visible="0" />
+      {ring && <div ref={ringRef} className="ambient-ring" data-visible="0" />}
     </div>
   );
 }

@@ -236,3 +236,21 @@ textarea:focus-visible {
   }
   .ambient-ring { display: none; }
 }
+
+/* Модальные окна: мягкое появление панели, без влияния на layout. */
+@keyframes dialog-in {
+  from { opacity: 0; transform: translate3d(0, 8px, 0) scale(0.99); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.animate-dialog { animation: dialog-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.animate-fade { animation: fade-in 140ms ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-dialog, .animate-fade { animation: none; }
+}
