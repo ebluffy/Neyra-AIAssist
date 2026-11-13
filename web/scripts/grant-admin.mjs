@@ -10,7 +10,7 @@
 //
 // Нужен DATABASE_URL. На площадке:
 //   set -a; . /opt/neyra/web/.env; set +a
-//   cd /opt/neyra/web/app && node scripts/grant-admin.mjs user@example.com
+//   cd /opt/neyra/web/app/web && node scripts/grant-admin.mjs user@example.com
 
 import { Client } from 'pg';
 

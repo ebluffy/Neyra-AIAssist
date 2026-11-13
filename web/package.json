@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "admin:grant": "node scripts/grant-admin.mjs",
     "build": "next build",
-    "dev": "next dev",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "admin:grant": "node scripts/grant-admin.mjs",
+    "dev": "next dev",
+    "invite:create": "node scripts/invite-create.mjs",
     "test:smoke": "node scripts/smoke-chat-ws.mjs"
   },
   "dependencies": {
