@@ -1,0 +1,20 @@
+[Unit]
+Description=Neyra web v2
+After=network.target docker.service
+
+[Service]
+Type=simple
+User=openbot
+WorkingDirectory=/opt/neyra/web/app/web
+EnvironmentFile=/opt/neyra/web/.env
+Environment=PORT=3000
+# Защита от бандлинга нативных модулей ws в standalone-сборке Next.js
+Environment=WS_NO_BUFFER_UTIL=1
+Environment=WS_NO_UTF_8_VALIDATE=1
+ExecStart=/opt/neyra/web/node/bin/node server.js
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

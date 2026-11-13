@@ -8,7 +8,8 @@
     "dev": "next dev",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "admin:grant": "node scripts/grant-admin.mjs"
+    "admin:grant": "node scripts/grant-admin.mjs",
+    "test:smoke": "node scripts/smoke-chat-ws.mjs"
   },
   "dependencies": {
     "@neyra/contracts": "0.0.0",
