@@ -257,3 +257,12 @@ textarea:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .animate-dialog, .animate-fade { animation: none; }
 }
+
+
+/* Чат занимает ровно экран: прокручивается только лента сообщений. */
+html:has([data-chat-shell]),
+body:has([data-chat-shell]) {
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}

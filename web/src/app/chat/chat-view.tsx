@@ -851,7 +851,7 @@ export function ChatView({
     : ru.chat);
 
   return (
-    <div className="relative flex h-dvh min-h-0 w-full bg-[var(--bg)] text-[var(--text)] overflow-hidden">
+    <div data-chat-shell className="relative flex h-dvh min-h-0 w-full bg-[var(--bg)] text-[var(--text)] overflow-hidden">
       <AmbientBackground />
       <AppSidebar
         activeSection="chat"
