@@ -35,7 +35,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://neyra:neyra@127.0.0.1:5432/neyra_web
-      BETTER_AUTH_SECRET: ci-integration-secret-0123456789abcdef
+      BETTER_AUTH_SECRET: ci-integration-secret-0123456789abcdef # gitleaks:allow — одноразовый секрет только для временной базы CI
       BETTER_AUTH_URL: http://localhost:3000
       AUTH_INTEGRATION_DATABASE_URL: postgres://neyra:neyra@127.0.0.1:5432/neyra_web
     steps:
