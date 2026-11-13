@@ -14,7 +14,6 @@ import {
   Link as LinkIcon,
   LogOut,
   MessageSquare,
-  MoreVertical,
   PanelLeft,
   Plus,
   RefreshCw,
@@ -25,7 +24,7 @@ import {
   X,
 } from 'lucide-react';
 import { SseChatEventSchema } from '@neyra/contracts';
-import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, type ContextUsage } from '../../components/ui';
+import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, type ContextUsage } from '../../components/ui';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
 import { ru } from '../../i18n';
@@ -105,16 +104,22 @@ export function ChatView({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showScrollDown, setShowScrollDown] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [threadLinkCopied, setThreadLinkCopied] = useState(false);
   const [customTitle, setCustomTitle] = useState<string | null>(null);
+  // Десктоп: сайдбар можно свернуть, чтобы чат занимал всё окно (§ волна 4).
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // V2 UI states
-  const [threadMenuOpen, setThreadMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<ChatMessageAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(() => initialUsage || null);
+
+  useEffect(() => {
+    try {
+      setSidebarCollapsed(window.localStorage.getItem('neyra:sidebar-collapsed') === '1');
+    } catch {}
+  }, []);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -123,7 +128,6 @@ export function ChatView({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
-  const threadMenuRef = useRef<HTMLDivElement | null>(null);
   const attachMenuRef = useRef<HTMLDivElement | null>(null);
   const profileTriggerRef = useRef<HTMLButtonElement | null>(null);
 
@@ -214,7 +218,6 @@ export function ChatView({
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
       if (e.key === 'Escape') {
         setSidebarOpen(false);
-        setThreadMenuOpen(false);
         setProfileMenuOpen(false);
         setAttachMenuOpen(false);
       }
@@ -229,9 +232,6 @@ export function ChatView({
       const target = e.target as Node;
       if (profileMenuRef.current && !profileMenuRef.current.contains(target) && !profileTriggerRef.current?.contains(target)) {
         setProfileMenuOpen(false);
-      }
-      if (threadMenuRef.current && !threadMenuRef.current.contains(target)) {
-        setThreadMenuOpen(false);
       }
       if (attachMenuRef.current && !attachMenuRef.current.contains(target)) {
         setAttachMenuOpen(false);
@@ -288,7 +288,6 @@ export function ChatView({
     setThinking(false);
     setStreaming(false);
     setSidebarOpen(false);
-    setThreadMenuOpen(false);
     setAttachments([]);
     setAttachmentError(null);
     if (textareaRef.current) {
@@ -636,7 +635,8 @@ export function ChatView({
     : ru.chat);
 
   return (
-    <div className="flex h-screen w-full bg-[var(--bg)] text-[var(--text)] overflow-hidden">
+    <div className="relative flex h-screen w-full bg-[var(--bg)] text-[var(--text)] overflow-hidden">
+      <AmbientBackground />
       {/* Mobile Drawer Backdrop (< 900px) */}
       {sidebarOpen && (
         <div
@@ -648,9 +648,9 @@ export function ChatView({
 
       {/* Sidebar (264px) (§3) */}
       <aside
-        className={`fixed lg:static inset-y-0 left-0 z-50 w-[264px] bg-[var(--surface)] border-r border-[var(--border)] flex flex-col justify-between transition-transform duration-150 ease-out select-none ${
+        className={`relative z-10 fixed lg:static inset-y-0 left-0 z-50 w-[264px] bg-[var(--surface)] border-r border-[var(--border)] flex flex-col justify-between transition-transform duration-150 ease-out select-none ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-        }`}
+        } ${sidebarCollapsed ? 'lg:hidden' : ''}`}
         aria-label="Боковая панель"
       >
         {/* Top: Logo & New Chat button */}
@@ -782,12 +782,23 @@ export function ChatView({
           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 mr-2">
             <IconButton
               type="button"
-              aria-label="Открыть меню"
+              aria-label={sidebarCollapsed ? 'Показать панель' : 'Скрыть панель'}
+              tooltip={sidebarCollapsed ? 'Показать панель' : 'Скрыть панель'}
               icon={<PanelLeft size={18} />}
               variant="ghost"
               size="md"
-              className="lg:hidden text-[var(--text-muted)] shrink-0"
-              onClick={() => setSidebarOpen(true)}
+              className="text-[var(--text-muted)] shrink-0"
+              onClick={() => {
+                if (typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches) {
+                  setSidebarCollapsed(prev => {
+                    const next = !prev;
+                    try { window.localStorage.setItem('neyra:sidebar-collapsed', next ? '1' : '0'); } catch {}
+                    return next;
+                  });
+                } else {
+                  setSidebarOpen(true);
+                }
+              }}
             />
             <h1
               className="text-[15px] font-medium text-[var(--text)] truncate min-w-0 max-w-[260px] sm:max-w-[400px] md:max-w-xl"
@@ -797,81 +808,6 @@ export function ChatView({
             </h1>
           </div>
 
-          {/* Right Header: Thread Menu with «⋮» (§2.2) */}
-          <div className="relative shrink-0" ref={threadMenuRef}>
-            <IconButton
-              type="button"
-              aria-label="Опции диалога"
-              icon={<MoreVertical size={18} />}
-              variant="ghost"
-              size="md"
-              onClick={() => setThreadMenuOpen(prev => !prev)}
-              className="text-[var(--text-muted)] hover:text-[var(--text)]"
-            />
-
-            {threadMenuOpen && (
-              <div
-                role="menu"
-                aria-label="Опции диалога"
-                className="absolute right-0 top-full mt-1.5 w-48 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-strong)] shadow-panel p-1 z-50 text-xs flex flex-col gap-0.5"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
-                  onClick={() => {
-                    const next = window.prompt('Новое название диалога:', threadTitle);
-                    if (next && next.trim()) setCustomTitle(next.trim());
-                    setThreadMenuOpen(false);
-                  }}
-                >
-                  <Edit2 size={13} className="text-[var(--text-muted)]" />
-                  <span>Переименовать</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
-                  onClick={async () => {
-                    if (typeof window !== 'undefined') {
-                      await navigator.clipboard.writeText(window.location.href);
-                      setThreadLinkCopied(true);
-                      setTimeout(() => setThreadLinkCopied(false), 2000);
-                    }
-                    setThreadMenuOpen(false);
-                  }}
-                >
-                  {threadLinkCopied ? <Check size={13} className="text-[var(--accent)]" /> : <LinkIcon size={13} className="text-[var(--text-muted)]" />}
-                  <span>{threadLinkCopied ? 'Ссылка скопирована' : 'Скопировать ссылку'}</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
-                  onClick={startNewChat}
-                >
-                  <Plus size={13} className="text-[var(--accent)]" />
-                  <span>{ru.newChat}</span>
-                </button>
-                <div className="my-1 border-t border-[var(--border)]" />
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors text-left cursor-pointer"
-                  onClick={() => {
-                    if (window.confirm('Очистить сообщения этого диалога?')) {
-                      setMessages([]);
-                      setCustomTitle(null);
-                    }
-                    setThreadMenuOpen(false);
-                  }}
-                >
-                  <Trash2 size={13} />
-                  <span>Удалить диалог</span>
-                </button>
-              </div>
-            )}
-          </div>
         </header>
 
         {/* Messages Feed (max 720px column) (§3) */}
@@ -888,21 +824,9 @@ export function ChatView({
                 <h2 className="text-[26px] md:text-[30px] font-semibold tracking-tight text-[var(--text)] mt-4 mb-2">
                   {ru.emptyChat}
                 </h2>
-                <p className="text-[14px] text-[var(--text-muted)] max-w-[380px] mb-8">
-                  Задайте вопрос или выберите готовый сценарий для начала диалога:
+                <p className="text-[14px] text-[var(--text-muted)] max-w-[380px]">
+                  Задайте вопрос — или начните с готового сценария под полем ввода.
                 </p>
-
-                <div className="flex flex-wrap items-center justify-center gap-2 max-w-[560px]">
-                  <Chip onClick={() => sendMessage('Что нового в памяти?')}>
-                    Что нового в памяти?
-                  </Chip>
-                  <Chip onClick={() => sendMessage('Суммируй вчерашний диалог')}>
-                    Суммируй вчерашний диалог
-                  </Chip>
-                  <Chip onClick={() => sendMessage('Проверь состояние сервера')}>
-                    Проверь состояние сервера
-                  </Chip>
-                </div>
               </div>
             )}
 
@@ -915,9 +839,6 @@ export function ChatView({
                 {msg.role === 'user' ? (
                   // User Message (§3: surface-2 bubble, right, max 78%)
                   <div className="flex flex-col items-end max-w-[78%]">
-                    <span className="text-[11px] text-[var(--text-subtle)] mb-1 select-none">
-                      {ru.userRole}
-                    </span>
                     <div className="rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] px-3.5 py-2.5 text-[15px] leading-[24px] text-[var(--text)] whitespace-pre-wrap">
                       {msg.content}
                       {msg.attachments && msg.attachments.length > 0 && (
@@ -1115,6 +1036,15 @@ export function ChatView({
                 </div>
               )}
 
+              {/* Быстрые сценарии над полем ввода: только в пустом чате */}
+              {messages.length === 0 && (
+                <div className="mb-2 flex flex-wrap items-center justify-center gap-2 animate-chips">
+                  <Chip onClick={() => sendMessage('Что нового в памяти?')}>Что нового в памяти?</Chip>
+                  <Chip onClick={() => sendMessage('Суммируй вчерашний диалог')}>Суммируй вчерашний диалог</Chip>
+                  <Chip onClick={() => sendMessage('Проверь состояние сервера')}>Проверь состояние сервера</Chip>
+                </div>
+              )}
+
               {/* Composer container */}
               <div className="relative rounded-[var(--radius-lg)] bg-[var(--surface-2)] border border-[var(--border)] p-2.5 shadow-panel focus-within:border-[var(--accent)] transition-colors flex flex-col gap-2">
                 {/* File chips row (§3.2) */}
@@ -1148,7 +1078,7 @@ export function ChatView({
                 )}
 
                 {/* Input row: Attach button + Textarea + Send button */}
-                <div className="flex items-end gap-2">
+                <div className="flex items-center gap-2">
                   {/* Plus button & Attachment popover (§3.2) */}
                   <div className="relative shrink-0" ref={attachMenuRef}>
                     <IconButton
@@ -1202,7 +1132,7 @@ export function ChatView({
                     disabled={streaming}
                     rows={1}
                     aria-label="Сообщение"
-                    className="flex-1 bg-transparent border-0 outline-none resize-none text-[15px] leading-[24px] text-[var(--text)] placeholder-[var(--text-subtle)] max-h-36 min-h-[24px] p-0 focus:outline-none focus:ring-0 focus-visible:outline-none"
+                    className="flex-1 self-center bg-transparent border-0 outline-none resize-none text-[15px] leading-[24px] text-[var(--text)] placeholder-[var(--text-subtle)] placeholder:leading-[24px] max-h-36 min-h-[24px] py-1 focus:outline-none focus:ring-0 focus-visible:outline-none"
                   />
 
                   {/* Stop or Send button (§3.3) */}

@@ -23,6 +23,8 @@ describe('ChatView component', () => {
     expect(html).toContain('Спросите Нейру…');
     expect(html).toContain('aria-label="Отправить"');
     expect(html).toContain('aria-label="Прикрепить файл"');
-    expect(html).toContain('aria-label="Опции диалога"');
+    // Волна 4: меню «⋮» в шапке убрано, вместо него переключатель боковой панели.
+    expect(html).not.toContain('aria-label="Опции диалога"');
+    expect(html).toContain('aria-label="Скрыть панель"');
   });
 });

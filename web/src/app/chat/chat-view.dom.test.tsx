@@ -85,7 +85,7 @@ describe('ChatView conversation', () => {
     // Assistant message bubble should not render header/content, leaving only user message and alert block
     expect(screen.queryByText('…')).toBeNull();
     expect(screen.queryByText('Нейра')).toBeNull();
-    expect(screen.getByText('Вы')).toBeTruthy();
+    expect(screen.getAllByText('привет с ошибкой').length).toBeGreaterThan(0);
   });
 
   it('retrying failed exchange reuses chat_id and replaces error block without adding duplicate user message (§4.1)', async () => {
@@ -105,9 +105,9 @@ describe('ChatView conversation', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
     expect(screen.getByText('Сбой сети')).toBeTruthy();
 
-    // Verify there is only 1 user message
-    const userBadges = screen.getAllByText('Вы');
-    expect(userBadges).toHaveLength(1);
+    // Подписи «Вы» больше нет: фиксируем число вхождений текста до и после повтора,
+    // чтобы поймать дубль сообщения.
+    const beforeRetry = screen.getAllByText('запрос на повтор').length;
 
     // Click "Повторить"
     const retryBtn = screen.getByText('Повторить');
@@ -117,9 +117,8 @@ describe('ChatView conversation', () => {
     await waitFor(() => expect(screen.getByText('Успешный ответ после повтора')).toBeTruthy());
     expect(screen.queryByRole('alert')).toBeNull();
 
-    // There must still be exactly ONE user message block (no duplicate!)
-    const userBadgesAfter = screen.getAllByText('Вы');
-    expect(userBadgesAfter).toHaveLength(1);
+    // There must still be the same number of user message blocks (no duplicate!)
+    expect(screen.getAllByText('запрос на повтор').length).toBe(beforeRetry);
     expect(screen.getAllByText('запрос на повтор').length).toBeGreaterThanOrEqual(1);
   });
 

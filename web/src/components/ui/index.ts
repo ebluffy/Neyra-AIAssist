@@ -7,3 +7,4 @@ export * from './NeyraLogo';
 export * from './MarkdownMessage';
 export * from './ContextIndicator';
 export * from './Tooltip';
+export * from './AmbientBackground';
