@@ -41,3 +41,14 @@ def context_usage(config, inputs=None):
         if all(field in entry for entry in lanes.values()):
             total[field] = sum(entry[field] for entry in lanes.values())
     return {'total': total, 'lanes': lanes}
+
+
+def context_policy(config):
+    """Describe the existing archive switches without changing their policy."""
+    from core.agent.session_archive import session_archive_cfg
+    cfg = session_archive_cfg(config)
+    enabled = bool(cfg.get('enabled'))
+    threshold = int(cfg.get('threshold_messages') or 0)
+    active = enabled and bool(cfg.get('on_stm_threshold')) and threshold > 0
+    return {'compaction_enabled': enabled, 'mode': 'messages' if active else 'off',
+            'threshold_messages': threshold}

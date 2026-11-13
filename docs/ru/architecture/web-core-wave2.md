@@ -24,7 +24,7 @@
 
 ВАЖНО: в этой версии нет процентной политики автоматического сжатия. Реальная `memory.session_archive` использует on_stm_threshold/threshold_messages (число сообщений). `threshold_pct` отсутствует: значение 80 не подставляется и не обещает срабатывание существующего механизма. Схема допускает threshold_pct для будущей интеграции реальной политики, но сервер его сейчас не возвращает. Конфиги и алгоритмы памяти не менялись. Поэтому полный индикатор с процентным порогом пока не готов к включению.
 
-`GET /v1/context/limits?channel_id=...` возвращает обычную envelope `{ok,trace_id,data:<тот же usage>}`. Требуется admin service bearer; при подписанной web identity чтение scoped на sub + канал. Другой пользователь/канал видит лимиты без чужого used. Значения — снимок последнего done через WS этого API процесса, до первого хода/после перезапуска used отсутствует. Это bounded cache (256 owner/channel пар), без записи в память/БД и без запросов к провайдерам; новые лимиты читаются из config на каждом обращении. Legacy API чтение scoped по hash bearer, как вложения. JWT admin не обходит owner-scope; канал без своего снимка не раскрывает наличие чужого.
+`GET /v1/context/limits?channel_id=...` возвращает обычную envelope `{ok,trace_id,data:{...usage,policy}}`. Требуется admin service bearer; при подписанной web identity чтение scoped на sub + канал. Другой пользователь/канал видит лимиты без чужого used. Значения — снимок последнего done через WS этого API процесса, до первого хода/после перезапуска used отсутствует. Это bounded cache (256 owner/channel пар), без записи в память/БД и без запросов к провайдерам; новые лимиты читаются из config на каждом обращении. Legacy API чтение scoped по hash bearer, как вложения. JWT admin не обходит owner-scope; канал без своего снимка не раскрывает наличие чужого.
 
 ## Загрузка
 
@@ -55,3 +55,10 @@ WS chat получает необязательный `attachments` — масс
 Схемы в `packages/contracts/src/index.ts` дополнены usage/phase/stored attachment; эта ветка создана до npm-монорепо, поэтому файлы исходных контрактов взяты из локальной web/p2-chat, без переноса приложений/настроек сборки. При сведении PR #73/#74 согласовать общий файл и обновить BFF allowlist/normalization для phase и usage. Проверка TS выполнена изолированным временным инструментарием, не сборкой всего сайта.
 
 Не добавлялись POST /v1/chat/{channel_id}/compact, новые алгоритмы памяти, смена модели/провайдера, OCR, retention/общая disk quota вложений или поддержка PDF worker на Windows. Такие задачи требуют отдельного пакета.
+
+
+## Политика сжатия в REST limits
+
+В `data.policy` всегда возвращаются `compaction_enabled: bool`, `mode: "messages" | "off"`, `threshold_messages: int`. Источник — существующий `memory.session_archive`, включая его штатные defaults при отсутствии блока. compaction_enabled точно отражает bool(enabled), а не вычисленный статус триггера. mode="messages" только если enabled и on_stm_threshold включены и threshold_messages > 0; иначе mode="off". Поэтому enabled=true/on_stm_threshold=false даёт compaction_enabled=true, mode="off". threshold_messages возвращается из конфига без пересчёта в проценты.
+
+Пример выключенной политики: `{"compaction_enabled":false,"mode":"off","threshold_messages":0}`. Этот блок добавлен только в REST data, WS done usage остаётся прежним. Ничего не включает и не запускает. Процентного ключа не будет; threshold_pct отсутствует.

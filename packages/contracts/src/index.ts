@@ -6,7 +6,8 @@ export const StoredAttachmentSchema = AttachmentSchema;
 export type StoredAttachment = z.infer<typeof StoredAttachmentSchema>;
 export const ContextLaneSchema = z.object({ used: z.number().int().nonnegative().optional(), limit: z.number().int().positive().optional() }).strict();
 export const ChatUsageSchema = z.object({ total: ContextLaneSchema.extend({ threshold_pct: z.number().min(0).max(100).optional() }).strict(), lanes: z.object({ talk: ContextLaneSchema, brain: ContextLaneSchema, memory: ContextLaneSchema, vision: ContextLaneSchema }).strict() }).strict();
-export const ContextLimitsSchema = ChatUsageSchema;
+export const ContextPolicySchema = z.object({ compaction_enabled: z.boolean(), mode: z.enum(['messages', 'off']), threshold_messages: z.number().int() }).strict();
+export const ContextLimitsSchema = ChatUsageSchema.extend({ policy: ContextPolicySchema }).strict();
 export type ChatUsage = z.infer<typeof ChatUsageSchema>;
 export const ChatPhaseEventSchema = z.object({ type: z.literal('phase'), phase: z.enum(['retrieval', 'plan', 'answer']), label: z.string().min(1) }).strict();
 

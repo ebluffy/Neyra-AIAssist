@@ -1,5 +1,5 @@
 import { it, expect } from 'vitest';
-import { ChatRequestSchema, ChatMessageSchema, WsChatMessageSchema, WsChatEventSchema, SseChatEventSchema, MemorySearchRequestSchema, MemoryRecallRequestSchema, MemoryWriteRequestSchema, DesktopManifestSchema, CaptureEventSchema } from './index';
+import { ContextLimitsSchema, ChatRequestSchema, ChatMessageSchema, WsChatMessageSchema, WsChatEventSchema, SseChatEventSchema, MemorySearchRequestSchema, MemoryRecallRequestSchema, MemoryWriteRequestSchema, DesktopManifestSchema, CaptureEventSchema } from './index';
 const uuid = '11111111-1111-4111-8111-111111111111';
 it('validates chat text, chat_id UUID, and forbids unknown keys', () => {
   expect(ChatRequestSchema.safeParse({ text: 'hello' }).success).toBe(true);
@@ -69,4 +69,11 @@ it('accepts unknown lane readings without fabricating zeros or a threshold', () 
   expect(SseChatEventSchema.safeParse({type:'done',text:'ok',usage:{...usage,lanes:{...usage.lanes,memory:{used:invalid}}}}).success).toBe(false);
  }
  expect(SseChatEventSchema.safeParse({type:'done',text:'ok',usage:{...usage,total:{threshold_pct:101}}}).success).toBe(false);
+});
+
+it('validates REST policy without changing WS done usage', () => {
+ const data={total:{},lanes:{talk:{},brain:{},memory:{},vision:{}},policy:{compaction_enabled:false,mode:'off',threshold_messages:0}};
+ expect(ContextLimitsSchema.parse(data)).toEqual(data);
+ expect(ContextLimitsSchema.safeParse({...data,policy:{...data.policy,mode:'percent'}}).success).toBe(false);
+ expect(SseChatEventSchema.safeParse({type:'done',text:'ok',usage:data}).success).toBe(false);
 });

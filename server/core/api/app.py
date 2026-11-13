@@ -1655,10 +1655,10 @@ def build_app(
     @app.get("/v1/context/limits")
     async def v1_context_limits(request: Request, channel_id: str = Query(min_length=1, max_length=120),
                                 _: str = Depends(dep_admin)):
-        from core.agent.chat_progress import context_usage
+        from core.agent.chat_progress import context_usage, context_policy
         inputs = context_readings.get((_attachment_owner(request), channel_id), {})
         return {"ok": True, "trace_id": _trace_id(request),
-                "data": context_usage(agent.config, inputs)}
+                "data": {**context_usage(agent.config, inputs), "policy": context_policy(agent.config)}}
 
     @app.post("/v1/attachments")
     async def v1_attachments(request: Request, _: str = Depends(dep_admin)):

@@ -236,7 +236,7 @@ def test_context_limits_private_readings_and_live_config(real_api, auth_headers)
         yield AIMessageChunk(content='answer', response_metadata={'usage':{'prompt_tokens':17,'completion_tokens':4}})
     agent.llm_talk.astream = stream
     done = turn(http, auth_headers)[-1]
-    assert http.get(path, headers=own).json()['data'] == done['usage']
+    assert {key:value for key,value in http.get(path, headers=own).json()['data'].items() if key != 'policy'} == done['usage']
     assert done['usage']['lanes']['talk'] == {'limit':100,'used':17}
     other = headers(auth_headers, token(claims(sub='another-web-user')), role='admin')
     assert 'used' not in http.get(path, headers=other).json()['data']['lanes']['talk']
@@ -262,3 +262,24 @@ def test_lane_readings_last_success_no_failed_retry_or_fabricated_total():
     assert 'talk' not in inputs
     assert 'used' not in context_usage(config,inputs)['total']
     assert context_usage({}, {}) == {'total':{},'lanes':dict.fromkeys(('talk','brain','memory','vision'),{})}
+
+
+@pytest.mark.parametrize('enabled,on_threshold,threshold,mode', [
+    (False,False,0,'off'), (False,True,20,'off'),
+    (True,False,20,'off'), (True,True,0,'off'),
+    (True,True,20,'messages'), (True,False,0,'off'),
+])
+def test_context_limits_reports_real_message_compaction_policy(real_api, auth_headers, enabled, on_threshold, threshold, mode):
+    from copy import deepcopy
+    http, agent = real_api
+    agent.config.setdefault('memory', {})['session_archive'] = {
+        'enabled':enabled, 'on_stm_threshold':on_threshold, 'threshold_messages':threshold,
+    }
+    before = deepcopy(agent.config)
+    response = http.get('/v1/context/limits?channel_id=chat-1', headers=headers(auth_headers, role='admin'))
+    assert response.status_code == 200
+    assert response.json()['data']['policy'] == {
+        'compaction_enabled':enabled, 'mode':mode, 'threshold_messages':threshold,
+    }
+    assert 'threshold_pct' not in response.text
+    assert agent.config == before
