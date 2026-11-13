@@ -278,6 +278,57 @@ describe('ChatView conversation', () => {
     fireEvent.click(screen.getByRole('button', { name: /контекст диалога/i }));
     expect(screen.getByText('Автосжатие выключено')).toBeTruthy();
   });
+
+  it('restores thread messages from localStorage upon reload and switches threads (AR-12)', async () => {
+    const userId = 'u-persist';
+    const tabKey = resolveTabKey(window);
+    const thread1Id = 'th-persisted-1';
+    const thread2Id = 'th-persisted-2';
+
+    // Simulate active tab having thread1Id
+    sessionStorage.setItem(`neyra.chat_id:${userId}:${tabKey}`, thread1Id);
+
+    // Populate threads list and thread messages in localStorage
+    window.localStorage.setItem(
+      `neyra:threads:${userId}`,
+      JSON.stringify([
+        { id: thread1Id, title: 'Первый сохранённый тред', updatedAt: '2026-11-13T10:00:00Z' },
+        { id: thread2Id, title: 'Второй сохранённый тред', updatedAt: '2026-11-13T11:00:00Z' },
+      ])
+    );
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${thread1Id}`,
+      JSON.stringify([
+        { id: 'm1', role: 'user', content: 'Сообщение из первого треда' },
+        { id: 'm2', role: 'assistant', content: 'Ответ первого треда' },
+      ])
+    );
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${thread2Id}`,
+      JSON.stringify([
+        { id: 'm3', role: 'user', content: 'Сообщение из второго треда' },
+        { id: 'm4', role: 'assistant', content: 'Ответ второго треда' },
+      ])
+    );
+
+    const { unmount } = render(
+      <ChatView user={{ id: userId, email: 'p@example.com', name: 'Персист', role: 'user' }} />
+    );
+
+    // Initial render: messages from thread1 restored!
+    expect(screen.getAllByText('Сообщение из первого треда').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Ответ первого треда')).toBeTruthy();
+
+    // Switch to thread 2 from sidebar
+    fireEvent.click(screen.getByText('Второй сохранённый тред'));
+
+    // Messages from thread 2 displayed!
+    expect(screen.getAllByText('Сообщение из второго треда').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Ответ второго треда')).toBeTruthy();
+    expect(screen.queryByText('Ответ первого треда')).toBeNull();
+
+    unmount();
+  });
 });
 
 describe('TextField layout integrity', () => {

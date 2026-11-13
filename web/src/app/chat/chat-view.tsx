@@ -29,6 +29,7 @@ import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
 import { SettingsDialog } from '../../components/settings-dialog';
 import { ChannelsNav } from '../../components/channels/channels-nav';
+import { AppSidebar } from '../../components/layout/app-sidebar';
 import { ru } from '../../i18n';
 
 export interface ChatMessageAttachment {
@@ -98,7 +99,18 @@ export function ChatView({
   initialUsage,
 }: ChatViewProps) {
   const router = useRouter();
-  const [messages, setMessages] = useState<ChatMessageItem[]>(() => initialMessages || []);
+  const [messages, setMessages] = useState<ChatMessageItem[]>(() => {
+    if (initialMessages && initialMessages.length > 0) return initialMessages;
+    if (typeof window === 'undefined') return [];
+    try {
+      const currentTabChatId = resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
+      const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${currentTabChatId}`);
+      if (raw) {
+        return JSON.parse(raw);
+      }
+    } catch {}
+    return [];
+  });
   const [input, setInput] = useState('');
   const [thinking, setThinking] = useState(false);
   const [streaming, setStreaming] = useState(false);
@@ -275,6 +287,91 @@ export function ChatView({
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     setShowScrollDown(false);
+  };
+
+  // Sync messages & thread list to localStorage per user (§3, AR-12)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !chatId || !user?.id) return;
+    const threadsKey = `neyra:threads:${user.id}`;
+    const msgsKey = `neyra:thread-messages:${user.id}:${chatId}`;
+
+    try {
+      if (messages.length > 0) {
+        // Save thread messages
+        window.localStorage.setItem(msgsKey, JSON.stringify(messages));
+
+        // Derive thread title from first user message
+        const firstUser = messages.find((m) => m.role === 'user')?.content.trim();
+        const derivedTitle = customTitle || (firstUser ? firstUser.split('\n')[0].slice(0, 80) : 'Диалог');
+
+        const rawThreads = window.localStorage.getItem(threadsKey);
+        let list: { id: string; title: string; updatedAt: string }[] = rawThreads ? JSON.parse(rawThreads) : [];
+        const existingIdx = list.findIndex((t) => t.id === chatId);
+        if (existingIdx >= 0) {
+          list[existingIdx] = {
+            ...list[existingIdx],
+            title: derivedTitle,
+            updatedAt: new Date().toISOString(),
+          };
+        } else {
+          list = [
+            {
+              id: chatId,
+              title: derivedTitle,
+              updatedAt: new Date().toISOString(),
+            },
+            ...list,
+          ];
+        }
+        window.localStorage.setItem(threadsKey, JSON.stringify(list));
+      } else {
+        // When messages are empty (new chat or deleted exchange)
+        window.localStorage.removeItem(msgsKey);
+        const rawThreads = window.localStorage.getItem(threadsKey);
+        if (rawThreads) {
+          const list: { id: string; title: string }[] = JSON.parse(rawThreads);
+          const filtered = list.filter((t) => t.id !== chatId);
+          window.localStorage.setItem(threadsKey, JSON.stringify(filtered));
+        }
+      }
+    } catch {}
+  }, [messages, chatId, user?.id, customTitle]);
+
+  const switchThread = (targetThreadId: string) => {
+    if (streaming) {
+      stopGeneration();
+    }
+    setChatId(targetThreadId);
+    try {
+      sessionStorage.setItem(`neyra.chat_id:${user.id}:${resolveTabKey(window)}`, targetThreadId);
+      const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
+      if (raw) {
+        setMessages(JSON.parse(raw));
+      } else {
+        setMessages([]);
+      }
+    } catch {
+      setMessages([]);
+    }
+    setSidebarOpen(false);
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  };
+
+  const deleteThread = (targetThreadId: string) => {
+    try {
+      window.localStorage.removeItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
+      const raw = window.localStorage.getItem(`neyra:threads:${user.id}`);
+      if (raw) {
+        const list = JSON.parse(raw);
+        const filtered = list.filter((t: { id: string }) => t.id !== targetThreadId);
+        window.localStorage.setItem(`neyra:threads:${user.id}`, JSON.stringify(filtered));
+      }
+    } catch {}
+    if (chatId === targetThreadId) {
+      startNewChat();
+    }
   };
 
   const startNewChat = () => {
@@ -640,195 +737,18 @@ export function ChatView({
   return (
     <div className="relative flex h-dvh min-h-0 w-full bg-[var(--bg)] text-[var(--text)] overflow-hidden">
       <AmbientBackground />
-      {/* Mobile Drawer Backdrop (< 900px) */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/60 lg:hidden backdrop-blur-sm transition-opacity"
-          onClick={() => setSidebarOpen(false)}
-          aria-hidden="true"
-        />
-      )}
-
-      {/* Sidebar (264px) (§3) */}
-      <aside
-        className={`relative z-10 fixed lg:static inset-y-0 left-0 z-50 bg-[var(--surface)] border-r border-[var(--border)] flex flex-col justify-between transition-[transform,width] duration-150 ease-out select-none ${
-          sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-        } ${sidebarCollapsed ? 'w-[264px] lg:w-[64px]' : 'w-[264px]'}`}
-        aria-label="Боковая панель"
-      >
-        {/* Рейл: только иконки, без названий */}
-        {sidebarCollapsed && (
-          <div className="hidden lg:flex flex-col items-center gap-1.5 p-2">
-            <IconButton
-              aria-label="Развернуть панель"
-              tooltip="Развернуть панель"
-              icon={<PanelLeft size={16} />}
-              variant="ghost"
-              size="md"
-              onClick={() => {
-                setSidebarCollapsed(false);
-                try { window.localStorage.setItem('neyra:sidebar-collapsed', '0'); } catch {}
-              }}
-            />
-            <IconButton
-              aria-label={ru.newChat}
-              tooltip={ru.newChat}
-              icon={<Plus size={16} />}
-              variant="secondary"
-              size="md"
-              onClick={startNewChat}
-            />
-            <ChannelsNav role={user.role} compact />
-            <IconButton
-              aria-label="Настройки"
-              tooltip="Настройки"
-              icon={<Settings size={16} />}
-              variant="ghost"
-              size="md"
-              onClick={() => setSettingsOpen(true)}
-            />
-          </div>
-        )}
-
-        {/* Top: Logo & New Chat button */}
-        <div className={`p-4 space-y-4 ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
-          <div className="flex items-center justify-between">
-            <Link href="/" className="flex items-center gap-2.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] rounded-[var(--radius-sm)]">
-              <NeyraLogo size={24} />
-              <span className="text-[16px] font-semibold tracking-tight text-[var(--text)]">Neyra</span>
-            </Link>
-            <span className="flex items-center gap-1">
-              <IconButton
-                aria-label="Свернуть панель"
-                tooltip="Свернуть панель"
-                icon={<PanelLeft size={15} />}
-                variant="ghost"
-                size="sm"
-                className="hidden lg:inline-flex"
-                onClick={() => {
-                  setSidebarCollapsed(true);
-                  try { window.localStorage.setItem('neyra:sidebar-collapsed', '1'); } catch {}
-                }}
-              />
-              <IconButton
-                aria-label="Закрыть панель"
-                icon={<X size={16} />}
-                variant="ghost"
-                size="sm"
-                className="lg:hidden"
-                onClick={() => setSidebarOpen(false)}
-              />
-            </span>
-          </div>
-
-          <Button
-            type="button"
-            variant="secondary"
-            size="md"
-            onClick={startNewChat}
-            className="w-full justify-start text-[13px] h-9 gap-2 px-3 bg-[var(--surface-2)]"
-          >
-            <Plus size={15} className="text-[var(--text-muted)]" />
-            <span>{ru.newChat}</span>
-          </Button>
-
-          <ChannelsNav role={user.role} />
-
-          {/* Chat threads list */}
-          <div className="pt-2 space-y-1">
-            <div className="text-xs font-normal text-[var(--text-muted)] px-2 pb-1">
-              Текущий диалог
-            </div>
-            <div className="flex items-center gap-2.5 h-[34px] px-2.5 rounded-[var(--radius-sm)] bg-[var(--surface-3)] text-[var(--text)] border-l-2 border-[var(--accent)] text-[13px] font-medium truncate cursor-default">
-              <MessageSquare size={14} className="text-[var(--text)] shrink-0" />
-              <span className="truncate">{threadTitle}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Bottom: User Card & Profile Popover (§5.1) */}
-        <div className={`relative border-t border-[var(--border)] bg-[var(--surface)] ${sidebarCollapsed ? 'lg:p-2' : 'p-3'}`}>
-          <button
-            ref={profileTriggerRef}
-            type="button"
-            aria-haspopup="menu"
-            aria-expanded={profileMenuOpen}
-            aria-label="Меню профиля пользователя"
-            onClick={() => setProfileMenuOpen(prev => !prev)}
-            className={`w-full flex items-center gap-2 p-1.5 -m-1.5 rounded-[var(--radius-sm)] hover:bg-[var(--surface-2)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] ${
-              sidebarCollapsed ? 'lg:justify-center lg:p-0 lg:m-0' : 'justify-between'
-            }`}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <Avatar name={user.name} email={user.email} size={26} />
-              <div className={`min-w-0 flex flex-col ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
-                <span className="text-xs font-medium text-[var(--text)] truncate">
-                  {user.name && user.name !== user.email ? user.name : user.email}
-                </span>
-              </div>
-            </div>
-            <span className={`text-[10px] text-[var(--text-subtle)] border border-[var(--border)] rounded px-1.5 py-0.5 shrink-0 ${sidebarCollapsed ? 'lg:hidden' : ''}`}>
-              {user.role === 'admin' ? 'Администратор' : 'Пользователь'}
-            </span>
-          </button>
-
-          {/* Popover Menu (§5.1) */}
-          {profileMenuOpen && (
-            <div
-              ref={profileMenuRef}
-              role="menu"
-              aria-label="Меню профиля"
-              tabIndex={-1}
-              onKeyDown={handleProfileMenuKeyDown}
-              className="absolute bottom-full left-3 right-3 mb-2 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-strong)] shadow-panel p-1.5 z-50 text-xs flex flex-col gap-0.5"
-            >
-              <div className="px-2.5 py-2 border-b border-[var(--border)] mb-1">
-                <div className="font-medium text-[var(--text)] truncate">{user.name || user.email?.split('@')[0]}</div>
-                <div className="text-[11px] text-[var(--text-muted)] truncate">{user.email}</div>
-                <div className="mt-1.5">
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
-                    {user.role === 'admin' ? 'Администратор' : 'Пользователь'}
-                  </span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
-                onClick={() => { setProfileMenuOpen(false); setSettingsOpen(true); }}
-              >
-                <Settings size={14} className="text-[var(--text-muted)]" />
-                <span>Настройки</span>
-              </button>
-
-              {user.role === 'admin' && (
-                <Link
-                  href="/admin"
-                  role="menuitem"
-                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
-                  onClick={() => setProfileMenuOpen(false)}
-                >
-                  <Shield size={14} className="text-[var(--accent)]" />
-                  <span>Админ-панель</span>
-                </Link>
-              )}
-
-              <div className="border-t border-[var(--border)] my-1" />
-
-              <button
-                type="button"
-                role="menuitem"
-                className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
-                onClick={handleSignOut}
-              >
-                <LogOut size={14} />
-                <span>{ru.signOut}</span>
-              </button>
-            </div>
-          )}
-        </div>
-      </aside>
+      <AppSidebar
+        activeSection="chat"
+        user={user}
+        threadTitle={threadTitle}
+        activeThreadId={chatId}
+        onNewChat={startNewChat}
+        onSelectThread={switchThread}
+        onDeleteThread={deleteThread}
+        mobileOpen={sidebarOpen}
+        onCloseMobile={() => setSidebarOpen(false)}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
 
       {/* Main Column */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
