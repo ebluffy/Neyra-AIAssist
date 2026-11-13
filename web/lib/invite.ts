@@ -20,7 +20,7 @@ export function readInviteToken(body: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-export type InviteCheck = 'ok' | 'not-found' | 'used' | 'expired' | 'error';
+export type InviteCheck = 'ok' | 'not-found' | 'used' | 'expired' | 'revoked' | 'error';
 
 // Gate для регистрации: ошибка БД закрывает регистрацию (fail-closed), а не открывает.
 export async function checkInvite(token: string): Promise<InviteCheck> {
@@ -31,6 +31,7 @@ export async function checkInvite(token: string): Promise<InviteCheck> {
       .limit(1);
     const row = rows[0];
     if (!row) return 'not-found';
+    if (row.revokedAt) return 'revoked';
     if (row.usedAt) return 'used';
     if (row.expiresAt.getTime() <= Date.now()) return 'expired';
     return 'ok';
@@ -49,6 +50,7 @@ export async function consumeInvite(token: string, usedBy: string): Promise<bool
       .where(and(
         eq(invite.tokenHash, hashInviteToken(token)),
         isNull(invite.usedAt),
+        isNull(invite.revokedAt),
         gt(invite.expiresAt, new Date()),
       ))
       .returning({ id: invite.id });

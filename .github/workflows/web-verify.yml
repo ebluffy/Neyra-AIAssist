@@ -49,3 +49,5 @@ jobs:
         run: npm run db:migrate -w @neyra/web
       - name: Интеграционный тест входа (signup/login/session/role/grant/rate-limit)
         run: npx vitest run web/lib/auth.integration.test.ts
+      - name: Интеграционный тест админки (роли, блокировка, инвайты, сброс пароля, аудит)
+        run: npx vitest run web/lib/admin.integration.test.ts

@@ -12,7 +12,22 @@ import {
   readFailures,
 } from './login-throttle';
 import { checkInvite, consumeInvite, readInviteToken } from './invite';
+import { findBannedByEmail, touchLastLogin } from './admin-users';
 import * as schema from '../db/schema';
+
+// Ссылка сброса пароля живёт до первого запроса админа (2 минуты): письма сайт
+// не отправляет, админ передаёт одноразовую ссылку сам.
+const pendingResets = new Map<string, { url: string; at: number }>();
+const RESET_LINK_TTL_MS = 2 * 60 * 1000;
+
+export function takeResetLink(email: string): string | null {
+  const key = email.trim().toLowerCase();
+  const entry = pendingResets.get(key);
+  pendingResets.delete(key);
+  if (!entry) return null;
+  if (Date.now() - entry.at > RESET_LINK_TTL_MS) return null;
+  return entry.url;
+}
 
 function createAuth() {
   const env = readAuthEnv();
@@ -20,7 +35,18 @@ function createAuth() {
     secret: env.secret,
     baseURL: env.baseURL,
     database: drizzleAdapter(getDatabase().db, { provider: 'pg', schema }),
-    emailAndPassword: { enabled: true, minPasswordLength: MIN_PASSWORD_LENGTH, maxPasswordLength: MAX_PASSWORD_LENGTH },
+    emailAndPassword: {
+      enabled: true,
+      minPasswordLength: MIN_PASSWORD_LENGTH,
+      maxPasswordLength: MAX_PASSWORD_LENGTH,
+      // Сброс пароля инициирует админ из панели: письмо не отправляется, ссылка
+      // возвращается ему один раз и передаётся пользователю вручную.
+      resetPasswordTokenExpiresIn: 60 * 60,
+      sendResetPassword: async ({ user: target, url }) => {
+        if (pendingResets.size > 100) pendingResets.clear();
+        pendingResets.set(target.email.trim().toLowerCase(), { url, at: Date.now() });
+      },
+    },
     user: { additionalFields: { role: roleField } },
     // No automatic promotion on sign-up: an e-mail is not proof of ownership, and an open
     // registration would let a stranger claim a listed admin address. The first admin is
@@ -50,6 +76,11 @@ function createAuth() {
           const email = await readEmail(ctx.request);
           if (!email) return;
           signInEmail.set(ctx.request, email);
+          // Блокировка админом действует и на новый вход, даже если старые сессии уже удалены.
+          const state = await findBannedByEmail(email).catch(() => null);
+          if (state?.banned) {
+            return ctx.json({ message: 'Аккаунт заблокирован администратором Нейры.' }, { status: 403 });
+          }
           if ((await readFailures(email)) >= FAILED_LOGIN_MAX_ATTEMPTS) {
             return ctx.json(
               { message: 'Слишком много неудачных попыток входа. Попробуйте позже.' },
@@ -94,8 +125,10 @@ function createAuth() {
           signInEmail.delete(ctx.request);
           if (!email) return;
           if (statusCode === 429) return; // already throttled; do not stack counters
-          if (statusCode === undefined) await clearFailures(email); // success body
-          else if (statusCode === 401) await noteFailure(email);
+          if (statusCode === undefined) {
+            await clearFailures(email); // success body
+            await touchLastLogin(email);
+          } else if (statusCode === 401) await noteFailure(email);
           return;
         }
         if (ctx.path === '/sign-up/email') {
