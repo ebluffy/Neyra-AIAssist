@@ -25,7 +25,16 @@ fi
 export PATH="$NODE_BIN:/tmp/opencode/node-v22.23.4-linux-x64/bin:$PATH"
 
 echo "== переменные окружения площадки"
-set -a; . "$ENV_FILE"; set +a
+ENV_LOADER="$(dirname "$0")/env-load.py"
+[ -f "$ENV_LOADER" ] || ENV_LOADER=/tmp/opencode/env-load.py
+[ -f "$ENV_LOADER" ] || { echo "нет env-load.py рядом со скриптом" >&2; exit 1; }
+TMP_ENV=$(mktemp)
+trap 'rm -f "$TMP_ENV"' EXIT
+if ! python3 "$ENV_LOADER" "$ENV_FILE" > "$TMP_ENV"; then
+  echo "не удалось разобрать $ENV_FILE" >&2
+  exit 1
+fi
+while IFS= read -r -d '' kv; do export "$kv"; done < "$TMP_ENV"
 for v in NEYRA_WS_URL NEYRA_SERVICE_KEY NEYRA_IDENTITY_JWT_SECRET; do
   if [ -z "${!v:-}" ]; then echo "внимание: $v пуст — чат сайта вернёт 503" >&2; fi
 done

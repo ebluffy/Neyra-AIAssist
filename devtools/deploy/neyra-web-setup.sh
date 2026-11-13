@@ -43,14 +43,14 @@ else
 fi
 
 echo "== 3b/6 связка с ядром: NEYRA_* в .env сайта"
-ENV_SYNC="$(dirname "$0")/neyra-web-env.sh"
-[ -f "$ENV_SYNC" ] || ENV_SYNC=/tmp/opencode/neyra-web-env.sh
+ENV_SYNC="$(dirname "$0")/neyra-web-env.py"
+[ -f "$ENV_SYNC" ] || ENV_SYNC=/tmp/opencode/neyra-web-env.py
 if [ -f "$ENV_SYNC" ]; then
-  if ! bash "$ENV_SYNC"; then
-    echo "внимание: не удалось синхронизировать NEYRA_* — чат сайта вернёт 503 до настройки" >&2
+  if ! python3 "$ENV_SYNC"; then
+    echo "внимание: NEYRA_* связаны не полностью — чат сайта вернёт 503 до настройки" >&2
   fi
 else
-  echo "внимание: neyra-web-env.sh не найден — NEYRA_* в .env не добавлены" >&2
+  echo "внимание: neyra-web-env.py не найден — NEYRA_* в .env не добавлены" >&2
 fi
 
 echo "== 4/6 Postgres 16 в контейнере, только на 127.0.0.1"
