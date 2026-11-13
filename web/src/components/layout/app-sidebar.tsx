@@ -23,6 +23,7 @@ import { Avatar, Button, IconButton, NeyraLogo } from '../ui';
 import { resetChatId, resolveTabKey } from '../../../lib/chat-id';
 import { signOut } from '../../../lib/auth-client';
 import { ru } from '../../i18n';
+import { AdminDialog, type AdminSection } from '../admin/admin-dialog';
 
 export interface AppSidebarUser {
   id: string;
@@ -56,6 +57,10 @@ export interface AppSidebarProps {
   onOpenSettings?: () => void;
   onSelectThread?: (threadId: string) => void;
   onDeleteThread?: (threadId: string) => void;
+  adminOpen?: boolean;
+  onOpenAdmin?: () => void;
+  onCloseAdmin?: () => void;
+  initialAdminSection?: AdminSection;
 }
 
 export function AppSidebar({
@@ -69,10 +74,26 @@ export function AppSidebar({
   onOpenSettings,
   onSelectThread,
   onDeleteThread,
+  adminOpen,
+  onOpenAdmin,
+  onCloseAdmin,
+  initialAdminSection = 'overview',
 }: AppSidebarProps) {
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [internalAdminOpen, setInternalAdminOpen] = useState(false);
+  const isAdminOpen = adminOpen !== undefined ? adminOpen : internalAdminOpen;
+
+  const handleOpenAdmin = () => {
+    if (onOpenAdmin) onOpenAdmin();
+    else setInternalAdminOpen(true);
+  };
+
+  const handleCloseAdmin = () => {
+    if (onCloseAdmin) onCloseAdmin();
+    else setInternalAdminOpen(false);
+  };
   const [activeTab, setActiveTab] = useState<'chats' | 'notes'>('chats');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -430,6 +451,16 @@ export function AppSidebar({
                   else router.push('/settings');
                 }}
               />
+              {isAdmin && (
+                <IconButton
+                  aria-label="Админ-панель"
+                  tooltip="Админ-панель"
+                  icon={<Shield size={16} />}
+                  variant={activeSection === 'admin' || isAdminOpen ? 'secondary' : 'ghost'}
+                  size="md"
+                  onClick={handleOpenAdmin}
+                />
+              )}
               <button
                 ref={profileTriggerRef}
                 type="button"
@@ -794,15 +825,18 @@ export function AppSidebar({
                 </Link>
 
                 {isAdmin && (
-                  <Link
-                    href="/admin/system"
+                  <button
+                    type="button"
                     role="menuitem"
-                    onClick={() => setProfileMenuOpen(false)}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left"
+                    onClick={() => {
+                      setProfileMenuOpen(false);
+                      handleOpenAdmin();
+                    }}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
                   >
                     <Shield size={14} className="shrink-0" />
                     <span>Админ-панель</span>
-                  </Link>
+                  </button>
                 )}
 
                 <button
@@ -823,6 +857,16 @@ export function AppSidebar({
           </div>
         </div>
       </aside>
+
+      {/* Admin Dialog Modal */}
+      {isAdmin && (
+        <AdminDialog
+          open={isAdminOpen}
+          onClose={handleCloseAdmin}
+          initialSection={initialAdminSection}
+          user={user}
+        />
+      )}
     </>
   );
 }
