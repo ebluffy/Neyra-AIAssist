@@ -2,6 +2,7 @@
 
 import React, { type ButtonHTMLAttributes, forwardRef, type ReactNode } from 'react';
 import { Tooltip } from './Tooltip';
+import { playButtonClickSound } from '../../lib/ui-sounds';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 export type ButtonSize = 'sm' | 'md' | 'lg';
@@ -11,22 +12,38 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: ButtonSize;
   loading?: boolean;
   tooltip?: ReactNode;
+  sound?: boolean;
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ variant = 'primary', size = 'md', loading = false, disabled, className = '', children, type = 'button', tooltip, ...props }, ref) => {
+  (
+    {
+      variant = 'primary',
+      size = 'md',
+      loading = false,
+      disabled,
+      className = '',
+      children,
+      type = 'button',
+      tooltip,
+      sound = true,
+      onClick,
+      ...props
+    },
+    ref
+  ) => {
     const baseClasses =
-      'inline-flex items-center justify-center font-medium transition-transform select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]';
+      'inline-flex items-center justify-center font-medium transition-[transform,background-color,border-color,color,box-shadow,opacity] duration-150 ease-out select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] enabled:active:scale-[0.96]';
 
     const variantClasses = {
       primary:
-        'bg-[var(--accent)] text-[var(--accent-ink)] hover:bg-[var(--accent-hover)] active:scale-[0.98] shadow-sm',
+        'bg-[var(--accent)] text-[var(--accent-ink)] hover:bg-[var(--accent-hover)] shadow-sm hover:shadow',
       secondary:
-        'bg-[var(--surface-2)] text-[var(--text)] border border-[var(--border)] hover:bg-[var(--surface-3)] hover:border-[var(--border-strong)] active:scale-[0.98]',
+        'bg-[var(--surface-2)] text-[var(--text)] border border-[var(--border)] hover:bg-[var(--surface-3)] hover:border-[var(--border-strong)]',
       ghost:
-        'bg-transparent text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] active:scale-[0.98]',
+        'bg-transparent text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)]',
       danger:
-        'bg-[var(--danger-quiet)] text-[var(--danger)] border border-[var(--danger)] hover:bg-[var(--danger)] hover:text-[var(--bg)] active:scale-[0.98]',
+        'bg-[var(--danger-quiet)] text-[var(--danger)] border border-[var(--danger)] hover:bg-[var(--danger)] hover:text-[var(--bg)]',
     }[variant];
 
     const sizeClasses = {
@@ -37,11 +54,19 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
 
     const stateClasses = disabled || loading ? 'opacity-40 cursor-default pointer-events-none' : 'cursor-pointer';
 
+    const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+      if (sound && !disabled && !loading) {
+        playButtonClickSound();
+      }
+      onClick?.(e);
+    };
+
     const btn = (
       <button
         ref={ref}
         type={type}
         disabled={disabled || loading}
+        onClick={handleClick}
         className={`${baseClasses} ${variantClasses} ${sizeClasses} ${stateClasses} ${className}`}
         {...props}
       >
