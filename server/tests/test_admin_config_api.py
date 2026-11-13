@@ -67,6 +67,7 @@ def test_config_snapshot_lists_lanes_without_secrets(real_api, auth_headers, mon
         {"api.token": "x"},
         {"llm.providers.aihope.api_key": "x"},
         {"llm.talk_model.secret": "x"},
+        {"llm.talk_model.max_tokens": 100},
         {"paths.data_dir": "/tmp"},
         {},
     ],
@@ -116,11 +117,19 @@ def test_config_put_writes_lane_keeps_backup_and_audits(
     response = put_config(
         http,
         auth_headers,
-        {"llm.talk_model.model": "new-model-1", "llm.talk_model.temperature": 0.4},
+        {
+            "llm.talk_model.model": "new-model-1",
+            "llm.talk_model.temperature": 0.4,
+            "llm.talk_model.reply_max_tokens": 300,
+        },
     )
     assert response.status_code == 200, response.text
     data = response.json()["data"]
-    assert data["applied"] == {"llm.talk_model.model": "new-model-1", "llm.talk_model.temperature": 0.4}
+    assert data["applied"] == {
+        "llm.talk_model.model": "new-model-1",
+        "llm.talk_model.temperature": 0.4,
+        "llm.talk_model.reply_max_tokens": 300,
+    }
     assert data["persisted"] == ["config/llm.yaml"]
     assert data["backups"] == ["config/llm.yaml.bak"]
     assert data["requires_restart"] is False
@@ -136,7 +145,11 @@ def test_config_put_writes_lane_keeps_backup_and_audits(
     audit = project / "logs" / "api_audit.jsonl"
     rows = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines() if line.strip()]
     entry = [row for row in rows if row.get("op") == "config_write"][-1]
-    assert entry["keys"] == ["llm.talk_model.model", "llm.talk_model.temperature"]
+    assert entry["keys"] == [
+        "llm.talk_model.model",
+        "llm.talk_model.reply_max_tokens",
+        "llm.talk_model.temperature",
+    ]
     assert entry["requires_restart"] is False
     assert ENV_SECRET not in audit.read_text(encoding="utf-8")
 

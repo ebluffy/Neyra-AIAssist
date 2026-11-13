@@ -49,6 +49,7 @@ _BOOL_FIELDS: frozenset[str] = frozenset(
 _LANE_INT_FIELDS: dict[str, tuple[int, int]] = {
     "context_window": (1, 2_000_000),
     "max_tokens": (1, 200_000),
+    "reply_max_tokens": (1, 200_000),
 }
 
 _LANE_FLOAT_FIELDS: dict[str, tuple[float, float]] = {
@@ -60,6 +61,11 @@ def _lane_paths() -> set[str]:
     out: set[str] = set()
     for lane in LANES:
         for field in ("provider", "model", *_LANE_FLOAT_FIELDS, *_LANE_INT_FIELDS):
+            # talk caps the visible reply with reply_max_tokens; max_tokens is unused there.
+            if lane != "talk" and field == "reply_max_tokens":
+                continue
+            if lane == "talk" and field == "max_tokens":
+                continue
             out.add(f"llm.{lane}_model.{field}")
     return out
 
