@@ -37,7 +37,10 @@ def main() -> int:
             import dotenv  # noqa: F401
         except ImportError:
             return fail("в окружении нет python-dotenv: .env ядра не будет прочитан")
-    load_dotenv_file(root)
+    try:
+        load_dotenv_file(root)
+    except Exception as exc:  # noqa: BLE001 — сломанное ядро не должно давать traceback
+        return fail(f"не удалось загрузить .env ядра из {root}: {exc}")
 
     try:
         from core.runtime.config_loader import load_layered_config
@@ -46,7 +49,10 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001 — пустой конфиг вместо ошибки недопустим
         return fail(f"не удалось прочитать конфиг ядра в {root}: {exc}")
 
-    from core.runtime.paths import resolve_data_dir
+    try:
+        from core.runtime.paths import resolve_data_dir
+    except Exception as exc:  # noqa: BLE001 — обещаем код 4, а не traceback
+        return fail(f"не удалось загрузить core.runtime.paths из {root}: {exc}")
 
     data_dir = resolve_data_dir(root, config if isinstance(config, dict) else {})
     print(data_dir)

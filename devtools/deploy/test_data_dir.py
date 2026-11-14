@@ -122,3 +122,14 @@ def test_update_core_checks_data_dir_before_vault() -> None:
     vault = text.index("== 4/7 vault key")
     assert check < vault
     assert "data_dir вне $DEST" in text
+
+
+def test_broken_paths_module_returns_4_not_traceback(tmp_path: Path) -> None:
+    root = make_root(tmp_path)
+    (root / "core" / "runtime" / "paths.py").write_text(
+        "raise ImportError('broken paths module')\n", encoding="utf-8"
+    )
+    result = run(root)
+    assert result.returncode == 4
+    assert "core.runtime.paths" in result.stderr
+    assert "Traceback" not in result.stderr
