@@ -39,9 +39,9 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(
             aria-describedby={describedBy}
             className={`h-11 w-full rounded-[var(--radius)] bg-[var(--surface-2)] px-3.5 text-sm text-[var(--text)] placeholder-[var(--text-subtle)] border ${
               error
-                ? 'border-[var(--danger)] focus:border-[var(--danger)]'
-                : 'border-[var(--border)] focus:border-[var(--accent)]'
-            } outline-none transition-colors disabled:opacity-40 disabled:cursor-default ${trailing ? 'pr-12' : ''} ${className}`}
+                ? 'border-[var(--danger)] focus:border-[var(--danger)] focus:ring-2 focus:ring-[var(--danger)]/40'
+                : 'border-[var(--border)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/30'
+            } outline-none transition-all disabled:opacity-40 disabled:cursor-default ${trailing ? 'pr-12' : ''} ${className}`}
             {...props}
           />
           {trailing}
