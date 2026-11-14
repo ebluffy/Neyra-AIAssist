@@ -38,7 +38,7 @@ proxy denies the rest at the edge (see [api-reverse-proxy](../ops/api-reverse-pr
 | P4–P5 | Ops screens parity, attachments, model switching |
 | P6 | Domain switch, `/legacy`, removal of the old UI |
 
-## Known blockers before P0
+## Known blockers before web P1
 
 §15 of the Russian document lists the core changes. Items 1–8 are P1 work in the core and are
 needed before web P1–P2; they are not "minimal fixes" but a separate stage:
@@ -54,5 +54,6 @@ needed before web P1–P2; they are not "minimal fixes" but a separate stage:
 | 7 | Scope in `/v1/memory/*`: a user sees only their own `person_id` | P1 |
 | 8 | HTTP wrapper for STT/TTS in the web (`/v1/web/voice` or `/v1/desktop/voice`) | P1 |
 
-The web stack is settled: `web` is Next.js App Router (ADR-0001, decision of 12.11.2026), so
-[ADR-0001](adr-0001-client-monorepo.md) and D3 agree and there is no conflict to resolve.
+The stack itself is fixed and needs no decision: `web` is the Next.js App Router, while the desktop
+front end (`client/`, later `desktop/`) is a Vite SPA that keeps `createBrowserRouter` with a
+hash/memory variant. This is ADR-0001 item 4 and D3.

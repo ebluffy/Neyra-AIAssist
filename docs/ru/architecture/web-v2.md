@@ -147,7 +147,7 @@ flowchart LR
 
 - `web` — веб-клиент (Next.js). Владеет аккаунтами, чатами, настройками UI и админкой. Своя БД.
 - `desktop` — фронт Tauri на общем ките; Rust `client/src-tauri` и IPC не меняются.
-- `packages/ui` — токены, тема, Radix/shadcn-примитивы.
+- `packages/ui` — токены, тема и базовые DOM-примитивы; Radix/shadcn — позже.
 - `packages/contracts` — zod-схемы HTTP/WSS и desktop-моста.
 - `server/` — ядро Нейры. Владеет памятью, моделями, инструментами, модулями, голосом. Своя SQLite.
 - Обмен — только по внутренней сети: `http://127.0.0.1:8787` и WSS.
