@@ -14,6 +14,10 @@
   только после этого удалить vault.key;
 * ключа и vault.key нет — сгенерировать случайный ключ и записать в .env.
 
+Скрипт запускается от root при обновлении ядра, поэтому созданные им ``.env``
+и ``providers.json`` получают владельца прежнего файла (или каталога), а не
+root: иначе служба под openbot не сможет их прочитать.
+
 Значение ключа никогда не печатается.
 """
 
@@ -56,7 +60,32 @@ def _read_env_value(env_path: Path) -> str:
     return ""
 
 
+def _owner_of(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_uid, st.st_gid
+
+
+def _restore_owner(path: Path, owner: tuple[int, int] | None) -> None:
+    """Вернуть файлу владельца, от имени которого работает служба."""
+    if owner is None or os.geteuid() != 0 or not path.exists():
+        return
+    st = path.stat()
+    if (st.st_uid, st.st_gid) == owner:
+        return
+    try:
+        os.chown(path, *owner)
+    except OSError as e:
+        raise ProviderSecretsError(
+            f"Не удалось вернуть владельца {path} ({owner[0]}:{owner[1]}): "
+            "служба не сможет прочитать файл"
+        ) from e
+
+
 def _write_env_value(env_path: Path, value: str) -> None:
+    owner = _owner_of(env_path) or _owner_of(env_path.parent)
     env_path.parent.mkdir(parents=True, exist_ok=True)
     lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.is_file() else []
     out: list[str] = []
@@ -81,6 +110,8 @@ def _write_env_value(env_path: Path, value: str) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write("\n".join(out) + "\n")
         os.chmod(tmp, 0o600)
+        if owner is not None and os.geteuid() == 0:
+            os.chown(tmp, *owner)
         os.replace(tmp, env_path)
     except Exception:
         try:
@@ -112,12 +143,16 @@ def ensure_vault_key(env_path: Path, data_dir: Path) -> str:
             raise ProviderSecretsError("data/secrets/vault.key пуст: задайте NEYRA_VAULT_KEY вручную")
 
     raw_key = old_key or secrets.token_urlsafe(48)
+    secrets_dir = vault_key_path.parent
+    secrets_owner = _owner_of(secrets_dir) or _owner_of(data_dir)
     store = _store(data_dir, raw_key)
     names = store.names()
     for name in names:
         value = store.get_strict(name)
         store.set(name, value)  # v1 -> v2; v2 re-encrypts with a fresh nonce
     store.verify()
+    _restore_owner(secrets_dir, secrets_owner)
+    _restore_owner(store.path, secrets_owner)
 
     # Сначала .env, затем удаление файла: при сбое записи старый ключ остаётся.
     _write_env_value(env_path, raw_key)

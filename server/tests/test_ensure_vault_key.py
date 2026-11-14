@@ -124,3 +124,24 @@ def test_write_env_value_drops_duplicate_key(tmp_path: Path):
     assert text.count("NEYRA_VAULT_KEY=") == 1
     assert "NEYRA_VAULT_KEY=new-key" in text
     assert "A=1" in text and "B=2" in text
+
+
+def test_root_run_returns_env_and_vault_to_service_owner(tmp_path: Path, monkeypatch):
+    """update-core.sh идёт от root: .env и vault не должны остаться root:root."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("OTHER=1\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    old_key = "old-local-vault-key"
+    _write_legacy_store(data_dir, old_key)
+    (data_dir / "secrets" / "vault.key").write_text(old_key + "\n", encoding="utf-8")
+
+    service_owner = (1234, 5678)
+    monkeypatch.setattr(helper, "_owner_of", lambda _path: service_owner)
+    monkeypatch.setattr(helper.os, "geteuid", lambda: 0)
+    chowns: list[tuple[Path, int, int]] = []
+    monkeypatch.setattr(helper.os, "chown", lambda path, uid, gid: chowns.append((Path(path), uid, gid)))
+
+    assert helper.ensure_vault_key(env_path, data_dir) == "vault.key"
+    assert any(p.name.startswith(".env.") and (uid, gid) == service_owner for p, uid, gid in chowns)
+    assert any(p.name == "providers.json" and (uid, gid) == service_owner for p, uid, gid in chowns)
+    assert any(p.name == "secrets" and (uid, gid) == service_owner for p, uid, gid in chowns)
