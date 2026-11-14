@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { pgTable, pgEnum, text, timestamp, boolean, index, jsonb } from 'drizzle-orm/pg-core';
+import { pgTable, pgEnum, text, timestamp, boolean, integer, index, jsonb } from 'drizzle-orm/pg-core';
 export const DEFAULT_ROLE = 'user' as const;
 export const roleEnum = pgEnum('role', ['admin', 'user']);
 export const user = pgTable('user', {
@@ -50,13 +50,19 @@ export const verification = pgTable('verification', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
 }, table => [index('verification_identifier_idx').on(table.identifier)]);
-// Одноразовые инвайты на регистрацию (AR-2): хранится только хэш токена.
+// Инвайты на регистрацию (AR-2, AR-35): хранится только хэш токена.
+// max_uses = null — без лимита; 1 — одноразовый. expires_at = null — без срока.
+// email = null — подходит любому; иначе код принимается только для этого адреса.
 export const invite = pgTable('invite', {
   id: text('id').primaryKey(),
   tokenHash: text('token_hash').notNull().unique(),
   createdBy: text('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  maxUses: integer('max_uses'),
+  usedCount: integer('used_count').default(0).notNull(),
+  email: text('email'),
+  // Последнее использование: показывается в списке.
   usedBy: text('used_by'),
   usedAt: timestamp('used_at', { withTimezone: true }),
   // Отзыв админом: строка остаётся в списке, но инвайт недействителен.

@@ -235,35 +235,117 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     state.memberCookie = afterUnban.cookie;
   });
 
-  it('создаёт и отзывает инвайт, повторно не пускает', async () => {
-    const created = await createInviteRoute(adminRequest('/api/admin/invites', state.adminCookie, {
+  async function makeInviteViaApi(body: Record<string, unknown>) {
+    const response = await createInviteRoute(adminRequest('/api/admin/invites', state.adminCookie, {
       method: 'POST',
-      body: JSON.stringify({ ttlHours: 1 }),
+      body: JSON.stringify(body),
     }));
-    expect(created.status).toBe(200);
-    const createdPayload = await payloadOf(created);
-    const url = String(createdPayload?.data?.url ?? '');
-    const id = String(createdPayload?.data?.id ?? '');
-    const token = url.split('invite=')[1] ?? '';
-    expect(token).toBeTruthy();
+    const payload = await payloadOf(response);
+    const data = (payload?.data ?? {}) as {
+      id?: string; url?: string; maxUses?: number | null; usedCount?: number; expiresAt?: string | null; email?: string | null;
+    };
+    return { response, id: data.id ?? '', token: (data.url ?? '').split('invite=')[1] ?? '', data };
+  }
+
+  it('создаёт одноразовый инвайт по умолчанию: второй раз не пускает, отзыв работает', async () => {
+    const created = await makeInviteViaApi({ ttlHours: 1 });
+    expect(created.response.status).toBe(200);
+    expect(created.token).toBeTruthy();
+    expect(created.data.maxUses).toBe(1);
+    expect(created.data.usedCount).toBe(0);
 
     const invited = await authCall('/sign-up/email', {
-      email: uniqueEmail('invited'), password: 'invited-password-1', name: 'invited', invite: token,
+      email: uniqueEmail('invited'), password: 'invited-password-1', name: 'invited', invite: created.token,
     });
     expect(invited.response.status).toBe(200);
 
     const again = await authCall('/sign-up/email', {
-      email: uniqueEmail('invited'), password: 'invited-password-1', name: 'invited', invite: token,
+      email: uniqueEmail('invited'), password: 'invited-password-1', name: 'invited', invite: created.token,
     });
     expect(again.response.status).toBe(403);
 
-    const revoke = await revokeInviteRoute(adminRequest(`/api/admin/invites/${id}`, state.adminCookie, { method: 'DELETE' }),
-      { params: Promise.resolve({ id }) });
-    expect(revoke.status).toBe(409);
+    // AR-35: отзыв разрешён и после использования — многоразовый мог быть не исчерпан.
+    const revoke = await revokeInviteRoute(adminRequest(`/api/admin/invites/${created.id}`, state.adminCookie, { method: 'DELETE' }),
+      { params: Promise.resolve({ id: created.id }) });
+    expect(revoke.status).toBe(200);
+
+    const list = await listInvites(adminRequest('/api/admin/invites?state=revoked', state.adminCookie));
+    expect(list.status).toBe(200);
+    const items = ((await payloadOf(list))?.data?.items ?? []) as Array<{ id: string; usedCount: number; maxUses: number | null }>;
+    const row = items.find(item => item.id === created.id);
+    expect(row).toMatchObject({ usedCount: 1, maxUses: 1 });
+  });
+
+  it('многоразовый инвайт: лимит 2, два успеха и отказ третьему (AR-35)', async () => {
+    const created = await makeInviteViaApi({ ttlHours: 1, maxUses: 2 });
+    expect(created.response.status).toBe(200);
+    expect(created.data.maxUses).toBe(2);
+
+    for (let index = 0; index < 2; index++) {
+      const signUp = await authCall('/sign-up/email', {
+        email: uniqueEmail(`multi-${index}`), password: 'multi-password-12', name: `multi-${index}`, invite: created.token,
+      });
+      expect(signUp.response.status).toBe(200);
+    }
+    const third = await authCall('/sign-up/email', {
+      email: uniqueEmail('multi-third'), password: 'multi-password-12', name: 'multi-third', invite: created.token,
+    });
+    expect(third.response.status).toBe(403);
+    expect(String(third.json?.message ?? '')).toContain('Лимит');
 
     const list = await listInvites(adminRequest('/api/admin/invites?state=used', state.adminCookie));
-    expect(list.status).toBe(200);
-    expect(((await payloadOf(list))?.data?.items as unknown[]).length).toBeGreaterThan(0);
+    const items = ((await payloadOf(list))?.data?.items ?? []) as Array<{ id: string; usedCount: number; maxUses: number | null }>;
+    expect(items.find(item => item.id === created.id)).toMatchObject({ usedCount: 2, maxUses: 2 });
+  });
+
+  it('две параллельные регистрации по одноразовому инвайту: один успех и один отказ (AR-35)', async () => {
+    const created = await makeInviteViaApi({ ttlHours: 1, maxUses: 1 });
+    const [first, second] = await Promise.all([
+      authCall('/sign-up/email', {
+        email: uniqueEmail('race-a'), password: 'race-password-12', name: 'race-a', invite: created.token,
+      }),
+      authCall('/sign-up/email', {
+        email: uniqueEmail('race-b'), password: 'race-password-12', name: 'race-b', invite: created.token,
+      }),
+    ]);
+    expect([first.response.status, second.response.status].sort()).toEqual([200, 403]);
+  });
+
+  it('инвайт с привязкой к email отклоняет чужой адрес (AR-35)', async () => {
+    const boundEmail = uniqueEmail('bound');
+    const created = await makeInviteViaApi({ ttlHours: 1, maxUses: 1, email: boundEmail });
+    expect(created.data.email).toBe(boundEmail);
+
+    const foreign = await authCall('/sign-up/email', {
+      email: uniqueEmail('foreign'), password: 'foreign-password-1', name: 'foreign', invite: created.token,
+    });
+    expect(foreign.response.status).toBe(403);
+    expect(String(foreign.json?.message ?? '')).toContain('другого адреса');
+
+    const own = await authCall('/sign-up/email', {
+      email: boundEmail, password: 'bound-password-12', name: 'bound', invite: created.token,
+    });
+    expect(own.response.status).toBe(200);
+  });
+
+  it('истёкший и безлимитный инвайты (AR-35)', async () => {
+    const expired = await makeInviteViaApi({ expiresAt: new Date(Date.now() + 3600_000).toISOString(), maxUses: 1 });
+    await pgQuery(`UPDATE "invite" SET expires_at = now() - interval '1 hour' WHERE id = $1`, [expired.id]);
+    const late = await authCall('/sign-up/email', {
+      email: uniqueEmail('late'), password: 'late-password-12', name: 'late', invite: expired.token,
+    });
+    expect(late.response.status).toBe(403);
+    expect(String(late.json?.message ?? '')).toContain('Срок');
+
+    const unlimited = await makeInviteViaApi({ ttlHours: null, maxUses: null });
+    expect(unlimited.data.maxUses).toBeNull();
+    expect(unlimited.data.expiresAt).toBeNull();
+    for (let index = 0; index < 2; index++) {
+      const signUp = await authCall('/sign-up/email', {
+        email: uniqueEmail(`unlimited-${index}`), password: 'unlimited-pw-12', name: `u${index}`, invite: unlimited.token,
+      });
+      expect(signUp.response.status).toBe(200);
+    }
   });
 
   it('отзывает неиспользованный инвайт: регистрация по нему невозможна', async () => {

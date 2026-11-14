@@ -3,6 +3,9 @@ import {
   checkDelete,
   checkRoleChange,
   inviteState,
+  normalizeInviteEmail,
+  normalizeInviteExpiry,
+  normalizeInviteMaxUses,
   normalizeInviteTtl,
   normalizeSearch,
   pageCount,
@@ -86,6 +89,39 @@ describe('invites', () => {
     expect(inviteState({ usedAt: null, revokedAt: null, expiresAt: '2026-11-12T12:00:00Z' }, now)).toBe('expired');
     expect(inviteState({ usedAt: '2026-11-13T10:00:00Z', revokedAt: null, expiresAt: '2026-11-14T12:00:00Z' }, now)).toBe('used');
     expect(inviteState({ usedAt: null, revokedAt: '2026-11-13T10:00:00Z', expiresAt: '2026-11-14T12:00:00Z' }, now)).toBe('revoked');
+  });
+
+  it('treats an exhausted limit as used, unlimited stays active (AR-35)', () => {
+    const now = Date.parse('2026-11-13T12:00:00Z');
+    const base = { usedAt: null, revokedAt: null, expiresAt: null };
+    expect(inviteState({ ...base, maxUses: 2, usedCount: 1 }, now)).toBe('active');
+    expect(inviteState({ ...base, maxUses: 2, usedCount: 2 }, now)).toBe('used');
+    expect(inviteState({ ...base, maxUses: null, usedCount: 99 }, now)).toBe('active');
+    expect(inviteState({ ...base, maxUses: 1, usedCount: 1, revokedAt: '2026-11-13T10:00:00Z' }, now)).toBe('revoked');
+  });
+
+  it('normalizes the multi-use limit (AR-35)', () => {
+    expect(normalizeInviteMaxUses(undefined)).toBe(1);
+    expect(normalizeInviteMaxUses(null)).toBeNull();
+    expect(normalizeInviteMaxUses('unlimited')).toBeNull();
+    expect(normalizeInviteMaxUses('5')).toBe(5);
+    expect(normalizeInviteMaxUses(10000)).toBe(10000);
+    expect(normalizeInviteMaxUses(0)).toBe('invalid');
+    expect(normalizeInviteMaxUses(10001)).toBe('invalid');
+    expect(normalizeInviteMaxUses('nope')).toBe('invalid');
+  });
+
+  it('normalizes expiry and optional email binding (AR-35)', () => {
+    const now = Date.parse('2026-11-13T12:00:00Z');
+    expect(normalizeInviteExpiry({}, now)).toEqual(new Date(now + 24 * 3600 * 1000));
+    expect(normalizeInviteExpiry({ ttlHours: null }, now)).toBeNull();
+    expect(normalizeInviteExpiry({ expiresAt: null, ttlHours: 1 }, now)).toBeNull();
+    expect(normalizeInviteExpiry({ expiresAt: '2026-11-20T00:00:00Z' }, now)).toEqual(new Date('2026-11-20T00:00:00Z'));
+    expect(normalizeInviteExpiry({ expiresAt: '2026-11-01T00:00:00Z' }, now)).toBe('invalid');
+    expect(normalizeInviteExpiry({ ttlHours: 0 }, now)).toBe('invalid');
+    expect(normalizeInviteEmail(undefined)).toBeNull();
+    expect(normalizeInviteEmail('  User@Example.TEST ')).toBe('user@example.test');
+    expect(normalizeInviteEmail('not-an-email')).toBe('invalid');
   });
 
   it('parses invite list filters', () => {

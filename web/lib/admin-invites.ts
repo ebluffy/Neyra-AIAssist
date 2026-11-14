@@ -1,15 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import { and, count, desc, eq, gt, isNull, lte, sql, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { getDatabase } from './db';
 import { invite } from '../db/schema';
-import { generateInviteToken, hashInviteToken, INVITE_TTL_MS } from './invite';
+import { generateInviteToken, hashInviteToken } from './invite';
 import { inviteState, pageOffset, type InviteListQuery, type InviteState } from './admin-rules';
 
 export interface AdminInviteRow {
   id: string;
   createdBy: string | null;
   createdAt: string;
-  expiresAt: string;
+  expiresAt: string | null;
+  maxUses: number | null;
+  usedCount: number;
+  email: string | null;
   usedBy: string | null;
   usedAt: string | null;
   revokedAt: string | null;
@@ -29,17 +32,27 @@ export interface InviteCounts {
   used: number;
 }
 
+// AR-35: «использован» — исчерпан лимит (max_uses not null и used_count >=
+// max_uses). Инвайт без лимита не становится used, только expired/revoked.
+function exhaustedCondition(): SQL {
+  return sql`${invite.maxUses} is not null and ${invite.usedCount} >= ${invite.maxUses}`;
+}
+
+function notExpiredCondition(now: Date): SQL {
+  return or(isNull(invite.expiresAt), gt(invite.expiresAt, now))!;
+}
+
 function stateCondition(state: Exclude<InviteListQuery['state'], 'all'>): SQL {
   const now = new Date();
   switch (state) {
     case 'active':
-      return and(isNull(invite.usedAt), isNull(invite.revokedAt), gt(invite.expiresAt, now))!;
+      return and(isNull(invite.revokedAt), notExpiredCondition(now), sql`not (${exhaustedCondition()})`)!;
     case 'used':
-      return sql`${invite.usedAt} is not null`;
+      return exhaustedCondition();
     case 'revoked':
       return sql`${invite.revokedAt} is not null`;
     case 'expired':
-      return and(isNull(invite.usedAt), isNull(invite.revokedAt), lte(invite.expiresAt, now))!;
+      return and(isNull(invite.revokedAt), sql`not (${exhaustedCondition()})`, lte(invite.expiresAt, now))!;
   }
 }
 
@@ -48,8 +61,8 @@ export async function countInvites(): Promise<InviteCounts> {
   const now = new Date();
   const [row] = await db.select({
     total: count(),
-    active: sql<number>`count(*) filter (where ${invite.usedAt} is null and ${invite.revokedAt} is null and ${invite.expiresAt} > ${now})`,
-    used: sql<number>`count(*) filter (where ${invite.usedAt} is not null)`,
+    active: sql<number>`count(*) filter (where ${invite.revokedAt} is null and (${invite.expiresAt} is null or ${invite.expiresAt} > ${now}) and not (${exhaustedCondition()}))`,
+    used: sql<number>`count(*) filter (where ${exhaustedCondition()})`,
   }).from(invite);
   return {
     total: Number(row?.total ?? 0),
@@ -74,7 +87,10 @@ export async function listInvites(query: InviteListQuery): Promise<InvitePage> {
       id: row.id,
       createdBy: row.createdBy,
       createdAt: row.createdAt.toISOString(),
-      expiresAt: row.expiresAt.toISOString(),
+      expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
+      maxUses: row.maxUses,
+      usedCount: row.usedCount,
+      email: row.email,
       usedBy: row.usedBy,
       usedAt: row.usedAt ? row.usedAt.toISOString() : null,
       revokedAt: row.revokedAt ? row.revokedAt.toISOString() : null,
@@ -83,40 +99,54 @@ export async function listInvites(query: InviteListQuery): Promise<InvitePage> {
   };
 }
 
+export interface CreateInviteOptions {
+  /** null — без лимита; 1 — одноразовый. */
+  maxUses: number | null;
+  /** null — без срока. */
+  expiresAt: Date | null;
+  /** null — любой адрес; иначе только этот. */
+  email: string | null;
+}
+
 export interface CreatedInvite {
   id: string;
   url: string;
-  expiresAt: string;
+  expiresAt: string | null;
+  maxUses: number | null;
+  usedCount: number;
+  email: string | null;
 }
 
 // Ссылка строится из origin сайта; токен возвращается один раз и в базе не хранится.
-export async function createInvite(createdBy: string, ttlHours: number, baseUrl: string): Promise<CreatedInvite> {
+export async function createInvite(createdBy: string, options: CreateInviteOptions, baseUrl: string): Promise<CreatedInvite> {
   const { db } = getDatabase();
   const token = generateInviteToken();
   const id = randomUUID();
-  const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
   await db.insert(invite).values({
     id,
     tokenHash: hashInviteToken(token),
     createdBy,
-    expiresAt,
+    expiresAt: options.expiresAt,
+    maxUses: options.maxUses,
+    email: options.email,
   });
   return {
     id,
-    expiresAt: expiresAt.toISOString(),
+    expiresAt: options.expiresAt ? options.expiresAt.toISOString() : null,
+    maxUses: options.maxUses,
+    usedCount: 0,
+    email: options.email,
     url: `${baseUrl.replace(/\/$/, '')}/signup?invite=${token}`,
   };
 }
 
-export async function revokeInvite(id: string): Promise<'ok' | 'not-found' | 'used' | 'revoked'> {
+// Отзыв: работает и для многоразового инвайта с уже потраченными использованиями.
+export async function revokeInvite(id: string): Promise<'ok' | 'not-found' | 'revoked'> {
   const { db } = getDatabase();
   const rows = await db.select().from(invite).where(eq(invite.id, id)).limit(1);
   const row = rows[0];
   if (!row) return 'not-found';
   if (row.revokedAt) return 'revoked';
-  if (row.usedAt) return 'used';
   await db.update(invite).set({ revokedAt: new Date() }).where(and(eq(invite.id, id), isNull(invite.revokedAt)));
   return 'ok';
 }
-
-export { INVITE_TTL_MS };

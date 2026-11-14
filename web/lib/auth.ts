@@ -169,19 +169,26 @@ function createAuth() {
           if (!inviteToken) {
             return ctx.json({ message: 'Регистрация на сайте — только по инвайту. Обратитесь к администратору Нейры.' }, { status: 403 });
           }
-          const verdict = await checkInvite(inviteToken);
+          const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+          const verdict = await checkInvite(inviteToken, normalizedEmail);
           if (verdict !== 'ok') {
-            const message = verdict === 'error'
-              ? 'Не удалось проверить инвайт. Попробуйте позже.'
-              : 'Инвайт недействителен, уже использован или истёк. Запросите новый.';
+            const messages: Record<string, string> = {
+              error: 'Не удалось проверить инвайт. Попробуйте позже.',
+              used: 'Лимит использований этого инвайта исчерпан. Запросите новый.',
+              expired: 'Срок действия инвайта истёк. Запросите новый.',
+              revoked: 'Инвайт отозван администратором. Запросите новый.',
+              'email-mismatch': 'Этот инвайт выдан для другого адреса почты.',
+              'not-found': 'Инвайт недействителен. Запросите новый.',
+            };
+            const message = messages[verdict] ?? 'Инвайт недействителен. Запросите новый.';
             return ctx.json({ message }, { status: 403 });
           }
-          // AR-26: инвайт тратится атомарно ДО создания аккаунта; проигравшая
-          // параллельная регистрация получает 403. При ошибке after вернёт его.
-          const consumed = await consumeInvite(inviteToken, typeof email === 'string' ? email.trim().toLowerCase() : '');
+          // AR-26/AR-35: инвайт тратится атомарно ДО создания аккаунта; лимит
+          // проверяется тем же UPDATE. При ошибке after вернёт расход.
+          const consumed = await consumeInvite(inviteToken, normalizedEmail, normalizedEmail);
           if (!consumed) {
             return ctx.json(
-              { message: 'Инвайт недействителен, уже использован или истёк. Запросите новый.' },
+              { message: 'Инвайт недействителен, лимит исчерпан или истёк. Запросите новый.' },
               { status: 403 },
             );
           }

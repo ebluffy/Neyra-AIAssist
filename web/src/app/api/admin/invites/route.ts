@@ -1,6 +1,11 @@
 import { requireAdmin } from '../../../../../lib/admin-guard';
 import { countInvites, createInvite, listInvites } from '../../../../../lib/admin-invites';
-import { normalizeInviteTtl, parseInviteListQuery } from '../../../../../lib/admin-rules';
+import {
+  normalizeInviteEmail,
+  normalizeInviteExpiry,
+  normalizeInviteMaxUses,
+  parseInviteListQuery,
+} from '../../../../../lib/admin-rules';
 import { readAuthEnv } from '../../../../../lib/env';
 import { recordAudit } from '../../../../../lib/admin-audit';
 import { jsonError, jsonOk, readJson } from '../../../../../lib/admin-http';
@@ -26,9 +31,22 @@ export async function POST(request: Request) {
   if (!auth.ok) return auth.response;
   const body = await readJson(request);
   if (!body) return jsonError(400, 'bad_request', 'Ожидается JSON-объект.');
-  const ttl = normalizeInviteTtl(body.ttlHours ?? 24);
-  if (ttl === null) {
-    return jsonError(400, 'bad_request', 'Срок действия — от 1 до 720 часов.');
+  // AR-35: лимит, срок и привязка к email. Принимаем camelCase и snake_case.
+  // Явный null («без лимита») нельзя путать с отсутствием поля (по умолчанию 1).
+  const maxUses = normalizeInviteMaxUses('maxUses' in body ? body.maxUses : body.max_uses);
+  if (maxUses === 'invalid') {
+    return jsonError(400, 'bad_request', 'Лимит использований — целое число от 1 до 10000 или null (без лимита).');
+  }
+  const expiresAt = normalizeInviteExpiry({
+    expiresAt: 'expiresAt' in body ? body.expiresAt : body.expires_at,
+    ttlHours: body.ttlHours,
+  });
+  if (expiresAt === 'invalid') {
+    return jsonError(400, 'bad_request', 'Срок действия — будущая дата, от 1 до 720 часов или null (без срока).');
+  }
+  const email = normalizeInviteEmail(body.email);
+  if (email === 'invalid') {
+    return jsonError(400, 'bad_request', 'Email для инвайта должен быть корректным адресом или null.');
   }
   let baseUrl: string;
   try {
@@ -37,8 +55,12 @@ export async function POST(request: Request) {
     return jsonError(503, 'unavailable', 'Не задан BETTER_AUTH_URL: ссылку приглашения не собрать.');
   }
   try {
-    const created = await createInvite(auth.user.email, ttl, baseUrl);
-    await recordAudit(auth.user, 'invite.create', { type: 'invite', id: created.id }, { ttlHours: ttl });
+    const created = await createInvite(auth.user.email, { maxUses, expiresAt, email }, baseUrl);
+    await recordAudit(auth.user, 'invite.create', { type: 'invite', id: created.id }, {
+      maxUses,
+      expiresAt: expiresAt ? expiresAt.toISOString() : null,
+      email,
+    });
     return jsonOk(created);
   } catch {
     return jsonError(503, 'db_unavailable', 'Не удалось создать инвайт: база недоступна.');
