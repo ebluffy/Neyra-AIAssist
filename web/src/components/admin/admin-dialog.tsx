@@ -48,8 +48,20 @@ export function StatusPill({ tone = 'muted', children }: { tone?: Tone; children
   );
 }
 import { playButtonClickSound, playModalCloseSound, playModalOpenSound } from '../../lib/ui-sounds';
+import { ProvidersSection } from './providers-section';
+import { AdminPageSection } from './admin-pages';
 
-export type AdminSection = 'overview' | 'models' | 'integrations' | 'access' | 'system';
+export type AdminSection =
+  | 'overview'
+  | 'models'
+  | 'providers'
+  | 'integrations'
+  | 'access'
+  | 'system'
+  | 'logs'
+  | 'memory'
+  | 'files'
+  | 'prompts';
 
 export interface AdminDialogProps {
   open: boolean;
@@ -227,6 +239,12 @@ export function AdminDialog({
             onClick={() => setActiveSection('models')}
           />
           <NavButton
+            active={activeSection === 'providers'}
+            icon={<Key size={14} />}
+            label="Провайдеры"
+            onClick={() => setActiveSection('providers')}
+          />
+          <NavButton
             active={activeSection === 'integrations'}
             icon={<Workflow size={14} />}
             label="Интеграции"
@@ -243,6 +261,30 @@ export function AdminDialog({
             icon={<Server size={14} />}
             label="Система"
             onClick={() => setActiveSection('system')}
+          />
+          <NavButton
+            active={activeSection === 'logs'}
+            icon={<FileText size={14} />}
+            label="Журналы"
+            onClick={() => setActiveSection('logs')}
+          />
+          <NavButton
+            active={activeSection === 'memory'}
+            icon={<Database size={14} />}
+            label="Память"
+            onClick={() => setActiveSection('memory')}
+          />
+          <NavButton
+            active={activeSection === 'files'}
+            icon={<Folder size={14} />}
+            label="Файлы"
+            onClick={() => setActiveSection('files')}
+          />
+          <NavButton
+            active={activeSection === 'prompts'}
+            icon={<Key size={14} />}
+            label="Промпты"
+            onClick={() => setActiveSection('prompts')}
           />
         </div>
 
@@ -270,6 +312,12 @@ export function AdminDialog({
                 onClick={() => setActiveSection('models')}
               />
               <NavButton
+                active={activeSection === 'providers'}
+                icon={<Key size={15} />}
+                label="Провайдеры"
+                onClick={() => setActiveSection('providers')}
+              />
+              <NavButton
                 active={activeSection === 'integrations'}
                 icon={<Workflow size={15} />}
                 label="Интеграции"
@@ -288,14 +336,34 @@ export function AdminDialog({
                 onClick={() => setActiveSection('system')}
               />
 
-              <div className="pt-3 pb-1 border-t border-[var(--border)] mt-3">
+              <div className="pt-3 pb-1 border-t border-[var(--border)] mt-3 space-y-1">
                 <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
-                  Страницы
+                  Данные
                 </p>
-                <SidebarPageLink href="/admin/logs" icon={<FileText size={14} />} label="Журналы" />
-                <SidebarPageLink href="/admin/memory" icon={<Database size={14} />} label="Память" />
-                <SidebarPageLink href="/admin/files" icon={<Folder size={14} />} label="Файлы" />
-                <SidebarPageLink href="/admin/prompts" icon={<Key size={14} />} label="Промпты" />
+                <NavButton
+                  active={activeSection === 'logs'}
+                  icon={<FileText size={15} />}
+                  label="Журналы"
+                  onClick={() => setActiveSection('logs')}
+                />
+                <NavButton
+                  active={activeSection === 'memory'}
+                  icon={<Database size={15} />}
+                  label="Память"
+                  onClick={() => setActiveSection('memory')}
+                />
+                <NavButton
+                  active={activeSection === 'files'}
+                  icon={<Folder size={15} />}
+                  label="Файлы"
+                  onClick={() => setActiveSection('files')}
+                />
+                <NavButton
+                  active={activeSection === 'prompts'}
+                  icon={<Key size={15} />}
+                  label="Промпты"
+                  onClick={() => setActiveSection('prompts')}
+                />
               </div>
             </div>
 
@@ -309,9 +377,14 @@ export function AdminDialog({
           <main className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 bg-[var(--surface-2)]">
             {activeSection === 'overview' && <OverviewSection onNavigate={setActiveSection} />}
             {activeSection === 'models' && <ModelsSection />}
+            {activeSection === 'providers' && <ProvidersSection />}
             {activeSection === 'integrations' && <IntegrationsSection />}
             {activeSection === 'access' && <AccessSection />}
             {activeSection === 'system' && <SystemSection />}
+            {activeSection === 'logs' && <AdminPageSection kind="logs" />}
+            {activeSection === 'memory' && <AdminPageSection kind="memory" />}
+            {activeSection === 'files' && <AdminPageSection kind="files" />}
+            {activeSection === 'prompts' && <AdminPageSection kind="prompts" />}
           </main>
         </div>
       </div>

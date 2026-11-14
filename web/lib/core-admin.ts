@@ -47,7 +47,7 @@ interface CoreRequest {
 }
 
 async function request<T>(
-  method: 'GET' | 'POST' | 'PUT',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   options: CoreRequest & { body?: unknown } = {},
 ): Promise<CoreResult<T>> {
@@ -122,6 +122,10 @@ export function corePost<T>(path: string, body: unknown, options: CoreRequest = 
 
 export function corePut<T>(path: string, body: unknown, options: CoreRequest = {}): Promise<CoreResult<T>> {
   return request<T>('PUT', path, { ...options, body });
+}
+
+export function coreDelete<T>(path: string, options: CoreRequest = {}): Promise<CoreResult<T>> {
+  return request<T>('DELETE', path, options);
 }
 
 export interface CoreHealth {
