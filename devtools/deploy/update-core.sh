@@ -112,8 +112,18 @@ BACKUP_PARENT=${BACKUP_ROOT:-/opt/neyra}
 CHECK_DATA="$(cd "$(dirname "$0")" && pwd)/check-data-dir.py"
 [ -f "$CHECK_DATA" ] || die "нет check-data-dir.py рядом с update-core.sh"
 DATA_DIR=""
-if ! DATA_DIR="$(cd "$DEST" && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python "$CHECK_DATA" "$DEST")"; then
-  die "data_dir вне $DEST: полный бэкап и откат покрывают только $DEST (AR-29)"
+CHECK_ERR="$(mktemp)"
+if DATA_DIR="$(cd "$DEST" && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python "$CHECK_DATA" "$DEST" 2>"$CHECK_ERR")"; then
+  rm -f "$CHECK_ERR"
+else
+  rc=$?
+  msg="$(cat "$CHECK_ERR")"
+  rm -f "$CHECK_ERR"
+  case "$rc" in
+    3) die "$msg" ;;
+    4) die "не удалось определить data_dir ядра: $msg" ;;
+    *) die "check-data-dir.py завершился с кодом $rc: $msg" ;;
+  esac
 fi
 echo "data_dir: $DATA_DIR (внутри $DEST)"
 
