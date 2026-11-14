@@ -802,7 +802,7 @@ export function AppSidebar({
                           </div>
                         </div>
                         {note.content && (
-                          <p className="text-[11px] text-[var(--text-muted)] line-clamp-2 mt-1 whitespace-pre-wrap">
+                          <p className="text-[11px] text-[var(--text-muted)] line-clamp-2 mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                             {note.content}
                           </p>
                         )}

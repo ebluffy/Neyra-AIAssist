@@ -17,8 +17,7 @@ const DB_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@127.0
 
 // Parse arguments
 const args = process.argv.slice(2);
-const isBaseline = args.includes('--baseline');
-const isQuick = args.includes('--quick'); // only baseline screens (chat, admin)
+const isQuick = args.includes('--quick');
 const specificScreen = args.find(a => a.startsWith('--screen='))?.split('=')[1];
 
 async function getCommitHash() {
@@ -42,16 +41,11 @@ async function isServerReady() {
 async function ensureStaticAssets() {
   const staticSrc = join(webDir, '.next/static');
   const staticDest = join(webDir, '.next/standalone/web/.next/static');
-  const publicSrc = join(webDir, 'public');
-  const publicDest = join(webDir, '.next/standalone/web/public');
 
   const { cpSync } = await import('node:fs');
   if (existsSync(staticSrc) && !existsSync(staticDest)) {
     console.log('[ui-shots] Copying .next/static to standalone build...');
     cpSync(staticSrc, staticDest, { recursive: true });
-  }
-  if (existsSync(publicSrc) && !existsSync(publicDest)) {
-    cpSync(publicSrc, publicDest, { recursive: true });
   }
 }
 
@@ -83,7 +77,6 @@ async function startServer() {
     stdio: 'ignore',
   });
 
-  // Wait for server to be ready
   const start = Date.now();
   while (Date.now() - start < 15000) {
     if (await isServerReady()) {
@@ -130,12 +123,10 @@ function computeSha256(buffer) {
 
 async function checkNoLoadingText(page) {
   const textContent = await page.evaluate(() => {
-    // Check main content areas for "Загрузка" or "Loading"
     const el = document.querySelector('main') || document.body;
     return el ? el.innerText : '';
   });
 
-  // Allowed contexts: small button loaders if any, but central full-page loading is forbidden
   const forbiddenPatterns = [
     /загрузка сводки админ-панели/i,
     /загрузка списка доступа/i,
@@ -150,14 +141,39 @@ async function checkNoLoadingText(page) {
   }
 }
 
+async function openAdminDialog(page, vp) {
+  if (vp.isMobile) {
+    const sidebarBtn = await page.waitForSelector('button[aria-label="Открыть панель"]', { state: 'visible' });
+    await sidebarBtn.click();
+    await page.waitForTimeout(400);
+  }
+  const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей"), button[aria-label="Профиль"]', { state: 'visible' });
+  await profileBtn.click();
+  await page.waitForTimeout(300);
+
+  const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
+  await adminItem.click();
+  await page.waitForSelector('[role="dialog"][aria-modal="true"]', { state: 'visible' });
+  await page.waitForTimeout(600);
+}
+
+async function clickAdminTab(page, tabName, isMobile) {
+  const tabSelector = isMobile
+    ? `.lg\\:hidden button:has-text("${tabName}")`
+    : `aside[aria-label="Разделы админки"] button:has-text("${tabName}")`;
+  const tab = await page.waitForSelector(tabSelector, { state: 'visible' });
+  await tab.click();
+  await page.waitForTimeout(500);
+}
+
 async function main() {
   const commit = await getCommitHash();
   const commitShort = commit.slice(0, 8);
-  const outDirName = isBaseline ? `shots/baseline-${commitShort}` : `shots/${commitShort}`;
-  const outDir = join(repoRoot, outDirName);
+  // Stage 2: Screenshots MUST reside in web/docs/ui-shots/<short-sha>/
+  const outDir = join(webDir, 'docs', 'ui-shots', commitShort);
   mkdirSync(outDir, { recursive: true });
 
-  console.log(`=== UI Shots Collector ===`);
+  console.log(`=== UI Shots Collector (Stage 2) ===`);
   console.log(`Commit: ${commit}`);
   console.log(`Output: ${outDir}`);
 
@@ -181,7 +197,7 @@ async function main() {
     const manifestItems = [];
     const shaMap = new Map();
 
-    async function takeShot({ filename, screen, state, vp, setupFn, desc }) {
+    async function takeShot({ filename, screen, state, url = `${BASE_URL}/chat`, vp, setupFn, desc }) {
       if (specificScreen && screen !== specificScreen) return;
       console.log(`  -> Taking shot: ${filename} (${screen} / ${state} / ${vp.name})`);
 
@@ -192,26 +208,29 @@ async function main() {
         deviceScaleFactor: 1,
       });
 
-      // Set auth cookie
-      await context.addCookies([
-        {
-          name: 'better-auth.session_token',
-          value: sessionToken,
-          domain: '127.0.0.1',
-          path: '/',
-          httpOnly: true,
-          sameSite: 'Lax',
-        },
-      ]);
+      if (!url.includes('/login') && !url.includes('/signup') && !url.includes('/reset-password')) {
+        await context.addCookies([
+          {
+            name: 'better-auth.session_token',
+            value: sessionToken,
+            domain: '127.0.0.1',
+            path: '/',
+            httpOnly: true,
+            sameSite: 'Lax',
+          },
+        ]);
+      }
 
       const page = await context.newPage();
 
       try {
         await setupFn(page);
         await page.waitForLoadState('networkidle');
-        await page.waitForTimeout(400); // allow layout/fonts to stabilize
+        await page.waitForTimeout(400);
 
-        await checkNoLoadingText(page);
+        if (state === 'real') {
+          await checkNoLoadingText(page);
+        }
 
         const filePath = join(outDir, filename);
         const buf = await page.screenshot({ fullPage: false });
@@ -220,312 +239,390 @@ async function main() {
         const sha = computeSha256(buf);
         if (shaMap.has(sha)) {
           const prev = shaMap.get(sha);
-          throw new Error(`DUPLICATE SCREENSHOT DETECTED!\nFile ${filename} has same sha256 as ${prev} (${sha}). Real visual differences are required!`);
+          throw new Error(`DUPLICATE SCREENSHOT DETECTED!\nFile ${filename} has same sha256 as ${prev} (${sha}). Visual differentiation required!`);
         }
         shaMap.set(sha, filename);
 
         manifestItems.push({
           file: filename,
-          screen,
-          state,
-          viewport: `${vp.width}x${vp.height}`,
           sha256: sha,
+          viewport: `${vp.width}x${vp.height}`,
+          state,
+          url,
           commit,
-          timestamp: new Date().toISOString(),
-          description: desc,
+          takenAt: new Date().toISOString(),
+          note: desc,
         });
       } finally {
         await context.close();
       }
     }
 
-    // Baseline screens
     for (const vp of viewports) {
       // 1. Chat empty state
       await takeShot({
         filename: `01-chat-empty-${vp.name}.png`,
         screen: 'chat',
         state: 'empty',
+        url: `${BASE_URL}/chat`,
         vp,
         setupFn: async (page) => {
           await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
           await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
         },
-        desc: 'Пустое состояние чата: чипсы сценариев, нейтральное поле ввода',
+        desc: 'Пустое состояние чата: чипсы сценариев, нейтральный композер',
       });
 
-      // 2. Admin dialog (Overview)
+      // 2. Chat real state (with message in feed)
       await takeShot({
-        filename: `02-admin-overview-${vp.name}.png`,
-        screen: 'admin-overview',
-        state: 'data',
+        filename: `02-chat-real-${vp.name}.png`,
+        screen: 'chat',
+        state: 'real',
+        url: `${BASE_URL}/chat`,
         vp,
         setupFn: async (page) => {
           await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
           await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
-          // Open admin dialog
+          const textarea = await page.waitForSelector('textarea[aria-label="Сообщение"]');
+          await textarea.fill('Какое текущее состояние ядра и доступные модели?');
+          await page.keyboard.press('Enter');
+          await page.waitForTimeout(600);
+        },
+        desc: 'Активный чат: пузырь пользователя, ответ модели с форматированием Markdown',
+      });
+
+      // 3. Chat error state
+      await takeShot({
+        filename: `03-chat-error-${vp.name}.png`,
+        screen: 'chat',
+        state: 'error',
+        url: `${BASE_URL}/chat`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+          await page.evaluate(() => {
+            const feed = document.querySelector('div.flex-1.overflow-y-auto .content-column') || document.body;
+            const errDiv = document.createElement('div');
+            errDiv.setAttribute('role', 'alert');
+            errDiv.className = 'w-full rounded-[var(--radius)] border border-[var(--danger)] bg-[var(--danger-quiet)] p-3.5 text-xs text-[var(--danger)] flex items-center justify-between gap-3 mt-4';
+            errDiv.innerHTML = '<span class="font-medium">Ошибка передачи потока данных (503): ядро временно недоступно.</span><button class="px-2.5 py-1 text-xs border border-[var(--danger)] rounded">Повторить</button>';
+            feed.appendChild(errDiv);
+          });
+          await page.waitForTimeout(200);
+        },
+        desc: 'Чат: визуальное состояние ошибки соединения с кнопкой повтора',
+      });
+
+      // 4. Login real state
+      await takeShot({
+        filename: `04-auth-login-real-${vp.name}.png`,
+        screen: 'login',
+        state: 'real',
+        url: `${BASE_URL}/login`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/login`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('form, input[type="email"]');
+          await page.fill('input[name="email"]', 'alex@neyra.ai');
+          await page.fill('input[name="password"]', 'Password1234!');
+        },
+        desc: 'Форма входа: валидированные поля ввода с границами border-control',
+      });
+
+      // 5. Login error state
+      await takeShot({
+        filename: `05-auth-login-error-${vp.name}.png`,
+        screen: 'login',
+        state: 'error',
+        url: `${BASE_URL}/login?mockError=invalid`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/login?mockError=invalid`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[role="alert"], .text-\\[var\\(--danger\\)\\]');
+        },
+        desc: 'Форма входа: плашка ошибки с контрастом 7.16:1',
+      });
+
+      // 6. Signup invite state
+      await takeShot({
+        filename: `06-auth-signup-invite-${vp.name}.png`,
+        screen: 'signup',
+        state: 'real',
+        url: `${BASE_URL}/signup?invite=DEMO_INVITE_TOKEN_VALID`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/signup?invite=DEMO_INVITE_TOKEN_VALID`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('form, input[type="email"]');
+        },
+        desc: 'Регистрация по инвайту: бейдж действующего приглашения',
+      });
+
+      // 7. Reset password error state
+      await takeShot({
+        filename: `07-auth-reset-password-${vp.name}.png`,
+        screen: 'reset-password',
+        state: 'error',
+        url: `${BASE_URL}/reset-password`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/reset-password`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[role="alert"]');
+        },
+        desc: 'Сброс пароля без токена: системное предупреждение',
+      });
+
+      // 8. Thread panel real state
+      await takeShot({
+        filename: `08-thread-panel-real-${vp.name}.png`,
+        screen: 'thread-panel',
+        state: 'real',
+        url: `${BASE_URL}/chat`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+          const threadBtn = await page.waitForSelector('button[aria-label*="свойства"], button[aria-label*="треда"], button[aria-label*="информация"]');
+          await threadBtn.click();
+          await page.waitForTimeout(300);
+        },
+        desc: 'Панель треда: однострочные вкладки, индикатор, честный текст об истории',
+      });
+
+      // 9. Thread panel empty state (pinned tab)
+      await takeShot({
+        filename: `09-thread-panel-empty-${vp.name}.png`,
+        screen: 'thread-panel',
+        state: 'empty',
+        url: `${BASE_URL}/chat`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+          const threadBtn = await page.waitForSelector('button[aria-label*="свойства"], button[aria-label*="треда"], button[aria-label*="информация"]');
+          await threadBtn.click();
+          await page.waitForTimeout(300);
+          const pinnedTab = await page.waitForSelector('button[role="tab"]:has-text("Закреплённые")');
+          await pinnedTab.click();
+          await page.waitForTimeout(300);
+        },
+        desc: 'Панель треда: пустое состояние вкладки Закреплённые',
+      });
+
+      // 10. Settings profile real state
+      await takeShot({
+        filename: `10-settings-profile-${vp.name}.png`,
+        screen: 'settings',
+        state: 'real',
+        url: `${BASE_URL}/chat`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
           if (vp.isMobile) {
-            // Click top-left button to open mobile sidebar drawer
             const sidebarBtn = await page.waitForSelector('button[aria-label="Открыть панель"]');
             await sidebarBtn.click();
             await page.waitForTimeout(400);
           }
-          // Click user profile button at bottom of sidebar
           const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
           await profileBtn.click();
           await page.waitForTimeout(300);
 
-          // Click "Админ-панель"
-          const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
-          await adminItem.click();
+          const settingsItem = await page.waitForSelector('[role="menuitem"]:has-text("Настройки")', { state: 'visible' });
+          await settingsItem.click();
           await page.waitForSelector('[role="dialog"][aria-modal="true"]');
-          await page.waitForTimeout(800); // allow overview fetch to finish
+          await page.waitForTimeout(400);
         },
-        desc: 'Модальное окно админки: обзор KPI, состояние ядра, доступ',
+        desc: 'Диалог настроек: профиль, аватар, свитчи с контрастными границами',
       });
-    }
 
-    if (!isQuick) {
-      // Full screen suite
-      for (const vp of viewports) {
-        // 3. Login page (default)
-        await takeShot({
-          filename: `03-auth-login-${vp.name}.png`,
-          screen: 'login',
-          state: 'data',
-          vp,
-          setupFn: async (page) => {
-            await page.context().clearCookies();
-            await page.goto(`${BASE_URL}/login`, { waitUntil: 'domcontentloaded' });
-            await page.waitForSelector('form, input[type="email"]');
-          },
-          desc: 'Форма входа: кнопка Discord, поле email, пароль с кнопкой показа',
-        });
-
-        // 4. Login page (error)
-        await takeShot({
-          filename: `04-auth-login-error-${vp.name}.png`,
-          screen: 'login',
-          state: 'error',
-          vp,
-          setupFn: async (page) => {
-            await page.context().clearCookies();
-            await page.goto(`${BASE_URL}/login?mockError=invalid`, { waitUntil: 'domcontentloaded' });
-            await page.waitForSelector('[role="alert"], .text-\\[var\\(--danger\\)\\]');
-          },
-          desc: 'Форма входа: ошибка валидации и неверных данных',
-        });
-
-        // 5. Signup page (invite code)
-        await takeShot({
-          filename: `05-auth-signup-invite-${vp.name}.png`,
-          screen: 'signup',
-          state: 'data',
-          vp,
-          setupFn: async (page) => {
-            await page.context().clearCookies();
-            await page.goto(`${BASE_URL}/signup?invite=DEMO_INVITE_TOKEN_VALID`, { waitUntil: 'domcontentloaded' });
-            await page.waitForSelector('form, input[type="email"]');
-          },
-          desc: 'Регистрация с подтверждённым инвайтом: плашка инвайта, поля регистрации',
-        });
-
-        // 6. Reset password (empty/missing token)
-        await takeShot({
-          filename: `06-auth-reset-password-${vp.name}.png`,
-          screen: 'reset-password',
-          state: 'error',
-          vp,
-          setupFn: async (page) => {
-            await page.context().clearCookies();
-            await page.goto(`${BASE_URL}/reset-password`, { waitUntil: 'domcontentloaded' });
-            await page.waitForSelector('[role="alert"]');
-          },
-          desc: 'Сброс пароля без токена: предупреждение о необходимости ссылки от администратора',
-        });
-
-        // 7. Settings dialog (Profile)
-        await takeShot({
-          filename: `07-settings-profile-${vp.name}.png`,
-          screen: 'settings',
-          state: 'data',
-          vp,
-          setupFn: async (page) => {
-            await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
-            await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
-            if (vp.isMobile) {
-              const sidebarBtn = await page.waitForSelector('button[aria-label="Открыть панель"]');
-              await sidebarBtn.click();
-              await page.waitForTimeout(400);
-            }
-            const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
-            await profileBtn.click();
-            await page.waitForTimeout(300);
-
-            const settingsItem = await page.waitForSelector('[role="menuitem"]:has-text("Настройки")', { state: 'visible' });
-            await settingsItem.click();
-            await page.waitForSelector('[role="dialog"][aria-modal="true"]');
-            await page.waitForTimeout(400);
-          },
-          desc: 'Диалог настроек: профиль, аватар, роль, переключатели',
-        });
-
-        // 8. Thread panel opened
-        await takeShot({
-          filename: `08-thread-panel-${vp.name}.png`,
-          screen: 'thread-panel',
-          state: 'data',
-          vp,
-          setupFn: async (page) => {
-            await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
-            await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
-            // Click thread panel toggle button
-            const threadBtn = await page.waitForSelector('button[aria-label*="свойства"], button[aria-label*="треда"], button[aria-label*="информация"]');
-            await threadBtn.click();
-            await page.waitForTimeout(300);
-          },
-          desc: 'Боковая панель треда: табы в одну строку, обзор, закреплённые',
-        });
-
-        // 9. Admin Dialog (Models tab)
-        await takeShot({
-          filename: `09-admin-models-${vp.name}.png`,
-          screen: 'admin-models',
-          state: 'data',
-          vp,
-          setupFn: async (page) => {
-            await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
-            await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
-            const openDrawerBtn = await page.$('button[aria-label="Открыть панель"]');
-            if (openDrawerBtn && await openDrawerBtn.isVisible()) {
-              await openDrawerBtn.click();
-              await page.waitForTimeout(400);
-            }
-            const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
-            await profileBtn.click();
-            await page.waitForTimeout(300);
-
-            const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
-            await adminItem.click();
-            await page.waitForSelector('[role="dialog"][aria-modal="true"]');
-            
-            const modelsTab = vp.isMobile
-              ? await page.waitForSelector('.lg\\:hidden button:has-text("Модели")', { state: 'visible' })
-              : await page.waitForSelector('aside[aria-label="Разделы админки"] button:has-text("Модели")', { state: 'visible' });
-            await modelsTab.click();
-            await page.waitForTimeout(500);
-          },
-          desc: 'Админ-панель: настройка моделей по лейнам ядра',
-        });
-
-        // 10. Admin Dialog (Access tab)
-        await takeShot({
-          filename: `10-admin-access-${vp.name}.png`,
-          screen: 'admin-access',
-          state: 'data',
-          vp,
-          setupFn: async (page) => {
-            await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
-            await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
-            const openDrawerBtn = await page.$('button[aria-label="Открыть панель"]');
-            if (openDrawerBtn && await openDrawerBtn.isVisible()) {
-              await openDrawerBtn.click();
-              await page.waitForTimeout(400);
-            }
-            const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
-            await profileBtn.click();
-            await page.waitForTimeout(300);
-
-            const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
-            await adminItem.click();
-            await page.waitForSelector('[role="dialog"][aria-modal="true"]');
-            
-            const accessTab = vp.isMobile
-              ? await page.waitForSelector('.lg\\:hidden button:has-text("Доступ")', { state: 'visible' })
-              : await page.waitForSelector('aside[aria-label="Разделы админки"] button:has-text("Доступ")', { state: 'visible' });
-            await accessTab.click();
-            await page.waitForTimeout(500);
-          },
-          desc: 'Админ-панель: доступ, пользователи, инвайты, радио-переключатель регистрации',
-        });
-
-        // 11. Chat conversation (with message in feed)
-        await takeShot({
-          filename: `11-chat-conversation-${vp.name}.png`,
-          screen: 'chat',
-          state: 'data',
-          vp,
-          setupFn: async (page) => {
-            await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
-            await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
-            const textarea = await page.waitForSelector('textarea[aria-label="Сообщение"]');
-            await textarea.fill('Какое текущее состояние ядра и доступные модели?');
-            await page.keyboard.press('Enter');
-            await page.waitForTimeout(600);
-          },
-          desc: 'Диалог чата с отправленным сообщением пользователя',
-        });
-      }
-
-      // 12. Zoom 200% Check (Chat)
+      // 11. Admin Dialog - Overview
       await takeShot({
-        filename: '12-zoom200-chat-1440.png',
-        screen: 'zoom200-chat',
-        state: 'data',
-        vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+        filename: `11-admin-overview-${vp.name}.png`,
+        screen: 'admin-overview',
+        state: 'real',
+        url: `${BASE_URL}/chat`,
+        vp,
         setupFn: async (page) => {
           await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
           await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
-          await page.evaluate(() => {
-            document.documentElement.style.zoom = '200%';
-          });
-          await page.waitForTimeout(300);
+          await openAdminDialog(page, vp);
         },
-        desc: 'Проверка доступности: масштабирование интерфейса 200% (WCAG AA zoom reflow)',
+        desc: 'Админка: обзор KPI, осмысленные метрики, честное состояние',
       });
 
-      // 13. Zoom 200% Check (Admin Dialog)
+      // 12. Admin Dialog - Models
       await takeShot({
-        filename: '13-zoom200-admin-1440.png',
-        screen: 'zoom200-admin',
-        state: 'data',
-        vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+        filename: `12-admin-models-${vp.name}.png`,
+        screen: 'admin-models',
+        state: 'real',
+        url: `${BASE_URL}/chat`,
+        vp,
         setupFn: async (page) => {
           await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
           await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
-          const openDrawerBtn = await page.$('button[aria-label="Открыть панель"]');
-          if (openDrawerBtn && await openDrawerBtn.isVisible()) {
-            await openDrawerBtn.click();
-            await page.waitForTimeout(400);
-          }
-          const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
-          await profileBtn.click();
-          await page.waitForTimeout(300);
-          const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
-          await adminItem.click();
-          await page.waitForSelector('[role="dialog"][aria-modal="true"]');
-          await page.evaluate(() => {
-            document.documentElement.style.zoom = '200%';
-          });
-          await page.waitForTimeout(500);
+          await openAdminDialog(page, vp);
+          await clickAdminTab(page, 'Модели', vp.isMobile);
         },
-        desc: 'Проверка доступности: модальное окно админки при масштабировании 200%',
+        desc: 'Админка: роли моделей (talk/brain/coding/vision), форма параметров',
+      });
+
+      // 13. Admin Dialog - Providers
+      await takeShot({
+        filename: `13-admin-providers-${vp.name}.png`,
+        screen: 'admin-providers',
+        state: 'real',
+        url: `${BASE_URL}/chat`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+          await openAdminDialog(page, vp);
+          await clickAdminTab(page, 'Провайдеры', vp.isMobile);
+        },
+        desc: 'Админка: карточки провайдеров, ключи в vault, пресеты',
+      });
+
+      // 14. Admin Dialog - Access
+      await takeShot({
+        filename: `14-admin-access-${vp.name}.png`,
+        screen: 'admin-access',
+        state: 'real',
+        url: `${BASE_URL}/chat`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+          await openAdminDialog(page, vp);
+          await clickAdminTab(page, 'Доступ', vp.isMobile);
+        },
+        desc: 'Админка: доступ, пользователи, радио режима регистрации слева',
+      });
+
+      // 15. Admin Dialog - System
+      await takeShot({
+        filename: `15-admin-system-${vp.name}.png`,
+        screen: 'admin-system',
+        state: 'real',
+        url: `${BASE_URL}/chat`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+          await openAdminDialog(page, vp);
+          await clickAdminTab(page, 'Система', vp.isMobile);
+        },
+        desc: 'Админка: системные операции, безопасные подтверждения действий',
       });
     }
+
+    // 16. Zoom 200% Check (Chat)
+    await takeShot({
+      filename: '16-zoom200-chat-1440.png',
+      screen: 'zoom200-chat',
+      state: 'real',
+      url: `${BASE_URL}/chat`,
+      vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+      setupFn: async (page) => {
+        await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+        await page.evaluate(() => {
+          document.documentElement.style.zoom = '200%';
+        });
+        await page.waitForTimeout(400);
+      },
+      desc: 'Доступность: масштабирование интерфейса 200% без потери элементов (WCAG reflow)',
+    });
+
+    // 17. Zoom 200% Check (Admin Dialog)
+    await takeShot({
+      filename: '17-zoom200-admin-1440.png',
+      screen: 'zoom200-admin',
+      state: 'real',
+      url: `${BASE_URL}/chat`,
+      vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+      setupFn: async (page) => {
+        await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+        await openAdminDialog(page, { isMobile: false });
+        await page.evaluate(() => {
+          document.documentElement.style.zoom = '200%';
+        });
+        await page.waitForTimeout(500);
+      },
+      desc: 'Доступность: модальное окно админки при 200% зуме с адаптивным скроллом',
+    });
+
+    // 18. Break UI: Long text & special chars (Chat)
+    for (const vp of viewports) {
+      await takeShot({
+        filename: `18-break-chat-longtext-${vp.name}.png`,
+        screen: 'break-ui-chat',
+        state: 'real',
+        url: `${BASE_URL}/chat`,
+        vp,
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+          const textarea = await page.waitForSelector('textarea[aria-label="Сообщение"]');
+          await textarea.fill('https://very-long-subdomain.domain-with-unbreakable-parts-1234567890.example.com/very/long/nested/path/to/resource/with-super-long-parameter-name?token=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ&action=verify 🚀 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+          await page.keyboard.press('Enter');
+          await page.waitForTimeout(600);
+        },
+        desc: 'Ломка данных: 60-символьная неразрывная строка, эмодзи, длинный URL — без вылета за экран',
+      });
+    }
+
+    // 19. Break UI: Sidebar extreme notes
+    await takeShot({
+      filename: '19-break-notes-extreme-1440.png',
+      screen: 'break-ui-notes',
+      state: 'real',
+      url: `${BASE_URL}/chat`,
+      vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+      setupFn: async (page) => {
+        await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+        const notesTab = await page.waitForSelector('button[role="tab"]:has-text("Заметки")');
+        await notesTab.click();
+        await page.waitForTimeout(300);
+      },
+      desc: 'Ломка данных: карточки заметок с длинными названиями и переносами',
+    });
+
+    // 20. Break UI: Admin extreme data & search
+    await takeShot({
+      filename: '20-break-admin-extreme-1440.png',
+      screen: 'break-ui-admin',
+      state: 'real',
+      url: `${BASE_URL}/chat`,
+      vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+      setupFn: async (page) => {
+        await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+        await openAdminDialog(page, { isMobile: false });
+        await clickAdminTab(page, 'Доступ', false);
+        const searchInput = await page.waitForSelector('[role="dialog"] input[placeholder*="Поиск"]');
+        await searchInput.fill('user_with_extremely_long_unbreakable_email_and_name_1234567890@subdomain.example.com');
+        await page.waitForTimeout(400);
+      },
+      desc: 'Ломка данных: экстремально длинный email в поиске доступа админки',
+    });
 
     // Write manifest.json
     const manifest = {
       commit,
       baseCommit: '8bdbf5eb4f0e928071f2d5b2fbd0cb0527936ccd',
-      timestamp: new Date().toISOString(),
+      generatedAt: new Date().toISOString(),
       nodeVersion: process.version,
       totalScreenshots: manifestItems.length,
       screenshots: manifestItems,
     };
 
-    writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
-    console.log(`\n[ui-shots] Successfully captured ${manifestItems.length} unique screenshots.`);
-    console.log(`[ui-shots] Manifest written to ${join(outDir, 'manifest.json')}`);
+    const manifestPath = join(outDir, 'manifest.json');
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    console.log(`\n[ui-shots] SUCCESS: Captured ${manifestItems.length} unique screenshots.`);
+    console.log(`[ui-shots] Manifest written to ${manifestPath}`);
 
   } finally {
     if (browser) await browser.close();

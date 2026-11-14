@@ -337,7 +337,7 @@ export function ProvidersSection() {
                 onChange={(e) => setForm((current) => (current ? { ...current, name: e.target.value } : current))}
                 disabled={form.mode === 'edit'}
                 placeholder="my-laptop"
-                className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-60"
+                className="w-full rounded-[var(--radius-sm)] border border-[var(--border-control)] bg-[var(--surface-2)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-60"
               />
             </label>
             <label className="space-y-1 text-[11px] text-[var(--text-muted)]">
@@ -346,7 +346,7 @@ export function ProvidersSection() {
                 value={form.base_url}
                 onChange={(e) => setForm((current) => (current ? { ...current, base_url: e.target.value } : current))}
                 placeholder="http://192.168.1.10:1234/v1"
-                className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                className="w-full rounded-[var(--radius-sm)] border border-[var(--border-control)] bg-[var(--surface-2)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)]"
               />
             </label>
           </div>
@@ -361,7 +361,7 @@ export function ProvidersSection() {
               value={form.apiKey}
               onChange={(e) => setForm((current) => (current ? { ...current, apiKey: e.target.value } : current))}
               placeholder="sk-…"
-              className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)]"
+              className="w-full rounded-[var(--radius-sm)] border border-[var(--border-control)] bg-[var(--surface-2)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)]"
             />
             <span className="block text-[10px] text-[var(--text-subtle)]">
               Ключ уходит в шифрованное хранилище ядра и никогда не показывается снова.

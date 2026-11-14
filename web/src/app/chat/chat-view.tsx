@@ -986,7 +986,7 @@ export function ChatView({
                 {msg.role === 'user' ? (
                   // User Message (§3: surface-2 bubble, right, max 78%)
                   <div className="flex flex-col items-end max-w-[78%] group/usermsg">
-                    <div className="rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] px-3.5 py-2.5 text-[15px] leading-[24px] text-[var(--text)] whitespace-pre-wrap">
+                    <div className="rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] px-3.5 py-2.5 text-[15px] leading-[24px] text-[var(--text)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                       {msg.content}
                       {msg.attachments && msg.attachments.length > 0 && (
                         <div className="mt-2 pt-2 border-t border-[var(--border)] flex flex-wrap gap-1.5">
