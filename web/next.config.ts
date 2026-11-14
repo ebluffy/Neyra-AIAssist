@@ -7,6 +7,7 @@ const config: NextConfig = {
     WS_NO_BUFFER_UTIL: '1',
     WS_NO_UTF_8_VALIDATE: '1',
   },
+  devIndicators: false,
   experimental: { cpus: 2 },
   output: 'standalone',
 };

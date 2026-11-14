@@ -196,12 +196,12 @@ export function AuthForm({ mode, config, initialError = '', invite = '', registr
           <div className="space-y-3">
             <Button
               type="button"
-              variant="secondary"
+              variant="discord"
               size="lg"
               disabled={discordPending}
               loading={discordPending}
               onClick={handleDiscordSignIn}
-              className="w-full flex items-center justify-center gap-2.5 bg-[var(--brand-discord)] hover:bg-[var(--brand-discord-hover)] text-white border-transparent cursor-pointer shadow-sm"
+              className="w-full flex items-center justify-center gap-2.5 cursor-pointer"
             >
               <DiscordIcon size={18} />
               <span>Войти через Discord</span>

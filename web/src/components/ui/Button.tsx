@@ -4,7 +4,7 @@ import React, { type ButtonHTMLAttributes, forwardRef, type ReactNode } from 're
 import { Tooltip } from './Tooltip';
 import { playButtonClickSound } from '../../lib/ui-sounds';
 
-export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
+export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'discord';
 export type ButtonSize = 'sm' | 'md' | 'lg';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -44,6 +44,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         'bg-transparent text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)]',
       danger:
         'bg-[var(--danger-quiet)] text-[var(--danger)] border border-[var(--danger)] hover:bg-[var(--danger)] hover:text-[var(--bg)]',
+      discord:
+        'bg-[#5865F2] text-white hover:bg-[#4752C4] shadow-sm hover:shadow border-transparent',
     }[variant];
 
     const sizeClasses = {

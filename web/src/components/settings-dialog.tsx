@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Bell, BookOpen, KeyRound, Mic, Palette, Sparkles, User, X } from 'lucide-react';
-import { IconButton, NeyraLogo } from './ui';
+import { Avatar, IconButton, NeyraLogo } from './ui';
 
 type SectionId = 'profile' | 'appearance' | 'notifications' | 'voice' | 'library' | 'memory' | 'security';
 
@@ -37,7 +37,7 @@ function writeFlag(key: string, value: boolean) {
 
 function SoonBadge() {
   return (
-    <span className="ml-1.5 rounded-full border border-[var(--border)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--text-subtle)]">
+    <span className="ml-1.5 rounded-full border border-[var(--border-strong)] bg-[var(--surface-3)] px-1.5 py-0.5 text-[10px] uppercase font-medium tracking-wide text-[var(--text-muted)]">
       soon
     </span>
   );
@@ -137,10 +137,10 @@ export function SettingsDialog({ open, onClose, user, onSignOut }: SettingsDialo
         aria-modal="true"
         aria-label="Настройки"
         tabIndex={-1}
-        className="relative w-full max-w-[880px] h-[min(640px,88vh)] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border-strong)] bg-[var(--surface)] shadow-panel animate-dialog flex flex-col sm:flex-row"
+        className="relative w-full max-w-[680px] h-[min(540px,85vh)] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border-strong)] bg-[var(--surface)] shadow-panel animate-dialog flex flex-col sm:flex-row"
       >
         {/* Левая навигация */}
-        <nav className="sm:w-[220px] shrink-0 border-b sm:border-b-0 sm:border-r border-[var(--border)] bg-[var(--surface-2)] p-3 flex sm:flex-col gap-1 overflow-x-auto sm:overflow-y-auto">
+        <nav className="sm:w-[210px] shrink-0 border-b sm:border-b-0 sm:border-r border-[var(--border)] bg-[var(--surface-2)] p-2.5 sm:p-3 flex sm:flex-col gap-1 overflow-x-auto sm:overflow-y-auto">
           <div className="hidden sm:flex items-center gap-2 px-2 pb-3 text-[13px] font-semibold text-[var(--text)]">
             <NeyraLogo size={20} />
             <span>Настройки</span>
@@ -151,13 +151,13 @@ export function SettingsDialog({ open, onClose, user, onSignOut }: SettingsDialo
               type="button"
               onClick={() => setSection(item.id)}
               aria-current={section === item.id ? 'page' : undefined}
-              className={`flex shrink-0 items-center gap-2 rounded-[var(--radius-sm)] min-h-[44px] sm:min-h-0 px-3 py-2 text-[13px] text-left transition-colors cursor-pointer select-none ${
+              className={`flex shrink-0 items-center gap-2.5 rounded-[var(--radius-sm)] min-h-[38px] sm:min-h-0 px-3 py-2 text-[12px] font-medium text-left transition-colors cursor-pointer select-none ${
                 section === item.id
-                  ? 'bg-[var(--surface-3)] text-[var(--text)] font-semibold shadow-sm border border-[var(--border-strong)] sm:border-0'
-                  : 'text-[var(--text-muted)] hover:bg-[var(--surface-3)] hover:text-[var(--text)]'
+                  ? 'bg-[var(--surface-3)] text-[var(--text)] font-semibold shadow-sm'
+                  : 'text-[var(--text-muted)] hover:bg-[var(--surface-3)]/60 hover:text-[var(--text)]'
               }`}
             >
-              <span className="text-[var(--text-muted)]">{item.icon}</span>
+              <span className={`shrink-0 ${section === item.id ? 'text-[var(--text)]' : 'text-[var(--text-subtle)]'}`}>{item.icon}</span>
               <span>{item.label}</span>
               {item.soon && <SoonBadge />}
             </button>
@@ -173,25 +173,38 @@ export function SettingsDialog({ open, onClose, user, onSignOut }: SettingsDialo
 
           <div className="flex-1 overflow-y-auto px-4 py-3">
             {section === 'profile' && (
-              <div>
-                <Row label="Email" hint="Логин на сайте. Меняется администратором.">
-                  <span className="text-[13px] text-[var(--text-muted)]">{user.email ?? '—'}</span>
-                </Row>
-                <Row label="Имя" hint="Как тебя называет Нейра в диалоге.">
-                  <span className="text-[13px] text-[var(--text-muted)]">{user.name || 'не задано'}</span>
-                </Row>
-                <Row label="Роль">
-                  <span className="text-[13px] text-[var(--text-muted)]">{user.role === 'admin' ? 'администратор' : 'пользователь'}</span>
-                </Row>
-                <Row label="Выйти из аккаунта">
-                  <button
-                    type="button"
-                    onClick={() => { onClose(); onSignOut?.(); }}
-                    className="min-h-[44px] sm:min-h-0 flex items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border-strong)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors cursor-pointer"
-                  >
-                    Выйти
-                  </button>
-                </Row>
+              <div className="space-y-4">
+                <div className="flex items-center gap-3.5 p-3 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)]">
+                  <Avatar name={user.name} email={user.email} size={42} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-[var(--text)] truncate">{user.name || user.email || 'Пользователь'}</div>
+                    <div className="text-xs text-[var(--text-muted)] truncate">{user.email ?? '—'}</div>
+                  </div>
+                  <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--surface-3)] text-[var(--text-subtle)] shrink-0">
+                    {user.role === 'admin' ? 'админ' : 'пользователь'}
+                  </span>
+                </div>
+
+                <div className="space-y-0.5">
+                  <Row label="Email" hint="Логин на сайте. Меняется администратором.">
+                    <span className="text-[13px] text-[var(--text-muted)] font-mono text-xs">{user.email ?? '—'}</span>
+                  </Row>
+                  <Row label="Имя" hint="Как тебя называет Нейра в диалоге.">
+                    <span className="text-[13px] text-[var(--text)]">{user.name || 'не задано'}</span>
+                  </Row>
+                  <Row label="Роль" hint="Права доступа в интерфейсе.">
+                    <span className="text-[13px] text-[var(--text-muted)]">{user.role === 'admin' ? 'Администратор' : 'Пользователь'}</span>
+                  </Row>
+                  <Row label="Выйти из аккаунта">
+                    <button
+                      type="button"
+                      onClick={() => { onClose(); onSignOut?.(); }}
+                      className="min-h-[36px] sm:min-h-0 flex items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border-strong)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors cursor-pointer"
+                    >
+                      Выйти
+                    </button>
+                  </Row>
+                </div>
               </div>
             )}
 

@@ -22,12 +22,12 @@ export function PasswordField({ disabled, ...props }: TextFieldProps) {
           disabled={disabled}
           aria-label={label}
           aria-pressed={visible}
-          className="absolute right-1.5 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[var(--radius)] text-[var(--text-subtle)] transition-colors hover:text-[var(--text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-2)] disabled:opacity-40 disabled:cursor-default"
+          className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center p-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)]/60 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] disabled:opacity-40 disabled:cursor-default cursor-pointer"
         >
           {visible ? (
-            <EyeOff size={18} strokeWidth={1.5} aria-hidden="true" />
+            <EyeOff size={16} strokeWidth={1.75} aria-hidden="true" />
           ) : (
-            <Eye size={18} strokeWidth={1.5} aria-hidden="true" />
+            <Eye size={16} strokeWidth={1.75} aria-hidden="true" />
           )}
         </button>
       }

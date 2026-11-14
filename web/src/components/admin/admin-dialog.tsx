@@ -389,11 +389,6 @@ export function AdminDialog({
                 />
               </div>
             </div>
-
-            <div className="pt-3 border-t border-[var(--border)] px-2 text-[11px] text-[var(--text-subtle)] flex items-center justify-between">
-              <span>Neyra Admin</span>
-              <span className="font-mono text-[10px]">v1</span>
-            </div>
           </aside>
 
           {/* Right Content Area */}
@@ -440,21 +435,21 @@ function NavButton({
         playButtonClickSound();
         onClick();
       }}
-      className={`flex items-center gap-2 rounded-[var(--radius-sm)] text-xs font-medium transition-[background-color,border-color,color,box-shadow] duration-150 text-left cursor-pointer whitespace-nowrap select-none ${
+      className={`flex items-center gap-2.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors text-left cursor-pointer whitespace-nowrap select-none ${
         isMobile
-          ? `min-h-[44px] px-3.5 py-2 shrink-0 border ${
+          ? `min-h-[38px] px-3 py-1.5 shrink-0 ${
               active
-                ? 'bg-[var(--surface-3)] text-[var(--text)] border-[var(--border-strong)] shadow-sm font-semibold'
-                : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'
+                ? 'bg-[var(--surface-3)] text-[var(--text)] font-semibold shadow-sm'
+                : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'
             }`
           : `w-full px-3 py-2 ${
               active
-                ? 'bg-[var(--surface-3)] text-[var(--text)] border-l-2 border-[var(--accent)] shadow-sm font-semibold'
-                : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)]/60'
+                ? 'bg-[var(--surface-3)] text-[var(--text)] font-semibold shadow-sm'
+                : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]/80'
             }`
       }`}
     >
-      <span className="shrink-0">{icon}</span>
+      <span className={`shrink-0 ${active ? 'text-[var(--text)]' : 'text-[var(--text-subtle)]'}`}>{icon}</span>
       <span className="truncate">{label}</span>
     </button>
   );
@@ -1443,7 +1438,7 @@ function AccessSection() {
                 : 'text-[var(--text-muted)] hover:text-[var(--text)]'
             }`}
           >
-            Пользователи ({users.length})
+            Пользователи {loading ? '' : `(${users.length})`}
           </button>
           <button
             type="button"
@@ -1454,7 +1449,7 @@ function AccessSection() {
                 : 'text-[var(--text-muted)] hover:text-[var(--text)]'
             }`}
           >
-            Приглашения ({invites.length})
+            Приглашения {loading ? '' : `(${invites.length})`}
           </button>
         </div>
       </div>
@@ -1699,13 +1694,23 @@ function AccessSection() {
                     : 'border-[var(--border)] bg-[var(--surface-2)]/60 hover:bg-[var(--surface-2)] text-[var(--text-muted)]'
                 } ${savingRegMode ? 'opacity-60 pointer-events-none' : ''}`}
               >
-                <div className="flex items-center justify-between">
-                  <span className={`text-xs font-medium ${active ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}`}>
-                    {item.label}
-                  </span>
-                  {active && <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />}
+                <div className="flex items-start gap-2.5">
+                  <div
+                    className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                      active
+                        ? 'border-[var(--accent)] bg-[var(--accent)]'
+                        : 'border-[var(--border-strong)] bg-transparent'
+                    }`}
+                  >
+                    {active && <div className="h-1.5 w-1.5 rounded-full bg-[var(--accent-ink)]" />}
+                  </div>
+                  <div className="min-w-0">
+                    <div className={`text-xs font-medium ${active ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}`}>
+                      {item.label}
+                    </div>
+                    <p className="text-[11px] text-[var(--text-subtle)] mt-0.5 leading-relaxed">{item.desc}</p>
+                  </div>
                 </div>
-                <p className="text-[10px] text-[var(--text-subtle)] mt-1">{item.desc}</p>
               </button>
             );
           })}
@@ -1825,7 +1830,7 @@ function SystemSection() {
         <StatTile
           label="Uptime ядра"
           value={formatSeconds(system?.core?.health?.data?.uptime_seconds)}
-          hint={system?.core?.health?.data?.version ? `версия ${system.core.health.data.version}` : '—'}
+          hint="служба neyra-core"
         />
       </div>
 
@@ -1838,7 +1843,7 @@ function SystemSection() {
               Мягкая остановка ядра. Systemd или Docker автоматически поднимут сервис заново.
             </p>
           </div>
-          <Button variant="danger" size="sm" onClick={() => setRestartConfirmOpen(true)}>
+          <Button variant="secondary" size="sm" onClick={() => setRestartConfirmOpen(true)}>
             <RotateCw size={13} className="mr-1.5" />
             Перезапустить ядро
           </Button>

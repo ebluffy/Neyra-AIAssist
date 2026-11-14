@@ -640,19 +640,9 @@ export function AppSidebar({
                           ? 'Попробуйте другой запрос'
                           : 'Диалог появится здесь, как только вы напишете первое сообщение'}
                       </p>
-                      {query ? (
+                      {query && (
                         <Button variant="secondary" size="sm" className="mt-3 min-h-11 sm:min-h-0" onClick={() => setSearchQuery('')}>
                           Сбросить поиск
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="mt-3 min-h-11 gap-1.5 sm:min-h-0"
-                          onClick={handleStartNewChat}
-                        >
-                          <Plus size={13} />
-                          <span>Начать диалог</span>
                         </Button>
                       )}
                     </div>
