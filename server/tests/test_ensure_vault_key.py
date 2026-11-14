@@ -145,9 +145,13 @@ def test_data_dir_follows_core_resolution(tmp_path: Path, monkeypatch):
     assert helper._resolve_data_dir(tmp_path, env_path, None) == Path("/srv/neyra-data")
 
     env_path.write_text("", encoding="utf-8")
+    monkeypatch.delenv("NEYRA_DATA_DIR", raising=False)
     (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "runtime.yaml").write_text("paths:\n  data_dir: /var/lib/neyra\n", encoding="utf-8")
-    assert helper._resolve_data_dir(tmp_path, env_path, None) == Path("/var/lib/neyra")
+    (tmp_path / "config" / "runtime.yaml").write_text("paths:\n  data_dir: /from/layer\n", encoding="utf-8")
+    (tmp_path / "config" / "agent.example.yaml").write_text("paths:\n  data_dir: /from/example\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text("paths:\n  data_dir: /from/root\n", encoding="utf-8")
+    # Ядро сливает слои, затем root config.yaml; *.example.yaml не грузится.
+    assert helper._resolve_data_dir(tmp_path, env_path, None) == Path("/from/root")
     assert helper._resolve_data_dir(tmp_path, env_path, "./other") == (tmp_path / "other").resolve()
 
 

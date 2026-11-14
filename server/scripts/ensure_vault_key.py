@@ -30,8 +30,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-import yaml
-
 SERVER_ROOT = Path(__file__).resolve().parents[1]
 if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
@@ -62,34 +60,20 @@ def _read_env_value(env_path: Path, name: str = _KEY) -> str:
     return ""
 
 
-def _config_data_dir(server_root: Path) -> str:
-    """paths.data_dir из config/*.yaml + config.yaml без полной валидации."""
-    for path in (*sorted((server_root / "config").glob("*.yaml")), server_root / "config.yaml"):
-        try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        paths = raw.get("paths") if isinstance(raw, dict) else None
-        if isinstance(paths, dict):
-            value = str(paths.get("data_dir") or "").strip()
-            if value:
-                return value
-    return ""
-
-
 def _resolve_data_dir(server_root: Path, env_path: Path, cli_value: str | None) -> Path:
-    """Тот же приоритет, что у ядра: --data, NEYRA_DATA_DIR, paths.data_dir, ./data."""
+    """Каталог данных так же, как у ядра: --data, затем resolve_data_dir(config)."""
     raw = (cli_value or "").strip()
-    if not raw:
-        raw = (os.environ.get("NEYRA_DATA_DIR") or "").strip()
-    if not raw:
-        raw = _read_env_value(env_path, "NEYRA_DATA_DIR")
-    if not raw:
-        raw = _config_data_dir(server_root)
-    if not raw:
-        raw = "./data"
-    path = Path(raw).expanduser()
-    return path.resolve() if path.is_absolute() else (server_root / path).resolve()
+    if raw:
+        path = Path(raw).expanduser()
+        return path.resolve() if path.is_absolute() else (server_root / path).resolve()
+    from dotenv import load_dotenv
+
+    from core.runtime.config_loader import load_layered_yaml
+    from core.runtime.paths import resolve_data_dir
+
+    if env_path.is_file():
+        load_dotenv(env_path, override=False)
+    return resolve_data_dir(server_root, load_layered_yaml(server_root))
 
 
 def _owner_of(path: Path) -> tuple[int, int] | None:
@@ -207,8 +191,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     env_path = Path(args.env)
-    data_dir = _resolve_data_dir(SERVER_ROOT, env_path, args.data)
     try:
+        data_dir = _resolve_data_dir(SERVER_ROOT, env_path, args.data)
         source = ensure_vault_key(env_path, data_dir)
     except Exception as e:
         print(f"ОШИБКА vault: {e}", file=sys.stderr)
