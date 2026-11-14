@@ -163,11 +163,12 @@ fi
 
 echo "== 8/9 узкое правило sudoers: рестарт юнита и дамп базы перед миграциями"
 sudoers_tmp=$(mktemp)
-cat > "$sudoers_tmp" <<'EOF'
+cat > "$sudoers_tmp" <<EOF
 # Выкладка сайта Neyra без рута: только рестарт/статус юнита сайта
 # и pg_dump базы сайта перед миграциями (deploy-web.sh, AR-14).
 openbot ALL=(root) NOPASSWD: /bin/systemctl restart neyra-web.service, /bin/systemctl is-active neyra-web.service, /bin/systemctl status neyra-web.service
-openbot ALL=(root) NOPASSWD: /usr/bin/docker compose -f /opt/neyra/web/docker-compose.yml exec -T $PG_SERVICE pg_dump -U neyra -d neyra_web -Fc
+openbot ALL=(root) NOPASSWD: /usr/bin/docker compose -f /opt/neyra/web/docker-compose.yml exec -T ${PG_SERVICE} pg_dump -U neyra -d neyra_web -Fc
+openbot ALL=(root) NOPASSWD: /usr/bin/docker compose -f /opt/neyra/web/docker-compose.yml exec -T db pg_dump -U neyra -d neyra_web -Fc
 EOF
 chmod 440 "$sudoers_tmp"
 visudo -cf "$sudoers_tmp" >/dev/null

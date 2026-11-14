@@ -63,7 +63,16 @@ BACKUP_DIR=/opt/neyra/web/backups
 mkdir -p "$BACKUP_DIR"
 DUMP="$BACKUP_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
 # pg_dump только из контейнера (клиента на хосте нет); вывод — на хост в $DUMP.
-if ! sudo -n docker compose -f /opt/neyra/web/docker-compose.yml exec -T postgres pg_dump -U neyra -d neyra_web -Fc > "$DUMP" 2>/dev/null; then
+# В репозитории сервис называется postgres; на уже развёрнутых площадках до
+# переименования он мог называться db — пробуем оба, пока дамп не получится.
+DUMP_OK=0
+for pg_service in postgres db; do
+  if sudo -n docker compose -f /opt/neyra/web/docker-compose.yml exec -T "$pg_service" pg_dump -U neyra -d neyra_web -Fc > "$DUMP" 2>/dev/null && [ -s "$DUMP" ]; then
+    DUMP_OK=1
+    break
+  fi
+done
+if [ "$DUMP_OK" != "1" ]; then
   echo "pg_dump не выполнился — миграции отменены, база не тронута" >&2
   rm -f "$DUMP"
   exit 1
