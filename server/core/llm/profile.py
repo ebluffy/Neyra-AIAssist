@@ -10,6 +10,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 from urllib.parse import urlparse
@@ -129,18 +130,24 @@ def provider_kind(cfg: dict, provider: str) -> str:
 
 
 def _vault_provider_key(cfg: dict, provider: str) -> str:
-    """API-ключ из шифрованного vault (data_dir/secrets). Никогда не из YAML."""
-    paths = cfg.get("paths")
-    data_dir = str((paths or {}).get("data_dir") or "").strip() if isinstance(paths, dict) else ""
-    if not data_dir or not provider:
-        return ""
-    try:
-        from core.llm.provider_secrets import store_for
+    """API-ключ из шифрованного vault (data_dir/secrets). Никогда не из YAML.
 
-        return store_for(data_dir).get(provider)
-    except Exception:
-        logger.warning("Vault ключей провайдеров недоступен", exc_info=True)
+    data_dir резолвится как у ядра (NEYRA_DATA_DIR → paths.data_dir), ошибка
+    чтения vault не превращается в молчаливый «ключа нет».
+    """
+    if not provider:
         return ""
+    from core.runtime.paths import resolve_data_dir
+
+    server_root = Path(__file__).resolve().parents[2]
+    data_dir = resolve_data_dir(server_root, cfg)
+    from core.llm.provider_secrets import store_for
+
+    try:
+        return store_for(data_dir).get_strict(provider)
+    except Exception:
+        logger.exception("Vault ключей провайдеров недоступен | provider=%s", provider)
+        raise
 
 
 # Совпадает с legacy DEPRECATED_OPENROUTER_MODELS в core/agent.py для ID моделей.

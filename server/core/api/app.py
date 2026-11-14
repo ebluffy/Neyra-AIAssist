@@ -4223,8 +4223,9 @@ def build_app(
 
     # ── Провайдеры LLM: любые OpenAI-совместимые шлюзы ─────────────────────
     def _provider_data_dir() -> str:
-        paths_cfg = config.get("paths") if isinstance(config.get("paths"), dict) else {}
-        return str((paths_cfg or {}).get("data_dir") or "./data").strip() or "./data"
+        from core.runtime.paths import resolve_data_dir
+
+        return str(resolve_data_dir(root, config))
 
     def _vault():
         from core.llm.provider_secrets import store_for
@@ -4292,6 +4293,7 @@ def build_app(
         }
 
     @app.put("/v1/providers/{name}")
+    @_serialized_config_write
     async def v1_provider_put(
         name: str,
         body: ProviderUpsertRequest,
@@ -4396,6 +4398,7 @@ def build_app(
         }
 
     @app.delete("/v1/providers/{name}")
+    @_serialized_config_write
     async def v1_provider_delete(
         name: str,
         request: Request,
@@ -4458,6 +4461,7 @@ def build_app(
         }
 
     @app.put("/v1/providers/{name}/secret")
+    @_serialized_config_write
     async def v1_provider_secret_put(
         name: str,
         body: ProviderSecretRequest,
@@ -4491,6 +4495,7 @@ def build_app(
         }
 
     @app.delete("/v1/providers/{name}/secret")
+    @_serialized_config_write
     async def v1_provider_secret_delete(
         name: str,
         request: Request,
@@ -4517,6 +4522,7 @@ def build_app(
         }
 
     @app.post("/v1/providers/{name}/migrate-secret")
+    @_serialized_config_write
     async def v1_provider_migrate_secret(
         name: str,
         request: Request,
