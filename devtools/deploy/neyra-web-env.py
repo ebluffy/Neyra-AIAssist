@@ -3,7 +3,7 @@
 
 Идемпотентно. Два ключа ядра разделены (AR-23/AR-36): NEYRA_WEB_KEY = web-роль
 ядра (API_WEB_TOKEN; генерируется, если пуст) для чата и вложений, NEYRA_ADMIN_KEY =
-API_MAINT_TOKEN (иначе API_TOKEN) только для серверных роутов /api/admin/*.
+API_MAINT_TOKEN (только он; admin-токен API_TOKEN сайту не передаётся) для серверных роутов /api/admin/*.
 Отката с одного ключа на другой нет; без admin-ключа админка честно сообщает,
 что ядро не подключено. URL заполняются только если пусты, чтобы не затирать
 явную настройку. Identity-issuer — одно значение для ядра и сайта: по умолчанию
@@ -101,10 +101,10 @@ def main() -> int:
     core_changed = False
     core_updates: dict[str, str] = {}
 
-    # AR-23/AR-36: два разных ключа, без отката одного на другой.
+    # AR-23/AR-36/AR-38: два разных ключа, без отката одного на другой.
     # NEYRA_WEB_KEY — web-роль ядра (API_WEB_TOKEN): чат, вложения, /v1/web/me.
-    # NEYRA_ADMIN_KEY — admin/maint-роль (API_MAINT_TOKEN, иначе API_TOKEN) только
-    # для серверных роутов /api/admin/*.
+    # NEYRA_ADMIN_KEY — API_MAINT_TOKEN, только для серверных роутов /api/admin/*.
+    # API_TOKEN (роль admin) в интернет-сервис не передаётся ни при каких условиях.
     web_key = (core.get("API_WEB_TOKEN") or "").strip()
     if not web_key:
         # Web-роль без токена не пустит чат: генерируем и пишем ядру, как identity.
@@ -116,26 +116,18 @@ def main() -> int:
             print(f"нет {CORE_ENV}: web-ключ записан только сайту, чат не заработает", file=sys.stderr)
             status = 2
     admin_key = (core.get("API_MAINT_TOKEN") or "").strip()
-    admin_source = "API_MAINT_TOKEN"
-    if not admin_key:
-        admin_key = (core.get("API_TOKEN") or "").strip()
-        admin_source = "API_TOKEN"
-    if not admin_key:
-        print(
-            f"внимание: в {CORE_ENV} нет API_MAINT_TOKEN/API_TOKEN — NEYRA_ADMIN_KEY не записан, "
-            "админка не прочитает ядро",
-            file=sys.stderr,
-        )
-        status = 2
-    elif admin_source == "API_TOKEN":
-        print(
-            "внимание: API_MAINT_TOKEN не задан — для админки используется API_TOKEN (роль admin)",
-            file=sys.stderr,
-        )
     if web_key and admin_key and web_key == admin_key:
+        # Отказ до любых записей: web-роль не должна иметь admin/maint-права.
         print(
-            f"внимание: API_WEB_TOKEN совпадает с {admin_source} — разделите ключи: "
-            "web-роль не должна иметь admin-прав",
+            "ОШИБКА: API_WEB_TOKEN совпадает с API_MAINT_TOKEN — разделите ключи, "
+            "ничего не записано",
+            file=sys.stderr,
+        )
+        return 1
+    if not admin_key:
+        print(
+            f"внимание: в {CORE_ENV} нет API_MAINT_TOKEN — NEYRA_ADMIN_KEY не записан, "
+            "админка не прочитает ядро (API_TOKEN сайту не передаётся)",
             file=sys.stderr,
         )
         status = 2

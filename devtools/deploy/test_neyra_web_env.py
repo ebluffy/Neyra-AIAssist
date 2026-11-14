@@ -223,12 +223,12 @@ def test_legacy_shared_key_is_removed(tmp_path: Path) -> None:
     assert "NEYRA_SERVICE_KEY" not in read_env(web)
 
 
-def test_missing_admin_token_leaves_admin_key_empty(tmp_path: Path) -> None:
+def test_missing_maint_token_never_falls_back_to_admin_token(tmp_path: Path) -> None:
     web = make_env(
         tmp_path,
         "web",
         "DATABASE_URL='postgres://x'\n"
-        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n",
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n",  # gitleaks:allow — фиктивная фикстура теста
     )
     core = make_env(
         tmp_path,
@@ -238,8 +238,32 @@ def test_missing_admin_token_leaves_admin_key_empty(tmp_path: Path) -> None:
         "NEYRA_IDENTITY_JWT_ISSUER='neyra-web'\n",
     )
     result = run_sync(tmp_path, web, core)
-    assert result.returncode == 0, result.stderr
+    # AR-38: admin-токен API_TOKEN в интернет-сервис не попадает даже как fallback.
+    assert result.returncode == 2
+    assert "API_MAINT_TOKEN" in result.stderr
+    assert "API_TOKEN сайту не передаётся" in result.stderr
     values = read_env(web)
-    # Fallback разрешён спецификацией задачи: maint предпочтителен, иначе API_TOKEN.
-    assert values["NEYRA_ADMIN_KEY"] == "core-service-key"
-    assert "API_MAINT_TOKEN не задан" in result.stderr
+    assert "NEYRA_ADMIN_KEY" not in values
+    assert values["NEYRA_WEB_KEY"]
+
+
+def test_matching_web_and_admin_keys_are_refused(tmp_path: Path) -> None:
+    original = (
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"  # gitleaks:allow — фиктивная фикстура теста
+    )
+    web = make_env(tmp_path, "web", original)
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_MAINT_TOKEN='same-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_WEB_TOKEN='same-key'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 1
+    assert "совпадает с API_MAINT_TOKEN" in result.stderr
+    # Отказ до записи: ни ключей, ни остальных NEYRA_* в .env сайта нет.
+    assert web.read_text(encoding="utf-8") == original
+    core_values = read_env(core)
+    assert core_values["API_WEB_TOKEN"] == "same-key"
+    assert core_values["API_MAINT_TOKEN"] == "same-key"
