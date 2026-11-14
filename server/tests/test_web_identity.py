@@ -170,7 +170,7 @@ def test_websocket_legacy_and_signed_identity_keep_protocol(client, auth_headers
 
 
 def test_identity_cannot_use_anonymous_console_exception(client, api_config, auth_headers):
-    for key in ['token', 'viewer_token', 'maint_token']:
+    for key in ['token', 'viewer_token', 'maint_token', 'web_token']:
         api_config['api'][key] = ''
     assert client.get('/v1/meta').status_code == 200
     assert client.get('/v1/web/me', headers=headers(auth_headers)).status_code == 401

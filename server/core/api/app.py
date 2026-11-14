@@ -278,6 +278,7 @@ def api_tokens_configured(cfg: dict) -> bool:
         str(api.get("token") or "").strip()
         or str(api.get("viewer_token") or "").strip()
         or str(api.get("maint_token") or "").strip()
+        or str(api.get("web_token") or "").strip()
     )
 
 
@@ -310,7 +311,7 @@ def _api_token(cfg: dict) -> str:
     return str(api_cfg.get("token") or "").strip()
 
 
-_ROLE_RANK = {"anon": 0, "viewer": 1, "maint": 2, "admin": 3}
+_ROLE_RANK = {"anon": 0, "web": 0, "viewer": 1, "maint": 2, "admin": 3}
 
 
 def _resolve_role(
@@ -327,7 +328,8 @@ def _resolve_role(
     primary = str(api.get("token") or "").strip()
     viewer = str(api.get("viewer_token") or "").strip()
     maint = str(api.get("maint_token") or "").strip()
-    if not primary and not viewer and not maint:
+    web = str(api.get("web_token") or "").strip()
+    if not primary and not viewer and not maint and not web:
         return "anon"
     raw = (authorization or "").strip()
     if not raw.startswith("Bearer "):
@@ -339,6 +341,8 @@ def _resolve_role(
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
+    if _token_eq(got, web):
+        return "web"
     if dash_auth is not None and dash_auth.verify_session(got):
         return "admin"
     raise ApiError("unauthorized", "Invalid bearer token", 401)
@@ -348,6 +352,12 @@ def _role_at_least(role: str, minimum: str) -> bool:
     # anon is treated as full access only for console-local requests (see RequireRole).
     if role == "anon":
         return True
+    if minimum == "web":
+        return role in {"web", "viewer", "maint", "admin"}
+    if minimum == "web_admin":
+        return role in {"web", "admin"}
+    if role == "web":
+        return False
     return _ROLE_RANK.get(role, 0) >= _ROLE_RANK.get(minimum, 0)
 
 
@@ -365,7 +375,8 @@ def _require_ws_auth(
     primary = str(api.get("token") or "").strip()
     viewer = str(api.get("viewer_token") or "").strip()
     maint = str(api.get("maint_token") or "").strip()
-    if not primary and not viewer and not maint:
+    web = str(api.get("web_token") or "").strip()
+    if not primary and not viewer and not maint and not web:
         return "anon"
     got = ""
     if authorization and authorization.strip().startswith("Bearer "):
@@ -380,6 +391,8 @@ def _require_ws_auth(
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
+    if _token_eq(got, web):
+        return "web"
     if dash_auth is not None and dash_auth.verify_session(got):
         return "admin"
     raise ApiError("unauthorized", "Invalid bearer token for WebSocket", 401)
@@ -1449,10 +1462,14 @@ def build_app(
                 peer = request.client.host if request.client else "unknown"
                 if not _is_console_local_client(peer=peer, headers=request.headers):
                     raise ApiError("unauthorized", "Missing bearer token", 401)
+            if role == "web" and getattr(request.state, "web_identity", None) is None:
+                raise ApiError("web_identity_required", "Web identity required", 403)
             if not _role_at_least(role, self.min_role):
                 raise ApiError("forbidden", "Insufficient API token scope", 403)
             return role
 
+    dep_web = RequireRole("web")
+    dep_web_admin = RequireRole("web_admin")
     dep_viewer = RequireRole("viewer")
     dep_maint = RequireRole("maint")
     dep_admin = RequireRole("admin")
@@ -1654,14 +1671,14 @@ def build_app(
 
     @app.get("/v1/context/limits")
     async def v1_context_limits(request: Request, channel_id: str = Query(min_length=1, max_length=120),
-                                _: str = Depends(dep_admin)):
+                                _: str = Depends(dep_web_admin)):
         from core.agent.chat_progress import context_usage, context_policy
         inputs = context_readings.get((_attachment_owner(request), channel_id), {})
         return {"ok": True, "trace_id": _trace_id(request),
                 "data": {**context_usage(agent.config, inputs), "policy": context_policy(agent.config)}}
 
     @app.post("/v1/attachments")
-    async def v1_attachments(request: Request, _: str = Depends(dep_admin)):
+    async def v1_attachments(request: Request, _: str = Depends(dep_web_admin)):
         from starlette.datastructures import UploadFile as StarletteUploadFile
         from starlette.exceptions import HTTPException
         from starlette.formparsers import MultiPartException
@@ -1697,7 +1714,7 @@ def build_app(
         return {"ok": True, "trace_id": _trace_id(request), "data": {"attachments": saved}}
 
     @app.get("/v1/attachments/{attachment_id}")
-    async def v1_attachment(attachment_id: str, request: Request, channel_id: str = Query(min_length=1, max_length=120), _: str = Depends(dep_admin)):
+    async def v1_attachment(attachment_id: str, request: Request, channel_id: str = Query(min_length=1, max_length=120), _: str = Depends(dep_web_admin)):
         try:
             meta, path = await asyncio.to_thread(attachment_store.load, attachment_id, _attachment_owner(request), channel_id)
         except AttachmentError as error:
@@ -1705,7 +1722,7 @@ def build_app(
         return FileResponse(path, media_type=meta['mime'], filename=meta['name'])
 
     @app.get("/v1/web/me")
-    async def v1_web_me(request: Request, _: str = Depends(dep_viewer)):
+    async def v1_web_me(request: Request, _: str = Depends(dep_web)):
         identity = getattr(request.state, "web_identity", None)
         if identity is None:
             raise ApiError("web_identity_required", "Web identity required", 401)
@@ -4421,9 +4438,12 @@ def build_app(
                 peer = websocket.client.host if websocket.client else "unknown"
                 if not _is_console_local_client(peer=peer, headers=websocket.headers):
                     raise ApiError("unauthorized", "Missing bearer token", 401)
-            # Same bar as POST /v1/chat (admin): viewer must not mutate memory / spend LLM.
-            if not _role_at_least(ws_role, "admin"):
-                raise ApiError("forbidden", "WebSocket chat requires admin (same as POST /v1/chat)", 403)
+            ws_identity = websocket.scope.get("state", {}).get("web_identity")
+            if ws_role == "web":
+                if ws_identity is None:
+                    raise ApiError("forbidden", "WebSocket chat requires X-Neyra-Identity", 403)
+            elif not _role_at_least(ws_role, "admin"):
+                raise ApiError("forbidden", "WebSocket chat requires admin or web identity", 403)
         except ApiError:
             # 1008: Policy Violation
             await websocket.close(code=1008, reason="unauthorized")
