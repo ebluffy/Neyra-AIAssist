@@ -1,7 +1,9 @@
-// Провайдеры LLM для админки: только транспорт к ядру и типы.
+// Провайдеры LLM, зрения и речи для админки: транспорт к ядру и типы.
 // Ключи никогда не возвращаются: сайт видит лишь «задан / не задан» и источник.
 
 import { coreDelete, coreGet, corePost, corePut, type CoreResult } from './core-admin';
+
+export type ProviderType = 'llm' | 'vision' | 'stt' | 'tts';
 
 export interface ProviderProbe {
   state: 'open' | 'auth_required' | 'unreachable';
@@ -10,12 +12,38 @@ export interface ProviderProbe {
   checked_ago_seconds: number;
 }
 
+export interface ProviderFieldOption {
+  value: string;
+  label: string;
+}
+
+export interface ProviderField {
+  key: string;
+  label: string;
+  kind: 'text' | 'select' | 'number' | 'url';
+  required: boolean;
+  placeholder: string;
+  help: string;
+  default: string | number;
+  options: ProviderFieldOption[];
+  max_length: number;
+  min?: number;
+  max?: number;
+}
+
+export type ProviderFieldValue = string | number | boolean;
+
 export interface ProviderRow {
   name: string;
   label: string;
   base_url: string;
   kind: string;
   builtin: boolean;
+  preset: string;
+  provider_type: ProviderType;
+  provider_type_label: string;
+  fields: Record<string, ProviderFieldValue>;
+  needs_key: boolean;
   has_key: boolean;
   key_source: 'vault' | 'yaml' | 'env' | 'none';
   lanes: string[];
@@ -25,10 +53,14 @@ export interface ProviderRow {
 export interface ProviderPreset {
   id: string;
   label: string;
+  type: ProviderType;
+  type_label: string;
   base_url: string;
   kind: string;
   needs_key: boolean;
   hint: string;
+  docs_url: string;
+  fields: ProviderField[];
 }
 
 export interface ProvidersPayload {
@@ -44,7 +76,17 @@ export interface ProviderWriteResult {
   llm_rebound?: boolean;
 }
 
+export interface ProviderWriteBody {
+  base_url: string;
+  kind?: string;
+  preset?: string;
+  provider_type?: ProviderType;
+  fields?: Record<string, ProviderFieldValue>;
+}
+
 export const PROVIDER_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+export const PROVIDER_TYPES: ProviderType[] = ['llm', 'vision', 'stt', 'tts'];
 
 export function isValidProviderName(name: string): boolean {
   return PROVIDER_NAME_RE.test(name.trim().toLowerCase());
@@ -61,13 +103,17 @@ export function isValidBaseUrl(value: string): boolean {
   }
 }
 
+export function isProviderType(value: unknown): value is ProviderType {
+  return typeof value === 'string' && (PROVIDER_TYPES as string[]).includes(value);
+}
+
 export function readProviders(): Promise<CoreResult<ProvidersPayload>> {
   return coreGet<ProvidersPayload>('/v1/providers', { timeoutMs: 8000 });
 }
 
 export function writeProvider(
   name: string,
-  body: { base_url: string; kind?: string },
+  body: ProviderWriteBody,
 ): Promise<CoreResult<ProviderWriteResult>> {
   return corePut<ProviderWriteResult>(`/v1/providers/${encodeURIComponent(name)}`, body, { timeoutMs: 20000 });
 }

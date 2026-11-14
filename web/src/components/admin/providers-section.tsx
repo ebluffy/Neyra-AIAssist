@@ -3,26 +3,46 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  Brain,
   Check,
+  ChevronDown,
   Copy,
+  ExternalLink,
+  Eye,
   Key,
   Loader2,
+  Mic,
   Pencil,
   Plus,
   RefreshCw,
-  Trash2,
-  X,
   Server,
+  Settings2,
+  Trash2,
+  Volume2,
+  X,
 } from 'lucide-react';
 import { Button, IconButton } from '../ui';
 import {
   isValidBaseUrl,
   isValidProviderName,
+  PROVIDER_TYPES,
+  type ProviderField,
+  type ProviderFieldValue,
   type ProviderPreset,
   type ProviderRow,
+  type ProviderType,
   type ProvidersPayload,
 } from '../../../lib/admin-providers';
 import { playButtonClickSound } from '../../lib/ui-sounds';
+
+const TYPE_ORDER: ProviderType[] = ['llm', 'vision', 'stt', 'tts'];
+
+const TYPE_META: Record<ProviderType, { label: string; icon: typeof Brain }> = {
+  llm: { label: 'LLM', icon: Brain },
+  vision: { label: 'Vision', icon: Eye },
+  stt: { label: 'Речь → текст', icon: Mic },
+  tts: { label: 'Текст → речь', icon: Volume2 },
+};
 
 const LANE_LABEL: Record<string, string> = {
   talk: 'talk',
@@ -32,8 +52,8 @@ const LANE_LABEL: Record<string, string> = {
 };
 
 const PROBE_TONE: Record<NonNullable<ProviderRow['probe']>['state'], { label: string; className: string }> = {
-  open: { label: 'без ключа, открыт', className: 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]' },
-  auth_required: { label: 'требует ключ', className: 'border-[var(--danger)]/40 bg-[var(--danger-quiet)] text-[var(--danger)]' },
+  open: { label: 'отвечает', className: 'border-[var(--border)] bg-[var(--surface-3)] text-[var(--text)]' },
+  auth_required: { label: 'нужен ключ', className: 'border-[var(--danger)]/40 bg-[var(--danger-quiet)] text-[var(--danger)]' },
   unreachable: { label: 'не отвечает', className: 'border-[var(--border)] bg-transparent text-[var(--text-subtle)]' },
 };
 
@@ -46,14 +66,70 @@ const KEY_TONE: Record<ProviderRow['key_source'], { label: string; className: st
 
 interface FormState {
   mode: 'create' | 'edit';
+  presetId: string;
   name: string;
   base_url: string;
   kind: string;
-  presetId: string | null;
+  provider_type: ProviderType;
+  fields: Record<string, string>;
   apiKey: string;
+  needsKey: boolean;
+  advanced: boolean;
 }
 
-const EMPTY_FORM: FormState = { mode: 'create', name: '', base_url: '', kind: 'openai', presetId: null, apiKey: '' };
+function TypeBadge({ type, label }: { type: ProviderType; label?: string }) {
+  const meta = TYPE_META[type] ?? TYPE_META.llm;
+  const Icon = meta.icon;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
+      <Icon size={10} />
+      {label ?? meta.label}
+    </span>
+  );
+}
+
+function initialFields(preset: ProviderPreset | null, stored?: Record<string, ProviderFieldValue>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const field of preset?.fields ?? []) {
+    const value = stored?.[field.key];
+    out[field.key] = value == null ? String(field.default ?? '') : String(value);
+  }
+  return out;
+}
+
+function fieldsSummary(row: ProviderRow, preset: ProviderPreset | null): string[] {
+  if (!preset) return [];
+  const stored = row.fields ?? {};
+  return preset.fields
+    .filter((field) => stored[field.key] !== undefined && stored[field.key] !== '')
+    .slice(0, 3)
+    .map((field) => `${field.label}: ${String(stored[field.key])}`);
+}
+
+function providerStatus(row: ProviderRow): { label: string; className: string; title: string } {
+  if (row.needs_key && !row.has_key) {
+    return {
+      label: 'нужен ключ',
+      className: 'border-[var(--danger)]/40 bg-[var(--danger-quiet)] text-[var(--danger)]',
+      title: 'Без ключа провайдер не сможет отвечать',
+    };
+  }
+  if ((row.provider_type === 'stt' || row.provider_type === 'tts') && !row.probe) {
+    return {
+      label: 'ключ сохранён',
+      className: 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]',
+      title: 'Проверка ключа произойдёт при первом голосовом запросе',
+    };
+  }
+  if (row.probe) {
+    return { ...PROBE_TONE[row.probe.state], title: row.probe.message };
+  }
+  return {
+    label: 'не проверено',
+    className: 'border-[var(--border)] bg-transparent text-[var(--text-subtle)]',
+    title: 'Ядро ещё не проверяло этот адрес',
+  };
+}
 
 export function ProvidersSection() {
   const [data, setData] = useState<ProvidersPayload | null>(null);
@@ -64,6 +140,8 @@ export function ProvidersSection() {
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'all' | ProviderType>('all');
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -84,26 +162,76 @@ export function ProvidersSection() {
     void load();
   }, [load]);
 
-  const providers = useMemo(() => data?.providers ?? [], [data]);
+  const providers = data?.providers ?? [];
   const presets = data?.presets ?? [];
+  const presetById = useMemo(() => new Map(presets.map((preset) => [preset.id, preset])), [presets]);
 
-  const startCreate = (preset?: ProviderPreset) => {
+  const connectedPresetIds = useMemo(
+    () => new Set(providers.map((row) => row.preset || row.name)),
+    [providers],
+  );
+
+  const available = useMemo(
+    () => presets.filter((preset) => preset.id !== 'custom' && !connectedPresetIds.has(preset.id)),
+    [connectedPresetIds, presets],
+  );
+
+  const customPreset = presets.find((preset) => preset.id === 'custom') ?? null;
+  const activePreset = form ? presetById.get(form.presetId) ?? null : null;
+  const activeFields = activePreset?.fields ?? [];
+
+  const matches = useCallback(
+    (type: ProviderType) => filter === 'all' || filter === type,
+    [filter],
+  );
+
+  const visibleProviders = providers.filter((row) => matches(row.provider_type));
+  const visibleAvailable = available.filter((preset) => matches(preset.type));
+
+  const startCreate = (preset: ProviderPreset) => {
     playButtonClickSound();
     setNotice(null);
+    setConfirmDelete(null);
+    setShowAdvanced(preset.id === 'custom' || !preset.base_url);
     setForm({
       mode: 'create',
-      name: preset && preset.id !== 'custom' ? preset.id : '',
-      base_url: preset?.base_url ?? '',
-      kind: preset?.kind ?? 'openai',
-      presetId: preset?.id ?? null,
+      presetId: preset.id,
+      name: preset.id === 'custom' ? '' : preset.id,
+      base_url: preset.base_url,
+      kind: preset.kind,
+      provider_type: preset.type,
+      fields: initialFields(preset),
       apiKey: '',
+      needsKey: preset.needs_key,
+      advanced: preset.id === 'custom' || !preset.base_url,
     });
   };
 
   const startEdit = (row: ProviderRow) => {
     playButtonClickSound();
     setNotice(null);
-    setForm({ mode: 'edit', name: row.name, base_url: row.base_url, kind: row.kind, presetId: null, apiKey: '' });
+    setConfirmDelete(null);
+    const presetId = row.preset || (presetById.has(row.name) ? row.name : '');
+    const preset = presetById.get(presetId) ?? null;
+    setShowAdvanced(!preset || !preset.base_url);
+    setForm({
+      mode: 'edit',
+      presetId,
+      name: row.name,
+      base_url: row.base_url,
+      kind: row.kind,
+      provider_type: row.provider_type,
+      fields: initialFields(preset, row.fields),
+      apiKey: '',
+      needsKey: row.needs_key,
+      advanced: !preset || !preset.base_url,
+    });
+  };
+
+  const closeForm = () => {
+    setForm(null);
+    setNotice(null);
+    setShowAdvanced(false);
   };
 
   const submit = async () => {
@@ -117,13 +245,55 @@ export function ProvidersSection() {
       setNotice('Адрес должен начинаться с http:// или https:// и без логина в строке.');
       return;
     }
+    if (form.mode === 'create' && form.needsKey && !form.apiKey.trim()) {
+      setNotice('Вставьте API-ключ: для этого провайдера он обязателен.');
+      return;
+    }
+
+    const fieldsPayload: Record<string, ProviderFieldValue> = {};
+    for (const field of activeFields) {
+      const raw = (form.fields[field.key] ?? '').trim();
+      if (field.required && !raw) {
+        setNotice(`Заполните «${field.label}».`);
+        return;
+      }
+      if (!raw) {
+        fieldsPayload[field.key] = '';
+        continue;
+      }
+      if (field.kind === 'number') {
+        const value = Number(raw.replace(',', '.'));
+        if (!Number.isFinite(value)) {
+          setNotice(`«${field.label}»: нужно число.`);
+          return;
+        }
+        if (typeof field.min === 'number' && value < field.min) {
+          setNotice(`«${field.label}»: не меньше ${field.min}.`);
+          return;
+        }
+        if (typeof field.max === 'number' && value > field.max) {
+          setNotice(`«${field.label}»: не больше ${field.max}.`);
+          return;
+        }
+        fieldsPayload[field.key] = value;
+      } else {
+        fieldsPayload[field.key] = raw;
+      }
+    }
+
     setSaving(true);
     setNotice(null);
     try {
       const saved = await fetch(`/api/admin/providers/${encodeURIComponent(name)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base_url: form.base_url.trim(), kind: form.kind }),
+        body: JSON.stringify({
+          base_url: form.base_url.trim(),
+          kind: form.kind,
+          preset: form.presetId || undefined,
+          provider_type: form.provider_type,
+          fields: fieldsPayload,
+        }),
       });
       const savedPayload = await saved.json().catch(() => null);
       if (!saved.ok) throw new Error(savedPayload?.message || 'Ядро не приняло провайдера.');
@@ -137,8 +307,14 @@ export function ProvidersSection() {
         const secretPayload = await secret.json().catch(() => null);
         if (!secret.ok) throw new Error(secretPayload?.message || 'Провайдер сохранён, но ключ не принят.');
       }
+      const label = form.presetId ? presetById.get(form.presetId)?.label ?? name : name;
       setForm(null);
-      setNotice(`Провайдер «${name}» сохранён${form.apiKey.trim() ? ' вместе с ключом' : ''}.`);
+      setShowAdvanced(false);
+      setNotice(
+        form.mode === 'create'
+          ? `${label} подключён${form.apiKey.trim() ? ' вместе с ключом' : ''}.`
+          : `Настройки «${name}» сохранены${form.apiKey.trim() ? ' вместе с ключом' : ''}.`,
+      );
       await load();
     } catch (e) {
       setNotice(e instanceof Error ? e.message : 'Не удалось сохранить провайдера.');
@@ -206,6 +382,12 @@ export function ProvidersSection() {
     }
   };
 
+  const updateField = (key: string, value: string) => {
+    setForm((current) =>
+      current ? { ...current, fields: { ...current.fields, [key]: value } } : current,
+    );
+  };
+
   if (loading && !data) {
     return (
       <div className="flex items-center gap-2 py-16 justify-center text-xs text-[var(--text-muted)]">
@@ -216,12 +398,14 @@ export function ProvidersSection() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-base font-semibold text-[var(--text)]">Провайдеры</h3>
-          <p className="text-xs text-[var(--text-muted)] mt-0.5">
-            Любой OpenAI-совместимый шлюз: свой адрес, свой ключ, сколько нужно. Ключи лежат в шифрованном хранилище ядра.
+          <p className="text-xs text-[var(--text-muted)] mt-0.5 max-w-xl">
+            Готовые карточки: вставьте ключ и при необходимости уточните пару полей. Любой
+            OpenAI-совместимый шлюз: свой адрес, свой ключ, сколько нужно. Ключи лежат в шифрованном
+            хранилище ядра и не показываются снова.
           </p>
         </div>
         <div className="flex items-center gap-2 ml-auto shrink-0">
@@ -233,10 +417,12 @@ export function ProvidersSection() {
             size="sm"
             onClick={() => void load()}
           />
-          <Button variant="primary" size="sm" className="gap-1.5" onClick={() => startCreate()}>
-            <Plus size={14} />
-            Добавить провайдера
-          </Button>
+          {customPreset && (
+            <Button variant="primary" size="sm" className="gap-1.5" onClick={() => startCreate(customPreset)}>
+              <Plus size={14} />
+              Свой провайдер
+            </Button>
+          )}
         </div>
       </div>
 
@@ -265,102 +451,139 @@ export function ProvidersSection() {
         </div>
       )}
 
+      <div role="tablist" aria-label="Вид провайдера" className="flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={filter === 'all'}
+          onClick={() => setFilter('all')}
+          className={`px-2.5 py-1 rounded-full border text-[11px] transition-colors ${
+            filter === 'all'
+              ? 'border-[var(--accent)] bg-[var(--surface-3)] text-[var(--text)]'
+              : 'border-[var(--border)] bg-transparent text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]'
+          }`}
+        >
+          Все
+        </button>
+        {TYPE_ORDER.map((type) => {
+          const meta = TYPE_META[type];
+          const Icon = meta.icon;
+          const count =
+            providers.filter((row) => row.provider_type === type).length +
+            available.filter((preset) => preset.type === type).length;
+          return (
+            <button
+              key={type}
+              type="button"
+              role="tab"
+              aria-selected={filter === type}
+              onClick={() => setFilter(type)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] transition-colors ${
+                filter === type
+                  ? 'border-[var(--accent)] bg-[var(--surface-3)] text-[var(--text)]'
+                  : 'border-[var(--border)] bg-transparent text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]'
+              }`}
+            >
+              <Icon size={11} />
+              {meta.label}
+              <span className="text-[var(--text-subtle)]">{count}</span>
+            </button>
+          );
+        })}
+      </div>
+
       {form && (
         <div className="rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--surface)] p-4 space-y-3.5">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-sm font-semibold text-[var(--text)]">
-              {form.mode === 'create' ? 'Новый провайдер' : `Настройка «${form.name}»`}
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="text-sm font-semibold text-[var(--text)]">
+                  {form.mode === 'create'
+                    ? activePreset
+                      ? `Подключить ${activePreset.label}`
+                      : 'Новый провайдер'
+                    : `Настройка «${form.name}»`}
+                </div>
+                <TypeBadge type={form.provider_type} />
+              </div>
+              {activePreset?.hint && (
+                <p className="text-[11px] text-[var(--text-muted)] mt-1">{activePreset.hint}</p>
+              )}
             </div>
             <IconButton
               aria-label="Закрыть форму"
               icon={<X size={14} />}
               variant="ghost"
               size="sm"
-              onClick={() => setForm(null)}
+              onClick={closeForm}
             />
           </div>
 
-          {form.mode === 'create' && (
-            <div className="space-y-1.5">
-              <div className="text-[11px] font-medium text-[var(--text-muted)]">Готовые шлюзы</div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                {presets.map((preset) => {
-                  const selected = form.presetId === preset.id;
-                  return (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      onClick={() =>
-                        setForm((current) =>
-                          current
-                            ? {
-                                ...current,
-                                presetId: preset.id,
-                                kind: preset.kind,
-                                base_url: preset.base_url || current.base_url,
-                                name:
-                                  preset.id === 'custom' || current.name
-                                    ? current.name
-                                    : preset.id,
-                              }
-                            : current,
-                        )
-                      }
-                      className={`text-left px-2.5 py-2 rounded-[var(--radius-sm)] border text-[11px] transition-colors ${
-                        selected
-                          ? 'border-[var(--accent)] bg-[var(--surface-3)] text-[var(--text)]'
-                          : 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]'
-                      }`}
-                      aria-pressed={selected}
-                    >
-                      <span className="block font-medium">{preset.label}</span>
-                      <span className="block text-[10px] text-[var(--text-subtle)] truncate">
-                        {preset.base_url || 'свой адрес'}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              {form.presetId && (
-                <p className="text-[11px] text-[var(--text-subtle)]">
-                  {presets.find((preset) => preset.id === form.presetId)?.hint}
-                </p>
+          {activePreset && activePreset.id !== 'custom' && (
+            <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[11px] text-[var(--text-muted)]">
+              <span className="font-medium text-[var(--text)]">{activePreset.label}</span>
+              <TypeBadge type={activePreset.type} />
+              {!activePreset.needs_key && <span>ключ не нужен</span>}
+              {activePreset.docs_url && (
+                <a
+                  href={activePreset.docs_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-auto inline-flex items-center gap-1 text-[var(--text-muted)] hover:text-[var(--text)]"
+                >
+                  Документация
+                  <ExternalLink size={11} />
+                </a>
               )}
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="space-y-1 text-[11px] text-[var(--text-muted)]">
-              <span className="block font-medium">Имя (латиницей)</span>
-              <input
-                value={form.name}
-                onChange={(e) => setForm((current) => (current ? { ...current, name: e.target.value } : current))}
-                disabled={form.mode === 'edit'}
-                placeholder="my-laptop"
-                className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-60"
-              />
+          {(form.presetId === '' || (form.mode === 'create' && form.presetId === 'custom')) && (
+            <label className="space-y-1 text-[11px] text-[var(--text-muted)] block">
+              <span className="block font-medium">Вид провайдера</span>
+              <select
+                value={form.provider_type}
+                onChange={(e) =>
+                  setForm((current) =>
+                    current ? { ...current, provider_type: e.target.value as ProviderType } : current,
+                  )
+                }
+                className="w-full sm:w-64 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+              >
+                {PROVIDER_TYPES.map((type) => (
+                  <option key={type} value={type}>
+                    {TYPE_META[type].label}
+                  </option>
+                ))}
+              </select>
             </label>
-            <label className="space-y-1 text-[11px] text-[var(--text-muted)]">
-              <span className="block font-medium">Base URL (OpenAI-совместимый)</span>
-              <input
-                value={form.base_url}
-                onChange={(e) => setForm((current) => (current ? { ...current, base_url: e.target.value } : current))}
-                placeholder="http://192.168.1.10:1234/v1"
-                className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)]"
-              />
-            </label>
-          </div>
+          )}
+
+          {activeFields.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {activeFields.map((field) => (
+                <ProviderFieldInput
+                  key={field.key}
+                  field={field}
+                  value={form.fields[field.key] ?? ''}
+                  onChange={(value) => updateField(field.key, value)}
+                />
+              ))}
+            </div>
+          )}
 
           <label className="space-y-1 text-[11px] text-[var(--text-muted)] block">
             <span className="block font-medium">
-              API-ключ {form.mode === 'edit' ? '(пусто — оставить прежний)' : '(можно добавить позже)'}
+              API-ключ
+              {form.needsKey ? ' *' : ' (необязательно)'}
+              {form.mode === 'edit' ? ' — пусто, чтобы оставить прежний' : ''}
             </span>
             <input
               type="password"
               autoComplete="new-password"
               value={form.apiKey}
               onChange={(e) => setForm((current) => (current ? { ...current, apiKey: e.target.value } : current))}
-              placeholder="sk-…"
+              placeholder={form.needsKey ? 'sk-…' : 'локальный шлюз может работать без ключа'}
               className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)]"
             />
             <span className="block text-[10px] text-[var(--text-subtle)]">
@@ -368,171 +591,324 @@ export function ProvidersSection() {
             </span>
           </label>
 
+          {!showAdvanced ? (
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(true)}
+              className="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text)]"
+            >
+              <Settings2 size={12} />
+              Имя и адрес
+              <ChevronDown size={12} />
+            </button>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] p-3">
+              <label className="space-y-1 text-[11px] text-[var(--text-muted)]">
+                <span className="block font-medium">Имя (латиницей)</span>
+                <input
+                  value={form.name}
+                  onChange={(e) => setForm((current) => (current ? { ...current, name: e.target.value } : current))}
+                  disabled={form.mode === 'edit'}
+                  placeholder="my-laptop"
+                  className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-60"
+                />
+              </label>
+              <label className="space-y-1 text-[11px] text-[var(--text-muted)]">
+                <span className="block font-medium">Base URL</span>
+                <input
+                  value={form.base_url}
+                  onChange={(e) =>
+                    setForm((current) => (current ? { ...current, base_url: e.target.value } : current))
+                  }
+                  placeholder="http://192.168.1.10:1234/v1"
+                  className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                />
+              </label>
+            </div>
+          )}
+
           <div className="flex items-center gap-2 pt-1">
             <Button variant="primary" size="sm" disabled={saving} loading={saving} onClick={() => void submit()}>
-              {form.mode === 'create' ? 'Добавить' : 'Сохранить'}
+              {form.mode === 'create' ? 'Подключить' : 'Сохранить'}
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => setForm(null)}>
+            <Button variant="ghost" size="sm" onClick={closeForm}>
               Отмена
             </Button>
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-        {providers.length === 0 && !loading && (
-          <div className="col-span-full flex flex-col items-center gap-2 py-10 text-center rounded-[var(--radius)] border border-dashed border-[var(--border)]">
-            <Server size={18} className="text-[var(--text-subtle)]" />
-            <p className="text-xs font-medium text-[var(--text)]">Провайдеров нет</p>
-            <p className="text-[11px] text-[var(--text-muted)] max-w-[320px]">
-              Добавь OpenAI, OpenRouter или свой локальный шлюз — лейны выберешь в разделе «Модели».
-            </p>
-            <Button variant="secondary" size="sm" className="mt-1" onClick={() => startCreate()}>
-              Добавить провайдера
-            </Button>
-          </div>
-        )}
+      <section className="space-y-2.5">
+        <div className="flex items-center gap-2">
+          <h4 className="text-sm font-semibold text-[var(--text)]">Подключённые</h4>
+          <span className="text-[11px] text-[var(--text-subtle)]">{visibleProviders.length}</span>
+        </div>
 
-        {providers.map((row) => {
-          const tone = KEY_TONE[row.key_source];
-          const busy = saving;
-          return (
-            <div
-              key={row.name}
-              className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 space-y-2.5 transition-colors hover:border-[var(--border-strong)]"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-sm font-semibold text-[var(--text)]">{row.label}</span>
-                    <span className="font-mono text-[10px] text-[var(--text-subtle)]">{row.name}</span>
-                    {!row.builtin && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]">
-                        свой
-                      </span>
-                    )}
+        {visibleProviders.length === 0 ? (
+          <div className="rounded-[var(--radius)] border border-dashed border-[var(--border)] px-4 py-6 text-center">
+            <Server size={18} className="mx-auto text-[var(--text-subtle)]" />
+            <p className="text-xs font-medium text-[var(--text)] mt-1.5">
+              {providers.length === 0 ? 'Пока ничего не подключено' : 'В этом виде провайдеров нет'}
+            </p>
+            <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+              Выберите карточку ниже — понадобится только ключ.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {visibleProviders.map((row) => {
+              const tone = KEY_TONE[row.key_source];
+              const status = providerStatus(row);
+              const preset = presetById.get(row.preset) ?? null;
+              const summary = fieldsSummary(row, preset);
+              return (
+                <div
+                  key={row.name}
+                  className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 space-y-2.5 transition-colors hover:border-[var(--border-strong)]"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-sm font-semibold text-[var(--text)]">{row.label}</span>
+                        <TypeBadge type={row.provider_type} label={row.provider_type_label} />
+                        {!row.builtin && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]">
+                            свой
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 flex items-center gap-1.5 min-w-0">
+                        <code className="text-[11px] text-[var(--text-muted)] truncate" title={row.base_url}>
+                          {row.base_url || 'адрес не задан'}
+                        </code>
+                        {row.base_url && (
+                          <IconButton
+                            aria-label={`Скопировать адрес ${row.name}`}
+                            tooltip="Скопировать"
+                            icon={copied === row.base_url ? <Check size={12} /> : <Copy size={12} />}
+                            variant="ghost"
+                            size="sm"
+                            className="w-6 h-6 shrink-0"
+                            onClick={() => void copyBaseUrl(row.base_url)}
+                          />
+                        )}
+                      </div>
+                    </div>
+                    <span className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full border ${status.className}`} title={status.title}>
+                      {status.label}
+                    </span>
                   </div>
-                  <div className="mt-1 flex items-center gap-1.5 min-w-0">
-                    <code className="text-[11px] text-[var(--text-muted)] truncate" title={row.base_url}>
-                      {row.base_url || 'адрес не задан'}
-                    </code>
-                    {row.base_url && (
-                      <IconButton
-                        aria-label={`Скопировать адрес ${row.name}`}
-                        tooltip="Скопировать"
-                        icon={copied === row.base_url ? <Check size={12} /> : <Copy size={12} />}
+
+                  <div className="flex flex-wrap items-center gap-1">
+                    {row.lanes.length > 0 ? (
+                      row.lanes.map((lane) => (
+                        <span
+                          key={lane}
+                          className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]"
+                        >
+                          {LANE_LABEL[lane] ?? lane}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-[10px] text-[var(--text-subtle)]">не занят ни одним лейном</span>
+                    )}
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full border ${tone.className}`} title={tone.label}>
+                      {tone.label}
+                    </span>
+                  </div>
+
+                  {summary.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {summary.map((item) => (
+                        <span
+                          key={item}
+                          className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)] max-w-full truncate"
+                          title={item}
+                        >
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {confirmDelete === row.name ? (
+                    <div className="rounded-[var(--radius-sm)] border border-[var(--danger)]/40 bg-[var(--danger-quiet)] p-2.5 space-y-2">
+                      <p className="text-[11px] text-[var(--danger)]">Удалить «{row.name}» вместе с ключом?</p>
+                      <div className="flex items-center gap-1.5">
+                        <Button variant="danger" size="sm" disabled={saving} onClick={() => void remove(row.name)}>
+                          Да, удалить
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(null)}>
+                          Отмена
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                      <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => startEdit(row)}>
+                        <Pencil size={12} />
+                        Настроить
+                      </Button>
+                      {row.key_source === 'yaml' && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="gap-1.5"
+                          disabled={saving}
+                          onClick={() => void migrateKey(row.name)}
+                        >
+                          <Key size={12} />
+                          Перенести ключ в vault
+                        </Button>
+                      )}
+                      {row.key_source === 'vault' && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="gap-1.5 text-[var(--danger)] hover:bg-[var(--danger-quiet)]"
+                          disabled={saving}
+                          onClick={() => void removeKey(row.name)}
+                        >
+                          <Key size={12} />
+                          Убрать ключ
+                        </Button>
+                      )}
+                      <Button
                         variant="ghost"
                         size="sm"
-                        className="w-6 h-6 shrink-0"
-                        onClick={() => void copyBaseUrl(row.base_url)}
-                      />
-                    )}
-                  </div>
+                        className="gap-1.5 ml-auto text-[var(--text-muted)] hover:text-[var(--danger)]"
+                        disabled={saving || row.lanes.length > 0}
+                        title={row.lanes.length > 0 ? 'Сначала переключите лейны на другого провайдера' : undefined}
+                        onClick={() => setConfirmDelete(row.name)}
+                      >
+                        <Trash2 size={12} />
+                        Удалить
+                      </Button>
+                    </div>
+                  )}
                 </div>
-                {row.probe && row.key_source === 'none' && (
-                  <span
-                    className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full border ${PROBE_TONE[row.probe.state].className}`}
-                    title={row.probe.models != null ? `${row.probe.message}: моделей ${row.probe.models}` : row.probe.message}
-                  >
-                    {PROBE_TONE[row.probe.state].label}
-                  </span>
-                )}
-                <span
-                  className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full border ${tone.className}`}
-                  title={
-                    row.key_source === 'yaml'
-                      ? 'Ключ лежит открытым текстом в config/llm.yaml — перенесите его в vault через «Адрес и ключ»'
-                      : row.key_source === 'env'
-                        ? 'Ключ берётся из переменной окружения ядра'
-                        : row.key_source === 'vault'
-                          ? 'Ключ хранится в шифрованном хранилище ядра'
-                          : 'Ключ не задан: провайдер не сможет отвечать'
-                  }
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-2.5">
+        <div className="flex items-center gap-2">
+          <h4 className="text-sm font-semibold text-[var(--text)]">Доступные</h4>
+          <span className="text-[11px] text-[var(--text-subtle)]">{visibleAvailable.length}</span>
+        </div>
+
+        {visibleAvailable.length === 0 ? (
+          <p className="rounded-[var(--radius)] border border-dashed border-[var(--border)] px-4 py-5 text-center text-[11px] text-[var(--text-muted)]">
+            {available.length === 0
+              ? 'Все провайдеры из каталога уже подключены.'
+              : 'В этом виде больше нет доступных карточек.'}
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
+            {visibleAvailable.map((preset) => {
+              const meta = TYPE_META[preset.type];
+              const Icon = meta.icon;
+              return (
+                <div
+                  key={preset.id}
+                  className="flex flex-col gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 transition-colors hover:border-[var(--border-strong)]"
                 >
-                  {tone.label}
-                </span>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-1">
-                {row.lanes.length > 0 ? (
-                  row.lanes.map((lane) => (
-                    <span
-                      key={lane}
-                      className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]"
-                    >
-                      {LANE_LABEL[lane] ?? lane}
+                  <div className="flex items-start gap-2">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]">
+                      <Icon size={15} />
                     </span>
-                  ))
-                ) : (
-                  <span className="text-[10px] text-[var(--text-subtle)]">не занят ни одним лейном</span>
-                )}
-              </div>
-
-              {confirmDelete === row.name ? (
-                <div className="rounded-[var(--radius-sm)] border border-[var(--danger)]/40 bg-[var(--danger-quiet)] p-2.5 space-y-2">
-                  <p className="text-[11px] text-[var(--danger)]">
-                    Удалить «{row.name}» вместе с ключом?
-                  </p>
-                  <div className="flex items-center gap-1.5">
-                    <Button variant="danger" size="sm" disabled={busy} onClick={() => void remove(row.name)}>
-                      Да, удалить
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(null)}>
-                      Отмена
-                    </Button>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-xs font-semibold text-[var(--text)]">{preset.label}</span>
+                        <TypeBadge type={preset.type} />
+                      </div>
+                      <code className="mt-0.5 block truncate text-[10px] text-[var(--text-subtle)]" title={preset.base_url}>
+                        {preset.base_url || 'свой адрес'}
+                      </code>
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => startEdit(row)}>
-                    <Pencil size={12} />
-                    Адрес и ключ
-                  </Button>
-                  {row.key_source === 'yaml' && (
+                  <p className="text-[11px] leading-4 text-[var(--text-muted)]">{preset.hint}</p>
+                  <div className="mt-auto flex items-center gap-1.5 pt-0.5">
+                    {preset.docs_url && (
+                      <a
+                        href={preset.docs_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label={`Документация ${preset.label}`}
+                        className="inline-flex items-center gap-1 text-[10px] text-[var(--text-subtle)] hover:text-[var(--text)]"
+                      >
+                        Документация
+                        <ExternalLink size={10} />
+                      </a>
+                    )}
                     <Button
                       variant="secondary"
                       size="sm"
-                      className="gap-1.5"
-                      disabled={busy}
-                      onClick={() => void migrateKey(row.name)}
+                      className="ml-auto gap-1"
+                      aria-label={`Подключить ${preset.label}`}
+                      onClick={() => startCreate(preset)}
                     >
-                      <Key size={12} />
-                      Перенести ключ в vault
+                      <Plus size={12} />
+                      Подключить
                     </Button>
-                  )}
-                  {row.key_source === 'vault' && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="gap-1.5 text-[var(--danger)] hover:bg-[var(--danger-quiet)]"
-                      disabled={busy}
-                      onClick={() => void removeKey(row.name)}
-                    >
-                      <Key size={12} />
-                      Убрать ключ
-                    </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="gap-1.5 ml-auto text-[var(--text-muted)] hover:text-[var(--danger)]"
-                    disabled={busy || row.lanes.length > 0}
-                    title={row.lanes.length > 0 ? 'Сначала переключите лейны на другого провайдера' : undefined}
-                    onClick={() => setConfirmDelete(row.name)}
-                  >
-                    <Trash2 size={12} />
-                    Удалить
-                  </Button>
+                  </div>
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       <p className="text-[11px] text-[var(--text-subtle)]">
         Ключи работают и из .env, но приоритет у vault. Модели по лейнам — в разделе «Модели».
       </p>
     </div>
+  );
+}
+
+function ProviderFieldInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: ProviderField;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="space-y-1 text-[11px] text-[var(--text-muted)]">
+      <span className="block font-medium">
+        {field.label}
+        {field.required ? ' *' : ''}
+      </span>
+      {field.kind === 'select' ? (
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+        >
+          {field.options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type={field.kind === 'number' ? 'number' : 'text'}
+          inputMode={field.kind === 'number' ? 'decimal' : undefined}
+          min={field.min}
+          max={field.max}
+          step={field.kind === 'number' ? 'any' : undefined}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={field.placeholder}
+          className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-2 text-xs font-mono text-[var(--text)] outline-none focus:border-[var(--accent)]"
+        />
+      )}
+      {field.help && <span className="block text-[10px] text-[var(--text-subtle)]">{field.help}</span>}
+    </label>
   );
 }
