@@ -10,6 +10,8 @@ import {
   checkUploadRateLimit,
   endUpload,
   recordUpload,
+  releaseUpload,
+  reserveUpload,
   resetUploadLimitsForTests,
   uploadQuotaUsed,
 } from './upload-limits';
@@ -51,6 +53,32 @@ describe('upload quota', () => {
     expect(blocked.ok).toBe(false);
     expect(blocked.remainingBytes).toBe(10);
     expect(blocked.retryAfterSeconds).toBeGreaterThan(0);
+  });
+
+  it('reserves atomically: two reservations over the quota, the second is rejected (AR-34)', () => {
+    const now = 4_000_000;
+    const first = reserveUpload('user-1', UPLOAD_QUOTA_BYTES - 10, now);
+    expect(first.ok).toBe(true);
+    expect(first.reservation).toBeTruthy();
+
+    const second = reserveUpload('user-1', 20, now);
+    expect(second.ok).toBe(false);
+    expect(second.remainingBytes).toBe(10);
+    expect(second.reservation).toBeUndefined();
+    expect(uploadQuotaUsed('user-1', now)).toBe(UPLOAD_QUOTA_BYTES - 10);
+  });
+
+  it('returns reserved space after release (AR-34)', () => {
+    const now = 5_000_000;
+    const first = reserveUpload('user-1', UPLOAD_QUOTA_BYTES - 10, now);
+    expect(first.ok).toBe(true);
+    expect(reserveUpload('user-1', 20, now).ok).toBe(false);
+
+    expect(releaseUpload('user-1', first.reservation!.id)).toBe(true);
+    expect(uploadQuotaUsed('user-1', now)).toBe(0);
+    expect(reserveUpload('user-1', 20, now).ok).toBe(true);
+    // Повторный release того же резерва ничего не ломает.
+    expect(releaseUpload('user-1', first.reservation!.id)).toBe(false);
   });
 
   it('expires old usage by TTL so the quota is freed', () => {

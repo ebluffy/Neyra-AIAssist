@@ -13,7 +13,10 @@ export const UPLOAD_QUOTA_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const requestHits = new Map<string, number[]>();
 const activeByUser = new Map<string, number>();
-const usage = new Map<string, Array<{ at: number; bytes: number }>>();
+interface UsageEntry { id?: string; at: number; bytes: number }
+
+const usage = new Map<string, UsageEntry[]>();
+let sequence = 0;
 
 export interface UploadLimitDecision {
   ok: boolean;
@@ -23,6 +26,16 @@ export interface UploadLimitDecision {
 export interface UploadQuotaDecision extends UploadLimitDecision {
   usedBytes?: number;
   remainingBytes?: number;
+}
+
+export interface UploadReservation {
+  id: string;
+  bytes: number;
+  at: number;
+}
+
+export interface UploadReservationDecision extends UploadQuotaDecision {
+  reservation?: UploadReservation;
 }
 
 function prune(map: Map<string, unknown>, limit = 10_000) {
@@ -70,7 +83,7 @@ export function activeUploads(userId: string): number {
   return activeByUser.get(userId) ?? 0;
 }
 
-function freshUsage(userId: string, now: number): Array<{ at: number; bytes: number }> {
+function freshUsage(userId: string, now: number): UsageEntry[] {
   const cutoff = now - UPLOAD_QUOTA_WINDOW_MS;
   const entries = (usage.get(userId) ?? []).filter((entry) => entry.at > cutoff);
   if (entries.length) usage.set(userId, entries);
@@ -95,10 +108,39 @@ export function checkUploadQuota(userId: string, bytes: number, now = Date.now()
   return { ok: true, usedBytes: used, remainingBytes: remaining };
 }
 
+// Атомарный резерв квоты: проверка и запись идут в одном синхронном тике.
+// Параллельные запросы не могут оба увидеть свободное место и вместе превысить квоту.
+export function reserveUpload(userId: string, bytes: number, now = Date.now()): UploadReservationDecision {
+  if (!userId || !Number.isFinite(bytes) || bytes <= 0) {
+    return { ok: false, retryAfterSeconds: Math.ceil(UPLOAD_QUOTA_WINDOW_MS / 1000) };
+  }
+  const decision = checkUploadQuota(userId, bytes, now);
+  if (!decision.ok) return decision;
+  const reservation: UploadReservation = { id: `reserve-${++sequence}`, bytes, at: now };
+  const entries = freshUsage(userId, now);
+  entries.push(reservation);
+  usage.set(userId, entries);
+  prune(usage);
+  return { ...decision, reservation };
+}
+
+// Возврат резерва при ошибке ядра: место снова доступно другим загрузкам.
+export function releaseUpload(userId: string, reservation: string | UploadReservation): boolean {
+  if (!userId) return false;
+  const id = typeof reservation === 'string' ? reservation : reservation.id;
+  const entries = usage.get(userId);
+  if (!entries) return false;
+  const next = entries.filter((entry) => entry.id !== id);
+  if (next.length === entries.length) return false;
+  if (next.length) usage.set(userId, next);
+  else usage.delete(userId);
+  return true;
+}
+
 export function recordUpload(userId: string, bytes: number, now = Date.now()): void {
   if (!userId || bytes <= 0) return;
   const entries = freshUsage(userId, now);
-  entries.push({ at: now, bytes });
+  entries.push({ id: `manual-${++sequence}`, at: now, bytes });
   usage.set(userId, entries);
   prune(usage);
 }
@@ -111,4 +153,5 @@ export function resetUploadLimitsForTests(): void {
   requestHits.clear();
   activeByUser.clear();
   usage.clear();
+  sequence = 0;
 }

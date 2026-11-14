@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET, POST } from './route';
 import { getAuth } from '../../../../lib/auth';
 import { verifyIdentityToken } from '../../../../lib/identity';
-import { resetUploadLimitsForTests, UPLOAD_REQUESTS_PER_WINDOW } from '../../../../lib/upload-limits';
+import {
+  UPLOAD_QUOTA_BYTES,
+  UPLOAD_REQUESTS_PER_WINDOW,
+  recordUpload,
+  resetUploadLimitsForTests,
+  uploadQuotaUsed,
+} from '../../../../lib/upload-limits';
 
 vi.mock('../../../../lib/auth', () => ({ getAuth: vi.fn() }));
 
@@ -154,6 +160,17 @@ describe('POST /api/attachments', () => {
     expect(blocked.status).toBe(429);
     expect(blocked.headers.get('retry-after')).toBeTruthy();
     expect(await blocked.json()).toMatchObject({ error: 'rate_limited' });
+  });
+
+  it('releases the reserved quota when the core upload fails (AR-34)', async () => {
+    recordUpload('usr-42', UPLOAD_QUOTA_BYTES - 10);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ detail: 'Not Found' }), {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    })));
+    const response = await POST(await formRequest([new File(['hello'], 'a.txt', { type: 'text/plain' })]));
+    expect(response.status).toBe(503);
+    expect(uploadQuotaUsed('usr-42')).toBe(UPLOAD_QUOTA_BYTES - 10);
   });
 
   it('maps a missing core endpoint to a calm 503 without leaking a 404', async () => {

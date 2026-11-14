@@ -7,10 +7,10 @@ import { createIdentityToken } from '../../../../lib/identity';
 import { readBodyWithLimit } from '../../../../lib/request-body';
 import {
   beginUpload,
-  checkUploadQuota,
   checkUploadRateLimit,
   endUpload,
-  recordUpload,
+  releaseUpload,
+  reserveUpload,
 } from '../../../../lib/upload-limits';
 
 export const runtime = 'nodejs';
@@ -98,6 +98,8 @@ export async function POST(request: Request) {
     return jsonError(429, 'rate_limited', 'Слишком много одновременных загрузок. Дождитесь завершения.');
   }
 
+  let reservationId: string | null = null;
+  let committed = false;
   try {
     // Считаем фактические байты потоком: Content-Length может врать или отсутствовать
     // в промежуточном прокси, а буфер ограничен MAX_BODY_SIZE.
@@ -142,13 +144,15 @@ export async function POST(request: Request) {
       return jsonError(413, 'attachment_size', 'Суммарный размер файлов больше 32 МБ.');
     }
 
-    // Квота на 24 часа: старые записи истекают по TTL, поэтому окно само освобождается.
-    const quota = checkUploadQuota(session.user.id, total);
-    if (!quota.ok) {
+    // Квота на 24 часа: резервируем атомарно до похода в ядро, чтобы две
+    // параллельные загрузки не прошли проверку на одном свободном месте.
+    const reservation = reserveUpload(session.user.id, total);
+    if (!reservation.ok || !reservation.reservation) {
       return jsonError(429, 'upload_quota', 'Квота вложений на 24 часа исчерпана. Попробуйте позже.', {
-        'Retry-After': String(quota.retryAfterSeconds ?? 3600),
+        'Retry-After': String(reservation.retryAfterSeconds ?? 3600),
       });
     }
+    reservationId = reservation.reservation.id;
 
     // Канал тот же, что у чата: web:<user.id>:<chat_id>. Клиент не может подставить чужой.
     const channelId = `web:${session.user.id}:${chatId}`;
@@ -230,9 +234,11 @@ export async function POST(request: Request) {
       return jsonError(502, 'attachment_contract', 'Ядро сохранило не все вложения.');
     }
 
-    recordUpload(session.user.id, total);
+    // Успех: резерв становится фактическим расходом квоты.
+    committed = true;
     return NextResponse.json({ attachments });
   } finally {
+    if (reservationId && !committed) releaseUpload(session.user.id, reservationId);
     endUpload(session.user.id);
   }
 }
