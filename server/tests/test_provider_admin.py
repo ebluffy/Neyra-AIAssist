@@ -346,3 +346,47 @@ def test_extra_body_disables_thinking_only_for_marked_lane():
         "chat_template_kwargs": {"enable_thinking": False},
     }
     assert _lane_extra_body(agent, "brain", {"reasoning_enabled": True}) == {"reasoning_enabled": True}
+
+
+def test_thinking_effort_levels(real_api, auth_headers):
+    http, agent = real_api
+    agent._setup_llm = lambda: None
+    for lane, effort in (("talk", "off"), ("brain", "medium"), ("vision", "max"), ("memory", "low")):
+        response = http.put(
+            "/v1/config",
+            json={"updates": {f"llm.{lane}_model.thinking_effort": effort}},
+            headers=auth_headers[ADMIN],
+        )
+        assert response.status_code == 200, response.text
+    lanes = http.get("/v1/config", headers=auth_headers[ADMIN]).json()["data"]["lanes"]
+    assert lanes["talk"]["thinking_effort"] == "off"
+    assert lanes["brain"]["thinking_effort"] == "medium"
+    assert lanes["vision"]["thinking_effort"] == "max"
+
+    bad = http.put(
+        "/v1/config",
+        json={"updates": {"llm.talk_model.thinking_effort": "ultra"}},
+        headers=auth_headers[ADMIN],
+    )
+    assert bad.status_code == 400
+
+
+def test_extra_body_maps_effort_levels():
+    from types import SimpleNamespace
+
+    from core.agent.llm_setup import _lane_extra_body
+
+    def agent_for(value):
+        return SimpleNamespace(config={"llm": {"talk_model": {"thinking_effort": value}}})
+
+    assert _lane_extra_body(agent_for("off"), "talk", {}) == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+    assert _lane_extra_body(agent_for("low"), "talk", {}) == {"reasoning_effort": "low"}
+    assert _lane_extra_body(agent_for("max"), "talk", {}) == {"reasoning_effort": "max"}
+    assert _lane_extra_body(agent_for("default"), "talk", {"reasoning_enabled": True}) == {
+        "reasoning_enabled": True
+    }
+    # Старый булев флаг остаётся понятным.
+    legacy = SimpleNamespace(config={"llm": {"talk_model": {"thinking": False}}})
+    assert _lane_extra_body(legacy, "talk", {}) == {"chat_template_kwargs": {"enable_thinking": False}}

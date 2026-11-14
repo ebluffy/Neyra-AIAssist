@@ -37,25 +37,37 @@ def _force_chat_completions(provider: str) -> dict[str, Any]:
     return {}
 
 
-def _lane_thinking(agent: Any, lane: str) -> bool | None:
-    """llm.<lane>_model.thinking: False — просить модель не рассуждать вслух."""
+THINKING_EFFORTS: tuple[str, ...] = ("default", "off", "low", "medium", "high", "max")
+
+
+def _lane_thinking_effort(agent: Any, lane: str) -> str:
+    """Режим рассуждения лейна: llm.<lane>_model.thinking_effort.
+
+    Старый булев ``thinking`` поддерживается: false → off, true → default.
+    """
     llm = agent.config.get("llm") if isinstance(agent.config.get("llm"), dict) else {}
     role = llm.get(f"{lane}_model") if isinstance(llm, dict) else None
     if isinstance(role, dict):
-        raw = role.get("thinking")
-        if isinstance(raw, bool):
-            return raw
-    return None
+        raw = role.get("thinking_effort")
+        if isinstance(raw, str) and raw.strip().lower() in THINKING_EFFORTS:
+            return raw.strip().lower()
+        legacy = role.get("thinking")
+        if isinstance(legacy, bool):
+            return "default" if legacy else "off"
+    return "default"
 
 
 def _lane_extra_body(agent: Any, lane: str, base: dict[str, Any]) -> dict[str, Any]:
-    """extra_body с отключённым think для конкретного лейна (llama.cpp/Qwen)."""
+    """extra_body для лейна: off — без think, low/medium/high/max — reasoning_effort."""
     body = dict(base)
-    if _lane_thinking(agent, lane) is False:
+    effort = _lane_thinking_effort(agent, lane)
+    if effort == "off":
         kwargs = body.get("chat_template_kwargs")
         merged = dict(kwargs) if isinstance(kwargs, dict) else {}
         merged["enable_thinking"] = False
         body["chat_template_kwargs"] = merged
+    elif effort in {"low", "medium", "high", "max"}:
+        body["reasoning_effort"] = effort
     return body
 
 
