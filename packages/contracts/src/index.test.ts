@@ -18,6 +18,7 @@ import {
   CaptureEventSchema,
   BrowserServerEventSchema,
   KernelServerEventSchema,
+  WsChatEventSchema,
   WsChatMessageSchema,
 } from './index';
 
@@ -142,6 +143,8 @@ describe('server-only payloads', () => {
     const kernelDone = { type: 'done', text: 'x', trace_id: 't', model_trace: { lane: 'talk' } };
     expect(KernelServerEventSchema.safeParse(kernelDone).success).toBe(true);
     expect(BrowserServerEventSchema.safeParse(kernelDone).success).toBe(false);
+    expect(WsChatEventSchema.safeParse(kernelDone).success).toBe(false);
+    expect(WsChatEventSchema.safeParse({ type: 'done', text: 'x', trace_id: 't' }).success).toBe(true);
     expect(BrowserServerEventSchema.safeParse({ type: 'done', text: 'x', trace_id: 't' }).success).toBe(true);
     expect(BrowserServerEventSchema.safeParse({ type: 'token', text: 'x', trace_id: 't', extra: 1 }).success).toBe(false);
     expect(KernelServerEventSchema.safeParse({ type: 'token', text: 3, trace_id: 't' }).success).toBe(false);

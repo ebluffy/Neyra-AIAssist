@@ -166,9 +166,10 @@ export const KernelServerEventSchema = z.discriminatedUnion('type', [
 ]);
 export type KernelServerEvent = z.infer<typeof KernelServerEventSchema>;
 
-// Старое имя валидирует кадры ядра; для ответа браузеру — BrowserServerEventSchema.
-export const WsChatEventSchema = KernelServerEventSchema;
-export type WsChatEvent = KernelServerEvent;
+// Старое имя — публичный контракт браузера: model_trace в него не проходит.
+// Кадры ядра валидирует KernelServerEventSchema.
+export const WsChatEventSchema = BrowserServerEventSchema;
+export type WsChatEvent = BrowserServerEvent;
 
 export const DesktopToolSchema = z.enum(['client.list_apps', 'client.open_url', 'client.open_app', 'client.search_web', 'client.list_windows', 'client.focus_window', 'client.close_window', 'client.media', 'client.volume', 'client.shell_exec', 'client.fs_list', 'client.fs_read', 'client.fs_search', 'client.fs_write', 'client.fs_mkdir', 'client.fs_move', 'client.screenshot', 'client.input', 'client.computer_snapshot', 'client.computer_click', 'client.computer_type', 'client.computer_press']);
 export const DesktopManifestSchema = z.object({ protocol: z.literal('neyra.desktop.v1').default('neyra.desktop.v1'), device_id: z.string().uuid(), session_id: z.string().uuid(), name: z.string().min(1).max(90), platform: z.enum(['windows', 'macos', 'linux-wayland', 'linux-x11']), tools: z.array(DesktopToolSchema).max(24).default([]), commands: z.array(z.object({ name: z.string().min(1).max(60), triggers: z.array(z.object({ kind: z.enum(['phrase', 'regex', 'hotkey']), value: z.string().min(1).max(120) }).strict()).max(8).default([]), actions: z.array(z.string()).max(10).default([]) }).strict()).max(32).default([]), features: z.array(z.literal('command_drafts')).max(2).default([]) }).strict();
