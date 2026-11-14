@@ -184,6 +184,17 @@ def activity_for(agent):
 _RATE_LIMIT_CLASS = re.compile(r"ratelimit|rate_limit|too.?many|429", re.IGNORECASE)
 
 
+def is_rate_limit_error(exc: BaseException | str) -> bool:
+    """True only for the current exception (429/RateLimit), never a global window."""
+    status = getattr(exc, "status_code", None)
+    if status == 429:
+        return True
+    return bool(
+        _RATE_LIMIT_CLASS.search(str(exc))
+        or _RATE_LIMIT_CLASS.search(type(exc).__name__)
+    )
+
+
 def _report_rate_limit(report) -> str | None:
     """Why this failed report is a provider rate limit, or None if it is not."""
     for call in report.get("calls") or []:

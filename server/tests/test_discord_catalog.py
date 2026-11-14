@@ -202,7 +202,7 @@ def test_message_filters_cursor_and_legacy_nulls(store: SqliteStore):
     seed_messages(store)
     everything = catalog.list_messages(store, limit=10)
     assert everything["total"] == 4
-    assert [row["ts"] for row in everything["items"]] == sorted((row["ts"] for row in everything["items"]), reverse=True)
+    assert [row["id"] for row in everything["items"]] == sorted((row["id"] for row in everything["items"]), reverse=True)
 
     by_guild = catalog.list_messages(store, guild_id="g1", limit=10)
     assert by_guild["total"] == 3
@@ -224,9 +224,30 @@ def test_message_filters_cursor_and_legacy_nulls(store: SqliteStore):
     assert legacy["platform"] is None and legacy["guild_id"] is None
     assert legacy["native_message_id"] is None and legacy["discord_id"] is None
 
+    by_day = catalog.list_messages(store, date_from="2026-11-10", date_to="2026-11-10", limit=10)
+    assert by_day["total"] == 2
+    by_offset = catalog.list_messages(
+        store, date_from="2026-11-10T13:00:00+03:00", date_to="2026-11-10T23:00:00+03:00", limit=10
+    )
+    assert by_offset["total"] == 2
+
     first_row = [row for row in everything["items"] if row["text"] == "привет"][0]
     assert first_row["discord_id"] == "d1" and first_row["discord_username"] == "dmitry"
     assert first_row["native_message_id"] == "m1"
+
+
+def test_cursor_does_not_lose_rows_when_ts_is_not_monotonic(store: SqliteStore):
+    store.append_chat_rows([
+        {"role": "user", "text": "newer-id-older-ts", "user_id": "p1", "channel_id": "c", "source": "chat",
+         "ts": "2026-11-01T10:00:00+00:00"},
+        {"role": "user", "text": "older-id-newer-ts", "user_id": "p1", "channel_id": "c", "source": "chat",
+         "ts": "2026-11-02T10:00:00+00:00"},
+    ])
+    first = catalog.list_messages(store, limit=1)
+    second = catalog.list_messages(store, limit=1, cursor=first["next_cursor"])
+    assert {first["items"][0]["id"], second["items"][0]["id"]} == {
+        row["id"] for row in catalog.list_messages(store, limit=10)["items"]
+    }
 
 
 def test_person_stats_counts_messages_turns_channels_and_days(store: SqliteStore):
@@ -295,3 +316,57 @@ def test_admin_api_survives_agent_without_memory(client, auth_headers):
         assert response.status_code == 200, path
         assert response.json()["data"]["available"] is False
         assert response.json()["data"]["items" if "stats" not in path else "days"] == []
+
+
+def test_delete_guild_removes_children_and_prune_drops_stale(store: SqliteStore):
+    seed_catalog(store)
+    store._conn.execute("UPDATE discord_channels SET updated_at = '2000-01-01T00:00:00+00:00' WHERE id = 'c2'")
+    store._conn.execute("UPDATE discord_members SET last_seen = '2000-01-01T00:00:00+00:00' WHERE discord_id = 'd2'")
+    store._conn.commit()
+    catalog.prune_guild(store, "g1", "2025-01-01T00:00:00+00:00")
+    assert [row["id"] for row in store._conn.execute("SELECT id FROM discord_channels ORDER BY id")] == ["c1"]
+    assert [row["discord_id"] for row in store._conn.execute("SELECT discord_id FROM discord_members")] == ["d1"]
+
+    catalog.delete_guild(store, "g1")
+    for table in ("discord_guilds", "discord_channels", "discord_members"):
+        assert store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
+def test_writer_overflow_is_counted_and_apply_batch_is_one_transaction(store: SqliteStore):
+    writer = catalog.DiscordCatalogWriter(store, max_queue=1)
+    assert writer.submit("guild", guild_id="g1") is True
+    assert writer.submit("guild", guild_id="g2") is False
+    assert writer.dropped == 1
+
+    events: list[str] = []
+    store._conn.set_trace_callback(lambda sql: events.append(sql))
+    try:
+        assert writer.apply_batch([
+            ("guild", {"guild_id": "g3", "name": "Three"}),
+            ("guild", {"guild_id": "g4", "name": "Four"}),
+        ]) == 2
+    finally:
+        store._conn.set_trace_callback(None)
+    assert sum(1 for sql in events if sql.upper().startswith("BEGIN")) == 1
+
+
+def test_member_person_id_is_stored_when_known(store: SqliteStore):
+    catalog.upsert_member(store, guild_id="g1", discord_id="d1", username="u", person_id="person-1")
+    row = store._conn.execute("SELECT person_id FROM discord_members WHERE discord_id = 'd1'").fetchone()
+    assert row["person_id"] == "person-1"
+
+
+def test_admin_discord_query_runs_outside_event_loop(real_api, auth_headers, monkeypatch):
+    import threading
+
+    http, _agent = real_api
+    seen: list[str] = []
+
+    def fake_list_guilds(store, **kwargs):
+        seen.append(threading.current_thread().name)
+        return {"items": [], "total": 0, "limit": 50, "offset": 0}
+
+    monkeypatch.setattr(catalog, "list_guilds", fake_list_guilds)
+    response = http.get("/v1/admin/discord/guilds", headers=auth_headers["admin"])
+    assert response.status_code == 200
+    assert seen and seen[0] != threading.current_thread().name

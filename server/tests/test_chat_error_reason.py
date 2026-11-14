@@ -65,3 +65,20 @@ def test_rate_limit_message_is_user_facing_and_promises_no_exact_hour():
     assert "429" in text
     assert "провайдер" in text.lower()
     assert "OpenAI" not in text
+
+
+def test_foreign_rate_limit_does_not_override_brain_error(real_api, auth_headers, monkeypatch):
+    http, agent = real_api
+
+    async def broken_brain(**kwargs):
+        raise RuntimeError("brain down")
+
+    monkeypatch.setattr(agent, "_run_brain_tool_phase", broken_brain)
+    monkeypatch.setattr(
+        "core.agent.model_trace.recent_provider_rate_limit",
+        lambda _agent, window_seconds=600: {"error_class": "OtherUser429", "http_status": 429, "at": "x"},
+    )
+    error = turn(http, auth_headers)[-1]
+    assert error["type"] == "error"
+    assert error["code"] == "brain_unavailable"
+    assert "429" not in error["message"]
