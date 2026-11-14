@@ -33,7 +33,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     ref
   ) => {
     const baseClasses =
-      'inline-flex items-center justify-center font-medium transition-[transform,background-color,border-color,color,box-shadow,opacity] duration-150 ease-out select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] enabled:active:scale-[0.96]';
+      'inline-flex items-center justify-center font-medium transition-[transform,background-color,border-color,color,box-shadow,opacity] duration-150 ease-out select-none touch-manipulation focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] enabled:active:scale-[0.96]';
 
     const variantClasses = {
       primary:

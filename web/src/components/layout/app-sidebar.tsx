@@ -556,7 +556,7 @@ export function AppSidebar({
                     setActiveTab('chats');
                     if (activeSection !== 'chat') router.push('/chat');
                   }}
-                  className={`flex items-center justify-center gap-1.5 py-1 text-xs font-medium rounded-[calc(var(--radius-sm)-2px)] transition-colors cursor-pointer ${
+                  className={`flex items-center justify-center gap-1.5 py-2 sm:py-1 min-h-[40px] sm:min-h-0 text-xs font-medium rounded-[calc(var(--radius-sm)-2px)] transition-colors cursor-pointer ${
                     activeTab === 'chats'
                       ? 'bg-[var(--surface-3)] text-[var(--text)] shadow-sm'
                       : 'text-[var(--text-muted)] hover:text-[var(--text)]'
@@ -569,7 +569,7 @@ export function AppSidebar({
                   type="button"
                   aria-selected={activeTab === 'notes'}
                   onClick={() => setActiveTab('notes')}
-                  className={`flex items-center justify-center gap-1.5 py-1 text-xs font-medium rounded-[calc(var(--radius-sm)-2px)] transition-colors cursor-pointer ${
+                  className={`flex items-center justify-center gap-1.5 py-2 sm:py-1 min-h-[40px] sm:min-h-0 text-xs font-medium rounded-[calc(var(--radius-sm)-2px)] transition-colors cursor-pointer ${
                     activeTab === 'notes'
                       ? 'bg-[var(--surface-3)] text-[var(--text)] shadow-sm'
                       : 'text-[var(--text-muted)] hover:text-[var(--text)]'
@@ -833,7 +833,7 @@ export function AppSidebar({
               aria-expanded={profileMenuOpen}
               aria-label="Меню профиля пользователя"
               onClick={() => setProfileMenuOpen((prev) => !prev)}
-              className="w-full flex items-center justify-between gap-2 p-1.5 rounded-[var(--radius-sm)] hover:bg-[var(--surface-2)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+              className="w-full min-h-[44px] flex items-center justify-between gap-2 p-1.5 rounded-[var(--radius-sm)] hover:bg-[var(--surface-2)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
             >
               <div className="flex items-center gap-2.5 min-w-0">
                 <Avatar name={user?.name} email={user?.email} size={28} />
@@ -869,7 +869,7 @@ export function AppSidebar({
                       onOpenSettings();
                     }
                   }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left"
+                  className="w-full min-h-[44px] sm:min-h-0 flex items-center gap-2 px-2.5 py-2 sm:py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left"
                 >
                   <Settings size={14} className="shrink-0" />
                   <span>Настройки</span>
@@ -883,7 +883,7 @@ export function AppSidebar({
                       setProfileMenuOpen(false);
                       handleOpenAdmin();
                     }}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
+                    className="w-full min-h-[44px] sm:min-h-0 flex items-center gap-2 px-2.5 py-2 sm:py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
                   >
                     <Shield size={14} className="shrink-0" />
                     <span>Админ-панель</span>
@@ -898,7 +898,7 @@ export function AppSidebar({
                     await signOut();
                     router.push('/login');
                   }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors text-left cursor-pointer"
+                  className="w-full min-h-[44px] sm:min-h-0 flex items-center gap-2 px-2.5 py-2 sm:py-1.5 rounded-[var(--radius-sm)] text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors text-left cursor-pointer"
                 >
                   <LogOut size={14} className="shrink-0" />
                   <span>{ru.signOut}</span>

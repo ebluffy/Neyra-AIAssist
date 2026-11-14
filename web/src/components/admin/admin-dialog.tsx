@@ -237,65 +237,75 @@ export function AdminDialog({
         {/* Mobile Navigation Tabs (Horizontal Scroll) */}
         <div
           ref={mobileNavRef}
-          className="lg:hidden flex items-center gap-1 overflow-x-auto p-2 border-b border-[var(--border)] bg-[var(--surface)] shrink-0 select-none"
+          className="lg:hidden flex items-center gap-1.5 overflow-x-auto p-2.5 border-b border-[var(--border)] bg-[var(--surface)] shrink-0 select-none scrollbar-none"
         >
           <NavButton
+            isMobile
             active={activeSection === 'overview'}
-            icon={<LayoutDashboard size={14} />}
+            icon={<LayoutDashboard size={15} />}
             label="Обзор"
             onClick={() => setActiveSection('overview')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'models'}
-            icon={<Cpu size={14} />}
+            icon={<Cpu size={15} />}
             label="Модели"
             onClick={() => setActiveSection('models')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'providers'}
-            icon={<Key size={14} />}
+            icon={<Key size={15} />}
             label="Провайдеры"
             onClick={() => setActiveSection('providers')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'integrations'}
-            icon={<Workflow size={14} />}
+            icon={<Workflow size={15} />}
             label="Интеграции"
             onClick={() => setActiveSection('integrations')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'access'}
-            icon={<Users size={14} />}
+            icon={<Users size={15} />}
             label="Доступ"
             onClick={() => setActiveSection('access')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'system'}
-            icon={<Server size={14} />}
+            icon={<Server size={15} />}
             label="Система"
             onClick={() => setActiveSection('system')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'logs'}
-            icon={<FileText size={14} />}
+            icon={<FileText size={15} />}
             label="Журналы"
             onClick={() => setActiveSection('logs')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'memory'}
-            icon={<Database size={14} />}
+            icon={<Database size={15} />}
             label="Память"
             onClick={() => setActiveSection('memory')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'files'}
-            icon={<Folder size={14} />}
+            icon={<Folder size={15} />}
             label="Файлы"
             onClick={() => setActiveSection('files')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'prompts'}
-            icon={<Key size={14} />}
+            icon={<Key size={15} />}
             label="Промпты"
             onClick={() => setActiveSection('prompts')}
           />
@@ -414,11 +424,13 @@ function NavButton({
   icon,
   label,
   onClick,
+  isMobile = false,
 }: {
   active: boolean;
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
+  isMobile?: boolean;
 }) {
   return (
     <button
@@ -428,10 +440,18 @@ function NavButton({
         playButtonClickSound();
         onClick();
       }}
-      className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors text-left cursor-pointer whitespace-nowrap ${
-        active
-          ? 'bg-[var(--accent)] text-[var(--accent-ink)] shadow-sm'
-          : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)]'
+      className={`flex items-center gap-2 rounded-[var(--radius-sm)] text-xs font-medium transition-[background-color,border-color,color,box-shadow] duration-150 text-left cursor-pointer whitespace-nowrap select-none ${
+        isMobile
+          ? `min-h-[44px] px-3.5 py-2 shrink-0 border ${
+              active
+                ? 'bg-[var(--surface-3)] text-[var(--text)] border-[var(--border-strong)] shadow-sm font-semibold'
+                : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'
+            }`
+          : `w-full px-3 py-2 ${
+              active
+                ? 'bg-[var(--surface-3)] text-[var(--text)] border-l-2 border-[var(--accent)] shadow-sm font-semibold'
+                : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)]/60'
+            }`
       }`}
     >
       <span className="shrink-0">{icon}</span>
@@ -886,9 +906,9 @@ function ModelsSection() {
                 </div>
 
                 {/* Form fields */}
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="col-span-1 space-y-1">
-                    <label className="text-[11px] text-[var(--text-muted)] block">Провайдер</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--text-muted)] block">Провайдер</label>
                     <select
                       value={form.provider}
                       onChange={(e) =>
@@ -897,7 +917,7 @@ function ModelsSection() {
                           [laneKey]: { ...form, provider: e.target.value },
                         }))
                       }
-                      className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none"
+                      className="h-10 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none transition-colors"
                     >
                       {providers.map((p) => (
                         <option key={p} value={p}>
@@ -907,8 +927,8 @@ function ModelsSection() {
                     </select>
                   </div>
 
-                  <div className="col-span-1 space-y-1">
-                    <label className="text-[11px] text-[var(--text-muted)] block">Модель</label>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--text-muted)] block">Модель</label>
                     <input
                       type="text"
                       value={form.model}
@@ -919,12 +939,12 @@ function ModelsSection() {
                           [laneKey]: { ...form, model: e.target.value },
                         }))
                       }
-                      className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono"
+                      className="h-10 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono transition-colors"
                     />
                   </div>
 
-                  <div className="col-span-1 space-y-1">
-                    <label className="text-[11px] text-[var(--text-muted)] block">Температура</label>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--text-muted)] block">Температура</label>
                     <input
                       type="text"
                       value={form.temperature}
@@ -935,12 +955,12 @@ function ModelsSection() {
                           [laneKey]: { ...form, temperature: e.target.value },
                         }))
                       }
-                      className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono"
+                      className="h-10 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono transition-colors"
                     />
                   </div>
 
-                  <div className="col-span-1 space-y-1">
-                    <label className="text-[11px] text-[var(--text-muted)] block">Макс. токенов</label>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--text-muted)] block">Макс. токенов</label>
                     <input
                       type="text"
                       value={form.max_tokens}
@@ -951,13 +971,13 @@ function ModelsSection() {
                           [laneKey]: { ...form, max_tokens: e.target.value },
                         }))
                       }
-                      className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono"
+                      className="h-10 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono transition-colors"
                     />
                   </div>
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-[var(--border)] space-y-1">
+              <div className="pt-3 border-t border-[var(--border)] space-y-1.5">
                 <label
                   htmlFor={`thinking-effort-${laneKey}`}
                   className="text-[11px] font-medium text-[var(--text)] block"
@@ -973,7 +993,7 @@ function ModelsSection() {
                       [laneKey]: { ...form, thinking_effort: e.target.value },
                     }))
                   }
-                  className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none"
+                  className="h-10 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none transition-colors"
                 >
                   <option value="default">Default — как в модели</option>
                   <option value="off">Off — без рассуждения, самый быстрый</option>
@@ -982,16 +1002,16 @@ function ModelsSection() {
                   <option value="high">High — долгое</option>
                   <option value="max">Max — без ограничения</option>
                 </select>
-                <p className="text-[10px] text-[var(--text-subtle)] leading-relaxed">
+                <p className="text-[11px] text-[var(--text-subtle)] leading-relaxed">
                   Для локальных reasoning-моделей Off обычно в 5–20 раз быстрее; High/Max — дольше, но глубже.
                 </p>
               </div>
 
-              <div className="pt-2 border-t border-[var(--border)] space-y-2">
+              <div className="pt-3 border-t border-[var(--border)] space-y-2">
                 {msg?.text && (
                   <p
                     role={msg.tone === 'error' ? 'alert' : 'status'}
-                    className={`text-[11px] p-1.5 rounded-[var(--radius-sm)] ${
+                    className={`text-[11px] p-2 rounded-[var(--radius-sm)] ${
                       msg.tone === 'error'
                         ? 'bg-[var(--danger-quiet)] text-[var(--danger)] border border-[var(--danger)]/30'
                         : msg.tone === 'warn'
@@ -1007,6 +1027,7 @@ function ModelsSection() {
                   <Button
                     variant="secondary"
                     size="sm"
+                    className="min-h-[40px] sm:min-h-0"
                     disabled={isPending}
                     loading={isPending}
                     onClick={() => handleSaveLane(laneKey)}
@@ -1446,21 +1467,31 @@ function AccessSection() {
         <div className="space-y-3">
           {/* Search bar */}
           <div className="relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
             <input
               type="text"
               placeholder="Поиск по имени или email…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] text-xs text-[var(--text)] placeholder:text-[var(--text-subtle)] outline-none focus:border-[var(--accent)]"
+              className="h-10 w-full pl-9 pr-8 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] text-xs text-[var(--text)] placeholder:text-[var(--text-subtle)] outline-none focus:border-[var(--accent)] transition-colors"
             />
+            {searchQuery && (
+              <button
+                type="button"
+                aria-label="Очистить поиск"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-subtle)] hover:text-[var(--text)] p-1 cursor-pointer"
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
 
           {/* User List */}
           <div className="border border-[var(--border)] rounded-[var(--radius)] bg-[var(--surface)] overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-[var(--surface-2)] border-b border-[var(--border)] text-[11px] font-medium text-[var(--text-muted)] uppercase">
+                <thead className="hidden sm:table-header-group bg-[var(--surface-2)] border-b border-[var(--border)] text-[11px] font-medium text-[var(--text-muted)] uppercase">
                   <tr>
                     <th className="py-2.5 px-3">Пользователь</th>
                     <th className="py-2.5 px-3">Роль</th>
@@ -1471,17 +1502,19 @@ function AccessSection() {
                 <tbody className="divide-y divide-[var(--border)]">
                   {filteredUsers.length > 0 ? (
                     filteredUsers.map((u) => (
-                      <tr key={u.id} className="hover:bg-[var(--surface-2)]/60 transition-colors">
-                        <td className="py-2.5 px-3">
-                          <div className="font-medium text-[var(--text)]">{u.name || 'Без имени'}</div>
-                          <div className="text-[11px] text-[var(--text-subtle)]">{u.email || u.id}</div>
+                      <tr key={u.id} className="flex flex-col sm:table-row p-3 sm:py-2.5 sm:px-3 hover:bg-[var(--surface-2)]/60 transition-colors gap-2 sm:gap-0">
+                        <td className="sm:py-2.5 sm:px-3">
+                          <div className="font-medium text-xs text-[var(--text)]">{u.name || 'Без имени'}</div>
+                          <div className="text-[11px] text-[var(--text-subtle)] truncate">{u.email || u.id}</div>
                         </td>
-                        <td className="py-2.5 px-3">
+                        <td className="sm:py-2.5 sm:px-3 flex sm:table-cell items-center justify-between">
+                          <span className="sm:hidden text-[11px] text-[var(--text-muted)] font-medium">Роль:</span>
                           <StatusPill tone={u.role === 'admin' ? 'ok' : 'muted'}>
                             {u.role === 'admin' ? 'админ' : 'пользователь'}
                           </StatusPill>
                         </td>
-                        <td className="py-2.5 px-3">
+                        <td className="sm:py-2.5 sm:px-3 flex sm:table-cell items-center justify-between">
+                          <span className="sm:hidden text-[11px] text-[var(--text-muted)] font-medium">Статус:</span>
                           {u.banned ? (
                             <span className="inline-flex items-center gap-1 text-[var(--danger)] text-xs font-medium">
                               <Ban size={12} /> заблокирован
@@ -1490,11 +1523,12 @@ function AccessSection() {
                             <span className="text-[var(--text-subtle)] text-xs">активен</span>
                           )}
                         </td>
-                        <td className="py-2.5 px-3 text-right">
-                          <div className="flex items-center justify-end gap-1.5">
+                        <td className="sm:py-2.5 sm:px-3 sm:text-right pt-2 sm:pt-0 border-t border-[var(--border)] sm:border-0">
+                          <div className="flex items-center justify-end gap-2 w-full sm:w-auto">
                             <Button
                               variant="ghost"
                               size="sm"
+                              className="min-h-[44px] sm:min-h-0 flex-1 sm:flex-initial justify-center"
                               disabled={actionPendingId === u.id}
                               onClick={() => handleToggleRole(u)}
                             >
@@ -1503,6 +1537,7 @@ function AccessSection() {
                             <Button
                               variant={u.banned ? 'secondary' : 'danger'}
                               size="sm"
+                              className="min-h-[44px] sm:min-h-0 flex-1 sm:flex-initial justify-center"
                               disabled={actionPendingId === u.id}
                               onClick={() => handleToggleBan(u)}
                             >
@@ -1535,7 +1570,7 @@ function AccessSection() {
               <select
                 value={newInviteTtl}
                 onChange={(e) => setNewInviteTtl(e.target.value)}
-                className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1 text-xs text-[var(--text)] outline-none"
+                className="h-10 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] transition-colors"
               >
                 <option value="24">24 часа (1 сутки)</option>
                 <option value="72">72 часа (3 суток)</option>
@@ -1544,6 +1579,7 @@ function AccessSection() {
               <Button
                 variant="secondary"
                 size="sm"
+                className="min-h-[44px] sm:min-h-0"
                 disabled={creatingInvite}
                 loading={creatingInvite}
                 onClick={handleCreateInvite}
@@ -1554,9 +1590,9 @@ function AccessSection() {
             </div>
 
             {createdInviteUrl && (
-              <div className="p-2.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border-strong)] flex items-center justify-between gap-2">
-                <span className="text-xs font-mono text-[var(--text)] truncate">{createdInviteUrl}</span>
-                <Button variant="secondary" size="sm" onClick={handleCopyInvite}>
+              <div className="p-2.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border-strong)] flex flex-wrap sm:flex-nowrap items-center justify-between gap-2">
+                <span className="text-xs font-mono text-[var(--text)] truncate break-all">{createdInviteUrl}</span>
+                <Button variant="secondary" size="sm" className="min-h-[44px] sm:min-h-0 shrink-0" onClick={handleCopyInvite}>
                   {copied ? <Check size={13} className="mr-1 text-[var(--success)]" /> : <Copy size={13} className="mr-1" />}
                   {copied ? 'Скопировано!' : 'Копировать'}
                 </Button>
@@ -1568,7 +1604,7 @@ function AccessSection() {
           <div className="border border-[var(--border)] rounded-[var(--radius)] bg-[var(--surface)] overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-[var(--surface-2)] border-b border-[var(--border)] text-[11px] font-medium text-[var(--text-muted)] uppercase">
+                <thead className="hidden sm:table-header-group bg-[var(--surface-2)] border-b border-[var(--border)] text-[11px] font-medium text-[var(--text-muted)] uppercase">
                   <tr>
                     <th className="py-2.5 px-3">Код / Ссылка</th>
                     <th className="py-2.5 px-3">Создано</th>
@@ -1578,14 +1614,16 @@ function AccessSection() {
                 <tbody className="divide-y divide-[var(--border)]">
                   {invites.length > 0 ? (
                     invites.map((inv) => (
-                      <tr key={inv.id} className="hover:bg-[var(--surface-2)]/60 transition-colors">
-                        <td className="py-2.5 px-3 font-mono text-[11px] text-[var(--text)]">
+                      <tr key={inv.id} className="flex flex-col sm:table-row p-3 sm:py-2.5 sm:px-3 hover:bg-[var(--surface-2)]/60 transition-colors gap-1 sm:gap-0">
+                        <td className="sm:py-2.5 sm:px-3 font-mono text-[11px] text-[var(--text)] break-all">
                           {inv.code || inv.token || inv.id}
                         </td>
-                        <td className="py-2.5 px-3 text-[var(--text-muted)] text-[11px]">
-                          {inv.createdAt ? new Date(inv.createdAt).toLocaleDateString('ru-RU') : '—'}
+                        <td className="sm:py-2.5 sm:px-3 text-[var(--text-muted)] text-[11px] flex sm:table-cell justify-between">
+                          <span className="sm:hidden text-[10px] text-[var(--text-subtle)] font-medium">Создано:</span>
+                          <span>{inv.createdAt ? new Date(inv.createdAt).toLocaleDateString('ru-RU') : '—'}</span>
                         </td>
-                        <td className="py-2.5 px-3">
+                        <td className="sm:py-2.5 sm:px-3 flex sm:table-cell justify-between">
+                          <span className="sm:hidden text-[10px] text-[var(--text-subtle)] font-medium">Статус:</span>
                           <StatusPill tone={inv.used ? 'muted' : 'ok'}>
                             {inv.used ? 'использован' : 'активен'}
                           </StatusPill>

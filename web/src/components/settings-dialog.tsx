@@ -57,22 +57,24 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 
 function Switch({ checked, onChange, label }: { checked: boolean; onChange: (next: boolean) => void; label: string }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      onClick={() => onChange(!checked)}
-      className={`relative h-5 w-9 rounded-full border transition-colors duration-150 ${
-        checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'bg-[var(--surface-3)] border-[var(--border-strong)]'
-      }`}
-    >
-      <span
-        className={`absolute left-0.5 top-0.5 h-3.5 w-3.5 rounded-full transition-transform duration-150 ${
-          checked ? 'translate-x-[18px] bg-[var(--accent-ink)]' : 'translate-x-0 bg-[var(--text-muted)]'
+    <div className="flex items-center min-h-[44px]">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        onClick={() => onChange(!checked)}
+        className={`relative h-6 w-11 rounded-full border transition-colors duration-150 cursor-pointer ${
+          checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'bg-[var(--surface-3)] border-[var(--border-strong)]'
         }`}
-      />
-    </button>
+      >
+        <span
+          className={`absolute left-0.5 top-0.5 h-4.5 w-4.5 rounded-full transition-transform duration-150 ${
+            checked ? 'translate-x-[20px] bg-[var(--accent-ink)]' : 'translate-x-0 bg-[var(--text-muted)]'
+          }`}
+        />
+      </button>
+    </div>
   );
 }
 
@@ -149,9 +151,9 @@ export function SettingsDialog({ open, onClose, user, onSignOut }: SettingsDialo
               type="button"
               onClick={() => setSection(item.id)}
               aria-current={section === item.id ? 'page' : undefined}
-              className={`flex shrink-0 items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-2 text-[13px] text-left transition-colors ${
+              className={`flex shrink-0 items-center gap-2 rounded-[var(--radius-sm)] min-h-[44px] sm:min-h-0 px-3 py-2 text-[13px] text-left transition-colors cursor-pointer select-none ${
                 section === item.id
-                  ? 'bg-[var(--surface-3)] text-[var(--text)]'
+                  ? 'bg-[var(--surface-3)] text-[var(--text)] font-semibold shadow-sm border border-[var(--border-strong)] sm:border-0'
                   : 'text-[var(--text-muted)] hover:bg-[var(--surface-3)] hover:text-[var(--text)]'
               }`}
             >
@@ -185,7 +187,7 @@ export function SettingsDialog({ open, onClose, user, onSignOut }: SettingsDialo
                   <button
                     type="button"
                     onClick={() => { onClose(); onSignOut?.(); }}
-                    className="rounded-[var(--radius-sm)] border border-[var(--border-strong)] px-2.5 py-1 text-[12px] text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors"
+                    className="min-h-[44px] sm:min-h-0 flex items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border-strong)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors cursor-pointer"
                   >
                     Выйти
                   </button>

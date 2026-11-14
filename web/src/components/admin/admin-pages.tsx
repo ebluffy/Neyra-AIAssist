@@ -116,10 +116,10 @@ export function AdminPageSection({ kind }: { kind: PageKind }) {
             <p className="text-xs text-[var(--text-muted)] mt-0.5">{meta.hint}</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
           {kind === 'memory' && (
-            <div className="relative">
-              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-subtle)]" />
+            <div className="relative w-full sm:w-auto">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-subtle)] pointer-events-none" />
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -127,7 +127,7 @@ export function AdminPageSection({ kind }: { kind: PageKind }) {
                   if (e.key === 'Enter') void load();
                 }}
                 placeholder="Имя, аккаунт, Discord ID"
-                className="w-[200px] rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] pl-7 pr-2 py-1.5 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                className="w-full sm:w-[240px] h-9 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] pl-7 pr-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] transition-colors"
               />
             </div>
           )}
@@ -137,6 +137,7 @@ export function AdminPageSection({ kind }: { kind: PageKind }) {
             icon={<RefreshCw size={14} className={loading ? 'animate-spin' : ''} />}
             variant="ghost"
             size="sm"
+            className="min-h-[36px] min-w-[36px] sm:min-h-0 sm:min-w-0"
             onClick={() => void load()}
           />
         </div>
