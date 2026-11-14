@@ -18,7 +18,10 @@ export function InviteRowActions({ id, disabled }: { id: string; disabled: boole
     setPending(true);
     setError('');
     try {
-      const response = await fetch(`/api/admin/invites/${id}`, { method: 'DELETE' });
+      const response = await fetch(`/api/admin/invites/${id}`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+      });
       const payload = await response.json().catch(() => null) as { ok?: boolean; message?: string } | null;
       if (!response.ok || payload?.ok === false) throw new Error(payload?.message ?? 'Не удалось отозвать приглашение.');
       setOpen(false);

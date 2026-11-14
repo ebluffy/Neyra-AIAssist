@@ -59,3 +59,19 @@ export async function consumeInvite(token: string, usedBy: string): Promise<bool
     return false;
   }
 }
+
+
+// Возврат инвайта, если регистрация не прошла после атомарного расхода.
+// Вторая параллельная регистрация уже получила 403 и сюда не доходит.
+export async function releaseInvite(token: string): Promise<boolean> {
+  try {
+    const { db } = getDatabase();
+    const rows = await db.update(invite)
+      .set({ usedBy: null, usedAt: null })
+      .where(eq(invite.tokenHash, hashInviteToken(token)))
+      .returning({ id: invite.id });
+    return rows.length === 1;
+  } catch {
+    return false;
+  }
+}

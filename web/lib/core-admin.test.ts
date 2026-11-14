@@ -64,13 +64,24 @@ describe('coreGet', () => {
     expect(unavailable.message).toBe('Ядро не ответило вовремя.');
   });
 
-  it('surfaces the core error message without leaking the raw body', async () => {
+  it('hides the core error text from admin responses by default (AR-30)', async () => {
     const result = await coreGet('/v1/memory/people', {
       env,
-      fetchImpl: (async () => jsonResponse({ ok: false, error: { message: 'Memory Hub is not initialized' } }, 503)) as typeof fetch,
+      fetchImpl: (async () => jsonResponse({ ok: false, error: { message: 'Memory Hub is not initialized at /opt/neyra' } }, 503)) as typeof fetch,
     });
     expect(result.state).toBe('error');
-    expect(result.message).toBe('Memory Hub is not initialized');
+    expect(result.message).not.toContain('Memory Hub');
+    expect(result.message).not.toContain('/opt/neyra');
+  });
+
+  it('forwards the core message only when the caller opts in', async () => {
+    const result = await coreGet('/v1/config', {
+      env,
+      forwardMessage: true,
+      fetchImpl: (async () => jsonResponse({ ok: false, error: { message: 'unknown_field: api.token' } }, 400)) as typeof fetch,
+    });
+    expect(result.state).toBe('error');
+    expect(result.message).toBe('unknown_field: api.token');
   });
 
   it('treats ok:false with 200 as an error', async () => {

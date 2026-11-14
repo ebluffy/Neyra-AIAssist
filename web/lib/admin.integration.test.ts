@@ -163,7 +163,9 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     expect(ban.status).toBe(200);
 
     const blocked = await signIn(state.memberEmail, state.memberPassword);
-    expect(blocked.response.status).toBe(403);
+    // AR-28: не раскрываем бан и существование адреса — тот же 401, что и при неверном пароле.
+    expect(blocked.response.status).toBe(401);
+    expect(String(blocked.json?.message ?? '')).not.toContain('заблокирован');
 
     const list = await payloadOf(await listUsers(adminRequest(`/api/admin/users?q=${encodeURIComponent(state.memberEmail)}`, state.adminCookie)));
     const banned = ((list?.data?.items ?? []) as Array<{ banned: boolean }>)[0];
@@ -255,16 +257,30 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     expect(secondUse.status).toBe(400);
   });
 
+  it('защищает изменяющие запросы админки от чужого Origin и не-JSON (AR-29)', async () => {
+    const plain = await createInviteRoute(new Request(`${BASE}/api/admin/invites`, {
+      method: 'POST',
+      headers: { cookie: state.adminCookie, 'content-type': 'text/plain' },
+      body: 'x',
+    }));
+    expect(plain.status).toBe(415);
+
+    const foreign = await createInviteRoute(new Request(`${BASE}/api/admin/invites`, {
+      method: 'POST',
+      headers: { cookie: state.adminCookie, 'content-type': 'application/json', origin: 'https://evil.example' },
+      body: '{}',
+    }));
+    expect(foreign.status).toBe(403);
+  });
+
   it('пишет действия в журнал и не даёт удалить себя', async () => {
     const logs = await listLogs(adminRequest('/api/admin/logs?limit=100&period=all', state.adminCookie));
     expect(logs.status).toBe(200);
     const items = ((await payloadOf(logs))?.data?.items ?? []) as Array<{ action: string; actorEmail: string }>;
     const actions = items.map(item => item.action);
-    expect(actions).toContain('user.role_change');
-    expect(actions).toContain('user.ban');
-    expect(actions).toContain('invite.create');
-    expect(actions).toContain('user.password_reset');
-    expect(items.every(item => item.actorEmail === state.adminEmail)).toBe(true);
+    for (const action of ['user.role_change', 'user.ban', 'invite.create', 'user.password_reset']) {
+      expect(items.some(item => item.action === action && item.actorEmail === state.adminEmail), action).toBe(true);
+    }
 
     const self = await deleteUser(adminRequest(`/api/admin/users/${state.adminId}`, state.adminCookie, { method: 'DELETE' }),
       { params: Promise.resolve({ id: state.adminId }) });

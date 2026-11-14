@@ -13,6 +13,7 @@ set -euo pipefail
 
 WEB=/opt/neyra/web
 COMPOSE="docker compose"  # плагин v2; /usr/bin/docker-compose здесь старый 1.29
+PG_SERVICE=postgres  # имя сервиса в web/docker-compose.yml
 UNIT=/etc/systemd/system/neyra-web.service
 
 # Публичный origin сайта: аргумент или PUBLIC_URL. Без него cookie и origin-проверки
@@ -107,10 +108,10 @@ echo "== 4/9 связка с ядром: NEYRA_* в .env сайта"
 python3 "$ENV_SYNC"
 
 echo "== 5/9 Postgres 16 в контейнере (compose из репозитория), только на 127.0.0.1"
-install -m 644 "$REPO_WEB/docker-compose.yml" "$WEB/docker-compose.yml"
+install -o root -g root -m 644 "$REPO_WEB/docker-compose.yml" "$WEB/docker-compose.yml"
 (cd "$WEB" && $COMPOSE up -d --wait)
 for i in $(seq 1 10); do
-  if (cd "$WEB" && $COMPOSE exec -T db pg_isready -U neyra -d neyra_web >/dev/null 2>&1); then
+  if (cd "$WEB" && $COMPOSE exec -T $PG_SERVICE pg_isready -U neyra -d neyra_web >/dev/null 2>&1); then
     echo "Postgres готов"
     break
   fi
@@ -166,7 +167,7 @@ cat > "$sudoers_tmp" <<'EOF'
 # Выкладка сайта Neyra без рута: только рестарт/статус юнита сайта
 # и pg_dump базы сайта перед миграциями (deploy-web.sh, AR-14).
 openbot ALL=(root) NOPASSWD: /bin/systemctl restart neyra-web.service, /bin/systemctl is-active neyra-web.service, /bin/systemctl status neyra-web.service
-openbot ALL=(root) NOPASSWD: /usr/bin/docker compose -f /opt/neyra/web/docker-compose.yml exec -T db pg_dump -U neyra -d neyra_web -Fc
+openbot ALL=(root) NOPASSWD: /usr/bin/docker compose -f /opt/neyra/web/docker-compose.yml exec -T $PG_SERVICE pg_dump -U neyra -d neyra_web -Fc
 EOF
 chmod 440 "$sudoers_tmp"
 visudo -cf "$sudoers_tmp" >/dev/null

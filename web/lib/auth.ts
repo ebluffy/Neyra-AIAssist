@@ -7,11 +7,12 @@ import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, roleField } from './auth-poli
 import {
   FAILED_LOGIN_MAX_ATTEMPTS,
   clearFailures,
+  clientIp,
   noteFailure,
   readEmail,
   readFailures,
 } from './login-throttle';
-import { checkInvite, consumeInvite, readInviteToken } from './invite';
+import { checkInvite, consumeInvite, readInviteToken, releaseInvite } from './invite';
 import { findBannedByEmail, touchLastLogin } from './admin-users';
 import * as schema from '../db/schema';
 
@@ -76,12 +77,15 @@ function createAuth() {
           const email = await readEmail(ctx.request);
           if (!email) return;
           signInEmail.set(ctx.request, email);
-          // Блокировка админом действует и на новый вход, даже если старые сессии уже удалены.
+          const ip = clientIp(ctx.request);
+          signInIp.set(ctx.request, ip);
+          // AR-28: забаненный аккаунт отвечает так же, как неверный пароль,
+          // чтобы не раскрывать существование адреса и факт блокировки.
           const state = await findBannedByEmail(email).catch(() => null);
           if (state?.banned) {
-            return ctx.json({ message: 'Аккаунт заблокирован администратором Нейры.' }, { status: 403 });
+            return ctx.json({ message: 'Неверный адрес почты или пароль.' }, { status: 401 });
           }
-          if ((await readFailures(email)) >= FAILED_LOGIN_MAX_ATTEMPTS) {
+          if ((await readFailures(email, ip)) >= FAILED_LOGIN_MAX_ATTEMPTS) {
             return ctx.json(
               { message: 'Слишком много неудачных попыток входа. Попробуйте позже.' },
               { status: 429 },
@@ -110,6 +114,15 @@ function createAuth() {
               : 'Инвайт недействителен, уже использован или истёк. Запросите новый.';
             return ctx.json({ message }, { status: 403 });
           }
+          // AR-26: инвайт тратится атомарно ДО создания аккаунта; проигравшая
+          // параллельная регистрация получает 403. При ошибке after вернёт его.
+          const consumed = await consumeInvite(inviteToken, typeof email === 'string' ? email.trim().toLowerCase() : '');
+          if (!consumed) {
+            return ctx.json(
+              { message: 'Инвайт недействителен, уже использован или истёк. Запросите новый.' },
+              { status: 403 },
+            );
+          }
         }
       }),
       after: createAuthMiddleware(async (ctx) => {
@@ -122,22 +135,23 @@ function createAuth() {
           // Count failures, reset on success. On error `returned` is the APIError
           // thrown by the endpoint (has statusCode); on success it is the body object.
           const email = signInEmail.get(ctx.request);
+          const ip = signInIp.get(ctx.request) ?? 'unknown';
           signInEmail.delete(ctx.request);
+          signInIp.delete(ctx.request);
           if (!email) return;
           if (statusCode === 429) return; // already throttled; do not stack counters
           if (statusCode === undefined) {
-            await clearFailures(email); // success body
+            await clearFailures(email, ip); // success body
             await touchLastLogin(email);
-          } else if (statusCode === 401) await noteFailure(email);
+          } else if (statusCode === 401) await noteFailure(email, ip);
           return;
         }
         if (ctx.path === '/sign-up/email') {
-          // Успешная регистрация тратит инвайт атомарно (used_by/used_at).
+          // Инвайт уже потрачен в before; неудачная регистрация возвращает его.
           const pending = signUpInvite.get(ctx.request);
           signUpInvite.delete(ctx.request);
           if (!pending?.invite) return;
-          if (statusCode !== undefined) return; // регистрация не прошла — инвайт не тратим
-          await consumeInvite(pending.invite, pending.email);
+          if (statusCode !== undefined) await releaseInvite(pending.invite);
         }
       }),
     },
@@ -149,5 +163,7 @@ export function getAuth() { return auth ??= createAuth(); }
 // Email from the request body is captured in the before hook: by the after hook
 // the body stream is already consumed by the endpoint, so it is carried per-request.
 const signInEmail = new WeakMap<Request, string>();
+// IP запроса для счётчика неудач (email + IP), см. AR-27.
+const signInIp = new WeakMap<Request, string>();
 // Same idea for invite-only sign-up: invite token and email ride the request object.
 const signUpInvite = new WeakMap<Request, { invite: string; email: string }>();

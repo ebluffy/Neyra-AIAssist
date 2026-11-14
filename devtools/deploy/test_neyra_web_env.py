@@ -56,7 +56,7 @@ def test_issuer_defaults_to_neyra_web_in_both_envs(tmp_path: Path) -> None:
         "DATABASE_URL='postgres://x'\n"
         "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n",  # gitleaks:allow — фиктивная фикстура теста
     )
-    core = make_env(tmp_path, "core", "API_TOKEN='core-service-key'\n")  # gitleaks:allow — фиктивная фикстура теста
+    core = make_env(tmp_path, "core", "API_TOKEN='core-service-key'\nAPI_MAINT_TOKEN='core-maint-key'\n")  # gitleaks:allow — фиктивная фикстура теста
 
     first = run_sync(tmp_path, web, core)
     assert first.returncode == 0, first.stderr
@@ -67,6 +67,9 @@ def test_issuer_defaults_to_neyra_web_in_both_envs(tmp_path: Path) -> None:
     assert web_values["NEYRA_IDENTITY_JWT_ISSUER"] == "neyra-web"
     assert core_values["NEYRA_IDENTITY_JWT_ISSUER"] == "neyra-web"
     assert web_values["NEYRA_IDENTITY_JWT_SECRET"] == core_values["NEYRA_IDENTITY_JWT_SECRET"]
+    # Сайту передаётся maint-ключ, а не админский API_TOKEN (AR-16).
+    assert web_values["NEYRA_SERVICE_KEY"] == "core-maint-key"
+    assert web_values["NEYRA_SERVICE_KEY"] != core_values["API_TOKEN"]
 
     # Повторный запуск идемпотентен: файлы не меняются.
     web_before = web.read_text(encoding="utf-8")
@@ -88,7 +91,7 @@ def test_existing_matching_issuer_is_not_rewritten(tmp_path: Path) -> None:
     core = make_env(
         tmp_path,
         "core",
-        "API_TOKEN='core-service-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_TOKEN='core-service-key'\nAPI_MAINT_TOKEN='core-maint-key'\n"  # gitleaks:allow — фиктивная фикстура теста
         "NEYRA_IDENTITY_JWT_SECRET='shared-secret-0123456789abcdef0123456789abcd'\n"  # gitleaks:allow — фиктивная фикстура теста
         "NEYRA_IDENTITY_JWT_ISSUER='custom-issuer'\n",
     )
@@ -114,7 +117,7 @@ def test_mismatched_web_issuer_is_brought_to_core_with_warning(tmp_path: Path) -
     core = make_env(
         tmp_path,
         "core",
-        "API_TOKEN='core-service-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_TOKEN='core-service-key'\nAPI_MAINT_TOKEN='core-maint-key'\n"  # gitleaks:allow — фиктивная фикстура теста
         "NEYRA_IDENTITY_JWT_SECRET='shared-secret-0123456789abcdef0123456789abcd'\n"  # gitleaks:allow — фиктивная фикстура теста
         "NEYRA_IDENTITY_JWT_ISSUER='core-issuer'\n",
     )
@@ -139,7 +142,7 @@ def test_web_only_issuer_is_adopted_by_core(tmp_path: Path) -> None:
         "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"  # gitleaks:allow — фиктивная фикстура теста
         "NEYRA_IDENTITY_JWT_ISSUER='web-issuer'\n",
     )
-    core = make_env(tmp_path, "core", "API_TOKEN='core-service-key'\n")  # gitleaks:allow — фиктивная фикстура теста
+    core = make_env(tmp_path, "core", "API_TOKEN='core-service-key'\nAPI_MAINT_TOKEN='core-maint-key'\n")  # gitleaks:allow — фиктивная фикстура теста
 
     result = run_sync(tmp_path, web, core)
     assert result.returncode == 0, result.stderr
@@ -149,3 +152,24 @@ def test_web_only_issuer_is_adopted_by_core(tmp_path: Path) -> None:
     second = run_sync(tmp_path, web, core)
     assert second.returncode == 0, second.stderr
     assert web.read_text(encoding="utf-8") == web_before
+
+
+def test_missing_maint_token_is_not_replaced_with_admin_token(tmp_path: Path) -> None:
+    web = make_env(
+        tmp_path,
+        "web",
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n",
+    )
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_TOKEN='core-service-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "NEYRA_IDENTITY_JWT_SECRET='shared-secret-0123456789abcdef0123456789abcd'\n"
+        "NEYRA_IDENTITY_JWT_ISSUER='neyra-web'\n",
+    )
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 2
+    assert "API_MAINT_TOKEN" in result.stderr
+    values = read_env(web)
+    assert "NEYRA_SERVICE_KEY" not in values

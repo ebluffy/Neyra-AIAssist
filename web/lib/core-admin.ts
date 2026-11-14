@@ -40,6 +40,11 @@ interface CoreRequest {
   env?: Environment;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * AR-30: только доверенные ручки (config) показывают текст ошибки ядра.
+   * По умолчанию наружу идёт фиксированный текст.
+   */
+  forwardMessage?: boolean;
 }
 
 async function request<T>(
@@ -66,15 +71,15 @@ async function request<T>(
       return { state: 'unauthorized', data: null, message: `Ядро отклонило ключ сайта (${response.status}).` };
     }
     const payload = await response.json().catch(() => null) as { ok?: boolean; data?: unknown; error?: { message?: string } } | null;
+    const rawMessage = payload?.error?.message;
+    const safeMessage = options.forwardMessage
+      ? (rawMessage ?? `Ядро ответило ${response.status}.`)
+      : 'Ядро вернуло ошибку. Подробности в журнале ядра.';
     if (!response.ok) {
-      return {
-        state: 'error',
-        data: null,
-        message: payload?.error?.message ?? `Ядро ответило ${response.status}.`,
-      };
+      return { state: 'error', data: null, message: safeMessage };
     }
     if (payload && payload.ok === false) {
-      return { state: 'error', data: null, message: payload.error?.message ?? 'Ядро вернуло ошибку.' };
+      return { state: 'error', data: null, message: safeMessage };
     }
     const data = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
     return { state: 'ok', data: (data ?? null) as T };

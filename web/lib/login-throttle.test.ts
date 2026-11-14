@@ -1,10 +1,18 @@
 import { it, expect } from 'vitest';
-import { failedLoginKey, readEmail, FAILED_LOGIN_MAX_ATTEMPTS } from './login-throttle';
+import { clientIp, failedLoginKey, readEmail, FAILED_LOGIN_MAX_ATTEMPTS } from './login-throttle';
 
-it('keys failed-login counters by normalized email', () => {
-  expect(failedLoginKey('User@Example.COM')).toBe('login-fail:user@example.com');
-  expect(failedLoginKey('  a@b.co ')).toBe('login-fail:a@b.co');
-  expect(failedLoginKey('User@Example.COM')).not.toBe(failedLoginKey('other@example.com'));
+it('keys failed-login counters by normalized email and IP (AR-27)', () => {
+  expect(failedLoginKey('User@Example.COM', '203.0.113.7')).toBe('login-fail:user@example.com:203.0.113.7');
+  expect(failedLoginKey('  a@b.co ', '198.51.100.1')).toBe('login-fail:a@b.co:198.51.100.1');
+  // Другой адрес с того же email не блокирует владельца.
+  expect(failedLoginKey('user@example.com', '203.0.113.7'))
+    .not.toBe(failedLoginKey('user@example.com', '198.51.100.9'));
+});
+
+it('reads only the trusted edge IP header', () => {
+  const request = new Request('http://localhost/', { headers: { 'x-real-ip': ' 203.0.113.7 ' } });
+  expect(clientIp(request)).toBe('203.0.113.7');
+  expect(clientIp(new Request('http://localhost/', { headers: { 'x-forwarded-for': '1.2.3.4' } }))).toBe('unknown');
 });
 
 it('allows a bounded number of failures before the brake engages', () => {
