@@ -293,13 +293,13 @@ def assert_api_bind_safe(cfg: dict) -> None:
     if public:
         raise RuntimeError(
             f"api.public_base_url={public!r} is set but API tokens are empty. "
-            "Set API_TOKEN (and preferably viewer/maint) before publishing."
+            "Set API_TOKEN (and preferably viewer/maint/web) before publishing."
         )
     if _is_loopback_host(host):
         return
     raise RuntimeError(
         f"api.host={host!r} is not loopback but API_TOKEN / API_KEY / "
-        "API_VIEWER_TOKEN / API_MAINT_TOKEN are empty. Set tokens or bind 127.0.0.1."
+        "API_VIEWER_TOKEN / API_MAINT_TOKEN / API_WEB_TOKEN are empty. Set tokens or bind 127.0.0.1."
     )
 
 
@@ -357,6 +357,8 @@ def _role_at_least(role: str, minimum: str) -> bool:
         return role in {"web", "viewer", "maint", "admin"}
     if minimum == "web_admin":
         return role in {"web", "admin"}
+    if minimum == "web_memory":
+        return role in {"web", "maint", "admin"}
     if role == "web":
         # Web key is deliberately lower than viewer: only dep_web routes accept it.
         return False
@@ -1495,6 +1497,7 @@ def build_app(
 
     dep_web = RequireRole("web")
     dep_web_admin = RequireRole("web_admin")
+    dep_web_memory = RequireRole("web_memory")
     dep_viewer = RequireRole("viewer")
     dep_maint = RequireRole("maint")
     dep_admin = RequireRole("admin")
@@ -1797,7 +1800,7 @@ def build_app(
         return {"ok": True, "trace_id": _trace_id(request), "data": {"accepted": accepted, **manager.status()}}
 
     @app.post("/v1/memory/search")
-    async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_maint)):
+    async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_web_memory)):
         trace_id = _trace_id(request)
         uid = _memory_user_id(request, body.user_id)
         if not uid:
@@ -1814,7 +1817,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": {"results": rows, "user_id": uid}}
 
     @app.post("/v1/memory/chat/recall")
-    async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_maint)):
+    async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_web_memory)):
         """Chronological list from SQLite chat_log (Memory Hub). Requires user_id and/or channel_id."""
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
@@ -2838,7 +2841,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/memory/people/{person_id}")
-    async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_maint)):
+    async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_web_memory)):
         """Person card: accounts + facts (no анкета)."""
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
@@ -3923,6 +3926,18 @@ def build_app(
         response.headers["x-trace-id"] = trace_id
         return response
 
+    config_write_lock = asyncio.Lock()
+
+    def _serialized_config_write(fn):
+        import functools
+
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            async with config_write_lock:
+                return await fn(*args, **kwargs)
+
+        return wrapper
+
     def _safe_set(cfg: dict, path: str, value: Any) -> None:
         keys = path.split(".")
         cur = cfg
@@ -3948,6 +3963,7 @@ def build_app(
         }
 
     @app.post("/v1/config/update")
+    @_serialized_config_write
     async def v1_config_update(body: ConfigUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
         """Apply allowlisted keys: persist to layer YAML first, then runtime + LLM rebind."""
         trace_id = _trace_id(request)
@@ -4098,6 +4114,7 @@ def build_app(
                 parent.pop(key, None)
 
     @app.put("/v1/config")
+    @_serialized_config_write
     async def v1_admin_config_put(
         body: AdminConfigPutRequest,
         request: Request,
@@ -4206,8 +4223,9 @@ def build_app(
 
     # ── Провайдеры LLM: любые OpenAI-совместимые шлюзы ─────────────────────
     def _provider_data_dir() -> str:
-        paths_cfg = config.get("paths") if isinstance(config.get("paths"), dict) else {}
-        return str((paths_cfg or {}).get("data_dir") or "./data").strip() or "./data"
+        from core.runtime.paths import resolve_data_dir
+
+        return str(resolve_data_dir(root, config))
 
     def _vault():
         from core.llm.provider_secrets import store_for
@@ -4275,6 +4293,7 @@ def build_app(
         }
 
     @app.put("/v1/providers/{name}")
+    @_serialized_config_write
     async def v1_provider_put(
         name: str,
         body: ProviderUpsertRequest,
@@ -4379,6 +4398,7 @@ def build_app(
         }
 
     @app.delete("/v1/providers/{name}")
+    @_serialized_config_write
     async def v1_provider_delete(
         name: str,
         request: Request,
@@ -4441,6 +4461,7 @@ def build_app(
         }
 
     @app.put("/v1/providers/{name}/secret")
+    @_serialized_config_write
     async def v1_provider_secret_put(
         name: str,
         body: ProviderSecretRequest,
@@ -4474,6 +4495,7 @@ def build_app(
         }
 
     @app.delete("/v1/providers/{name}/secret")
+    @_serialized_config_write
     async def v1_provider_secret_delete(
         name: str,
         request: Request,
@@ -4500,6 +4522,7 @@ def build_app(
         }
 
     @app.post("/v1/providers/{name}/migrate-secret")
+    @_serialized_config_write
     async def v1_provider_migrate_secret(
         name: str,
         request: Request,

@@ -130,3 +130,35 @@ def test_guild_join_with_small_queue_keeps_all_members(tmp_path):
         assert count == 5
     finally:
         store.close()
+
+
+def test_chunked_false_skips_members_and_prune():
+    catalog = FakeCatalog()
+    bot = make_bot(catalog)
+    guild = make_guild()
+    guild.unavailable = False
+    guild.chunked = False
+    asyncio.run(bot._sync_guild(guild, "2026-01-01T00:00:00+00:00"))
+    kinds = [kind for kind, _ in catalog.waited]
+    assert "member" not in kinds and "guild_prune" not in kinds
+
+
+def test_repeated_start_keeps_one_sync_task():
+    catalog = FakeCatalog()
+    bot = make_bot(catalog)
+    bot._catalog_sync_task = None
+
+    async def slow_sync():
+        await asyncio.sleep(0.01)
+
+    bot._sync_catalog = slow_sync
+    bot._start_catalog_sync = NeyraDiscordBot._start_catalog_sync.__get__(bot, SimpleNamespace)
+
+    async def run():
+        bot._start_catalog_sync()
+        first = bot._catalog_sync_task
+        bot._start_catalog_sync()
+        assert bot._catalog_sync_task is first
+        await first
+
+    asyncio.run(run())

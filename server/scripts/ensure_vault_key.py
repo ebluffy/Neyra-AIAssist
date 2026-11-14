@@ -157,9 +157,9 @@ def ensure_vault_key(env_path: Path, data_dir: Path) -> str:
         try:
             old_key = vault_key_path.read_text(encoding="utf-8").strip()
         except OSError as e:
-            raise ProviderSecretsError("Не удалось прочитать data/secrets/vault.key") from e
+            raise ProviderSecretsError(f"Не удалось прочитать {vault_key_path}") from e
         if not old_key:
-            raise ProviderSecretsError("data/secrets/vault.key пуст: задайте NEYRA_VAULT_KEY вручную")
+            raise ProviderSecretsError(f"{vault_key_path} пуст: задайте NEYRA_VAULT_KEY вручную")
 
     raw_key = old_key or secrets.token_urlsafe(48)
     secrets_dir = vault_key_path.parent
