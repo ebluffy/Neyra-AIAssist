@@ -319,7 +319,7 @@ export function AdminDialog({
             className="hidden lg:flex flex-col justify-between w-[220px] shrink-0 border-r border-[var(--border)] bg-[var(--surface)] p-3 overflow-y-auto select-none"
           >
             <div className="space-y-1">
-              <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
+              <p className="px-2.5 pt-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
                 Управление
               </p>
               <NavButton
@@ -359,8 +359,8 @@ export function AdminDialog({
                 onClick={() => setActiveSection('system')}
               />
 
-              <div className="pt-3 pb-1 border-t border-[var(--border)] mt-3 space-y-1">
-                <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
+              <div className="pt-4 pb-1 border-t border-[var(--border)] mt-4 space-y-1">
+                <p className="px-2.5 pt-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
                   Данные
                 </p>
                 <NavButton
@@ -449,7 +449,7 @@ function NavButton({
             }`
           : `w-full px-3 py-2 ${
               active
-                ? 'bg-[var(--surface-3)] text-[var(--text)] border-l-2 border-[var(--accent)] shadow-sm font-semibold'
+                ? 'bg-[var(--surface-3)] text-[var(--text)] shadow-sm font-semibold'
                 : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)]/60'
             }`
       }`}
@@ -547,7 +547,35 @@ function OverviewSection({ onNavigate }: { onNavigate: (section: AdminSection) =
   }, [loadData]);
 
   if (loading) {
-    return <LoadingState message="Загрузка сводки админ-панели…" />;
+    return (
+      <div className="space-y-5 animate-pulse" aria-label="Загрузка данных обзора">
+        <div className="space-y-1.5">
+          <div className="h-5 w-40 bg-[var(--surface-3)] rounded" />
+          <div className="h-3.5 w-72 bg-[var(--surface-3)]/60 rounded" />
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="p-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-2 h-[84px] flex flex-col justify-between">
+              <div className="h-3 w-20 bg-[var(--surface-3)] rounded" />
+              <div className="h-6 w-12 bg-[var(--surface-3)] rounded" />
+              <div className="h-2.5 w-24 bg-[var(--surface-3)]/50 rounded" />
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="h-48 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
+            <div className="h-4 w-36 bg-[var(--surface-3)] rounded" />
+            <div className="h-3 w-full bg-[var(--surface-3)]/50 rounded" />
+            <div className="h-3 w-4/5 bg-[var(--surface-3)]/50 rounded" />
+          </div>
+          <div className="h-48 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
+            <div className="h-4 w-36 bg-[var(--surface-3)] rounded" />
+            <div className="h-3 w-full bg-[var(--surface-3)]/50 rounded" />
+            <div className="h-3 w-4/5 bg-[var(--surface-3)]/50 rounded" />
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (error && !data.overview && !data.system) {
@@ -1443,7 +1471,7 @@ function AccessSection() {
                 : 'text-[var(--text-muted)] hover:text-[var(--text)]'
             }`}
           >
-            Пользователи ({users.length})
+            Пользователи {!loading ? `(${users.length})` : ''}
           </button>
           <button
             type="button"
@@ -1454,7 +1482,7 @@ function AccessSection() {
                 : 'text-[var(--text-muted)] hover:text-[var(--text)]'
             }`}
           >
-            Приглашения ({invites.length})
+            Приглашения {!loading ? `(${invites.length})` : ''}
           </button>
         </div>
       </div>
@@ -1699,13 +1727,21 @@ function AccessSection() {
                     : 'border-[var(--border)] bg-[var(--surface-2)]/60 hover:bg-[var(--surface-2)] text-[var(--text-muted)]'
                 } ${savingRegMode ? 'opacity-60 pointer-events-none' : ''}`}
               >
-                <div className="flex items-center justify-between">
-                  <span className={`text-xs font-medium ${active ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}`}>
-                    {item.label}
+                <div className="flex items-start gap-2.5">
+                  <span
+                    className={`mt-0.5 w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${
+                      active ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--border-strong)] bg-transparent'
+                    }`}
+                  >
+                    {active && <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-ink)]" />}
                   </span>
-                  {active && <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />}
+                  <div className="min-w-0">
+                    <span className={`text-xs font-medium block ${active ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}`}>
+                      {item.label}
+                    </span>
+                    <p className="text-[10px] text-[var(--text-subtle)] mt-0.5 leading-relaxed">{item.desc}</p>
+                  </div>
                 </div>
-                <p className="text-[10px] text-[var(--text-subtle)] mt-1">{item.desc}</p>
               </button>
             );
           })}
