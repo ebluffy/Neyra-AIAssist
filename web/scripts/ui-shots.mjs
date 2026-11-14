@@ -396,9 +396,9 @@ async function main() {
           setupFn: async (page) => {
             await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
             await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
-            if (vp.isMobile) {
-              const sidebarBtn = await page.waitForSelector('button[aria-label="Открыть панель"]');
-              await sidebarBtn.click();
+            const openDrawerBtn = await page.$('button[aria-label="Открыть панель"]');
+            if (openDrawerBtn && await openDrawerBtn.isVisible()) {
+              await openDrawerBtn.click();
               await page.waitForTimeout(400);
             }
             const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
@@ -408,7 +408,10 @@ async function main() {
             const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
             await adminItem.click();
             await page.waitForSelector('[role="dialog"][aria-modal="true"]');
-            const modelsTab = await page.waitForSelector('button:has-text("Модели")');
+            
+            const modelsTab = vp.isMobile
+              ? await page.waitForSelector('.lg\\:hidden button:has-text("Модели")', { state: 'visible' })
+              : await page.waitForSelector('aside[aria-label="Разделы админки"] button:has-text("Модели")', { state: 'visible' });
             await modelsTab.click();
             await page.waitForTimeout(500);
           },
@@ -424,9 +427,9 @@ async function main() {
           setupFn: async (page) => {
             await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
             await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
-            if (vp.isMobile) {
-              const sidebarBtn = await page.waitForSelector('button[aria-label="Открыть панель"]');
-              await sidebarBtn.click();
+            const openDrawerBtn = await page.$('button[aria-label="Открыть панель"]');
+            if (openDrawerBtn && await openDrawerBtn.isVisible()) {
+              await openDrawerBtn.click();
               await page.waitForTimeout(400);
             }
             const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
@@ -436,7 +439,10 @@ async function main() {
             const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
             await adminItem.click();
             await page.waitForSelector('[role="dialog"][aria-modal="true"]');
-            const accessTab = await page.waitForSelector('button:has-text("Доступ")');
+            
+            const accessTab = vp.isMobile
+              ? await page.waitForSelector('.lg\\:hidden button:has-text("Доступ")', { state: 'visible' })
+              : await page.waitForSelector('aside[aria-label="Разделы админки"] button:has-text("Доступ")', { state: 'visible' });
             await accessTab.click();
             await page.waitForTimeout(500);
           },
@@ -487,6 +493,11 @@ async function main() {
         setupFn: async (page) => {
           await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
           await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+          const openDrawerBtn = await page.$('button[aria-label="Открыть панель"]');
+          if (openDrawerBtn && await openDrawerBtn.isVisible()) {
+            await openDrawerBtn.click();
+            await page.waitForTimeout(400);
+          }
           const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
           await profileBtn.click();
           await page.waitForTimeout(300);
