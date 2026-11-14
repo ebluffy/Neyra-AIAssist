@@ -168,11 +168,7 @@ def test_config_put_memory_limits_require_restart(real_api, auth_headers, projec
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["requires_restart"] is True
-    assert data["restart_fields"] == [
-        "memory.session_archive.enabled",
-        "memory.session_archive.threshold_messages",
-        "memory.stm_max_messages",
-    ]
+    assert data["restart_fields"] == ["memory.stm_max_messages"]
     assert data["persisted"] == ["config/memory.yaml"]
     snapshot = http.get("/v1/config", headers=auth_headers[ADMIN]).json()["data"]
     assert snapshot["memory"]["limits"]["memory.stm_max_messages"] == 12
@@ -243,3 +239,67 @@ def test_logs_tail_handles_missing_file(real_api, auth_headers, tmp_path):
 def test_logs_tail_validates_lines(client, auth_headers):
     assert client.get("/v1/logs/tail?lines=0", headers=auth_headers[ADMIN]).status_code == 422
     assert client.get("/v1/logs/tail?lines=5000", headers=auth_headers[ADMIN]).status_code == 422
+
+
+def test_secret_values_auto_collects_env_and_config():
+    from core.runtime.admin_config import secret_flags, secret_values
+
+    env = {
+        "GROQ_API_KEY": "groq-secret-012345",  # gitleaks:allow — фикстура теста
+        "HF_TOKEN": "hf-secret-0123456",  # gitleaks:allow — фикстура теста
+        "CUSTOM_SECRET": "custom-secret-0123",  # gitleaks:allow — фикстура теста
+        "PUBLIC_VALUE": "public",
+    }
+    cfg = {"llm": {"providers": {"custom": {"api_key": "provider-secret-0123"}}}}  # gitleaks:allow — фикстура теста
+    values = secret_values(cfg, env)
+    for expected in ("groq-secret-012345", "hf-secret-0123456", "custom-secret-0123", "provider-secret-0123"):  # gitleaks:allow — фикстура теста
+        assert expected in values
+    flags = secret_flags(env)
+    assert flags["GROQ_API_KEY"] == "set" and flags["CUSTOM_SECRET"] == "set"
+    assert "PUBLIC_VALUE" not in flags
+
+
+def test_log_tail_masks_before_truncation(tmp_path):
+    from core.api.log_tail import read_tail
+
+    secret = "sk-boundary-secret-0123456789"  # gitleaks:allow — фикстура теста
+    line = "x" * 3990 + secret + " tail"
+    path = tmp_path / "system.log"
+    path.write_text(line + "\n", encoding="utf-8")
+    data = read_tail(path, 1, max_line_chars=4000, extra_secrets=[secret])
+    assert secret not in data["lines"][0]
+    assert "***" in data["lines"][0]
+    assert len(data["lines"][0]) <= 4000
+
+
+def test_config_put_rolls_back_files_and_memory_on_rebind_failure(
+    real_api, auth_headers, project, api_config, monkeypatch
+):
+    http, agent = real_api
+    layer = project / "config" / "llm.yaml"
+    old_text = "llm:\n  talk_model:\n    provider: openrouter\n    model: old-model\n"
+    layer.write_text(old_text, encoding="utf-8")
+    agent.config["llm"]["talk_model"]["model"] = "old-model"
+    calls = {"n": 0}
+
+    def setup():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("bad rebind")
+
+    monkeypatch.setattr(agent, "_setup_llm", setup)
+    response = put_config(http, auth_headers, {"llm.talk_model.model": "bad-model"})
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "llm_rebind_failed"
+    assert "old-model" in layer.read_text(encoding="utf-8")
+    assert "bad-model" not in layer.read_text(encoding="utf-8")
+    assert agent.config["llm"]["talk_model"]["model"] == "old-model"
+    assert calls["n"] == 2
+
+
+def test_snapshot_exposes_reply_max_tokens_and_hides_max_records_write(real_api, auth_headers, api_config):
+    http, _agent = real_api
+    api_config["llm"]["talk_model"]["reply_max_tokens"] = 321
+    data = http.get("/v1/config", headers=auth_headers[ADMIN]).json()["data"]
+    assert data["lanes"]["talk"]["reply_max_tokens"] == 321
+    assert "memory.max_records" not in data["editable"]

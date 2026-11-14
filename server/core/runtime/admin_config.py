@@ -29,11 +29,12 @@ SECRET_ENV_NAMES: tuple[str, ...] = (
     "DISCORD_TOKEN",
     "NEYRA_IDENTITY_JWT_SECRET",
     "NEYRA_SERVICE_KEY",
+    "NEYRA_VAULT_KEY",
 )
+_SECRET_NAME_RE = re.compile(r"(^|_)(KEY|TOKEN|SECRET|PASSWORD)$", re.IGNORECASE)
 
 _INT_FIELDS: dict[str, tuple[int, int]] = {
     "memory.stm_max_messages": (1, 200),
-    "memory.max_records": (100, 1_000_000),
     "memory.rag_top_k": (1, 20),
     "memory.diary_max_entries": (100, 100_000),
     "memory.session_archive.threshold_messages": (0, 1_000),
@@ -216,26 +217,66 @@ def requires_restart_fields(paths: Iterable[str]) -> list[str]:
     Memory limits and the auto-compaction threshold are read by stores/hub built
     at startup — writing them to disk is safe, applying them is not.
     """
-    return sorted(path for path in paths if str(path).startswith("memory."))
+    restart_prefixes = (
+        "memory.stm_max_messages",
+        "memory.rag_top_k",
+        "memory.diary_max_entries",
+    )
+    return sorted(
+        path for path in paths
+        if any(str(path) == prefix for prefix in restart_prefixes)
+    )
+
+
+def _secret_env_names(source: Mapping[str, str]) -> list[str]:
+    names = set(SECRET_ENV_NAMES)
+    names.update(name for name in source if _SECRET_NAME_RE.search(str(name)))
+    return sorted(names)
 
 
 def secret_flags(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """``set`` / ``missing`` per known secret name. Values are never returned."""
+    """``set`` / ``missing`` per known or name-matching secret. Values are never returned."""
     source = os.environ if env is None else env
     return {
         name: "set" if (source.get(name) or "").strip() else "missing"
-        for name in SECRET_ENV_NAMES
+        for name in _secret_env_names(source)
     }
 
 
-def secret_values(env: Mapping[str, str] | None = None) -> list[str]:
-    """Secret values for log redaction only. Never serialize this list."""
+def _config_secret_values(cfg: Any) -> list[str]:
+    out: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, Mapping):
+            for key, value in node.items():
+                key_s = str(key).lower()
+                if (
+                    key_s in {"api_key", "token", "secret", "password"}
+                    or key_s.endswith(("_api_key", "_token", "_secret", "_password"))
+                ):
+                    if isinstance(value, str) and len(value.strip()) >= 8:
+                        out.append(value.strip())
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(cfg)
+    return out
+
+
+def secret_values(
+    config: Mapping[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Values for log redaction only (env names + config api_key/token/secret/password)."""
     source = os.environ if env is None else env
-    return [
-        value.strip()
-        for value in (source.get(name) or "" for name in SECRET_ENV_NAMES)
-        if len(value.strip()) >= 8
+    values = [
+        (source.get(name) or "").strip()
+        for name in _secret_env_names(source)
     ]
+    values.extend(_config_secret_values(config or {}))
+    return [value for value in values if len(value) >= 8]
 
 
 def _mcp_servers(cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -298,7 +339,8 @@ def admin_config_snapshot(
             "resolved_model": str(resolved_models.get(lane) or ""),
             "temperature": role.get("temperature"),
             "context_window": role.get("context_window"),
-            "max_tokens": role.get("max_tokens", role.get("reply_max_tokens")),
+            "max_tokens": role.get("max_tokens"),
+            "reply_max_tokens": role.get("reply_max_tokens"),
             "enabled": role.get("enabled"),
             "thinking": role.get("thinking"),
             "thinking_effort": role.get("thinking_effort")
