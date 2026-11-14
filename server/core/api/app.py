@@ -293,13 +293,13 @@ def assert_api_bind_safe(cfg: dict) -> None:
     if public:
         raise RuntimeError(
             f"api.public_base_url={public!r} is set but API tokens are empty. "
-            "Set API_TOKEN (and preferably viewer/maint) before publishing."
+            "Set API_TOKEN (and preferably viewer/maint/web) before publishing."
         )
     if _is_loopback_host(host):
         return
     raise RuntimeError(
         f"api.host={host!r} is not loopback but API_TOKEN / API_KEY / "
-        "API_VIEWER_TOKEN / API_MAINT_TOKEN are empty. Set tokens or bind 127.0.0.1."
+        "API_VIEWER_TOKEN / API_MAINT_TOKEN / API_WEB_TOKEN are empty. Set tokens or bind 127.0.0.1."
     )
 
 
@@ -357,6 +357,8 @@ def _role_at_least(role: str, minimum: str) -> bool:
         return role in {"web", "viewer", "maint", "admin"}
     if minimum == "web_admin":
         return role in {"web", "admin"}
+    if minimum == "web_memory":
+        return role in {"web", "maint", "admin"}
     if role == "web":
         # Web key is deliberately lower than viewer: only dep_web routes accept it.
         return False
@@ -1477,6 +1479,7 @@ def build_app(
 
     dep_web = RequireRole("web")
     dep_web_admin = RequireRole("web_admin")
+    dep_web_memory = RequireRole("web_memory")
     dep_viewer = RequireRole("viewer")
     dep_maint = RequireRole("maint")
     dep_admin = RequireRole("admin")
@@ -1779,7 +1782,7 @@ def build_app(
         return {"ok": True, "trace_id": _trace_id(request), "data": {"accepted": accepted, **manager.status()}}
 
     @app.post("/v1/memory/search")
-    async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_maint)):
+    async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_web_memory)):
         trace_id = _trace_id(request)
         uid = _memory_user_id(request, body.user_id)
         if not uid:
@@ -1796,7 +1799,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": {"results": rows, "user_id": uid}}
 
     @app.post("/v1/memory/chat/recall")
-    async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_maint)):
+    async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_web_memory)):
         """Chronological list from SQLite chat_log (Memory Hub). Requires user_id and/or channel_id."""
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
@@ -2820,7 +2823,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/memory/people/{person_id}")
-    async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_maint)):
+    async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_web_memory)):
         """Person card: accounts + facts (no анкета)."""
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
