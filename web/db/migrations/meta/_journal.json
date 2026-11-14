@@ -43,6 +43,13 @@
       "when": 1794686978903,
       "tag": "0005_nice_karnak",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794688034795,
+      "tag": "0006_wise_electro",
+      "breakpoints": true
     }
   ]
 }

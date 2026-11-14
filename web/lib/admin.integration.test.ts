@@ -281,9 +281,12 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     expect(created.response.status).toBe(200);
     expect(created.data.maxUses).toBe(2);
 
+    const usedEmails: string[] = [];
     for (let index = 0; index < 2; index++) {
+      const email = uniqueEmail(`multi-${index}`);
+      usedEmails.push(email);
       const signUp = await authCall('/sign-up/email', {
-        email: uniqueEmail(`multi-${index}`), password: 'multi-password-12', name: `multi-${index}`, invite: created.token,
+        email, password: 'multi-password-12', name: `multi-${index}`, invite: created.token,
       });
       expect(signUp.response.status).toBe(200);
     }
@@ -294,8 +297,43 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     expect(String(third.json?.message ?? '')).toContain('Лимит');
 
     const list = await listInvites(adminRequest('/api/admin/invites?state=used', state.adminCookie));
-    const items = ((await payloadOf(list))?.data?.items ?? []) as Array<{ id: string; usedCount: number; maxUses: number | null }>;
-    expect(items.find(item => item.id === created.id)).toMatchObject({ usedCount: 2, maxUses: 2 });
+    const items = ((await payloadOf(list))?.data?.items ?? []) as Array<{
+      id: string; usedCount: number; maxUses: number | null; usedBy: string | null;
+    }>;
+    expect(items.find(item => item.id === created.id)).toMatchObject({
+      usedCount: 2, maxUses: 2, usedBy: usedEmails[1],
+    });
+
+    // AR-39: каждое использование пишет audit invite.use (актор — новый аккаунт).
+    const logs = await payloadOf(await listLogs(adminRequest('/api/admin/logs?limit=100&action=invite.use', state.adminCookie)));
+    const uses = ((logs?.data?.items ?? []) as Array<{
+      action: string; targetId: string | null; actorEmail: string; details: { email?: string } | null;
+    }>).filter(item => item.action === 'invite.use' && item.targetId === created.id);
+    expect(uses).toHaveLength(2);
+    expect(uses.map(item => item.details?.email).sort()).toEqual([...usedEmails].sort());
+    expect(uses.every(item => usedEmails.includes(item.actorEmail))).toBe(true);
+  });
+
+  it('неудачная регистрация возвращает расход и не портит «последнее использование» (AR-40)', async () => {
+    const created = await makeInviteViaApi({ ttlHours: 1, maxUses: 2 });
+    const email = uniqueEmail('release');
+    const first = await authCall('/sign-up/email', {
+      email, password: 'release-password-12', name: 'release', invite: created.token,
+    });
+    expect(first.response.status).toBe(200);
+
+    // Повторная регистрация того же адреса: расход уже сделан в before-хуке,
+    // after возвращает его, потому что аккаунт не создан.
+    const duplicate = await authCall('/sign-up/email', {
+      email, password: 'release-password-12', name: 'release', invite: created.token,
+    });
+    expect(duplicate.response.status).not.toBe(200);
+
+    const list = await listInvites(adminRequest('/api/admin/invites?state=all', state.adminCookie));
+    const items = ((await payloadOf(list))?.data?.items ?? []) as Array<{
+      id: string; usedCount: number; usedBy: string | null;
+    }>;
+    expect(items.find(item => item.id === created.id)).toMatchObject({ usedCount: 1, usedBy: email });
   });
 
   it('две параллельные регистрации по одноразовому инвайту: один успех и один отказ (AR-35)', async () => {

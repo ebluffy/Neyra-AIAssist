@@ -267,3 +267,63 @@ def test_matching_web_and_admin_keys_are_refused(tmp_path: Path) -> None:
     core_values = read_env(core)
     assert core_values["API_WEB_TOKEN"] == "same-key"
     assert core_values["API_MAINT_TOKEN"] == "same-key"
+
+
+def test_stale_admin_key_is_removed_when_maint_is_missing(tmp_path: Path) -> None:
+    original = (
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "NEYRA_ADMIN_KEY='core-service-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+    )
+    web = make_env(tmp_path, "web", original)
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_TOKEN='core-service-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "NEYRA_IDENTITY_JWT_SECRET='shared-secret-0123456789abcdef0123456789abcd'\n"
+        "NEYRA_IDENTITY_JWT_ISSUER='neyra-web'\n",
+    )
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 2
+    # AR-38: старый ключ, равный API_TOKEN, удалён, а не оставлен «как был».
+    values = read_env(web)
+    assert "NEYRA_ADMIN_KEY" not in values
+    assert values["NEYRA_WEB_KEY"]
+
+
+def test_stale_admin_key_is_replaced_with_the_maint_key(tmp_path: Path) -> None:
+    web = make_env(
+        tmp_path,
+        "web",
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "NEYRA_ADMIN_KEY='core-service-key'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_TOKEN='core-service-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_MAINT_TOKEN='core-maint-key'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 0, result.stderr
+    assert read_env(web)["NEYRA_ADMIN_KEY"] == "core-maint-key"
+
+
+def test_web_key_matching_admin_token_is_refused(tmp_path: Path) -> None:
+    original = (
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"  # gitleaks:allow — фиктивная фикстура теста
+    )
+    web = make_env(tmp_path, "web", original)
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_TOKEN='same-admin-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_MAINT_TOKEN='other-maint-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_WEB_TOKEN='same-admin-key'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 1
+    assert "совпадает с API_TOKEN" in result.stderr
+    assert web.read_text(encoding="utf-8") == original

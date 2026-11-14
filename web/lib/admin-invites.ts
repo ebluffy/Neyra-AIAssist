@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { and, count, desc, eq, gt, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { getDatabase } from './db';
-import { invite } from '../db/schema';
+import { invite, inviteUse } from '../db/schema';
+import { recordAudit } from './admin-audit';
 import { generateInviteToken, hashInviteToken } from './invite';
 import { inviteState, pageOffset, type InviteListQuery, type InviteState } from './admin-rules';
 
@@ -138,6 +139,28 @@ export async function createInvite(createdBy: string, options: CreateInviteOptio
     email: options.email,
     url: `${baseUrl.replace(/\/$/, '')}/signup?invite=${token}`,
   };
+}
+
+// AR-39: успешная регистрация по инвайту — audit invite.use и привязка
+// использования к аккаунту. Журнал не ломает регистрацию, если запись не удалась.
+export async function recordInviteUse(useId: string, email: string, userId: string | null): Promise<void> {
+  try {
+    const { db } = getDatabase();
+    const rows = await db.update(inviteUse)
+      .set({ userId })
+      .where(eq(inviteUse.id, useId))
+      .returning({ inviteId: inviteUse.inviteId });
+    const row = rows[0];
+    if (!row) return;
+    await recordAudit(
+      { id: userId ?? 'invite', email },
+      'invite.use',
+      { type: 'invite', id: row.inviteId },
+      { email, userId },
+    );
+  } catch {
+    // Журнал и привязка — не критичный путь регистрации.
+  }
 }
 
 // Отзыв: работает и для многоразового инвайта с уже потраченными использованиями.

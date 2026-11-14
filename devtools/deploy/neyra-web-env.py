@@ -116,14 +116,17 @@ def main() -> int:
             print(f"нет {CORE_ENV}: web-ключ записан только сайту, чат не заработает", file=sys.stderr)
             status = 2
     admin_key = (core.get("API_MAINT_TOKEN") or "").strip()
-    if web_key and admin_key and web_key == admin_key:
-        # Отказ до любых записей: web-роль не должна иметь admin/maint-права.
-        print(
-            "ОШИБКА: API_WEB_TOKEN совпадает с API_MAINT_TOKEN — разделите ключи, "
-            "ничего не записано",
-            file=sys.stderr,
-        )
-        return 1
+    admin_token = (core.get("API_TOKEN") or "").strip()
+    # AR-38: web-ключ сравниваем с обоими admin-секретами: с maint и с admin
+    # API_TOKEN. Совпадение с любым — отказ до любых записей.
+    for label, secret in (("API_MAINT_TOKEN", admin_key), ("API_TOKEN", admin_token)):
+        if web_key and secret and web_key == secret:
+            print(
+                f"ОШИБКА: API_WEB_TOKEN совпадает с {label} — разделите ключи, "
+                "ничего не записано",
+                file=sys.stderr,
+            )
+            return 1
     if not admin_key:
         print(
             f"внимание: в {CORE_ENV} нет API_MAINT_TOKEN — NEYRA_ADMIN_KEY не записан, "
@@ -180,10 +183,15 @@ def main() -> int:
         updates["NEYRA_IDENTITY_JWT_SECRET"] = identity_secret
     if web_key:
         updates["NEYRA_WEB_KEY"] = web_key
+    # AR-38: старый NEYRA_ADMIN_KEY либо перезаписывается выбранным maint-ключом,
+    # либо удаляется, если maint-ключа нет. Оставлять вчерашний (тем более равный
+    # API_TOKEN) нельзя: скрипт пишет «не записан», а ключ продолжает жить.
+    remove_keys: set[str] = {"NEYRA_SERVICE_KEY"}
     if admin_key:
         updates["NEYRA_ADMIN_KEY"] = admin_key
+    else:
+        remove_keys.add("NEYRA_ADMIN_KEY")
     # Старое имя ключа не поддерживаем: оно смешивало web- и admin-роль.
-    remove_keys = {"NEYRA_SERVICE_KEY"}
     # Всё, что пишем, обязано читаться тем же парсером: иначе loader отвергнет файл.
     for key, value in updates.items():
         if parse_env(serialize(key, value)).get(key) != value:

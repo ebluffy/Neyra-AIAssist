@@ -119,8 +119,20 @@ const RELATIVE_TTL_MS = 60 * 60 * 1000;
 export function normalizeInviteMaxUses(value: unknown, fallback: number | null = 1): number | null | 'invalid' {
   if (value === undefined) return fallback;
   if (value === null) return null;
-  if (typeof value === 'string' && ['', 'unlimited', 'none', '∞'].includes(value.trim().toLowerCase())) return null;
-  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
+  let parsed: number;
+  if (typeof value === 'number') {
+    // AR-41: только целое; 1.9 и NaN — отказ, без усечения.
+    if (!Number.isInteger(value)) return 'invalid';
+    parsed = value;
+  } else if (typeof value === 'string') {
+    const text = value.trim().toLowerCase();
+    if (['unlimited', 'none', '∞'].includes(text)) return null;
+    // Пустая строка, '5abc', '1.9' — не число, а не «сколько получится».
+    if (!/^\d+$/.test(text)) return 'invalid';
+    parsed = Number(text);
+  } else {
+    return 'invalid';
+  }
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > INVITE_MAX_USES_LIMIT) return 'invalid';
   return parsed;
 }

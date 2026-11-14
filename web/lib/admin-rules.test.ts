@@ -109,6 +109,11 @@ describe('invites', () => {
     expect(normalizeInviteMaxUses(0)).toBe('invalid');
     expect(normalizeInviteMaxUses(10001)).toBe('invalid');
     expect(normalizeInviteMaxUses('nope')).toBe('invalid');
+    expect(normalizeInviteMaxUses('')).toBe('invalid');
+    expect(normalizeInviteMaxUses('5abc')).toBe('invalid');
+    expect(normalizeInviteMaxUses('1.9')).toBe('invalid');
+    expect(normalizeInviteMaxUses(1.9)).toBe('invalid');
+    expect(normalizeInviteMaxUses(' 5 ')).toBe(5);
   });
 
   it('normalizes expiry and optional email binding (AR-35)', () => {

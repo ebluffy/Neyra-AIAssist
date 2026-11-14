@@ -15,6 +15,7 @@ import {
 } from './login-throttle';
 import { checkInvite, consumeInvite, readInviteToken, releaseInvite } from './invite';
 import { isUserBanned, touchLastLogin } from './admin-users';
+import { recordInviteUse } from './admin-invites';
 import { getRegistrationMode } from './site-settings';
 import * as schema from '../db/schema';
 
@@ -192,6 +193,7 @@ function createAuth() {
               { status: 403 },
             );
           }
+          signUpInvite.set(ctx.request, { invite: inviteToken, email: normalizedEmail, useId: consumed.useId });
         }
       }),
       after: createAuthMiddleware(async (ctx) => {
@@ -216,11 +218,17 @@ function createAuth() {
           return;
         }
         if (ctx.path === '/sign-up/email') {
-          // Инвайт уже потрачен в before; неудачная регистрация возвращает его.
+          // Инвайт уже потрачен в before; неудачная регистрация возвращает расход,
+          // успешная — пишет audit invite.use (AR-39) и привязывает аккаунт.
           const pending = signUpInvite.get(ctx.request);
           signUpInvite.delete(ctx.request);
-          if (!pending?.invite) return;
-          if (statusCode !== undefined) await releaseInvite(pending.invite);
+          if (!pending?.invite || !pending.useId) return;
+          if (statusCode !== undefined) {
+            await releaseInvite(pending.useId);
+          } else {
+            const user = (returned as { user?: { id?: string } } | null)?.user;
+            await recordInviteUse(pending.useId, pending.email, user?.id ?? null);
+          }
         }
       }),
     },
@@ -235,4 +243,4 @@ const signInEmail = new WeakMap<Request, string>();
 // IP запроса для счётчика неудач (email + IP), см. AR-27.
 const signInIp = new WeakMap<Request, string>();
 // Same idea for invite-only sign-up: invite token and email ride the request object.
-const signUpInvite = new WeakMap<Request, { invite: string; email: string }>();
+const signUpInvite = new WeakMap<Request, { invite: string; email: string; useId?: string }>();

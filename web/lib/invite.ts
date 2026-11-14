@@ -1,7 +1,7 @@
-import { createHash, randomBytes } from 'node:crypto';
-import { and, eq, gt, isNull, or, sql } from 'drizzle-orm';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { and, desc, eq, gt, isNull, or, sql } from 'drizzle-orm';
 import { getDatabase } from './db';
-import { invite } from '../db/schema';
+import { invite, inviteUse } from '../db/schema';
 
 // AR-2/AR-35: регистрация по инвайтам. Токен живёт только в ссылке; в базе —
 // sha256, лимит использований (max_uses, null — без лимита), срок (null — без
@@ -61,44 +61,63 @@ export async function checkInvite(token: string, email?: string | null): Promise
   }
 }
 
+export interface InviteConsumption {
+  useId: string;
+}
+
 // Расход атомарен: UPDATE … WHERE (лимит не исчерпан, не истёк, не отозван,
-// email совпадает) с used_count + 1. Параллельные регистрации при max_uses=2
-// дают ровно две успешные и отказ третьей; при max_uses=1 — одну.
-export async function consumeInvite(token: string, usedBy: string, email: string): Promise<boolean> {
+// email совпадает) с used_count + 1 и строкой в invite_use (AR-39/AR-40).
+// Параллельные регистрации при max_uses=2 дают ровно две успешные и отказ
+// третьей; при max_uses=1 — одну.
+export async function consumeInvite(token: string, usedBy: string, email: string): Promise<InviteConsumption | null> {
   try {
     const { db } = getDatabase();
     const now = new Date();
-    const rows = await db.update(invite)
-      .set({ usedCount: sql`${invite.usedCount} + 1`, usedBy, usedAt: now })
-      .where(and(
-        eq(invite.tokenHash, hashInviteToken(token)),
-        isNull(invite.revokedAt),
-        or(isNull(invite.expiresAt), gt(invite.expiresAt, now)),
-        or(isNull(invite.maxUses), sql`${invite.usedCount} < ${invite.maxUses}`),
-        or(isNull(invite.email), sql`lower(${invite.email}) = lower(${email})`),
-      ))
-      .returning({ id: invite.id });
-    return rows.length === 1;
+    return await db.transaction(async (tx) => {
+      const rows = await tx.update(invite)
+        .set({ usedCount: sql`${invite.usedCount} + 1`, usedBy, usedAt: now })
+        .where(and(
+          eq(invite.tokenHash, hashInviteToken(token)),
+          isNull(invite.revokedAt),
+          or(isNull(invite.expiresAt), gt(invite.expiresAt, now)),
+          or(isNull(invite.maxUses), sql`${invite.usedCount} < ${invite.maxUses}`),
+          or(isNull(invite.email), sql`lower(${invite.email}) = lower(${email})`),
+        ))
+        .returning({ id: invite.id });
+      const row = rows[0];
+      if (!row) return null;
+      const useId = randomUUID();
+      await tx.insert(inviteUse).values({ id: useId, inviteId: row.id, email: usedBy, usedAt: now });
+      return { useId };
+    });
   } catch {
-    return false;
+    return null;
   }
 }
 
 // Возврат расхода, если регистрация не прошла после атомарного списания.
-// Уменьшаем только наше использование; «последнее использование» чистим, когда
-// счётчик дошёл до нуля, чтобы список не показывал неудавшуюся попытку.
-export async function releaseInvite(token: string): Promise<boolean> {
+// Удаляем конкретное использование и пересчитываем used_by/used_at по
+// оставшимся строкам invite_use, чтобы список не показывал неудавшуюся попытку.
+export async function releaseInvite(useId: string): Promise<boolean> {
   try {
     const { db } = getDatabase();
-    const rows = await db.update(invite)
-      .set({
-        usedCount: sql`greatest(${invite.usedCount} - 1, 0)`,
-        usedBy: sql`case when ${invite.usedCount} - 1 <= 0 then null else ${invite.usedBy} end`,
-        usedAt: sql`case when ${invite.usedCount} - 1 <= 0 then null else ${invite.usedAt} end`,
-      })
-      .where(and(eq(invite.tokenHash, hashInviteToken(token)), gt(invite.usedCount, 0)))
-      .returning({ id: invite.id });
-    return rows.length === 1;
+    return await db.transaction(async (tx) => {
+      const rows = await tx.select().from(inviteUse).where(eq(inviteUse.id, useId)).limit(1);
+      const use = rows[0];
+      if (!use) return false;
+      await tx.delete(inviteUse).where(eq(inviteUse.id, useId));
+      await tx.update(invite)
+        .set({ usedCount: sql`greatest(${invite.usedCount} - 1, 0)` })
+        .where(eq(invite.id, use.inviteId));
+      const last = await tx.select().from(inviteUse)
+        .where(eq(inviteUse.inviteId, use.inviteId))
+        .orderBy(desc(inviteUse.usedAt))
+        .limit(1);
+      await tx.update(invite)
+        .set({ usedBy: last[0]?.email ?? null, usedAt: last[0]?.usedAt ?? null })
+        .where(eq(invite.id, use.inviteId));
+      return true;
+    });
   } catch {
     return false;
   }

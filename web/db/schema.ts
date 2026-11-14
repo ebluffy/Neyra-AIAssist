@@ -68,6 +68,17 @@ export const invite = pgTable('invite', {
   // Отзыв админом: строка остаётся в списке, но инвайт недействителен.
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
 });
+// AR-39/AR-40: каждое успешное использование инвайта отдельной строкой.
+// Журнал админки хранит действие invite.use; эта таблица — источник для
+// восстановления used_by/used_at, если регистрация сорвалась после списания.
+export const inviteUse = pgTable('invite_use', {
+  id: text('id').primaryKey(),
+  inviteId: text('invite_id').notNull().references(() => invite.id, { onDelete: 'cascade' }),
+  email: text('email').notNull(),
+  userId: text('user_id'),
+  usedAt: timestamp('used_at', { withTimezone: true }).defaultNow().notNull(),
+}, table => [index('invite_use_invite_idx').on(table.inviteId, table.usedAt)]);
+
 // Настройки сайта, управляемые админом (пока — режим регистрации).
 export const siteSetting = pgTable('site_setting', {
   key: text('key').primaryKey(),
