@@ -118,6 +118,16 @@ def is_private_endpoint(base_url: str) -> bool:
     return ip in ipaddress.ip_network("100.64.0.0/10")
 
 
+def provider_kind(cfg: dict, provider: str) -> str:
+    """Вид провайдера: openai (шлюз), local, cli. По умолчанию openai."""
+    block = _providers_block(cfg).get(provider)
+    if isinstance(block, dict):
+        kind = str(block.get("kind") or "").strip().lower()
+        if kind:
+            return kind
+    return "openai"
+
+
 def _vault_provider_key(cfg: dict, provider: str) -> str:
     """API-ключ из шифрованного vault (data_dir/secrets). Никогда не из YAML."""
     paths = cfg.get("paths")
