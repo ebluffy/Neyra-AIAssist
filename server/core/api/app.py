@@ -1337,6 +1337,9 @@ def build_app(
     dash_auth = DashboardAuthStore(resolve_data_dir(root, config) / "dashboard_auth.sqlite")
     app.state.dashboard_auth = dash_auth
     main_loop: list[asyncio.AbstractEventLoop | None] = [None]
+    # Один lock на все пересборки LLM: параллельные admin-запросы не должны
+    # одновременно пересоздавать клиентов и менять agent.tools.
+    llm_rebind_lock = asyncio.Lock()
 
     def _schedule_webhook_fanout(event_type: str, source: str, payload: dict[str, Any]) -> None:
         # Always hop to the uvicorn loop — Discord/resident threads have their own loops.
@@ -3974,7 +3977,8 @@ def build_app(
         llm_rebound = False
         if any(str(k).startswith("llm.") and not str(k).startswith("llm.talk_model.responses.") for k in updates_applied):
             try:
-                agent._setup_llm()
+                async with llm_rebind_lock:
+                    await asyncio.to_thread(agent._setup_llm)
                 llm_rebound = True
             except Exception as e:
                 logger.exception("LLM rebind after config update failed; rolling back memory | trace_id=%s", trace_id)
@@ -4093,7 +4097,8 @@ def build_app(
         llm_rebound = False
         if any(path.startswith("llm.") for path in updates):
             try:
-                agent._setup_llm()
+                async with llm_rebind_lock:
+                    await asyncio.to_thread(agent._setup_llm)
                 llm_rebound = True
             except Exception as e:
                 logger.exception("LLM rebind after admin config write failed | trace_id=%s", trace_id)
@@ -4142,7 +4147,8 @@ def build_app(
 
     async def _rebind_llm_after_provider_change() -> bool:
         try:
-            await asyncio.to_thread(agent._setup_llm)
+            async with llm_rebind_lock:
+                await asyncio.to_thread(agent._setup_llm)
         except Exception as e:
             logger.exception("LLM rebind after provider change failed")
             raise ApiError(
@@ -4225,18 +4231,6 @@ def build_app(
         old_block = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
         old_base_url = str((old_block or {}).get("base_url") or "").strip().rstrip("/") if isinstance(old_block, dict) else ""
         base_url_changed = isinstance(old_block, dict) and old_base_url != base_url
-        key_reset = False
-        if base_url_changed:
-            try:
-                if _vault().has(provider):
-                    key_reset = _vault().delete(provider)
-            except Exception as e:
-                logger.exception("Failed to reset provider key after base_url change | trace_id=%s", trace_id)
-                raise ApiError(
-                    "vault_error",
-                    "Не удалось сбросить ключ после смены base_url. Ключ не оставлен на новом адресе; повторите сохранение.",
-                    500,
-                ) from e
 
         updates: dict[str, Any] = {
             f"llm.providers.{provider}.base_url": base_url,
@@ -4253,6 +4247,45 @@ def build_app(
 
         for path, value in updates.items():
             _safe_set(config, path, value)
+
+        # Конфиг уже записан; только теперь убираем старый ключ, чтобы новый
+        # адрес никогда не получил ключ от прежнего хоста.
+        key_reset = False
+        if base_url_changed:
+            try:
+                if _vault().has(provider):
+                    key_reset = _vault().delete(provider)
+            except Exception as e:
+                logger.exception("Failed to reset provider key after base_url change | trace_id=%s", trace_id)
+                # Старый ключ остался: возвращаем прежний адрес, чтобы новый хост
+                # не получил его даже при повторном сохранении.
+                try:
+                    if old_base_url:
+                        persist_allowlisted_updates(
+                            root,
+                            {f"llm.providers.{provider}.base_url": old_base_url},
+                            keep_backup=True,
+                        )
+                        _safe_set(config, f"llm.providers.{provider}.base_url", old_base_url)
+                    else:
+                        from core.runtime.config_loader import persist_dotted_removals
+
+                        persist_dotted_removals(
+                            root,
+                            [f"llm.providers.{provider}.base_url"],
+                            keep_backup=True,
+                        )
+                        if isinstance(config.get("llm", {}).get("providers", {}), dict):
+                            config["llm"]["providers"][provider].pop("base_url", None)
+                except Exception:
+                    logger.exception("Failed to rollback base_url after key reset failure | trace_id=%s", trace_id)
+                raise ApiError(
+                    "vault_error",
+                    "Ключ из vault убрать не удалось; сделан откат base_url. "
+                    "Повторите сохранение нового адреса.",
+                    500,
+                ) from e
+
         llm_rebound = await _rebind_llm_after_provider_change()
         _audit("provider_write", trace_id, api_role, {"provider": provider, "base_url": base_url, "key_reset": key_reset})
         return {

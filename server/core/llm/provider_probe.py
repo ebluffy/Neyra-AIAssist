@@ -13,11 +13,15 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
+import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import Lock
 
@@ -77,7 +81,59 @@ def probe_models(base_url: str, *, timeout: float = PROBE_TIMEOUT_SECONDS, force
     return result
 
 
+def _blocked_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if address.is_link_local or address.is_multicast or address.is_unspecified:
+        return True
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return _blocked_address(address.ipv4_mapped)
+        if address == ipaddress.IPv6Address("fd00:ec2::254"):
+            return True
+    return False
+
+
+def _resolve(host: str, port: int) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Резолв с коротким таймаутом; getaddrinfo сам таймаут не принимает."""
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            infos = pool.submit(
+                socket.getaddrinfo, host, port, 0, socket.SOCK_STREAM
+            ).result(timeout=1.0)
+    except Exception:
+        return []
+    out: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for info in infos:
+        try:
+            out.append(ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]))
+        except ValueError:
+            continue
+    return out
+
+
+def _target_block_reason(base_url: str) -> str:
+    parsed = urllib.parse.urlparse(base_url)
+    host = parsed.hostname or ""
+    if not host:
+        return "base_url без хоста"
+    try:
+        addresses = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            port = int(parsed.port or (443 if parsed.scheme == "https" else 80))
+        except (TypeError, ValueError):
+            return "base_url с некорректным портом"
+        addresses = _resolve(host, port)
+        if not addresses:
+            return "DNS не разрешился"
+    if any(_blocked_address(address) for address in addresses):
+        return "link-local или metadata-адрес запрещён"
+    return ""
+
+
 def _probe_uncached(base_url: str, timeout: float) -> ProbeResult:
+    blocked = _target_block_reason(base_url)
+    if blocked:
+        return ProbeResult("unreachable", None, blocked, time.time())
     request = urllib.request.Request(
         _endpoint(base_url),
         headers={"Accept": "application/json", "User-Agent": "Neyra-Core/1"},

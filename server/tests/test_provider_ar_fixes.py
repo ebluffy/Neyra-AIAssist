@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import socket
 import threading
 from pathlib import Path
 
@@ -32,6 +33,8 @@ def test_metadata_and_link_local_base_urls_are_rejected():
         "http://[fe80::1]/v1",
         "http://metadata.google.internal/computeMetadata/v1",
         "http://instance-data/latest",
+        "http://2852039166/latest",
+        "http://0xa9fea9fe/latest",
     ):
         with pytest.raises(ProviderAdminError):
             validate_base_url(url)
@@ -42,6 +45,18 @@ def test_metadata_and_link_local_base_urls_are_rejected():
         "http://100.121.199.40:11435/v1",
     ):
         assert validate_base_url(url) == url.rstrip("/")
+
+
+def test_probe_rejects_dns_resolving_to_metadata(monkeypatch):
+    from core.llm.provider_probe import probe_models
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    result = probe_models("http://metadata.example/v1", force=True, timeout=0.2)
+    assert result.state == "unreachable"
+    assert "metadata" in result.message
 
 
 def test_probe_does_not_follow_redirects():
@@ -219,3 +234,63 @@ def test_scrub_backups_removes_dotted_key(tmp_path):
     )
     assert scrub_layer_backups(tmp_path, "llm.yaml", ["llm.providers.a.api_key"]) == 1
     assert "sk-only-in-backup" not in bak.read_text(encoding="utf-8")  # gitleaks:allow
+
+
+def test_backup_rotation_keeps_five_timestamped_copies(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "llm.yaml").write_text("llm:\n  providers: {}\n", encoding="utf-8")
+    for index in range(7):
+        persist_allowlisted_updates(
+            tmp_path,
+            {f"llm.providers.p{index}.base_url": f"https://p{index}.example/v1"},
+            keep_backup=True,
+        )
+    stamped = sorted(config_dir.glob("llm.yaml.*.bak"))
+    assert 1 <= len(stamped) <= 5
+    assert (config_dir / "llm.yaml.bak").is_file()
+
+
+def test_probe_rejects_literal_metadata_without_network():
+    from core.llm.provider_probe import probe_models
+
+    result = probe_models("http://169.254.169.254/v1", force=True, timeout=0.1)
+    assert result.state == "unreachable"
+    assert "metadata" in result.message
+
+
+def test_malformed_ipv6_base_url_is_rejected():
+    with pytest.raises(ProviderAdminError):
+        validate_base_url("http://[bad/v1")
+
+
+def test_key_reset_failure_rolls_back_base_url(real_api, auth_headers, monkeypatch):
+    http, agent = real_api
+    agent._setup_llm = lambda: None
+    http.put(
+        "/v1/providers/rollback",
+        json={"base_url": "https://old.example/v1", "kind": "openai"},
+        headers=auth_headers[ADMIN],
+    )
+    http.put(
+        "/v1/providers/rollback/secret",
+        json={"api_key": RAW_KEY},
+        headers=auth_headers[ADMIN],
+    )
+
+    def boom(self, name):
+        raise ProviderSecretsError("vault write failed")
+
+    monkeypatch.setattr(ProviderSecretStore, "delete", boom)
+    response = http.put(
+        "/v1/providers/rollback",
+        json={"base_url": "https://new.example/v1", "kind": "openai"},
+        headers=auth_headers[ADMIN],
+    )
+    assert response.status_code == 500
+    row = next(
+        item for item in http.get("/v1/providers", headers=auth_headers[ADMIN]).json()["data"]["providers"]
+        if item["name"] == "rollback"
+    )
+    assert row["base_url"] == "https://old.example/v1"
+    assert row["has_key"] is True

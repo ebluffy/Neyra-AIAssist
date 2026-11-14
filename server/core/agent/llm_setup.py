@@ -7,7 +7,6 @@ Supports dual-backend: each role sets ``llm.<role>.provider``
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("neyra.agent.llm_setup")
@@ -73,84 +72,13 @@ def _lane_extra_body(agent: Any, lane: str, base: dict[str, Any]) -> dict[str, A
 
 
 
-def _lane_provider_block(agent: Any, lane: str) -> tuple[str, dict[str, Any]]:
-    llm = agent.config.get("llm") if isinstance(agent.config.get("llm"), dict) else {}
-    role = llm.get(f"{lane}_model") if isinstance(llm, dict) else None
-    name = ""
-    if isinstance(role, dict):
-        name = str(role.get("provider") or "").strip()
-    if not name and isinstance(llm, dict):
-        name = str(llm.get("provider") or "").strip()
-    providers = llm.get("providers") if isinstance(llm, dict) else None
-    block = providers.get(name) if isinstance(providers, dict) and name else None
-    return name, block if isinstance(block, dict) else {}
-
-
-def _cli_settings(agent: Any, lane: str):
-    """CliSettings для лейна, если провайдер помечен kind: cli."""
-    from core.llm.cli_provider import CliProviderError, CliSettings
-    from core.llm.profile import resolved_brain_model, resolved_memory_model, resolved_talk_model
-
-    name, block = _lane_provider_block(agent, lane)
-    if str(block.get("kind") or "").strip().lower() != "cli":
-        return None
-    resolver = {"talk": resolved_talk_model, "brain": resolved_brain_model, "memory": resolved_memory_model}.get(lane)
-    model = ""
-    if resolver is not None:
-        try:
-            model = resolver(agent.config, name)
-        except Exception:
-            model = ""
-    if not model:
-        raise CliProviderError(f"llm.{lane}_model.model не задан для CLI-провайдера '{name}'")
-    paths = agent.config.get("paths") if isinstance(agent.config.get("paths"), dict) else {}
-    data_dir = str((paths or {}).get("data_dir") or "").strip()
-    default_sandbox = str(Path(data_dir) / "cli-sandbox") if data_dir else ""
-    return CliSettings.from_config(block, model=model, default_sandbox=default_sandbox)
-
-
-def _cli_connection(name: str):
-    from core.llm.profile import OpenAICompatibleConnection
-
-    return OpenAICompatibleConnection(
-        provider=name,
-        base_url="",
-        api_key="cli",
-        default_headers={},
-        capabilities={"supports_stream": False, "supports_vision": False, "supports_tool_calls": False},
-    )
-
-
 def setup_llm_connection(agent: Any) -> None:
     """Resolve default + per-role provider connections and build ChatOpenAI clients."""
     from core.llm.profile import resolve_openai_compatible_connection
 
-    cli_specs: dict[str, Any] = {}
-    for lane in ("talk", "memory"):
-        spec = _cli_settings(agent, lane)
-        if spec is not None:
-            cli_specs[lane] = spec
-            logger.info("CLI-провайдер | lane=%s cli=%s model=%s", lane, spec.cli, spec.model)
-    vision_spec = _cli_settings(agent, "vision")
-    if vision_spec is not None:
-        logger.error("Лейн vision на CLI пока не поддерживается: картинки через CLI не передаются")
-    agent._cli_lane_specs = cli_specs
-
-    agent._llm_conn_talk = (
-        _cli_connection(_lane_provider_block(agent, "talk")[0])
-        if "talk" in cli_specs
-        else resolve_openai_compatible_connection(agent.config, role="talk_model")
-    )
-    agent._llm_conn_brain = (
-        _cli_connection(_lane_provider_block(agent, "brain")[0])
-        if "brain" in cli_specs
-        else resolve_openai_compatible_connection(agent.config, role="brain_model")
-    )
-    agent._llm_conn_memory = (
-        _cli_connection(_lane_provider_block(agent, "memory")[0])
-        if "memory" in cli_specs
-        else resolve_openai_compatible_connection(agent.config, role="memory_model")
-    )
+    agent._llm_conn_talk = resolve_openai_compatible_connection(agent.config, role="talk_model")
+    agent._llm_conn_brain = resolve_openai_compatible_connection(agent.config, role="brain_model")
+    agent._llm_conn_memory = resolve_openai_compatible_connection(agent.config, role="memory_model")
     agent._llm_conn_vision = resolve_openai_compatible_connection(agent.config, role="vision_model")
     agent._llm_connection = agent._llm_conn_talk
     agent.backend = agent._llm_conn_talk.provider
@@ -192,9 +120,6 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     conn_memory = getattr(agent, "_llm_conn_memory", None) or conn_default
     conn_vision = getattr(agent, "_llm_conn_vision", None) or conn_default
 
-    from core.llm.cli_provider import CliChatModel
-
-    _cli = getattr(agent, "_cli_lane_specs", {})
     cfg = merge_llm_tuning_options(agent.config)
     talk_model = resolved_talk_model(agent.config, conn_talk.provider)
     brain_model = resolved_brain_model(agent.config, conn_brain.provider)
@@ -299,10 +224,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "stream_usage": bool(conn_talk.capabilities.get("supports_stream_usage")),
     }
     talk_kwargs.update(_force_chat_completions(conn_talk.provider))
-    if "talk" in _cli:
-        agent.llm_talk = CliChatModel(settings=_cli["talk"], provider_name=conn_talk.provider)
-    else:
-        agent.llm_talk = ChatOpenAI(**talk_kwargs)
+    talk_client = ChatOpenAI(**talk_kwargs)
     # Do not bind stop=… here: some gateways (aihope / deepseek-v4-*) reject
     # stop sequences with gateway_error 400 Invalid request. Think blocks are
     # stripped in reply_postprocess.extract_think_blocks instead.
@@ -325,10 +247,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     brain_llm_kwargs.update(_force_chat_completions(conn_brain.provider))
     if agent.brain_max_tokens is not None:
         brain_llm_kwargs["max_tokens"] = agent.brain_max_tokens
-    if "brain" in _cli:
-        agent.llm_brain = CliChatModel(settings=_cli["brain"], provider_name=conn_brain.provider)
-    else:
-        agent.llm_brain = ChatOpenAI(**brain_llm_kwargs)
+    brain_client = ChatOpenAI(**brain_llm_kwargs)
 
     hdr_memory = dict(conn_memory.default_headers)
     hdr_memory["X-Title"] = "Neyra Memory"
@@ -347,16 +266,18 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     memory_llm_kwargs.update(_force_chat_completions(conn_memory.provider))
     if agent.reflection_max_tokens is not None:
         memory_llm_kwargs["max_tokens"] = agent.reflection_max_tokens
-    if "memory" in _cli:
-        agent.llm_memory = CliChatModel(settings=_cli["memory"], provider_name=conn_memory.provider)
-    else:
-        agent.llm_memory = ChatOpenAI(**memory_llm_kwargs)
-    agent.llm_reflection = agent.llm_memory
+    memory_client = ChatOpenAI(**memory_llm_kwargs)
+
+    # Публикуем собранные клиенты одним блоком: читатели не видят полупересборку.
+    agent.llm_talk = talk_client
+    agent.llm_brain = brain_client
+    agent.llm_memory = memory_client
+    agent.llm_reflection = memory_client
     agent.llm_memory_model = memory_model
     agent.llm_reflection_model = memory_model
 
-    agent.llm_primary = agent.llm_talk
-    agent.llm = agent.llm_talk
+    agent.llm_primary = talk_client
+    agent.llm = talk_client
     agent.llm_model = talk_model
     agent.llm_talk_model = talk_model
     agent.llm_primary_model = talk_model
@@ -408,7 +329,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     )
     logger.info("LLM vision_model id (resolved)=%s @%s", vision_model_id, conn_vision.provider)
 
-    agent.llm_with_tools = agent.llm_brain
+    agent.llm_with_tools = brain_client
     agent.llm_capabilities = dict(conn_talk.capabilities)
 
     from core.llm.profile import merged_vision_pipeline
@@ -417,7 +338,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     agent.llm_vision = None
     if vis.get("enabled"):
         if vis.get("use_brain_model_for_vision"):
-            agent.llm_vision = agent.llm_brain
+            agent.llm_vision = brain_client
             logger.info(
                 "Зрение: unified brain — нативный мультимодальный ввод (%s@%s).",
                 brain_model,

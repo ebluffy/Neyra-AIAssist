@@ -152,3 +152,19 @@ def test_lost_key_makes_verify_and_strict_get_fail_loudly(tmp_path: Path):
 
 def test_verify_is_quiet_when_store_is_empty(tmp_path: Path):
     _store(tmp_path).verify()
+
+
+def test_nonempty_vault_without_key_fails_verify(tmp_path: Path):
+    store = _store(tmp_path)
+    store.set("openai", "sk-secret")  # gitleaks:allow
+    without_key = ProviderSecretStore(tmp_path / "secrets", env={})
+    with pytest.raises(ProviderSecretsError, match="NEYRA_VAULT_KEY"):
+        without_key.verify()
+
+
+def test_items_not_object_is_reported_as_corrupt(tmp_path: Path):
+    store = _store(tmp_path)
+    store.dir.mkdir(parents=True, exist_ok=True)
+    store.path.write_text('{"version": 2, "items": []}', encoding="utf-8")
+    with pytest.raises(ProviderSecretsError, match="повреждён"):
+        _store(tmp_path).verify()

@@ -176,9 +176,21 @@ def _reject_metadata_host(hostname: str) -> None:
             "invalid_base_url",
             "Link-local и metadata-адреса запрещены: укажите публичный или локальный шлюз модели.",
         )
+    # Числовой/hex-хост (2852039166, 0xa9fea9fe) ОС трактует как IP.
+    if re.fullmatch(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)", host):
+        raise ProviderAdminError(
+            "invalid_base_url",
+            "Числовой или hex-адрес запрещён: используйте обычное имя хоста или IPv4/IPv6.",
+        )
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
+        # Dotted numeric forms (0251.0376...) ОС тоже может трактовать как IP.
+        if re.fullmatch(r"[0-9.]+", host):
+            raise ProviderAdminError(
+                "invalid_base_url",
+                "Числовой или hex-адрес запрещён: используйте обычное имя хоста или IPv4/IPv6.",
+            )
         return
     if _is_blocked_address(address):
         raise ProviderAdminError(

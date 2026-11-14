@@ -33,10 +33,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:  # pragma: no cover - dependency is in requirements; message is for broken installs
+try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-except ImportError:  # pragma: no cover
-    AESGCM = None  # type: ignore[assignment]
+except ImportError as exc:  # pragma: no cover - broken install must fail at import, not on first key
+    raise ImportError(
+        "Для vault провайдеров нужен пакет cryptography (AES-256-GCM). "
+        "Установите server/requirements.txt в venv ядра."
+    ) from exc
 
 logger = logging.getLogger("neyra.provider_secrets")
 
@@ -125,14 +128,10 @@ def _aad(key_id: str) -> bytes:
 
 
 def _aead_encrypt(master: bytes, nonce: bytes, plaintext: bytes, key_id: str) -> bytes:
-    if AESGCM is None:
-        raise ProviderSecretsError("Модуль cryptography не установлен: AES-GCM недоступен")
     return AESGCM(master).encrypt(nonce, plaintext, _aad(key_id))
 
 
 def _aead_decrypt(master: bytes, nonce: bytes, ciphertext: bytes, key_id: str) -> bytes:
-    if AESGCM is None:
-        raise ProviderSecretsError("Модуль cryptography не установлен: AES-GCM недоступен")
     return AESGCM(master).decrypt(nonce, ciphertext, _aad(key_id))
 
 
@@ -200,7 +199,9 @@ class ProviderSecretStore:
         except (OSError, ValueError) as e:
             raise ProviderSecretsError("Файл секретов повреждён") from e
         items = raw.get("items") if isinstance(raw, dict) else None
-        self._items = items if isinstance(items, dict) else {}
+        if not isinstance(items, dict):
+            raise ProviderSecretsError("Файл секретов повреждён")
+        self._items = items
         return self._items
 
     def _save(self, items: dict[str, dict[str, Any]]) -> None:
