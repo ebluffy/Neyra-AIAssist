@@ -45,7 +45,19 @@ ENV_SYNC="$(dirname "$0")/neyra-web-env.py"
 [ -f "$ENV_SYNC" ] || { echo "не найден $ENV_SYNC" >&2; exit 1; }
 
 echo "== 1/9 каталоги"
-mkdir -p "$WEB/app" "$WEB/data/pg" "$WEB/backups"
+# $WEB принадлежит openbot, поэтому каталоги дампов проверяем на симлинк: root не
+# должен ни chown'ить, ни писать через подложенную ссылку (AR-27).
+for dir in "$WEB/backups" "$WEB/backups-app"; do
+  [ ! -L "$dir" ] || { echo "$dir — символическая ссылка, отказ" >&2; exit 1; }
+done
+mkdir -p "$WEB/app" "$WEB/data/pg" "$WEB/backups" "$WEB/backups-app"
+# backups: сюда пишет только root-хелпер openbot-admin — каталог закрыт от openbot,
+# иначе openbot мог бы подложить симлинк и root записал бы дамп за пределы каталога.
+chown root:root "$WEB/backups"
+chmod 0700 "$WEB/backups"
+# backups-app: запасной путь deploy-web.sh без хелпера — каталог принадлежит openbot.
+chown openbot:openbot "$WEB/backups-app" 2>/dev/null || true
+chmod 0700 "$WEB/backups-app"
 
 echo "== 2/9 Node $NODE_VERSION рядом с сайтом (системный здесь 18)"
 if [ ! -x "$WEB/node/bin/node" ]; then
@@ -124,9 +136,11 @@ done
 
 echo "== 6/9 каталоги приложения принадлежат openbot (выкладка без root)"
 # data/pg НЕ трогаем: это bind-mount PGDATA, у него должен остаться владелец контейнера.
+# docker-compose.yml тоже не трогаем: он ставится root:root 0644, чтобы openbot не мог
+# подменить описание сервисов (AR-27). backups остаётся root:root 0700.
 mkdir -p "$WEB/data/pg"
-chown openbot:openbot "$WEB" "$WEB/.env" "$WEB/docker-compose.yml" 2>/dev/null || true
-chown -R openbot:openbot "$WEB/app" "$WEB/node" "$WEB/backups"
+chown openbot:openbot "$WEB" "$WEB/.env" 2>/dev/null || true
+chown -R openbot:openbot "$WEB/app" "$WEB/node" "$WEB/backups-app"
 
 echo "== 7/9 systemd-юнит neyra-web.service"
 cat > "$UNIT" <<EOF
@@ -162,11 +176,15 @@ else
 fi
 
 echo "== 8/9 узкое правило sudoers: рестарт юнита и дамп базы перед миграциями"
+# Root-хелпер ставится из репозитория: без него дамп снимает запасной путь
+# deploy-web.sh (docker из-под sudo), но штатный путь — хелпер с mktemp-записью.
+install -m 0755 "$(dirname "$0")/openbot-admin" /usr/local/sbin/openbot-admin
 sudoers_tmp=$(mktemp)
 cat > "$sudoers_tmp" <<EOF
 # Выкладка сайта Neyra без рута: только рестарт/статус юнита сайта
 # и pg_dump базы сайта перед миграциями (deploy-web.sh, AR-14).
 openbot ALL=(root) NOPASSWD: /bin/systemctl restart neyra-web.service, /bin/systemctl is-active neyra-web.service, /bin/systemctl status neyra-web.service
+openbot ALL=(root) NOPASSWD: /usr/local/sbin/openbot-admin db-dump
 openbot ALL=(root) NOPASSWD: /usr/bin/docker compose -f /opt/neyra/web/docker-compose.yml exec -T ${PG_SERVICE} pg_dump -U neyra -d neyra_web -Fc
 openbot ALL=(root) NOPASSWD: /usr/bin/docker compose -f /opt/neyra/web/docker-compose.yml exec -T db pg_dump -U neyra -d neyra_web -Fc
 EOF

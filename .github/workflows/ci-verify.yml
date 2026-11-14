@@ -55,6 +55,8 @@ jobs:
           pytest -q devtools/mcp_server/test_server.py
       - name: Web env sync on copies (identity issuer, idempotency)
         run: pytest -q devtools/deploy/test_neyra_web_env.py
+      - name: Deploy dump helper (symlink-safe dump, postgres → db)
+        run: pytest -q devtools/deploy/test_openbot_admin.py
       - name: Check layout / no legacy paths
         run: python server/scripts/verify_stage_1b.py
       - name: Healthcheck smoke (examples, skip HTTP)

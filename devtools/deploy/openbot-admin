@@ -9,14 +9,19 @@
 #   visudo -cf /etc/sudoers.d/openbot-admin
 #
 # Секреты БД не печатаются: команда отдаёт только путь и размер дампа.
+# Безопасность записи: root не пишет дамп в предсказуемое имя в каталоге,
+# которым владеет openbot. Сначала mktemp (O_EXCL, 0600), затем mv в имя
+# pre-migrate-*.dump — mv заменяет подложенный симлинк, а не пишет через него.
 set -euo pipefail
 
 COMPOSE_FILE="${NEYRA_COMPOSE_FILE:-/opt/neyra/web/docker-compose.yml}"
 BACKUP_DIR="${NEYRA_BACKUP_DIR:-/opt/neyra/web/backups}"
-DB_SERVICE="${NEYRA_DB_SERVICE:-db}"
+DB_SERVICE="${NEYRA_DB_SERVICE:-}"
 DB_USER="${NEYRA_DB_USER:-neyra}"
 DB_NAME="${NEYRA_DB_NAME:-neyra_web}"
 KEEP_DUMPS="${NEYRA_KEEP_DUMPS:-10}"
+
+die() { echo "$*" >&2; exit 1; }
 
 usage() {
   cat >&2 <<'EOF'
@@ -25,25 +30,63 @@ usage() {
 EOF
 }
 
+# Каталог дампов принадлежит root и закрыт: openbot не может подложить туда
+# симлинк или подменить каталог. Симлинк/файл на месте каталога — отказ.
+prepare_backup_dir() {
+  [ ! -L "$BACKUP_DIR" ] || die "BACKUP_DIR $BACKUP_DIR — символическая ссылка, отказ"
+  if [ -e "$BACKUP_DIR" ] && [ ! -d "$BACKUP_DIR" ]; then
+    die "BACKUP_DIR $BACKUP_DIR — не каталог"
+  fi
+  mkdir -p "$BACKUP_DIR"
+  chown root:root "$BACKUP_DIR"
+  chmod 0700 "$BACKUP_DIR"
+}
+
+# Имя сервиса БД: явный NEYRA_DB_SERVICE, иначе postgres (как в
+# web/docker-compose.yml), затем db (так сервис звался на старых площадках).
+resolve_db_service() {
+  if [ -n "$DB_SERVICE" ]; then
+    printf '%s\n' "$DB_SERVICE"
+    return 0
+  fi
+  local candidate
+  for candidate in postgres db; do
+    if docker compose -f "$COMPOSE_FILE" exec -T "$candidate" \
+      pg_isready -U "$DB_USER" -d "$DB_NAME" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  # Ни один не ответил: отдаём первый по порядку и покажем ошибку pg_dump.
+  printf '%s\n' postgres
+}
+
 case "${1:-}" in
   db-dump)
-    [ -f "$COMPOSE_FILE" ] || { echo "нет $COMPOSE_FILE" >&2; exit 1; }
-    command -v docker >/dev/null 2>&1 || { echo "docker не найден" >&2; exit 1; }
-    mkdir -p "$BACKUP_DIR"
+    [ -f "$COMPOSE_FILE" ] || die "нет $COMPOSE_FILE"
+    command -v docker >/dev/null 2>&1 || die "docker не найден"
+    umask 077
+    prepare_backup_dir
+
+    service="$(resolve_db_service)"
+    tmp="$(mktemp "$BACKUP_DIR/.pre-migrate.XXXXXXXX")"
+    trap 'rm -f "$tmp"' EXIT
+    if ! docker compose -f "$COMPOSE_FILE" exec -T "$service" \
+      pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc > "$tmp"; then
+      die "pg_dump не выполнился (сервис $service)"
+    fi
+    [ -s "$tmp" ] || die "дамп пуст (сервис $service)"
+
+    chown root:root "$tmp"
+    chmod 0600 "$tmp"
     dump="$BACKUP_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
-    if ! docker compose -f "$COMPOSE_FILE" exec -T "$DB_SERVICE" \
-      pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc > "$dump"; then
-      rm -f "$dump"
-      echo "pg_dump не выполнился" >&2
-      exit 1
-    fi
-    if [ ! -s "$dump" ]; then
-      rm -f "$dump"
-      echo "дамп пуст" >&2
-      exit 1
-    fi
+    # mv заменяет существующий путь целиком: подложенный симлинк не раскрывается.
+    mv -f "$tmp" "$dump"
+    trap - EXIT
+
     # Оставляем последние KEEP_DUMPS копий, остальные удаляем.
-    ls -1t "$BACKUP_DIR"/pre-migrate-*.dump 2>/dev/null | tail -n +"$((KEEP_DUMPS + 1))" | xargs -r rm -f
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name 'pre-migrate-*.dump' -printf '%T@ %p\n' 2>/dev/null \
+      | sort -rn | tail -n +"$((KEEP_DUMPS + 1))" | cut -d' ' -f2- | xargs -r rm -f
     echo "path=$dump"
     echo "size=$(stat -c%s "$dump")"
     ;;
