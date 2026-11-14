@@ -8,10 +8,10 @@ this page is a summary and follows it.
 
 Two React applications with different UI stacks exist today: the Tauri desktop client (`client/`,
 own CSS and hand-written components, 233 Vitest tests) and the web dashboard (`server/dashboard`,
-Tailwind, Radix/shadcn primitives, `createBrowserRouter`, TanStack Query, Playwright). The dashboard
+Tailwind, Radix/shadcn primitives, `createBrowserRouter`, TanStack Query, Playwright). That dashboard
 stack is legacy: `createBrowserRouter` and the rest stay with `server/dashboard` and are retired
-together with it, and are not carried into `web`. Keeping both UIs after the reform would reproduce
-the two design languages the reform exists to remove.
+with it — they are not reused in `web` or in the desktop client. Keeping both UIs after the reform
+would reproduce the two design languages the reform exists to remove.
 
 ## Decision
 
@@ -28,9 +28,10 @@ the two design languages the reform exists to remove.
 3. **Overlay and character window stay separate webviews** with their own minimal bundle (three-vrm).
 4. **Router and runtime:** `web` uses the Next.js App Router (file routes; it is also the BFF:
    sessions, OAuth, SSR). The desktop front end (`client/`, later `desktop/`) is a Vite SPA with
-   `createBrowserRouter` and a hash/memory variant, otherwise routes break under the `tauri://`
-   protocol. Two applications in one monorepo with different builders, because Tauri cannot run on
-   the Next.js server runtime (owner's decision of 12.11.2026).
+   its own router and hash/memory history, because browser-history routes break under the `tauri://`
+   protocol; the legacy dashboard's `createBrowserRouter` is not reused there. Two applications in
+   one monorepo with different builders, because Tauri cannot run on the Next.js server runtime
+   (owner's decision of 12.11.2026).
 5. **Platform adapter:** PTT, keyring, input devices and screen capture are unavailable in a
    browser, so they are shown as "app only" instead of being hidden.
 6. **Layout:** chat is full-bleed, ops screens keep the dense "list + detail" shape.

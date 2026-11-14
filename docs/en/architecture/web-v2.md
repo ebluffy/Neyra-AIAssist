@@ -54,6 +54,7 @@ needed before web P1–P2; they are not "minimal fixes" but a separate stage:
 | 7 | Scope in `/v1/memory/*`: a user sees only their own `person_id` | P1 |
 | 8 | HTTP wrapper for STT/TTS in the web (`/v1/web/voice` or `/v1/desktop/voice`) | P1 |
 
-The stack itself is fixed and needs no decision: `web` is the Next.js App Router, while the desktop
-front end (`client/`, later `desktop/`) is a Vite SPA that keeps `createBrowserRouter` with a
-hash/memory variant. This is ADR-0001 item 4 and D3.
+The stack itself is fixed and needs no further decision: `web` is the Next.js App Router, while the
+desktop front end (`client/`, later `desktop/`) is a Vite SPA with its own router and hash/memory
+history under `tauri://`. The legacy dashboard's `createBrowserRouter` is not reused in either
+application. This is ADR-0001 item 4 and D3.
