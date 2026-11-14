@@ -1,0 +1,25 @@
+{
+  "name": "neyra-clients",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": [
+    "packages/*",
+    "web"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "npm run build:packages && npm run build -w @neyra/web",
+    "build:packages": "tsc --build packages/contracts packages/ui",
+    "typecheck": "npm run build:packages && tsc --noEmit -p web",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.4",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0"
+  }
+}

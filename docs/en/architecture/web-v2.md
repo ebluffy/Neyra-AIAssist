@@ -14,7 +14,7 @@ memory browsing, and the desktop client's server-side counterpart. The old dashb
 
 | ID | Decision |
 | --- | --- |
-| D1 | The web client lives in the client monorepo (`apps/web`), not in `server/dashboard` |
+| D1 | The web client lives in the client monorepo (`web`), not in `server/dashboard` |
 | D3 | Stack: Next.js, Better Auth, PostgreSQL, Drizzle |
 | D5 | Identity: the web signs a short-lived JWT (HS256, 60 s TTL); the core verifies it and resolves the web account to its current person (initial ID is uuid5 of `web:<sub>`, a merge may change the account owner) |
 | D14 | Old dashboard is decommissioned after parity; `/legacy` during migration |
@@ -38,24 +38,24 @@ proxy denies the rest at the edge (see [api-reverse-proxy](../ops/api-reverse-pr
 | P4–P5 | Ops screens parity, attachments, model switching |
 | P6 | Domain switch, `/legacy`, removal of the old UI |
 
-## Known blockers before P0
+## Known blockers before web P1
 
-Three core-contract gaps are described in §15 of the Russian document and are not implemented yet:
-`person_id` derivation, attachments in the chat request, and a per-request `model` field. They must
-be decided before P0 code starts. The web stack choice (D3, Next.js) also conflicts with
-[ADR-0001](adr-0001-client-monorepo.md), which names `createBrowserRouter`; PLAN §6.2 recommends
-keeping Next.js and correcting the ADR line.
+§15 of the Russian document lists the core changes. Items 1, 2, 5 and 7 (identity, `/v1/web/me`,
+attachments and scoped memory) are implemented in the web identity PR; items 3, 4, 6 and 8
+(`platform`, per-request `model`, `stop`, HTTP voice) remain P1 work:
 
-## Core web identity contract
+| # | Change | Priority |
+| --- | --- | --- |
+| 1 | Verify `X-Neyra-Identity` on `/v1/chat`, `/v1/ws/chat`, `/v1/memory/*`, `/v1/desktop/*` | done (#73) |
+| 2 | `GET /v1/web/me`: `person_id`, role, limits from the JWT | done (#73) |
+| 3 | `platform` field in `WsChatMessage` | P1 |
+| 4 | `model` field in `ChatRequest` / `WsChatMessage` plus a model override in `agent.chat` | P1 |
+| 5 | Attachment contract: `attachments[]` (`kind`, `path`/`url`, `mime`, `text?`) routed to vision/STT/text extraction | done (#73) |
+| 6 | `stop` message type in WS | P1 |
+| 7 | Scope in `/v1/memory/*`: a user sees only their own `person_id` | done (#73) |
+| 8 | HTTP wrapper for STT/TTS in the web (`/v1/web/voice` or `/v1/desktop/voice`) | P1 |
 
-`NEYRA_IDENTITY_JWT_SECRET` must contain at least 32 UTF-8 bytes. The core requires
-`NEYRA_IDENTITY_JWT_ISSUER` with no default; the web signer must put that exact value
-in the required `iss` claim. HS256 is fixed and TTL is at most 60 seconds.
-An absent identity header preserves legacy API behaviour; an invalid present header
-returns 401, not anonymous access. A bearer service key is still required (WS also
-supports the existing query-token path), and its role is not elevated by JWT claims.
-`GET /v1/web/me` returns the account's current `person_id`, `user_id`, role, name and
-`limits: null`; per-user limits are not implemented yet.
-Signed users can only use scoped search/chat-recall and GET their own person card;
-all other memory API paths and mutations default to 403. Signed admins and legacy
-callers retain existing ops routes subject to the bearer key's permissions.
+The stack itself is fixed and needs no further decision: `web` is the Next.js App Router, while the
+desktop front end (`client/`, later `desktop/`) is a Vite SPA with its own router and hash/memory
+history under `tauri://`. The legacy dashboard's `createBrowserRouter` is not reused in either
+application. This is ADR-0001 item 4 and D3.

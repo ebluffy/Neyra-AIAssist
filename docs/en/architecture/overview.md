@@ -9,7 +9,7 @@ Neyra is a stable core plus plugins under `server/modules/`.
 - `server/modules/discord/`: resident Discord plugin (text + music via Lavalink 4.x, `MUSIC_*` on the bus).
 - `server/modules/*`: other extensions via the Plugin SDK (`local_voice`, `000EXAMPLE`, …).
 - `server/config/*.yaml` + `server/config.yaml`: layered configuration; HTTP bind and dashboard settings in `server/config/server.yaml` (`api:`, `dashboard:`).
-- `client/`: Tauri 2 + React desktop app (Rust `src-tauri` + UI; front moves to `apps/desktop`).
+- `client/`: Tauri 2 + React desktop app (Rust `src-tauri` + UI; front moves to `desktop`).
 - `devtools/mcp_server/`: optional IDE MCP (not shipped with runtime).
 
 ## Data flow
