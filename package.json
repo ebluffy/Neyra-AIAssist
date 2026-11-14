@@ -9,6 +9,10 @@
   "engines": {
     "node": ">=22"
   },
+  "overrides": {
+    "tinypool": "^2.2.0",
+    "postcss": "^8.5.3"
+  },
   "scripts": {
     "build": "npm run build:packages && npm run build -w @neyra/web",
     "build:packages": "tsc --build packages/contracts packages/ui",

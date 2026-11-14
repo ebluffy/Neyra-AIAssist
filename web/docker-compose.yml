@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U neyra -d neyra_web']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      POSTGRES_USER: neyra
+      POSTGRES_DB: neyra_web
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD outside the repository}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./data/pg:/var/lib/postgresql/data
