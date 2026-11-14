@@ -33,6 +33,7 @@ async def run_chat(
     lyrics_marker: str,
     avatar_url: Optional[str] = None,
     discord_context=None,
+    person_id: Optional[str] = None,
 ) -> dict:
     """Run one non-streaming chat turn; return text/sounds/thoughts/raw."""
     try:
@@ -48,6 +49,7 @@ async def run_chat(
             vision_images=vision_images,
             lyrics_marker=lyrics_marker,
             source="chat",
+            person_id=person_id,
         )
         if fp is not None:
             return fp
@@ -69,6 +71,7 @@ async def run_chat(
         log_lane="chat",
         avatar_url=avatar_url,
         discord_context=discord_context,
+        person_id=person_id,
     )
     try:
         try:

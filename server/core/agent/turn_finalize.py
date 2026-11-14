@@ -67,7 +67,8 @@ async def finalize_successful_turn(
     if hub is not None and active is not None and active.affect_generations is not None:
         try:
             await asyncio.to_thread(hub.apply_affect_turn, turn_id=active.id, discord_id=discord_user_id,
-                                  text=user_message, generations=active.affect_generations)
+                                  text=user_message, generations=active.affect_generations,
+                                  person_id=getattr(active, "person_id", None))
         except Exception:
             logger.exception("Assistant state update failed")
     if hub is None or getattr(hub, "rag_write_mode", "off") != "off":

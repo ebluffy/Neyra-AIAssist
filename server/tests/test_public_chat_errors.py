@@ -63,13 +63,24 @@ def test_provider_error_never_reaches_public_output(tmp_path, transport, stage):
                     with client.websocket_connect("/v1/ws/chat", headers=headers) as ws:
                         assert ws.receive_json()["type"] == "hello"
                         ws.send_json({"type": "chat", "text": "hello"})
-                        error = ws.receive_json()
-                        output = [error]
+                        # Wave 2: progress frames may precede the terminal frame.
+                        output = []
+                        while True:
+                            event = ws.receive_json()
+                            output.append(event)
+                            assert event["type"] in ("phase", "token", "thinking", "error", "done"), event
+                            if event["type"] in ("error", "done"):
+                                break
+                        error = output[-1]
                         assert error["type"] == "error"
                         assert error["message"] == expected
                         assert error["code"] == "chat_error"
         assert "PRIVATE-UPSTREAM-DETAIL" not in json.dumps(output)
-        assert error["model_trace"]["status"] == "failed"
+        if transport == "ws":
+            # Browser frames never carry model_trace (wave 2 contract).
+            assert "model_trace" not in error
+        else:
+            assert error["model_trace"]["status"] == "failed"
         failed.assert_called_once()
         assert private in failed.call_args.kwargs["error"]
         attempts = {"brain": 0, "talk": 2, "overflow_retry": 4}[stage]

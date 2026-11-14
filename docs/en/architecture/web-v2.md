@@ -16,7 +16,7 @@ memory browsing, and the desktop client's server-side counterpart. The old dashb
 | --- | --- |
 | D1 | The web client lives in the client monorepo (`web`), not in `server/dashboard` |
 | D3 | Stack: Next.js, Better Auth, PostgreSQL, Drizzle |
-| D5 | Identity: the web signs a short-lived JWT (HS256, 60 s TTL); the core verifies it and maps `platform='web'`, `platform_user_id=<sub>` to a `person_id` = uuid5 of `web:<sub>` |
+| D5 | Identity: the web signs a short-lived JWT (HS256, 60 s TTL); the core verifies it and resolves the web account to its current person (initial ID is uuid5 of `web:<sub>`, a merge may change the account owner) |
 | D14 | Old dashboard is decommissioned after parity; `/legacy` during migration |
 | D15 | Attachments (images, PDF, audio) are part of the chat contract |
 | D27 | Per-message model choice: switching the model does not create a new chat |
@@ -40,18 +40,19 @@ proxy denies the rest at the edge (see [api-reverse-proxy](../ops/api-reverse-pr
 
 ## Known blockers before web P1
 
-§15 of the Russian document lists the core changes. Items 1–8 are P1 work in the core and are
-needed before web P1–P2; they are not "minimal fixes" but a separate stage:
+§15 of the Russian document lists the core changes. Items 1, 2, 5 and 7 (identity, `/v1/web/me`,
+attachments and scoped memory) are implemented in the web identity PR; items 3, 4, 6 and 8
+(`platform`, per-request `model`, `stop`, HTTP voice) remain P1 work:
 
 | # | Change | Priority |
 | --- | --- | --- |
-| 1 | Verify `X-Neyra-Identity` on `/v1/chat`, `/v1/ws/chat`, `/v1/memory/*`, `/v1/desktop/*` | P1 |
-| 2 | `GET /v1/web/me`: `person_id`, role, limits from the JWT | P1 |
+| 1 | Verify `X-Neyra-Identity` on `/v1/chat`, `/v1/ws/chat`, `/v1/memory/*`, `/v1/desktop/*` | done (#73) |
+| 2 | `GET /v1/web/me`: `person_id`, role, limits from the JWT | done (#73) |
 | 3 | `platform` field in `WsChatMessage` | P1 |
 | 4 | `model` field in `ChatRequest` / `WsChatMessage` plus a model override in `agent.chat` | P1 |
-| 5 | Attachment contract: `attachments[]` (`kind`, `path`/`url`, `mime`, `text?`) routed to vision/STT/text extraction; today `extra="forbid"` returns 422 | P1 |
+| 5 | Attachment contract: `attachments[]` (`kind`, `path`/`url`, `mime`, `text?`) routed to vision/STT/text extraction | done (#73) |
 | 6 | `stop` message type in WS | P1 |
-| 7 | Scope in `/v1/memory/*`: a user sees only their own `person_id` | P1 |
+| 7 | Scope in `/v1/memory/*`: a user sees only their own `person_id` | done (#73) |
 | 8 | HTTP wrapper for STT/TTS in the web (`/v1/web/voice` or `/v1/desktop/voice`) | P1 |
 
 The stack itself is fixed and needs no further decision: `web` is the Next.js App Router, while the

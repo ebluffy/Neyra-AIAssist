@@ -248,6 +248,10 @@ def apply_env_secrets(cfg: dict) -> None:
     if im:
         cfg.setdefault("api", {})["maint_token"] = im
 
+    iw = _s("API_WEB_TOKEN")
+    if iw:
+        cfg.setdefault("api", {})["web_token"] = iw
+
     pub_env = [
         n
         for n in ("API_PUBLIC_BASE_URL", "DASHBOARD_PUBLIC_BASE_URL", "INTERNAL_API_PUBLIC_BASE_URL")
