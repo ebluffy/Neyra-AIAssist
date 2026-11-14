@@ -2,17 +2,17 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Bell, BookOpen, KeyRound, Mic, Palette, Sparkles, User, X } from 'lucide-react';
-import { IconButton, NeyraLogo } from './ui';
+import { Avatar, IconButton, NeyraLogo } from './ui';
 
 type SectionId = 'profile' | 'appearance' | 'notifications' | 'voice' | 'library' | 'memory' | 'security';
 
-const SECTIONS: Array<{ id: SectionId; label: string; icon: React.ReactNode; soon?: boolean }> = [
+const SECTIONS: Array<{ id: SectionId; label: string; icon: React.ReactNode }> = [
   { id: 'profile', label: 'Профиль', icon: <User size={15} /> },
   { id: 'appearance', label: 'Внешний вид', icon: <Palette size={15} /> },
-  { id: 'notifications', label: 'Уведомления', icon: <Bell size={15} />, soon: true },
-  { id: 'voice', label: 'Голос', icon: <Mic size={15} />, soon: true },
-  { id: 'library', label: 'Библиотека', icon: <BookOpen size={15} />, soon: true },
-  { id: 'memory', label: 'Память', icon: <Sparkles size={15} />, soon: true },
+  { id: 'notifications', label: 'Уведомления', icon: <Bell size={15} /> },
+  { id: 'voice', label: 'Голос', icon: <Mic size={15} /> },
+  { id: 'library', label: 'Библиотека', icon: <BookOpen size={15} /> },
+  { id: 'memory', label: 'Память', icon: <Sparkles size={15} /> },
   { id: 'security', label: 'Безопасность', icon: <KeyRound size={15} /> },
 ];
 
@@ -33,14 +33,6 @@ function writeFlag(key: string, value: boolean) {
   try {
     window.localStorage.setItem(key, value ? '1' : '0');
   } catch {}
-}
-
-function SoonBadge() {
-  return (
-    <span className="ml-1.5 rounded-full border border-[var(--border)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--text-subtle)]">
-      soon
-    </span>
-  );
 }
 
 function Row({ label, hint, children }: { label: string; hint?: string; children?: React.ReactNode }) {
@@ -137,10 +129,10 @@ export function SettingsDialog({ open, onClose, user, onSignOut }: SettingsDialo
         aria-modal="true"
         aria-label="Настройки"
         tabIndex={-1}
-        className="relative w-full max-w-[880px] h-[min(640px,88vh)] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border-strong)] bg-[var(--surface)] shadow-panel animate-dialog flex flex-col sm:flex-row"
+        className="relative w-full max-w-[680px] h-[min(540px,88vh)] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border-strong)] bg-[var(--surface)] shadow-panel animate-dialog flex flex-col sm:flex-row"
       >
         {/* Левая навигация */}
-        <nav className="sm:w-[220px] shrink-0 border-b sm:border-b-0 sm:border-r border-[var(--border)] bg-[var(--surface-2)] p-3 flex sm:flex-col gap-1 overflow-x-auto sm:overflow-y-auto">
+        <nav className="sm:w-[210px] shrink-0 border-b sm:border-b-0 sm:border-r border-[var(--border)] bg-[var(--surface-2)] p-2.5 sm:p-3 flex sm:flex-col gap-1 overflow-x-auto sm:overflow-y-auto no-scrollbar scroll-smooth">
           <div className="hidden sm:flex items-center gap-2 px-2 pb-3 text-[13px] font-semibold text-[var(--text)]">
             <NeyraLogo size={20} />
             <span>Настройки</span>
@@ -153,13 +145,12 @@ export function SettingsDialog({ open, onClose, user, onSignOut }: SettingsDialo
               aria-current={section === item.id ? 'page' : undefined}
               className={`flex shrink-0 items-center gap-2 rounded-[var(--radius-sm)] min-h-[44px] sm:min-h-0 px-3 py-2 text-[13px] text-left transition-colors cursor-pointer select-none ${
                 section === item.id
-                  ? 'bg-[var(--surface-3)] text-[var(--text)] font-semibold shadow-sm border border-[var(--border-strong)] sm:border-0'
+                  ? 'bg-[var(--surface-3)] text-[var(--text)] font-semibold shadow-sm'
                   : 'text-[var(--text-muted)] hover:bg-[var(--surface-3)] hover:text-[var(--text)]'
               }`}
             >
               <span className="text-[var(--text-muted)]">{item.icon}</span>
               <span>{item.label}</span>
-              {item.soon && <SoonBadge />}
             </button>
           ))}
         </nav>
@@ -173,25 +164,43 @@ export function SettingsDialog({ open, onClose, user, onSignOut }: SettingsDialo
 
           <div className="flex-1 overflow-y-auto px-4 py-3">
             {section === 'profile' && (
-              <div>
-                <Row label="Email" hint="Логин на сайте. Меняется администратором.">
-                  <span className="text-[13px] text-[var(--text-muted)]">{user.email ?? '—'}</span>
-                </Row>
-                <Row label="Имя" hint="Как тебя называет Нейра в диалоге.">
-                  <span className="text-[13px] text-[var(--text-muted)]">{user.name || 'не задано'}</span>
-                </Row>
-                <Row label="Роль">
-                  <span className="text-[13px] text-[var(--text-muted)]">{user.role === 'admin' ? 'администратор' : 'пользователь'}</span>
-                </Row>
-                <Row label="Выйти из аккаунта">
+              <div className="space-y-4">
+                <div className="flex items-center gap-3.5 pb-4 border-b border-[var(--border)]">
+                  <Avatar name={user.name} email={user.email} size={44} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[14px] font-semibold text-[var(--text)] truncate">{user.name || 'Пользователь'}</div>
+                    <div className="text-[12px] text-[var(--text-muted)] truncate">{user.email ?? '—'}</div>
+                    <div className="mt-1 inline-flex items-center px-2 py-0.5 rounded-[var(--radius-sm)] bg-[var(--surface-3)] text-[10px] font-medium text-[var(--text-subtle)] border border-[var(--border)]">
+                      {user.role === 'admin' ? 'Администратор' : 'Пользователь'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <Row label="Email" hint="Логин на сайте. Меняется администратором.">
+                    <span className="text-[13px] text-[var(--text-muted)]">{user.email ?? '—'}</span>
+                  </Row>
+                  <Row label="Имя" hint="Имя обращения ассистента в диалоге.">
+                    <span className="text-[13px] text-[var(--text-muted)]">{user.name || 'не задано'}</span>
+                  </Row>
+                  <Row label="Роль в системе" hint="Уровень прав: доступ к админ-панели и настройкам.">
+                    <span className="text-[13px] text-[var(--text-muted)]">{user.role === 'admin' ? 'Администратор' : 'Пользователь'}</span>
+                  </Row>
+                </div>
+
+                <div className="pt-2 border-t border-[var(--border)] flex items-center justify-between">
+                  <div>
+                    <p className="text-[13px] font-medium text-[var(--text)]">Сессия</p>
+                    <p className="text-[11px] text-[var(--text-subtle)]">Выйти из текущей учетной записи</p>
+                  </div>
                   <button
                     type="button"
                     onClick={() => { onClose(); onSignOut?.(); }}
-                    className="min-h-[44px] sm:min-h-0 flex items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border-strong)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors cursor-pointer"
+                    className="min-h-[36px] flex items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border-strong)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors cursor-pointer"
                   >
                     Выйти
                   </button>
-                </Row>
+                </div>
               </div>
             )}
 
