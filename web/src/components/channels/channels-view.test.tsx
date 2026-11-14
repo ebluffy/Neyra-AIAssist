@@ -10,6 +10,12 @@ import { guilds, members, detail, messages, stats, activity } from './fixtures.t
 const push = vi.fn();
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 
+vi.mock('../../../lib/history-client', () => ({
+  apiListThreads: vi.fn(async () => ({ items: [], next_cursor: null })),
+  apiListNotes: vi.fn(async () => ({ items: [], next_cursor: null })),
+  importLocalStorageData: vi.fn(async () => ({ threadsCount: 0, notesCount: 0 })),
+}));
+
 beforeAll(() => {
   HTMLDialogElement.prototype.showModal = function () {
     this.setAttribute('open', '');

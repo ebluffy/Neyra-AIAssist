@@ -25,6 +25,7 @@ const SAFE_ERROR_MESSAGES: Record<string, string> = {
   chat_error: 'Ошибка при обработке сообщения в ядре.',
   provider_rate_limit: 'Провайдер моделей ограничил запросы. Попробуйте позже — лимит сбрасывается автоматически.',
   idle_timeout: 'Превышено время ожидания ответа ядра.',
+  thread_not_found: 'Диалог не найден.',
 };
 
 // Только эти коды ядра несут публичный текст, который можно показать как есть.
@@ -130,6 +131,8 @@ export async function POST(request: Request) {
     username: session.user.email,
     platform_user_id: session.user.id,
     channel_id: channelId,
+    ...(parsed.data.thread_id ? { thread_id: parsed.data.thread_id } : {}),
+    ...(parsed.data.client_message_id ? { client_message_id: parsed.data.client_message_id } : {}),
   };
 
   return new Promise<Response>((resolve) => {

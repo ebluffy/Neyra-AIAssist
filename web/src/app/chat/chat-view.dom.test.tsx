@@ -11,8 +11,75 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }),
 }));
 
+let mockThreads: Array<{ id: string; title: string; updatedAt: string }> = [];
+let mockMessagesByThread: Record<string, Array<{ id: string; role: string; content: string }>> = {};
+
+vi.mock('../../../lib/history-client', () => ({
+  apiListThreads: vi.fn(async () => ({ items: [...mockThreads], next_cursor: null })),
+  apiGetThread: vi.fn(async (id: string) => {
+    const thread = mockThreads.find((t) => t.id === id) || {
+      id,
+      title: 'Диалог',
+      archived: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      message_count: 0,
+    };
+    const msgs = mockMessagesByThread[id] || [];
+    return {
+      thread,
+      messages: msgs,
+      has_more: false,
+      next_before: null,
+    };
+  }),
+  apiCreateThread: vi.fn(async (body: { title?: string }) => {
+    const id = `thread-${Date.now()}`;
+    const item = { id, title: body?.title || 'Диалог', updatedAt: new Date().toISOString() };
+    mockThreads.push(item);
+    return {
+      id,
+      title: item.title,
+      archived: false,
+      created_at: item.updatedAt,
+      updated_at: item.updatedAt,
+      message_count: 0,
+    };
+  }),
+  apiUpdateThread: vi.fn(async (id: string, body: { title?: string }) => {
+    const t = mockThreads.find((item) => item.id === id);
+    if (t && body.title) t.title = body.title;
+    return { id, title: t?.title || '', archived: false, created_at: '', updated_at: '', message_count: 0 };
+  }),
+  apiDeleteThread: vi.fn(async (id: string) => {
+    mockThreads = mockThreads.filter((t) => t.id !== id);
+    delete mockMessagesByThread[id];
+    return true;
+  }),
+  apiListNotes: vi.fn(async () => ({ items: [], next_cursor: null })),
+  apiCreateNote: vi.fn(async () => ({ id: 'note-1', user_id: 'u1', thread_id: null, text: '', pinned: false, created_at: '', updated_at: '' })),
+  apiUpdateNote: vi.fn(async () => ({ id: 'note-1', user_id: 'u1', thread_id: null, text: '', pinned: false, created_at: '', updated_at: '' })),
+  apiDeleteNote: vi.fn(async () => true),
+  importLocalStorageData: vi.fn(async (userId: string) => {
+    try {
+      const raw = window.localStorage.getItem(`neyra:threads:${userId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        mockThreads = parsed;
+        for (const t of parsed) {
+          const msgsRaw = window.localStorage.getItem(`neyra:thread-messages:${userId}:${t.id}`);
+          if (msgsRaw) {
+            mockMessagesByThread[t.id] = JSON.parse(msgsRaw);
+          }
+        }
+      }
+    } catch {}
+    return { threadsCount: mockThreads.length, notesCount: 0 };
+  }),
+}));
+
 beforeAll(() => { Element.prototype.scrollIntoView = vi.fn(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); window.name = ''; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); window.name = ''; mockThreads = []; mockMessagesByThread = {}; });
 
 function sseResponse(tokenText = 'привет'): Response {
   const body = new ReadableStream<Uint8Array>({
@@ -321,7 +388,7 @@ describe('ChatView conversation', () => {
     expect(screen.getByText('Ответ первого треда')).toBeTruthy();
 
     // Switch to thread 2 from sidebar
-    fireEvent.click(screen.getByText('Второй сохранённый тред'));
+    fireEvent.click(await screen.findByText('Второй сохранённый тред'));
 
     // Messages from thread 2 displayed!
     expect(screen.getAllByText('Сообщение из второго треда').length).toBeGreaterThanOrEqual(1);

@@ -3,13 +3,32 @@ const identity = { username: z.string().max(120).optional(), platform_user_id: z
 // Target v2 contract (§9/§15). model/attachments/stop require P1 core support.
 export const AttachmentSchema = z.object({ kind: z.enum(['image', 'file', 'audio', 'text']), path: z.string().optional(), url: z.string().url().optional(), mime: z.string().min(1), text: z.string().optional() }).strict().refine(v => !!(v.path || v.url || v.text), 'Attachment requires a source');
 // Личность пользователя подписывает BFF из сессии; клиент не может её прислать.
-export const ChatRequestSchema = z.object({ text: z.string().min(1).max(6000), chat_id: z.string().uuid().optional(), model: z.string().min(1).optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
+export const ChatRequestSchema = z.object({
+  text: z.string().min(1).max(6000),
+  chat_id: z.string().uuid().optional(),
+  thread_id: z.string().max(64).optional(),
+  client_message_id: z.string().max(64).optional(),
+  model: z.string().min(1).optional(),
+  attachments: z.array(AttachmentSchema).optional(),
+}).strict();
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 export const ChatMessageSchema = z.object({ id: z.union([z.string(), z.number()]).optional(), turn_id: z.string().optional(), request_id: z.string().uuid().optional(), role: z.enum(['user', 'assistant', 'system']), content: z.string(), model: z.string().optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 // The kernel's WsChatMessage has no `platform` (REST only) and forbids unknown fields, so the
 // WS variant is built from explicit fields. model/attachments are target v2 (§15).
-const wsChat = z.object({ type: z.literal('chat'), text: z.string().min(1).max(6000), username: identity.username, platform_user_id: identity.platform_user_id, channel_id: identity.channel_id, author_display_name: identity.author_display_name, display_name: z.string().max(120).optional(), model: z.string().min(1).optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
+const wsChat = z.object({
+  type: z.literal('chat'),
+  text: z.string().min(1).max(6000),
+  username: identity.username,
+  platform_user_id: identity.platform_user_id,
+  channel_id: identity.channel_id,
+  author_display_name: identity.author_display_name,
+  display_name: z.string().max(120).optional(),
+  model: z.string().min(1).optional(),
+  attachments: z.array(AttachmentSchema).optional(),
+  thread_id: z.string().max(64).optional(),
+  client_message_id: z.string().max(64).optional(),
+}).strict();
 export const WsChatMessageSchema = z.discriminatedUnion('type', [wsChat, z.object({ type: z.literal('ping') }).strict(), z.object({ type: z.literal('stop') }).strict()]);
 export const WsChatEventSchema = z.discriminatedUnion('type', [
  z.object({ type: z.literal('hello'), trace_id: z.string(), protocol: z.literal('neyra.ws.chat.v1'), role: z.string(), ping_interval_seconds: z.number(), idle_timeout_seconds: z.number(), reconnect: z.literal('open_new_socket') }),
@@ -39,3 +58,37 @@ export const DesktopManifestSchema = z.object({ protocol: z.literal('neyra.deskt
 export type DesktopManifest = z.infer<typeof DesktopManifestSchema>;
 export const CaptureEventSchema = z.discriminatedUnion('type', [z.object({ type: z.literal('recording'), seq: z.number().int().nonnegative().optional() }), z.object({ type: z.literal('capture.failed'), code: z.string(), stage: z.enum(['start', 'stop']), seq: z.number().int().nonnegative().optional() }), z.object({ type: z.literal('voice.clip'), request_id: z.string().uuid(), audio: z.string(), duration_ms: z.number().nonnegative(), seq: z.number().int().nonnegative().optional() })]);
 export type CaptureEvent = z.infer<typeof CaptureEventSchema>;
+
+export const WebThreadItemSchema = z.object({
+  id: z.string().min(1),
+  title: z.string(),
+  archived: z.boolean(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  last_message_at: z.string().nullable().optional(),
+  message_count: z.number().int().nonnegative(),
+});
+export type WebThreadItem = z.infer<typeof WebThreadItemSchema>;
+
+export const WebThreadMessageSchema = z.object({
+  id: z.string().min(1),
+  thread_id: z.string().min(1),
+  seq: z.number().int().positive(),
+  role: z.enum(['user', 'assistant', 'system']),
+  content: z.string(),
+  attachments: z.array(z.unknown()).optional(),
+  model: z.string().nullable().optional(),
+  created_at: z.string(),
+});
+export type WebThreadMessage = z.infer<typeof WebThreadMessageSchema>;
+
+export const WebNoteSchema = z.object({
+  id: z.string().min(1),
+  thread_id: z.string().nullable().optional(),
+  text: z.string(),
+  pinned: z.boolean(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type WebNote = z.infer<typeof WebNoteSchema>;
+

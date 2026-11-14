@@ -45,6 +45,13 @@ import {
   setUiSoundsEnabled,
 } from '../../lib/ui-sounds';
 import { ru } from '../../i18n';
+import {
+  apiCreateThread,
+  apiGetThread,
+  apiUpdateThread,
+  apiDeleteThread,
+  type ThreadMessage,
+} from '../../../lib/history-client';
 
 export interface ChatMessageAttachment {
   id: string;
@@ -122,6 +129,8 @@ export function ChatView({
   const [messages, setMessages] = useState<ChatMessageItem[]>(() => {
     if (initialMessages && initialMessages.length > 0) return initialMessages;
     if (typeof window === 'undefined') return [];
+    const isImported = window.localStorage.getItem(`neyra:imported-to-db:${user.id}`) === '1';
+    if (isImported) return [];
     try {
       const currentTabChatId = resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
       const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${currentTabChatId}`);
@@ -204,6 +213,69 @@ export function ChatView({
     if (typeof window === 'undefined') return resolveChatId(null, 'ssr', user.id);
     return resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
   });
+
+  const [serverThreadId, setServerThreadId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const saved = sessionStorage.getItem(`neyra.server_thread_id:${user.id}:${resolveTabKey(window)}`);
+      if (saved) return saved;
+      const currentTabChatId = resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
+      if (/^[a-f0-9]{32}$/i.test(currentTabChatId)) return currentTabChatId;
+    } catch {}
+    return null;
+  });
+
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [nextBefore, setNextBefore] = useState<number | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+
+  // Load thread messages on mount if serverThreadId is active
+  useEffect(() => {
+    let cancelled = false;
+    async function loadInitialThread() {
+      if (!serverThreadId || !user?.id) return;
+      try {
+        const detail = await apiGetThread(serverThreadId);
+        if (!cancelled && detail && detail.messages && detail.messages.length > 0) {
+          setMessages(
+            detail.messages.map((m: ThreadMessage) => ({
+              id: m.id,
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+            }))
+          );
+          if (detail.thread?.title) setCustomTitle(detail.thread.title);
+          setHasMoreMessages(Boolean(detail.has_more));
+          setNextBefore(detail.next_before ?? null);
+        }
+      } catch {}
+    }
+    loadInitialThread();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const loadOlderMessages = async () => {
+    const targetId = serverThreadId || chatId;
+    if (!targetId || !hasMoreMessages || nextBefore === null || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const detail = await apiGetThread(targetId, { before: nextBefore, limit: 30 });
+      const olderMessages: ChatMessageItem[] = detail.messages.map((m: ThreadMessage) => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      }));
+      setMessages((prev) => [...olderMessages, ...prev]);
+      setHasMoreMessages(detail.has_more);
+      setNextBefore(detail.next_before);
+    } catch (err) {
+      console.error('Failed to load older messages', err);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
 
   // Load pinned messages whenever chatId or user.id changes
   useEffect(() => {
@@ -294,6 +366,8 @@ export function ChatView({
   // Sync messages & thread list to localStorage per user (§3, AR-12)
   useEffect(() => {
     if (typeof window === 'undefined' || !chatId || !user?.id) return;
+    const isImported = window.localStorage.getItem(`neyra:imported-to-db:${user.id}`) === '1';
+    if (isImported) return; // Zero legacy writes once imported to DB!
     const threadsKey = `neyra:threads:${user.id}`;
     const msgsKey = `neyra:thread-messages:${user.id}:${chatId}`;
 
@@ -339,38 +413,66 @@ export function ChatView({
     } catch {}
   }, [messages, chatId, user?.id, customTitle]);
 
-  const switchThread = (targetThreadId: string) => {
+  const switchThread = async (targetThreadId: string) => {
     if (streaming) {
       stopGeneration();
     }
     setChatId(targetThreadId);
+    setServerThreadId(targetThreadId);
     try {
       sessionStorage.setItem(`neyra.chat_id:${user.id}:${resolveTabKey(window)}`, targetThreadId);
-      const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
-      if (raw) {
-        setMessages(JSON.parse(raw));
-      } else {
+      sessionStorage.setItem(`neyra.server_thread_id:${user.id}:${resolveTabKey(window)}`, targetThreadId);
+    } catch {}
+
+    const isImported = typeof window !== 'undefined' && window.localStorage.getItem(`neyra:imported-to-db:${user.id}`) === '1';
+    if (!isImported) {
+      try {
+        const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
+        if (raw) {
+          setMessages(JSON.parse(raw));
+        } else {
+          setMessages([]);
+        }
+        const rawPins = window.localStorage.getItem(`neyra:pinned-messages:${user.id}:${targetThreadId}`);
+        setPinnedMessageIds(rawPins ? JSON.parse(rawPins) : []);
+        const rawThreads = window.localStorage.getItem(`neyra:threads:${user.id}`);
+        if (rawThreads) {
+          const list = JSON.parse(rawThreads);
+          const targetThread = list.find((t: any) => t.id === targetThreadId);
+          setCustomTitle(targetThread ? targetThread.title : null);
+        }
+      } catch {
         setMessages([]);
+        setPinnedMessageIds([]);
       }
-      const rawPins = window.localStorage.getItem(`neyra:pinned-messages:${user.id}:${targetThreadId}`);
-      setPinnedMessageIds(rawPins ? JSON.parse(rawPins) : []);
-      const rawThreads = window.localStorage.getItem(`neyra:threads:${user.id}`);
-      if (rawThreads) {
-        const list = JSON.parse(rawThreads);
-        const targetThread = list.find((t: any) => t.id === targetThreadId);
-        setCustomTitle(targetThread ? targetThread.title : null);
-      }
-    } catch {
-      setMessages([]);
-      setPinnedMessageIds([]);
     }
+
+    try {
+      const detail = await apiGetThread(targetThreadId);
+      if (detail && detail.messages) {
+        setMessages(
+          detail.messages.map((m: ThreadMessage) => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+          }))
+        );
+        if (detail.thread?.title) setCustomTitle(detail.thread.title);
+        setHasMoreMessages(Boolean(detail.has_more));
+        setNextBefore(detail.next_before ?? null);
+      }
+    } catch {}
+
     setSidebarOpen(false);
     if (textareaRef.current) {
       textareaRef.current.focus();
     }
   };
 
-  const deleteThread = (targetThreadId: string) => {
+  const deleteThread = async (targetThreadId: string) => {
+    try {
+      await apiDeleteThread(targetThreadId);
+    } catch {}
     try {
       window.localStorage.removeItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
       window.localStorage.removeItem(`neyra:pinned-messages:${user.id}:${targetThreadId}`);
@@ -381,7 +483,8 @@ export function ChatView({
         window.localStorage.setItem(`neyra:threads:${user.id}`, JSON.stringify(filtered));
       }
     } catch {}
-    if (chatId === targetThreadId) {
+    window.dispatchEvent(new CustomEvent('neyra:threads-refresh'));
+    if (chatId === targetThreadId || serverThreadId === targetThreadId) {
       startNewChat();
     }
   };
@@ -391,16 +494,20 @@ export function ChatView({
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-    const newId =
-      typeof window === 'undefined'
-        ? resolveChatId(null, 'ssr', user.id)
-        : resetChatId(window.sessionStorage, resolveTabKey(window), user.id);
+    const newId = resetChatId(window.sessionStorage, resolveTabKey(window), user.id);
     setChatId(newId);
+    setServerThreadId(null);
+    try {
+      sessionStorage.removeItem(`neyra.server_thread_id:${user.id}:${resolveTabKey(window)}`);
+    } catch {}
     setMessages([]);
-    setPinnedMessageIds([]);
     setCustomTitle(null);
-    setThinking(false);
+    setHasMoreMessages(false);
+    setNextBefore(null);
+    setPinnedMessageIds([]);
+    setUsage(null);
     setStreaming(false);
+    setThinking(false);
     setSidebarOpen(false);
     setAttachments([]);
     setAttachmentError(null);
@@ -620,7 +727,8 @@ export function ChatView({
   const executeChatRequest = async (
     textToSend: string,
     targetAssistantMsgId: string,
-    currentAttachments: ChatMessageAttachment[]
+    currentAttachments: ChatMessageAttachment[],
+    clientMessageId?: string
   ) => {
     setThinking(true);
     setStreaming(true);
@@ -629,6 +737,25 @@ export function ChatView({
     abortControllerRef.current = controller;
     let assistantText = '';
 
+    // If serverThreadId is not set, auto-create a server thread for this chat
+    let activeThreadId = serverThreadId;
+    if (!activeThreadId && user?.id) {
+      try {
+        const title = customTitle || textToSend.split('\n')[0].slice(0, 80);
+        const created = await apiCreateThread({ title });
+        if (created?.id) {
+          activeThreadId = created.id;
+          setServerThreadId(created.id);
+          try {
+            sessionStorage.setItem(`neyra.server_thread_id:${user.id}:${resolveTabKey(window)}`, created.id);
+          } catch {}
+          window.dispatchEvent(new CustomEvent('neyra:threads-refresh'));
+        }
+      } catch {
+        // If thread creation fails (e.g. offline/mocked), continue with chatId
+      }
+    }
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -636,6 +763,8 @@ export function ChatView({
         body: JSON.stringify({
           text: textToSend,
           chat_id: chatId,
+          thread_id: activeThreadId || undefined,
+          client_message_id: clientMessageId || undefined,
           attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
         }),
         signal: controller.signal,
@@ -727,6 +856,7 @@ export function ChatView({
               if (rawEvent.usage && typeof rawEvent.usage === 'object') {
                 setUsage(rawEvent.usage);
               }
+              window.dispatchEvent(new CustomEvent('neyra:threads-refresh'));
             } else if (event.type === 'error') {
               setThinking(false);
               const errMsg = event.message || 'Ошибка обработки запроса.';
@@ -789,7 +919,7 @@ export function ChatView({
       { id: assistantMsgId, role: 'assistant', content: '', pending: true },
     ]);
 
-    await executeChatRequest(text, assistantMsgId, activeAttachments);
+    await executeChatRequest(text, assistantMsgId, activeAttachments, userMsgId);
   };
 
   // V2 Retry flow (§4.1): Reuses existing exchange, shows spinner in error block, no duplicate user message
@@ -802,10 +932,12 @@ export function ChatView({
     // Find preceding user message
     let userText = lastUserMessage;
     let userAttachments: ChatMessageAttachment[] = [];
+    let precedingUserMsgId: string | undefined;
     for (let i = assistantIndex - 1; i >= 0; i--) {
       if (messages[i].role === 'user') {
         userText = messages[i].content;
         userAttachments = messages[i].attachments || [];
+        precedingUserMsgId = messages[i].id;
         break;
       }
     }
@@ -816,24 +948,41 @@ export function ChatView({
     setMessages(prev =>
       prev.map(m =>
         m.id === assistantMsgId
-          ? { ...m, isRetrying: true, content: '' }
+          ? { ...m, isRetrying: true, content: '', error: null }
           : m
       )
     );
 
-    await executeChatRequest(userText, assistantMsgId, userAttachments);
+    await executeChatRequest(userText, assistantMsgId, userAttachments, precedingUserMsgId);
   };
 
   // V2 Delete exchange (§4.1): Removes error and its preceding user message
-  const handleDeleteExchange = (assistantMsgId: string) => {
+  const handleDeleteExchange = async (assistantMsgId: string) => {
+    let willBeEmpty = false;
     setMessages(prev => {
       const idx = prev.findIndex(m => m.id === assistantMsgId);
       if (idx === -1) return prev;
+      let next: ChatMessageItem[];
       if (idx > 0 && prev[idx - 1].role === 'user') {
-        return prev.filter((_, i) => i !== idx && i !== idx - 1);
+        next = prev.filter((_, i) => i !== idx && i !== idx - 1);
+      } else {
+        next = prev.filter(m => m.id !== assistantMsgId);
       }
-      return prev.filter(m => m.id !== assistantMsgId);
+      if (next.length === 0) willBeEmpty = true;
+      return next;
     });
+
+    if (willBeEmpty && serverThreadId) {
+      const tid = serverThreadId;
+      setServerThreadId(null);
+      try {
+        sessionStorage.removeItem(`neyra.server_thread_id:${user.id}:${resolveTabKey(window)}`);
+      } catch {}
+      try {
+        await apiDeleteThread(tid);
+      } catch {}
+      window.dispatchEvent(new CustomEvent('neyra:threads-refresh'));
+    }
   };
 
   const handleSubmit = (e: FormEvent) => {
@@ -895,7 +1044,7 @@ export function ChatView({
         activeSection="chat"
         user={user}
         threadTitle={threadTitle}
-        activeThreadId={chatId}
+        activeThreadId={serverThreadId || chatId}
         onNewChat={startNewChat}
         onSelectThread={switchThread}
         onDeleteThread={deleteThread}
@@ -969,6 +1118,21 @@ export function ChatView({
                 <p className="text-[14px] text-[var(--text-muted)] max-w-[380px]">
                   Задайте вопрос — или начните с готового сценария под полем ввода.
                 </p>
+              </div>
+            )}
+
+            {/* Older Messages Button */}
+            {hasMoreMessages && (
+              <div className="flex justify-center pb-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={loadingOlder}
+                  onClick={loadOlderMessages}
+                  className="text-xs h-8"
+                >
+                  {loadingOlder ? 'Загрузка…' : 'Показать более ранние сообщения'}
+                </Button>
               </div>
             )}
 

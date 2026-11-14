@@ -13,6 +13,89 @@ vi.mock('../../../lib/auth-client', () => ({
   signOut: vi.fn(async () => {}),
 }));
 
+let mockThreads: Array<{ id: string; title: string; updatedAt: string }> = [];
+let mockNotes: Array<{ id: string; title: string; content: string; updatedAt: string; pinned?: boolean }> = [];
+
+vi.mock('../../../lib/history-client', () => ({
+  apiListThreads: vi.fn(async () => ({ items: [...mockThreads], next_cursor: null })),
+  apiDeleteThread: vi.fn(async (id: string) => {
+    mockThreads = mockThreads.filter((t) => t.id !== id);
+    return true;
+  }),
+  apiListNotes: vi.fn(async () => ({
+    items: mockNotes.map((n) => ({
+      id: n.id,
+      user_id: 'user-1',
+      thread_id: null,
+      text: n.title ? `${n.title}\n\n${n.content}` : n.content,
+      pinned: Boolean(n.pinned),
+      created_at: n.updatedAt,
+      updated_at: n.updatedAt,
+    })),
+    next_cursor: null,
+  })),
+  apiCreateNote: vi.fn(async (data: { text: string; pinned?: boolean }) => {
+    const lines = (data.text || '').split('\n\n');
+    const title = lines.length > 1 ? lines[0] : '';
+    const content = lines.length > 1 ? lines.slice(1).join('\n\n') : data.text;
+    const note = {
+      id: `note-${Date.now()}`,
+      title,
+      content,
+      updatedAt: new Date().toISOString(),
+      pinned: Boolean(data.pinned),
+    };
+    mockNotes.push(note);
+    return {
+      id: note.id,
+      user_id: 'user-1',
+      thread_id: null,
+      text: data.text,
+      pinned: Boolean(data.pinned),
+      created_at: note.updatedAt,
+      updated_at: note.updatedAt,
+    };
+  }),
+  apiUpdateNote: vi.fn(async (id: string, data: { text?: string; pinned?: boolean }) => {
+    const idx = mockNotes.findIndex((n) => n.id === id);
+    if (idx !== -1) {
+      if (data.text !== undefined) {
+        const lines = data.text.split('\n\n');
+        mockNotes[idx].title = lines.length > 1 ? lines[0] : '';
+        mockNotes[idx].content = lines.length > 1 ? lines.slice(1).join('\n\n') : data.text;
+      }
+      if (data.pinned !== undefined) {
+        mockNotes[idx].pinned = data.pinned;
+      }
+      const n = mockNotes[idx];
+      return {
+        id: n.id,
+        user_id: 'user-1',
+        thread_id: null,
+        text: data.text !== undefined ? data.text : (n.title ? `${n.title}\n\n${n.content}` : n.content),
+        pinned: Boolean(n.pinned),
+        created_at: n.updatedAt,
+        updated_at: n.updatedAt,
+      };
+    }
+    throw new Error('Not found');
+  }),
+  apiDeleteNote: vi.fn(async (id: string) => {
+    mockNotes = mockNotes.filter((n) => n.id !== id);
+    return true;
+  }),
+  importLocalStorageData: vi.fn(async (userId: string) => {
+    try {
+      const rawThreads = window.localStorage.getItem(`neyra:threads:${userId}`);
+      if (rawThreads) mockThreads = JSON.parse(rawThreads);
+      const rawNotes = window.localStorage.getItem(`neyra:notes:${userId}`);
+      if (rawNotes) mockNotes = JSON.parse(rawNotes);
+      window.localStorage.setItem(`neyra:imported-to-db:${userId}`, '1');
+    } catch {}
+    return { threadsCount: mockThreads.length, notesCount: mockNotes.length };
+  }),
+}));
+
 describe('AppSidebar', () => {
   const adminUser: AppSidebarUser = {
     id: 'user-admin-1',
@@ -30,6 +113,8 @@ describe('AppSidebar', () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    mockThreads = [];
+    mockNotes = [];
     push.mockClear();
   });
 
@@ -81,19 +166,19 @@ describe('AppSidebar', () => {
     expect(screen.getByText('Ничего не найдено')).toBeDefined();
   });
 
-  it('manages user notes in localStorage scoped to user.id', async () => {
+  it('manages user notes in database scoped to user.id', async () => {
     render(<AppSidebar activeSection="chat" user={normalUser} />);
 
     // Switch to notes tab
     fireEvent.click(screen.getByRole('button', { name: 'Заметки' }));
 
-    expect(screen.getByText('Хранятся в этом браузере')).toBeDefined();
-    expect(screen.getByText('Заметок пока нет')).toBeDefined();
+    expect(screen.getByText('Личные заметки в базе данных')).toBeDefined();
+    expect(await screen.findByText('Заметок пока нет')).toBeDefined();
 
     // Add note
     fireEvent.click(screen.getByRole('button', { name: 'Добавить заметку' }));
 
-    const titleInput = screen.getByRole('textbox', { name: 'Заголовок заметки' });
+    const titleInput = await screen.findByRole('textbox', { name: 'Заголовок заметки' });
     const contentInput = screen.getByRole('textbox', { name: 'Текст заметки' });
 
     fireEvent.change(titleInput, { target: { value: 'Моя тестовая заметка' } });
@@ -105,20 +190,16 @@ describe('AppSidebar', () => {
     expect(await screen.findByText('Моя тестовая заметка')).toBeDefined();
     expect(screen.getByText('Секретный контент')).toBeDefined();
 
-    // Verify localStorage key
-    const rawStored = window.localStorage.getItem(`neyra:notes:${normalUser.id}`);
-    expect(rawStored).toBeTruthy();
-    const parsed = JSON.parse(rawStored || '[]');
-    expect(parsed.length).toBe(1);
-    expect(parsed[0].title).toBe('Моя тестовая заметка');
+    // Verify stored in mockNotes
+    expect(mockNotes.length).toBe(1);
+    expect(mockNotes[0].title).toBe('Моя тестовая заметка');
 
     // Delete note
     const deleteBtn = screen.getByRole('button', { name: 'Удалить заметку' });
     fireEvent.click(deleteBtn);
 
-    expect(screen.queryByText('Моя тестовая заметка')).toBeNull();
-    const afterDelete = JSON.parse(window.localStorage.getItem(`neyra:notes:${normalUser.id}`) || '[]');
-    expect(afterDelete.length).toBe(0);
+    await waitFor(() => expect(screen.queryByText('Моя тестовая заметка')).toBeNull());
+    expect(mockNotes.length).toBe(0);
   });
 
   it('renders collapsed rail with required actions when collapsed', () => {
@@ -137,7 +218,7 @@ describe('AppSidebar', () => {
 
   it('handles mobile drawer backdrop click and Escape key', () => {
     const onCloseMobile = vi.fn();
-    const { rerender } = render(
+    render(
       <AppSidebar
         activeSection="chat"
         user={normalUser}
@@ -185,7 +266,7 @@ describe('AppSidebar', () => {
     // Delete thread th-1
     const deleteBtn = screen.getByRole('button', { name: 'Удалить Обсуждение Docker' });
     fireEvent.click(deleteBtn);
-    expect(onDeleteThread).toHaveBeenCalledWith('th-1');
+    await waitFor(() => expect(onDeleteThread).toHaveBeenCalledWith('th-1'));
   });
 
   it('opens and closes user profile menu popover', () => {

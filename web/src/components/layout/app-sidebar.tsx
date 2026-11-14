@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -11,6 +11,7 @@ import {
   LogOut,
   MessageSquare,
   PanelLeft,
+  Pin,
   Plus,
   Search,
   Settings,
@@ -22,6 +23,15 @@ import {
 import { Avatar, Button, IconButton, NeyraLogo } from '../ui';
 import { resetChatId, resolveTabKey } from '../../../lib/chat-id';
 import { signOut } from '../../../lib/auth-client';
+import {
+  apiListThreads,
+  apiDeleteThread,
+  apiListNotes,
+  apiCreateNote,
+  apiUpdateNote,
+  apiDeleteNote,
+  importLocalStorageData,
+} from '../../../lib/history-client';
 import { ru } from '../../i18n';
 import { AdminDialog, type AdminSection } from '../admin/admin-dialog';
 
@@ -44,6 +54,36 @@ export interface UserNote {
   title: string;
   content: string;
   updatedAt: string;
+  pinned?: boolean;
+}
+
+function parseNoteText(text: string): { title: string; content: string } {
+  const trimmed = (text || '').trim();
+  const doubleBreak = trimmed.indexOf('\n\n');
+  if (doubleBreak !== -1) {
+    return {
+      title: trimmed.slice(0, doubleBreak).trim() || 'Без названия',
+      content: trimmed.slice(doubleBreak + 2).trim(),
+    };
+  }
+  const singleBreak = trimmed.indexOf('\n');
+  if (singleBreak !== -1) {
+    return {
+      title: trimmed.slice(0, singleBreak).trim() || 'Без названия',
+      content: trimmed.slice(singleBreak + 1).trim(),
+    };
+  }
+  if (trimmed.length <= 40) {
+    return { title: trimmed || 'Без названия', content: '' };
+  }
+  return { title: trimmed.slice(0, 40) + '…', content: trimmed };
+}
+
+function formatNoteText(title: string, content: string): string {
+  const t = title.trim();
+  const c = content.trim();
+  if (t && c) return `${t}\n\n${c}`;
+  return t || c || 'Новая заметка';
 }
 
 export interface AppSidebarProps {
@@ -99,9 +139,13 @@ export function AppSidebar({
 
   // Threads state
   const [threads, setThreads] = useState<ChatThreadItem[]>([]);
+  const [threadsLoading, setThreadsLoading] = useState(false);
+  const [threadsError, setThreadsError] = useState<string | null>(null);
 
   // Notes state
   const [notes, setNotes] = useState<UserNote[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [notesError, setNotesError] = useState<string | null>(null);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [noteTitleInput, setNoteTitleInput] = useState('');
   const [noteContentInput, setNoteContentInput] = useState('');
@@ -113,9 +157,7 @@ export function AppSidebar({
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const [isMobile, setIsMobile] = useState(false);
 
-  const userId = user?.id || 'guest';
-  const notesStorageKey = `neyra:notes:${userId}`;
-  const threadsStorageKey = `neyra:threads:${userId}`;
+  const userId = user?.id;
 
   // Read collapsed state from localStorage
   useEffect(() => {
@@ -192,71 +234,109 @@ export function AppSidebar({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [collapsed]);
 
-  // Read notes from localStorage
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(notesStorageKey);
-      if (raw) {
-        setNotes(JSON.parse(raw));
-      } else {
-        setNotes([]);
-      }
-    } catch {
-      setNotes([]);
+  const loadThreads = useCallback(async () => {
+    if (!userId) {
+      setThreads([]);
+      setThreadsLoading(false);
+      return;
     }
-  }, [notesStorageKey]);
-
-  // Read & sync threads from localStorage
-  useEffect(() => {
+    setThreadsLoading(true);
+    setThreadsError(null);
     try {
-      const raw = window.localStorage.getItem(threadsStorageKey);
-      let list: ChatThreadItem[] = raw ? JSON.parse(raw) : [];
+      const res = await apiListThreads();
+      setThreads(
+        res.items.map((t) => ({
+          id: t.id,
+          title: t.title || 'Диалог',
+          updatedAt: t.updated_at,
+          lastMessage: undefined,
+        }))
+      );
+    } catch {
+      setThreadsError('Не удалось загрузить список чатов.');
+    } finally {
+      setThreadsLoading(false);
+    }
+  }, [userId]);
 
-      // If activeThreadId and threadTitle are provided and not default/empty
-      if (threadTitle && threadTitle !== ru.chat) {
-        const targetId = activeThreadId || 'current';
-        const existingIdx = list.findIndex((t) => t.id === targetId || (targetId === 'current' && t.title === threadTitle));
-        if (existingIdx >= 0) {
-          list[existingIdx] = {
-            ...list[existingIdx],
-            id: targetId,
-            title: threadTitle,
-            updatedAt: new Date().toISOString(),
+  const loadNotes = useCallback(async () => {
+    if (!userId) {
+      setNotes([]);
+      setNotesLoading(false);
+      return;
+    }
+    setNotesLoading(true);
+    setNotesError(null);
+    try {
+      const res = await apiListNotes();
+      setNotes(
+        res.items.map((n) => {
+          const parsed = parseNoteText(n.text);
+          return {
+            id: n.id,
+            title: parsed.title,
+            content: parsed.content,
+            updatedAt: n.updated_at,
+            pinned: n.pinned,
           };
-        } else {
-          list = [
-            {
-              id: targetId,
-              title: threadTitle,
-              updatedAt: new Date().toISOString(),
-            },
-            ...list,
-          ];
-        }
-        window.localStorage.setItem(threadsStorageKey, JSON.stringify(list));
-      } else if (threadTitle === ru.chat) {
-        // When chat is reset to default empty title, remove unsaved synthetic 'current' thread and empty active thread
-        list = list.filter((t) => t.id !== 'current' && (!activeThreadId || t.id !== activeThreadId));
+        })
+      );
+    } catch {
+      setNotesError('Не удалось загрузить заметки.');
+    } finally {
+      setNotesLoading(false);
+    }
+  }, [userId]);
+
+  // Initial load & one-time import on mount / user change
+  useEffect(() => {
+    let cancelled = false;
+    async function init() {
+      if (userId) {
         try {
-          window.localStorage.setItem(threadsStorageKey, JSON.stringify(list));
+          await importLocalStorageData(userId);
         } catch {}
       }
-
-      setThreads(list);
-    } catch {
-      setThreads([]);
+      if (!cancelled) {
+        loadThreads();
+        loadNotes();
+      }
     }
-  }, [threadsStorageKey, threadTitle, activeThreadId]);
+    init();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, loadThreads, loadNotes]);
 
-  function handleDeleteThread(e: React.MouseEvent, threadId: string) {
+  // Listen for thread refresh events
+  useEffect(() => {
+    const handleRefresh = () => {
+      loadThreads();
+    };
+    window.addEventListener('neyra:threads-refresh', handleRefresh);
+    return () => window.removeEventListener('neyra:threads-refresh', handleRefresh);
+  }, [loadThreads]);
+
+  // Sync active thread title in list if changed
+  useEffect(() => {
+    if (!threadTitle || threadTitle === ru.chat || !activeThreadId) return;
+    setThreads((prev) => {
+      const idx = prev.findIndex((t) => t.id === activeThreadId);
+      if (idx >= 0) {
+        return prev.map((t) => (t.id === activeThreadId ? { ...t, title: threadTitle, updatedAt: new Date().toISOString() } : t));
+      }
+      return [{ id: activeThreadId, title: threadTitle, updatedAt: new Date().toISOString() }, ...prev];
+    });
+  }, [threadTitle, activeThreadId]);
+
+  async function handleDeleteThread(e: React.MouseEvent, threadId: string) {
     e.stopPropagation();
-    const updated = threads.filter((t) => t.id !== threadId);
+    setThreads((prev) => prev.filter((t) => t.id !== threadId));
     try {
-      window.localStorage.setItem(threadsStorageKey, JSON.stringify(updated));
-      window.localStorage.removeItem(`neyra:thread-messages:${userId}:${threadId}`);
-      window.localStorage.removeItem(`neyra:pinned-messages:${userId}:${threadId}`);
-    } catch {}
-    setThreads(updated);
+      await apiDeleteThread(threadId);
+    } catch (err) {
+      console.error('Failed to delete thread', err);
+    }
     if (onDeleteThread) {
       onDeleteThread(threadId);
     } else if (activeThreadId === threadId) {
@@ -319,23 +399,22 @@ export function AppSidebar({
   }
 
   // Notes operations
-  function saveNotesToStorage(updated: UserNote[]) {
-    setNotes(updated);
+  async function handleCreateNote() {
     try {
-      window.localStorage.setItem(notesStorageKey, JSON.stringify(updated));
-    } catch {}
-  }
-
-  function handleCreateNote() {
-    const newNote: UserNote = {
-      id: `note-${Date.now()}`,
-      title: 'Новая заметка',
-      content: '',
-      updatedAt: new Date().toISOString(),
-    };
-    const updated = [newNote, ...notes];
-    saveNotesToStorage(updated);
-    startEditingNote(newNote);
+      const created = await apiCreateNote({ text: 'Новая заметка' });
+      const parsed = parseNoteText(created.text);
+      const newNote: UserNote = {
+        id: created.id,
+        title: parsed.title,
+        content: parsed.content,
+        updatedAt: created.updated_at,
+        pinned: created.pinned,
+      };
+      setNotes((prev) => [newNote, ...prev]);
+      startEditingNote(newNote);
+    } catch (err) {
+      console.error('Failed to create note', err);
+    }
   }
 
   function startEditingNote(note: UserNote) {
@@ -344,27 +423,43 @@ export function AppSidebar({
     setNoteContentInput(note.content);
   }
 
-  function handleSaveEditingNote() {
+  async function handleSaveEditingNote() {
     if (!editingNoteId) return;
-    const updated = notes.map((n) =>
-      n.id === editingNoteId
-        ? {
-            ...n,
-            title: noteTitleInput.trim() || 'Без названия',
-            content: noteContentInput.trim(),
-            updatedAt: new Date().toISOString(),
-          }
-        : n
-    );
-    saveNotesToStorage(updated);
-    setEditingNoteId(null);
+    const text = formatNoteText(noteTitleInput, noteContentInput);
+    try {
+      const updated = await apiUpdateNote(editingNoteId, { text });
+      const parsed = parseNoteText(updated.text);
+      setNotes((prev) =>
+        prev.map((n) =>
+          n.id === editingNoteId
+            ? { ...n, title: parsed.title, content: parsed.content, updatedAt: updated.updated_at }
+            : n
+        )
+      );
+      setEditingNoteId(null);
+    } catch (err) {
+      console.error('Failed to save note', err);
+    }
   }
 
-  function handleDeleteNote(noteId: string) {
-    const updated = notes.filter((n) => n.id !== noteId);
-    saveNotesToStorage(updated);
+  async function handleDeleteNote(noteId: string) {
+    setNotes((prev) => prev.filter((n) => n.id !== noteId));
     if (editingNoteId === noteId) {
       setEditingNoteId(null);
+    }
+    try {
+      await apiDeleteNote(noteId);
+    } catch (err) {
+      console.error('Failed to delete note', err);
+    }
+  }
+
+  async function handleTogglePinNote(noteId: string, currentPinned: boolean) {
+    try {
+      await apiUpdateNote(noteId, { pinned: !currentPinned });
+      loadNotes();
+    } catch (err) {
+      console.error('Failed to toggle pin', err);
     }
   }
 
@@ -627,7 +722,20 @@ export function AppSidebar({
 
                 {/* Threads list */}
                 <div className="flex-1 overflow-y-auto space-y-0.5 pr-0.5" aria-label="Список чатов">
-                  {filteredThreads.length === 0 ? (
+                  {threadsLoading && threads.length === 0 ? (
+                    <div className="space-y-2 p-2 animate-pulse" role="status" aria-label="Загрузка чатов">
+                      <div className="h-7 bg-[var(--surface-2)] rounded-[var(--radius-sm)]" />
+                      <div className="h-7 bg-[var(--surface-2)] rounded-[var(--radius-sm)]" />
+                      <div className="h-7 bg-[var(--surface-2)] rounded-[var(--radius-sm)]" />
+                    </div>
+                  ) : threadsError ? (
+                    <div className="py-6 px-3 text-center space-y-2">
+                      <p className="text-xs text-[var(--danger)]">{threadsError}</p>
+                      <Button variant="secondary" size="sm" onClick={loadThreads}>
+                        Повторить
+                      </Button>
+                    </div>
+                  ) : filteredThreads.length === 0 ? (
                     <div className="py-8 px-2 flex flex-col items-center text-center">
                       <div className="w-10 h-10 rounded-full bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-center text-[var(--text-subtle)] mb-2.5">
                         <MessageSquare size={17} />
@@ -705,7 +813,7 @@ export function AppSidebar({
                 <div className="flex items-center justify-between shrink-0 px-0.5">
                   <div>
                     <h3 className="text-xs font-semibold text-[var(--text)]">Заметки</h3>
-                    <p className="text-[10px] text-[var(--text-subtle)]">Хранятся в этом браузере</p>
+                    <p className="text-[10px] text-[var(--text-subtle)]">Личные заметки в базе данных</p>
                   </div>
                   <IconButton
                     aria-label="Добавить заметку"
@@ -758,14 +866,26 @@ export function AppSidebar({
 
                 {/* Notes List */}
                 <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5" aria-label="Список заметок">
-                  {notes.length === 0 ? (
+                  {notesLoading && notes.length === 0 ? (
+                    <div className="space-y-2 p-2 animate-pulse" role="status" aria-label="Загрузка заметок">
+                      <div className="h-12 bg-[var(--surface-2)] rounded-[var(--radius-sm)]" />
+                      <div className="h-12 bg-[var(--surface-2)] rounded-[var(--radius-sm)]" />
+                    </div>
+                  ) : notesError ? (
+                    <div className="py-6 px-3 text-center space-y-2">
+                      <p className="text-xs text-[var(--danger)]">{notesError}</p>
+                      <Button variant="secondary" size="sm" onClick={loadNotes}>
+                        Повторить
+                      </Button>
+                    </div>
+                  ) : notes.length === 0 ? (
                     <div className="py-8 px-2 flex flex-col items-center text-center">
                       <div className="w-10 h-10 rounded-full bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-center text-[var(--text-subtle)] mb-2.5">
                         <StickyNote size={17} />
                       </div>
                       <p className="text-xs font-medium text-[var(--text)]">Заметок пока нет</p>
                       <p className="mt-1 text-[11px] text-[var(--text-subtle)] leading-relaxed">
-                        Короткие записи для себя — останутся в этом браузере
+                        Короткие записи для себя — сохраняются в базе данных
                       </p>
                       <Button
                         variant="secondary"
@@ -781,17 +901,30 @@ export function AppSidebar({
                     notes.map((note) => (
                       <div
                         key={note.id}
-                        className="group relative p-2 rounded-[var(--radius-sm)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--border)] transition-colors text-left"
+                        className={`group relative p-2 rounded-[var(--radius-sm)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border transition-colors text-left ${
+                          note.pinned ? 'border-[var(--accent)]/40 bg-[var(--surface-2)]' : 'border-[var(--border)]'
+                        }`}
                       >
                         <div className="flex items-start justify-between gap-1">
                           <button
                             type="button"
                             onClick={() => startEditingNote(note)}
-                            className="font-medium text-xs text-[var(--text)] truncate text-left flex-1 hover:underline cursor-pointer"
+                            className="font-medium text-xs text-[var(--text)] truncate text-left flex-1 hover:underline cursor-pointer flex items-center gap-1.5"
                           >
-                            {note.title}
+                            {note.pinned && (
+                              <Pin size={11} className="shrink-0 text-[var(--accent)] fill-current" />
+                            )}
+                            <span className="truncate">{note.title}</span>
                           </button>
                           <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity">
+                            <IconButton
+                              aria-label={note.pinned ? 'Открепить заметку' : 'Закрепить заметку'}
+                              tooltip={note.pinned ? 'Открепить' : 'Закрепить'}
+                              icon={<Pin size={12} className={note.pinned ? 'fill-current text-[var(--accent)]' : ''} />}
+                              size="sm"
+                              className={`w-6 h-6 ${note.pinned ? 'opacity-100 text-[var(--accent)]' : ''}`}
+                              onClick={() => handleTogglePinNote(note.id, Boolean(note.pinned))}
+                            />
                             <IconButton
                               aria-label="Редактировать заметку"
                               tooltip="Редактировать"
