@@ -8,7 +8,7 @@
 
 JWT: HS256, обязательные iss/sub/role/name/iat/exp, TTL ≤60 секунд, часы сервисов синхронизированы, leeway 0. Подписанный user не имеет доступа к общим ops-ручкам памяти: разрешены только scoped search/chat-recall и своя карточка. /v1/web/me сообщает limits:null до отдельной реализации лимитов.
 
-Для сайта задайте отдельный `API_WEB_TOKEN`: он открывает `/v1/ws/chat`, `/v1/attachments*`, `/v1/context/limits`, `/v1/web/me`, scoped search/recall и `GET /v1/memory/people/{свой}` **только** вместе с валидным `X-Neyra-Identity`; админские и viewer-ручки с ним получают 403. Maint/admin по-прежнему работают для `/v1/web/me` и scoped-памяти, но для WS-чата, вложений и limits нужен именно web-ключ. Без identity web-ключ получает 401/403 (WS — denial/1008).
+Для сайта задайте отдельный `API_WEB_TOKEN`: он открывает `/v1/ws/chat`, `/v1/attachments*`, `/v1/context/limits`, `/v1/web/me`, scoped search/recall и `GET /v1/memory/people/{свой}` **только** вместе с валидным `X-Neyra-Identity`; админские и viewer-ручки с ним получают 403. Admin service key тоже допускается для WS-чата, вложений и limits (ops/legacy); maint — нет. `/v1/web/me` и scoped-память работают и с maint/admin. Без identity web-ключ получает 401/403 (WS — denial/1008).
 
 Перед допуском трафика проверить зависимости, отрицательный запрос с неверным issuer (401), /v1/web/me (свой текущий person_id, в том числе после merge), невозможность прочитать чужую память (403) и готовность WS denial/trace через выбранный ASGI server и reverse proxy. Рабочий API key остаётся обязательным и ограничивает доступ независимо от JWT.
 
