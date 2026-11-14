@@ -108,7 +108,7 @@ describe('McpSection', () => {
     expect((await screen.findAllByText('filesystem')).length).toBeGreaterThan(0);
     expect(screen.getAllByText('подключён').length).toBeGreaterThan(0);
     expect(screen.getAllByText('ошибка').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('3').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/инструментов: 3/).length).toBeGreaterThan(0);
     expect(screen.getAllByText('connection refused').length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Ядро работает; исправьте настройки/).length).toBeGreaterThan(0);
 

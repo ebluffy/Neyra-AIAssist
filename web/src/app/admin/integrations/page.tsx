@@ -41,11 +41,9 @@ export default async function AdminIntegrationsPage() {
         </Card>
 
         <Card title="MCP-серверы" description="Подключения инструментов ядра.">
-          <StatusPill tone="ok">управление доступно</StatusPill>
+          <StatusPill tone="warn">нет API ядра</StatusPill>
           <p className="mt-2 text-xs text-[var(--muted)]">
-            Добавление, изменение, переподключение и удаление MCP-серверов — в разделе{' '}
-            <a href="/admin/mcp" className="underline underline-offset-2 hover:text-[var(--text)]">MCP</a>.
-            Статус, число инструментов и причина ошибки видны там же.
+            У ядра нет API управления MCP-серверами. Список и переключатели появятся вместе с ним; сейчас раздел ничего не меняет.
           </p>
         </Card>
       </div>

@@ -60,7 +60,7 @@ const TRANSPORT_LABEL: Record<McpTransport, string> = {
 
 const dateFormat = new Intl.DateTimeFormat('ru-RU', {
   dateStyle: 'short',
-  timeStyle: 'medium',
+  timeStyle: 'short',
   timeZone: 'Europe/Moscow',
 });
 
@@ -716,14 +716,12 @@ export function McpSection() {
       ) : (
         <>
           {/* Desktop table */}
-          <div className="hidden md:block rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] overflow-hidden">
-            <table className="w-full border-collapse text-xs">
+          <div className="hidden md:block rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] overflow-x-auto">
+            <table className="w-full min-w-[700px] border-collapse text-xs">
               <thead>
                 <tr className="border-b border-[var(--border)] text-left text-[10px] uppercase tracking-wider text-[var(--text-subtle)]">
                   <th className="px-3 py-2.5 font-medium">Сервер</th>
-                  <th className="px-3 py-2.5 font-medium">Инструменты</th>
                   <th className="px-3 py-2.5 font-medium">Состояние</th>
-                  <th className="px-3 py-2.5 font-medium">Проверка</th>
                   <th className="px-3 py-2.5 font-medium text-right">Действия</th>
                 </tr>
               </thead>
@@ -746,7 +744,7 @@ export function McpSection() {
                                 <span className="text-[10px] text-[var(--text-subtle)]">выключен</span>
                               )}
                             </div>
-                            <p className="mt-0.5 max-w-[260px] truncate font-mono text-[10px] text-[var(--text-subtle)]" title={server.command || server.url || ''}>
+                            <p className="mt-0.5 max-w-[220px] truncate font-mono text-[10px] text-[var(--text-subtle)]" title={server.command || server.url || ''}>
                               {server.command || server.url || '—'}
                             </p>
                             {server.env.length > 0 && (
@@ -754,32 +752,34 @@ export function McpSection() {
                                 env: {server.env.map((item) => `${item.name}${item.set ? '' : ' (не задан)'}`).join(', ')}
                               </p>
                             )}
+                            <p className="mt-0.5 text-[10px] text-[var(--text-subtle)]">
+                              инструментов: {server.tools}
+                            </p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-[var(--text-muted)] tabular-nums">{server.tools}</td>
                       <td className="px-3 py-3">
                         <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] ${meta.pill}`}>
                           <StatusDot status={server.status} />
                         </span>
                         {lastError && (
-                          <div className="mt-1 max-w-[260px]">
+                          <div className="mt-1 max-w-[230px]">
                             <p className="text-[10px] leading-relaxed text-[var(--danger)] break-words">{lastError}</p>
                             <p className="mt-0.5 text-[10px] text-[var(--text-subtle)]">
                               Ядро работает; исправьте настройки или переподключите.
                             </p>
                           </div>
                         )}
-                      </td>
-                      <td className="px-3 py-3 text-[10px] text-[var(--text-subtle)] whitespace-nowrap">
-                        {formatChecked(server.checked_at)}
+                        <p className="mt-1 text-[10px] text-[var(--text-subtle)] whitespace-nowrap">
+                          проверено: {formatChecked(server.checked_at)}
+                        </p>
                       </td>
                       <td className="px-3 py-3">
                         <div className="flex items-center justify-end gap-1">
                           <Button
                             variant="secondary"
                             size="sm"
-                            className="gap-1"
+                            className="gap-1 whitespace-nowrap"
                             aria-label={`Переподключить ${server.name}`}
                             disabled={busy !== null || !server.enabled || !data?.enabled}
                             loading={busy === `restart:${server.name}`}

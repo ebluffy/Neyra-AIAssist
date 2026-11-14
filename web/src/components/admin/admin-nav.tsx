@@ -16,7 +16,6 @@ const items = [
   { href: '/admin/memory', label: 'Память' },
   { href: '/admin/files', label: 'Файлы' },
   { href: '/admin/integrations', label: 'Интеграции' },
-  { href: '/admin/mcp', label: 'MCP' },
   { href: '/admin/logs', label: 'Журналы' },
   { href: '/admin/system', label: 'Система' },
 ];
