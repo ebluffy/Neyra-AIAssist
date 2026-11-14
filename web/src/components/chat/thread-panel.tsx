@@ -213,7 +213,7 @@ export function ThreadPanel({
         <div
           role="tablist"
           aria-label="Вкладки панели треда"
-          className="flex flex-wrap items-center border-b border-[var(--border)] bg-[var(--surface-2)]/50 px-2 py-1 gap-1 shrink-0"
+          className="flex flex-nowrap overflow-x-auto no-scrollbar scroll-smooth items-center border-b border-[var(--border)] bg-[var(--surface-2)]/50 px-2 py-1 gap-1 shrink-0"
         >
           {tabList.map((tab, idx) => {
             const isSelected = activeTab === tab.id;
@@ -235,7 +235,7 @@ export function ThreadPanel({
                   playButtonClickSound();
                 }}
                 onKeyDown={(e) => handleTabKeyDown(e, idx)}
-                className={`flex items-center gap-1.5 px-2.5 py-2 sm:py-1.5 min-h-[40px] sm:min-h-0 text-[12px] font-medium rounded-[var(--radius-sm)] transition-colors whitespace-nowrap cursor-pointer select-none ${
+                className={`flex shrink-0 items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] sm:min-h-0 text-[12px] font-medium rounded-[var(--radius-sm)] transition-colors whitespace-nowrap cursor-pointer select-none ${
                   isSelected
                     ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm'
                     : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface)]/50'
@@ -338,7 +338,7 @@ export function ThreadPanel({
                       <div className="min-w-0">
                         <div className="text-[11px] font-medium text-[var(--text)]">Помнит контекст</div>
                         <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">
-                          История диалогов остаётся в вашем браузере
+                          История хранится на сервере и доступна на всех устройствах
                         </p>
                       </div>
                     </li>
@@ -373,7 +373,7 @@ export function ThreadPanel({
                   {onStartChat && (
                     <Button
                       type="button"
-                      variant="primary"
+                      variant="secondary"
                       size="sm"
                       className="w-full justify-center gap-1.5"
                       onClick={onStartChat}
