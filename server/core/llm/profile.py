@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 logger = logging.getLogger("neyra.llm_profile")
 
@@ -96,6 +98,24 @@ def _first_env(*names: str) -> str:
         if v:
             return v
     return ""
+
+
+def is_private_endpoint(base_url: str) -> bool:
+    """Локальный/домашний адрес: loopback, частные сети, Tailscale, *.local, *.ts.net."""
+    host = (urlparse(str(base_url or "")).hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in {"localhost", "host.docker.internal"}:
+        return True
+    if host.endswith(".local") or host.endswith(".ts.net") or host.endswith(".home.arpa"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return True
+    return ip in ipaddress.ip_network("100.64.0.0/10")
 
 
 def _vault_provider_key(cfg: dict, provider: str) -> str:
@@ -453,6 +473,24 @@ def resolve_openai_compatible_connection(
         api_key = "ollama"
     if not api_key:
         api_key = _vault_provider_key(cfg, provider)
+    if not api_key:
+        # OpenAI-клиенту нужен непустой ключ даже для своего шлюза. Для
+        # локального адреса ставим заглушку, чтобы ядро поднималось без
+        # рестарта в цикле; для внешнего — тоже заглушку, но с явной ошибкой.
+        kind = str(prov_over.get("kind") or "").strip().lower()
+        if kind == "local" or is_private_endpoint(base_url):
+            api_key = "local"
+            logger.info(
+                "Провайдер '%s' — локальный адрес без ключа, использую заглушку", provider
+            )
+        else:
+            api_key = "missing-api-key"
+            logger.error(
+                "API ключ для провайдера '%s' не задан: запросы будут падать с 401. "
+                "Добавь ключ в админке (Провайдеры → Ключ) или llm.providers.%s.api_key",
+                provider,
+                provider,
+            )
 
     caps = dict(_DEFAULT_CAPABILITIES)
     raw_caps = llm.get("capabilities")

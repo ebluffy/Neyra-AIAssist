@@ -175,3 +175,46 @@ def test_provider_secret_validation(real_api, auth_headers):
     assert short.status_code == 400
     removed = http.delete("/v1/providers/k/secret", headers=auth_headers[ADMIN])
     assert removed.status_code == 200
+
+
+def test_private_endpoint_detection():
+    from core.llm.profile import is_private_endpoint
+
+    for url in (
+        "http://127.0.0.1:11434/v1",
+        "http://192.168.1.5:8000/v1",
+        "http://100.121.199.40:11435/v1",
+        "http://laptop.local:1234/v1",
+        "http://host.tailnet.ts.net:1/v1",
+        "http://localhost:8080/v1",
+    ):
+        assert is_private_endpoint(url), url
+    for url in ("https://api.openai.com/v1", "https://openrouter.ai/api/v1", ""):
+        assert not is_private_endpoint(url), url
+
+
+def test_local_provider_without_key_gets_placeholder():
+    """Локальный шлюз без ключа не должен валить ядро Missing credentials."""
+    from core.llm.profile import resolve_openai_compatible_connection
+
+    cfg = {
+        "llm": {
+            "talk_model": {"provider": "llama", "model": "qwen3"},
+            "providers": {"llama": {"base_url": "http://100.121.199.40:11435/v1", "kind": "local"}},
+        }
+    }
+    conn = resolve_openai_compatible_connection(cfg, role="talk_model")
+    assert conn.api_key == "local"
+
+
+def test_remote_provider_without_key_keeps_core_alive():
+    from core.llm.profile import resolve_openai_compatible_connection
+
+    cfg = {
+        "llm": {
+            "talk_model": {"provider": "remote", "model": "x"},
+            "providers": {"remote": {"base_url": "https://gateway.example/v1"}},
+        }
+    }
+    conn = resolve_openai_compatible_connection(cfg, role="talk_model")
+    assert conn.api_key == "missing-api-key"
