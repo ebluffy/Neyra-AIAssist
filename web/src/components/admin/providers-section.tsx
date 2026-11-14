@@ -202,7 +202,7 @@ export function ProvidersSection() {
             Любой OpenAI-совместимый шлюз: свой адрес, свой ключ, сколько нужно. Ключи лежат в шифрованном хранилище ядра.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 ml-auto shrink-0">
           <IconButton
             aria-label="Обновить список провайдеров"
             tooltip="Обновить"
@@ -377,7 +377,7 @@ export function ProvidersSection() {
           return (
             <div
               key={row.name}
-              className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 space-y-2.5"
+              className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 space-y-2.5 transition-colors hover:border-[var(--border-strong)]"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -407,7 +407,20 @@ export function ProvidersSection() {
                     )}
                   </div>
                 </div>
-                <span className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full border ${tone.className}`}>{tone.label}</span>
+                <span
+                  className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full border ${tone.className}`}
+                  title={
+                    row.key_source === 'yaml'
+                      ? 'Ключ лежит открытым текстом в config/llm.yaml — перенесите его в vault через «Адрес и ключ»'
+                      : row.key_source === 'env'
+                        ? 'Ключ берётся из переменной окружения ядра'
+                        : row.key_source === 'vault'
+                          ? 'Ключ хранится в шифрованном хранилище ядра'
+                          : 'Ключ не задан: провайдер не сможет отвечать'
+                  }
+                >
+                  {tone.label}
+                </span>
               </div>
 
               <div className="flex flex-wrap items-center gap-1">

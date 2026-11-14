@@ -63,6 +63,19 @@ export type AdminSection =
   | 'files'
   | 'prompts';
 
+const SECTION_HINT: Record<AdminSection, string> = {
+  overview: 'Состояние ядра, модели и быстрые переходы',
+  models: 'Провайдер и модель для каждого лейна',
+  providers: 'Любой OpenAI-совместимый шлюз и его ключ',
+  integrations: 'Инструменты ядра, Discord и служебные подключения',
+  access: 'Пользователи, роли, приглашения и режим регистрации',
+  system: 'Сервисы, диск, резервные копии и перезапуск',
+  logs: 'Действия админки и операции ядра',
+  memory: 'Люди и статистика долгой памяти',
+  files: 'Вложения, которые принимает Neyra',
+  prompts: 'Персона и системные инструкции ядра',
+};
+
 export interface AdminDialogProps {
   open: boolean;
   onClose: () => void;
@@ -204,7 +217,7 @@ export function AdminDialog({
                 </span>
               </div>
               <p className="text-[11px] text-[var(--text-muted)] truncate hidden sm:block">
-                Управление ядром, моделями, интеграциями и пользователями
+                {SECTION_HINT[activeSection]}
               </p>
             </div>
           </div>
