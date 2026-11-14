@@ -125,19 +125,27 @@ export async function setUserRole(actorId: string, targetId: string, nextRole: '
   if (target.id === actorId && nextRole !== 'admin') return { ok: false, error: 'self' };
   try {
     const { db } = getDatabase();
-    // AR-30: проверка «последний админ» атомарна — в одном UPDATE, иначе два
-    // одновременных понижения оставят сайт без администратора.
-    const result = await db.execute(sql`
-      UPDATE "user" SET role = ${nextRole}, updated_at = now()
-      WHERE id = ${targetId}
-        AND (${nextRole} = 'admin'
-             OR (SELECT count(*) FROM "user" WHERE role = 'admin') > 1)
-      RETURNING id
-    `);
-    const changed = Array.isArray((result as { rows?: unknown[] }).rows)
-      ? ((result as { rows: unknown[] }).rows.length)
-      : 0;
-    if (!changed) return { ok: false, error: 'last-admin' };
+    // AR-30: блокируем строки админов в транзакции. Подзапрос в одном UPDATE
+    // не спасает от write skew: две транзакции видят «2 админа» и обе коммитятся.
+    const outcome = await db.transaction(async (tx) => {
+      // Advisory-lock сериализует все изменения ролей: FOR UPDATE не спасает,
+      // если обе транзакции успели прочитать «2 админа» до блокировки строк.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(734002)`);
+      const counted = await tx.execute(sql`SELECT count(*)::int AS admins FROM "user" WHERE role = 'admin'`);
+      const adminCount = Number((counted.rows[0] as { admins?: number } | undefined)?.admins ?? 0);
+      if (target.role === 'admin' && nextRole !== 'admin' && adminCount <= 1) {
+        return 'last-admin' as const;
+      }
+      const updated = await tx.execute(sql`
+        UPDATE "user" SET role = ${nextRole}, updated_at = now()
+        WHERE id = ${targetId}
+        RETURNING id
+      `);
+      const changed = updated.rows.length;
+      return changed ? ('ok' as const) : ('not-found' as const);
+    });
+    if (outcome === 'last-admin') return { ok: false, error: 'last-admin' };
+    if (outcome === 'not-found') return { ok: false, error: 'not-found' };
     return { ok: true, value: { role: nextRole } };
   } catch {
     return { ok: false, error: 'db' };
@@ -169,17 +177,17 @@ export async function deleteUser(actorId: string, targetId: string): Promise<Mut
   if (target.id === actorId) return { ok: false, error: 'self' };
   try {
     const { db } = getDatabase();
-    const result = await db.execute(sql`
-      DELETE FROM "user"
-      WHERE id = ${targetId}
-        AND (role <> 'admin'
-             OR (SELECT count(*) FROM "user" WHERE role = 'admin') > 1)
-      RETURNING id
-    `);
-    const changed = Array.isArray((result as { rows?: unknown[] }).rows)
-      ? ((result as { rows: unknown[] }).rows.length)
-      : 0;
-    if (!changed) return { ok: false, error: 'last-admin' };
+    const outcome = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(734002)`);
+      const counted = await tx.execute(sql`SELECT count(*)::int AS admins FROM "user" WHERE role = 'admin'`);
+      const adminCount = Number((counted.rows[0] as { admins?: number } | undefined)?.admins ?? 0);
+      if (target.role === 'admin' && adminCount <= 1) return 'last-admin' as const;
+      const deleted = await tx.execute(sql`DELETE FROM "user" WHERE id = ${targetId} RETURNING id`);
+      const changed = deleted.rows.length;
+      return changed ? ('ok' as const) : ('not-found' as const);
+    });
+    if (outcome === 'last-admin') return { ok: false, error: 'last-admin' };
+    if (outcome === 'not-found') return { ok: false, error: 'not-found' };
     return { ok: true, value: { email: target.email } };
   } catch {
     return { ok: false, error: 'db' };

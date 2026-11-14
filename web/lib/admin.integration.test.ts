@@ -156,6 +156,10 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
   });
 
   it('блокирует вход и удаляет живые сессии', async () => {
+    // Ответ на настоящий неверный пароль — эталон для AR-28.
+    const wrong = await signIn(state.memberEmail, 'definitely-wrong-password');
+    expect(wrong.response.status).toBe(401);
+
     const ban = await patchUser(adminRequest(`/api/admin/users/${state.memberId}`, state.adminCookie, {
       method: 'PATCH',
       body: JSON.stringify({ banned: true, banReason: 'проверка' }),
@@ -163,9 +167,9 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     expect(ban.status).toBe(200);
 
     const blocked = await signIn(state.memberEmail, state.memberPassword);
-    // AR-28: не раскрываем бан и существование адреса — тот же 401, что и при неверном пароле.
-    expect(blocked.response.status).toBe(401);
-    expect(String(blocked.json?.message ?? '')).not.toContain('заблокирован');
+    // AR-28: байт-в-байт тот же ответ, что Better Auth даёт на неверный пароль.
+    expect(blocked.response.status).toBe(wrong.response.status);
+    expect(blocked.json).toEqual(wrong.json);
 
     const list = await payloadOf(await listUsers(adminRequest(`/api/admin/users?q=${encodeURIComponent(state.memberEmail)}`, state.adminCookie)));
     const banned = ((list?.data?.items ?? []) as Array<{ banned: boolean }>)[0];
@@ -285,5 +289,30 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     const self = await deleteUser(adminRequest(`/api/admin/users/${state.adminId}`, state.adminCookie, { method: 'DELETE' }),
       { params: Promise.resolve({ id: state.adminId }) });
     expect(self.status).toBe(409);
+  });
+
+  it('два параллельных понижения не оставляют сайт без админа (AR-30)', async () => {
+    // Второй админ — бывший участник; пароль изменён тестом сброса.
+    grantAdmin(state.memberEmail);
+    const memberLogin = await signIn(state.memberEmail, 'member-new-password-2');
+    expect(memberLogin.response.status).toBe(200);
+    const memberCookie = memberLogin.cookie;
+
+    const [demoteMember, demoteAdmin] = await Promise.all([
+      patchUser(adminRequest(`/api/admin/users/${state.memberId}`, state.adminCookie, {
+        method: 'PATCH',
+        body: JSON.stringify({ role: 'user' }),
+      }), { params: Promise.resolve({ id: state.memberId }) }),
+      patchUser(adminRequest(`/api/admin/users/${state.adminId}`, memberCookie, {
+        method: 'PATCH',
+        body: JSON.stringify({ role: 'user' }),
+      }), { params: Promise.resolve({ id: state.adminId }) }),
+    ]);
+    expect([demoteMember.status, demoteAdmin.status].sort()).toEqual([200, 409]);
+
+    // Восстанавливаем исходные роли.
+    grantAdmin(state.adminEmail);
+    execFileSync(process.execPath, [join(repoRoot(), 'web/scripts/grant-admin.mjs'), state.memberEmail, '--revoke'],
+      { env: process.env, encoding: 'utf-8' });
   });
 });

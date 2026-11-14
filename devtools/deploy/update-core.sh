@@ -69,20 +69,22 @@ done
 nested_link=$(find "$DEST/data" "$DEST/config" -type l -print -quit 2>/dev/null || true)
 [ -z "$nested_link" ] || die "в data/config есть симлинк $nested_link — полный снимок невозможен"
 
-GIT_ROOT=$(git -C "$SRC" rev-parse --show-toplevel 2>/dev/null) \
+GIT_ROOT=$(git -C "$SRC" -c safe.directory='*' rev-parse --show-toplevel 2>/dev/null) \
   || die "$SRC не в git-репозитории: выкладка возможна только из закоммиченного кода"
+# Один вход в git: safe.directory для root/чужого владельца, ошибки не глотаем.
+g() { git -C "$GIT_ROOT" -c safe.directory="$GIT_ROOT" "$@"; }
 REL=$(realpath --relative-to="$GIT_ROOT" "$SRC")
 [ "$REL" = "server" ] || die "ожидается каталог server/ в корне репозитория, получено $REL"
-DIRTY=$(git -C "$GIT_ROOT" status --porcelain 2>/dev/null || true)
+DIRTY=$(g status --porcelain) || die "git status не выполнился — состояние рабочей копии неизвестно"
 [ -z "$DIRTY" ] || die "рабочая копия грязная: закоммить или stash изменения перед выкладкой"
-HEAD=$(git -C "$GIT_ROOT" -c safe.directory="*" rev-parse HEAD 2>/dev/null) || die "не удалось определить HEAD"
+HEAD=$(g rev-parse HEAD) || die "не удалось определить HEAD"
 command -v tar >/dev/null || die "нужен tar"
 
 # Выкладываем только файлы коммита: gitignored данные/конфиги рабочей копии
 # не попадают в архив и не могут перезаписать боевые (AR-20).
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
-git -C "$GIT_ROOT" archive "$HEAD" -- "$REL" | tar -x -C "$STAGE" --strip-components=1 \
+g archive "$HEAD" -- "$REL" | tar -x -C "$STAGE" --strip-components=1 \
   || die "git archive HEAD не удался"
 [ -f "$STAGE/main.py" ] || die "в архиве коммита нет main.py"
 SYNC_SRC="$STAGE"

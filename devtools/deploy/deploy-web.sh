@@ -11,31 +11,43 @@ SRC="${1:-$DEFAULT_SRC}"
 DST=/opt/neyra/web/app
 ENV_FILE=/opt/neyra/web/.env
 NODE_BIN=/opt/neyra/web/node/bin
+DRY=${DRY:-0}
 
-if [ ! -x "$NODE_BIN/node" ]; then
-  echo "Нет Node 22 в $NODE_BIN — сначала выполни: sudo bash devtools/deploy/neyra-web-setup.sh https://example.test"
-  exit 1
+if [ "$DRY" = 1 ]; then
+  echo "== DRY=1: проверяю сборку и цель, в /opt/neyra ничего не пишу"
+  if [ -x "$NODE_BIN/node" ]; then
+    export PATH="$NODE_BIN:$PATH"
+  else
+    echo "внимание: $NODE_BIN/node нет — использую node из PATH; env площадки не требуется" >&2
+  fi
+else
+  if [ ! -x "$NODE_BIN/node" ]; then
+    echo "Нет Node 22 в $NODE_BIN — сначала выполни: sudo bash devtools/deploy/neyra-web-setup.sh https://example.test"
+    exit 1
+  fi
+  if [ ! -f "$ENV_FILE" ]; then
+    echo "Нет $ENV_FILE — сначала выполни: sudo bash devtools/deploy/neyra-web-setup.sh https://example.test"
+    exit 1
+  fi
+  export PATH="$NODE_BIN:$PATH"
 fi
-if [ ! -f "$ENV_FILE" ]; then
-  echo "Нет $ENV_FILE — сначала выполни: sudo bash devtools/deploy/neyra-web-setup.sh https://example.test"
-  exit 1
-fi
 
-export PATH="$NODE_BIN:$PATH"
-
-echo "== переменные окружения площадки"
-ENV_LOADER="$(dirname "$0")/env-load.py"
-[ -f "$ENV_LOADER" ] || { echo "нет env-load.py рядом со скриптом" >&2; exit 1; }
-TMP_ENV=$(mktemp)
+TMP_ENV=""
 trap 'rm -f "$TMP_ENV"' EXIT
-if ! python3 "$ENV_LOADER" "$ENV_FILE" > "$TMP_ENV"; then
-  echo "не удалось разобрать $ENV_FILE" >&2
-  exit 1
+if [ "$DRY" != 1 ]; then
+  echo "== переменные окружения площадки"
+  ENV_LOADER="$(dirname "$0")/env-load.py"
+  [ -f "$ENV_LOADER" ] || { echo "нет env-load.py рядом со скриптом" >&2; exit 1; }
+  TMP_ENV=$(mktemp)
+  if ! python3 "$ENV_LOADER" "$ENV_FILE" > "$TMP_ENV"; then
+    echo "не удалось разобрать $ENV_FILE" >&2
+    exit 1
+  fi
+  while IFS= read -r -d '' kv; do export "$kv"; done < "$TMP_ENV"
+  for v in NEYRA_WS_URL NEYRA_SERVICE_KEY NEYRA_IDENTITY_JWT_SECRET NEYRA_IDENTITY_JWT_ISSUER; do
+    if [ -z "${!v:-}" ]; then echo "внимание: $v пуст — чат сайта вернёт 503" >&2; fi
+  done
 fi
-while IFS= read -r -d '' kv; do export "$kv"; done < "$TMP_ENV"
-for v in NEYRA_WS_URL NEYRA_SERVICE_KEY NEYRA_IDENTITY_JWT_SECRET NEYRA_IDENTITY_JWT_ISSUER; do
-  if [ -z "${!v:-}" ]; then echo "внимание: $v пуст — чат сайта вернёт 503" >&2; fi
-done
 
 ROOT="$(dirname "$SRC")"   # корень монорепо: здесь npm workspaces
 # Собираем в чистой копии: без локальных node_modules/.next и незакоммиченных артефактов.
@@ -57,6 +69,12 @@ npm run build
 cd "$SRC"                  # web/
 STAGE=.next/standalone
 [ -f "$STAGE/web/server.js" ] || { echo "Нет $STAGE/web/server.js — проверь output: 'standalone'"; exit 1; }
+
+if [ "$DRY" = 1 ]; then
+  echo "DRY: сборка ok — $SRC/$STAGE/web/server.js"
+  echo "DRY: цель выкладки $DST не тронута; бэкап базы, миграции и rsync пропущены"
+  exit 0
+fi
 
 echo "== резервная копия базы перед миграциями"
 BACKUP_DIR=/opt/neyra/web/backups

@@ -1,6 +1,7 @@
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
-import { createAuthMiddleware } from 'better-auth/api';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
+import { BASE_ERROR_CODES } from '@better-auth/core/error';
 import { getDatabase } from './db';
 import { readAuthEnv } from './env';
 import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, roleField } from './auth-policy';
@@ -79,11 +80,11 @@ function createAuth() {
           signInEmail.set(ctx.request, email);
           const ip = clientIp(ctx.request);
           signInIp.set(ctx.request, ip);
-          // AR-28: забаненный аккаунт отвечает так же, как неверный пароль,
-          // чтобы не раскрывать существование адреса и факт блокировки.
+          // AR-28: забаненный аккаунт получает байт-в-байт тот же ответ, что
+          // Better Auth отдаёт на неверный пароль (код и тело совпадают).
           const state = await findBannedByEmail(email).catch(() => null);
           if (state?.banned) {
-            return ctx.json({ message: 'Неверный адрес почты или пароль.' }, { status: 401 });
+            throw APIError.from('UNAUTHORIZED', BASE_ERROR_CODES.INVALID_EMAIL_OR_PASSWORD);
           }
           if ((await readFailures(email, ip)) >= FAILED_LOGIN_MAX_ATTEMPTS) {
             return ctx.json(
