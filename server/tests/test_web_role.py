@@ -8,7 +8,8 @@ from starlette.websockets import WebSocketDisconnect
 from test_web_identity import identity_env, token  # noqa: F401
 from test_web_identity_review import real_api  # noqa: F401
 
-WEB = {"Authorization": "Bearer web-secret-token-xxxxxxxxxx"}
+WEB_TOKEN = "web-secret-token-xxxxxxxxxx"  # gitleaks:allow — фикстура теста
+WEB = {"Authorization": f"Bearer {WEB_TOKEN}"}
 
 
 def _identity_headers():
@@ -66,7 +67,8 @@ def test_web_key_reads_web_me_only_with_identity(real_api):
 def test_api_web_token_env_maps_to_config(monkeypatch):
     from core.runtime.secrets import apply_env_secrets
 
-    monkeypatch.setenv("API_WEB_TOKEN", "web-env-token-0123456789")
+    env_token = "web-env-token-0123456789"  # gitleaks:allow — фикстура теста
+    monkeypatch.setenv("API_WEB_TOKEN", env_token)
     cfg: dict = {}
     apply_env_secrets(cfg)
-    assert cfg["api"]["web_token"] == "web-env-token-0123456789"
+    assert cfg["api"]["web_token"] == env_token

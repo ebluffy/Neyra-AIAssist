@@ -37,7 +37,7 @@ def api_config(data_dir: Path, tmp_path: Path) -> dict[str, Any]:
             "token": "admin-secret-token-xxxxxxxx",
             "viewer_token": "viewer-secret-token-xxxxxxx",
             "maint_token": "maint-secret-token-xxxxxxxx",
-            "web_token": "web-secret-token-xxxxxxxxxx",
+            "web_token": "web-secret-token-xxxxxxxxxx",  # gitleaks:allow
             "public_base_url": "",
             "public_path_prefix": "/api",
             "audit_log_enabled": False,
@@ -128,5 +128,5 @@ def auth_headers() -> dict[str, dict[str, str]]:
         "admin": {"Authorization": "Bearer admin-secret-token-xxxxxxxx"},
         "viewer": {"Authorization": "Bearer viewer-secret-token-xxxxxxx"},
         "maint": {"Authorization": "Bearer maint-secret-token-xxxxxxxx"},
-        "web": {"Authorization": "Bearer web-secret-token-xxxxxxxxxx"},
+        "web": {"Authorization": "Bearer web-secret-token-xxxxxxxxxx"},  # gitleaks:allow
     }
