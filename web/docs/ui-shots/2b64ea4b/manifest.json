@@ -1,0 +1,369 @@
+{
+  "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+  "baseCommit": "8bdbf5eb4f0e928071f2d5b2fbd0cb0527936ccd",
+  "generatedAt": "2026-11-14T15:04:14.915Z",
+  "nodeVersion": "v26.13.1",
+  "totalScreenshots": 36,
+  "screenshots": [
+    {
+      "file": "01-chat-empty-1440.png",
+      "sha256": "8793300e6929313cb1e64c9974538ff62d492f06ef4ba1c6c804af5905c99e9b",
+      "viewport": "1440x900",
+      "state": "empty",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:11.993Z",
+      "note": "Пустое состояние чата: чипсы сценариев, нейтральный композер"
+    },
+    {
+      "file": "02-chat-real-1440.png",
+      "sha256": "2027719ab32a871bd3bd6e69276f6c7779b797a52482662193d1d9ee788db691",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:13.517Z",
+      "note": "Активный чат: пузырь пользователя, ответ модели с форматированием Markdown"
+    },
+    {
+      "file": "03-chat-error-1440.png",
+      "sha256": "79f05d80f0681d828b4b76f299e3529692066a05025797445d8376e23ec26a3d",
+      "viewport": "1440x900",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:14.875Z",
+      "note": "Чат: визуальное состояние ошибки соединения с кнопкой повтора"
+    },
+    {
+      "file": "04-auth-login-real-1440.png",
+      "sha256": "610989cb701ccc1bf2a63733550c0379bb7d404f2e7403ad6e9680b2b4f19609",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/login",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:16.154Z",
+      "note": "Форма входа: валидированные поля ввода с границами border-control"
+    },
+    {
+      "file": "05-auth-login-error-1440.png",
+      "sha256": "4b4c41c0497f259fae366f63efddc88022b5384774fe1be730e4d319dd4071b0",
+      "viewport": "1440x900",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/login?mockError=invalid",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:17.405Z",
+      "note": "Форма входа: плашка ошибки с контрастом 7.16:1"
+    },
+    {
+      "file": "06-auth-signup-invite-1440.png",
+      "sha256": "a90fb463bcdb9cb6bb1607a04b1aeedcaf67304c96b32318c7bd38b4c03657d0",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/signup?invite=DEMO_INVITE_TOKEN_VALID",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:18.673Z",
+      "note": "Регистрация по инвайту: бейдж действующего приглашения"
+    },
+    {
+      "file": "07-auth-reset-password-1440.png",
+      "sha256": "5b938318a869cc83e1c8d28157c6eefaeef030dcf2d2622ed711e3efb6dafed8",
+      "viewport": "1440x900",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/reset-password",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:19.904Z",
+      "note": "Сброс пароля без токена: системное предупреждение"
+    },
+    {
+      "file": "08-thread-panel-real-1440.png",
+      "sha256": "f87f69edc21892e458d0f302e3be38bbd5fb8290ace6d6951ca3e88f90c18752",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:21.250Z",
+      "note": "Панель треда: однострочные вкладки, индикатор, честный текст об истории"
+    },
+    {
+      "file": "09-thread-panel-empty-1440.png",
+      "sha256": "0f50be802183660b4533c10aca626fc0ea9972448d148674233df38227e1fe0d",
+      "viewport": "1440x900",
+      "state": "empty",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:22.814Z",
+      "note": "Панель треда: пустое состояние вкладки Закреплённые"
+    },
+    {
+      "file": "10-settings-profile-1440.png",
+      "sha256": "463ac95bb88cf7db02948e1667ff5e136aec88aef5319b8eb0a0d7089864805d",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:24.537Z",
+      "note": "Диалог настроек: профиль, аватар, свитчи с контрастными границами"
+    },
+    {
+      "file": "11-admin-overview-1440.png",
+      "sha256": "54f7ced356807805f2e8edfc2e9be5dff385660a32514b372ae1196883f644e2",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:26.462Z",
+      "note": "Админка: обзор KPI, осмысленные метрики, честное состояние"
+    },
+    {
+      "file": "12-admin-models-1440.png",
+      "sha256": "147cc358e0ee190485b3856cf10f86026725c2e9e411685994c0f45fea82ba57",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:28.994Z",
+      "note": "Админка: роли моделей (talk/brain/coding/vision), форма параметров"
+    },
+    {
+      "file": "13-admin-providers-1440.png",
+      "sha256": "ef34602a4ec30ac2f6e51523dfd740b8ca729c74fdc776cb1a929b555825ece9",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:31.462Z",
+      "note": "Админка: карточки провайдеров, ключи в vault, пресеты"
+    },
+    {
+      "file": "14-admin-access-1440.png",
+      "sha256": "9f17468787d6ee6fd8506c583c8da42af28587ec8d5bb1fbea1edcb4143abbe9",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:33.914Z",
+      "note": "Админка: доступ, пользователи, радио режима регистрации слева"
+    },
+    {
+      "file": "15-admin-system-1440.png",
+      "sha256": "ed2d5f46f3526d1c04c98af094eb60e1f6e948d7c1666485b5c2908cc54d0125",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:36.418Z",
+      "note": "Админка: системные операции, безопасные подтверждения действий"
+    },
+    {
+      "file": "01-chat-empty-390.png",
+      "sha256": "95748b84b9f55d6f2fcd5a0aad7a552d2d8ffd26cdcb9da51cfb5cded7b82319",
+      "viewport": "390x844",
+      "state": "empty",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:37.680Z",
+      "note": "Пустое состояние чата: чипсы сценариев, нейтральный композер"
+    },
+    {
+      "file": "02-chat-real-390.png",
+      "sha256": "378632e248a94c20e4df3c1d882688b87218e91c3180a12d9174bf9c707e094b",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:39.063Z",
+      "note": "Активный чат: пузырь пользователя, ответ модели с форматированием Markdown"
+    },
+    {
+      "file": "03-chat-error-390.png",
+      "sha256": "1f199d57d92397d98fcf0892457f499e0d94b487e06202fcce53015f0fb32467",
+      "viewport": "390x844",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:40.380Z",
+      "note": "Чат: визуальное состояние ошибки соединения с кнопкой повтора"
+    },
+    {
+      "file": "04-auth-login-real-390.png",
+      "sha256": "ae79afc05fca48b599f9bd89af70f83c9ae5fa473dd53228dcd085bac7bef331",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/login",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:41.619Z",
+      "note": "Форма входа: валидированные поля ввода с границами border-control"
+    },
+    {
+      "file": "05-auth-login-error-390.png",
+      "sha256": "0c675b4e907891c6bb8d32121b79e53c66975695260a20e36ca6bcdc7c37589f",
+      "viewport": "390x844",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/login?mockError=invalid",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:42.855Z",
+      "note": "Форма входа: плашка ошибки с контрастом 7.16:1"
+    },
+    {
+      "file": "06-auth-signup-invite-390.png",
+      "sha256": "7fd3dcb1a4ef63855191f102d65696254501e4a935799b5feebe38348e9b2a9e",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/signup?invite=DEMO_INVITE_TOKEN_VALID",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:44.104Z",
+      "note": "Регистрация по инвайту: бейдж действующего приглашения"
+    },
+    {
+      "file": "07-auth-reset-password-390.png",
+      "sha256": "745054b5bed46f03f724a3b1da8f778ba5836ac5f0a9dff7c4f8ab71a8218cca",
+      "viewport": "390x844",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/reset-password",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:45.303Z",
+      "note": "Сброс пароля без токена: системное предупреждение"
+    },
+    {
+      "file": "08-thread-panel-real-390.png",
+      "sha256": "c487e67b46ddb5ab5e45d044c427bd9b8f62074a3aaccd91d34ab3e81049eba3",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:46.641Z",
+      "note": "Панель треда: однострочные вкладки, индикатор, честный текст об истории"
+    },
+    {
+      "file": "09-thread-panel-empty-390.png",
+      "sha256": "5704ab51ebd5069c52c73cc3ae68fa2f141a4c77d0784aba03b9590c3e698ec6",
+      "viewport": "390x844",
+      "state": "empty",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:48.129Z",
+      "note": "Панель треда: пустое состояние вкладки Закреплённые"
+    },
+    {
+      "file": "10-settings-profile-390.png",
+      "sha256": "91766d7f90c5700a425b3f2e8dee66ba226004d848038a52485f9160f09a2f60",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:50.200Z",
+      "note": "Диалог настроек: профиль, аватар, свитчи с контрастными границами"
+    },
+    {
+      "file": "11-admin-overview-390.png",
+      "sha256": "87d504df3b08c612870b41464250f27d6adc82f6a35c227dec0c412232e52a62",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:52.533Z",
+      "note": "Админка: обзор KPI, осмысленные метрики, честное состояние"
+    },
+    {
+      "file": "12-admin-models-390.png",
+      "sha256": "a02e40f3105d614911c9c37659a043397f9f88c02b941cce802b0867b3590f36",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:55.497Z",
+      "note": "Админка: роли моделей (talk/brain/coding/vision), форма параметров"
+    },
+    {
+      "file": "13-admin-providers-390.png",
+      "sha256": "a723e4da22ded8f3d3ca522b7e837fe66262750605697e6eba6af4a1fa28129a",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:03:58.366Z",
+      "note": "Админка: карточки провайдеров, ключи в vault, пресеты"
+    },
+    {
+      "file": "14-admin-access-390.png",
+      "sha256": "8b40ce097088f7155ad8e755fa9bba253c8887a186c442d4bef75c05ce2f6639",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:04:01.256Z",
+      "note": "Админка: доступ, пользователи, радио режима регистрации слева"
+    },
+    {
+      "file": "15-admin-system-390.png",
+      "sha256": "fd3cd2a10addc64606589dd768b1d5014b951c22043c05425df373f6cb476303",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:04:04.095Z",
+      "note": "Админка: системные операции, безопасные подтверждения действий"
+    },
+    {
+      "file": "16-zoom200-chat-1440.png",
+      "sha256": "18e428e3f89d2d6be628311d9f8d8ad671ead14df2879267c811bc2908274483",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:04:05.414Z",
+      "note": "Доступность: масштабирование интерфейса 200% без потери элементов (WCAG reflow)"
+    },
+    {
+      "file": "17-zoom200-admin-1440.png",
+      "sha256": "8f79b8b8013c42b8b25ac4e8f57f2cc49c009e7ffe04b0222f0f415c696bbcc1",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:04:07.794Z",
+      "note": "Доступность: модальное окно админки при 200% зуме с адаптивным скроллом"
+    },
+    {
+      "file": "18-break-chat-longtext-1440.png",
+      "sha256": "576bb8379116e7a346ed1bfb265de169d2fec568573400384f2ca3730d9cbbd8",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:04:09.267Z",
+      "note": "Ломка данных: 60-символьная неразрывная строка, эмодзи, длинный URL — без вылета за экран"
+    },
+    {
+      "file": "18-break-chat-longtext-390.png",
+      "sha256": "d9c7b2227fad56cf496ffb06cd4d58a349803ae6d06197d0606a2effc3a17b88",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:04:10.746Z",
+      "note": "Ломка данных: 60-символьная неразрывная строка, эмодзи, длинный URL — без вылета за экран"
+    },
+    {
+      "file": "19-break-notes-extreme-1440.png",
+      "sha256": "658397e7ddbe5fd2d391d87b9063af39efc5fe9965557c930eedd223ca4435be",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:04:12.048Z",
+      "note": "Ломка данных: карточки заметок с длинными названиями и переносами"
+    },
+    {
+      "file": "20-break-admin-extreme-1440.png",
+      "sha256": "66c5fcaf147d0f0539ee6b8287f2d6d170563723bbb081de38b7d85099a6e054",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "2b64ea4bfb98c5f191ea449b6e60eff812107be6",
+      "takenAt": "2026-11-14T15:04:14.907Z",
+      "note": "Ломка данных: экстремально длинный email в поиске доступа админки"
+    }
+  ]
+}

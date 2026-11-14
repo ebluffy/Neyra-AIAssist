@@ -583,9 +583,32 @@ async function main() {
       setupFn: async (page) => {
         await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
         await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
-        const notesTab = await page.waitForSelector('button[role="tab"]:has-text("Заметки")');
+        await page.evaluate(() => {
+          const noteList = [
+            {
+              id: 'note-break-1',
+              title: 'VeryLongUnbreakableNoteTitleWithoutSpaces_1234567890_abcdefghij_KLMNOPQRST_uvwxyz',
+              content: 'Extreme long URL: https://subdomain.verylonghostnameexample.org/deeply/nested/resource/path/with/multiple/parameters?query=extremely_long_parameter_value_that_should_not_overflow_the_container_layout',
+              updatedAt: new Date().toISOString(),
+            },
+            {
+              id: 'note-break-2',
+              title: 'Заметка с эмодзи 🚀🔥🎉 и спецсимволами <script>alert(1)</script> & quote',
+              content: 'Вторая карточка для демонстрации списка и переполнения контента',
+              updatedAt: new Date().toISOString(),
+            },
+          ];
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith('neyra:notes:')) {
+              localStorage.setItem(k, JSON.stringify(noteList));
+            }
+          }
+          localStorage.setItem('neyra:notes:guest', JSON.stringify(noteList));
+        });
+        const notesTab = await page.waitForSelector('button:has-text("Заметки"), button[aria-label="Заметки"]', { state: 'visible' });
         await notesTab.click();
-        await page.waitForTimeout(300);
+        await page.waitForTimeout(400);
       },
       desc: 'Ломка данных: карточки заметок с длинными названиями и переносами',
     });
