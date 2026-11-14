@@ -113,6 +113,7 @@ class NeyraAgent:
         source: Optional[str],
         meta: Optional[dict] = None,
         latency_ms: Optional[float] = None,
+        origin: Optional[dict] = None,
     ) -> str:
         """Dual-write full turn into SQLite chat_log (Memory Hub). Returns turn_id."""
         from core.agent.chat_log import append_turn_to_chat_log
@@ -130,6 +131,7 @@ class NeyraAgent:
             assistant_name=assistant_name,
             meta=meta,
             latency_ms=latency_ms,
+            origin=origin,
         )
 
     def _setup_tools(self):
