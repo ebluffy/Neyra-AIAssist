@@ -1,0 +1,639 @@
+{
+  "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+  "baseCommit": "8bdbf5eb4f0e928071f2d5b2fbd0cb0527936ccd",
+  "generatedAt": "2026-11-14T17:58:39.580Z",
+  "nodeVersion": "v26.13.1",
+  "totalScreenshots": 63,
+  "screenshots": [
+    {
+      "file": "01-chat-empty-1440.png",
+      "sha256": "33680e43ea82ac0b625f26734fe6c1534b5d17f997b96b83f3dfd5ee73f65a2f",
+      "viewport": "1440x900",
+      "state": "empty",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:56:48.851Z",
+      "note": "Пустое состояние чата: чипсы сценариев, нейтральный композер"
+    },
+    {
+      "file": "02-chat-real-1440.png",
+      "sha256": "a594c5398122dd33bd7c620c4b7160fab79145b396c896e51fb60d3586cd5f92",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:56:50.270Z",
+      "note": "Активный чат: пузырь пользователя, ответ модели с форматированием Markdown"
+    },
+    {
+      "file": "03-chat-error-1440.png",
+      "sha256": "d1fe39ba281283c6d28f9cc8beb38f963d946248807b0250d4201b9887a619d6",
+      "viewport": "1440x900",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:56:51.571Z",
+      "note": "Чат: визуальное состояние ошибки соединения с кнопкой повтора"
+    },
+    {
+      "file": "04-auth-login-discord-1440.png",
+      "sha256": "c418325bc5c48b8f23a6ffccc2e9ba1d82c1ca4abeb291dae2e34f74a4a0e5ba",
+      "viewport": "1440x900",
+      "state": "discord-first",
+      "url": "http://127.0.0.1:3456/login",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:56:52.837Z",
+      "note": "Форма входа: главный вход через Discord (#5865F2, 44px) со скрытой email-формой"
+    },
+    {
+      "file": "04-auth-login-real-1440.png",
+      "sha256": "58cf2bf706c60064efe10e1f5bb25f52433725caa1100c692f64c2f21558f514",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/login",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:56:54.105Z",
+      "note": "Форма входа: раскрытая email-форма с валидированными полями ввода"
+    },
+    {
+      "file": "05-auth-login-error-1440.png",
+      "sha256": "d2bfb7d2e4aa0b21c54c9de3a1e23aa48deeb84453aaccbe0a30ce2f94fb6620",
+      "viewport": "1440x900",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/login?mockError=invalid",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:56:55.373Z",
+      "note": "Форма входа: плашка ошибки с контрастом 7.16:1"
+    },
+    {
+      "file": "06-auth-signup-invite-1440.png",
+      "sha256": "000561bdcfcbd84a66414d26cd9296567eec5ca5f7da12c7413e3f1c37062669",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/signup?invite=DEMO_INVITE_TOKEN_VALID",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:56:56.653Z",
+      "note": "Регистрация по инвайту: бейдж действующего приглашения"
+    },
+    {
+      "file": "07-auth-reset-password-1440.png",
+      "sha256": "5b938318a869cc83e1c8d28157c6eefaeef030dcf2d2622ed711e3efb6dafed8",
+      "viewport": "1440x900",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/reset-password",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:56:57.823Z",
+      "note": "Сброс пароля без токена: системное предупреждение"
+    },
+    {
+      "file": "08-thread-panel-real-1440.png",
+      "sha256": "1d6370161fcd683c291c3f3cf144e14c700d0dae9a01efe8c356032a6d24f002",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:56:59.100Z",
+      "note": "Панель треда: однострочные вкладки, индикатор, честный текст об истории"
+    },
+    {
+      "file": "09-thread-panel-empty-1440.png",
+      "sha256": "def4d83598ca3dd26c1c9377d8aaab561fdaa62f91520d48774467b1d4e5b9c9",
+      "viewport": "1440x900",
+      "state": "empty",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:00.599Z",
+      "note": "Панель треда: пустое состояние вкладки Закреплённые"
+    },
+    {
+      "file": "10-settings-profile-1440.png",
+      "sha256": "3d196442c7320c4bd9e3a7895c2a27c74bb61952e6dfacd1d7014804a089c632",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:02.258Z",
+      "note": "Диалог настроек: профиль, аватар, свитчи с контрастными границами"
+    },
+    {
+      "file": "11-admin-overview-1440.png",
+      "sha256": "492486b7d5e2df43162332059170c0c3c1e43a3aafba6cd3bd663200e5415aae",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:04.130Z",
+      "note": "Админка: обзор KPI, осмысленные метрики, честное состояние"
+    },
+    {
+      "file": "12-admin-models-1440.png",
+      "sha256": "b537e2d9d5954fdca21ac1571ea3f17aeff6a67b4ea1bb0097fbb5e5bcf852af",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:06.633Z",
+      "note": "Админка: роли моделей (talk/brain/coding/vision), форма параметров"
+    },
+    {
+      "file": "13-admin-providers-1440.png",
+      "sha256": "ddc43a71c74fab2e3c2f31110faf3ffd2dca6e0601e6bf4a4f63fbca880b7a38",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:09.114Z",
+      "note": "Админка: карточки провайдеров, ключи в vault, пресеты"
+    },
+    {
+      "file": "14-admin-access-1440.png",
+      "sha256": "602403ad2cc8a29c4dd85f0243683434497c76e4f51656114276e6391a0c54f4",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:11.576Z",
+      "note": "Админка: доступ, пользователи, радио режима регистрации слева"
+    },
+    {
+      "file": "15-admin-system-1440.png",
+      "sha256": "e5e5b2a90b6c094333890350fe0f6c516f8949914517aad8986b5b9351b15f2d",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:14.065Z",
+      "note": "Админка: системные операции, безопасные подтверждения действий"
+    },
+    {
+      "file": "01-chat-empty-390.png",
+      "sha256": "e09da4f972cd60d18c84a079c802df8cdb98d752f752155c61bfefb08a1baad4",
+      "viewport": "390x844",
+      "state": "empty",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:15.329Z",
+      "note": "Пустое состояние чата: чипсы сценариев, нейтральный композер"
+    },
+    {
+      "file": "02-chat-real-390.png",
+      "sha256": "4035ec3569b37e5bc453585cefb793b05de4bd19fcaa66575ff9a4d55b121790",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:16.746Z",
+      "note": "Активный чат: пузырь пользователя, ответ модели с форматированием Markdown"
+    },
+    {
+      "file": "03-chat-error-390.png",
+      "sha256": "65289153cb448f60795593c71e3f503ced3b0921b2bada46166e7f199bc570d7",
+      "viewport": "390x844",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:18.028Z",
+      "note": "Чат: визуальное состояние ошибки соединения с кнопкой повтора"
+    },
+    {
+      "file": "04-auth-login-discord-390.png",
+      "sha256": "f4ae92df8c502a12e9f8c92a7c8baebcddb3e69ee2ce2d11b3dd89d64c79a9a9",
+      "viewport": "390x844",
+      "state": "discord-first",
+      "url": "http://127.0.0.1:3456/login",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:19.270Z",
+      "note": "Форма входа: главный вход через Discord (#5865F2, 44px) со скрытой email-формой"
+    },
+    {
+      "file": "04-auth-login-real-390.png",
+      "sha256": "cb500ee32d1b7c53b12291de03bce63e16bd6abfd0888b60fe874667abbbd61c",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/login",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:20.555Z",
+      "note": "Форма входа: раскрытая email-форма с валидированными полями ввода"
+    },
+    {
+      "file": "05-auth-login-error-390.png",
+      "sha256": "a3139d973c09e5f710fd8824c06708a6de752152b45de68a06df86d59ab08f01",
+      "viewport": "390x844",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/login?mockError=invalid",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:21.805Z",
+      "note": "Форма входа: плашка ошибки с контрастом 7.16:1"
+    },
+    {
+      "file": "06-auth-signup-invite-390.png",
+      "sha256": "901ab8a11bbdc302f5b608a29a6d4cae27de1ce09dbab118fc11f62f85fed237",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/signup?invite=DEMO_INVITE_TOKEN_VALID",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:23.069Z",
+      "note": "Регистрация по инвайту: бейдж действующего приглашения"
+    },
+    {
+      "file": "07-auth-reset-password-390.png",
+      "sha256": "745054b5bed46f03f724a3b1da8f778ba5836ac5f0a9dff7c4f8ab71a8218cca",
+      "viewport": "390x844",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/reset-password",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:24.228Z",
+      "note": "Сброс пароля без токена: системное предупреждение"
+    },
+    {
+      "file": "08-thread-panel-real-390.png",
+      "sha256": "a99d3a467d87566cb7bad3071f33363295f82e605b4778bf83841e0e5f6de558",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:25.503Z",
+      "note": "Панель треда: однострочные вкладки, индикатор, честный текст об истории"
+    },
+    {
+      "file": "09-thread-panel-empty-390.png",
+      "sha256": "4e2848be44bffa00896716fc6fa78a6148549fc1023ef0f54c6d6364ee80ce87",
+      "viewport": "390x844",
+      "state": "empty",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:26.984Z",
+      "note": "Панель треда: пустое состояние вкладки Закреплённые"
+    },
+    {
+      "file": "10-settings-profile-390.png",
+      "sha256": "382e0c64da84610e151bb3ad1fe8237ca7e868e714c55c2f851b4159422e5fe8",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:29.027Z",
+      "note": "Диалог настроек: профиль, аватар, свитчи с контрастными границами"
+    },
+    {
+      "file": "11-admin-overview-390.png",
+      "sha256": "9e306f361fde43aa1fc7cecddcee9032538867bcb6aab5c8ab0e30d6c599e1f5",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:31.316Z",
+      "note": "Админка: обзор KPI, осмысленные метрики, честное состояние"
+    },
+    {
+      "file": "12-admin-models-390.png",
+      "sha256": "a02e40f3105d614911c9c37659a043397f9f88c02b941cce802b0867b3590f36",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:34.131Z",
+      "note": "Админка: роли моделей (talk/brain/coding/vision), форма параметров"
+    },
+    {
+      "file": "13-admin-providers-390.png",
+      "sha256": "966e67a87091cf77762582c5b2bcf8b7d58f46fd96eb7e4aa5287dc02cf3c491",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:36.953Z",
+      "note": "Админка: карточки провайдеров, ключи в vault, пресеты"
+    },
+    {
+      "file": "14-admin-access-390.png",
+      "sha256": "100a3c4e5ea1ef27c10dc718ecb5429e97fbf27070ab2fc5a424cde522bb055b",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:39.812Z",
+      "note": "Админка: доступ, пользователи, радио режима регистрации слева"
+    },
+    {
+      "file": "15-admin-system-390.png",
+      "sha256": "fd3cd2a10addc64606589dd768b1d5014b951c22043c05425df373f6cb476303",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:42.662Z",
+      "note": "Админка: системные операции, безопасные подтверждения действий"
+    },
+    {
+      "file": "16-zoom200-chat-1440.png",
+      "sha256": "ce984ffd2d7193b3c5b992b5ec77cad5f0339bc6c3f41fe195a5d78637f29e90",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:43.936Z",
+      "note": "Доступность: масштабирование интерфейса 200% без потери элементов (WCAG reflow)"
+    },
+    {
+      "file": "17-zoom200-admin-1440.png",
+      "sha256": "d45f01a343d98a0650bbb0911cea36f28b9c650bd40eb5ca6119214a447c117f",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:46.293Z",
+      "note": "Доступность: модальное окно админки при 200% зуме с адаптивным скроллом"
+    },
+    {
+      "file": "18-break-chat-longtext-1440.png",
+      "sha256": "04376c6569b141b001cd7da0e02f610049684f2347294cc9691c6c85bd941f9a",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:47.750Z",
+      "note": "Ломка данных: 60-символьная неразрывная строка, эмодзи, длинный URL — без вылета за экран"
+    },
+    {
+      "file": "18-break-chat-longtext-390.png",
+      "sha256": "db2e8a635b7ad302c9904ef2d9e3d52de25358b702189d27db78faa211b0a53f",
+      "viewport": "390x844",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:49.161Z",
+      "note": "Ломка данных: 60-символьная неразрывная строка, эмодзи, длинный URL — без вылета за экран"
+    },
+    {
+      "file": "19-break-notes-extreme-1440.png",
+      "sha256": "c8bfcd3de41007988cf3e39898130e0dd831822e95d56bd37e3305c01874efb4",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:50.447Z",
+      "note": "Ломка данных: карточки заметок с длинными названиями и переносами"
+    },
+    {
+      "file": "20-break-admin-extreme-1440.png",
+      "sha256": "32c5e461486da0779b3d74abb725c2ddca7c89d67fbde2fcb303973d84f94fc0",
+      "viewport": "1440x900",
+      "state": "real",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:53.337Z",
+      "note": "Ломка данных: экстремально длинный email в поиске доступа админки"
+    },
+    {
+      "file": "21-login-pending-1440.png",
+      "sha256": "79db5aee109d9c1381c7a2074d47707fbd0d62eaf7bbaa94ce40a2f8e8fd019c",
+      "viewport": "1440x900",
+      "state": "pending",
+      "url": "http://127.0.0.1:3456/login/pending",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:54.552Z",
+      "note": "Ожидание Discord OAuth: пульсирующий индикатор и кнопка повторного открытия"
+    },
+    {
+      "file": "22-login-denied-1440.png",
+      "sha256": "942719611f5d506d713309d345df46acb95b6eca3dd48c1a40205739feb72a5e",
+      "viewport": "1440x900",
+      "state": "denied",
+      "url": "http://127.0.0.1:3456/login/denied",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:55.753Z",
+      "note": "Отказ во входе без инвайта: форма ввода кода и смена аккаунта"
+    },
+    {
+      "file": "23-login-error-1440.png",
+      "sha256": "fb8cb655bbe99ad2ae07a905354eddc7a7c51cac8b76c0085ce201b1365b86c5",
+      "viewport": "1440x900",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/login/error?code=access_denied",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:56.924Z",
+      "note": "Экран ошибки авторизации с кодом ошибки и понятным разъяснением"
+    },
+    {
+      "file": "24-onboarding-step1-1440.png",
+      "sha256": "d0728750457cc817df34a938197b4d6a84374b6c2523f1b06c896ee2887e0815",
+      "viewport": "1440x900",
+      "state": "step1",
+      "url": "http://127.0.0.1:3456/onboarding",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:58.036Z",
+      "note": "Онбординг (шаг 1): отображаемое имя и аватар с инициалами"
+    },
+    {
+      "file": "25-onboarding-step2-1440.png",
+      "sha256": "61986501c7aae689df2e0cc7536499d5cfe18b5d207a750f4ff5d435344e341b",
+      "viewport": "1440x900",
+      "state": "step2",
+      "url": "http://127.0.0.1:3456/onboarding",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:57:59.123Z",
+      "note": "Онбординг (шаг 2): переключатели памяти и синхронизации внешних каналов"
+    },
+    {
+      "file": "21-login-pending-390.png",
+      "sha256": "bd788859b00eb37d4093247390b141d5a01e7ceffc3c1072f47b69812f72666b",
+      "viewport": "390x844",
+      "state": "pending",
+      "url": "http://127.0.0.1:3456/login/pending",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:00.302Z",
+      "note": "Ожидание Discord OAuth: пульсирующий индикатор и кнопка повторного открытия"
+    },
+    {
+      "file": "22-login-denied-390.png",
+      "sha256": "48d8de89e2964d8ec64b107207d012cd6113e9acafac1b8418f2e007e0b78789",
+      "viewport": "390x844",
+      "state": "denied",
+      "url": "http://127.0.0.1:3456/login/denied",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:01.502Z",
+      "note": "Отказ во входе без инвайта: форма ввода кода и смена аккаунта"
+    },
+    {
+      "file": "23-login-error-390.png",
+      "sha256": "e3dc6f419e88b892bec0e1aa39d69cfae069a025ea67ce305aa30747be38d09c",
+      "viewport": "390x844",
+      "state": "error",
+      "url": "http://127.0.0.1:3456/login/error?code=access_denied",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:02.667Z",
+      "note": "Экран ошибки авторизации с кодом ошибки и понятным разъяснением"
+    },
+    {
+      "file": "24-onboarding-step1-390.png",
+      "sha256": "3e0ac4ed0745e2ed2ba1327ef7776ea327815f8aff8c7a19a729ea27e7a557b3",
+      "viewport": "390x844",
+      "state": "step1",
+      "url": "http://127.0.0.1:3456/onboarding",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:03.753Z",
+      "note": "Онбординг (шаг 1): отображаемое имя и аватар с инициалами"
+    },
+    {
+      "file": "25-onboarding-step2-390.png",
+      "sha256": "19f6e2de75937621105aa78c25aecbc3b2cc8672f09ca58db7548815aeae457c",
+      "viewport": "390x844",
+      "state": "step2",
+      "url": "http://127.0.0.1:3456/onboarding",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:04.823Z",
+      "note": "Онбординг (шаг 2): переключатели памяти и синхронизации внешних каналов"
+    },
+    {
+      "file": "26-settings-accounts-1440.png",
+      "sha256": "0220cc8641054e54c395a14252ed2c84cc18f874dee565fc7e8df8d5f801e5f5",
+      "viewport": "1440x900",
+      "state": "accounts",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:06.553Z",
+      "note": "Настройки: привязанные аккаунты (Discord, Web email, Telegram заглушка)"
+    },
+    {
+      "file": "27-settings-merge-modal-1440.png",
+      "sha256": "c568d428572b8653d2b16b55602b3c9f2ba25bed2f74eeea76b0071b63024b73",
+      "viewport": "1440x900",
+      "state": "merge-modal",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:08.460Z",
+      "note": "Настройки: модальное окно объединения профилей с предпросмотром данных"
+    },
+    {
+      "file": "28-admin-access-invites-1440.png",
+      "sha256": "89e459f9e2833bfebda4774786e4c82bf88847699d466fb037af91372a15ff8a",
+      "viewport": "1440x900",
+      "state": "invites",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:11.613Z",
+      "note": "Админка: таблица инвайтов с созданным кодом, сроком, ссылкой и отзывом"
+    },
+    {
+      "file": "29-admin-person-merge-1440.png",
+      "sha256": "ec59edde248383d34f68dd03158deb7f500907dda9b2428100630ece19433b14",
+      "viewport": "1440x900",
+      "state": "person-merge",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:14.584Z",
+      "note": "Админка: модальное окно объединения двух person_id с требованием слова «объединить»"
+    },
+    {
+      "file": "30-context-menu-message-1440.png",
+      "sha256": "47222920d01cbd4c123d26860022d90c5d3e124986ac7fbd669d7264e31e0e3f",
+      "viewport": "1440x900",
+      "state": "message",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:16.351Z",
+      "note": "Контекстное меню (ПКМ) сообщения: копирование, редактирование, озвучка (скоро), удаление"
+    },
+    {
+      "file": "31-context-menu-sidebar-chat-1440.png",
+      "sha256": "0201c7148f5fe0b85a10081cf55de1dc9e3a137a0874030643fc4b88a656a35d",
+      "viewport": "1440x900",
+      "state": "sidebar-chat",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:18.163Z",
+      "note": "Контекстное меню (ПКМ) диалога в сайдбаре: переименовать, закрепить, экспорт, копировать ID"
+    },
+    {
+      "file": "32-context-menu-invite-row-1440.png",
+      "sha256": "e9ccde73ddd16fab34156080c4b8ec0f3864c5d1b5ad24926256cbdd9061220e",
+      "viewport": "1440x900",
+      "state": "invite-row",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:22.003Z",
+      "note": "Контекстное меню (ПКМ) инвайта в админке: копирование кода, ссылки, отзыв"
+    },
+    {
+      "file": "33-context-menu-admin-row-1440.png",
+      "sha256": "89b4275fb0d5e08e85624a65f4646f06a0fc4f44bc3ddede07c5d7ec4717ada0",
+      "viewport": "1440x900",
+      "state": "admin-row",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:24.887Z",
+      "note": "Контекстное меню (ПКМ) пользователя в админке: объединение, person_id, роль, бан, вход как"
+    },
+    {
+      "file": "34-context-menu-link-1440.png",
+      "sha256": "dcfcbcc2e12315168723f5a1dc30580e836bacd97a2ee5f0bd42495288f1d61c",
+      "viewport": "1440x900",
+      "state": "link",
+      "url": "http://127.0.0.1:3456/login",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:26.152Z",
+      "note": "Контекстное меню (ПКМ) ссылки: копировать адрес ссылки, открыть в новой вкладке"
+    },
+    {
+      "file": "35-context-menu-mobile-390.png",
+      "sha256": "ab5e5b856e2cafd055efc89571ce0cfd821efcb772edf767ea66e28665c20285",
+      "viewport": "390x844",
+      "state": "mobile-touch",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:27.575Z",
+      "note": "Мобильное контекстное меню (390px): длинное нажатие (long-press 500ms) с тактильной адаптацией"
+    },
+    {
+      "file": "36-admin-providers-opencode-cli-1440.png",
+      "sha256": "c50b9e78832762971dd972107eb5e0171e0a1512de9c21e6c9d532f08638c48b",
+      "viewport": "1440x900",
+      "state": "cli-modal",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:30.551Z",
+      "note": "Провайдеры: модальное окно с инструкцией подключения OpenCode CLI и копированием команды"
+    },
+    {
+      "file": "37-admin-provider-detail-1440.png",
+      "sha256": "79e85a9cd19617f3f0fddd8d3d44576643ee8ee0a48557cd836cdc92d338efa5",
+      "viewport": "1440x900",
+      "state": "provider-detail",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:33.679Z",
+      "note": "Провайдеры: выделенный экран провайдера (OpenAI) с разделами подключения, ключа, моделей, лейнов и опасной зоны"
+    },
+    {
+      "file": "38-admin-add-provider-modal-1440.png",
+      "sha256": "f4115faf946941af60fbc8c674cf0084f61150c5bcab24d61483d9d042d75403",
+      "viewport": "1440x900",
+      "state": "add-modal",
+      "url": "http://127.0.0.1:3456/chat",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:36.577Z",
+      "note": "Провайдеры: двухшаговая модалка добавления провайдера с каталогом пресетов"
+    },
+    {
+      "file": "39-channels-settings-modal-1440.png",
+      "sha256": "9ae6d3fd834048ccfaa73d72daeb88ef401839a8bec4d9de26d4b0a1f190b830",
+      "viewport": "1440x900",
+      "state": "settings-modal",
+      "url": "http://127.0.0.1:3456/channels",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:38.224Z",
+      "note": "Каналы: вызов модалки настроек прямо из интерфейса /channels без перехода на страницу"
+    },
+    {
+      "file": "40-chat-settings-param-1440.png",
+      "sha256": "dca34a9b6cd7a2bce931d9ec059c527de9c04303b4094e6d6048577dc26d534d",
+      "viewport": "1440x900",
+      "state": "query-param-settings",
+      "url": "http://127.0.0.1:3456/chat?settings=1",
+      "commit": "66852fa3add908a1bb0e296ec1ec6aa2c6a5527d",
+      "takenAt": "2026-11-14T17:58:39.575Z",
+      "note": "Чат: автоматическое открытие модалки настроек по URL-параметру ?settings=1 (легаси-редирект с /settings)"
+    }
+  ]
+}
