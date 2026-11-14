@@ -1233,14 +1233,16 @@ export function ChatView({
                     className="min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
                   >
                     <History size={14} className="shrink-0 text-[var(--text-muted)]" />
-                    <span className="truncate">Суммируй вчерашний диалог</span>
+                    <span className="sm:hidden">Суммируй вчера</span>
+                    <span className="hidden sm:inline">Суммируй вчерашний диалог</span>
                   </Chip>
                   <Chip
                     onClick={() => sendMessage('Проверь состояние сервера')}
                     className="min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
                   >
                     <Activity size={14} className="shrink-0 text-[var(--text-muted)]" />
-                    <span className="truncate">Проверь состояние сервера</span>
+                    <span className="sm:hidden">Состояние сервера</span>
+                    <span className="hidden sm:inline">Проверь состояние сервера</span>
                   </Chip>
                 </div>
               )}
