@@ -1,5 +1,6 @@
 'use client';
 
+import { adminFetch } from './admin-fetch';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Ban } from 'lucide-react';
@@ -17,7 +18,7 @@ export function InviteRowActions({ id, disabled }: { id: string; disabled: boole
     setPending(true);
     setError('');
     try {
-      const response = await fetch(`/api/admin/invites/${id}`, {
+      const response = await adminFetch(`/api/admin/invites/${id}`, {
         method: 'DELETE',
         headers: { 'content-type': 'application/json' },
       });

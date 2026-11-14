@@ -1,5 +1,6 @@
 'use client';
 
+import { adminFetch } from './admin-fetch';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
@@ -70,7 +71,7 @@ export function ProvidersSection() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/admin/providers', { cache: 'no-store' });
+      const response = await adminFetch('/api/admin/providers', { cache: 'no-store' });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.message || 'Ядро не отдало провайдеров.');
       const next = payload?.data ?? payload;
@@ -128,7 +129,7 @@ export function ProvidersSection() {
     setSaving(true);
     setNotice(null);
     try {
-      const saved = await fetch(`/api/admin/providers/${encodeURIComponent(name)}`, {
+      const saved = await adminFetch(`/api/admin/providers/${encodeURIComponent(name)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ base_url: form.base_url.trim(), kind: form.kind }),
@@ -138,7 +139,7 @@ export function ProvidersSection() {
       if (savedPayload?.supported === false) throw new Error(savedPayload.message || 'Ядро не поддерживает управление провайдерами.');
 
       if (form.apiKey.trim()) {
-        const secret = await fetch(`/api/admin/providers/${encodeURIComponent(name)}/secret`, {
+        const secret = await adminFetch(`/api/admin/providers/${encodeURIComponent(name)}/secret`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ api_key: form.apiKey.trim() }),
@@ -161,7 +162,7 @@ export function ProvidersSection() {
     setSaving(true);
     setNotice(null);
     try {
-      const response = await fetch(`/api/admin/providers/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const response = await adminFetch(`/api/admin/providers/${encodeURIComponent(name)}`, { method: 'DELETE' });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.message || 'Ядро не удалило провайдера.');
       if (payload?.supported === false) throw new Error(payload.message || 'Ядро не поддерживает управление провайдерами.');
@@ -179,7 +180,7 @@ export function ProvidersSection() {
     setSaving(true);
     setNotice(null);
     try {
-      const response = await fetch(`/api/admin/providers/${encodeURIComponent(name)}`, { method: 'POST' });
+      const response = await adminFetch(`/api/admin/providers/${encodeURIComponent(name)}`, { method: 'POST' });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.message || 'Ядро не перенесло ключ.');
       if (payload?.supported === false) throw new Error(payload.message || 'Ядро не поддерживает управление провайдерами.');
@@ -196,7 +197,7 @@ export function ProvidersSection() {
     setSaving(true);
     setNotice(null);
     try {
-      const response = await fetch(`/api/admin/providers/${encodeURIComponent(name)}/secret`, { method: 'DELETE' });
+      const response = await adminFetch(`/api/admin/providers/${encodeURIComponent(name)}/secret`, { method: 'DELETE' });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.message || 'Ядро не убрало ключ.');
       if (payload?.supported === false) throw new Error(payload.message || 'Ядро не поддерживает управление провайдерами.');

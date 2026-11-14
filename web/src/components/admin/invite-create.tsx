@@ -1,5 +1,6 @@
 'use client';
 
+import { adminFetch } from './admin-fetch';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Check, Copy } from 'lucide-react';
@@ -26,7 +27,7 @@ export function InviteCreate() {
     setError('');
     setLink('');
     try {
-      const response = await fetch('/api/admin/invites', {
+      const response = await adminFetch('/api/admin/invites', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ttlHours: Math.max(1, Math.round(Number(ttl) / 3600)) }),

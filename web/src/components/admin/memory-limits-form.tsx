@@ -1,5 +1,6 @@
 'use client';
 
+import { adminFetch } from './admin-fetch';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -51,7 +52,7 @@ export function MemoryLimitsForm({ limits, autocompact }: MemoryFormProps) {
     setPending(true);
     setMessage(null);
     try {
-      const response = await fetch('/api/admin/config', {
+      const response = await adminFetch('/api/admin/config', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ updates }),

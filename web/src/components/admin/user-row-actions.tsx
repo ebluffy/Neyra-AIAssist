@@ -1,5 +1,6 @@
 'use client';
 
+import { adminFetch } from './admin-fetch';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ShieldCheck, ShieldAlert, KeyRound, Trash2, Check } from 'lucide-react';
@@ -28,7 +29,7 @@ export function UserRowActions({ user, isSelf }: { user: UserRow; isSelf: boolea
     setPending(true);
     setError('');
     try {
-      const response = await fetch(url, init);
+      const response = await adminFetch(url, init);
       const payload = await response.json().catch(() => null) as { ok?: boolean; message?: string; resetUrl?: string } | null;
       if (!response.ok || payload?.ok === false) throw new Error(payload?.message ?? 'Действие отклонено сервером.');
       return payload;

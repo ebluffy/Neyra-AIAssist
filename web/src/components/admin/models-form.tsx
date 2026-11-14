@@ -1,5 +1,6 @@
 'use client';
 
+import { adminFetch } from './admin-fetch';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { LaneConfig } from '../../../lib/admin-config';
@@ -71,7 +72,7 @@ export function ModelsForm({ lanes, providers }: { lanes: Record<string, LaneCon
     setPending(lane);
     setMessages(current => ({ ...current, [lane]: { tone: 'ok', text: '' } }));
     try {
-      const response = await fetch('/api/admin/config', {
+      const response = await adminFetch('/api/admin/config', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ updates }),

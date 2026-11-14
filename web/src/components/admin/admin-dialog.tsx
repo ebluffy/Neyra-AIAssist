@@ -1,5 +1,6 @@
 'use client';
 
+import { adminFetch } from './admin-fetch';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
@@ -501,8 +502,8 @@ function OverviewSection({ onNavigate }: { onNavigate: (section: AdminSection) =
     setError(null);
     try {
       const [overviewRes, systemRes] = await Promise.all([
-        fetch('/api/admin/overview'),
-        fetch('/api/admin/system'),
+        adminFetch('/api/admin/overview'),
+        adminFetch('/api/admin/system'),
       ]);
       const overviewJson = await overviewRes.json().catch(() => null);
       const systemJson = await systemRes.json().catch(() => null);
@@ -730,7 +731,7 @@ function ModelsSection() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/admin/config');
+      const res = await adminFetch('/api/admin/config');
       const json = await res.json().catch(() => null);
       if (!res.ok || json?.ok === false) {
         throw new Error(json?.message || 'Ядро не отдало настройки моделей.');
@@ -806,7 +807,7 @@ function ModelsSection() {
     setFeedback((prev) => ({ ...prev, [laneKey]: { tone: 'ok', text: '' } }));
 
     try {
-      const res = await fetch('/api/admin/config', {
+      const res = await adminFetch('/api/admin/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ updates }),
@@ -1066,8 +1067,8 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
     setError(null);
     try {
       const [intRes, cfgRes] = await Promise.all([
-        fetch('/api/admin/integrations'),
-        fetch('/api/admin/config'),
+        adminFetch('/api/admin/integrations'),
+        adminFetch('/api/admin/config'),
       ]);
       const intJson = await intRes.json().catch(() => null);
       const cfgJson = await cfgRes.json().catch(() => null);
@@ -1296,9 +1297,9 @@ function AccessSection() {
     setError(null);
     try {
       const [uRes, iRes, sRes] = await Promise.all([
-        fetch('/api/admin/users'),
-        fetch('/api/admin/invites'),
-        fetch('/api/admin/settings'),
+        adminFetch('/api/admin/users'),
+        adminFetch('/api/admin/invites'),
+        adminFetch('/api/admin/settings'),
       ]);
       const uJson = await uRes.json().catch(() => null);
       const iJson = await iRes.json().catch(() => null);
@@ -1331,7 +1332,7 @@ function AccessSection() {
     const nextRole = user.role === 'admin' ? 'user' : 'admin';
     setActionPendingId(user.id);
     try {
-      const res = await fetch(`/api/admin/users/${user.id}`, {
+      const res = await adminFetch(`/api/admin/users/${user.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role: nextRole }),
@@ -1351,7 +1352,7 @@ function AccessSection() {
     const nextBanned = !user.banned;
     setActionPendingId(user.id);
     try {
-      const res = await fetch(`/api/admin/users/${user.id}`, {
+      const res = await adminFetch(`/api/admin/users/${user.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ banned: nextBanned }),
@@ -1371,7 +1372,7 @@ function AccessSection() {
     setCreatingInvite(true);
     setCreatedInviteUrl(null);
     try {
-      const res = await fetch('/api/admin/invites', {
+      const res = await adminFetch('/api/admin/invites', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ttlHours: Number(newInviteTtl) || 24 }),
@@ -1403,7 +1404,7 @@ function AccessSection() {
     setRegModeError(null);
     setRegModeSaved(false);
     try {
-      const res = await fetch('/api/admin/settings', {
+      const res = await adminFetch('/api/admin/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ registration_mode: mode }),
@@ -1729,7 +1730,7 @@ function SystemSection() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/admin/system');
+      const res = await adminFetch('/api/admin/system');
       const json = await res.json().catch(() => null);
       if (!res.ok || json?.ok === false) {
         throw new Error(json?.message || 'Не удалось получить данные о системе.');
@@ -1751,7 +1752,7 @@ function SystemSection() {
     setRestartError(null);
     setRestartMessage(null);
     try {
-      const res = await fetch('/api/admin/system/restart', {
+      const res = await adminFetch('/api/admin/system/restart', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target: 'core' }),

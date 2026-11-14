@@ -203,6 +203,12 @@ export function ChatView({
     if (typeof window === 'undefined') return resolveChatId(null, 'ssr', user.id);
     return resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
   });
+  // Актуальный тред для асинхронной загрузки: результат не должен прилипнуть
+  // к диалогу, который уже сменили.
+  const chatIdRef = useRef(chatId);
+  useEffect(() => {
+    chatIdRef.current = chatId;
+  }, [chatId]);
 
   // Load pinned messages whenever chatId or user.id changes
   useEffect(() => {
@@ -343,6 +349,14 @@ export function ChatView({
       stopGeneration();
     }
     setChatId(targetThreadId);
+    chatIdRef.current = targetThreadId;
+    // Состояние композера и индикаторов принадлежит прошлому треду: не переносим
+    // вложения, usage и фазу в чужой диалог.
+    setAttachments([]);
+    setAttachmentError(null);
+    setAttachMenuOpen(false);
+    setUsage(null);
+    setPhaseLabel(null);
     try {
       sessionStorage.setItem(`neyra.chat_id:${user.id}:${resolveTabKey(window)}`, targetThreadId);
       const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
@@ -395,6 +409,7 @@ export function ChatView({
         ? resolveChatId(null, 'ssr', user.id)
         : resetChatId(window.sessionStorage, resolveTabKey(window), user.id);
     setChatId(newId);
+    chatIdRef.current = newId;
     setMessages([]);
     setPinnedMessageIds([]);
     setCustomTitle(null);
@@ -626,9 +641,10 @@ export function ChatView({
     }
 
     setUploadingCount(count => count + 1);
+    const uploadChatId = chatId;
     try {
       const form = new FormData();
-      form.set('chat_id', chatId);
+      form.set('chat_id', uploadChatId);
       for (const file of selected) form.append('files', file, file.name);
       const response = await fetch('/api/attachments', { method: 'POST', body: form });
       const payload = await response.json().catch(() => null) as {
@@ -648,9 +664,12 @@ export function ChatView({
       if (!parsed.success || parsed.data.length !== selected.length) {
         throw new Error('Ядро вернуло вложение в неизвестном формате.');
       }
+      if (chatIdRef.current !== uploadChatId) return;
       setAttachments(prev => [...prev, ...parsed.data]);
     } catch (error) {
-      setAttachmentError(error instanceof Error ? error.message : 'Не удалось загрузить вложение.');
+      if (chatIdRef.current === uploadChatId) {
+        setAttachmentError(error instanceof Error ? error.message : 'Не удалось загрузить вложение.');
+      }
     } finally {
       setUploadingCount(count => Math.max(0, count - 1));
     }
@@ -860,7 +879,12 @@ export function ChatView({
     for (let i = assistantIndex - 1; i >= 0; i--) {
       if (messages[i].role === 'user') {
         userText = messages[i].content;
-        userAttachments = messages[i].attachments || [];
+        // В localStorage могли остаться вложения старого формата (local id/isImage).
+        // В ядро уходят только метаданные, прошедшие AttachmentSchema.
+        userAttachments = (messages[i].attachments ?? []).flatMap((attachment) => {
+          const parsed = AttachmentSchema.safeParse(attachment);
+          return parsed.success ? [parsed.data] : [];
+        });
         break;
       }
     }

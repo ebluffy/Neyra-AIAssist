@@ -1,5 +1,6 @@
 'use client';
 
+import { adminFetch } from './admin-fetch';
 import { useCallback, useEffect, useState } from 'react';
 
 interface Tail {
@@ -24,7 +25,7 @@ export function LogTail({ lines = 200 }: { lines?: number }) {
     setPending(true);
     setError('');
     try {
-      const response = await fetch(`/api/admin/logs/tail?lines=${lines}`);
+      const response = await adminFetch(`/api/admin/logs/tail?lines=${lines}`);
       const payload = await response.json().catch(() => null) as { ok?: boolean; data?: Tail; message?: string } | null;
       if (!response.ok || payload?.ok === false || !payload?.data) {
         throw new Error(payload?.message ?? 'Ядро не отдало лог.');
