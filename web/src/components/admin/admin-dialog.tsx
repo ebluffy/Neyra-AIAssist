@@ -1501,7 +1501,7 @@ function AccessSection() {
               placeholder="Поиск по имени или email…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-10 w-full pl-9 pr-8 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] text-xs text-[var(--text)] placeholder:text-[var(--text-subtle)] outline-none focus:border-[var(--accent)] transition-colors"
+              className="h-10 w-full pl-9 pr-8 rounded-[var(--radius-sm)] border border-[var(--border-control)] bg-[var(--surface)] text-xs text-[var(--text)] placeholder:text-[var(--text-subtle)] outline-none focus:border-[var(--accent)] transition-colors"
             />
             {searchQuery && (
               <button
@@ -1598,7 +1598,7 @@ function AccessSection() {
               <select
                 value={newInviteTtl}
                 onChange={(e) => setNewInviteTtl(e.target.value)}
-                className="h-10 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] transition-colors"
+                className="h-10 rounded-[var(--radius-sm)] border border-[var(--border-control)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] transition-colors"
               >
                 <option value="24">24 часа (1 сутки)</option>
                 <option value="72">72 часа (3 суток)</option>
@@ -1724,13 +1724,13 @@ function AccessSection() {
                 className={`p-3 text-left rounded-[var(--radius-sm)] border transition-all cursor-pointer ${
                   active
                     ? 'border-[var(--accent)] bg-[var(--surface-3)] ring-1 ring-[var(--accent)]/30'
-                    : 'border-[var(--border)] bg-[var(--surface-2)]/60 hover:bg-[var(--surface-2)] text-[var(--text-muted)]'
+                    : 'border-[var(--border-control)] bg-[var(--surface-2)]/60 hover:bg-[var(--surface-2)] text-[var(--text-muted)]'
                 } ${savingRegMode ? 'opacity-60 pointer-events-none' : ''}`}
               >
                 <div className="flex items-start gap-2.5">
                   <span
                     className={`mt-0.5 w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${
-                      active ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--border-strong)] bg-transparent'
+                      active ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--border-control)] bg-transparent'
                     }`}
                   >
                     {active && <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-ink)]" />}

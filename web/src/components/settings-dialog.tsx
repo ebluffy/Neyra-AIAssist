@@ -56,8 +56,8 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: (nex
         aria-checked={checked}
         aria-label={label}
         onClick={() => onChange(!checked)}
-        className={`relative h-6 w-11 rounded-full border transition-colors duration-150 cursor-pointer ${
-          checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'bg-[var(--surface-3)] border-[var(--border-strong)]'
+        className={`relative h-6 w-11 rounded-full border transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)] ${
+          checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'bg-[var(--surface-3)] border-[var(--border-control)] hover:border-[var(--accent)]'
         }`}
       >
         <span

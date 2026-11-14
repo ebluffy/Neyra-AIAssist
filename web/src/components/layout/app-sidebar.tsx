@@ -611,7 +611,7 @@ export function AppSidebar({
                     placeholder="Поиск по чатам…"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)] text-xs pl-7 pr-7 py-1.5 text-[var(--text)] placeholder-[var(--text-subtle)] outline-none focus:border-[var(--accent)]"
+                    className="w-full bg-[var(--surface-2)] border border-[var(--border-control)] rounded-[var(--radius-sm)] text-xs pl-7 pr-7 py-1.5 text-[var(--text)] placeholder-[var(--text-subtle)] outline-none focus:border-[var(--accent)]"
                   />
                   {searchQuery && (
                     <button
@@ -716,7 +716,7 @@ export function AppSidebar({
                       placeholder="Заголовок…"
                       value={noteTitleInput}
                       onChange={(e) => setNoteTitleInput(e.target.value)}
-                      className="w-full bg-[var(--surface-3)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] font-medium outline-none focus:border-[var(--accent)]"
+                      className="w-full bg-[var(--surface-3)] border border-[var(--border-control)] rounded px-2 py-1 text-xs text-[var(--text)] font-medium outline-none focus:border-[var(--accent)]"
                     />
                     <textarea
                       aria-label="Текст заметки"
@@ -724,7 +724,7 @@ export function AppSidebar({
                       rows={3}
                       value={noteContentInput}
                       onChange={(e) => setNoteContentInput(e.target.value)}
-                      className="w-full bg-[var(--surface-3)] border border-[var(--border)] rounded p-2 text-xs text-[var(--text)] resize-none outline-none focus:border-[var(--accent)]"
+                      className="w-full bg-[var(--surface-3)] border border-[var(--border-control)] rounded p-2 text-xs text-[var(--text)] resize-none outline-none focus:border-[var(--accent)]"
                     />
                     <div className="flex justify-end gap-1.5">
                       <Button

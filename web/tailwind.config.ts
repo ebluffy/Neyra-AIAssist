@@ -11,6 +11,7 @@ const config: Config = {
         'surface-3': 'var(--surface-3)',
         border: 'var(--border)',
         'border-strong': 'var(--border-strong)',
+        'border-control': 'var(--border-control)',
         text: 'var(--text)',
         'text-muted': 'var(--text-muted)',
         'text-subtle': 'var(--text-subtle)',

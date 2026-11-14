@@ -13,11 +13,12 @@
   --surface-3: #1a1a1a;
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.16);
+  --border-control: rgba(255, 255, 255, 0.36);
 
   /* Текст — строгая нейтральная шкала */
   --text: #f4f4f5;
   --text-muted: #a1a1aa;
-  --text-subtle: #71717a;
+  --text-subtle: #8e8e99;
 
   /* Сигнал — монохромный (белый акцент) */
   --accent: #ffffff;
@@ -26,8 +27,8 @@
   --accent-quiet: rgba(255, 255, 255, 0.08);
 
   /* Статусы — строгие, только красный для реальной ошибки */
-  --danger: #ef4444;
-  --danger-quiet: rgba(239, 68, 68, 0.12);
+  --danger: #f87171;
+  --danger-quiet: rgba(239, 68, 68, 0.14);
   --success: #e4e4e7;
   --brand-discord: #5865f2;
   --brand-discord-hover: #4752c4;

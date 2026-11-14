@@ -40,7 +40,7 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(
             className={`h-11 w-full rounded-[var(--radius)] bg-[var(--surface-2)] px-3.5 text-sm text-[var(--text)] placeholder-[var(--text-subtle)] border ${
               error
                 ? 'border-[var(--danger)] focus:border-[var(--danger)] focus:ring-2 focus:ring-[var(--danger)]/40'
-                : 'border-[var(--border)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/30'
+                : 'border-[var(--border-control)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/30'
             } outline-none transition-all disabled:opacity-40 disabled:cursor-default ${trailing ? 'pr-12' : ''} ${className}`}
             {...props}
           />
