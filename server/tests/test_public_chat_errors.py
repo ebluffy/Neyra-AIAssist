@@ -63,13 +63,26 @@ def test_provider_error_never_reaches_public_output(tmp_path, transport, stage):
                     with client.websocket_connect("/v1/ws/chat", headers=headers) as ws:
                         assert ws.receive_json()["type"] == "hello"
                         ws.send_json({"type": "chat", "text": "hello"})
-                        error = ws.receive_json()
-                        output = [error]
+                        # Кадры фаз приходят до ошибки: они не несут текста провайдера,
+                        # но проверять нужно именно кадр ошибки.
+                        frames = []
+                        error = None
+                        for _ in range(12):
+                            frame = ws.receive_json()
+                            frames.append(frame)
+                            if frame.get("type") == "error":
+                                error = frame
+                                break
+                        output = frames
+                        assert error is not None, frames
                         assert error["type"] == "error"
                         assert error["message"] == expected
-                        assert error["code"] == "chat_error"
+                        # WS отдаёт тот же семантический код, что stream/REST.
+                        assert error["code"] == ("brain_unavailable" if stage == "brain" else "generation_failed")
         assert "PRIVATE-UPSTREAM-DETAIL" not in json.dumps(output)
-        assert error["model_trace"]["status"] == "failed"
+        # Публичный кадр WS намеренно без model_trace: трасса остаётся диагностикой.
+        if transport != "ws":
+            assert error["model_trace"]["status"] == "failed"
         failed.assert_called_once()
         assert private in failed.call_args.kwargs["error"]
         attempts = {"brain": 0, "talk": 2, "overflow_retry": 4}[stage]
