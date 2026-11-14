@@ -103,9 +103,9 @@ export async function listUsers(query: UserListQuery): Promise<UserPage> {
   };
 }
 
-export async function getUser(id: string): Promise<{ id: string; email: string; role: 'admin' | 'user'; banned: boolean } | null> {
+export async function getUser(id: string): Promise<{ id: string; name: string; email: string; role: 'admin' | 'user'; banned: boolean } | null> {
   const { db } = getDatabase();
-  const rows = await db.select({ id: user.id, email: user.email, role: user.role, banned: user.banned })
+  const rows = await db.select({ id: user.id, name: user.name, email: user.email, role: user.role, banned: user.banned })
     .from(user).where(eq(user.id, id)).limit(1);
   const row = rows[0];
   return row ? { ...row, role: row.role as 'admin' | 'user' } : null;
@@ -118,6 +118,18 @@ export async function adminCount(): Promise<number> {
 }
 
 export type MutationResult<T> = { ok: true; value: T } | { ok: false; error: AdminActionError | 'db' };
+
+export async function setUserName(targetId: string, name: string): Promise<MutationResult<{ name: string }>> {
+  const target = await getUser(targetId);
+  if (!target) return { ok: false, error: 'not-found' };
+  try {
+    const { db } = getDatabase();
+    await db.update(user).set({ name, updatedAt: new Date() }).where(eq(user.id, targetId));
+    return { ok: true, value: { name } };
+  } catch {
+    return { ok: false, error: 'db' };
+  }
+}
 
 export async function setUserRole(actorId: string, targetId: string, nextRole: 'admin' | 'user'): Promise<MutationResult<{ role: string }>> {
   const target = await getUser(targetId);

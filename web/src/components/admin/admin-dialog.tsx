@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { Button, IconButton, Badge, SoonAction } from '../ui';
 import { emitToast, soonToast } from '../../lib/toast';
+import { isEnabled } from '../../lib/feature-flags';
 
 export type Tone = 'ok' | 'warn' | 'error' | 'muted';
 
@@ -402,7 +403,9 @@ export function AdminDialog({
           <main className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 bg-[var(--surface-2)]">
             {activeSection === 'overview' && <OverviewSection onNavigate={setActiveSection} />}
             {activeSection === 'models' && <ModelsSection />}
-            {activeSection === 'providers' && <ProvidersSection />}
+            {activeSection === 'providers' && (
+              <ProvidersSection onNavigateTab={(tab) => setActiveSection(tab as AdminSection)} />
+            )}
             {activeSection === 'integrations' && <IntegrationsSection onOpenProviders={() => setActiveSection('providers')} />}
             {activeSection === 'access' && <AccessSection />}
             {activeSection === 'system' && <SystemSection />}
@@ -1129,96 +1132,58 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
     return <ErrorState message={error} onRetry={loadAll} />;
   }
 
-  const activeProviders = integrations?.providers?.names || config?.providers || [];
-  const secrets = config?.secrets || {
-    OPENAI_API_KEY: 'set',
-    OPENROUTER_API_KEY: 'set',
-    AIHOPE_API_KEY: 'missing',
-  };
+  const mcpAdminEnabled = isEnabled('mcpAdmin');
 
   return (
     <div className="space-y-5">
       <div>
         <h3 className="text-base font-semibold text-[var(--text)]">Интеграции и подключения</h3>
         <p className="text-xs text-[var(--text-muted)] mt-0.5">
-          Внешние провайдеры нейросетей, инструменты MCP и канал авторизации Discord
+          Внешние сервисы авторизации, инструменты ядра MCP и планируемые платформенные коннекторы
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* LLM Providers */}
+        {/* Discord */}
         <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-3">
           <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
             <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
-              <Cpu size={14} className="text-[var(--text-muted)]" />
-              <span>Провайдеры моделей</span>
+              <Users size={14} className="text-[#5865F2]" />
+              <span>Discord интеграция</span>
             </h4>
-            <StatusPill tone={activeProviders.length > 0 ? 'ok' : 'warn'}>
-              {activeProviders.length} в конфиге
+            <StatusPill tone={integrations?.discord?.configured ? 'ok' : 'muted'}>
+              {integrations?.discord?.configured ? 'настроен' : 'не настроен'}
             </StatusPill>
           </div>
 
-          <div className="space-y-2">
-            <p className="text-xs text-[var(--text-muted)]">Провайдеры в конфиге ядра:</p>
-            <div className="flex flex-wrap gap-1.5">
-              {activeProviders.length > 0 ? (
-                activeProviders.map((name) => (
-                  <StatusPill key={name} tone="ok">
-                    {name}
-                  </StatusPill>
-                ))
-              ) : (
-                <span className="text-xs text-[var(--text-subtle)]">Нет активных провайдеров</span>
-              )}
-            </div>
-          </div>
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+            {integrations?.discord?.note ||
+              (integrations?.discord?.configured
+                ? 'Вход пользователей через Discord активен. Настройки OAuth2 заданы в .env хоста.'
+                : 'DISCORD_CLIENT_ID и DISCORD_CLIENT_SECRET не заданы в .env. Авторизация через Discord отключена.')}
+          </p>
 
-          <div className="pt-2 border-t border-[var(--border)] space-y-2">
-            <p className="text-[11px] font-medium text-[var(--text)]">Адреса и ключи</p>
-            <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
-              Base URL и API-ключи задаются в разделе «Провайдеры»: там же пресеты и проверка, открыт ли шлюз без ключа.
-            </p>
-            {onOpenProviders && (
-              <Button variant="secondary" size="sm" onClick={onOpenProviders}>
-                Открыть провайдеры
-              </Button>
-            )}
-          </div>
-
-          {/* Secrets status pill list */}
-          <div className="pt-2 border-t border-[var(--border)] space-y-1.5">
-            <span className="text-[11px] text-[var(--text-muted)] block">Ключи и секреты окружения:</span>
-            <div className="grid grid-cols-1 gap-1.5 text-xs">
-              {Object.entries(secrets).map(([secKey, secStatus]) => (
-                <div key={secKey} className="flex items-center justify-between p-1.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)]">
-                  <span className="font-mono text-[10px] text-[var(--text)] truncate" title={secKey}>{secKey}</span>
-                  <StatusPill tone={secStatus === 'set' ? 'ok' : 'muted'}>
-                    {secStatus === 'set' ? 'настроен' : 'не задан'}
-                  </StatusPill>
-                </div>
-              ))}
-            </div>
-            <p className="text-[10px] text-[var(--text-subtle)] mt-1">
-              Значения API ключей не передаются наружу и хранятся в защищённом окружении сервера.
-            </p>
+          <div className="p-2.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] text-[11px] text-[var(--text-subtle)] space-y-1">
+            <div className="font-semibold text-[var(--text)]">Синхронизация профиля:</div>
+            <div>Статус бота: {integrations?.discord?.configured ? 'Подключен к шлюзу' : 'Остановлен'}</div>
+            <div>Синхронизация каналов: Активна при наличии прав Bot</div>
           </div>
         </div>
 
-        {/* MCP & Discord */}
-        <div className="space-y-4">
-          {/* MCP Tools */}
-          <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-3">
-            <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
-              <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
-                <Plug size={14} className="text-[var(--text-muted)]" />
-                <span>MCP-серверы (инструменты ядра)</span>
-              </h4>
-              <StatusPill tone={config?.mcp?.enabled ? 'ok' : 'muted'}>
-                {config?.mcp?.enabled ? 'включено' : 'отключено'}
-              </StatusPill>
-            </div>
+        {/* MCP Tools */}
+        <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-3">
+          <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
+            <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
+              <Plug size={14} className="text-[var(--text-muted)]" />
+              <span>MCP-серверы (инструменты ядра)</span>
+            </h4>
+            <StatusPill tone={config?.mcp?.enabled && mcpAdminEnabled ? 'ok' : 'muted'}>
+              {mcpAdminEnabled ? (config?.mcp?.enabled ? 'включено' : 'отключено') : 'скоро'}
+            </StatusPill>
+          </div>
 
-            {Array.isArray(config?.mcp?.servers) && config.mcp.servers.length > 0 ? (
+          {mcpAdminEnabled ? (
+            Array.isArray(config?.mcp?.servers) && config.mcp.servers.length > 0 ? (
               <ul className="space-y-1 text-xs">
                 {config.mcp.servers.map((srv) => (
                   <li key={srv.name} className="flex items-center justify-between py-1 border-b border-[var(--border)] last:border-0">
@@ -1231,32 +1196,45 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
               </ul>
             ) : (
               <p className="text-xs text-[var(--text-muted)]">Ядро не отдало список MCP-серверов. Возможно, они не загружены при старте.</p>
-            )}
-
-            <div className="rounded-[var(--radius-sm)] p-2.5 bg-[var(--surface-2)] border border-[var(--border)] text-[11px] text-[var(--text-subtle)] leading-relaxed">
-              Управление MCP-серверами (добавление, удаление, редактирование) станет доступно после интеграции соответствующего API ядра. Список серверов в настоящий момент доступен только для чтения.
+            )
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+                Интеграция протокола Model Context Protocol (MCP) для подключения локальных и внешних инструментов к ассистенту.
+              </p>
+              <div className="p-2.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] text-[11px] text-[var(--text-subtle)]">
+                Функция находится на стадии стабилизации. Включение доступно через флаг <code>mcpAdmin</code>.
+              </div>
             </div>
-          </div>
+          )}
+        </div>
 
-          {/* Discord */}
-          <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-2.5">
-            <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
-              <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
-                <Users size={14} className="text-[var(--text-muted)]" />
-                <span>Discord интеграция</span>
-              </h4>
-              <StatusPill tone={integrations?.discord?.configured ? 'ok' : 'muted'}>
-                {integrations?.discord?.configured ? 'настроен' : 'не настроен'}
-              </StatusPill>
-            </div>
-
-            <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-              {integrations?.discord?.note ||
-                (integrations?.discord?.configured
-                  ? 'Вход пользователей через Discord активен. Настройки заданы в .env хоста.'
-                  : 'DISCORD_CLIENT_ID и DISCORD_CLIENT_SECRET не заданы в .env. Авторизация через Discord отключена.')}
-            </p>
+        {/* Telegram Connector */}
+        <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-2.5 opacity-80">
+          <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
+            <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
+              <ExternalLink size={14} className="text-[var(--text-muted)]" />
+              <span>Telegram Bot Connector</span>
+            </h4>
+            <Badge tone="muted">Скоро</Badge>
           </div>
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+            Подключение бота Telegram для мобильного доступа к Нейре, голосовых сообщений и синхронизации долгосрочной памяти.
+          </p>
+        </div>
+
+        {/* Webhooks Connector */}
+        <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-2.5 opacity-80">
+          <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
+            <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
+              <Workflow size={14} className="text-[var(--text-muted)]" />
+              <span>Исходящие вебхуки (Webhooks)</span>
+            </h4>
+            <Badge tone="muted">Скоро</Badge>
+          </div>
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+            Нотификации о завершении фоновых задач, генераций и системных событий в сторонние сервисы.
+          </p>
         </div>
       </div>
     </div>
@@ -1312,10 +1290,6 @@ function AccessSection() {
   // User actions & Profile Merge
   const [actionPendingId, setActionPendingId] = useState<string | null>(null);
   const [mergeModalUser, setMergeModalUser] = useState<UserItem | null>(null);
-  const [mergeTargetQuery, setMergeTargetQuery] = useState('');
-  const [mergeFoundUser, setMergeFoundUser] = useState<UserItem | null>(null);
-  const [mergeConfirmWord, setMergeConfirmWord] = useState('');
-  const [mergeSubmitting, setMergeSubmitting] = useState(false);
 
   // Revoke invite confirmation modal
   const [revokeInviteTarget, setRevokeInviteTarget] = useState<InviteItem | null>(null);
@@ -1484,67 +1458,36 @@ function AccessSection() {
     copyToClipboard(text, 'all');
   };
 
-  const handleRevokeInvite = (inv: InviteItem) => {
-    setInvites((prev) =>
-      prev.map((i) => (i.id === inv.id ? { ...i, status: 'revoked', used: true } : i))
-    );
-    setRevokeInviteTarget(null);
-    emitToast({ message: `Приглашение ${inv.code || inv.id} отозвано`, tone: 'info' });
+  const handleRevokeInvite = async (inv: InviteItem) => {
+    try {
+      const res = await fetch(`/api/admin/invites/${encodeURIComponent(inv.id)}`, { method: 'DELETE' });
+      if (res.ok) {
+        setInvites((prev) =>
+          prev.map((i) => (i.id === inv.id ? { ...i, status: 'revoked', used: true } : i))
+        );
+        setRevokeInviteTarget(null);
+        emitToast({ message: `Приглашение ${inv.code || inv.id} отозвано`, tone: 'success' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        emitToast({ message: err.message || 'Не удалось отозвать приглашение', tone: 'danger' });
+      }
+    } catch {
+      emitToast({ message: 'Ошибка сети при отзыве приглашения', tone: 'danger' });
+    }
   };
 
   const handleDeleteInvite = (inv: InviteItem) => {
-    setInvites((prev) => prev.filter((i) => i.id !== inv.id));
-    emitToast({ message: `Приглашение удалено из списка`, tone: 'info' });
+    soonToast('Удаление из истории', 'Приглашения архивируются для аудита безопасности');
   };
 
   // Execute Merge
   const handleExecuteMerge = () => {
-    if (!mergeModalUser || !mergeFoundUser) return;
-    setMergeSubmitting(true);
-
-    const targetPersonId = mergeModalUser.person_id || mergeModalUser.id;
-    const sourcePersonId = mergeFoundUser.person_id || mergeFoundUser.id;
-
-    setTimeout(() => {
-      setUsers((prev) =>
-        prev.map((u) =>
-          u.id === mergeModalUser.id
-            ? {
-                ...u,
-                mergedWith: sourcePersonId,
-                mergedAt: new Date().toISOString(),
-                platform: 'both',
-              }
-            : u
-        )
-      );
-
-      setMergeSubmitting(false);
-      setMergeModalUser(null);
-      setMergeFoundUser(null);
-      setMergeConfirmWord('');
-
-      emitToast({
-        title: 'Профили успешно объединены',
-        message: `Данные перенесены в ${targetPersonId}. Запись внесена в аудит (отмена доступна 30 дней).`,
-        tone: 'success',
-      });
-    }, 400);
+    setMergeModalUser(null);
+    soonToast('Объединение профилей', 'Функция слияния identity находится в разработке');
   };
 
   const handleUndoMerge = (user: UserItem) => {
-    setUsers((prev) =>
-      prev.map((u) =>
-        u.id === user.id
-          ? { ...u, mergedWith: null, mergedAt: null }
-          : u
-      )
-    );
-    emitToast({
-      title: 'Объединение отменено',
-      message: `Профиль ${user.person_id || user.id} возвращен к исходному состоянию.`,
-      tone: 'info',
-    });
+    soonToast('Отмена объединения', 'Функция находится в разработке');
   };
 
   const handleSetRegistrationMode = async (mode: 'invite' | 'open' | 'closed') => {
@@ -1657,11 +1600,11 @@ function AccessSection() {
               <table className="w-full text-left text-xs" data-context="table-header">
                 <thead className="hidden sm:table-header-group bg-[var(--surface-2)] border-b border-[var(--border)] text-[11px] font-medium text-[var(--text-muted)] uppercase">
                   <tr>
-                    <th className="py-2.5 px-3">Субъект (person_id)</th>
-                    <th className="py-2.5 px-3">Площадки</th>
-                    <th className="py-2.5 px-3">Роль</th>
-                    <th className="py-2.5 px-3">Статус</th>
-                    <th className="py-2.5 px-3 text-right">Действия</th>
+                    <th className="py-2.5 px-3 min-w-[180px] max-w-[260px]">Субъект (person_id)</th>
+                    <th className="py-2.5 px-3 w-[110px]">Площадки</th>
+                    <th className="py-2.5 px-3 w-[80px]">Роль</th>
+                    <th className="py-2.5 px-3 w-[100px]">Статус</th>
+                    <th className="py-2.5 px-3 text-right whitespace-nowrap">Действия</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border)]">
@@ -1672,23 +1615,25 @@ function AccessSection() {
                         data-context="admin-row"
                         data-id={u.person_id || u.id}
                         data-title={u.name || u.email || 'Пользователь'}
-                        className="flex flex-col sm:table-row p-3 sm:py-2.5 sm:px-3 hover:bg-[var(--surface-2)]/60 transition-colors gap-2 sm:gap-0"
+                        className="flex flex-col sm:table-row p-3 sm:py-2 sm:px-3 hover:bg-[var(--surface-2)]/60 transition-colors gap-2 sm:gap-0"
                       >
-                        <td className="sm:py-2.5 sm:px-3">
-                          <div className="font-medium text-xs text-[var(--text)]">
-                            {u.name || 'Без имени'}
-                          </div>
-                          <div className="text-[11px] font-mono text-[var(--text-subtle)] truncate">
-                            {u.person_id || u.id}
+                        <td className="sm:py-2 sm:px-3 min-w-[180px] max-w-[260px]">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="font-medium text-xs text-[var(--text)] truncate">
+                              {u.name || 'Без имени'}
+                            </span>
+                            <span className="text-[10px] font-mono text-[var(--text-subtle)] truncate shrink-0">
+                              ({(u.person_id || u.id).slice(0, 10)}…)
+                            </span>
                           </div>
                           {u.email && (
                             <div className="text-[11px] text-[var(--text-muted)] truncate">{u.email}</div>
                           )}
                         </td>
 
-                        <td className="sm:py-2.5 sm:px-3 flex sm:table-cell items-center justify-between">
+                        <td className="sm:py-2 sm:px-3 w-[110px] flex sm:table-cell items-center justify-between">
                           <span className="sm:hidden text-[11px] text-[var(--text-muted)] font-medium">Площадки:</span>
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1 whitespace-nowrap">
                             {u.platform === 'discord' || u.platform === 'both' ? (
                               <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#5865F2]/20 text-[#5865F2] font-medium">
                                 Discord
@@ -1702,60 +1647,36 @@ function AccessSection() {
                           </div>
                         </td>
 
-                        <td className="sm:py-2.5 sm:px-3 flex sm:table-cell items-center justify-between">
+                        <td className="sm:py-2 sm:px-3 w-[80px] flex sm:table-cell items-center justify-between">
                           <span className="sm:hidden text-[11px] text-[var(--text-muted)] font-medium">Роль:</span>
                           <StatusPill tone={u.role === 'admin' ? 'ok' : 'muted'}>
-                            {u.role === 'admin' ? 'админ' : 'пользователь'}
+                            {u.role === 'admin' ? 'админ' : 'юзер'}
                           </StatusPill>
                         </td>
 
-                        <td className="sm:py-2.5 sm:px-3 flex sm:table-cell items-center justify-between">
+                        <td className="sm:py-2 sm:px-3 w-[100px] flex sm:table-cell items-center justify-between">
                           <span className="sm:hidden text-[11px] text-[var(--text-muted)] font-medium">Статус:</span>
                           {u.banned ? (
-                            <span className="inline-flex items-center gap-1 text-[var(--danger)] text-xs font-medium">
-                              <Ban size={12} /> заблокирован
+                            <span className="inline-flex items-center gap-1 text-[var(--danger)] text-[11px] font-medium whitespace-nowrap">
+                              <Ban size={11} /> бан
                             </span>
                           ) : u.mergedWith ? (
-                            <span className="inline-flex items-center gap-1 text-[var(--accent)] text-xs font-medium">
-                              объединён ({u.mergedWith.slice(0, 10)}…)
+                            <span className="inline-flex items-center gap-1 text-[var(--accent)] text-[11px] font-medium whitespace-nowrap">
+                              объединён
                             </span>
                           ) : (
-                            <span className="text-[var(--text-subtle)] text-xs">активен</span>
+                            <span className="text-[var(--text-subtle)] text-[11px] whitespace-nowrap">активен</span>
                           )}
                         </td>
 
-                        <td className="sm:py-2.5 sm:px-3 sm:text-right pt-2 sm:pt-0 border-t border-[var(--border)] sm:border-0">
-                          <div className="flex flex-wrap items-center justify-end gap-1.5 w-full sm:w-auto">
-                            {u.mergedWith ? (
-                              <Button
-                                variant="secondary"
-                                size="sm"
-                                className="min-h-[44px] sm:min-h-0 text-[11px]"
-                                onClick={() => handleUndoMerge(u)}
-                              >
-                                Отменить объединение
-                              </Button>
-                            ) : (
-                              <Button
-                                variant="secondary"
-                                size="sm"
-                                className="min-h-[44px] sm:min-h-0 text-[11px]"
-                                onClick={() => {
-                                  setMergeModalUser(u);
-                                  setMergeTargetQuery('');
-                                  setMergeFoundUser(null);
-                                  setMergeConfirmWord('');
-                                }}
-                              >
-                                Объединить с…
-                              </Button>
-                            )}
-
+                        <td className="sm:py-2 sm:px-3 sm:text-right pt-2 sm:pt-0 border-t border-[var(--border)] sm:border-0 whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-1">
                             <Button
-                              variant="ghost"
+                              variant="secondary"
                               size="sm"
-                              className="min-h-[44px] sm:min-h-0 text-[11px]"
+                              className="h-7 px-2 text-[11px]"
                               disabled={actionPendingId === u.id}
+                              aria-label={u.role === 'admin' ? 'Снять админа' : 'Сделать админом'}
                               onClick={() => handleToggleRole(u)}
                             >
                               {u.role === 'admin' ? 'Снять админа' : 'Сделать админом'}
@@ -1764,16 +1685,26 @@ function AccessSection() {
                             <Button
                               variant={u.banned ? 'secondary' : 'danger'}
                               size="sm"
-                              className="min-h-[44px] sm:min-h-0 text-[11px]"
+                              className="h-7 px-2 text-[11px]"
                               disabled={actionPendingId === u.id}
+                              aria-label={u.banned ? 'Разблокировать' : 'Бан'}
                               onClick={() => handleToggleBan(u)}
                             >
                               {u.banned ? 'Разблокировать' : 'Бан'}
                             </Button>
 
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2 text-[11px] text-[var(--text-muted)]"
+                              onClick={() => setMergeModalUser(u)}
+                            >
+                              Объединить с…
+                            </Button>
+
                             <SoonAction featureName="Вход под пользователем (Impersonate)">
-                              <Button variant="ghost" size="sm" className="min-h-[44px] sm:min-h-0 text-[11px]">
-                                Войти как
+                              <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px] text-[var(--text-muted)]">
+                                Войти
                               </Button>
                             </SoonAction>
                           </div>
@@ -1885,7 +1816,7 @@ function AccessSection() {
           {/* Invites Table */}
           <div className="border border-[var(--border)] rounded-[var(--radius)] bg-[var(--surface)] overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs" data-context="table-header">
+              <table className="min-w-[640px] w-full text-left text-xs" data-context="table-header">
                 <thead className="hidden sm:table-header-group bg-[var(--surface-2)] border-b border-[var(--border)] text-[11px] font-medium text-[var(--text-muted)] uppercase">
                   <tr>
                     <th className="py-2.5 px-3">Код</th>
@@ -1893,7 +1824,7 @@ function AccessSection() {
                     <th className="py-2.5 px-3">Создано</th>
                     <th className="py-2.5 px-3">Статус</th>
                     <th className="py-2.5 px-3">Кем создан</th>
-                    <th className="py-2.5 px-3 text-right">Действия</th>
+                    <th className="py-2.5 px-3 text-right whitespace-nowrap">Действия</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border)]">
@@ -1905,14 +1836,16 @@ function AccessSection() {
                         data-id={inv.code || inv.id}
                         className="flex flex-col sm:table-row p-3 sm:py-2.5 sm:px-3 hover:bg-[var(--surface-2)]/60 transition-colors gap-1.5 sm:gap-0"
                       >
-                        <td className="sm:py-2.5 sm:px-3 font-mono text-[11px] text-[var(--text)]">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-semibold">{inv.code || inv.token || inv.id}</span>
+                        <td className="sm:py-2.5 sm:px-3 font-mono whitespace-nowrap text-[11px] text-[var(--text)]">
+                          <div className="flex items-center gap-1.5 max-w-[200px]">
+                            <span className="font-semibold truncate" title={inv.code || inv.token || inv.id}>
+                              {inv.code || inv.token || inv.id}
+                            </span>
                             <button
                               type="button"
                               onClick={() => copyToClipboard(inv.code || inv.token || inv.id, 'code')}
                               title="Копировать код"
-                              className="text-[var(--text-subtle)] hover:text-[var(--text)] p-0.5 cursor-pointer"
+                              className="text-[var(--text-subtle)] hover:text-[var(--text)] p-0.5 cursor-pointer shrink-0"
                             >
                               <Copy size={12} />
                             </button>
@@ -1947,7 +1880,7 @@ function AccessSection() {
                           {inv.createdBy || 'admin@neyra.local'}
                         </td>
 
-                        <td className="sm:py-2.5 sm:px-3 sm:text-right">
+                        <td className="sm:py-2.5 sm:px-3 sm:text-right whitespace-nowrap">
                           <div className="flex items-center justify-end gap-1">
                             <IconButton
                               icon={<Copy size={13} />}
@@ -1966,14 +1899,6 @@ function AccessSection() {
                                 onClick={() => setRevokeInviteTarget(inv)}
                               />
                             )}
-                            <IconButton
-                              icon={<Trash2 size={13} />}
-                              aria-label="Удалить"
-                              tooltip="Удалить инвайт"
-                              size="sm"
-                              variant="danger"
-                              onClick={() => handleDeleteInvite(inv)}
-                            />
                           </div>
                         </td>
                       </tr>
@@ -2085,7 +2010,7 @@ function AccessSection() {
                   Объединение профиля {mergeModalUser.name || mergeModalUser.email}
                 </h3>
                 <p className="text-[11px] text-[var(--text-subtle)] font-mono">
-                  Исходный: {mergeModalUser.person_id || mergeModalUser.id}
+                  Исходный субъект: {mergeModalUser.person_id || mergeModalUser.id}
                 </p>
               </div>
               <IconButton
@@ -2097,88 +2022,33 @@ function AccessSection() {
             </div>
 
             <div className="space-y-3">
-              <p className="text-[var(--text-muted)] leading-relaxed">
-                Найдите второй профиль (по email, нику Discord или <code>person_id</code>), который будет объединен с этим пользователем.
-              </p>
-
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="email@example.com или u_01HZX..."
-                  value={mergeTargetQuery}
-                  onChange={(e) => setMergeTargetQuery(e.target.value)}
-                  className="h-9 flex-1 px-3 rounded-[var(--radius-sm)] border border-[var(--border-control)] bg-[var(--surface)] text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => {
-                    const match = users.find(
-                      (u) =>
-                        u.id !== mergeModalUser.id &&
-                        (u.email?.includes(mergeTargetQuery) ||
-                          u.name?.includes(mergeTargetQuery) ||
-                          u.person_id?.includes(mergeTargetQuery))
-                    ) || {
-                      id: 'user-mock-found',
-                      person_id: 'u_01HZX_TARGET_OLDER_ID',
-                      name: 'Алексей (Discord)',
-                      email: 'alex@example.org',
-                      platform: 'discord',
-                      role: 'user',
-                    };
-                    setMergeFoundUser(match);
-                  }}
-                >
-                  Найти
-                </Button>
+              <div className="p-3.5 rounded-[var(--radius-sm)] bg-[var(--surface-3)] border border-[var(--border)] space-y-2 text-[var(--text-muted)] leading-relaxed">
+                <div className="flex items-center gap-1.5 font-semibold text-[var(--text)]">
+                  <Badge tone="muted">В разработке</Badge>
+                  <span>Слияние субъектов (person_id)</span>
+                </div>
+                <p>
+                  Административное слияние переносит связанные аккаунты (Discord OAuth, Email), диалоги, векторную память и системные журналы под единый старший <code>person_id</code>.
+                </p>
+                <p className="text-[11px] text-[var(--text-subtle)]">
+                  Для безопасного объединения требуется миграция таблиц долговременной памяти и тредов ядра. Операция станет доступна после релиза identity-service.
+                </p>
               </div>
-
-              {mergeFoundUser && (
-                <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-3)] border border-[var(--border-control)] space-y-2">
-                  <div className="flex items-center justify-between font-semibold">
-                    <span>Целевой профиль:</span>
-                    <Badge tone="ok">Старший профиль</Badge>
-                  </div>
-                  <div className="text-[11px] text-[var(--text-muted)] space-y-0.5">
-                    <div>person_id: <code className="text-[var(--text)]">{mergeFoundUser.person_id || mergeFoundUser.id}</code></div>
-                    <div>Имя: {mergeFoundUser.name} ({mergeFoundUser.email})</div>
-                  </div>
-                  <div className="p-2 rounded bg-[var(--surface)] border border-[var(--border)] text-[10px] text-[var(--text-subtle)]">
-                    Будет перенесено: аккаунты, диалоги, память и заметки. Основным останется более старый <code>person_id</code>.
-                  </div>
-                </div>
-              )}
-
-              {mergeFoundUser && (
-                <div className="space-y-1.5 pt-1">
-                  <label className="text-[11px] font-medium text-[var(--text)] block">
-                    Для подтверждения введите слово «объединить»:
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="объединить"
-                    value={mergeConfirmWord}
-                    onChange={(e) => setMergeConfirmWord(e.target.value)}
-                    className="h-9 w-full px-3 rounded-[var(--radius-sm)] border border-[var(--border-control)] bg-[var(--surface)] text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                  />
-                </div>
-              )}
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-[var(--border)]">
               <Button variant="secondary" size="sm" onClick={() => setMergeModalUser(null)}>
-                Отмена
+                Закрыть
               </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={!mergeFoundUser || mergeConfirmWord.trim().toLowerCase() !== 'объединить' || mergeSubmitting}
-                loading={mergeSubmitting}
-                onClick={handleExecuteMerge}
-              >
-                Объединить профили
-              </Button>
+              <SoonAction featureName="Объединение профилей">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleExecuteMerge}
+                >
+                  Объединить
+                </Button>
+              </SoonAction>
             </div>
           </div>
         </div>

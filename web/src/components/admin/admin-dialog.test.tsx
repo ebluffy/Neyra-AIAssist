@@ -268,7 +268,7 @@ describe('AdminDialog', () => {
     const intButtons = screen.getAllByRole('button', { name: 'Интеграции' });
     fireEvent.click(intButtons[0]);
     expect(await screen.findByText('Интеграции и подключения')).toBeDefined();
-    expect(screen.getByText('Провайдеры моделей')).toBeDefined();
+    expect(screen.getByText('Discord интеграция')).toBeDefined();
     expect(screen.getByText(/MCP-серверы/)).toBeDefined();
 
     // Switch to Access
@@ -305,15 +305,20 @@ describe('AdminDialog', () => {
     expect(await screen.findByText(/Изменение применится после перезапуска ядра/)).toBeDefined();
   });
 
-  it('Integrations points to the Providers section instead of duplicating base_url', async () => {
+  it('Integrations contains external integrations and does not duplicate model providers', async () => {
     render(<AdminDialog open={true} onClose={vi.fn()} initialSection="integrations" user={adminUser} />);
 
     expect(await screen.findByText('Интеграции и подключения')).toBeDefined();
     expect(screen.queryByPlaceholderText('https://openrouter.ai/api/v1')).toBeNull();
+    // Duplicate card removed in Part C
+    expect(screen.queryByText('Провайдеры моделей')).toBeNull();
+    expect(screen.getByText('Discord интеграция')).toBeDefined();
+    expect(screen.getByText(/MCP-серверы/)).toBeDefined();
 
-    const jump = await screen.findByRole('button', { name: 'Открыть провайдеры' });
-    fireEvent.click(jump);
-    expect(await screen.findByText('Любой OpenAI-совместимый шлюз: свой адрес, свой ключ, сколько нужно.', { exact: false })).toBeDefined();
+    // Switch to Providers tab
+    const provButtons = screen.getAllByRole('button', { name: 'Провайдеры' });
+    fireEvent.click(provButtons[0]);
+    expect(await screen.findByText('Подключение шлюзов моделей', { exact: false })).toBeDefined();
   });
 
   it('handles core error state and allows retry', async () => {

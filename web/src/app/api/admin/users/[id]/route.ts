@@ -1,5 +1,5 @@
 import { requireAdmin } from '../../../../../../lib/admin-guard';
-import { deleteUser, getUser, setUserBanned, setUserRole } from '../../../../../../lib/admin-users';
+import { deleteUser, getUser, setUserName, setUserBanned, setUserRole } from '../../../../../../lib/admin-users';
 import { recordAudit } from '../../../../../../lib/admin-audit';
 import { describeActionError, jsonError, jsonOk, readJson } from '../../../../../../lib/admin-http';
 
@@ -49,7 +49,20 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     return jsonOk({ id, banned: body.banned });
   }
 
-  return jsonError(400, 'bad_request', 'Нечего менять: укажите role или banned.');
+  if ('name' in body) {
+    if (typeof body.name !== 'string' || !body.name.trim()) {
+      return jsonError(400, 'bad_request', 'Поле name должно быть непустой строкой.');
+    }
+    const cleanName = body.name.trim().slice(0, 100);
+    const result = await setUserName(id, cleanName);
+    if (!result.ok) {
+      return jsonError(500, 'db_error', 'Не удалось обновить имя.');
+    }
+    await recordAudit(auth.user, 'user.name_change', { type: 'user', id }, { from: target.name, to: cleanName });
+    return jsonOk({ id, name: cleanName });
+  }
+
+  return jsonError(400, 'bad_request', 'Нечего менять: укажите role, banned или name.');
 }
 
 // DELETE: удаление аккаунта. Сессии и аккаунты удаляются каскадом.

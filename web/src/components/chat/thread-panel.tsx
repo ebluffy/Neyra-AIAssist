@@ -19,6 +19,7 @@ import {
   History,
   Hash,
   MessageSquare,
+  Copy,
 } from 'lucide-react';
 import { Button, IconButton } from '../ui';
 import { playButtonClickSound } from '../../lib/ui-sounds';
@@ -110,6 +111,11 @@ export function ThreadPanel({
     }
   }, [initialTab]);
 
+  // Ensure active tab is visible in scrollable tablist
+  useEffect(() => {
+    tabsRef.current.get(activeTab)?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+  }, [activeTab]);
+
   // Update titleDraft when threadTitle prop changes
   useEffect(() => {
     setTitleDraft(threadTitle);
@@ -189,7 +195,7 @@ export function ThreadPanel({
         ref={panelRef}
         data-testid="thread-panel"
         aria-label="Панель треда"
-        className={`fixed lg:static inset-y-0 right-0 z-50 lg:z-auto w-[320px] max-w-[85vw] lg:w-[288px] xl:w-[320px] lg:shrink-0 bg-[var(--surface)] border-l border-[var(--border)] flex flex-col h-full shadow-2xl lg:shadow-none transition-transform duration-200 ease-out select-none ${
+        className={`fixed lg:static inset-y-0 right-0 z-50 lg:z-auto w-[320px] max-w-[85vw] lg:w-[320px] xl:w-[340px] lg:shrink-0 bg-[var(--surface)] border-l border-[var(--border)] flex flex-col h-full shadow-2xl lg:shadow-none transition-transform duration-200 ease-out select-none ${
           open ? 'translate-x-0' : 'translate-x-full lg:hidden'
         }`}
       >
@@ -213,6 +219,11 @@ export function ThreadPanel({
         <div
           role="tablist"
           aria-label="Вкладки панели треда"
+          onWheel={(e) => {
+            if (e.deltaY !== 0) {
+              e.currentTarget.scrollLeft += e.deltaY;
+            }
+          }}
           className="flex flex-nowrap overflow-x-auto no-scrollbar scroll-smooth items-center border-b border-[var(--border)] bg-[var(--surface-2)]/50 px-2 py-1 gap-1 shrink-0"
         >
           {tabList.map((tab, idx) => {
@@ -265,7 +276,7 @@ export function ThreadPanel({
           role="tabpanel"
           aria-labelledby={`thread-panel-tab-${activeTab}`}
           tabIndex={0}
-          className="flex-1 overflow-y-auto px-4 py-4 space-y-4 focus:outline-none"
+          className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4 space-y-4 focus:outline-none"
         >
           {/* TAB 1: ABOUT */}
           {activeTab === 'about' && (
@@ -419,12 +430,23 @@ export function ThreadPanel({
                   )}
                   <div className="flex items-center justify-between text-xs pt-2 border-t border-[var(--border)]">
                     <span className="text-[var(--text-muted)]">ID диалога</span>
-                    <span
-                      className="font-mono text-[11px] text-[var(--text-subtle)] truncate max-w-[150px]"
-                      title={threadId}
-                    >
-                      {threadId}
-                    </span>
+                    <div className="flex items-center gap-1.5 max-w-[190px]">
+                      <span
+                        className="font-mono text-[11px] text-[var(--text-subtle)] truncate select-all"
+                        title={threadId}
+                      >
+                        {threadId}
+                      </span>
+                      <IconButton
+                        size="sm"
+                        icon={<Copy size={12} />}
+                        aria-label="Копировать ID диалога"
+                        tooltip="Копировать ID"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(threadId);
+                        }}
+                      />
+                    </div>
                   </div>
                 </div>
               )}

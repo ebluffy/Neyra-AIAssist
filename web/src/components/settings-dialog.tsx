@@ -38,7 +38,7 @@ import {
   setUiSoundsEnabled,
   playButtonClickSound,
 } from '../lib/ui-sounds';
-import { emitToast } from '../lib/toast';
+import { emitToast, soonToast } from '../lib/toast';
 
 type SectionId =
   | 'profile'
@@ -68,6 +68,9 @@ export interface SettingsDialogProps {
     email?: string | null;
     name?: string | null;
     role?: string | null;
+    discord_id?: string | null;
+    discord_username?: string | null;
+    platform?: string | null;
   };
   onSignOut?: () => void;
   initialTab?: SectionId;
@@ -173,13 +176,43 @@ export function SettingsDialog({
 
   // Profile Edit
   const [editName, setEditName] = useState(user.name || '');
+  const [savingName, setSavingName] = useState(false);
+  const [onlyMentions, setOnlyMentions] = useState(true);
+
+  const hasNameChanged = editName.trim() !== (user.name || '').trim() && editName.trim().length > 0;
+
+  const handleSaveProfile = async () => {
+    if (!hasNameChanged || savingName) return;
+    if (!user.id) {
+      soonToast('Сохранение профиля');
+      return;
+    }
+    setSavingName(true);
+    try {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(user.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: editName.trim() }),
+      });
+      if (res.ok) {
+        emitToast({ message: 'Имя профиля сохранено', tone: 'success' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        if (res.status === 401 || res.status === 403) {
+          soonToast('Сохранение профиля', 'В данный момент доступно администраторам');
+        } else {
+          emitToast({ message: err.message || 'Не удалось сохранить имя профиля', tone: 'danger' });
+        }
+      }
+    } catch {
+      emitToast({ message: 'Ошибка сети при сохранении профиля', tone: 'danger' });
+    } finally {
+      setSavingName(false);
+    }
+  };
 
   // Profile Merge Modal
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
-  const [mergeQuery, setMergeQuery] = useState('');
-  const [mergeFound, setMergeFound] = useState<boolean>(false);
-  const [mergePreview, setMergePreview] = useState<boolean>(false);
-  const [mergeExecuted, setMergeExecuted] = useState<boolean>(false);
 
   // Danger Zone
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -345,13 +378,16 @@ export function SettingsDialog({
                 </div>
 
                 <div className="pt-3 border-t border-[var(--border)] flex items-center justify-between">
+                  <span className="text-[11px] text-[var(--text-subtle)]">
+                    {!hasNameChanged ? 'Нет несохранённых изменений' : 'Есть несохранённые изменения'}
+                  </span>
                   <Button
                     type="button"
                     variant="primary"
                     size="md"
-                    onClick={() => {
-                      emitToast({ message: 'Изменения профиля сохранены', tone: 'success' });
-                    }}
+                    disabled={!hasNameChanged || savingName}
+                    loading={savingName}
+                    onClick={() => void handleSaveProfile()}
                   >
                     Сохранить изменения
                   </Button>
@@ -360,118 +396,155 @@ export function SettingsDialog({
             )}
 
             {/* 2. АККАУНТЫ (Discord + Web + Merge) */}
-            {section === 'accounts' && (
-              <div className="space-y-4">
-                <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] text-xs text-[var(--text-muted)] leading-relaxed">
-                  Один профиль Neyra, несколько площадок. История и память общие, удаление профиля удаляет всё.
-                </div>
+            {section === 'accounts' && (() => {
+              const isDiscordLinked = Boolean(
+                user.discord_id ||
+                user.discord_username ||
+                user.platform === 'discord' ||
+                user.platform === 'both' ||
+                (user.email && user.email.endsWith('@discord.placeholder.invalid'))
+              );
+              const discordTag = user.discord_username || (isDiscordLinked ? 'Подключен' : null);
+              const isRealEmail = Boolean(user.email && !user.email.endsWith('@discord.placeholder.invalid'));
 
-                <div className="space-y-2">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
-                    Привязанные площадки
-                  </h3>
-
-                  {/* Discord Account Item */}
-                  <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border-control)] flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-8 h-8 rounded-full bg-[#5865F2] flex items-center justify-center text-white shrink-0">
-                        <Link2 size={16} />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-[var(--text)] truncate">
-                            Discord
-                          </span>
-                          <span className="px-1.5 py-0.2 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)]">
-                            Основной
-                          </span>
-                        </div>
-                        <div className="text-[11px] text-[var(--text-muted)] truncate">
-                          Подключен · синхронизация памяти активна
-                        </div>
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      disabled={!user.email}
-                      title={!user.email ? 'Нельзя отвязать единственный способ входа' : 'Отвязать Discord'}
-                      onClick={() => emitToast({ message: 'Отвязка Discord требует подтверждения в письме', tone: 'info' })}
-                    >
-                      Отвязать
-                    </Button>
+              return (
+                <div className="space-y-4">
+                  <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] text-xs text-[var(--text-muted)] leading-relaxed">
+                    Один профиль Neyra, несколько площадок. История и память общие, удаление профиля удаляет всё.
                   </div>
 
-                  {/* Web Account Item */}
-                  <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-8 h-8 rounded-full bg-[var(--surface-3)] border border-[var(--border)] flex items-center justify-center text-[var(--text-muted)] shrink-0">
-                        <KeyRound size={16} />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-[var(--text)] truncate">
-                          Веб-аккаунт (Email)
+                  <div className="space-y-2">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
+                      Привязанные площадки
+                    </h3>
+
+                    {/* Discord Account Item */}
+                    <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border-control)] flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-8 h-8 rounded-full bg-[#5865F2] flex items-center justify-center text-white shrink-0">
+                          <Link2 size={16} />
                         </div>
-                        <div className="text-[11px] text-[var(--text-muted)] truncate">
-                          {user.email || 'Не привязан'}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-[var(--text)] truncate">
+                              Discord
+                            </span>
+                            {isDiscordLinked ? (
+                              <span className="px-1.5 py-0.2 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)]">
+                                {isRealEmail ? 'Подключен' : 'Основной'}
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.2 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)]">
+                                Не привязан
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-[var(--text-muted)] truncate">
+                            {isDiscordLinked
+                              ? `${discordTag ? `@${discordTag} · ` : ''}синхронизация памяти активна`
+                              : 'Не привязан · синхронизация памяти не активна'}
+                          </div>
                         </div>
                       </div>
+                      {isDiscordLinked ? (
+                        <SoonAction featureName="Отвязка Discord" description="Отвязка аккаунта требует подтверждения">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            disabled={!isRealEmail}
+                            title={!isRealEmail ? 'Нельзя отвязать единственный способ входа' : 'Отвязать Discord'}
+                            onClick={() => soonToast('Отвязка Discord')}
+                          >
+                            Отвязать
+                          </Button>
+                        </SoonAction>
+                      ) : (
+                        <SoonAction featureName="Привязка Discord" description="Привязка Discord к аккаунту">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => soonToast('Привязка Discord')}
+                          >
+                            Привязать
+                          </Button>
+                        </SoonAction>
+                      )}
                     </div>
-                    {user.email ? (
-                      <Badge tone="muted">Подключен</Badge>
-                    ) : (
+
+                    {/* Web Account Item */}
+                    <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-8 h-8 rounded-full bg-[var(--surface-3)] border border-[var(--border)] flex items-center justify-center text-[var(--text-muted)] shrink-0">
+                          <KeyRound size={16} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-[var(--text)] truncate">
+                            Веб-аккаунт (Email)
+                          </div>
+                          <div className="text-[11px] text-[var(--text-muted)] truncate">
+                            {isRealEmail ? user.email : 'Не привязан (вход через Discord)'}
+                          </div>
+                        </div>
+                      </div>
+                      {isRealEmail ? (
+                        <Badge tone="muted">Подключен</Badge>
+                      ) : (
+                        <SoonAction featureName="Привязка email" description="Добавить почту и пароль к профилю">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => soonToast('Привязка email')}
+                          >
+                            Привязать
+                          </Button>
+                        </SoonAction>
+                      )}
+                    </div>
+
+                    {/* Future platform stub */}
+                    <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-3)]/50 border border-dashed border-[var(--border)] flex items-center justify-between gap-3 opacity-60">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-center text-[var(--text-subtle)]">
+                          <ExternalLink size={14} />
+                        </div>
+                        <div>
+                          <div className="text-xs font-medium text-[var(--text-muted)]">Telegram</div>
+                          <div className="text-[10px] text-[var(--text-subtle)]">Площадка в разработке</div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-[var(--surface-2)] text-[var(--text-subtle)]">
+                        Скоро
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Profile Merge Section */}
+                  <div className="pt-3 border-t border-[var(--border)] space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h4 className="text-xs font-semibold text-[var(--text)]">
+                          Это не тот профиль?
+                        </h4>
+                        <p className="text-[11px] text-[var(--text-subtle)] leading-relaxed">
+                          Если у вас есть старый профиль Neyra, их можно объединить в один.
+                        </p>
+                      </div>
                       <Button
                         type="button"
                         variant="secondary"
                         size="sm"
-                        onClick={() => emitToast({ message: 'Привязка email доступна через администратора', tone: 'info' })}
+                        onClick={() => setMergeModalOpen(true)}
                       >
-                        Привязать
+                        Объединить с другим…
                       </Button>
-                    )}
-                  </div>
-
-                  {/* Future platform stub */}
-                  <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-3)]/50 border border-dashed border-[var(--border)] flex items-center justify-between gap-3 opacity-60">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-center text-[var(--text-subtle)]">
-                        <ExternalLink size={14} />
-                      </div>
-                      <div>
-                        <div className="text-xs font-medium text-[var(--text-muted)]">Telegram</div>
-                        <div className="text-[10px] text-[var(--text-subtle)]">Площадка в разработке</div>
-                      </div>
                     </div>
-                    <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-[var(--surface-2)] text-[var(--text-subtle)]">
-                      Скоро
-                    </span>
                   </div>
                 </div>
-
-                {/* Profile Merge Section */}
-                <div className="pt-3 border-t border-[var(--border)] space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h4 className="text-xs font-semibold text-[var(--text)]">
-                        Это не тот профиль?
-                      </h4>
-                      <p className="text-[11px] text-[var(--text-subtle)] leading-relaxed">
-                        Если у вас есть старый профиль Neyra, их можно объединить в один.
-                      </p>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => setMergeModalOpen(true)}
-                    >
-                      Объединить с другим…
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* 3. ВНЕШНИЙ ВИД */}
             {section === 'appearance' && (
@@ -618,9 +691,9 @@ export function SettingsDialog({
                   hint="Не присылать уведомления о промежуточных шагах reasoning."
                 >
                   <SwitchControl
-                    checked={true}
+                    checked={onlyMentions}
                     label="Только упоминания"
-                    onChange={() => emitToast({ message: 'Фильтр уведомлений сохранён' })}
+                    onChange={setOnlyMentions}
                   />
                 </Row>
               </div>
@@ -673,14 +746,16 @@ export function SettingsDialog({
                     <div className="text-xs font-medium text-[var(--text)]">Очистить долговременную память</div>
                     <div className="text-[11px] text-[var(--text-subtle)]">Удалит извлеченные факты, сохранив переписку</div>
                   </div>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => emitToast({ message: 'Запрос на очистку памяти отправлен в ядро', tone: 'info' })}
-                  >
-                    Очистить память
-                  </Button>
+                  <SoonAction featureName="Очистка долговременной памяти" description="Удаление извлеченных фактов из базы ядра">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => soonToast('Очистка долговременной памяти')}
+                    >
+                      Очистить память
+                    </Button>
+                  </SoonAction>
                 </div>
               </div>
             )}
@@ -737,24 +812,28 @@ export function SettingsDialog({
                         <div className="text-[11px] text-[var(--text-subtle)]">Москва · 2 часа назад</div>
                       </div>
                     </div>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => emitToast({ message: 'Сессия мобильного клиента завершена', tone: 'info' })}
-                    >
-                      Завершить
-                    </Button>
+                    <SoonAction featureName="Завершение сессии">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => soonToast('Завершение сессии')}
+                      >
+                        Завершить
+                      </Button>
+                    </SoonAction>
                   </div>
                 </div>
 
                 <div className="pt-2 border-t border-[var(--border)] flex justify-end">
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => emitToast({ message: 'Все остальные сессии успешно сброшены', tone: 'info' })}
-                  >
-                    Выйти на всех устройствах
-                  </Button>
+                  <SoonAction featureName="Сброс всех активных сессий">
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => soonToast('Сброс всех активных сессий')}
+                    >
+                      Выйти на всех устройствах
+                    </Button>
+                  </SoonAction>
                 </div>
               </div>
             )}
@@ -794,97 +873,42 @@ export function SettingsDialog({
       {/* Profile Merge Modal */}
       <Dialog
         open={mergeModalOpen}
-        onClose={() => {
-          setMergeModalOpen(false);
-          setMergePreview(false);
-          setMergeExecuted(false);
-        }}
+        onClose={() => setMergeModalOpen(false)}
         title="Объединение профилей Neyra"
         description="Перенос аккаунтов, истории и памяти из второго профиля"
       >
         <div className="space-y-4 text-xs">
-          {!mergePreview ? (
-            <div className="space-y-3">
-              <p className="text-[var(--text-muted)] leading-relaxed">
-                Введите email, ник в Discord или <code>person_id</code> второго профиля, который нужно объединить с текущим.
-              </p>
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <TextField
-                    label=""
-                    placeholder="name@example.com или u_01HZX..."
-                    value={mergeQuery}
-                    onChange={(e) => setMergeQuery(e.target.value)}
-                  />
-                </div>
-                <Button
-                  variant="secondary"
-                  size="md"
-                  onClick={() => {
-                    if (mergeQuery.trim()) {
-                      setMergeFound(true);
-                      setMergePreview(true);
-                    }
-                  }}
-                  className="mt-0.5"
-                >
-                  <Search size={14} className="mr-1.5" />
-                  <span>Найти</span>
-                </Button>
-              </div>
+          <div className="p-3.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] space-y-2 text-[var(--text-muted)] leading-relaxed">
+            <div className="flex items-center gap-1.5 font-semibold text-[var(--text)]">
+              <Badge tone="muted">В разработке</Badge>
+              <span>Объединение профилей (person_id)</span>
             </div>
-          ) : (
-            <div className="space-y-4 animate-in fade-in duration-150">
-              <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-3)] border border-[var(--border-control)] space-y-2">
-                <div className="font-semibold text-[var(--text)] flex items-center justify-between">
-                  <span>Найден второй профиль:</span>
-                  <Badge tone="muted">Старший профиль</Badge>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[11px] text-[var(--text-muted)]">
-                  <div>person_id: <code className="text-[var(--text)]">u_01HY98AKL1093J</code></div>
-                  <div>Создан: 12 дней назад</div>
-                  <div>Привязанные площадки: Discord (Alex#1337)</div>
-                  <div>Диалогов: 14 · Заметок: 3</div>
-                </div>
-              </div>
+            <p>
+              Слияние профилей позволяет перенести историю диалогов, привязанные площадки (Discord/Web) и векторную память в один аккаунт.
+            </p>
+            <p className="text-[11px] text-[var(--text-subtle)]">
+              Для безопасного переноса требуется миграция таблиц долговременной памяти и тредов ядра. Функция станет доступна после релиза identity-сервиса.
+            </p>
+          </div>
 
-              <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] text-[11px] text-[var(--text-muted)] space-y-1.5">
-                <div className="font-semibold text-[var(--text)]">Что произойдет при объединении:</div>
-                <ul className="list-disc pl-4 space-y-1">
-                  <li>Основным останется старший <code>person_id</code>.</li>
-                  <li>Все сессии, чаты, заметки и память перенесутся без потерь.</li>
-                  <li>Оба способа входа (Discord и Email) станут вести в один профиль.</li>
-                  <li>В аудит запишется событие с возможностью отмены в течение 30 дней.</li>
-                </ul>
-              </div>
-
-              <div className="flex items-center justify-between pt-2 border-t border-[var(--border)]">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setMergePreview(false)}
-                >
-                  Назад
-                </Button>
-
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => {
-                    setMergeExecuted(true);
-                    setMergeModalOpen(false);
-                    emitToast({
-                      title: 'Профили объединены',
-                      message: 'В аудит добавлена запись. Отмена доступна в течение 30 дней.',
-                      tone: 'success',
-                    });
-                  }}
-                >
-                  Подтвердить объединение
-                </Button>
-              </div>
-            </div>
-          )}
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border)]">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setMergeModalOpen(false)}
+            >
+              Закрыть
+            </Button>
+            <SoonAction featureName="Объединение профилей">
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => soonToast('Объединение профилей')}
+              >
+                Объединить
+              </Button>
+            </SoonAction>
+          </div>
         </div>
       </Dialog>
 

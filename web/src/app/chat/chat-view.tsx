@@ -143,6 +143,7 @@ export function ChatView({
   // Десктоп: сайдбар можно свернуть, чтобы чат занимал всё окно (§ волна 4).
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'profile' | 'accounts' | 'appearance' | 'notifications' | 'privacy' | 'data' | 'danger'>('profile');
 
   // Wave 5 Step 2: Thread Panel states
   const [threadPanelOpen, setThreadPanelOpen] = useState(initialThreadPanelOpen ?? false);
@@ -165,6 +166,18 @@ export function ChatView({
   const [usage, setUsage] = useState<ContextUsage | null>(() => initialUsage || null);
 
   useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        const settingsParam = params.get('settings');
+        if (settingsParam) {
+          setSettingsOpen(true);
+          if (['profile', 'accounts', 'appearance', 'notifications', 'privacy', 'data', 'danger'].includes(settingsParam)) {
+            setSettingsTab(settingsParam as any);
+          }
+        }
+      }
+    } catch {}
     try {
       setSidebarCollapsed(window.localStorage.getItem('neyra:sidebar-collapsed') === '1');
       if (initialThreadPanelOpen === undefined) {
@@ -967,14 +980,42 @@ export function ChatView({
           <div className="content-column space-y-6">
             {/* Empty State */}
             {messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center text-center pt-16 md:pt-24 pb-8 select-none">
-                <NeyraLogo size={40} />
-                <h2 className="text-[26px] md:text-[30px] font-semibold tracking-tight text-[var(--text)] mt-4 mb-2">
-                  {ru.emptyChat}
-                </h2>
-                <p className="text-[14px] text-[var(--text-muted)] max-w-[380px]">
-                  Задайте вопрос или выберите быстрый сценарий.
-                </p>
+              <div className="flex flex-col items-center justify-center text-center pt-12 md:pt-20 pb-6 select-none space-y-6">
+                <div className="flex flex-col items-center">
+                  <NeyraLogo size={42} />
+                  <h2 className="text-[26px] md:text-[30px] font-semibold tracking-tight text-[var(--text)] mt-4 mb-2">
+                    {ru.emptyChat}
+                  </h2>
+                  <p className="text-[14px] text-[var(--text-muted)] max-w-[380px]">
+                    Задайте вопрос или выберите быстрый сценарий.
+                  </p>
+                </div>
+
+                <div className="w-full max-w-[580px] grid grid-cols-1 sm:grid-cols-3 gap-2 px-2 animate-chips">
+                  <Chip
+                    onClick={() => sendMessage('Что нового в памяти?')}
+                    className="w-full min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-2 hover:-translate-y-px hover:!text-[var(--text)]"
+                  >
+                    <Sparkles size={14} className="shrink-0 text-[var(--text-muted)]" />
+                    <span>Что нового в памяти?</span>
+                  </Chip>
+                  <Chip
+                    onClick={() => sendMessage('Суммируй вчерашний диалог')}
+                    className="w-full min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-2 hover:-translate-y-px hover:!text-[var(--text)]"
+                  >
+                    <History size={14} className="shrink-0 text-[var(--text-muted)]" />
+                    <span className="sm:hidden whitespace-nowrap">Суммируй вчера</span>
+                    <span className="hidden sm:inline">Суммируй вчерашний диалог</span>
+                  </Chip>
+                  <Chip
+                    onClick={() => sendMessage('Проверь состояние сервера')}
+                    className="w-full min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-2 hover:-translate-y-px hover:!text-[var(--text)]"
+                  >
+                    <Activity size={14} className="shrink-0 text-[var(--text-muted)]" />
+                    <span className="sm:hidden whitespace-nowrap">Статус сервера</span>
+                    <span className="hidden sm:inline">Проверь состояние сервера</span>
+                  </Chip>
+                </div>
               </div>
             )}
 
@@ -1240,34 +1281,6 @@ export function ChatView({
                 </div>
               )}
 
-              {/* Быстрые сценарии над полем ввода: только в пустом чате */}
-              {messages.length === 0 && (
-                <div className="mb-2 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-center animate-chips">
-                  <Chip
-                    onClick={() => sendMessage('Что нового в памяти?')}
-                    className="col-span-2 min-h-11 justify-center gap-1.5 py-2.5 sm:col-span-1 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
-                  >
-                    <Sparkles size={14} className="shrink-0 text-[var(--text-muted)]" />
-                    <span>Что нового в памяти?</span>
-                  </Chip>
-                  <Chip
-                    onClick={() => sendMessage('Суммируй вчерашний диалог')}
-                    className="min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
-                  >
-                    <History size={14} className="shrink-0 text-[var(--text-muted)]" />
-                    <span className="sm:hidden whitespace-nowrap">Суммируй вчера</span>
-                    <span className="hidden sm:inline">Суммируй вчерашний диалог</span>
-                  </Chip>
-                  <Chip
-                    onClick={() => sendMessage('Проверь состояние сервера')}
-                    className="min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
-                  >
-                    <Activity size={14} className="shrink-0 text-[var(--text-muted)]" />
-                    <span className="sm:hidden whitespace-nowrap">Статус сервера</span>
-                    <span className="hidden sm:inline">Проверь состояние сервера</span>
-                  </Chip>
-                </div>
-              )}
 
               {/* Composer container */}
               <div className="relative rounded-[var(--radius-lg)] bg-[var(--surface-2)] border border-[var(--border)] p-2.5 shadow-panel focus-within:border-[var(--accent)] transition-colors flex flex-col gap-2">
@@ -1438,6 +1451,7 @@ export function ChatView({
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         user={user}
+        initialTab={settingsTab}
         onSignOut={handleSignOut}
       />
     </div>

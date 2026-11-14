@@ -3,6 +3,19 @@
 import type { Flag } from '../feature-flags';
 import { soonToast, emitToast } from '../toast';
 
+export function isMac(): boolean {
+  if (typeof window === 'undefined') return false;
+  return /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent || navigator.platform || '');
+}
+
+export function cmdShortcut(key: string): string {
+  return isMac() ? `⌘${key}` : `Ctrl+${key}`;
+}
+
+export function shiftCmdShortcut(key: string): string {
+  return isMac() ? `⇧⌘${key}` : `Ctrl+Shift+${key}`;
+}
+
 export interface MenuTarget {
   kind: string;
   id?: string;
@@ -102,7 +115,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
                 return;
               }
             }
-            emitToast({ message: `Чат «${target.title || 'Беседа'}» удалён`, tone: 'info' });
+            soonToast('Удаление диалога');
           },
         },
       ];
@@ -143,7 +156,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           id: 'note-copy',
           label: 'Копировать текст',
           iconName: 'Copy',
-          shortcut: '⌘C',
+          shortcut: cmdShortcut('C'),
           run: () => {
             if (target.text || target.title) {
               navigator.clipboard.writeText(`${target.title || ''}\n${target.text || ''}`);
@@ -213,7 +226,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           id: 'msg-copy',
           label: 'Копировать текст',
           iconName: 'Copy',
-          shortcut: '⌘C',
+          shortcut: cmdShortcut('C'),
           run: () => {
             if (target.text) {
               navigator.clipboard.writeText(target.text);
@@ -250,7 +263,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
                 id: 'msg-retry',
                 label: 'Повторить генерацию',
                 iconName: 'RotateCw',
-                shortcut: '⌘R',
+                shortcut: cmdShortcut('R'),
                 run: () => soonToast('Повтор генерации ответа'),
               },
               {
@@ -293,7 +306,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           label: 'Удалить сообщение',
           iconName: 'Trash2',
           danger: true,
-          run: () => emitToast({ message: 'Сообщение скрыто', tone: 'info' }),
+          run: () => soonToast('Удаление сообщения'),
         },
       ];
     }
@@ -304,14 +317,14 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           id: 'composer-paste',
           label: 'Вставить',
           iconName: 'Clipboard',
-          shortcut: '⌘V',
-          run: () => soonToast('Вставка из буфера', 'Используйте сочетание ⌘V / Ctrl+V'),
+          shortcut: cmdShortcut('V'),
+          run: () => soonToast('Вставка из буфера', isMac() ? 'Используйте сочетание ⌘V' : 'Используйте сочетание Ctrl+V'),
         },
         {
           id: 'composer-paste-plain',
           label: 'Вставить без форматирования',
           iconName: 'FileText',
-          shortcut: '⇧⌘V',
+          shortcut: shiftCmdShortcut('V'),
           run: () => soonToast('Вставка без стилей'),
         },
         {
@@ -688,7 +701,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           id: 'sel-copy',
           label: 'Копировать выделение',
           iconName: 'Copy',
-          shortcut: '⌘C',
+          shortcut: cmdShortcut('C'),
           run: () => {
             if (target.text) {
               navigator.clipboard.writeText(target.text);

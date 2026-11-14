@@ -42,10 +42,16 @@ async function ensureStaticAssets() {
   const staticSrc = join(webDir, '.next/static');
   const staticDest = join(webDir, '.next/standalone/web/.next/static');
 
-  const { cpSync } = await import('node:fs');
-  if (existsSync(staticSrc) && !existsSync(staticDest)) {
-    console.log('[ui-shots] Copying .next/static to standalone build...');
+  const { cpSync, mkdirSync } = await import('node:fs');
+  if (existsSync(staticSrc)) {
+    mkdirSync(dirname(staticDest), { recursive: true });
     cpSync(staticSrc, staticDest, { recursive: true });
+  }
+  const pubSrc = join(webDir, 'public');
+  const pubDest = join(webDir, '.next/standalone/web/public');
+  if (existsSync(pubSrc)) {
+    mkdirSync(pubDest, { recursive: true });
+    cpSync(pubSrc, pubDest, { recursive: true });
   }
 }
 
@@ -151,12 +157,20 @@ async function openAdminDialog(page, vp) {
     await sidebarBtn.click();
     await page.waitForTimeout(400);
   }
-  const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей"), button[aria-label="Профиль"]', { state: 'visible' });
-  await profileBtn.click();
-  await page.waitForTimeout(300);
+  const adminBtnDirect = await page.$('button[aria-label="Админ-панель"]');
+  if (adminBtnDirect && (await adminBtnDirect.isVisible())) {
+    await adminBtnDirect.click();
+  } else {
+    const profileBtn = await page.waitForSelector(
+      'button[aria-label="Меню профиля пользователя"], button:has-text("Администратор"), button:has-text("Алексей")',
+      { state: 'visible' },
+    );
+    await profileBtn.click();
+    await page.waitForTimeout(300);
 
-  const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
-  await adminItem.click();
+    const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
+    await adminItem.click();
+  }
   await page.waitForSelector('[role="dialog"][aria-modal="true"]', { state: 'visible' });
   await page.waitForTimeout(600);
 }
@@ -444,7 +458,7 @@ async function main() {
             await sidebarBtn.click();
             await page.waitForTimeout(400);
           }
-          const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
+          const profileBtn = await page.waitForSelector('button[aria-label="Меню профиля пользователя"], button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
           await profileBtn.click();
           await page.waitForTimeout(300);
 
@@ -767,11 +781,8 @@ async function main() {
         const mergeBtn = await page.waitForSelector('button:has-text("Объединить с другим")');
         await mergeBtn.click();
         await page.waitForSelector('h2:has-text("Объединение профилей Neyra")');
-        const searchInput = await page.waitForSelector('input[placeholder*="name@example.com"]');
-        await searchInput.fill('alex_discord#1337');
-        const findBtn = await page.waitForSelector('button:has-text("Найти")');
-        await findBtn.click();
-        await page.waitForSelector('span:has-text("Старший профиль")');
+        await page.waitForSelector('button:has-text("Закрыть")');
+        await page.waitForTimeout(400);
       },
       desc: 'Настройки: модальное окно объединения профилей с предпросмотром данных',
     });
@@ -811,11 +822,7 @@ async function main() {
         const mergeBtn = await page.waitForSelector('[role="dialog"] button:has-text("Объединить с…")');
         await mergeBtn.click();
         await page.waitForSelector('h3:has-text("Объединение профиля")');
-        const input = await page.waitForSelector('input[placeholder*="email@example.com"]');
-        await input.fill('alex@example.org');
-        const findBtn = await page.waitForSelector('button:has-text("Найти")');
-        await findBtn.click();
-        await page.waitForSelector('span:has-text("Старший профиль")');
+        await page.waitForSelector('button:has-text("Закрыть")');
         await page.waitForTimeout(400);
       },
       desc: 'Админка: модальное окно объединения двух person_id с требованием слова «объединить»',
@@ -947,6 +954,98 @@ async function main() {
         await page.waitForSelector('[role="menu"][aria-label="Контекстное меню"]');
       },
       desc: 'Мобильное контекстное меню (390px): длинное нажатие (long-press 500ms) с тактильной адаптацией',
+    });
+
+    // 36. OpenCode CLI Command Modal
+    await takeShot({
+      filename: '36-admin-providers-opencode-cli-1440.png',
+      screen: 'admin-providers',
+      state: 'cli-modal',
+      url: `${BASE_URL}/chat`,
+      vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+      setupFn: async (page) => {
+        await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+        await openAdminDialog(page, { isMobile: false });
+        await clickAdminTab(page, 'Провайдеры', false);
+        const cliBtn = await page.waitForSelector('button:has-text("Авторизация в терминале"), button:has-text("Инструкция")');
+        await cliBtn.click();
+        await page.waitForSelector('[role="dialog"][aria-label*="OpenCode"]');
+        await page.waitForTimeout(300);
+      },
+      desc: 'Провайдеры: модальное окно с инструкцией подключения OpenCode CLI и копированием команды',
+    });
+
+    // 37. Dedicated Provider Screen
+    await takeShot({
+      filename: '37-admin-provider-detail-1440.png',
+      screen: 'admin-providers',
+      state: 'provider-detail',
+      url: `${BASE_URL}/chat`,
+      vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+      setupFn: async (page) => {
+        await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+        await openAdminDialog(page, { isMobile: false });
+        await clickAdminTab(page, 'Провайдеры', false);
+        const providerCard = await page.waitForSelector('[data-provider-card="openai"], [data-provider-card]');
+        await providerCard.click();
+        await page.waitForSelector('button:has-text("Назад к списку")');
+        await page.waitForTimeout(400);
+      },
+      desc: 'Провайдеры: выделенный экран провайдера (OpenAI) с разделами подключения, ключа, моделей, лейнов и опасной зоны',
+    });
+
+    // 38. Add Provider Modal (Step 1 Presets)
+    await takeShot({
+      filename: '38-admin-add-provider-modal-1440.png',
+      screen: 'admin-providers',
+      state: 'add-modal',
+      url: `${BASE_URL}/chat`,
+      vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+      setupFn: async (page) => {
+        await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+        await openAdminDialog(page, { isMobile: false });
+        await clickAdminTab(page, 'Провайдеры', false);
+        const addBtn = await page.waitForSelector('button:has-text("Добавить провайдера")');
+        await addBtn.click();
+        await page.waitForSelector('[role="dialog"][aria-label="Добавить провайдера"]');
+        await page.waitForTimeout(300);
+      },
+      desc: 'Провайдеры: двухшаговая модалка добавления провайдера с каталогом пресетов',
+    });
+
+    // 39. Channels Settings Modal
+    await takeShot({
+      filename: '39-channels-settings-modal-1440.png',
+      screen: 'channels',
+      state: 'settings-modal',
+      url: `${BASE_URL}/channels`,
+      vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+      setupFn: async (page) => {
+        await page.goto(`${BASE_URL}/channels`, { waitUntil: 'domcontentloaded' });
+        const profileBtn = await page.waitForSelector('button[aria-label="Меню профиля пользователя"], button:has-text("Администратор")', { state: 'visible' });
+        await profileBtn.click();
+        await page.waitForTimeout(300);
+        const settingsItem = await page.waitForSelector('[role="menuitem"]:has-text("Настройки")', { state: 'visible' });
+        await settingsItem.click();
+        await page.waitForSelector('[role="dialog"][aria-modal="true"]');
+        await page.waitForTimeout(400);
+      },
+      desc: 'Каналы: вызов модалки настроек прямо из интерфейса /channels без перехода на страницу',
+    });
+
+    // 40. Chat Settings URL Query Parameter
+    await takeShot({
+      filename: '40-chat-settings-param-1440.png',
+      screen: 'chat',
+      state: 'query-param-settings',
+      url: `${BASE_URL}/chat?settings=1`,
+      vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+      setupFn: async (page) => {
+        await page.goto(`${BASE_URL}/chat?settings=1`, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector('[role="dialog"][aria-modal="true"]');
+        await page.waitForTimeout(400);
+      },
+      desc: 'Чат: автоматическое открытие модалки настроек по URL-параметру ?settings=1 (легаси-редирект с /settings)',
     });
 
     // Write manifest.json

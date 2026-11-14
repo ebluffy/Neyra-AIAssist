@@ -31,6 +31,7 @@ import { useCatalog } from './use-catalog';
 import { Empty, Failure, Loading, Unavailable } from './shared';
 import { History, type HistoryViewMode } from './history';
 import { PersonDrawer } from './person-drawer';
+import { SettingsDialog } from '../settings-dialog';
 import s from './channels.module.css';
 
 function GuildIcon({ guild }: { guild: Guild }) {
@@ -82,6 +83,7 @@ export function ChannelsView({
   const [offset, setOffset] = useState(0);
   const [guilds, setGuilds] = useState<Guild[]>([]);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const currentUser: AppSidebarUser = user || {
     id: userId || 'admin',
@@ -116,6 +118,7 @@ export function ChannelsView({
         user={currentUser}
         mobileOpen={mobileSidebarOpen}
         onCloseMobile={() => setMobileSidebarOpen(false)}
+        onOpenSettings={() => setSettingsOpen(true)}
         onSelectThread={(threadId) => {
           try {
             window.sessionStorage.setItem(buildChatStorageKey(currentUser.id, resolveTabKey(window)), threadId);
@@ -235,6 +238,13 @@ export function ChannelsView({
           </main>
         )}
       </div>
+
+      {/* Settings Dialog Modal */}
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        user={currentUser}
+      />
     </div>
   );
 }

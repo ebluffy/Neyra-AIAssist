@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
@@ -13,6 +13,21 @@ const PORT = 3456;
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const CHROMIUM_PATH = '/usr/bin/chromium';
 const DB_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@127.0.0.1:5432/neyra';
+
+async function ensureStaticAssets() {
+  const staticSrc = join(webDir, '.next/static');
+  const staticDest = join(webDir, '.next/standalone/web/.next/static');
+  if (existsSync(staticSrc)) {
+    mkdirSync(dirname(staticDest), { recursive: true });
+    cpSync(staticSrc, staticDest, { recursive: true });
+  }
+  const pubSrc = join(webDir, 'public');
+  const pubDest = join(webDir, '.next/standalone/web/public');
+  if (existsSync(pubSrc)) {
+    mkdirSync(pubDest, { recursive: true });
+    cpSync(pubSrc, pubDest, { recursive: true });
+  }
+}
 
 // WCAG relative luminance & contrast algorithms
 function srgbToLinear(c) {
@@ -74,6 +89,8 @@ async function isServerReady() {
 }
 
 async function startServer() {
+  await ensureStaticAssets();
+
   if (await isServerReady()) {
     console.log(`[contrast-audit] Server already active on ${BASE_URL}`);
     return null;
@@ -212,7 +229,7 @@ async function main() {
 
     // 1. Audit /login (anonymous context)
     console.log('[contrast-audit] Inspecting /login...');
-    const anonContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const anonContext = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
     const anonPage = await anonContext.newPage();
     await anonPage.goto(`${BASE_URL}/login`, { waitUntil: 'networkidle' });
 
@@ -269,7 +286,7 @@ async function main() {
       surface: 'Auth Card (--surface)',
       element: 'Discord Button',
       role: 'SC 1.4.3 Normal Text',
-      fgSelector: 'button:has-text("Войти через Discord")',
+      fgSelector: 'button:has-text("Продолжить с Discord"), button:has-text("Войти через Discord")',
       reqRatio: 4.5,
       type: 'text',
     });
@@ -295,9 +312,9 @@ async function main() {
 
     // 2. Audit /chat (authenticated context)
     console.log('[contrast-audit] Inspecting /chat...');
-    const authContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const authContext = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
     await authContext.addCookies([
-      { name: 'better-auth.session_token', value: sessionToken, domain: '127.0.0.1', path: '/' },
+      { name: 'better-auth.session_token', value: sessionToken, domain: '127.0.0.1', path: '/', httpOnly: true, sameSite: 'Lax' },
     ]);
     const authPage = await authContext.newPage();
     await authPage.goto(`${BASE_URL}/chat`, { waitUntil: 'networkidle' });
@@ -344,13 +361,23 @@ async function main() {
 
     // 3. Open Admin Dialog
     console.log('[contrast-audit] Inspecting Admin Dialog...');
-    const profileBtn = await authPage.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей"), button[aria-label="Профиль"]', { state: 'visible' });
-    await profileBtn.click();
-    await authPage.waitForTimeout(300);
-
-    const adminItem = await authPage.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
-    await adminItem.click();
-    await authPage.waitForSelector('[role="dialog"][aria-modal="true"]');
+    const adminBtnDirect = await authPage.$('button[aria-label="Админ-панель"]');
+    if (adminBtnDirect && (await adminBtnDirect.isVisible())) {
+      await adminBtnDirect.click();
+    } else {
+      const profileBtn = await authPage.waitForSelector(
+        'button[aria-label="Меню профиля пользователя"], button:has-text("Администратор"), button:has-text("Алексей")',
+        { state: 'visible' },
+      );
+      await profileBtn.click();
+      await authPage.waitForTimeout(300);
+      const adminItem = await authPage.waitForSelector(
+        'button:has-text("Админ-панель"), [role="menuitem"]:has-text("Админ-панель")',
+        { state: 'visible' },
+      );
+      await adminItem.click();
+    }
+    await authPage.waitForSelector('[role="dialog"][aria-modal="true"]', { state: 'visible' });
 
       // Admin search input border
       await authPage.click('aside[aria-label="Разделы админки"] button:has-text("Доступ")');

@@ -466,7 +466,7 @@ export function AppSidebar({
                 size="md"
                 onClick={() => {
                   if (onOpenSettings) onOpenSettings();
-                  else router.push('/settings');
+                  else router.push('/chat?settings=1');
                 }}
               />
               {isAdmin && (
@@ -860,7 +860,7 @@ export function AppSidebar({
                 </div>
 
                 <Link
-                  href="/settings"
+                  href="/chat?settings=1"
                   role="menuitem"
                   onClick={(event) => {
                     setProfileMenuOpen(false);
