@@ -1,6 +1,6 @@
 # Контракт сайта и ядра: волна 2
 
-Ветка ядра server/web-identity, потребитель — PR #74. Сайт ходит с `API_WEB_TOKEN` (роль web) и `X-Neyra-Identity` JWT (HS256, iss, TTL ≤60 с) в WS-чат, вложения, `/v1/context/limits`, `/v1/web/me` и scoped search/recall памяти. Admin service Bearer нужен только админским ручкам; maint-ключ эти пользовательские ручки не открывает. Подписанный пользователь не получает чужие файлы даже через admin service key.
+Ветка ядра server/web-identity, потребитель — PR #74. Сайт ходит с `API_WEB_TOKEN` (роль web) и `X-Neyra-Identity` JWT (HS256, iss, TTL ≤60 с) в WS-чат, вложения, `/v1/context/limits`, `/v1/web/me` и scoped search/recall памяти. Admin/maint Bearer по-прежнему работают для `/v1/web/me` и scoped-памяти; WS-чат, вложения и `/v1/context/limits` требуют `API_WEB_TOKEN` + identity. Подписанный пользователь не получает чужие файлы даже через admin service key.
 
 ## Публичные WS-кадры
 
