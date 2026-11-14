@@ -66,6 +66,7 @@ export function AdminDialog({
 }: AdminDialogProps) {
   const [activeSection, setActiveSection] = useState<AdminSection>(initialSection);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  const mobileNavRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
   // Sync initial section when opening
@@ -95,6 +96,16 @@ export function AdminDialog({
       };
     }
   }, [open]);
+
+  // Keep the active tab of the horizontal mobile navigation in view
+  useEffect(() => {
+    if (!open) return;
+    const nav = mobileNavRef.current;
+    const active = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (active && typeof active.scrollIntoView === 'function') {
+      active.scrollIntoView({ block: 'nearest', inline: 'center' });
+    }
+  }, [open, activeSection]);
 
   const handleClose = useCallback(() => {
     playModalCloseSound();
@@ -199,7 +210,10 @@ export function AdminDialog({
         </header>
 
         {/* Mobile Navigation Tabs (Horizontal Scroll) */}
-        <div className="lg:hidden flex items-center gap-1 overflow-x-auto p-2 border-b border-[var(--border)] bg-[var(--surface)] shrink-0 select-none">
+        <div
+          ref={mobileNavRef}
+          className="lg:hidden flex items-center gap-1 overflow-x-auto p-2 border-b border-[var(--border)] bg-[var(--surface)] shrink-0 select-none"
+        >
           <NavButton
             active={activeSection === 'overview'}
             icon={<LayoutDashboard size={14} />}
@@ -323,6 +337,7 @@ function NavButton({
   return (
     <button
       type="button"
+      aria-current={active ? 'page' : undefined}
       onClick={() => {
         playButtonClickSound();
         onClick();

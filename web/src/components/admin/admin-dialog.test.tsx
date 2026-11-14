@@ -227,6 +227,29 @@ describe('AdminDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
+  it('marks the active section and keeps its mobile tab in view', async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      value: scrollIntoView,
+      configurable: true,
+      writable: true,
+    });
+
+    try {
+      render(<AdminDialog open={true} onClose={vi.fn()} user={adminUser} />);
+
+      const accessButtons = await screen.findAllByRole('button', { name: 'Доступ' });
+      fireEvent.click(accessButtons[0]);
+      expect(await screen.findByText('Доступ и аккаунты')).toBeDefined();
+
+      const current = Array.from(document.querySelectorAll('[aria-current="page"]'));
+      expect(current.some((el) => el.textContent?.includes('Доступ'))).toBe(true);
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    } finally {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    }
+  });
+
   it('switches between sections: Overview, Models, Integrations, Access, System', async () => {
     render(<AdminDialog open={true} onClose={vi.fn()} user={adminUser} />);
 
