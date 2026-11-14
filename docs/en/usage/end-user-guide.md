@@ -7,4 +7,4 @@
 - Inspect health, memory, and plugins on **Dashboard**; configure outbound webhooks and the API Bearer token under **Settings** / **Webhooks** as needed.
 - Protected `/v1` routes use `Authorization: Bearer` (configured in **Settings**, matches `api.token` in `server/config/server.yaml` / `API_TOKEN` in `server/.env`).
 
-The **Tauri desktop client** (`client/`, Windows and Linux) is a separate app: it connects with server URL + API token, not the dashboard access key. Its front moves to `apps/desktop` on the shared kit (ADR-0001).
+The **Tauri desktop client** (`client/`, Windows and Linux) is a separate app: it connects with server URL + API token, not the dashboard access key. Its front moves to `desktop` on the shared kit (ADR-0001).
