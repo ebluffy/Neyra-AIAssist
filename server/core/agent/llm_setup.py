@@ -200,10 +200,15 @@ def setup_llm_connection(agent: Any) -> None:
         setattr(agent, name, value)
 
 
-def setup_openai_compatible_llm(agent: Any) -> None:
-    """Build ChatOpenAI clients; each role may use a different provider connection."""
+def _chat_openai():
+    """Ленивый импорт: чистый CLI-конфиг не требует langchain_openai."""
     from langchain_openai import ChatOpenAI
 
+    return ChatOpenAI
+
+
+def setup_openai_compatible_llm(agent: Any) -> None:
+    """Build ChatOpenAI clients; each role may use a different provider connection."""
     from core.llm.profile import (
         merge_llm_tuning_options,
         resolved_brain_model,
@@ -332,7 +337,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     talk_client = (
         CliChatModel(settings=_cli["talk"], provider_name=conn_talk.provider)
         if "talk" in _cli
-        else ChatOpenAI(**talk_kwargs)
+        else _chat_openai()(**talk_kwargs)
     )
     # Do not bind stop=… here: some gateways (aihope / deepseek-v4-*) reject
     # stop sequences with gateway_error 400 Invalid request. Think blocks are
@@ -359,7 +364,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     brain_client = (
         CliChatModel(settings=_cli["brain"], provider_name=conn_brain.provider)
         if "brain" in _cli
-        else ChatOpenAI(**brain_llm_kwargs)
+        else _chat_openai()(**brain_llm_kwargs)
     )
 
     hdr_memory = dict(conn_memory.default_headers)
@@ -382,7 +387,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     memory_client = (
         CliChatModel(settings=_cli["memory"], provider_name=conn_memory.provider)
         if "memory" in _cli
-        else ChatOpenAI(**memory_llm_kwargs)
+        else _chat_openai()(**memory_llm_kwargs)
     )
 
     # Публикуем собранные клиенты одним блоком: читатели не видят полупересборку.
@@ -468,7 +473,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
             vmodel = str(vision_model_id).strip()
             hdr_vision = dict(conn_vision.default_headers)
             hdr_vision["X-Title"] = "Neyra AI Vision"
-            agent.llm_vision = ChatOpenAI(
+            agent.llm_vision = _chat_openai()(
                 base_url=conn_vision.base_url,
                 api_key=conn_vision.api_key,
                 model=vmodel,
