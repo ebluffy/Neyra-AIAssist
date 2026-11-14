@@ -9,6 +9,10 @@
 # Скрипт делает полный бэкап /opt/neyra/server (код, .venv, data, config, .env),
 # обновляет код и зависимости, проверяет pip check/imports/compileall и при
 # любой ошибке сам откатывается целиком. Сервис не запускает и не перезапускает.
+# Шаг vault меняет $DEST/.env (NEYRA_VAULT_KEY, 0600) и $DEST/data/secrets
+# (v1 -> v2, удаляет vault.key). Полный бэкап и автооткат возвращают и их;
+# при ручном откате верните .env и data/secrets из бэкапа, иначе секреты
+# провайдеров не расшифруются.
 set -euo pipefail
 
 SRC=${1:-$(cd "$(dirname "$0")/../../server" && pwd)}
@@ -149,7 +153,7 @@ restore() {
 }
 trap 'rc=$?; rm -rf "$STAGE"; if [ "$rc" -ne 0 ]; then restore; fi; exit "$rc"' EXIT
 
-echo "== 2/7 синхронизация кода (data/config/models/.env не трогаются)"
+echo "== 2/7 синхронизация кода (data/config/models/.env не перезаписываются rsync)"
 rsync -a --no-owner --no-group --chown=root:root "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" \
   || die "rsync кода не удался"
 
@@ -160,7 +164,8 @@ echo "== 3/7 зависимости в $DEST/.venv"
 
 echo "== 4/7 vault key"
 if [ -f "$DEST/scripts/ensure_vault_key.py" ]; then
-  (cd "$DEST" && .venv/bin/python scripts/ensure_vault_key.py --env "$DEST/.env" --data "$DEST/data") \
+  # Каталог данных хелпер резолвит как ядро: NEYRA_DATA_DIR -> paths.data_dir -> ./data.
+  (cd "$DEST" && .venv/bin/python scripts/ensure_vault_key.py --env "$DEST/.env") \
     || die "не удалось обеспечить NEYRA_VAULT_KEY в $DEST/.env"
 else
   echo "vault-хелпера в этом ядре нет — пропуск (ядро без vault провайдеров)"
