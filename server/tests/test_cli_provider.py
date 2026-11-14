@@ -36,7 +36,7 @@ def test_settings_require_known_cli(tmp_path: Path):
     with pytest.raises(CliProviderError):
         CliSettings.from_config({"cli": "something-else"}, model="m")
     settings = CliSettings.from_config(
-        {"cli": "opencode", "cli_path": "/bin/echo", "sandbox": str(tmp_path)},
+        {"cli": "opencode", "cli_path": "/bin/echo", "sandbox": str(tmp_path), "experimental": True},
         model="opencode/x-free",
     )
     assert settings.backend == "run"
@@ -56,12 +56,17 @@ def test_run_cli_prompt_parses_stdout(tmp_path: Path):
         model="opencode/x-free",
         sandbox=str(tmp_path),
         cli_path="/bin/echo",
+        experimental=True,
     )
     stdout = json.dumps({"type": "text", "part": {"text": "ответ"}})
     completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
     with patch("core.llm.cli_provider.subprocess.run", return_value=completed) as run:
         assert run_cli_prompt(settings, "привет") == "ответ"
-    assert run.call_args.kwargs["cwd"] == str(tmp_path)
+    kwargs = run.call_args.kwargs
+    assert kwargs["cwd"] == str(tmp_path)
+    assert kwargs["input"] == "привет"
+    assert "привет" not in run.call_args.args[0]
+    assert kwargs["env"]["HOME"] == str(tmp_path)
 
 
 def test_run_cli_prompt_reports_failure(tmp_path: Path):
@@ -71,11 +76,64 @@ def test_run_cli_prompt_reports_failure(tmp_path: Path):
         model="opencode/x-free",
         sandbox=str(tmp_path),
         cli_path="/bin/false",
+        experimental=True,
     )
     completed = subprocess.CompletedProcess(args=[], returncode=2, stdout="", stderr="boom")
     with patch("core.llm.cli_provider.subprocess.run", return_value=completed):
         with pytest.raises(CliProviderError):
             run_cli_prompt(settings, "привет")
+
+
+def test_cli_requires_experimental_flag(tmp_path: Path):
+    with pytest.raises(CliProviderError):
+        CliSettings.from_config(
+            {"cli": "opencode", "cli_path": "/bin/echo", "sandbox": str(tmp_path)},
+            model="m",
+        )
+    with pytest.raises(CliProviderError):
+        run_cli_prompt(
+            CliSettings(
+                cli="opencode",
+                backend="run",
+                model="m",
+                sandbox=str(tmp_path),
+                cli_path="/bin/echo",
+            ),
+            "hi",
+        )
+
+
+def test_cli_env_has_no_core_secrets(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("API_TOKEN", "core-secret")
+    monkeypatch.setenv("NEYRA_VAULT_KEY", "vault-secret")
+    monkeypatch.setenv("NEYRA_IDENTITY_JWT_SECRET", "jwt-secret")
+    monkeypatch.setenv("DISCORD_TOKEN", "discord-secret")
+    settings = CliSettings(
+        cli="opencode",
+        backend="run",
+        model="opencode/x-free",
+        sandbox=str(tmp_path),
+        cli_path="/bin/echo",
+        experimental=True,
+    )
+    stdout = json.dumps({"type": "text", "part": {"text": "ok"}})
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+    with patch("core.llm.cli_provider.subprocess.run", return_value=completed) as run:
+        assert run_cli_prompt(settings, "hi") == "ok"
+    env = run.call_args.kwargs["env"]
+    assert env["HOME"] == str(tmp_path)
+    for name in ("API_TOKEN", "NEYRA_VAULT_KEY", "NEYRA_IDENTITY_JWT_SECRET", "DISCORD_TOKEN"):
+        assert name not in env
+    assert set(env) <= {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "HOME", "TMPDIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"}
+
+
+def test_cli_sandbox_defaults_to_data_dir(tmp_path: Path):
+    settings = CliSettings.from_config(
+        {"cli": "opencode", "cli_path": "/bin/echo", "experimental": True},
+        model="m",
+        default_sandbox=str(tmp_path / "data" / "cli-sandbox"),
+    )
+    assert settings.sandbox == str(tmp_path / "data" / "cli-sandbox")
 
 
 def test_bind_tools_is_refused(tmp_path: Path):
@@ -86,6 +144,7 @@ def test_bind_tools_is_refused(tmp_path: Path):
             model="opencode/x-free",
             sandbox=str(tmp_path),
             cli_path="/bin/true",
+            experimental=True,
         ),
         provider_name="oc",
     )
@@ -101,6 +160,7 @@ def test_generate_returns_text(tmp_path: Path):
             model="opencode/x-free",
             sandbox=str(tmp_path),
             cli_path="/bin/true",
+            experimental=True,
         ),
         provider_name="oc",
     )

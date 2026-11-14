@@ -7,6 +7,7 @@ Supports dual-backend: each role sets ``llm.<role>.provider``
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("neyra.agent.llm_setup")
@@ -102,7 +103,10 @@ def _cli_settings(agent: Any, lane: str):
             model = ""
     if not model:
         raise CliProviderError(f"llm.{lane}_model.model не задан для CLI-провайдера '{name}'")
-    return CliSettings.from_config(block, model=model)
+    paths = agent.config.get("paths") if isinstance(agent.config.get("paths"), dict) else {}
+    data_dir = str((paths or {}).get("data_dir") or "").strip()
+    default_sandbox = str(Path(data_dir) / "cli-sandbox") if data_dir else ""
+    return CliSettings.from_config(block, model=model, default_sandbox=default_sandbox)
 
 
 def _cli_connection(name: str):

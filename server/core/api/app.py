@@ -1375,6 +1375,11 @@ def build_app(
             agent.start_talk_sessions()
         if reflection is not None:
             reflection.start_scheduler()
+        try:
+            _vault().verify()
+        except Exception as e:
+            logger.error("Provider vault unavailable: %s", e)
+            raise
         monitor.start()
         await monitor.run_once()
         try:
@@ -4135,9 +4140,9 @@ def build_app(
 
         return store_for(_provider_data_dir())
 
-    def _rebind_llm_after_provider_change() -> bool:
+    async def _rebind_llm_after_provider_change() -> bool:
         try:
-            agent._setup_llm()
+            await asyncio.to_thread(agent._setup_llm)
         except Exception as e:
             logger.exception("LLM rebind after provider change failed")
             raise ApiError(
@@ -4216,6 +4221,23 @@ def build_app(
 
         from core.runtime.config_loader import persist_allowlisted_updates
 
+        providers_cfg = config.get("llm", {}).get("providers") if isinstance(config.get("llm"), dict) else None
+        old_block = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+        old_base_url = str((old_block or {}).get("base_url") or "").strip().rstrip("/") if isinstance(old_block, dict) else ""
+        base_url_changed = isinstance(old_block, dict) and old_base_url != base_url
+        key_reset = False
+        if base_url_changed:
+            try:
+                if _vault().has(provider):
+                    key_reset = _vault().delete(provider)
+            except Exception as e:
+                logger.exception("Failed to reset provider key after base_url change | trace_id=%s", trace_id)
+                raise ApiError(
+                    "vault_error",
+                    "Не удалось сбросить ключ после смены base_url. Ключ не оставлен на новом адресе; повторите сохранение.",
+                    500,
+                ) from e
+
         updates: dict[str, Any] = {
             f"llm.providers.{provider}.base_url": base_url,
             f"llm.providers.{provider}.kind": kind,
@@ -4231,8 +4253,8 @@ def build_app(
 
         for path, value in updates.items():
             _safe_set(config, path, value)
-        llm_rebound = _rebind_llm_after_provider_change()
-        _audit("provider_write", trace_id, api_role, {"provider": provider, "base_url": base_url})
+        llm_rebound = await _rebind_llm_after_provider_change()
+        _audit("provider_write", trace_id, api_role, {"provider": provider, "base_url": base_url, "key_reset": key_reset})
         return {
             "ok": True,
             "trace_id": trace_id,
@@ -4241,6 +4263,7 @@ def build_app(
                 "persisted": persisted,
                 "backups": [f"{rel}.bak" for rel in persisted],
                 "llm_rebound": llm_rebound,
+                "key_reset": key_reset,
             },
         }
 
@@ -4293,7 +4316,7 @@ def build_app(
             key_removed = _vault().delete(provider)
         except Exception:
             logger.warning("Vault delete failed | provider=%s", provider, exc_info=True)
-        llm_rebound = _rebind_llm_after_provider_change()
+        llm_rebound = await _rebind_llm_after_provider_change()
         _audit("provider_delete", trace_id, api_role, {"provider": provider, "key_removed": key_removed})
         return {
             "ok": True,
@@ -4330,8 +4353,8 @@ def build_app(
         try:
             _vault().set(provider, api_key)
         except ProviderSecretsError as e:
-            raise ApiError("vault_error", f"Хранилище ключей недоступно: {e}", 500) from e
-        llm_rebound = _rebind_llm_after_provider_change()
+            raise ApiError("vault_error", "Хранилище ключей недоступно.", 500) from e
+        llm_rebound = await _rebind_llm_after_provider_change()
         _audit("provider_secret_write", trace_id, api_role, {"provider": provider, "length": len(api_key)})
         return {
             "ok": True,
@@ -4357,7 +4380,7 @@ def build_app(
             removed = _vault().delete(provider)
         except Exception as e:
             raise ApiError("vault_error", "Хранилище ключей недоступно.", 500) from e
-        llm_rebound = _rebind_llm_after_provider_change()
+        llm_rebound = await _rebind_llm_after_provider_change()
         _audit("provider_secret_delete", trace_id, api_role, {"provider": provider, "removed": removed})
         return {
             "ok": True,
@@ -4391,22 +4414,29 @@ def build_app(
         try:
             _vault().set(provider, yaml_key)
         except ProviderSecretsError as e:
-            raise ApiError("vault_error", f"Хранилище ключей недоступно: {e}", 500) from e
+            raise ApiError("vault_error", "Хранилище ключей недоступно.", 500) from e
         try:
-            _vault().get(provider)
+            stored = _vault().get_strict(provider)
         except Exception as e:
             raise ApiError("vault_error", "Ключ записан, но не читается — отмена.", 500) from e
+        if stored != yaml_key:
+            raise ApiError("vault_error", "Ключ записан, но не читается — отмена.", 500)
 
-        from core.runtime.config_loader import persist_dotted_removals
+        from core.runtime.config_loader import persist_dotted_removals, scrub_layer_backups
 
         try:
-            persisted = persist_dotted_removals(root, [f"llm.providers.{provider}.api_key"], keep_backup=True)
+            persisted = persist_dotted_removals(root, [f"llm.providers.{provider}.api_key"], keep_backup=False)
         except Exception as e:
             logger.exception("Failed to remove yaml api_key | trace_id=%s", trace_id)
             raise ApiError("persist_failed", "Ключ в vault, но из yaml убрать не удалось.", 500) from e
+        try:
+            scrub_layer_backups(root, "llm.yaml", [f"llm.providers.{provider}.api_key"])
+        except Exception:
+            logger.exception("Failed to scrub yaml backups after secret migration | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Ключ перенесён, но backup конфига не очищен. Остановите ядро и удалите config/llm.yaml.bak вручную.", 500)
         if isinstance(block, dict):
             block.pop("api_key", None)
-        llm_rebound = _rebind_llm_after_provider_change()
+        llm_rebound = await _rebind_llm_after_provider_change()
         _audit("provider_secret_migrate", trace_id, api_role, {"provider": provider})
         return {
             "ok": True,

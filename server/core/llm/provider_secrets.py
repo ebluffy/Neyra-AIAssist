@@ -1,20 +1,22 @@
-"""Шифрованное хранилище API-ключей провайдеров (vault).
+"""Зашифрованное хранилище API-ключей провайдеров (vault).
 
 Ключи не попадают ни в YAML, ни в снимок конфига, ни в логи. Файл лежит в
 ``<data_dir>/secrets/providers.json`` с правами 0600 и содержит только
 зашифрованные значения:
 
-    {"version": 1, "items": {"openrouter": {"nonce": "b64", "ct": "b64", "tag": "b64", "updated_at": "..."}}}
+    {"version": 2, "items": {"openrouter": {"v": 2, "nonce": "b64", "ct": "b64", "updated_at": "..."}}}
 
-Схема — encrypt-then-MAC на stdlib, без внешних зависимостей:
-scrypt(пароль) → 64 байта (ключ шифрования + ключ MAC); поток ключа —
-HMAC-SHA256(enc_key, nonce ‖ counter), тег — HMAC-SHA256(mac_key, nonce ‖ ct)
-со сравнением за постоянное время.
+Формат v2 — AES-256-GCM (``cryptography.hazmat.primitives.ciphers.aead``):
+scrypt(мастер-ключ) → 32 байта, nonce 12 байт, AAD = имя провайдера с
+префиксом версии. Тег входит в ``ct``. Старые записи v1 (самодельный
+encrypt-then-MAC) только читаются, при следующей записи провайдер
+пересохраняется в v2.
 
-Мастер-ключ берётся из окружения ``NEYRA_VAULT_KEY`` (любая строка, из неё
-выводится ключ через scrypt). Если переменная пуста, ключ создаётся один раз
-рядом с файлом (``vault.key``, 0600) — так стенд работает без обязательного
-нового секрета в .env.
+Мастер-ключ берётся из ``NEYRA_VAULT_KEY``. Без него vault не работает:
+это боевой режим. Для локальной разработки можно явно задать
+``NEYRA_VAULT_DEV=1`` — тогда ключ один раз создаётся в
+``<data_dir>/secrets/vault.key`` (0600). ``verify()`` на старте проверяет,
+что все сохранённые секреты расшифровываются; потеря ключа — громкий отказ.
 """
 
 from __future__ import annotations
@@ -31,14 +33,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:  # pragma: no cover - dependency is in requirements; message is for broken installs
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+except ImportError:  # pragma: no cover
+    AESGCM = None  # type: ignore[assignment]
+
 logger = logging.getLogger("neyra.provider_secrets")
 
-VAULT_VERSION = 1
+VAULT_VERSION = 2
+_LEGACY_VERSION = 1
 _KEY_FILE_NAME = "vault.key"
 _SECRETS_FILE_NAME = "providers.json"
-_SCRYPT_SALT = b"neyra-provider-vault-v3"
-_ENC_INFO = b"neyra-vault-enc"
-_MAC_INFO = b"neyra-vault-mac"
+_AEAD_SALT = b"neyra-provider-vault-v4"
+_LEGACY_SCRYPT_SALT = b"neyra-provider-vault-v3"
+_LEGACY_ENC_INFO = b"neyra-vault-enc"
+_LEGACY_MAC_INFO = b"neyra-vault-mac"
+_AEAD_AAD_PREFIX = b"neyra-provider-v2:"
 
 
 class ProviderSecretsError(RuntimeError):
@@ -50,14 +60,26 @@ def _b64e(raw: bytes) -> str:
 
 
 def _b64d(text: str) -> bytes:
-    return base64.b64decode(text.encode("ascii"))
+    return base64.b64decode(text.encode("ascii"), validate=True)
 
 
-def _derive(raw: str) -> bytes:
-    """64 байта: 32 для шифрования, 32 для MAC."""
+def _derive_aead(raw: str) -> bytes:
+    """32-байтовый ключ AES-256-GCM."""
     return hashlib.scrypt(
         raw.encode("utf-8"),
-        salt=_SCRYPT_SALT,
+        salt=_AEAD_SALT,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=32,
+    )
+
+
+def _derive_legacy(raw: str) -> bytes:
+    """64 байта старого формата: 32 шифрование + 32 MAC."""
+    return hashlib.scrypt(
+        raw.encode("utf-8"),
+        salt=_LEGACY_SCRYPT_SALT,
         n=2**14,
         r=8,
         p=1,
@@ -65,13 +87,13 @@ def _derive(raw: str) -> bytes:
     )
 
 
-def _split(master: bytes) -> tuple[bytes, bytes]:
-    enc = hmac.new(master, _ENC_INFO, hashlib.sha256).digest()
-    mac = hmac.new(master, _MAC_INFO, hashlib.sha256).digest()
+def _legacy_split(master: bytes) -> tuple[bytes, bytes]:
+    enc = hmac.new(master, _LEGACY_ENC_INFO, hashlib.sha256).digest()
+    mac = hmac.new(master, _LEGACY_MAC_INFO, hashlib.sha256).digest()
     return enc, mac
 
 
-def _keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
+def _legacy_keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
     out = bytearray()
     counter = 0
     while len(out) < length:
@@ -81,21 +103,37 @@ def _keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
     return bytes(out[:length])
 
 
-def _encrypt(master: bytes, nonce: bytes, plaintext: bytes, aad: bytes) -> tuple[bytes, bytes]:
-    enc_key, mac_key = _split(master)
-    stream = _keystream(enc_key, nonce + b"|" + aad, len(plaintext))
+def _legacy_encrypt(master: bytes, nonce: bytes, plaintext: bytes, aad: bytes) -> tuple[bytes, bytes]:
+    enc_key, mac_key = _legacy_split(master)
+    stream = _legacy_keystream(enc_key, nonce + b"|" + aad, len(plaintext))
     ct = bytes(a ^ b for a, b in zip(plaintext, stream))
     tag = hmac.new(mac_key, nonce + b"|" + aad + b"|" + ct, hashlib.sha256).digest()
     return ct, tag
 
 
-def _decrypt(master: bytes, nonce: bytes, ct: bytes, tag: bytes, aad: bytes) -> bytes:
-    enc_key, mac_key = _split(master)
+def _legacy_decrypt(master: bytes, nonce: bytes, ct: bytes, tag: bytes, aad: bytes) -> bytes:
+    enc_key, mac_key = _legacy_split(master)
     expected = hmac.new(mac_key, nonce + b"|" + aad + b"|" + ct, hashlib.sha256).digest()
     if not hmac.compare_digest(expected, tag):
         raise ProviderSecretsError("Тег vault не совпал: ключ повреждён или подменён")
-    stream = _keystream(enc_key, nonce + b"|" + aad, len(ct))
+    stream = _legacy_keystream(enc_key, nonce + b"|" + aad, len(ct))
     return bytes(a ^ b for a, b in zip(ct, stream))
+
+
+def _aad(key_id: str) -> bytes:
+    return _AEAD_AAD_PREFIX + key_id.encode("utf-8")
+
+
+def _aead_encrypt(master: bytes, nonce: bytes, plaintext: bytes, key_id: str) -> bytes:
+    if AESGCM is None:
+        raise ProviderSecretsError("Модуль cryptography не установлен: AES-GCM недоступен")
+    return AESGCM(master).encrypt(nonce, plaintext, _aad(key_id))
+
+
+def _aead_decrypt(master: bytes, nonce: bytes, ciphertext: bytes, key_id: str) -> bytes:
+    if AESGCM is None:
+        raise ProviderSecretsError("Модуль cryptography не установлен: AES-GCM недоступен")
+    return AESGCM(master).decrypt(nonce, ciphertext, _aad(key_id))
 
 
 class ProviderSecretStore:
@@ -107,16 +145,20 @@ class ProviderSecretStore:
         self._key_path = self.dir / _KEY_FILE_NAME
         self._env = dict(os.environ if env is None else env)
         self._key: bytes | None = None
-        self._items: dict[str, dict[str, str]] | None = None
+        self._legacy_key: bytes | None = None
+        self._items: dict[str, dict[str, Any]] | None = None
 
     # ── key ──────────────────────────────────────────────────────────────
-    def _master_key(self) -> bytes:
-        if self._key is not None:
-            return self._key
+    def _raw_master(self) -> str:
         raw = (self._env.get("NEYRA_VAULT_KEY") or "").strip()
         if raw:
-            self._key = _derive(raw)
-            return self._key
+            return raw
+        if (self._env.get("NEYRA_VAULT_DEV") or "").strip() != "1":
+            raise ProviderSecretsError(
+                "NEYRA_VAULT_KEY не задан: vault провайдеров отключён. "
+                "Задайте ключ в окружении (deploy/secret manager). "
+                "Для локальной разработки разрешён NEYRA_VAULT_DEV=1."
+            )
         self.dir.mkdir(parents=True, exist_ok=True)
         try:
             existing = self._key_path.read_bytes()
@@ -130,11 +172,24 @@ class ProviderSecretStore:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(fresh)
             existing = fresh.encode("utf-8")
-        self._key = _derive(existing.decode("utf-8").strip())
+            logger.warning(
+                "Vault: создан dev-ключ %s. Для боевого режима задайте NEYRA_VAULT_KEY.",
+                self._key_path,
+            )
+        return existing.decode("utf-8").strip()
+
+    def _master_key(self) -> bytes:
+        if self._key is None:
+            self._key = _derive_aead(self._raw_master())
         return self._key
 
+    def _legacy_master_key(self) -> bytes:
+        if self._legacy_key is None:
+            self._legacy_key = _derive_legacy(self._raw_master())
+        return self._legacy_key
+
     # ── file ─────────────────────────────────────────────────────────────
-    def _load(self) -> dict[str, dict[str, str]]:
+    def _load(self) -> dict[str, dict[str, Any]]:
         if self._items is not None:
             return self._items
         try:
@@ -148,7 +203,7 @@ class ProviderSecretStore:
         self._items = items if isinstance(items, dict) else {}
         return self._items
 
-    def _save(self, items: dict[str, dict[str, str]]) -> None:
+    def _save(self, items: dict[str, dict[str, Any]]) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         payload = {"version": VAULT_VERSION, "items": items}
         text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
@@ -166,6 +221,51 @@ class ProviderSecretStore:
             raise
         self._items = items
 
+    # ── crypto ───────────────────────────────────────────────────────────
+    def _decrypt_item(self, key_id: str, item: dict[str, Any]) -> str:
+        try:
+            nonce = _b64d(str(item.get("nonce") or ""))
+            ct = _b64d(str(item.get("ct") or ""))
+        except ValueError as e:
+            raise ProviderSecretsError("Секрет vault повреждён (base64)") from e
+        if not nonce or not ct:
+            raise ProviderSecretsError("Секрет vault повреждён (пустые поля)")
+        version = item.get("v")
+        if version == 2:
+            if len(nonce) != 12:
+                raise ProviderSecretsError("Секрет vault повреждён (nonce)")
+            plain = _aead_decrypt(self._master_key(), nonce, ct, key_id)
+        else:
+            try:
+                tag = _b64d(str(item.get("tag") or ""))
+            except ValueError as e:
+                raise ProviderSecretsError("Секрет vault повреждён (tag)") from e
+            if len(nonce) != 16 or not tag:
+                raise ProviderSecretsError("Секрет vault повреждён (legacy nonce/tag)")
+            plain = _legacy_decrypt(self._legacy_master_key(), nonce, ct, tag, key_id.encode("utf-8"))
+        return plain.decode("utf-8", "replace")
+
+    def verify(self) -> None:
+        """Проверить мастер-ключ и расшифровку всех сохранённых секретов."""
+        self._master_key()
+        items = self._load()
+        failed: list[str] = []
+        for key_id, item in items.items():
+            if not isinstance(item, dict):
+                failed.append(str(key_id))
+                continue
+            try:
+                self._decrypt_item(str(key_id), item)
+            except Exception:
+                logger.error("Vault: секрет не расшифровывается | provider=%s", key_id)
+                failed.append(str(key_id))
+        if failed:
+            raise ProviderSecretsError(
+                "Vault не может расшифровать сохранённые ключи: "
+                + ", ".join(sorted(failed))
+                + ". Проверьте NEYRA_VAULT_KEY; ключи не будут молча проигнорированы."
+            )
+
     # ── api ──────────────────────────────────────────────────────────────
     def names(self) -> list[str]:
         return sorted(self._load().keys())
@@ -181,36 +281,34 @@ class ProviderSecretStore:
         if not value:
             raise ProviderSecretsError("Пустой API-ключ")
         items = dict(self._load())
-        nonce = secrets.token_bytes(16)
-        ct, tag = _encrypt(self._master_key(), nonce, value.encode("utf-8"), key_id.encode("utf-8"))
+        nonce = secrets.token_bytes(12)
+        ct = _aead_encrypt(self._master_key(), nonce, value.encode("utf-8"), key_id)
         items[key_id] = {
+            "v": 2,
             "nonce": _b64e(nonce),
             "ct": _b64e(ct),
-            "tag": _b64e(tag),
             "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         self._save(items)
         logger.info("Provider secret stored | provider=%s", key_id)
 
-    def get(self, name: str) -> str:
+    def get(self, name: str, *, strict: bool = False) -> str:
         key_id = str(name).strip().lower()
         item = self._load().get(key_id)
         if not isinstance(item, dict):
             return ""
         try:
-            nonce = _b64d(str(item.get("nonce") or ""))
-            ct = _b64d(str(item.get("ct") or ""))
-            tag = _b64d(str(item.get("tag") or ""))
-        except ValueError:
-            return ""
-        if not nonce or not ct or not tag:
-            return ""
-        try:
-            plain = _decrypt(self._master_key(), nonce, ct, tag, key_id.encode("utf-8"))
+            return self._decrypt_item(key_id, item)
         except Exception:
             logger.warning("Provider secret cannot be decrypted | provider=%s", key_id)
+            if strict:
+                raise ProviderSecretsError(
+                    f"Ключ провайдера '{key_id}' не расшифровывается: проверьте NEYRA_VAULT_KEY"
+                )
             return ""
-        return plain.decode("utf-8", "replace")
+
+    def get_strict(self, name: str) -> str:
+        return self.get(name, strict=True)
 
     def delete(self, name: str) -> bool:
         key_id = str(name).strip().lower()

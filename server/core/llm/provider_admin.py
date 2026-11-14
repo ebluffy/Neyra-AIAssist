@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from typing import Any, Mapping
 from urllib.parse import urlparse
@@ -138,12 +139,52 @@ def validate_base_url(raw: Any, *, allow_empty: bool = False) -> str:
         raise ProviderAdminError("invalid_base_url", "Укажите base_url провайдера.")
     if len(value) > 300:
         raise ProviderAdminError("invalid_base_url", "base_url слишком длинный.")
-    parsed = urlparse(value)
+    try:
+        parsed = urlparse(value)
+    except ValueError as e:
+        raise ProviderAdminError("invalid_base_url", "base_url содержит некорректный хост.") from e
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ProviderAdminError("invalid_base_url", "base_url должен начинаться с http:// или https://")
     if parsed.username or parsed.password:
         raise ProviderAdminError("invalid_base_url", "В base_url нельзя передавать логин и пароль.")
+    _reject_metadata_host(parsed.hostname or "")
     return value.rstrip("/")
+
+
+_BLOCKED_HOSTNAMES = frozenset({"metadata.google.internal", "metadata", "instance-data"})
+
+
+def _is_blocked_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if address.is_link_local or address.is_multicast or address.is_unspecified:
+        return True
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return _is_blocked_address(address.ipv4_mapped)
+        # AWS/GCP IPv6 metadata endpoint.
+        if address == ipaddress.IPv6Address("fd00:ec2::254"):
+            return True
+    return False
+
+
+def _reject_metadata_host(hostname: str) -> None:
+    """Запретить link-local и облачные metadata-адреса (SSRF в probe/провайдере)."""
+    host = str(hostname or "").strip().strip("[]").lower().rstrip(".")
+    if not host:
+        raise ProviderAdminError("invalid_base_url", "В base_url нет имени хоста.")
+    if host in _BLOCKED_HOSTNAMES:
+        raise ProviderAdminError(
+            "invalid_base_url",
+            "Link-local и metadata-адреса запрещены: укажите публичный или локальный шлюз модели.",
+        )
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    if _is_blocked_address(address):
+        raise ProviderAdminError(
+            "invalid_base_url",
+            "Link-local и metadata-адреса запрещены: укажите публичный или локальный шлюз модели.",
+        )
 
 
 def _providers_block(cfg: Mapping[str, Any]) -> dict[str, Any]:

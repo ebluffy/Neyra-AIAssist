@@ -1,8 +1,11 @@
 """CLI-провайдер: лейн Neyra отвечает через официальный CLI, не через прокси.
 
 Первый минимальный бэкенд — `opencode run --format json`: один процесс на
-запрос, в песочнице, с моделью из конфига. Авторизация живёт в самом CLI,
-Нейра ключей не видит и не логирует промпты целиком.
+запрос, с моделью из конфига. Это **экспериментальный** режим: провайдер
+включается только при явном `experimental: true`, потому что полноценной
+песочницы для инструментов CLI здесь нет. Потомок получает whitelist env,
+домашний каталог внутри sandbox и промпт через stdin; секреты ядра
+(`API_TOKEN`, `NEYRA_*`, токены Discord) ему не передаются.
 
 Контракт для ядра — обычная LangChain-модель: `BaseChatModel` с `_generate`,
 поэтому лейны, ретраи, таймауты и трассировка остаются прежними.
@@ -34,7 +37,6 @@ logger = logging.getLogger("neyra.llm_cli")
 CLI_KINDS: tuple[str, ...] = ("opencode",)
 CLI_BACKENDS: tuple[str, ...] = ("run",)
 DEFAULT_TIMEOUT_SECONDS = 120.0
-DEFAULT_SANDBOX = "/var/lib/openbot/neyra-cli-sandbox"
 
 
 class CliProviderError(RuntimeError):
@@ -50,16 +52,33 @@ class CliSettings:
     cli_path: str
     timeout: float = DEFAULT_TIMEOUT_SECONDS
     extra_args: tuple[str, ...] = ()
+    experimental: bool = False
 
     @classmethod
-    def from_config(cls, block: dict[str, Any], *, model: str) -> "CliSettings":
+    def from_config(
+        cls,
+        block: dict[str, Any],
+        *,
+        model: str,
+        default_sandbox: str = "",
+    ) -> "CliSettings":
         cli = str(block.get("cli") or "opencode").strip().lower()
         if cli not in CLI_KINDS:
             raise CliProviderError(f"CLI '{cli}' пока не поддерживается: {', '.join(CLI_KINDS)}")
         backend = str(block.get("backend") or "run").strip().lower()
         if backend not in CLI_BACKENDS:
             raise CliProviderError(f"Бэкенд CLI '{backend}' пока не поддерживается: {', '.join(CLI_BACKENDS)}")
-        sandbox = str(block.get("sandbox") or DEFAULT_SANDBOX).strip()
+        if block.get("experimental") is not True:
+            raise CliProviderError(
+                "CLI-провайдер экспериментальный: без явного experimental: true он не включается. "
+                "Полноценная песочница для инструментов CLI в этой версии не реализована."
+            )
+        sandbox = str(block.get("sandbox") or default_sandbox).strip()
+        if not sandbox:
+            raise CliProviderError(
+                "Не задан sandbox CLI: укажите llm.providers.<name>.sandbox "
+                "или paths.data_dir ядра"
+            )
         cli_path = str(block.get("cli_path") or "").strip()
         if not cli_path:
             cli_path = shutil.which(cli) or ""
@@ -79,6 +98,7 @@ class CliSettings:
             cli_path=cli_path,
             timeout=timeout,
             extra_args=extra_args,
+            experimental=True,
         )
 
 
@@ -125,31 +145,53 @@ def _parse_json_events(stdout: str) -> str:
     return "".join(chunks).strip()
 
 
+def _child_env(sandbox: Path) -> dict[str, str]:
+    """Минимальное окружение потомка: без секретов ядра и токенов сервисов."""
+    allowed = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM")
+    env = {name: os.environ[name] for name in allowed if os.environ.get(name)}
+    env.update(
+        {
+            "HOME": str(sandbox),
+            "TMPDIR": str(sandbox / "tmp"),
+            "XDG_CACHE_HOME": str(sandbox / "cache"),
+            "XDG_CONFIG_HOME": str(sandbox / "config"),
+            "XDG_DATA_HOME": str(sandbox / "data"),
+        }
+    )
+    return env
+
+
 def run_cli_prompt(settings: CliSettings, prompt: str) -> str:
     """Синхронный вызов CLI. Возвращает текст ответа, исключения — CliProviderError."""
+    if not settings.experimental:
+        raise CliProviderError(
+            "CLI-провайдер не включён: нужен явный experimental: true в llm.providers.<name>"
+        )
     sandbox = Path(settings.sandbox)
     try:
         sandbox.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         raise CliProviderError(f"Песочница CLI недоступна: {sandbox}") from e
 
+    for subdir in ("tmp", "cache", "config", "data"):
+        (sandbox / subdir).mkdir(parents=True, exist_ok=True)
+
+    # Промпт не уходит в argv: иначе он виден в ps и ограничен E2BIG.
     argv = [
         settings.cli_path,
         "run",
-        prompt,
         "--format",
         "json",
         "--model",
         settings.model,
         *settings.extra_args,
     ]
-    env = dict(os.environ)
-    env.pop("OPENAI_API_KEY", None)
-    env.pop("ANTHROPIC_API_KEY", None)
+    env = _child_env(sandbox)
 
     try:
         completed = subprocess.run(
             argv,
+            input=prompt,
             cwd=str(sandbox),
             capture_output=True,
             text=True,

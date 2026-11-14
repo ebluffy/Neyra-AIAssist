@@ -30,6 +30,16 @@ _cache: dict[str, tuple[float, "ProbeResult"]] = {}
 _lock = Lock()
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Probe не ходит по редиректам: иначе base_url можно увести на metadata."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect())
+
+
 @dataclass(frozen=True)
 class ProbeResult:
     state: str  # "open" | "auth_required" | "unreachable"
@@ -74,7 +84,7 @@ def _probe_uncached(base_url: str, timeout: float) -> ProbeResult:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _opener.open(request, timeout=timeout) as response:
             status = int(getattr(response, "status", 200))
             body = response.read(65536)
     except urllib.error.HTTPError as e:
