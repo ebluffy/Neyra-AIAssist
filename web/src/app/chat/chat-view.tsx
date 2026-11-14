@@ -1223,21 +1223,21 @@ export function ChatView({
                 <div className="mb-2 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-center animate-chips">
                   <Chip
                     onClick={() => sendMessage('Что нового в памяти?')}
-                    className="col-span-2 justify-center gap-1.5 py-2.5 sm:col-span-1 sm:py-1.5 !bg-[var(--accent)] !text-[var(--accent-ink)] !border-[var(--accent)] font-medium hover:!bg-[var(--accent-hover)] hover:!border-[var(--accent-hover)]"
+                    className="col-span-2 min-h-11 justify-center gap-1.5 py-2.5 sm:col-span-1 sm:min-h-0 sm:py-1.5 !bg-[var(--accent)] !text-[var(--accent-ink)] !border-[var(--accent)] font-medium hover:!bg-[var(--accent-hover)] hover:!border-[var(--accent-hover)]"
                   >
                     <Sparkles size={14} className="shrink-0" />
                     <span>Что нового в памяти?</span>
                   </Chip>
                   <Chip
                     onClick={() => sendMessage('Суммируй вчерашний диалог')}
-                    className="justify-center gap-1.5 py-2.5 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
+                    className="min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
                   >
                     <History size={14} className="shrink-0 text-[var(--text-muted)]" />
                     <span className="truncate">Суммируй вчерашний диалог</span>
                   </Chip>
                   <Chip
                     onClick={() => sendMessage('Проверь состояние сервера')}
-                    className="justify-center gap-1.5 py-2.5 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
+                    className="min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
                   >
                     <Activity size={14} className="shrink-0 text-[var(--text-muted)]" />
                     <span className="truncate">Проверь состояние сервера</span>

@@ -641,14 +641,14 @@ export function AppSidebar({
                           : 'Диалог появится здесь, как только вы напишете первое сообщение'}
                       </p>
                       {query ? (
-                        <Button variant="secondary" size="sm" className="mt-3" onClick={() => setSearchQuery('')}>
+                        <Button variant="secondary" size="sm" className="mt-3 min-h-11 sm:min-h-0" onClick={() => setSearchQuery('')}>
                           Сбросить поиск
                         </Button>
                       ) : (
                         <Button
                           variant="secondary"
                           size="sm"
-                          className="mt-3 gap-1.5"
+                          className="mt-3 min-h-11 gap-1.5 sm:min-h-0"
                           onClick={handleStartNewChat}
                         >
                           <Plus size={13} />
@@ -770,7 +770,7 @@ export function AppSidebar({
                       <Button
                         variant="secondary"
                         size="sm"
-                        className="mt-3 gap-1.5"
+                        className="mt-3 min-h-11 gap-1.5 sm:min-h-0"
                         onClick={handleCreateNote}
                       >
                         <Plus size={13} />
