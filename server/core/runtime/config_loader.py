@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 
@@ -376,4 +376,66 @@ def persist_allowlisted_updates(
                         bak.unlink()
                 except OSError:
                     pass
+    return touched
+
+
+def _drop_dotted(cfg: dict[str, Any], path: str) -> bool:
+    """Delete a dotted leaf and prune empty parent mappings. True if removed."""
+    keys = [p for p in path.split(".") if p]
+    if not keys:
+        return False
+    stack: list[tuple[dict[str, Any], str]] = []
+    cur: dict[str, Any] = cfg
+    for key in keys[:-1]:
+        nxt = cur.get(key)
+        if not isinstance(nxt, dict):
+            return False
+        stack.append((cur, key))
+        cur = nxt
+    if keys[-1] not in cur:
+        return False
+    cur.pop(keys[-1], None)
+    for parent, key in reversed(stack):
+        value = parent.get(key)
+        if isinstance(value, dict) and not value:
+            parent.pop(key, None)
+    return True
+
+
+def persist_dotted_removals(
+    server_root: Path,
+    paths: Iterable[str],
+    *,
+    keep_backup: bool = True,
+) -> list[str]:
+    """Remove dotted keys from their layer YAML files (provider delete)."""
+    root = Path(server_root)
+    config_dir = root / "config"
+    by_layer: dict[str, list[str]] = {}
+    for path in paths:
+        top = str(path).split(".", 1)[0].strip()
+        layer_name = _RUNTIME_PERSIST_LAYER.get(top)
+        if not layer_name:
+            raise ValueError(f"no layer mapping for config path: {path}")
+        by_layer.setdefault(layer_name, []).append(str(path))
+    touched: list[str] = []
+    for layer_name, dotted_paths in by_layer.items():
+        layer_path = config_dir / layer_name
+        if not layer_path.is_file():
+            continue
+        current = _load_yaml_file(layer_path)
+        changed = False
+        for dotted in dotted_paths:
+            changed = _drop_dotted(current, dotted) or changed
+        if not changed:
+            continue
+        text = yaml.safe_dump(current, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        tmp = layer_path.with_suffix(layer_path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        if keep_backup and layer_path.is_file():
+            bak = layer_path.with_suffix(layer_path.suffix + ".bak")
+            layer_path.replace(bak)
+        tmp.replace(layer_path)
+        touched.append(f"config/{layer_name}")
+        logger.info("Removed provider config keys from %s", layer_path)
     return touched

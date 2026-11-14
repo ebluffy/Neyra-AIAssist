@@ -603,6 +603,16 @@ class AdminConfigPutRequest(_ApiBody):
     updates: dict[str, Any] = Field(default_factory=dict)
 
 
+class ProviderUpsertRequest(_ApiBody):
+    base_url: str = ""
+    kind: str = "openai"
+    default_headers: dict[str, str] | None = None
+
+
+class ProviderSecretRequest(_ApiBody):
+    api_key: str = ""
+
+
 class PluginStateUpdateRequest(_ApiBody):
     enabled: bool
 
@@ -4113,6 +4123,240 @@ def build_app(
                 "restart_fields": restart_fields,
                 "llm_rebound": llm_rebound,
             },
+        }
+
+    # ── Провайдеры LLM: любые OpenAI-совместимые шлюзы ─────────────────────
+    def _provider_data_dir() -> str:
+        paths_cfg = config.get("paths") if isinstance(config.get("paths"), dict) else {}
+        return str((paths_cfg or {}).get("data_dir") or "./data").strip() or "./data"
+
+    def _vault():
+        from core.llm.provider_secrets import store_for
+
+        return store_for(_provider_data_dir())
+
+    def _rebind_llm_after_provider_change() -> bool:
+        try:
+            agent._setup_llm()
+        except Exception as e:
+            logger.exception("LLM rebind after provider change failed")
+            raise ApiError(
+                "llm_rebind_failed",
+                "Провайдер сохранён, но LLM-клиенты не пересобраны; нужен рестарт ядра.",
+                500,
+            ) from e
+        try:
+            from core.agent.talk_sessions import sessions_for
+
+            manager = sessions_for(agent)
+            manager.invalidate()
+            manager.start_warmup()
+        except Exception:
+            logger.exception("Session warmup after provider change failed")
+        return True
+
+    def _provider_row(name: str) -> dict[str, Any]:
+        from core.llm.provider_admin import provider_rows
+
+        try:
+            vault_names = _vault().names()
+        except Exception:
+            vault_names = []
+        for row in provider_rows(config, vault_names=vault_names):
+            if row["name"] == name:
+                return row
+        return {"name": name, "base_url": "", "kind": "openai", "builtin": False, "has_key": False, "key_source": "none", "lanes": []}
+
+    @app.get("/v1/providers")
+    async def v1_providers(request: Request, _: str = Depends(dep_admin)):
+        """Провайдеры из llm.providers + каталог пресетов. Секреты не отдаются."""
+        from core.llm.provider_admin import LANES, preset_catalog, provider_rows
+
+        trace_id = _trace_id(request)
+        try:
+            vault_names = _vault().names()
+        except Exception:
+            logger.warning("Provider vault unavailable", exc_info=True)
+            vault_names = []
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "providers": provider_rows(config, vault_names=vault_names),
+                "presets": preset_catalog(),
+                "lanes": list(LANES),
+            },
+        }
+
+    @app.put("/v1/providers/{name}")
+    async def v1_provider_put(
+        name: str,
+        body: ProviderUpsertRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Создать или обновить провайдера: base_url уходит в llm.yaml."""
+        from core.llm.provider_admin import ProviderAdminError, normalize_provider_name, validate_base_url
+
+        trace_id = _trace_id(request)
+        try:
+            provider = normalize_provider_name(name)
+            base_url = validate_base_url(body.base_url)
+            kind = str(body.kind or "openai").strip().lower()
+            if kind not in {"openai", "local", "proxy"}:
+                kind = "openai"
+        except ProviderAdminError as e:
+            raise ApiError(e.code, e.message, e.status)
+
+        from core.runtime.config_loader import persist_allowlisted_updates
+
+        updates: dict[str, Any] = {
+            f"llm.providers.{provider}.base_url": base_url,
+            f"llm.providers.{provider}.kind": kind,
+        }
+        headers = {str(k): str(v) for k, v in (body.default_headers or {}).items() if str(k).strip()}
+        if headers:
+            updates[f"llm.providers.{provider}.default_headers"] = headers
+        try:
+            persisted = persist_allowlisted_updates(root, updates, keep_backup=True)
+        except Exception as e:
+            logger.exception("Failed to persist provider config | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Не удалось записать провайдера в конфиг.", 500) from e
+
+        for path, value in updates.items():
+            _safe_set(config, path, value)
+        llm_rebound = _rebind_llm_after_provider_change()
+        _audit("provider_write", trace_id, api_role, {"provider": provider, "base_url": base_url})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "provider": _provider_row(provider),
+                "persisted": persisted,
+                "backups": [f"{rel}.bak" for rel in persisted],
+                "llm_rebound": llm_rebound,
+            },
+        }
+
+    @app.delete("/v1/providers/{name}")
+    async def v1_provider_delete(
+        name: str,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Удалить провайдера и его ключ. Занятые лейны не дают удалить."""
+        from core.llm.provider_admin import (
+            ProviderAdminError,
+            lanes_for_provider,
+            normalize_provider_name,
+        )
+
+        trace_id = _trace_id(request)
+        try:
+            provider = normalize_provider_name(name)
+        except ProviderAdminError as e:
+            raise ApiError(e.code, e.message, e.status)
+        used = lanes_for_provider(config, provider)
+        if used:
+            raise ApiError(
+                "provider_in_use",
+                f"Провайдер используется лейнами: {', '.join(used)}. Сначала переключите их на другого.",
+                409,
+            )
+
+        from core.runtime.config_loader import persist_dotted_removals
+
+        paths = [
+            f"llm.providers.{provider}.base_url",
+            f"llm.providers.{provider}.kind",
+            f"llm.providers.{provider}.default_headers",
+        ]
+        try:
+            persisted = persist_dotted_removals(root, paths, keep_backup=True)
+        except Exception as e:
+            logger.exception("Failed to remove provider config | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Не удалось убрать провайдера из конфига.", 500) from e
+
+        llm_cfg = config.get("llm") if isinstance(config.get("llm"), dict) else None
+        if isinstance(llm_cfg, dict):
+            providers_cfg = llm_cfg.get("providers")
+            if isinstance(providers_cfg, dict):
+                providers_cfg.pop(provider, None)
+        key_removed = False
+        try:
+            key_removed = _vault().delete(provider)
+        except Exception:
+            logger.warning("Vault delete failed | provider=%s", provider, exc_info=True)
+        llm_rebound = _rebind_llm_after_provider_change()
+        _audit("provider_delete", trace_id, api_role, {"provider": provider, "key_removed": key_removed})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "deleted": provider,
+                "key_removed": key_removed,
+                "persisted": persisted,
+                "llm_rebound": llm_rebound,
+            },
+        }
+
+    @app.put("/v1/providers/{name}/secret")
+    async def v1_provider_secret_put(
+        name: str,
+        body: ProviderSecretRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Сохранить API-ключ в шифрованном vault (в YAML и логи не попадает)."""
+        from core.llm.provider_admin import ProviderAdminError, normalize_provider_name
+        from core.llm.provider_secrets import ProviderSecretsError
+
+        trace_id = _trace_id(request)
+        try:
+            provider = normalize_provider_name(name)
+        except ProviderAdminError as e:
+            raise ApiError(e.code, e.message, e.status)
+        api_key = str(body.api_key or "").strip()
+        if len(api_key) < 8:
+            raise ApiError("invalid_key", "Ключ слишком короткий: нужно не меньше 8 символов.", 400)
+        if len(api_key) > 4096:
+            raise ApiError("invalid_key", "Ключ слишком длинный.", 400)
+        try:
+            _vault().set(provider, api_key)
+        except ProviderSecretsError as e:
+            raise ApiError("vault_error", f"Хранилище ключей недоступно: {e}", 500) from e
+        llm_rebound = _rebind_llm_after_provider_change()
+        _audit("provider_secret_write", trace_id, api_role, {"provider": provider, "length": len(api_key)})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"provider": _provider_row(provider), "llm_rebound": llm_rebound},
+        }
+
+    @app.delete("/v1/providers/{name}/secret")
+    async def v1_provider_secret_delete(
+        name: str,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Убрать ключ из vault; провайдер остаётся, но без ключа."""
+        from core.llm.provider_admin import ProviderAdminError, normalize_provider_name
+
+        trace_id = _trace_id(request)
+        try:
+            provider = normalize_provider_name(name)
+        except ProviderAdminError as e:
+            raise ApiError(e.code, e.message, e.status)
+        try:
+            removed = _vault().delete(provider)
+        except Exception as e:
+            raise ApiError("vault_error", "Хранилище ключей недоступно.", 500) from e
+        llm_rebound = _rebind_llm_after_provider_change()
+        _audit("provider_secret_delete", trace_id, api_role, {"provider": provider, "removed": removed})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"provider": _provider_row(provider), "removed": removed, "llm_rebound": llm_rebound},
         }
 
     @app.get("/v1/logs/tail")

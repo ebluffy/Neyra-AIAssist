@@ -33,6 +33,7 @@ python-dateutil>=2.9.0
 rich>=13.0.0
 pypdf==6.21.4  # Bounded PDF attachment extraction worker
 Pillow>=10.0.0  # сжатие картинок для vision (до 1024×768 и т.п.)
+cryptography>=42.0.0  # AES-256-GCM для vault API-ключей провайдеров
 
 # ── Discord Text Bot (+ voice for music / Lavalink) ─────────────────────────
 discord.py[voice]>=2.5.0,<3

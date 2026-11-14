@@ -98,6 +98,21 @@ def _first_env(*names: str) -> str:
     return ""
 
 
+def _vault_provider_key(cfg: dict, provider: str) -> str:
+    """API-ключ из шифрованного vault (data_dir/secrets). Никогда не из YAML."""
+    paths = cfg.get("paths")
+    data_dir = str((paths or {}).get("data_dir") or "").strip() if isinstance(paths, dict) else ""
+    if not data_dir or not provider:
+        return ""
+    try:
+        from core.llm.provider_secrets import store_for
+
+        return store_for(data_dir).get(provider)
+    except Exception:
+        logger.warning("Vault ключей провайдеров недоступен", exc_info=True)
+        return ""
+
+
 # Совпадает с legacy DEPRECATED_OPENROUTER_MODELS в core/agent.py для ID моделей.
 DEPRECATED_MODEL_MAP: dict[str, str] = {
     "openrouter/elephant-alpha": "inclusionai/ling-2.6-flash:free",
@@ -392,18 +407,22 @@ def resolve_openai_compatible_connection(
     if not provider:
         provider = "aihope"
 
-    if provider not in _OPENAI_COMPATIBLE_PRESETS:
-        known = ", ".join(sorted(_OPENAI_COMPATIBLE_PRESETS))
-        raise ValueError(
-            f"Неизвестный LLM-провайдер '{provider}'. "
-            f"Допустимые значения: {known}."
-        )
-
-    preset = _OPENAI_COMPATIBLE_PRESETS[provider]
     llm = _llm_block(cfg)
     prov_over = _providers_block(cfg).get(provider)
     if not isinstance(prov_over, dict):
         prov_over = {}
+
+    preset = _OPENAI_COMPATIBLE_PRESETS.get(provider)
+    if preset is None:
+        # Свободный провайдер: любой OpenAI-совместимый шлюз, добавленный
+        # пользователем в llm.providers.<name> с собственным base_url.
+        if not str(prov_over.get("base_url") or "").strip():
+            known = ", ".join(sorted(_OPENAI_COMPATIBLE_PRESETS))
+            raise ValueError(
+                f"Провайдер '{provider}' не описан: задайте "
+                f"llm.providers.{provider}.base_url или выберите из {known}."
+            )
+        preset = {}
 
     base_url = str(
         prov_over.get("base_url")
@@ -432,6 +451,8 @@ def resolve_openai_compatible_connection(
         api_key = _first_env("AIHOPE_API_KEY")
     if not api_key and provider == "ollama":
         api_key = "ollama"
+    if not api_key:
+        api_key = _vault_provider_key(cfg, provider)
 
     caps = dict(_DEFAULT_CAPABILITIES)
     raw_caps = llm.get("capabilities")
