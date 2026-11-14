@@ -17,6 +17,9 @@ if str(SERVER_ROOT) not in sys.path:
 @pytest.fixture(autouse=True)
 def isolate_runtime_data(monkeypatch):
     monkeypatch.delenv("NEYRA_DATA_DIR", raising=False)
+    # Tests use ephemeral vaults; production requires NEYRA_VAULT_KEY (AR-3).
+    monkeypatch.delenv("NEYRA_VAULT_KEY", raising=False)
+    monkeypatch.setenv("NEYRA_VAULT_DEV", "1")
 
 
 @pytest.fixture()

@@ -23,6 +23,7 @@ fastapi>=0.115.0
 uvicorn>=0.30.0
 python-multipart>=0.0.9
 PyJWT==2.15.1  # Fixed HS256 web identity verification
+cryptography>=42.0.0  # AES-256-GCM для vault ключей провайдеров
 
 # ── Config ───────────────────────────────────────────────────
 pyyaml>=6.0.0

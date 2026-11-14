@@ -8,9 +8,12 @@ Consumers still receive one merged dict.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 
@@ -286,6 +289,59 @@ def _set_dotted(cfg: dict[str, Any], path: str, value: Any) -> None:
     cur[keys[-1]] = value
 
 
+def _create_layer_backups(layer_path: Path) -> tuple[Path, Path]:
+    """Скопировать текущий слой в .bak и в .bak с UTC-отметкой; старые ротировать."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    stamped = layer_path.with_name(f"{layer_path.name}.{stamp}.bak")
+    latest = layer_path.with_name(f"{layer_path.name}.bak")
+    shutil.copy2(layer_path, stamped)
+    shutil.copy2(layer_path, latest)
+    os.chmod(stamped, 0o600)
+    os.chmod(latest, 0o600)
+    stamped_backups = sorted(layer_path.parent.glob(f"{layer_path.name}.*.bak"))
+    for old in stamped_backups[:-5]:
+        try:
+            old.unlink()
+        except OSError:
+            logger.warning("Не удалось удалить старый backup %s", old)
+    return latest, stamped
+
+
+def scrub_layer_backups(server_root: Path, layer_name: str, dotted_paths: Iterable[str]) -> int:
+    """Убрать dotted-ключи из всех .bak слоя (например, открытый api_key)."""
+    config_dir = Path(server_root) / "config"
+    scrubbed = 0
+    backups = {*config_dir.glob(f"{layer_name}.bak*"), *config_dir.glob(f"{layer_name}.*.bak")}
+    for backup in sorted(backups):
+        try:
+            current = _load_yaml_file(backup)
+            changed = False
+            for dotted in dotted_paths:
+                changed = _drop_dotted(current, dotted) or changed
+            if not changed:
+                continue
+            text = yaml.safe_dump(current, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            tmp = backup.with_suffix(backup.suffix + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, backup)
+            scrubbed += 1
+        except Exception:
+            logger.exception("Не удалось очистить backup %s; удаляю его", backup)
+            try:
+                backup.unlink()
+            except OSError:
+                pass
+    return scrubbed
+
+
+def _stage_yaml(layer_path: Path, current: dict[str, Any]) -> str:
+    text = yaml.safe_dump(current, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    tmp = layer_path.with_suffix(layer_path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    return text
+
+
 def persist_allowlisted_updates(
     server_root: Path,
     updates: dict[str, Any],
@@ -295,8 +351,9 @@ def persist_allowlisted_updates(
     """Write dotted allowlisted keys into layer YAML files. Returns relative paths touched.
 
     Does not touch root ``config.yaml`` or secrets. Layer comments may be rewritten by PyYAML.
-    With ``keep_backup=True`` the previous layer file stays next to the new one as
-    ``<layer>.yaml.bak`` (one generation), as required for admin-panel edits.
+    With ``keep_backup=True`` the previous layer is copied to ``<layer>.yaml.bak`` and a
+    timestamped ``<layer>.yaml.<UTC>.bak`` (rotation: 5 newest); the new file is written by
+    atomic ``os.replace`` only after the backups exist.
     """
     if not updates:
         return []
@@ -313,67 +370,130 @@ def persist_allowlisted_updates(
         by_layer.setdefault(layer_name, {})[str(path)] = value
 
     touched: list[str] = []
-    prepared: list[tuple[Path, Path, str, int]] = []  # final, tmp, rel, key_count
+    prepared: list[tuple[Path, str, int, str | None]] = []  # final, rel, key_count, previous text
     for layer_name, paths in by_layer.items():
         layer_path = config_dir / layer_name
-        current = _load_yaml_file(layer_path) if layer_path.is_file() else {}
+        previous_text = layer_path.read_text(encoding="utf-8") if layer_path.is_file() else None
+        current = _load_yaml_file(layer_path) if previous_text is not None else {}
         for dotted, val in paths.items():
             _set_dotted(current, dotted, val)
-        text = yaml.safe_dump(
-            current,
-            allow_unicode=True,
-            default_flow_style=False,
-            sort_keys=False,
-        )
-        tmp = layer_path.with_suffix(layer_path.suffix + ".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        prepared.append((layer_path, tmp, f"config/{layer_name}", len(paths)))
+        _stage_yaml(layer_path, current)
+        prepared.append((layer_path, f"config/{layer_name}", len(paths), previous_text))
 
-    # Commit all layers only after every tmp is written; on rename failure restore previous files.
-    backups: list[tuple[Path, Path | None]] = []  # (final_path, bak_or_None if newly created)
+    committed: list[tuple[Path, str | None]] = []
     try:
-        for layer_path, tmp, rel, nkeys in prepared:
-            bak: Path | None = None
-            if layer_path.is_file():
-                bak = layer_path.with_suffix(layer_path.suffix + ".bak")
-                # Replace existing → bak (atomic on same filesystem).
-                layer_path.replace(bak)
-            backups.append((layer_path, bak))
-            tmp.replace(layer_path)
+        for layer_path, rel, nkeys, previous_text in prepared:
+            if keep_backup and previous_text is not None:
+                _create_layer_backups(layer_path)
+            tmp = layer_path.with_suffix(layer_path.suffix + ".tmp")
+            os.replace(tmp, layer_path)
+            committed.append((layer_path, previous_text))
             touched.append(rel)
             logger.info("Persisted runtime config updates to %s (%s keys)", layer_path, nkeys)
     except Exception:
-        for layer_path, bak in reversed(backups):
+        for layer_path, previous_text in reversed(committed):
             try:
-                if bak is not None and bak.is_file():
-                    bak.replace(layer_path)
-                elif layer_path.is_file() and bak is None:
-                    layer_path.unlink()
+                if previous_text is None:
+                    layer_path.unlink(missing_ok=True)
+                else:
+                    tmp = layer_path.with_suffix(layer_path.suffix + ".restore")
+                    tmp.write_text(previous_text, encoding="utf-8")
+                    os.replace(tmp, layer_path)
             except OSError:
                 logger.exception("Failed to restore %s after persist error", layer_path)
-        for _layer_path, tmp, _rel, _n in prepared:
+        for layer_path, _rel, _n, _previous in prepared:
             try:
-                if tmp.is_file():
-                    tmp.unlink()
-            except OSError:
-                pass
-        for _layer_path, bak in backups:
-            if bak is None:
-                continue
-            try:
-                if bak.is_file():
-                    bak.unlink()
+                layer_path.with_suffix(layer_path.suffix + ".tmp").unlink(missing_ok=True)
             except OSError:
                 pass
         raise
-    else:
-        if not keep_backup:
-            for _layer_path, bak in backups:
-                if bak is None:
-                    continue
-                try:
-                    if bak.is_file():
-                        bak.unlink()
-                except OSError:
-                    pass
+    return touched
+
+
+def _drop_dotted(cfg: dict[str, Any], path: str) -> bool:
+    """Delete a dotted leaf and prune empty parent mappings. True if removed."""
+    keys = [p for p in path.split(".") if p]
+    if not keys:
+        return False
+    stack: list[tuple[dict[str, Any], str]] = []
+    cur: dict[str, Any] = cfg
+    for key in keys[:-1]:
+        nxt = cur.get(key)
+        if not isinstance(nxt, dict):
+            return False
+        stack.append((cur, key))
+        cur = nxt
+    if keys[-1] not in cur:
+        return False
+    cur.pop(keys[-1], None)
+    for parent, key in reversed(stack):
+        value = parent.get(key)
+        if isinstance(value, dict) and not value:
+            parent.pop(key, None)
+    return True
+
+
+def persist_dotted_removals(
+    server_root: Path,
+    paths: Iterable[str],
+    *,
+    keep_backup: bool = True,
+) -> list[str]:
+    """Remove dotted keys from their layer YAML files (provider delete).
+
+    Backups are copies made before the atomic replace. With ``keep_backup=False``
+    no new backup is kept, and existing backups are scrubbed of the same dotted keys
+    (used for secret migration).
+    """
+    root = Path(server_root)
+    config_dir = root / "config"
+    by_layer: dict[str, list[str]] = {}
+    for path in paths:
+        top = str(path).split(".", 1)[0].strip()
+        layer_name = _RUNTIME_PERSIST_LAYER.get(top)
+        if not layer_name:
+            raise ValueError(f"no layer mapping for config path: {path}")
+        by_layer.setdefault(layer_name, []).append(str(path))
+    touched: list[str] = []
+    prepared: list[tuple[Path, str, str | None, list[str]]] = []
+    for layer_name, dotted_paths in by_layer.items():
+        layer_path = config_dir / layer_name
+        if not layer_path.is_file():
+            continue
+        previous_text = layer_path.read_text(encoding="utf-8")
+        current = _load_yaml_file(layer_path)
+        changed = False
+        for dotted in dotted_paths:
+            changed = _drop_dotted(current, dotted) or changed
+        if not changed:
+            continue
+        _stage_yaml(layer_path, current)
+        prepared.append((layer_path, f"config/{layer_name}", previous_text, list(dotted_paths)))
+
+    committed: list[tuple[Path, str]] = []
+    try:
+        for layer_path, rel, previous_text, dotted_paths in prepared:
+            if keep_backup:
+                _create_layer_backups(layer_path)
+            tmp = layer_path.with_suffix(layer_path.suffix + ".tmp")
+            os.replace(tmp, layer_path)
+            committed.append((layer_path, previous_text))
+            touched.append(rel)
+            if not keep_backup:
+                scrub_layer_backups(root, layer_path.name, dotted_paths)
+            logger.info("Removed provider config keys from %s", layer_path)
+    except Exception:
+        for layer_path, previous_text in reversed(committed):
+            try:
+                tmp = layer_path.with_suffix(layer_path.suffix + ".restore")
+                tmp.write_text(previous_text, encoding="utf-8")
+                os.replace(tmp, layer_path)
+            except OSError:
+                logger.exception("Failed to restore %s after removal error", layer_path)
+        for layer_path, _rel, _previous, _dotted in prepared:
+            try:
+                layer_path.with_suffix(layer_path.suffix + ".tmp").unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
     return touched
