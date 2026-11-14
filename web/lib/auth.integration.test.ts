@@ -6,7 +6,10 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const RUN = Boolean(process.env.AUTH_INTEGRATION_DATABASE_URL);
+const TEST_DB_URL = process.env.AUTH_INTEGRATION_DATABASE_URL;
+const RUN = Boolean(TEST_DB_URL);
+// Все соединения теста — только на тестовую базу, не на DATABASE_URL окружения.
+if (TEST_DB_URL) process.env.DATABASE_URL = TEST_DB_URL;
 const BASE = 'http://localhost:3000';
 
 function uniqueEmail(tag: string): string {
@@ -63,7 +66,7 @@ function grant(email: string, revoke = false): string {
 
 async function sql(query: string, params: unknown[] = []): Promise<unknown> {
   const { Client } = await import('pg');
-  const client = new Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 5000 });
+  const client = new Client({ connectionString: TEST_DB_URL, connectionTimeoutMillis: 5000 });
   await client.connect();
   try {
     return await client.query(query, params);

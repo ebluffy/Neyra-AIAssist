@@ -11,7 +11,11 @@ import { GET as listInvites, POST as createInviteRoute } from '../src/app/api/ad
 import { DELETE as revokeInviteRoute } from '../src/app/api/admin/invites/[id]/route';
 import { GET as listLogs } from '../src/app/api/admin/logs/route';
 
-const RUN = Boolean(process.env.AUTH_INTEGRATION_DATABASE_URL);
+const TEST_DB_URL = process.env.AUTH_INTEGRATION_DATABASE_URL;
+const RUN = Boolean(TEST_DB_URL);
+// Тесты не должны случайно достучаться до боевой базы: все pg-соединения
+// идут только на AUTH_INTEGRATION_DATABASE_URL, и auth получает её же.
+if (TEST_DB_URL) process.env.DATABASE_URL = TEST_DB_URL;
 const BASE = 'http://localhost:3000';
 
 function repoRoot(): string {
@@ -88,7 +92,7 @@ function adminRequest(path: string, cookie?: string, init: RequestInit = {}): Re
 
 async function pgQuery(query: string, params: unknown[] = []) {
   const { Client } = await import('pg');
-  const client = new Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 5000 });
+  const client = new Client({ connectionString: TEST_DB_URL, connectionTimeoutMillis: 5000 });
   await client.connect();
   try {
     return await client.query(query, params);
@@ -377,41 +381,43 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     }).rows.map(row => row.id);
 
     const { Client } = await import('pg');
-    const holder = new Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 5000 });
-    await holder.connect();
+    const holder = new Client({ connectionString: TEST_DB_URL, connectionTimeoutMillis: 5000 });
     let pending: Promise<Response> | undefined;
     try {
-      // Держим advisory-lock, как это делает параллельное изменение ролей.
-      await holder.query('BEGIN');
-      await holder.query('SELECT pg_advisory_xact_lock(734002)');
+      await holder.connect();
+      try {
+        // Держим advisory-lock, как это делает параллельное изменение ролей.
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock(734002)');
 
-      // Удаление читает цель как обычного пользователя и встаёт на блокировку.
-      pending = deleteUser(adminRequest(`/api/admin/users/${targetId}`, adminLogin.cookie, { method: 'DELETE' }),
-        { params: Promise.resolve({ id: targetId }) });
-      await new Promise((resolve) => setTimeout(resolve, 400));
+        // Удаление читает цель как обычного пользователя и встаёт на блокировку.
+        pending = deleteUser(adminRequest(`/api/admin/users/${targetId}`, adminLogin.cookie, { method: 'DELETE' }),
+          { params: Promise.resolve({ id: targetId }) });
+        await new Promise((resolve) => setTimeout(resolve, 400));
 
-      // Пока запрос ждёт: цель становится админом, а прежний админ — обычным
-      // пользователем. Единственный админ теперь — цель удаления.
-      await holder.query(`UPDATE "user" SET role = 'admin' WHERE id = $1`, [targetId]);
-      await holder.query(`UPDATE "user" SET role = 'user' WHERE role = 'admin' AND id <> $1`, [targetId]);
-      const [counted] = (await holder.query(`SELECT count(*)::int AS admins FROM "user" WHERE role = 'admin'`)).rows as Array<{ admins: number }>;
-      expect(counted.admins).toBe(1);
-      await holder.query('COMMIT');
+        // Пока запрос ждёт: цель становится админом, а прежний админ — обычным
+        // пользователем. Единственный админ теперь — цель удаления.
+        await holder.query(`UPDATE "user" SET role = 'admin' WHERE id = $1`, [targetId]);
+        await holder.query(`UPDATE "user" SET role = 'user' WHERE role = 'admin' AND id <> $1`, [targetId]);
+        const [counted] = (await holder.query(`SELECT count(*)::int AS admins FROM "user" WHERE role = 'admin'`)).rows as Array<{ admins: number }>;
+        expect(counted.admins).toBe(1);
+        await holder.query('COMMIT');
+      } finally {
+        await holder.query('ROLLBACK').catch(() => {});
+        await holder.end().catch(() => {});
+      }
+
+      const response = await pending!;
+      // Старое чтение роли дало бы 200 и удалило последнего админа.
+      expect(response.status).toBe(409);
+      expect(((await payloadOf(response)) as { error?: string } | null)?.error).toBe('last-admin');
+
+      const still = await pgQuery(`SELECT role FROM "user" WHERE id = $1`, [targetId]);
+      expect((still as { rows: Array<{ role: string }> }).rows[0]?.role).toBe('admin');
     } finally {
-      await holder.query('ROLLBACK').catch(() => {});
-      await holder.end().catch(() => {});
+      // Убираем тестовые аккаунты и возвращаем прежние роли админов даже при падении.
+      await pgQuery(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [[actorId, targetId]]);
+      await pgQuery(`UPDATE "user" SET role = 'admin' WHERE id = ANY($1::text[])`, [adminsBefore]);
     }
-
-    const response = await pending!;
-    // Старое чтение роли дало бы 200 и удалило последнего админа.
-    expect(response.status).toBe(409);
-    expect(((await payloadOf(response)) as { error?: string } | null)?.error).toBe('last-admin');
-
-    const still = await pgQuery(`SELECT role FROM "user" WHERE id = $1`, [targetId]);
-    expect((still as { rows: Array<{ role: string }> }).rows[0]?.role).toBe('admin');
-
-    // Убираем тестовые аккаунты и возвращаем прежние роли админов.
-    await pgQuery(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [[actorId, targetId]]);
-    await pgQuery(`UPDATE "user" SET role = 'admin' WHERE id = ANY($1::text[])`, [adminsBefore]);
   });
 });
