@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import React, { useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Button, TextField, NeyraLogo } from './ui';
+import { Button, PasswordField, NeyraLogo } from './ui';
 import { ru } from '../i18n';
 
 const MIN_PASSWORD = 10;
@@ -93,10 +93,9 @@ export function ResetPasswordForm({ token }: { token: string }) {
           <p className="text-[13px] text-[var(--text-muted)]">Задайте новый пароль для вашей учётной записи</p>
         </div>
         <form onSubmit={submit} className="space-y-4" aria-busy={pending} noValidate>
-          <TextField
+          <PasswordField
             label="Новый пароль"
             name="password"
-            type="password"
             autoComplete="new-password"
             minLength={MIN_PASSWORD}
             maxLength={MAX_PASSWORD}
@@ -105,10 +104,9 @@ export function ResetPasswordForm({ token }: { token: string }) {
             placeholder="••••••••••"
             hint={`Не менее ${MIN_PASSWORD} символов`}
           />
-          <TextField
+          <PasswordField
             label="Повторите пароль"
             name="repeat"
-            type="password"
             autoComplete="new-password"
             minLength={MIN_PASSWORD}
             maxLength={MAX_PASSWORD}
