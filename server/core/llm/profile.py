@@ -119,16 +119,6 @@ def is_private_endpoint(base_url: str) -> bool:
 
 
 def provider_kind(cfg: dict, provider: str) -> str:
-    """Вид провайдера: openai (шлюз) или local. По умолчанию openai."""
-    block = _providers_block(cfg).get(provider)
-    if isinstance(block, dict):
-        kind = str(block.get("kind") or "").strip().lower()
-        if kind:
-            return kind
-    return "openai"
-
-
-def provider_kind(cfg: dict, provider: str) -> str:
     """Вид провайдера: openai (шлюз), local, cli. По умолчанию openai."""
     block = _providers_block(cfg).get(provider)
     if isinstance(block, dict):
