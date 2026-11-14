@@ -22,12 +22,8 @@ fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic
 fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic-api-key:1067
 # Synthetic test token in historical commit 73a7006 (storage.rs:1084); replaced by runtime-built tokens in 861f659.
 73a7006b96f283a202ff00c170a53769d04d754e:client/src-tauri/src/storage.rs:generic-api-key:1084
-# Fake fixtures in PR #76 commit 98fbc06; tip has gitleaks:allow comments.
+# Fake fixtures in historical #76 commit 98fbc06; tip builds them at runtime.
 98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:248
 98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:249
 98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:255
 98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:265
-98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_web_role.py:generic-api-key:11
-98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_web_role.py:generic-api-key:70
-98fbc067c273d6823694c56d485e68915cf46004:server/tests/conftest.py:generic-api-key:40
-98fbc067c273d6823694c56d485e68915cf46004:server/tests/conftest.py:generic-api-key:131
