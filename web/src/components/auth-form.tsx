@@ -4,7 +4,7 @@ import React, { useState, useEffect, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { CheckCircle2, Ticket } from 'lucide-react';
-import { Button, TextField, NeyraLogo } from './ui';
+import { Button, PasswordField, TextField, NeyraLogo } from './ui';
 import { signIn, signUp } from '../../lib/auth-client';
 import { credentialsSchema, authErrorText } from '../../lib/auth-policy';
 import type { AuthConfig } from '../../lib/env';
@@ -234,10 +234,9 @@ export function AuthForm({ mode, config, initialError = '', invite = '', registr
               error={fieldErrors.email}
             />
 
-            <TextField
+            <PasswordField
               label={ru.password}
               name="password"
-              type="password"
               autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
               minLength={10}
               maxLength={128}

@@ -1,13 +1,15 @@
-import React, { type InputHTMLAttributes, forwardRef, useId } from 'react';
+import React, { type InputHTMLAttributes, type ReactNode, forwardRef, useId } from 'react';
 
 export interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   label: string;
   error?: string;
   hint?: string;
+  // Кнопка/иконка внутри поля справа (показать пароль и т.п.).
+  trailing?: ReactNode;
 }
 
 export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(
-  ({ label, error, hint, id, disabled, required, className = '', ...props }, ref) => {
+  ({ label, error, hint, id, disabled, required, className = '', trailing, ...props }, ref) => {
     const generatedId = useId();
     const inputId = id ?? generatedId;
     const errorId = `${inputId}-error`;
@@ -27,20 +29,23 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(
             )}
           </span>
         </label>
-        <input
-          ref={ref}
-          id={inputId}
-          disabled={disabled}
-          required={required}
-          aria-invalid={!!error}
-          aria-describedby={describedBy}
-          className={`h-11 w-full rounded-[var(--radius)] bg-[var(--surface-2)] px-3.5 text-sm text-[var(--text)] placeholder-[var(--text-subtle)] border ${
-            error
-              ? 'border-[var(--danger)] focus:border-[var(--danger)]'
-              : 'border-[var(--border)] focus:border-[var(--accent)]'
-          } outline-none transition-colors disabled:opacity-40 disabled:cursor-default ${className}`}
-          {...props}
-        />
+        <div className="relative w-full">
+          <input
+            ref={ref}
+            id={inputId}
+            disabled={disabled}
+            required={required}
+            aria-invalid={!!error}
+            aria-describedby={describedBy}
+            className={`h-11 w-full rounded-[var(--radius)] bg-[var(--surface-2)] px-3.5 text-sm text-[var(--text)] placeholder-[var(--text-subtle)] border ${
+              error
+                ? 'border-[var(--danger)] focus:border-[var(--danger)]'
+                : 'border-[var(--border)] focus:border-[var(--accent)]'
+            } outline-none transition-colors disabled:opacity-40 disabled:cursor-default ${trailing ? 'pr-12' : ''} ${className}`}
+            {...props}
+          />
+          {trailing}
+        </div>
         {error ? (
           <p id={errorId} role="alert" className="text-xs text-[var(--danger)]">
             {error}
