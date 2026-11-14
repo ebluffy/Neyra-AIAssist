@@ -52,7 +52,7 @@ beforeEach(() => {
   vi.unstubAllGlobals();
   resetUploadLimitsForTests();
   vi.stubEnv('NEYRA_API_URL', 'http://core.test');
-  vi.stubEnv('NEYRA_SERVICE_KEY', 'service-key');
+  vi.stubEnv('NEYRA_WEB_KEY', 'service-key');
   vi.stubEnv('NEYRA_IDENTITY_JWT_SECRET', jwtSecret);
   vi.stubEnv('NEYRA_IDENTITY_JWT_ISSUER', 'neyra-web');
   vi.mocked(getAuth).mockReturnValue({
@@ -61,6 +61,17 @@ beforeEach(() => {
 });
 
 describe('POST /api/attachments', () => {
+  it('does not upload with the admin key alone (AR-36)', async () => {
+    vi.stubEnv('NEYRA_WEB_KEY', '');
+    vi.stubEnv('NEYRA_ADMIN_KEY', 'admin-key');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const response = await POST(await formRequest([new File(['x'], 'a.txt', { type: 'text/plain' })]));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: 'attachments_unavailable' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('returns 401 without a session', async () => {
     vi.mocked(getAuth).mockReturnValue({
       api: { getSession: vi.fn().mockResolvedValue(null) },

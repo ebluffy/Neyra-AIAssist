@@ -2,8 +2,9 @@
 
 Запуск: pytest -q devtools/deploy/test_data_dir.py
 Используется временный «сервер» с копией core/runtime/paths.py и подставным
-config_loader: проверяется, что check-data-dir.py резолвит NEYRA_DATA_DIR и
-paths.data_dir как ядро и отказывает, когда данные лежат вне выкладки.
+config_loader: проверяется, что check-data-dir.py загружает .env как ядро,
+резолвит NEYRA_DATA_DIR и paths.data_dir как ядро и отказывает, когда данные
+лежат вне выкладки или конфиг не читается.
 """
 from __future__ import annotations
 
@@ -18,6 +19,14 @@ HERE = Path(__file__).resolve().parent
 SCRIPT = HERE / "check-data-dir.py"
 REPO_RUNTIME = HERE.parent.parent / "server" / "core" / "runtime"
 
+CONFIG_LOADER = """import json, pathlib
+def load_layered_config(root, validate=True):
+    p = pathlib.Path(root) / 'paths.json'
+    if (pathlib.Path(root) / 'broken').exists():
+        raise ValueError('config schema validation failed: broken')
+    return json.loads(p.read_text()) if p.exists() else {}
+"""
+
 
 def make_root(tmp_path: Path) -> Path:
     root = tmp_path / "srv"
@@ -26,13 +35,8 @@ def make_root(tmp_path: Path) -> Path:
     (root / "core" / "__init__.py").write_text("", encoding="utf-8")
     (runtime / "__init__.py").write_text("", encoding="utf-8")
     shutil.copy(REPO_RUNTIME / "paths.py", runtime / "paths.py")
-    (runtime / "config_loader.py").write_text(
-        "import json, pathlib\n"
-        "def load_layered_config(root, validate=False):\n"
-        "    p = pathlib.Path(root) / 'paths.json'\n"
-        "    return json.loads(p.read_text()) if p.exists() else {}\n",
-        encoding="utf-8",
-    )
+    shutil.copy(REPO_RUNTIME / "secrets.py", runtime / "secrets.py")
+    (runtime / "config_loader.py").write_text(CONFIG_LOADER, encoding="utf-8")
     return root
 
 
@@ -83,6 +87,33 @@ def test_paths_data_dir_absolute_outside_fails(tmp_path: Path) -> None:
     result = run(root)
     assert result.returncode == 3
     assert "вне каталога выкладки" in result.stderr
+
+
+def test_dotenv_data_dir_outside_is_seen(tmp_path: Path) -> None:
+    root = make_root(tmp_path)
+    outside = tmp_path / "dotenv-outside"
+    outside.mkdir()
+    (root / ".env").write_text(f"NEYRA_DATA_DIR={outside}\n", encoding="utf-8")
+    result = run(root)
+    assert result.returncode == 3
+    assert str(outside.resolve()) in result.stderr
+
+
+def test_dotenv_data_dir_inside_is_allowed(tmp_path: Path) -> None:
+    root = make_root(tmp_path)
+    (root / ".env").write_text("NEYRA_DATA_DIR=./from-dotenv\n", encoding="utf-8")
+    result = run(root)
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()) == (root / "from-dotenv").resolve()
+
+
+def test_config_error_fails_instead_of_default(tmp_path: Path) -> None:
+    root = make_root(tmp_path)
+    (root / "broken").write_text("", encoding="utf-8")
+    result = run(root)
+    assert result.returncode == 4
+    assert "не удалось прочитать конфиг ядра" in result.stderr
+    assert result.stdout.strip() == ""
 
 
 def test_update_core_checks_data_dir_before_vault() -> None:

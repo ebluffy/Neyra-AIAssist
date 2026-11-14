@@ -26,7 +26,9 @@ export function readChatEnv(env: Environment = process.env) {
     const url = new URL(wsUrl);
     if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
   } catch { throw new Error('NEYRA_WS_URL должна быть корректным WS(S) URL ядра.'); }
-  const serviceKey = env.NEYRA_SERVICE_KEY || '';
+  // AR-23/AR-36: отдельный ключ web-роли ядра (API_WEB_TOKEN). Без него чат
+  // отвечает понятной ошибкой: молчаливого отката на admin/maint-ключ нет.
+  const webKey = (env.NEYRA_WEB_KEY || '').trim();
   const jwtSecret = env.NEYRA_IDENTITY_JWT_SECRET;
   if (!jwtSecret || jwtSecret.length < 32) {
     throw new Error('Задайте NEYRA_IDENTITY_JWT_SECRET длиной не менее 32 символов.');
@@ -35,7 +37,7 @@ export function readChatEnv(env: Environment = process.env) {
   if (!jwtIssuer || !jwtIssuer.trim()) {
     throw new Error('Задайте NEYRA_IDENTITY_JWT_ISSUER — эмитент токена идентичности.');
   }
-  return { wsUrl, serviceKey, jwtSecret, jwtIssuer: jwtIssuer.trim() };
+  return { wsUrl, webKey, jwtSecret, jwtIssuer: jwtIssuer.trim() };
 }
 
 export type AuthMode = 'password' | 'discord' | 'both';

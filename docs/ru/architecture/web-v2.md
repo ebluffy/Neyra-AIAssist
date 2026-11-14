@@ -326,7 +326,10 @@ DATABASE_URL=
 BETTER_AUTH_SECRET=
 BETTER_AUTH_URL=https://neyra.owyx.site
 NEYRA_BASE_URL=http://127.0.0.1:8787
-NEYRA_SERVICE_KEY=
+# Web-роль ядра (API_WEB_TOKEN): чат, вложения, /v1/web/me.
+NEYRA_WEB_KEY=
+# Admin/maint-роль ядра: только серверные роуты /api/admin/*.
+NEYRA_ADMIN_KEY=
 NEYRA_IDENTITY_JWT_SECRET=
 DISCORD_CLIENT_ID=
 DISCORD_CLIENT_SECRET=

@@ -101,8 +101,14 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
-  const { wsUrl, serviceKey, jwtSecret, jwtIssuer } = env;
-  if (!jwtSecret || !serviceKey || !jwtIssuer) {
+  const { wsUrl, webKey, jwtSecret, jwtIssuer } = env;
+  if (!webKey) {
+    return NextResponse.json(
+      { error: 'configuration_error', message: 'Не задан NEYRA_WEB_KEY — ключ web-роли ядра (API_WEB_TOKEN).' },
+      { status: 500 }
+    );
+  }
+  if (!jwtSecret || !jwtIssuer) {
     return NextResponse.json(
       { error: 'configuration_error', message: 'Не настроена конфигурация ядра или ключи идентичности.' },
       { status: 500 }
@@ -223,7 +229,7 @@ export async function POST(request: Request) {
 
     try {
       socket = new WebSocket(`${wsUrl}/v1/ws/chat`, {
-        headers: { Authorization: `Bearer ${serviceKey}`, 'X-Neyra-Identity': identityJwt },
+        headers: { Authorization: `Bearer ${webKey}`, 'X-Neyra-Identity': identityJwt },
         handshakeTimeout: 10_000,
         maxPayload: 1024 * 1024,
       });

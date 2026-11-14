@@ -1,5 +1,7 @@
-// Клиент ядра для админки. Сайт ходит в ядро только с сервера, ключ (NEYRA_SERVICE_KEY)
-// никогда не покидает сервер и не попадает в ответы API.
+// Клиент ядра для серверных роутов сайта. Ключи живут только на сервере и не
+// попадают в ответы API. AR-23/AR-36: ключи разделены — NEYRA_ADMIN_KEY (admin/
+// maint-роль ядра) для /api/admin/* и NEYRA_WEB_KEY (web-роль, API_WEB_TOKEN) для
+// чата, вложений и /v1/web/me. Отката с одного на другой нет.
 // Разделы настроек ядра в волне 2 — только чтение; отсутствие API показывается честно.
 
 export type CoreState = 'ok' | 'unconfigured' | 'unauthorized' | 'unavailable' | 'error' | 'unsupported';
@@ -19,9 +21,9 @@ export interface CoreEnv {
 
 export type Environment = Record<string, string | undefined>;
 
-export function readCoreEnv(env: Environment = process.env): CoreEnv | null {
-  const url = (env.NEYRA_API_URL ?? '').trim().replace(/\/+$/, '');
-  const token = (env.NEYRA_SERVICE_KEY ?? '').trim();
+function parseCoreEnv(urlRaw: string | undefined, tokenRaw: string | undefined): CoreEnv | null {
+  const url = (urlRaw ?? '').trim().replace(/\/+$/, '');
+  const token = (tokenRaw ?? '').trim();
   if (!url || !token) return null;
   try {
     const parsed = new URL(url);
@@ -32,10 +34,20 @@ export function readCoreEnv(env: Environment = process.env): CoreEnv | null {
   return { url, token };
 }
 
+// Админские ручки ядра: ключ роли admin/maint.
+export function readCoreEnv(env: Environment = process.env): CoreEnv | null {
+  return parseCoreEnv(env.NEYRA_API_URL, env.NEYRA_ADMIN_KEY);
+}
+
+// Web-ручки ядра (вложения, /v1/web/me): ключ web-роли, не admin.
+export function readWebCoreEnv(env: Environment = process.env): CoreEnv | null {
+  return parseCoreEnv(env.NEYRA_API_URL, env.NEYRA_WEB_KEY);
+}
+
 const UNCONFIGURED: CoreResult<never> = {
   state: 'unconfigured',
   data: null,
-  message: 'Ядро не подключено: в .env сайта нет NEYRA_API_URL и NEYRA_SERVICE_KEY.',
+  message: 'Ядро не подключено: в .env сайта нет NEYRA_API_URL и NEYRA_ADMIN_KEY.',
 };
 
 interface CoreRequest {

@@ -44,7 +44,7 @@ if [ "$DRY" != 1 ]; then
     exit 1
   fi
   while IFS= read -r -d '' kv; do export "$kv"; done < "$TMP_ENV"
-  for v in NEYRA_WS_URL NEYRA_SERVICE_KEY NEYRA_IDENTITY_JWT_SECRET NEYRA_IDENTITY_JWT_ISSUER; do
+  for v in NEYRA_WS_URL NEYRA_WEB_KEY NEYRA_ADMIN_KEY NEYRA_IDENTITY_JWT_SECRET NEYRA_IDENTITY_JWT_ISSUER; do
     if [ -z "${!v:-}" ]; then echo "внимание: $v пуст — чат сайта вернёт 503" >&2; fi
   done
 fi

@@ -18,7 +18,7 @@ export default async function AdminModelsPage() {
       {!config ? (
         <EmptyState
           title="Ядро не отдало конфиг"
-          text={result.message ?? 'Проверьте NEYRA_API_URL и NEYRA_SERVICE_KEY в .env сайта.'}
+          text={result.message ?? 'Проверьте NEYRA_API_URL и NEYRA_ADMIN_KEY в .env сайта.'}
         />
       ) : (
         <Card

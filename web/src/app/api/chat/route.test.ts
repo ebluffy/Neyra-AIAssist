@@ -29,7 +29,7 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     vi.clearAllMocks();
     resetChatLimitsForTests();
     vi.stubEnv('NEYRA_WS_URL', 'wss://core.test');
-    vi.stubEnv('NEYRA_SERVICE_KEY', 'public-test-service-key');
+    vi.stubEnv('NEYRA_WEB_KEY', 'public-test-service-key');
     vi.stubEnv('NEYRA_IDENTITY_JWT_SECRET', jwtSecret);
     vi.stubEnv('NEYRA_IDENTITY_JWT_ISSUER', 'neyra-web');
     socket = new EventEmitter() as FakeSocket;
@@ -336,10 +336,22 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
   });
 
   it('rejects missing service key and invalid WS configuration before connection', async () => {
-    vi.stubEnv('NEYRA_SERVICE_KEY', '');
+    vi.stubEnv('NEYRA_WEB_KEY', '');
     expect((await POST(request())).status).toBe(500);
-    vi.stubEnv('NEYRA_SERVICE_KEY', 'fixture'); vi.stubEnv('NEYRA_WS_URL', 'https://core.test');
+    vi.stubEnv('NEYRA_WEB_KEY', 'fixture'); vi.stubEnv('NEYRA_WS_URL', 'https://core.test');
     expect((await POST(request())).status).toBe(500);
+    expect(factory.create).not.toHaveBeenCalled();
+  });
+
+  it('does not accept the admin key as the chat key (AR-36)', async () => {
+    vi.stubEnv('NEYRA_WEB_KEY', '');
+    vi.stubEnv('NEYRA_ADMIN_KEY', 'admin-key');
+    const response = await POST(request());
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      error: 'configuration_error',
+      message: 'Не задан NEYRA_WEB_KEY — ключ web-роли ядра (API_WEB_TOKEN).',
+    });
     expect(factory.create).not.toHaveBeenCalled();
   });
 

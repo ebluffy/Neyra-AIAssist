@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { coreGet, coreGetReady, corePost, readCoreEnv } from './core-admin';
+import { coreGet, coreGetReady, corePost, readCoreEnv, readWebCoreEnv } from './core-admin';
 
-const env = { NEYRA_API_URL: 'http://127.0.0.1:8787', NEYRA_SERVICE_KEY: 'test-key' };
+const env = { NEYRA_API_URL: 'http://127.0.0.1:8787', NEYRA_ADMIN_KEY: 'test-key' };
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -11,16 +11,34 @@ describe('readCoreEnv', () => {
   it('requires both url and key', () => {
     expect(readCoreEnv({})).toBeNull();
     expect(readCoreEnv({ NEYRA_API_URL: 'http://127.0.0.1:8787' })).toBeNull();
-    expect(readCoreEnv({ NEYRA_SERVICE_KEY: 'k' })).toBeNull();
+    expect(readCoreEnv({ NEYRA_ADMIN_KEY: 'k' })).toBeNull();
   });
 
   it('rejects non-http urls and urls with credentials', () => {
-    expect(readCoreEnv({ NEYRA_API_URL: 'ftp://core', NEYRA_SERVICE_KEY: 'k' })).toBeNull();
-    expect(readCoreEnv({ NEYRA_API_URL: 'http://user:pass@core', NEYRA_SERVICE_KEY: 'k' })).toBeNull();
-    expect(readCoreEnv({ NEYRA_API_URL: 'http://core:8787/', NEYRA_SERVICE_KEY: 'k' })).toEqual({
+    expect(readCoreEnv({ NEYRA_API_URL: 'ftp://core', NEYRA_ADMIN_KEY: 'k' })).toBeNull();
+    expect(readCoreEnv({ NEYRA_API_URL: 'http://user:pass@core', NEYRA_ADMIN_KEY: 'k' })).toBeNull();
+    expect(readCoreEnv({ NEYRA_API_URL: 'http://core:8787/', NEYRA_ADMIN_KEY: 'k' })).toEqual({
       url: 'http://core:8787',
       token: 'k',
     });
+  });
+});
+
+describe('two keys (AR-23/AR-36)', () => {
+  it('admin routes use NEYRA_ADMIN_KEY and ignore the web key', () => {
+    expect(readCoreEnv({ NEYRA_API_URL: 'http://core', NEYRA_ADMIN_KEY: 'admin-key' })).toEqual({
+      url: 'http://core',
+      token: 'admin-key',
+    });
+    expect(readCoreEnv({ NEYRA_API_URL: 'http://core', NEYRA_WEB_KEY: 'web-key' })).toBeNull();
+  });
+
+  it('web routes use NEYRA_WEB_KEY and ignore the admin key', () => {
+    expect(readWebCoreEnv({ NEYRA_API_URL: 'http://core', NEYRA_WEB_KEY: 'web-key' })).toEqual({
+      url: 'http://core',
+      token: 'web-key',
+    });
+    expect(readWebCoreEnv({ NEYRA_API_URL: 'http://core', NEYRA_ADMIN_KEY: 'admin-key' })).toBeNull();
   });
 });
 

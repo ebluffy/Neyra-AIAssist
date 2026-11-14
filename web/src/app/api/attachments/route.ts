@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { AttachmentSchema } from '@neyra/contracts';
 import { getAuth } from '../../../../lib/auth';
-import { readCoreEnv } from '../../../../lib/core-admin';
+import { readWebCoreEnv } from '../../../../lib/core-admin';
 import { readChatEnv } from '../../../../lib/env';
 import { createIdentityToken } from '../../../../lib/identity';
 import { readBodyWithLimit } from '../../../../lib/request-body';
@@ -39,7 +39,7 @@ function isUpload(value: unknown): value is File {
 }
 
 function attachmentEnv() {
-  const core = readCoreEnv();
+  const core = readWebCoreEnv();
   if (!core) return null;
   try {
     const chat = readChatEnv();

@@ -79,6 +79,9 @@ fi
 "$WEB/node/bin/node" -v
 
 echo "== 3/9 .env секреты (только если ещё нет) и BETTER_AUTH_URL=$PUBLIC_URL"
+# AR-27: .env — корневой файл. Симлинк на его месте означал бы чтение/запись
+# (и chown) чужого файла от root, поэтому отказываем, а не идём по ссылке.
+[ ! -L "$WEB/.env" ] || { echo "$WEB/.env — символическая ссылка, отказ" >&2; exit 1; }
 if [ ! -f "$WEB/.env" ]; then
   DB_PASS=$(openssl rand -hex 24)
   AUTH_SECRET=$(openssl rand -base64 48 | tr -d '\n')
@@ -175,7 +178,8 @@ chmod 0644 "$WEB/docker-compose.yml"
 chmod 0600 "$WEB/db.env"
 chown -R openbot:openbot "$WEB/app" "$WEB/node" 2>/dev/null || true
 if [ -f "$WEB/.env" ]; then
-  chown root:openbot "$WEB/.env"
+  [ ! -L "$WEB/.env" ] || { echo "$WEB/.env — символическая ссылка, отказ" >&2; exit 1; }
+  chown -h root:openbot "$WEB/.env"
   chmod 0640 "$WEB/.env"
 fi
 

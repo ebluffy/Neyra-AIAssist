@@ -6,7 +6,7 @@ import {
   writeAdminConfig,
 } from './admin-config';
 
-const env = { NEYRA_API_URL: 'http://127.0.0.1:8787', NEYRA_SERVICE_KEY: 'test-key' };
+const env = { NEYRA_API_URL: 'http://127.0.0.1:8787', NEYRA_ADMIN_KEY: 'test-key' };
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });

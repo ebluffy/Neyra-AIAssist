@@ -2,10 +2,15 @@
 
 Запуск: <venv>/python devtools/deploy/check-data-dir.py <server_root>
 
-Печатает разрешённый data_dir ровно так, как его видит ядро
-(NEYRA_DATA_DIR → paths.data_dir → ./data). Если каталог вне <server_root>,
-выходит с кодом 3: полный бэкап и автооткат update-core.sh копируют только
-каталог выкладки, внешние данные в них не попадут.
+Порядок как у ядра: `.env` каталога выкладки загружается через
+`core.runtime.secrets.load_dotenv_file`, затем конфиг через
+`core.runtime.config_loader.load_layered_config`. Поэтому `NEYRA_DATA_DIR`,
+заданный в `.env`, виден проверке. Ошибка загрузки `.env`/конфига — отказ
+(код 4), а не подстановка `./data`: иначе проверка молча пропускает выкладку.
+
+Печатает разрешённый data_dir. Если каталог вне <server_root>, выходит с кодом 3:
+полный бэкап и автооткат update-core.sh копируют только каталог выкладки,
+внешние данные в них не попадут.
 """
 from __future__ import annotations
 
@@ -13,25 +18,34 @@ import sys
 from pathlib import Path
 
 
-def load_config(root: Path) -> dict:
-    try:
-        from core.runtime.config_loader import load_layered_config
-
-        return load_layered_config(root, validate=False)
-    except Exception:
-        pass
-    try:
-        from core.runtime.config_loader import load_layered_yaml
-
-        return load_layered_yaml(root)
-    except Exception:
-        return {}
+def fail(message: str) -> int:
+    print(message, file=sys.stderr)
+    return 4
 
 
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     sys.path.insert(0, str(root))
-    config = load_config(root)
+
+    try:
+        from core.runtime.secrets import load_dotenv_file
+    except Exception as exc:  # noqa: BLE001 — сообщаем причину как есть
+        return fail(f"не удалось загрузить core.runtime.secrets из {root}: {exc}")
+
+    if (root / ".env").is_file():
+        try:
+            import dotenv  # noqa: F401
+        except ImportError:
+            return fail("в окружении нет python-dotenv: .env ядра не будет прочитан")
+    load_dotenv_file(root)
+
+    try:
+        from core.runtime.config_loader import load_layered_config
+
+        config = load_layered_config(root)
+    except Exception as exc:  # noqa: BLE001 — пустой конфиг вместо ошибки недопустим
+        return fail(f"не удалось прочитать конфиг ядра в {root}: {exc}")
+
     from core.runtime.paths import resolve_data_dir
 
     data_dir = resolve_data_dir(root, config if isinstance(config, dict) else {})

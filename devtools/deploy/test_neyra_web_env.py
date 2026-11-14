@@ -67,9 +67,13 @@ def test_issuer_defaults_to_neyra_web_in_both_envs(tmp_path: Path) -> None:
     assert web_values["NEYRA_IDENTITY_JWT_ISSUER"] == "neyra-web"
     assert core_values["NEYRA_IDENTITY_JWT_ISSUER"] == "neyra-web"
     assert web_values["NEYRA_IDENTITY_JWT_SECRET"] == core_values["NEYRA_IDENTITY_JWT_SECRET"]
-    # Сайту передаётся maint-ключ, а не админский API_TOKEN (AR-16).
-    assert web_values["NEYRA_SERVICE_KEY"] == "core-maint-key"
-    assert web_values["NEYRA_SERVICE_KEY"] != core_values["API_TOKEN"]
+    # AR-23/AR-36: web-ключ — свой (сгенерирован в API_WEB_TOKEN), admin-ключ —
+    # maint, а не admin API_TOKEN. Старого общего ключа больше нет.
+    assert web_values["NEYRA_WEB_KEY"] == core_values["API_WEB_TOKEN"]
+    assert web_values["NEYRA_WEB_KEY"] != core_values["API_MAINT_TOKEN"]
+    assert web_values["NEYRA_ADMIN_KEY"] == "core-maint-key"
+    assert web_values["NEYRA_ADMIN_KEY"] != core_values["API_TOKEN"]
+    assert "NEYRA_SERVICE_KEY" not in web_values
 
     # Повторный запуск идемпотентен: файлы не меняются.
     web_before = web.read_text(encoding="utf-8")
@@ -154,7 +158,7 @@ def test_web_only_issuer_is_adopted_by_core(tmp_path: Path) -> None:
     assert web.read_text(encoding="utf-8") == web_before
 
 
-def test_web_token_wins_over_maint_for_site_key(tmp_path: Path) -> None:
+def test_web_and_admin_keys_are_separate(tmp_path: Path) -> None:
     web = make_env(
         tmp_path,
         "web",
@@ -171,10 +175,55 @@ def test_web_token_wins_over_maint_for_site_key(tmp_path: Path) -> None:
 
     result = run_sync(tmp_path, web, core)
     assert result.returncode == 0, result.stderr
-    assert read_env(web)["NEYRA_SERVICE_KEY"] == "core-web-key"
+    values = read_env(web)
+    assert values["NEYRA_WEB_KEY"] == "core-web-key"
+    assert values["NEYRA_ADMIN_KEY"] == "core-maint-key"
+    assert "NEYRA_SERVICE_KEY" not in values
 
 
-def test_missing_maint_token_is_not_replaced_with_admin_token(tmp_path: Path) -> None:
+def test_missing_web_token_is_generated_for_the_core(tmp_path: Path) -> None:
+    web = make_env(
+        tmp_path,
+        "web",
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_TOKEN='core-service-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_MAINT_TOKEN='core-maint-key'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 0, result.stderr
+    core_values = read_env(core)
+    values = read_env(web)
+    assert core_values["API_WEB_TOKEN"]
+    assert len(core_values["API_WEB_TOKEN"]) >= 32
+    assert values["NEYRA_WEB_KEY"] == core_values["API_WEB_TOKEN"]
+    assert values["NEYRA_ADMIN_KEY"] == "core-maint-key"
+    assert values["NEYRA_WEB_KEY"] != values["NEYRA_ADMIN_KEY"]
+
+
+def test_legacy_shared_key_is_removed(tmp_path: Path) -> None:
+    web = make_env(
+        tmp_path,
+        "web",
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "NEYRA_SERVICE_KEY='old-shared-key'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_MAINT_TOKEN='core-maint-key'\nAPI_WEB_TOKEN='core-web-key'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 0, result.stderr
+    assert "NEYRA_SERVICE_KEY" not in read_env(web)
+
+
+def test_missing_admin_token_leaves_admin_key_empty(tmp_path: Path) -> None:
     web = make_env(
         tmp_path,
         "web",
@@ -189,7 +238,8 @@ def test_missing_maint_token_is_not_replaced_with_admin_token(tmp_path: Path) ->
         "NEYRA_IDENTITY_JWT_ISSUER='neyra-web'\n",
     )
     result = run_sync(tmp_path, web, core)
-    assert result.returncode == 2
-    assert "API_MAINT_TOKEN" in result.stderr
+    assert result.returncode == 0, result.stderr
     values = read_env(web)
-    assert "NEYRA_SERVICE_KEY" not in values
+    # Fallback разрешён спецификацией задачи: maint предпочтителен, иначе API_TOKEN.
+    assert values["NEYRA_ADMIN_KEY"] == "core-service-key"
+    assert "API_MAINT_TOKEN не задан" in result.stderr

@@ -261,6 +261,9 @@ def test_setup_keeps_root_paths_out_of_openbot_dir() -> None:
         if line.lstrip().startswith("chown") and "openbot:openbot" in line:
             assert "docker-compose.yml" not in line, line
             assert '"$WEB"' not in line, line
+    # .env — корневой файл: симлинк на его месте отвергается (AR-27).
+    assert '[ ! -L "$WEB/.env" ]' in text
+    assert 'chown -h root:openbot "$WEB/.env"' in text
     # Прямых root-правил docker compose в sudoers больше нет (AR-27).
     assert "NOPASSWD: /usr/bin/docker compose" not in text
     assert "/usr/local/sbin/openbot-admin db-dump" in text
