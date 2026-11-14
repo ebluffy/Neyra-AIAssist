@@ -118,13 +118,25 @@ describe('validateMcpApiBody', () => {
 
 describe('MCP errors', () => {
   it('maps 409, 404 and 400 to human messages', () => {
-    expect(describeMcpError({ state: 'error', data: null, status: 409, message: 'conflict' })).toEqual({
+    expect(describeMcpError({ state: 'error', data: null, status: 409, message: 'Сервер с таким именем уже настроен.' })).toEqual({
       status: 409,
       error: 'conflict',
       message: 'Сервер с таким именем уже есть.',
     });
     expect(describeMcpError({ state: 'error', data: null, status: 404, message: 'not found' })).toMatchObject({
       status: 404,
+    });
+    expect(
+      describeMcpError({
+        state: 'error',
+        data: null,
+        status: 409,
+        message: 'Сервер выключен; включите его перед перезапуском.',
+      }),
+    ).toEqual({
+      status: 409,
+      error: 'conflict',
+      message: 'Сервер выключен; включите его перед перезапуском.',
     });
     expect(
       describeMcpError({

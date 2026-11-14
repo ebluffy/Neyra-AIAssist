@@ -222,7 +222,15 @@ export function describeMcpError(result: CoreResult<unknown>): McpActionError {
     };
   }
   if (result.status === 409) {
-    return { status: 409, error: 'conflict', message: 'Сервер с таким именем уже есть.' };
+    const message = result.message ?? '';
+    if (/уже/i.test(message)) {
+      return { status: 409, error: 'conflict', message: 'Сервер с таким именем уже есть.' };
+    }
+    return {
+      status: 409,
+      error: 'conflict',
+      message: message || 'Действие сейчас недоступно для этого сервера.',
+    };
   }
   if (result.status === 404) {
     return { status: 404, error: 'not_found', message: 'Сервер не найден. Обновите список.' };
