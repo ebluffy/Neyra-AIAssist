@@ -362,7 +362,7 @@ async function main() {
             await profileBtn.click();
             await page.waitForTimeout(300);
 
-            const settingsItem = await page.waitForSelector('button:has-text("Настройки")', { state: 'visible' });
+            const settingsItem = await page.waitForSelector('[role="menuitem"]:has-text("Настройки")', { state: 'visible' });
             await settingsItem.click();
             await page.waitForSelector('[role="dialog"][aria-modal="true"]');
             await page.waitForTimeout(400);
@@ -386,7 +386,120 @@ async function main() {
           },
           desc: 'Боковая панель треда: табы в одну строку, обзор, закреплённые',
         });
+
+        // 9. Admin Dialog (Models tab)
+        await takeShot({
+          filename: `09-admin-models-${vp.name}.png`,
+          screen: 'admin-models',
+          state: 'data',
+          vp,
+          setupFn: async (page) => {
+            await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+            await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+            if (vp.isMobile) {
+              const sidebarBtn = await page.waitForSelector('button[aria-label="Открыть панель"]');
+              await sidebarBtn.click();
+              await page.waitForTimeout(400);
+            }
+            const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
+            await profileBtn.click();
+            await page.waitForTimeout(300);
+
+            const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
+            await adminItem.click();
+            await page.waitForSelector('[role="dialog"][aria-modal="true"]');
+            const modelsTab = await page.waitForSelector('button:has-text("Модели")');
+            await modelsTab.click();
+            await page.waitForTimeout(500);
+          },
+          desc: 'Админ-панель: настройка моделей по лейнам ядра',
+        });
+
+        // 10. Admin Dialog (Access tab)
+        await takeShot({
+          filename: `10-admin-access-${vp.name}.png`,
+          screen: 'admin-access',
+          state: 'data',
+          vp,
+          setupFn: async (page) => {
+            await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+            await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+            if (vp.isMobile) {
+              const sidebarBtn = await page.waitForSelector('button[aria-label="Открыть панель"]');
+              await sidebarBtn.click();
+              await page.waitForTimeout(400);
+            }
+            const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
+            await profileBtn.click();
+            await page.waitForTimeout(300);
+
+            const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
+            await adminItem.click();
+            await page.waitForSelector('[role="dialog"][aria-modal="true"]');
+            const accessTab = await page.waitForSelector('button:has-text("Доступ")');
+            await accessTab.click();
+            await page.waitForTimeout(500);
+          },
+          desc: 'Админ-панель: доступ, пользователи, инвайты, радио-переключатель регистрации',
+        });
+
+        // 11. Chat conversation (with message in feed)
+        await takeShot({
+          filename: `11-chat-conversation-${vp.name}.png`,
+          screen: 'chat',
+          state: 'data',
+          vp,
+          setupFn: async (page) => {
+            await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+            await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+            const textarea = await page.waitForSelector('textarea[aria-label="Сообщение"]');
+            await textarea.fill('Какое текущее состояние ядра и доступные модели?');
+            await page.keyboard.press('Enter');
+            await page.waitForTimeout(600);
+          },
+          desc: 'Диалог чата с отправленным сообщением пользователя',
+        });
       }
+
+      // 12. Zoom 200% Check (Chat)
+      await takeShot({
+        filename: '12-zoom200-chat-1440.png',
+        screen: 'zoom200-chat',
+        state: 'data',
+        vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+          await page.evaluate(() => {
+            document.documentElement.style.zoom = '200%';
+          });
+          await page.waitForTimeout(300);
+        },
+        desc: 'Проверка доступности: масштабирование интерфейса 200% (WCAG AA zoom reflow)',
+      });
+
+      // 13. Zoom 200% Check (Admin Dialog)
+      await takeShot({
+        filename: '13-zoom200-admin-1440.png',
+        screen: 'zoom200-admin',
+        state: 'data',
+        vp: { name: '1440', width: 1440, height: 900, isMobile: false },
+        setupFn: async (page) => {
+          await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('[data-chat-shell], textarea, [role="textbox"]');
+          const profileBtn = await page.waitForSelector('button:has-text("Администратор"), button:has-text("Алексей")', { state: 'visible' });
+          await profileBtn.click();
+          await page.waitForTimeout(300);
+          const adminItem = await page.waitForSelector('button:has-text("Админ-панель")', { state: 'visible' });
+          await adminItem.click();
+          await page.waitForSelector('[role="dialog"][aria-modal="true"]');
+          await page.evaluate(() => {
+            document.documentElement.style.zoom = '200%';
+          });
+          await page.waitForTimeout(500);
+        },
+        desc: 'Проверка доступности: модальное окно админки при масштабировании 200%',
+      });
     }
 
     // Write manifest.json
