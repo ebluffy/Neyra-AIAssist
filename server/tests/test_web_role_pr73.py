@@ -65,12 +65,17 @@ def test_web_key_can_use_scoped_memory_routes(real_api):
     person_id = UnifiedIdentityMapper.resolve("web", "web-user-1")
     assert search.json()["data"]["user_id"] == person_id
 
+    hub = _agent.memory_hub
+    hub.append_chat(role="user", text="foreign-row", user_id="foreign-person", channel_id="c1")
+    hub.append_chat(role="user", text="own-row", user_id=person_id, channel_id="c1")
     recall = http.post(
         "/v1/memory/chat/recall", headers=_identity(),
         json={"user_id": "someone-else", "channel_id": "c1"},
     )
     assert recall.status_code == 200, recall.text
-    assert "someone-else" not in recall.text
+    texts = [row.get("text") for row in recall.json()["data"]["messages"]]
+    assert "own-row" in texts
+    assert "foreign-row" not in texts
 
     own = http.get(f"/v1/memory/people/{person_id}", headers=_identity())
     assert own.status_code == 200
@@ -119,8 +124,15 @@ def test_web_key_cannot_modify_people(real_api):
     from core.runtime.identity import UnifiedIdentityMapper
 
     person_id = UnifiedIdentityMapper.resolve("web", "web-user-1")
-    assert http.patch(f"/v1/memory/people/{person_id}", headers=_identity(), json={}).status_code == 403
-    assert http.delete(f"/v1/memory/people/{person_id}", headers=_identity()).status_code == 403
+    patch = http.patch(f"/v1/memory/people/{person_id}", headers=_identity(), json={})
+    delete = http.delete(f"/v1/memory/people/{person_id}", headers=_identity())
+    assert patch.status_code == 403 and patch.json()["error"]["code"] == "web_memory_forbidden"
+    assert delete.status_code == 403 and delete.json()["error"]["code"] == "web_memory_forbidden"
+
+    from test_web_identity import claims, token
+    admin = {**WEB, "X-Neyra-Identity": token(claims(role="admin"))}
+    admin_patch = http.patch(f"/v1/memory/people/{person_id}", headers=admin, json={})
+    assert admin_patch.status_code == 403 and admin_patch.json()["error"]["code"] == "forbidden"
 
 
 def test_web_ws_without_identity_is_closed(real_api):

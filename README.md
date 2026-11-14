@@ -18,7 +18,7 @@ Modular personal AI assistant: local **Neyra Server** + Windows/Linux desktop cl
 - Plugins under `server/modules/` (`discord`, `local_voice`, template `000EXAMPLE`)
 - Server web dashboard in `server/dashboard/` (React + Vite + Tailwind; access-key gate)
 - Dev MCP in `devtools/mcp_server/` (Cursor debug; not part of runtime packages)
-- Desktop client in `client/` (Tauri 2 + React): Connect/Chat/Status/Modules, voice, tray; front moves to `apps/desktop` per ADR-0001
+- Desktop client in `client/` (Tauri 2 + React): Connect/Chat/Status/Modules, voice, tray; front moves to `desktop` per ADR-0001
 
 ## Layout
 
@@ -88,13 +88,13 @@ Plugin SDK: [HELP.md](server/modules/000EXAMPLE/HELP.md) · [HELP-RU.md](server/
 
 ## Client
 
-`client/` is the Tauri 2 + React desktop app: Connect / Chat / Status / Modules screens, push-to-talk and live voice, tray, local permissions and the Rust `host bridge` executor (`client/src-tauri`). Today the UI lives in `client/src`; the front moves to `apps/desktop` on the shared kit ([ADR-0001](docs/ru/architecture/adr-0001-client-monorepo.md)). Windows and Linux are supported equally; public host `https://neyra.owyx.site` is reached via frp (home server → VPS). See [docs/PLAN.md](docs/PLAN.md) §7.
+`client/` is the Tauri 2 + React desktop app: Connect / Chat / Status / Modules screens, push-to-talk and live voice, tray, local permissions and the Rust `host bridge` executor (`client/src-tauri`). Today the UI lives in `client/src`; the front moves to `desktop` on the shared kit ([ADR-0001](docs/ru/architecture/adr-0001-client-monorepo.md)). Windows and Linux are supported equally; public host `https://neyra.owyx.site` is reached via frp (home server → VPS). See [docs/PLAN.md](docs/PLAN.md) §7.
 
 ## Status vs roadmap
 
 | Done | Next |
 |------|------|
-| Layout 1b, config layers 1c, dual LLM 1d, Control API Wave 1, dashboard gate | UI move to `apps/desktop` + hardware acceptance; see PLAN |
+| Layout 1b, config layers 1c, dual LLM 1d, Control API Wave 1, dashboard gate | UI move to `desktop` + hardware acceptance; see PLAN |
 
 ## Support
 

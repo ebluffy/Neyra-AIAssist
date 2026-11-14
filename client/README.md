@@ -1,6 +1,6 @@
 # Neyra desktop · Windows and Linux
 
-Tauri 2 + React + TypeScript, with a Rust executor. The server owns LLM orchestration, chat history/memory and STT/TTS. The UI currently lives in `client/src` and keeps its own styles; it moves to `apps/desktop` on the shared kit `packages/ui` with contracts in `packages/contracts` ([ADR-0001](../docs/ru/architecture/adr-0001-client-monorepo.md), PLAN §5).
+Tauri 2 + React + TypeScript, with a Rust executor. The server owns LLM orchestration, chat history/memory and STT/TTS. The UI currently lives in `client/src` and keeps its own styles; it moves to `desktop` on the shared kit `packages/ui` with contracts in `packages/contracts` ([ADR-0001](../docs/ru/architecture/adr-0001-client-monorepo.md), PLAN §5). The folder itself is renamed `client/` → `desktop/` right after the desktop PR merges, so that PR keeps its paths.
 
 Implemented for PLAN §7.9 steps 1–3:
 
