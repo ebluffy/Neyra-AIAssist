@@ -128,6 +128,16 @@ def provider_kind(cfg: dict, provider: str) -> str:
     return "openai"
 
 
+def provider_kind(cfg: dict, provider: str) -> str:
+    """Вид провайдера: openai (шлюз), local, cli. По умолчанию openai."""
+    block = _providers_block(cfg).get(provider)
+    if isinstance(block, dict):
+        kind = str(block.get("kind") or "").strip().lower()
+        if kind:
+            return kind
+    return "openai"
+
+
 def _vault_provider_key(cfg: dict, provider: str) -> str:
     """API-ключ из шифрованного vault (data_dir/secrets). Никогда не из YAML."""
     paths = cfg.get("paths")
@@ -547,13 +557,19 @@ def iter_unique_provider_connections(cfg: dict) -> list[OpenAICompatibleConnecti
     seen: set[str] = set()
     out: list[OpenAICompatibleConnection] = []
     for role in LLM_ROLE_ORDER:
+        lane_provider = resolve_role_provider(cfg, role)
+        if lane_provider and provider_kind(cfg, lane_provider) == "cli":
+            # CLI-провайдер не OpenAI-совместимый: у него нет base_url/ключа.
+            continue
         conn = resolve_openai_compatible_connection(cfg, role=role)
         if conn.provider in seen:
             continue
         seen.add(conn.provider)
         out.append(conn)
     if not out:
-        out.append(resolve_openai_compatible_connection(cfg))
+        default_provider = resolve_role_provider(cfg)
+        if provider_kind(cfg, default_provider) != "cli":
+            out.append(resolve_openai_compatible_connection(cfg))
     return out
 
 
