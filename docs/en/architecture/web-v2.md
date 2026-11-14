@@ -40,8 +40,19 @@ proxy denies the rest at the edge (see [api-reverse-proxy](../ops/api-reverse-pr
 
 ## Known blockers before P0
 
-Three core-contract gaps are described in §15 of the Russian document and are not implemented yet:
-`person_id` derivation, attachments in the chat request, and a per-request `model` field. They must
-be decided before P0 code starts. The web stack choice (D3, Next.js) also conflicts with
-[ADR-0001](adr-0001-client-monorepo.md), which names `createBrowserRouter`; PLAN §6.2 recommends
-keeping Next.js and correcting the ADR line.
+§15 of the Russian document lists the core changes. Items 1–8 are P1 work in the core and are
+needed before web P1–P2; they are not "minimal fixes" but a separate stage:
+
+| # | Change | Priority |
+| --- | --- | --- |
+| 1 | Verify `X-Neyra-Identity` on `/v1/chat`, `/v1/ws/chat`, `/v1/memory/*`, `/v1/desktop/*` | P1 |
+| 2 | `GET /v1/web/me`: `person_id`, role, limits from the JWT | P1 |
+| 3 | `platform` field in `WsChatMessage` | P1 |
+| 4 | `model` field in `ChatRequest` / `WsChatMessage` plus a model override in `agent.chat` | P1 |
+| 5 | Attachment contract: `attachments[]` (`kind`, `path`/`url`, `mime`, `text?`) routed to vision/STT/text extraction; today `extra="forbid"` returns 422 | P1 |
+| 6 | `stop` message type in WS | P1 |
+| 7 | Scope in `/v1/memory/*`: a user sees only their own `person_id` | P1 |
+| 8 | HTTP wrapper for STT/TTS in the web (`/v1/web/voice` or `/v1/desktop/voice`) | P1 |
+
+The web stack is settled: `web` is Next.js App Router (ADR-0001, decision of 12.11.2026), so
+[ADR-0001](adr-0001-client-monorepo.md) and D3 agree and there is no conflict to resolve.
