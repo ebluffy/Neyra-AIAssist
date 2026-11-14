@@ -52,7 +52,7 @@ WS chat получает необязательный `attachments` — масс
 
 Зависимости ядра/CI: pypdf==6.21.4 и Pillow (уже runtime dependency). Установить requirements в целевом venv перед включением PDF; этот патч ничего не разворачивает.
 
-Схемы в `packages/contracts/src/index.ts` дополнены usage/phase/stored attachment; эта ветка создана до npm-монорепо, поэтому файлы исходных контрактов взяты из локальной web/p2-chat, без переноса приложений/настроек сборки. При сведении PR #73/#74 согласовать общий файл и обновить BFF allowlist/normalization для phase и usage. Проверка TS выполнена изолированным временным инструментарием, не сборкой всего сайта.
+TS-контракты для usage/phase/stored attachment живут в `packages/contracts` (#71) и используются сайтом в #74; в этом серверном PR пакета нет, чтобы не создавать add/add-конфликт при сведении стека. BFF allowlist/normalization для phase и usage обновляется в #74. Проверка серверной части — pytest, без сборки сайта.
 
 Не добавлялись POST /v1/chat/{channel_id}/compact, новые алгоритмы памяти, смена модели/провайдера, OCR, retention/общая disk quota вложений или поддержка PDF worker на Windows. Такие задачи требуют отдельного пакета.
 
