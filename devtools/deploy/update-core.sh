@@ -134,7 +134,7 @@ AVAIL_INODES=$(df -Pi "$BACKUP_PARENT" | awk 'NR==2 {print $4}')
 umask 077
 service_idle || die "сервис $SERVICE запустился между проверками — обновление отменено"
 core_process_running && die "процесс $DEST/main.py появился между проверками — обновление отменено"
-echo "== 1/6 полный бэкап в $BACKUP"
+echo "== 1/7 полный бэкап в $BACKUP"
 cp -a --reflink=auto "$DEST" "$BACKUP" || { rm -rf "$BACKUP"; die "не удалось скопировать $DEST"; }
 [ -f "$BACKUP/main.py" ] && [ -x "$BACKUP/.venv/bin/python" ] || { rm -rf "$BACKUP"; die "бэкап неполный: $BACKUP"; }
 chmod 700 "$BACKUP"
@@ -149,26 +149,34 @@ restore() {
 }
 trap 'rc=$?; rm -rf "$STAGE"; if [ "$rc" -ne 0 ]; then restore; fi; exit "$rc"' EXIT
 
-echo "== 2/6 синхронизация кода (data/config/models/.env не трогаются)"
+echo "== 2/7 синхронизация кода (data/config/models/.env не трогаются)"
 rsync -a --no-owner --no-group --chown=root:root "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" \
   || die "rsync кода не удался"
 
-echo "== 3/6 зависимости в $DEST/.venv"
+echo "== 3/7 зависимости в $DEST/.venv"
 "$DEST/.venv/bin/python" -m pip install --disable-pip-version-check -r "$DEST/requirements.txt" \
   || die "pip install не удался"
 "$DEST/.venv/bin/python" -m pip check || die "pip check нашёл сломанные зависимости"
 
-echo "== 4/6 import-smoke без запуска агента"
+echo "== 4/7 vault key"
+if [ -f "$DEST/scripts/ensure_vault_key.py" ]; then
+  (cd "$DEST" && .venv/bin/python scripts/ensure_vault_key.py --env "$DEST/.env" --data "$DEST/data") \
+    || die "не удалось обеспечить NEYRA_VAULT_KEY в $DEST/.env"
+else
+  echo "vault-хелпера в этом ядре нет — пропуск (ядро без vault провайдеров)"
+fi
+
+echo "== 5/7 import-smoke без запуска агента"
 SMOKE_DATA=$(mktemp -d)
 trap 'rc=$?; rm -rf "$SMOKE_DATA" "$STAGE"; if [ "$rc" -ne 0 ]; then restore; fi; exit "$rc"' EXIT
 (cd "$DEST" && NEYRA_DATA_DIR="$SMOKE_DATA" PYTHONDONTWRITEBYTECODE=1 \
   .venv/bin/python -c "import jwt, core.api.app, core.neyra") || die "import-smoke не прошёл"
 
-echo "== 5/6 compileall"
+echo "== 6/7 compileall"
 (cd "$DEST" && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m compileall -q core main.py) \
   || die "compileall не прошёл"
 
-echo "== 6/6 отметка сборки"
+echo "== 7/7 отметка сборки"
 printf '%s\n' "$HEAD" > "$DEST/.deploy-sha"
 trap - EXIT
 rm -rf "$SMOKE_DATA" "$STAGE"
