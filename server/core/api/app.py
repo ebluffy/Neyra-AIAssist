@@ -3908,6 +3908,18 @@ def build_app(
         response.headers["x-trace-id"] = trace_id
         return response
 
+    config_write_lock = asyncio.Lock()
+
+    def _serialized_config_write(fn):
+        import functools
+
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            async with config_write_lock:
+                return await fn(*args, **kwargs)
+
+        return wrapper
+
     def _safe_set(cfg: dict, path: str, value: Any) -> None:
         keys = path.split(".")
         cur = cfg
@@ -3933,6 +3945,7 @@ def build_app(
         }
 
     @app.post("/v1/config/update")
+    @_serialized_config_write
     async def v1_config_update(body: ConfigUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
         """Apply allowlisted keys: persist to layer YAML first, then runtime + LLM rebind."""
         trace_id = _trace_id(request)
@@ -4082,6 +4095,7 @@ def build_app(
                 parent.pop(key, None)
 
     @app.put("/v1/config")
+    @_serialized_config_write
     async def v1_admin_config_put(
         body: AdminConfigPutRequest,
         request: Request,
