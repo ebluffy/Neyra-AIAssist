@@ -43,7 +43,7 @@ def read_tail(
         rows = rows[1:]
     more_lines = len(rows) > max(1, int(lines))
     rows = rows[-max(1, int(lines)):]
-    redacted = [redact_text(row[:max_line_chars], extra_secrets) for row in rows]
+    redacted = [redact_text(row, extra_secrets)[:max_line_chars] for row in rows]
     return {
         "file": target.name,
         "lines": redacted,

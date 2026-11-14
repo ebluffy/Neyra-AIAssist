@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -278,6 +279,7 @@ def api_tokens_configured(cfg: dict) -> bool:
         str(api.get("token") or "").strip()
         or str(api.get("viewer_token") or "").strip()
         or str(api.get("maint_token") or "").strip()
+        or str(api.get("web_token") or "").strip()
     )
 
 
@@ -310,7 +312,7 @@ def _api_token(cfg: dict) -> str:
     return str(api_cfg.get("token") or "").strip()
 
 
-_ROLE_RANK = {"anon": 0, "viewer": 1, "maint": 2, "admin": 3}
+_ROLE_RANK = {"anon": 0, "web": 0, "viewer": 1, "maint": 2, "admin": 3}
 
 
 def _resolve_role(
@@ -327,7 +329,8 @@ def _resolve_role(
     primary = str(api.get("token") or "").strip()
     viewer = str(api.get("viewer_token") or "").strip()
     maint = str(api.get("maint_token") or "").strip()
-    if not primary and not viewer and not maint:
+    web = str(api.get("web_token") or "").strip()
+    if not primary and not viewer and not maint and not web:
         return "anon"
     raw = (authorization or "").strip()
     if not raw.startswith("Bearer "):
@@ -339,6 +342,8 @@ def _resolve_role(
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
+    if _token_eq(got, web):
+        return "web"
     if dash_auth is not None and dash_auth.verify_session(got):
         return "admin"
     raise ApiError("unauthorized", "Invalid bearer token", 401)
@@ -348,6 +353,13 @@ def _role_at_least(role: str, minimum: str) -> bool:
     # anon is treated as full access only for console-local requests (see RequireRole).
     if role == "anon":
         return True
+    if minimum == "web":
+        return role in {"web", "viewer", "maint", "admin"}
+    if minimum == "web_admin":
+        return role in {"web", "admin"}
+    if role == "web":
+        # Web key is deliberately lower than viewer: only dep_web routes accept it.
+        return False
     return _ROLE_RANK.get(role, 0) >= _ROLE_RANK.get(minimum, 0)
 
 
@@ -365,7 +377,8 @@ def _require_ws_auth(
     primary = str(api.get("token") or "").strip()
     viewer = str(api.get("viewer_token") or "").strip()
     maint = str(api.get("maint_token") or "").strip()
-    if not primary and not viewer and not maint:
+    web = str(api.get("web_token") or "").strip()
+    if not primary and not viewer and not maint and not web:
         return "anon"
     got = ""
     if authorization and authorization.strip().startswith("Bearer "):
@@ -380,6 +393,8 @@ def _require_ws_auth(
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
+    if _token_eq(got, web):
+        return "web"
     if dash_auth is not None and dash_auth.verify_session(got):
         return "admin"
     raise ApiError("unauthorized", "Invalid bearer token for WebSocket", 401)
@@ -1292,6 +1307,7 @@ def build_app(
             str(_api_for_redact.get("viewer_token") or "").strip(),
             str(_api_for_redact.get("maint_token") or "").strip(),
             str(_api_for_redact.get("webhook_inbound_secret") or "").strip(),
+            str(_api_for_redact.get("web_token") or "").strip(),
         ]
     )
     if shared_agent is not None:
@@ -1457,6 +1473,8 @@ def build_app(
                 raise ApiError("forbidden", "Insufficient API token scope", 403)
             return role
 
+    dep_web = RequireRole("web")
+    dep_web_admin = RequireRole("web_admin")
     dep_viewer = RequireRole("viewer")
     dep_maint = RequireRole("maint")
     dep_admin = RequireRole("admin")
@@ -1665,7 +1683,7 @@ def build_app(
                 "data": {**context_usage(agent.config, inputs), "policy": context_policy(agent.config)}}
 
     @app.post("/v1/attachments")
-    async def v1_attachments(request: Request, _: str = Depends(dep_admin)):
+    async def v1_attachments(request: Request, _: str = Depends(dep_web_admin)):
         from starlette.datastructures import UploadFile as StarletteUploadFile
         from starlette.exceptions import HTTPException
         from starlette.formparsers import MultiPartException
@@ -1701,7 +1719,7 @@ def build_app(
         return {"ok": True, "trace_id": _trace_id(request), "data": {"attachments": saved}}
 
     @app.get("/v1/attachments/{attachment_id}")
-    async def v1_attachment(attachment_id: str, request: Request, channel_id: str = Query(min_length=1, max_length=120), _: str = Depends(dep_admin)):
+    async def v1_attachment(attachment_id: str, request: Request, channel_id: str = Query(min_length=1, max_length=120), _: str = Depends(dep_web_admin)):
         try:
             meta, path = await asyncio.to_thread(attachment_store.load, attachment_id, _attachment_owner(request), channel_id)
         except AttachmentError as error:
@@ -1709,7 +1727,7 @@ def build_app(
         return FileResponse(path, media_type=meta['mime'], filename=meta['name'])
 
     @app.get("/v1/web/me")
-    async def v1_web_me(request: Request, _: str = Depends(dep_viewer)):
+    async def v1_web_me(request: Request, _: str = Depends(dep_web)):
         identity = getattr(request.state, "web_identity", None)
         if identity is None:
             raise ApiError("web_identity_required", "Web identity required", 401)
@@ -4040,6 +4058,24 @@ def build_app(
             ),
         }
 
+    def _config_drop_path(cfg: dict[str, Any], path: str) -> None:
+        keys = [part for part in str(path).split(".") if part]
+        if not keys:
+            return
+        stack: list[tuple[dict[str, Any], str]] = []
+        cur: dict[str, Any] = cfg
+        for key in keys[:-1]:
+            nxt = cur.get(key)
+            if not isinstance(nxt, dict):
+                return
+            stack.append((cur, key))
+            cur = nxt
+        cur.pop(keys[-1], None)
+        for parent, key in reversed(stack):
+            value = parent.get(key)
+            if isinstance(value, dict) and not value:
+                parent.pop(key, None)
+
     @app.put("/v1/config")
     async def v1_admin_config_put(
         body: AdminConfigPutRequest,
@@ -4078,16 +4114,32 @@ def build_app(
         llm_rebound = False
         if any(path.startswith("llm.") for path in updates):
             try:
-                agent._setup_llm()
+                await asyncio.to_thread(agent._setup_llm)
                 llm_rebound = True
             except Exception as e:
                 logger.exception("LLM rebind after admin config write failed | trace_id=%s", trace_id)
+                # Restore files from the .bak that persist_allowlisted_updates wrote,
+                # drop newly added keys from memory, and rebuild LLM on the old config.
+                for rel in persisted:
+                    layer = root / rel
+                    bak = layer.with_suffix(layer.suffix + ".bak")
+                    try:
+                        if bak.is_file():
+                            shutil.copy2(bak, layer)
+                    except OSError:
+                        logger.exception("Failed to restore config layer from backup | layer=%s", layer)
                 for path, old in rollback.items():
-                    if old is not None:
+                    if old is None:
+                        _config_drop_path(config, path)
+                    else:
                         _safe_set(config, path, old)
+                try:
+                    await asyncio.to_thread(agent._setup_llm)
+                except Exception:
+                    logger.exception("LLM rebind on rolled-back config failed | trace_id=%s", trace_id)
                 raise ApiError(
                     "llm_rebind_failed",
-                    "Сохранено на диск, но LLM-клиенты не пересобраны; нужен рестарт ядра.",
+                    "Конфиг откатан из .bak, LLM пересобрана на прежних значениях. Проверьте лог.",
                     500,
                 ) from e
             from core.agent.talk_sessions import sessions_for
@@ -4135,9 +4187,9 @@ def build_app(
         api_cfg = config.get("api") if isinstance(config.get("api"), dict) else {}
         config_secrets = [
             str(api_cfg.get(key) or "").strip()
-            for key in ("token", "viewer_token", "maint_token", "webhook_inbound_secret")
+            for key in ("token", "viewer_token", "maint_token", "web_token", "webhook_inbound_secret")
         ]
-        extra = [value for value in [*secret_values(), *config_secrets] if len(value) >= 8]
+        extra = [value for value in [*secret_values(config), *config_secrets] if len(value) >= 8]
         data = await asyncio.to_thread(read_tail, path, lines, extra_secrets=extra)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
@@ -4146,15 +4198,22 @@ def build_app(
         hub = getattr(agent, "memory_hub", None)
         return getattr(hub, "sqlite", None) if hub is not None else None
 
-    def _iso_filter(value: Optional[str], field: str) -> Optional[str]:
+    def _iso_filter(value: Optional[str], field: str, *, end: bool = False) -> tuple[Optional[str], bool]:
         if value is None or not str(value).strip():
-            return None
+            return None, False
+        import re
+        from datetime import timedelta
+
+        from core.runtime.timeutil import parse_ts, to_utc_iso
+
         raw = str(value).strip()
-        try:
-            datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except Exception as e:
-            raise ApiError("bad_request", f"{field}: ожидается ISO-время", 400) from e
-        return raw
+        dt = parse_ts(raw)
+        if dt is None:
+            raise ApiError("bad_request", f"{field}: ожидается ISO-время", 400)
+        date_only = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw))
+        if end and date_only:
+            return to_utc_iso(dt + timedelta(days=1)), True
+        return to_utc_iso(dt), False
 
     @app.get("/v1/admin/discord/guilds")
     async def v1_admin_discord_guilds(
@@ -4171,7 +4230,7 @@ def build_app(
         if store is None:
             data = {"items": [], "total": 0, "limit": limit, "offset": offset, "available": False}
         else:
-            data = {**list_guilds(store, limit=limit, offset=offset), "available": True}
+            data = {**await asyncio.to_thread(list_guilds, store, limit=limit, offset=offset), "available": True}
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/admin/discord/guilds/{guild_id}")
@@ -4186,7 +4245,7 @@ def build_app(
 
         trace_id = _trace_id(request)
         store = _discord_catalog_store()
-        data = get_guild(store, guild_id, member_limit=member_limit) if store is not None else None
+        data = await asyncio.to_thread(get_guild, store, guild_id, member_limit=member_limit) if store is not None else None
         if data is None:
             raise ApiError("not_found", "Сервер не найден в каталоге.", 404)
         return {"ok": True, "trace_id": trace_id, "data": data}
@@ -4208,7 +4267,12 @@ def build_app(
         if store is None:
             data = {"items": [], "total": 0, "limit": limit, "offset": offset, "available": False}
         else:
-            data = {**list_members(store, guild_id=guild_id, q=q, limit=limit, offset=offset), "available": True}
+            data = {
+                **await asyncio.to_thread(
+                    list_members, store, guild_id=guild_id, q=q, limit=limit, offset=offset
+                ),
+                "available": True,
+            }
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/admin/discord/users/{person_id}/stats")
@@ -4227,7 +4291,7 @@ def build_app(
             data = {"person_id": person_id, "messages": 0, "turns": 0, "channels": [],
                     "first_contact": None, "last_contact": None, "days": [], "available": False}
         else:
-            data = {**person_stats(store, person_id, days=days), "available": True}
+            data = {**await asyncio.to_thread(person_stats, store, person_id, days=days), "available": True}
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/admin/discord/messages")
@@ -4248,21 +4312,27 @@ def build_app(
 
         trace_id = _trace_id(request)
         store = _discord_catalog_store()
-        since = _iso_filter(date_from, "from")
-        until = _iso_filter(date_to, "to")
-        if since and until and since > until:
-            raise ApiError("bad_request", "from: начало позже конца", 400)
+        since, _ = _iso_filter(date_from, "from")
+        until, until_exclusive = _iso_filter(date_to, "to", end=True)
+        if since and until:
+            from core.runtime.timeutil import parse_ts
+
+            since_dt, until_dt = parse_ts(since), parse_ts(until)
+            if since_dt is not None and until_dt is not None and since_dt >= until_dt:
+                raise ApiError("bad_request", "from: начало не раньше конца", 400)
         if store is None:
             data = {"items": [], "total": 0, "limit": limit, "next_cursor": None, "available": False}
         else:
             data = {
-                **list_messages(
+                **await asyncio.to_thread(
+                    list_messages,
                     store,
                     guild_id=guild_id,
                     channel_id=channel_id,
                     person_id=person_id,
                     date_from=since,
                     date_to=until,
+                    date_to_exclusive=until_exclusive,
                     q=q,
                     cursor=cursor,
                     limit=limit,
@@ -4695,9 +4765,14 @@ def build_app(
                 peer = websocket.client.host if websocket.client else "unknown"
                 if not _is_console_local_client(peer=peer, headers=websocket.headers):
                     raise ApiError("unauthorized", "Missing bearer token", 401)
-            # Same bar as POST /v1/chat (admin): viewer must not mutate memory / spend LLM.
-            if not _role_at_least(ws_role, "admin"):
-                raise ApiError("forbidden", "WebSocket chat requires admin (same as POST /v1/chat)", 403)
+            ws_identity = websocket.scope.get("state", {}).get("web_identity")
+            # Admin keeps the old access. The site uses a separate web key and must
+            # present a verified X-Neyra-Identity; viewer/maint still cannot chat.
+            if ws_role == "web":
+                if ws_identity is None:
+                    raise ApiError("forbidden", "WebSocket chat requires X-Neyra-Identity", 403)
+            elif not _role_at_least(ws_role, "admin"):
+                raise ApiError("forbidden", "WebSocket chat requires admin or web identity", 403)
         except ApiError:
             # 1008: Policy Violation
             await websocket.close(code=1008, reason="unauthorized")
@@ -4802,20 +4877,15 @@ def build_app(
                         )
                     elif chunk.get("type") == "error":
                         code = str(chunk.get("code") or "chat_error").strip() or "chat_error"
-                        message = str(chunk.get("text") or "").strip() or public_chat_error(chunk)
-                        # A provider rate limit is a different story from a generic failure:
-                        # the chat should name the limit, not "не удалось подготовить ответ".
-                        try:
-                            from core.agent.model_trace import recent_provider_rate_limit
-
-                            rate_limit = recent_provider_rate_limit(agent)
-                        except Exception:
-                            rate_limit = None
-                        if rate_limit:
+                        # Rate limit is decided by the current turn's exception, not by
+                        # any 429 from another user/background job in the last 10 min.
+                        if chunk.get("rate_limit"):
                             from core.agent.public_errors import provider_rate_limit_message
 
                             code = "provider_rate_limit"
                             message = provider_rate_limit_message()
+                        else:
+                            message = public_chat_error({"code": code})
                         await websocket.send_json(
                             {"type": "error", "code": code, "message": message, "trace_id": trace_id}
                         )

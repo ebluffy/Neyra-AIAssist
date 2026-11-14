@@ -317,6 +317,7 @@ class NeyraDiscordBot(discord.Client):
         self._proactive_channel_id = parse_snowflake((disc_cfg.get("proactive") or {}).get("channel_id")) if isinstance(disc_cfg.get("proactive"), dict) else None
         # Non-blocking Discord catalog writer (guilds/channels/members); started on ready.
         self._catalog = None
+        self._catalog_sync_task = None
 
         self.agent.event_bus.subscribe(MUSIC_RESULT, self._on_music_result)
 
@@ -619,6 +620,19 @@ class NeyraDiscordBot(discord.Client):
             parent_id=str(parent) if parent else None,
         )
 
+    def _person_for_discord_id(self, discord_id: str) -> str | None:
+        """Read an existing discord_id → person mapping; never create one here."""
+        store = self._catalog_store()
+        if store is None:
+            return None
+        try:
+            account = store.get_account("discord", str(discord_id))
+        except Exception:
+            logger.debug("Discord catalog: person lookup failed | discord_id=%s", discord_id, exc_info=True)
+            return None
+        person_id = account.get("person_id") if isinstance(account, dict) else None
+        return str(person_id) if person_id else None
+
     def _queue_member(self, member, *, removed: bool = False) -> None:
         if self._catalog is None or member is None:
             return
@@ -635,25 +649,71 @@ class NeyraDiscordBot(discord.Client):
             username=getattr(member, "name", None),
             display_name=getattr(member, "display_name", None),
             is_bot=bool(getattr(member, "bot", False)),
+            person_id=self._person_for_discord_id(str(member.id)),
         )
 
     async def _sync_catalog(self) -> None:
-        """Queue every guild, channel and cached member once after login."""
+        """Queue every guild, channel and cached member; wait for backpressure."""
         if self._catalog is None:
             return
+        sync_start = datetime.now(timezone.utc).isoformat()
         queued = 0
         try:
+            from core.memory.discord_catalog import list_guild_ids
+
+            store = self._catalog_store()
+            known = set(list_guild_ids(store)) if store is not None else set()
+            current = {str(guild.id) for guild in self.guilds}
+            for stale in sorted(known - current):
+                await self._catalog.submit_wait("guild_delete", guild_id=stale)
             for guild in list(self.guilds):
-                self._queue_guild(guild)
+                await self._catalog.submit_wait(
+                    "guild",
+                    guild_id=str(guild.id),
+                    name=getattr(guild, "name", None),
+                    icon_url=str(guild.icon.url) if getattr(guild, "icon", None) is not None else None,
+                    description=getattr(guild, "description", None),
+                    joined_at=(
+                        guild.me.joined_at.isoformat()
+                        if getattr(guild, "me", None) is not None and getattr(guild.me, "joined_at", None)
+                        else None
+                    ),
+                )
                 for channel in getattr(guild, "channels", []) or []:
-                    self._queue_channel(channel)
+                    await self._catalog.submit_wait(
+                        "channel",
+                        channel_id=str(channel.id),
+                        guild_id=str(guild.id),
+                        name=getattr(channel, "name", None),
+                        channel_type=str(getattr(channel, "type", "")),
+                        parent_id=str(channel.parent_id) if getattr(channel, "parent_id", None) else None,
+                    )
                     queued += 1
                 for member in getattr(guild, "members", []) or []:
-                    self._queue_member(member)
+                    await self._catalog.submit_wait(
+                        "member",
+                        guild_id=str(guild.id),
+                        discord_id=str(member.id),
+                        username=getattr(member, "name", None),
+                        display_name=getattr(member, "display_name", None),
+                        is_bot=bool(getattr(member, "bot", False)),
+                        person_id=await asyncio.to_thread(self._person_for_discord_id, str(member.id)),
+                    )
                     queued += 1
-            logger.info("Discord catalog: initial sync queued | guilds=%s items=%s", len(self.guilds), queued)
+                await self._catalog.submit_wait("guild_prune", guild_id=str(guild.id), before=sync_start)
+            logger.info(
+                "Discord catalog: initial sync queued | guilds=%s items=%s dropped=%s",
+                len(self.guilds), queued, self._catalog.dropped,
+            )
         except Exception:
             logger.exception("Discord catalog: initial sync failed")
+
+    async def on_guild_update(self, before, after):
+        self._queue_guild(after)
+
+    async def on_guild_remove(self, guild):
+        if self._catalog is not None and guild is not None:
+            self._catalog.submit("guild_delete", guild_id=str(guild.id))
 
     async def on_guild_join(self, guild):
         self._queue_guild(guild)
@@ -682,6 +742,13 @@ class NeyraDiscordBot(discord.Client):
         self._queue_member(member, removed=True)
 
     async def close(self):
+        if self._catalog_sync_task is not None and not self._catalog_sync_task.done():
+            self._catalog_sync_task.cancel()
+            try:
+                await self._catalog_sync_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._catalog_sync_task = None
         if self._catalog is not None:
             try:
                 await self._catalog.stop()
@@ -695,7 +762,9 @@ class NeyraDiscordBot(discord.Client):
         self.agent.discord_client = self
         self._setup_catalog()
         if self._catalog is not None:
-            asyncio.create_task(self._sync_catalog(), name="neyra-discord-catalog-sync")
+            self._catalog_sync_task = asyncio.create_task(
+                self._sync_catalog(), name="neyra-discord-catalog-sync"
+            )
         await self.change_presence(
             activity=discord.Activity(type=discord.ActivityType.listening, name="текст и музыка · Нейра")
         )
