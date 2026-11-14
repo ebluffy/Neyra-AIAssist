@@ -445,6 +445,18 @@ export function ChatView({
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
+  // «Прикрепить файл» из пустой вкладки «Вложения»: на узком экране
+  // закрываем панель и сразу открываем системный выбор файла.
+  const handleAttachFileFromPanel = () => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
+      setThreadPanelOpen(false);
+      try {
+        window.localStorage.setItem('neyra:thread-panel-open', '0');
+      } catch {}
+    }
+    requestAnimationFrame(() => fileInputRef.current?.click());
+  };
+
   const handleTogglePinMessage = (msgId: string) => {
     setPinnedMessageIds((prev) => {
       const isPinned = prev.includes(msgId);
@@ -1399,6 +1411,7 @@ export function ChatView({
         onToggleCompactView={handleToggleCompactView}
         initialTab={panelInitialTab}
         onStartChat={handleStartChatFromPanel}
+        onAttachFile={handleAttachFileFromPanel}
       />
     </div>
   </div>

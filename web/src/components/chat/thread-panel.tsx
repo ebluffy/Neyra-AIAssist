@@ -63,6 +63,8 @@ export interface ThreadPanelProps {
   initialTab?: ThreadPanelTab;
   /** Пустой диалог: кнопка «Начать диалог» ставит фокус в поле ввода. */
   onStartChat?: () => void;
+  /** Пустые «Вложения»: открыть выбор файла в чате. */
+  onAttachFile?: () => void;
 }
 
 function formatFileSize(bytes: number): string {
@@ -91,6 +93,7 @@ export function ThreadPanel({
   onToggleCompactView,
   initialTab = 'about',
   onStartChat,
+  onAttachFile,
 }: ThreadPanelProps) {
   const [activeTab, setActiveTab] = useState<ThreadPanelTab>(initialTab);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -543,8 +546,14 @@ export function ThreadPanel({
                   <p className="text-xs text-[var(--text-muted)] max-w-[220px] leading-relaxed">
                     Файлы и изображения, отправленные в этот диалог, появятся здесь.
                   </p>
-                  {onStartChat && (
-                    <Button type="button" variant="secondary" size="sm" className="mt-3" onClick={onStartChat}>
+                  {(onAttachFile || onStartChat) && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="mt-3"
+                      onClick={onAttachFile ?? onStartChat}
+                    >
                       Прикрепить файл
                     </Button>
                   )}
