@@ -12,14 +12,29 @@
   color: var(--foreground);
   background: var(--background);
 }
-button, input {
+button {
   font: inherit;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 14px;
-  min-height: 40px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  min-height: 0;
+  cursor: pointer;
 }
-button { cursor: pointer; }
-button:disabled { cursor: default; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-label { display: grid; gap: 8px; }
+button:disabled {
+  cursor: default;
+}
+input {
+  font: inherit;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  min-height: 0;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+label {
+  display: grid;
+  gap: 8px;
+}
