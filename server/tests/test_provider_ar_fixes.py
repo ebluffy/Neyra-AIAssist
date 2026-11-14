@@ -21,7 +21,7 @@ from core.runtime.config_loader import (
 )
 
 ADMIN = "admin"
-RAW_KEY = "sk-ar-test-0123456789abcdef"
+RAW_KEY = "sk-ar-test-0123456789abcdef"  # gitleaks:allow
 
 
 # ── AR-7: SSRF и редиректы ───────────────────────────────────────────────
@@ -118,7 +118,7 @@ def test_base_url_change_resets_vault_key(real_api, auth_headers, api_config):
 def test_migrate_refuses_when_vault_cannot_decrypt(real_api, auth_headers, api_config, monkeypatch):
     http, agent = real_api
     agent._setup_llm = lambda: None
-    legacy = "sk-yaml-broken-vault-0123456789"
+    legacy = "sk-yaml-broken-vault-0123456789"  # gitleaks:allow
     api_config.setdefault("llm", {}).setdefault("providers", {})["broken"] = {
         "base_url": "https://broken.example/v1",
         "api_key": legacy,
@@ -137,7 +137,7 @@ def test_migrate_refuses_when_vault_cannot_decrypt(real_api, auth_headers, api_c
 def test_migrate_removes_yaml_key_and_scrubs_backups(real_api, auth_headers, api_config, tmp_path, monkeypatch):
     http, agent = real_api
     agent._setup_llm = lambda: None
-    legacy = "sk-yaml-good-vault-0123456789"
+    legacy = "sk-yaml-good-vault-0123456789"  # gitleaks:allow
     api_config.setdefault("llm", {}).setdefault("providers", {})["legacy2"] = {
         "base_url": "https://legacy2.example/v1",
         "api_key": legacy,
@@ -198,7 +198,7 @@ def test_persist_removals_without_backup_leaves_no_key_in_any_backup(tmp_path):
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     layer = config_dir / "llm.yaml"
-    secret = "sk-very-secret-0123456789"
+    secret = "sk-very-secret-0123456789"  # gitleaks:allow
     layer.write_text(
         f"llm:\n  providers:\n    a:\n      base_url: https://a.example/v1\n      api_key: {secret}\n",
         encoding="utf-8",
@@ -214,8 +214,8 @@ def test_scrub_backups_removes_dotted_key(tmp_path):
     config_dir.mkdir()
     bak = config_dir / "llm.yaml.bak"
     bak.write_text(
-        "llm:\n  providers:\n    a:\n      api_key: sk-only-in-backup\n      base_url: https://a/v1\n",
+        "llm:\n  providers:\n    a:\n      api_key: sk-only-in-backup\n      base_url: https://a/v1\n",  # gitleaks:allow
         encoding="utf-8",
     )
     assert scrub_layer_backups(tmp_path, "llm.yaml", ["llm.providers.a.api_key"]) == 1
-    assert "sk-only-in-backup" not in bak.read_text(encoding="utf-8")
+    assert "sk-only-in-backup" not in bak.read_text(encoding="utf-8")  # gitleaks:allow
