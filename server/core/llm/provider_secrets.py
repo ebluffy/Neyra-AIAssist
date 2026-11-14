@@ -246,9 +246,16 @@ class ProviderSecretStore:
         return plain.decode("utf-8", "replace")
 
     def verify(self) -> None:
-        """Проверить мастер-ключ и расшифровку всех сохранённых секретов."""
-        self._master_key()
+        """Проверить мастер-ключ и расшифровку всех сохранённых секретов.
+
+        Пустой vault не требует ключа: расшифровывать нечего, и ядро должно
+        стартовать на чистой площадке без NEYRA_VAULT_KEY. Как только в vault
+        появился хотя бы один секрет, без ключа старт падает громко.
+        """
         items = self._load()
+        if not items:
+            return
+        self._master_key()
         failed: list[str] = []
         for key_id, item in items.items():
             if not isinstance(item, dict):

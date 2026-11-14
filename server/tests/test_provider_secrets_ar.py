@@ -126,8 +126,8 @@ def test_without_master_key_store_refuses_and_does_not_create_vault_key(tmp_path
     store = ProviderSecretStore(tmp_path / "secrets", env={})
     with pytest.raises(ProviderSecretsError, match="NEYRA_VAULT_KEY"):
         store.set("openai", "sk-secret")  # gitleaks:allow
-    with pytest.raises(ProviderSecretsError, match="NEYRA_VAULT_KEY"):
-        store.verify()
+    # Пустой vault нечего расшифровывать: чистая площадка стартует без ключа.
+    store.verify()
     assert not (tmp_path / "secrets" / "vault.key").exists()
 
 
