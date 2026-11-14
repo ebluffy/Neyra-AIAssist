@@ -50,3 +50,57 @@ def test_owner_quota_rejects_oversized_batch(tmp_path: Path, monkeypatch) -> Non
         store.save_batch("u", "c", [("big.txt", "text/plain", b"123456")])
     assert error.value.code == "attachment_quota"
     assert error.value.status == 413
+
+
+def test_total_storage_quota_across_owners(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(attachments, "MAX_TOTAL_BYTES", 5)
+    store = AttachmentStore(tmp_path)
+    store.save_batch("a", "c", [("one.txt", "text/plain", b"123")])
+    with pytest.raises(AttachmentError) as error:
+        store.save_batch("b", "c", [("two.txt", "text/plain", b"456")])
+    assert error.value.code == "attachment_quota"
+    assert "Общий" in error.value.message
+
+
+def test_expired_is_purged_on_load_and_store_start(tmp_path: Path) -> None:
+    store = AttachmentStore(tmp_path)
+    old = store.save_batch("u", "c", [("old.txt", "text/plain", b"old")])[0]
+    stamp = time.time() - attachments.ATTACHMENT_TTL_SECONDS - 10
+    for suffix in (".json", ".bin"):
+        os.utime(tmp_path / (old["id"] + suffix), (stamp, stamp))
+    with pytest.raises(AttachmentError):
+        store.load(old["id"], "u", "c")
+    assert not (tmp_path / (old["id"] + ".json")).exists()
+
+    second = store.save_batch("u", "c", [("old2.txt", "text/plain", b"old")])[0]
+    for suffix in (".json", ".bin"):
+        os.utime(tmp_path / (second["id"] + suffix), (stamp, stamp))
+    AttachmentStore(tmp_path)  # startup purge
+    assert not (tmp_path / (second["id"] + ".json")).exists()
+
+
+def test_parallel_owner_quota_is_atomic(tmp_path: Path, monkeypatch) -> None:
+    import threading
+
+    monkeypatch.setattr(attachments, "MAX_OWNER_BYTES", 20)
+    store = AttachmentStore(tmp_path)
+    barrier = threading.Barrier(2)
+    results: list[str] = []
+    lock = threading.Lock()
+
+    def upload():
+        barrier.wait()
+        try:
+            store.save_batch("same", "c", [("f.txt", "text/plain", b"x" * 12)])
+            outcome = "ok"
+        except AttachmentError as error:
+            outcome = error.code
+        with lock:
+            results.append(outcome)
+
+    threads = [threading.Thread(target=upload) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(results) == ["attachment_quota", "ok"]

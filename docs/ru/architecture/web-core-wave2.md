@@ -54,7 +54,7 @@ WS chat получает необязательный `attachments` — масс
 
 TS-контракты для usage/phase/stored attachment живут в `packages/contracts` (#71) и используются сайтом в #74; в этом серверном PR пакета нет, чтобы не создавать add/add-конфликт при сведении стека. BFF allowlist/normalization для phase и usage обновляется в #74. Проверка серверной части — pytest, без сборки сайта.
 
-Не добавлялись POST /v1/chat/{channel_id}/compact, новые алгоритмы памяти, смена модели/провайдера, OCR, retention/общая disk quota вложений или поддержка PDF worker на Windows. Такие задачи требуют отдельного пакета.
+Не добавлялись POST /v1/chat/{channel_id}/compact, новые алгоритмы памяти, смена модели/провайдера, OCR или поддержка PDF worker на Windows. Retention вложений (TTL 24 ч) и общая disk quota (1 ГБ) добавлены в #73 вместе с очисткой при старте/загрузке.
 
 
 ## Политика сжатия в REST limits

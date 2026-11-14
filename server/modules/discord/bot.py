@@ -318,6 +318,7 @@ class NeyraDiscordBot(discord.Client):
         # Non-blocking Discord catalog writer (guilds/channels/members); started on ready.
         self._catalog = None
         self._catalog_sync_task = None
+        self._catalog_guild_tasks: set[asyncio.Task] = set()
 
         self.agent.event_bus.subscribe(MUSIC_RESULT, self._on_music_result)
 
@@ -649,8 +650,58 @@ class NeyraDiscordBot(discord.Client):
             username=getattr(member, "name", None),
             display_name=getattr(member, "display_name", None),
             is_bot=bool(getattr(member, "bot", False)),
-            person_id=self._person_for_discord_id(str(member.id)),
+            # Event handlers stay non-blocking; full sync resolves person_id in a worker.
+            person_id=None,
         )
+
+    async def _sync_guild(self, guild, sync_start: str) -> int:
+        """Одна гильдия: backpressure, без prune/участников для недоступной/нечанканной."""
+        if self._catalog is None or guild is None:
+            return 0
+        guild_id = str(guild.id)
+        await self._catalog.submit_wait(
+            "guild",
+            guild_id=guild_id,
+            name=getattr(guild, "name", None),
+            icon_url=str(guild.icon.url) if getattr(guild, "icon", None) is not None else None,
+            description=getattr(guild, "description", None),
+            joined_at=(
+                guild.me.joined_at.isoformat()
+                if getattr(guild, "me", None) is not None and getattr(guild.me, "joined_at", None)
+                else None
+            ),
+        )
+        queued = 1
+        for channel in getattr(guild, "channels", []) or []:
+            await self._catalog.submit_wait(
+                "channel",
+                channel_id=str(channel.id),
+                guild_id=guild_id,
+                name=getattr(channel, "name", None),
+                channel_type=str(getattr(channel, "type", "")),
+                parent_id=str(channel.parent_id) if getattr(channel, "parent_id", None) else None,
+            )
+            queued += 1
+        available = not bool(getattr(guild, "unavailable", False))
+        chunked = bool(getattr(guild, "chunked", True))
+        if available and chunked:
+            for member in getattr(guild, "members", []) or []:
+                await self._catalog.submit_wait(
+                    "member",
+                    guild_id=guild_id,
+                    discord_id=str(member.id),
+                    username=getattr(member, "name", None),
+                    display_name=getattr(member, "display_name", None),
+                    is_bot=bool(getattr(member, "bot", False)),
+                    person_id=await asyncio.to_thread(self._person_for_discord_id, str(member.id)),
+                )
+                queued += 1
+            await self._catalog.submit_wait("guild_prune", guild_id=guild_id, before=sync_start)
+            queued += 1
+        else:
+            logger.info("Discord catalog: prune skipped | guild=%s unavailable=%s chunked=%s",
+                        guild_id, not available, chunked)
+        return queued
 
     async def _sync_catalog(self) -> None:
         """Queue every guild, channel and cached member; wait for backpressure."""
@@ -662,45 +713,12 @@ class NeyraDiscordBot(discord.Client):
             from core.memory.discord_catalog import list_guild_ids
 
             store = self._catalog_store()
-            known = set(list_guild_ids(store)) if store is not None else set()
+            known = set(await asyncio.to_thread(list_guild_ids, store)) if store is not None else set()
             current = {str(guild.id) for guild in self.guilds}
             for stale in sorted(known - current):
                 await self._catalog.submit_wait("guild_delete", guild_id=stale)
             for guild in list(self.guilds):
-                await self._catalog.submit_wait(
-                    "guild",
-                    guild_id=str(guild.id),
-                    name=getattr(guild, "name", None),
-                    icon_url=str(guild.icon.url) if getattr(guild, "icon", None) is not None else None,
-                    description=getattr(guild, "description", None),
-                    joined_at=(
-                        guild.me.joined_at.isoformat()
-                        if getattr(guild, "me", None) is not None and getattr(guild.me, "joined_at", None)
-                        else None
-                    ),
-                )
-                for channel in getattr(guild, "channels", []) or []:
-                    await self._catalog.submit_wait(
-                        "channel",
-                        channel_id=str(channel.id),
-                        guild_id=str(guild.id),
-                        name=getattr(channel, "name", None),
-                        channel_type=str(getattr(channel, "type", "")),
-                        parent_id=str(channel.parent_id) if getattr(channel, "parent_id", None) else None,
-                    )
-                    queued += 1
-                for member in getattr(guild, "members", []) or []:
-                    await self._catalog.submit_wait(
-                        "member",
-                        guild_id=str(guild.id),
-                        discord_id=str(member.id),
-                        username=getattr(member, "name", None),
-                        display_name=getattr(member, "display_name", None),
-                        is_bot=bool(getattr(member, "bot", False)),
-                        person_id=await asyncio.to_thread(self._person_for_discord_id, str(member.id)),
-                    )
-                    queued += 1
-                await self._catalog.submit_wait("guild_prune", guild_id=str(guild.id), before=sync_start)
+                queued += await self._sync_guild(guild, sync_start)
             logger.info(
                 "Discord catalog: initial sync queued | guilds=%s items=%s dropped=%s",
                 len(self.guilds), queued, self._catalog.dropped,
@@ -716,11 +734,14 @@ class NeyraDiscordBot(discord.Client):
             self._catalog.submit("guild_delete", guild_id=str(guild.id))
 
     async def on_guild_join(self, guild):
-        self._queue_guild(guild)
-        for channel in getattr(guild, "channels", []) or []:
-            self._queue_channel(channel)
-        for member in getattr(guild, "members", []) or []:
-            self._queue_member(member)
+        if self._catalog is None or guild is None:
+            return
+        task = asyncio.create_task(
+            self._sync_guild(guild, datetime.now(timezone.utc).isoformat()),
+            name=f"neyra-discord-guild-sync-{guild.id}",
+        )
+        self._catalog_guild_tasks.add(task)
+        task.add_done_callback(self._catalog_guild_tasks.discard)
 
     async def on_guild_channel_create(self, channel):
         self._queue_channel(channel)
@@ -749,6 +770,9 @@ class NeyraDiscordBot(discord.Client):
             except (asyncio.CancelledError, Exception):
                 pass
         self._catalog_sync_task = None
+        for task in list(self._catalog_guild_tasks):
+            task.cancel()
+        self._catalog_guild_tasks.clear()
         if self._catalog is not None:
             try:
                 await self._catalog.stop()
@@ -761,7 +785,9 @@ class NeyraDiscordBot(discord.Client):
         # Shared runtime handle for in-process music + other Discord-adjacent plugins.
         self.agent.discord_client = self
         self._setup_catalog()
-        if self._catalog is not None:
+        if self._catalog is not None and (
+            self._catalog_sync_task is None or self._catalog_sync_task.done()
+        ):
             self._catalog_sync_task = asyncio.create_task(
                 self._sync_catalog(), name="neyra-discord-catalog-sync"
             )

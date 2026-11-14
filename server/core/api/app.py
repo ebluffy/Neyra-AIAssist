@@ -1487,6 +1487,8 @@ def build_app(
                 peer = request.client.host if request.client else "unknown"
                 if not _is_console_local_client(peer=peer, headers=request.headers):
                     raise ApiError("unauthorized", "Missing bearer token", 401)
+            if role == "web" and getattr(request.state, "web_identity", None) is None:
+                raise ApiError("web_identity_required", "Web identity required", 403)
             if not _role_at_least(role, self.min_role):
                 raise ApiError("forbidden", "Insufficient API token scope", 403)
             return role
@@ -1694,7 +1696,7 @@ def build_app(
 
     @app.get("/v1/context/limits")
     async def v1_context_limits(request: Request, channel_id: str = Query(min_length=1, max_length=120),
-                                _: str = Depends(dep_admin)):
+                                _: str = Depends(dep_web_admin)):
         from core.agent.chat_progress import context_usage, context_policy
         inputs = context_readings.get((_attachment_owner(request), channel_id), {})
         return {"ok": True, "trace_id": _trace_id(request),
@@ -4121,6 +4123,11 @@ def build_app(
 
         restart_fields = requires_restart_fields(updates)
         rollback = {path: _config_get_path(config, path) for path in updates}
+        config_dir = root / "config"
+        before_files = {
+            path.name: path.is_file()
+            for path in config_dir.glob("*.yaml")
+        } if config_dir.is_dir() else {}
         try:
             persisted = persist_allowlisted_updates(root, updates, keep_backup=True)
         except Exception as e:
@@ -4142,6 +4149,13 @@ def build_app(
                 # drop newly added keys from memory, and rebuild LLM on the old config.
                 for rel in persisted:
                     layer = root / rel
+                    if not before_files.get(layer.name, False):
+                        # Слоя до PUT не было: откат обязан удалить созданный файл.
+                        try:
+                            layer.unlink(missing_ok=True)
+                        except OSError:
+                            logger.exception("Failed to remove config layer created by PUT | layer=%s", layer)
+                        continue
                     bak = layer.with_suffix(layer.suffix + ".bak")
                     try:
                         if bak.is_file():
@@ -4180,7 +4194,10 @@ def build_app(
             "data": {
                 "applied": updates,
                 "persisted": persisted,
-                "backups": [f"{rel}.bak" for rel in persisted],
+                "backups": [
+                    f"{rel}.bak" for rel in persisted
+                    if before_files.get((root / rel).name, False)
+                ],
                 "requires_restart": bool(restart_fields),
                 "restart_fields": restart_fields,
                 "llm_rebound": llm_rebound,

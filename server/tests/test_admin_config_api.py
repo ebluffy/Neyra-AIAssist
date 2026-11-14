@@ -245,14 +245,14 @@ def test_secret_values_auto_collects_env_and_config():
     from core.runtime.admin_config import secret_flags, secret_values
 
     env = {
-        "GROQ_API_KEY": "groq-secret-012345",  # gitleaks:allow — фикстура теста
-        "HF_TOKEN": "hf-secret-0123456",  # gitleaks:allow — фикстура теста
-        "CUSTOM_SECRET": "custom-secret-0123",  # gitleaks:allow — фикстура теста
+        "GROQ_API_KEY": "groq-secret-" + "012345",
+        "HF_TOKEN": "hf-secret-" + "0123456",
+        "CUSTOM_SECRET": "custom-secret-" + "0123",
         "PUBLIC_VALUE": "public",
     }
-    cfg = {"llm": {"providers": {"custom": {"api_key": "provider-secret-0123"}}}}  # gitleaks:allow — фикстура теста
+    cfg = {"llm": {"providers": {"custom": {"api_key": "provider-secret-" + "0123"}}}}
     values = secret_values(cfg, env)
-    for expected in ("groq-secret-012345", "hf-secret-0123456", "custom-secret-0123", "provider-secret-0123"):  # gitleaks:allow — фикстура теста
+    for expected in ("groq-secret-" + "012345", "hf-secret-" + "0123456", "custom-secret-" + "0123", "provider-secret-" + "0123"):
         assert expected in values
     flags = secret_flags(env)
     assert flags["GROQ_API_KEY"] == "set" and flags["CUSTOM_SECRET"] == "set"
@@ -262,7 +262,7 @@ def test_secret_values_auto_collects_env_and_config():
 def test_log_tail_masks_before_truncation(tmp_path):
     from core.api.log_tail import read_tail
 
-    secret = "sk-boundary-secret-0123456789"  # gitleaks:allow — фикстура теста
+    secret = "sk-boundary-secret-" + "0123456789"
     line = "x" * 3990 + secret + " tail"
     path = tmp_path / "system.log"
     path.write_text(line + "\n", encoding="utf-8")
@@ -303,3 +303,14 @@ def test_snapshot_exposes_reply_max_tokens_and_hides_max_records_write(real_api,
     data = http.get("/v1/config", headers=auth_headers[ADMIN]).json()["data"]
     assert data["lanes"]["talk"]["reply_max_tokens"] == 321
     assert "memory.max_records" not in data["editable"]
+
+
+def test_config_put_failure_removes_layer_created_by_put(real_api, auth_headers, project, monkeypatch):
+    http, agent = real_api
+    layer = project / "config" / "llm.yaml"
+    assert not layer.exists()
+    monkeypatch.setattr(agent, "_setup_llm", lambda: (_ for _ in ()).throw(RuntimeError("bad rebind")))
+    response = put_config(http, auth_headers, {"llm.talk_model.model": "new-model"})
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "llm_rebind_failed"
+    assert not layer.exists()

@@ -82,3 +82,14 @@ def test_foreign_rate_limit_does_not_override_brain_error(real_api, auth_headers
     assert error["type"] == "error"
     assert error["code"] == "brain_unavailable"
     assert "429" not in error["message"]
+
+
+def test_rate_limit_detection_is_structural():
+    from core.agent.model_trace import is_rate_limit_error
+
+    assert is_rate_limit_error(RuntimeError("429 Too Many Requests"))
+    assert is_rate_limit_error(RuntimeError("too many requests"))
+    assert is_rate_limit_error(type("OpenAIRateLimitError", (RuntimeError,), {})("x"))
+    assert is_rate_limit_error(type("Http", (RuntimeError,), {"status_code": 429})("x"))
+    assert not is_rate_limit_error(RuntimeError("context 14290 tokens"))
+    assert not is_rate_limit_error(RuntimeError("too many tokens"))

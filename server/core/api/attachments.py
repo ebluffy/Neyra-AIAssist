@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import os
+import threading
 from pathlib import Path
 import re
 import subprocess
@@ -16,6 +17,8 @@ MAX_FILES = 4
 MAX_TEXT = 12000
 ATTACHMENT_TTL_SECONDS = 24 * 60 * 60
 MAX_OWNER_BYTES = 64 * 1024 * 1024
+MAX_TOTAL_BYTES = 1024 * 1024 * 1024
+PURGE_INTERVAL_SECONDS = 60 * 60
 MIMES = {'image/png': 'PNG', 'image/jpeg': 'JPEG', 'image/webp': 'WEBP', 'image/gif': 'GIF',
          'application/pdf': None, 'text/plain': None, 'text/markdown': None}
 _END_MARKER = '[КОНЕЦ ВЛОЖЕНИЯ]'
@@ -83,18 +86,22 @@ def validate_file(name, mime, data):
 class AttachmentStore:
     def __init__(self, root):
         self.root = Path(root)
+        self._lock = threading.RLock()
+        self._last_purge = 0.0
+        # Стартовая очистка: просроченные файлы не должны лежать до первой загрузки.
+        self.purge_expired()
 
     @staticmethod
     def public(meta):
         return {k: meta[k] for k in ('id', 'kind', 'mime', 'name', 'size')}
 
-    def _purge_expired(self, now=None):
-        """Удалить вложения старше TTL, чтобы каталог не рос вечно."""
+    def _purge_expired_unlocked(self, now=None):
         now = time.time() if now is None else now
         try:
             manifests = list(self.root.glob('*.json'))
         except OSError:
-            return
+            return 0
+        removed = 0
         for manifest in manifests:
             try:
                 if now - manifest.stat().st_mtime <= ATTACHMENT_TTL_SECONDS:
@@ -104,10 +111,35 @@ class AttachmentStore:
                 if isinstance(ident, str) and re.fullmatch('[a-f0-9]{32}', ident):
                     (self.root / (ident + '.bin')).unlink(missing_ok=True)
                 manifest.unlink(missing_ok=True)
+                removed += 1
             except (OSError, ValueError):
                 continue
+        self._last_purge = now
+        return removed
 
-    def _owner_bytes(self, owner):
+    def purge_expired(self, now=None):
+        with self._lock:
+            return self._purge_expired_unlocked(now)
+
+    def _maybe_purge(self):
+        with self._lock:
+            if time.time() - self._last_purge >= PURGE_INTERVAL_SECONDS:
+                self._purge_expired_unlocked()
+
+    def _total_bytes_unlocked(self):
+        total = 0
+        try:
+            manifests = list(self.root.glob('*.json'))
+        except OSError:
+            return total
+        for manifest in manifests:
+            try:
+                total += int(json.loads(manifest.read_text('utf-8')).get('size') or 0)
+            except (OSError, ValueError, TypeError):
+                continue
+        return total
+
+    def _owner_bytes_unlocked(self, owner):
         total = 0
         try:
             manifests = list(self.root.glob('*.json'))
@@ -126,30 +158,37 @@ class AttachmentStore:
         if not 1 <= len(files) <= MAX_FILES:
             raise AttachmentError('attachment_count', 'Можно прикрепить от 1 до 4 файлов.')
         validated = [(data, *validate_file(name, mime, data)) for name, mime, data in files]
-        self._purge_expired()
         incoming = sum(len(data) for data, _public, _text in validated)
-        if self._owner_bytes(owner) + incoming > MAX_OWNER_BYTES:
-            raise AttachmentError('attachment_quota', 'Квота вложений исчерпана.', 413)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        created, result = [], []
-        try:
-            for data, public, text in validated:
-                ident = uuid.uuid4().hex
-                payload, manifest = self.root / (ident + '.bin'), self.root / (ident + '.json')
-                meta = {**public, 'id': ident, 'owner': owner, 'channel': channel, 'text': text}
-                for path, content in [(payload, data), (manifest, json.dumps(meta, ensure_ascii=False).encode('utf-8'))]:
-                    with path.open('xb') as handle:
-                        created.append(path)
-                        os.chmod(path, 0o600)
-                        handle.write(content)
-                result.append(self.public(meta))
-        except Exception:
-            for path in created:
-                path.unlink(missing_ok=True)
-            raise
-        return result
+        # Один lock вокруг purge + проверки квот + записи: параллельные загрузки
+        # не могут обе пройти проверку и вместе превысить лимит (AR-23).
+        with self._lock:
+            self._purge_expired_unlocked()
+            if self._total_bytes_unlocked() + incoming > MAX_TOTAL_BYTES:
+                raise AttachmentError('attachment_quota', 'Общий лимит хранилища вложений исчерпан.', 413)
+            if self._owner_bytes_unlocked(owner) + incoming > MAX_OWNER_BYTES:
+                raise AttachmentError('attachment_quota', 'Квота вложений исчерпана.', 413)
+            created, result = [], []
+            try:
+                for data, public, text in validated:
+                    ident = uuid.uuid4().hex
+                    payload, manifest = self.root / (ident + '.bin'), self.root / (ident + '.json')
+                    meta = {**public, 'id': ident, 'owner': owner, 'channel': channel, 'text': text}
+                    for path, content in [(payload, data), (manifest, json.dumps(meta, ensure_ascii=False).encode('utf-8'))]:
+                        with path.open('xb') as handle:
+                            created.append(path)
+                            os.chmod(path, 0o600)
+                            handle.write(content)
+                    result.append(self.public(meta))
+            except Exception:
+                for path in created:
+                    path.unlink(missing_ok=True)
+                raise
+            return result
 
     def load(self, ident, owner, channel):
+        self._maybe_purge()
+
         def missing():
             return AttachmentError('attachment_not_found', 'Вложение не найдено.', 404)
         if not isinstance(ident, str) or not re.fullmatch('[a-f0-9]{32}', ident):
@@ -157,6 +196,9 @@ class AttachmentStore:
         manifest, payload = self.root / (ident + '.json'), self.root / (ident + '.bin')
         try:
             if manifest.is_symlink() or payload.is_symlink() or manifest.stat().st_size > 100_000:
+                raise missing()
+            if time.time() - manifest.stat().st_mtime > ATTACHMENT_TTL_SECONDS:
+                self.purge_expired()
                 raise missing()
             meta = json.loads(manifest.read_text('utf-8'))
             if meta['owner'] != owner or meta['channel'] != channel or meta['id'] != ident:

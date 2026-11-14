@@ -8,7 +8,7 @@ from starlette.websockets import WebSocketDisconnect
 from test_web_identity import identity_env, token  # noqa: F401
 from test_web_identity_review import real_api  # noqa: F401
 
-WEB_TOKEN = "web-secret-token-xxxxxxxxxx"  # gitleaks:allow — фикстура теста
+WEB_TOKEN = "web-secret-token-xxxxxxxxxx"
 WEB = {"Authorization": f"Bearer {WEB_TOKEN}"}
 
 
@@ -58,7 +58,7 @@ def test_web_key_cannot_call_admin_routes(real_api):
 
 def test_web_key_reads_web_me_only_with_identity(real_api):
     http, _agent = real_api
-    assert http.get("/v1/web/me", headers=WEB).status_code == 401
+    assert http.get("/v1/web/me", headers=WEB).status_code == 403
     response = http.get("/v1/web/me", headers=_identity_headers())
     assert response.status_code == 200
     assert response.json()["data"]["user_id"] == "web-user-1"
@@ -67,8 +67,33 @@ def test_web_key_reads_web_me_only_with_identity(real_api):
 def test_api_web_token_env_maps_to_config(monkeypatch):
     from core.runtime.secrets import apply_env_secrets
 
-    env_token = "web-env-token-0123456789"  # gitleaks:allow — фикстура теста
+    env_token = "web-env-token-0123456789"
     monkeypatch.setenv("API_WEB_TOKEN", env_token)
     cfg: dict = {}
     apply_env_secrets(cfg)
     assert cfg["api"]["web_token"] == env_token
+
+
+def test_web_key_attachments_require_identity_and_are_person_scoped(real_api):
+    http, _agent = real_api
+    from test_web_identity import claims, token
+
+    def headers_for(sub):
+        return {**WEB, "X-Neyra-Identity": token(claims(sub=sub))}
+
+    assert http.post(
+        "/v1/attachments", headers=WEB, data={"channel_id": "c1"},
+        files=[("files", ("note.txt", b"hello", "text/plain"))],
+    ).status_code == 403
+    saved = http.post(
+        "/v1/attachments", headers=headers_for("web-user-1"), data={"channel_id": "c1"},
+        files=[("files", ("note.txt", b"hello", "text/plain"))],
+    )
+    assert saved.status_code == 200
+    attachment_id = saved.json()["data"]["attachments"][0]["id"]
+    assert http.get(
+        f"/v1/attachments/{attachment_id}?channel_id=c1", headers=headers_for("web-user-1")
+    ).status_code == 200
+    assert http.get(
+        f"/v1/attachments/{attachment_id}?channel_id=c1", headers=headers_for("web-user-2")
+    ).status_code == 404
