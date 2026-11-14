@@ -606,6 +606,9 @@ class AdminConfigPutRequest(_ApiBody):
 class ProviderUpsertRequest(_ApiBody):
     base_url: str = ""
     kind: str = "openai"
+    preset: str = ""
+    provider_type: str = ""
+    fields: dict[str, Any] = Field(default_factory=dict)
     default_headers: dict[str, str] | None = None
 
 
@@ -4165,7 +4168,22 @@ def build_app(
         for row in provider_rows(config, vault_names=vault_names):
             if row["name"] == name:
                 return row
-        return {"name": name, "base_url": "", "kind": "openai", "builtin": False, "has_key": False, "key_source": "none", "lanes": []}
+        return {
+            "name": name,
+            "label": name,
+            "base_url": "",
+            "kind": "openai",
+            "preset": "",
+            "provider_type": "llm",
+            "provider_type_label": "",
+            "fields": {},
+            "needs_key": True,
+            "builtin": False,
+            "has_key": False,
+            "key_source": "none",
+            "lanes": [],
+            "probe": None,
+        }
 
     @app.get("/v1/providers")
     async def v1_providers(request: Request, _: str = Depends(dep_admin)):
@@ -4202,24 +4220,24 @@ def build_app(
         api_role: str = Depends(dep_admin),
     ):
         """Создать или обновить провайдера: base_url уходит в llm.yaml."""
-        from core.llm.provider_admin import ProviderAdminError, normalize_provider_name, validate_base_url
+        from core.llm.provider_admin import ProviderAdminError, normalize_provider_name, provider_config_updates
 
         trace_id = _trace_id(request)
         try:
             provider = normalize_provider_name(name)
-            base_url = validate_base_url(body.base_url)
-            kind = str(body.kind or "openai").strip().lower()
-            if kind not in {"openai", "local", "proxy"}:
-                kind = "openai"
+            updates = provider_config_updates(
+                provider,
+                base_url=body.base_url,
+                kind=body.kind,
+                preset=body.preset or provider,
+                provider_type=body.provider_type,
+                fields=body.fields,
+            )
         except ProviderAdminError as e:
             raise ApiError(e.code, e.message, e.status)
 
         from core.runtime.config_loader import persist_allowlisted_updates
 
-        updates: dict[str, Any] = {
-            f"llm.providers.{provider}.base_url": base_url,
-            f"llm.providers.{provider}.kind": kind,
-        }
         headers = {str(k): str(v) for k, v in (body.default_headers or {}).items() if str(k).strip()}
         if headers:
             updates[f"llm.providers.{provider}.default_headers"] = headers
@@ -4232,7 +4250,12 @@ def build_app(
         for path, value in updates.items():
             _safe_set(config, path, value)
         llm_rebound = _rebind_llm_after_provider_change()
-        _audit("provider_write", trace_id, api_role, {"provider": provider, "base_url": base_url})
+        _audit(
+            "provider_write",
+            trace_id,
+            api_role,
+            {"provider": provider, "base_url": str(updates.get(f"llm.providers.{provider}.base_url", ""))},
+        )
         return {
             "ok": True,
             "trace_id": trace_id,
@@ -4276,6 +4299,9 @@ def build_app(
             f"llm.providers.{provider}.base_url",
             f"llm.providers.{provider}.kind",
             f"llm.providers.{provider}.default_headers",
+            f"llm.providers.{provider}.preset",
+            f"llm.providers.{provider}.provider_type",
+            f"llm.providers.{provider}.fields",
         ]
         try:
             persisted = persist_dotted_removals(root, paths, keep_backup=True)

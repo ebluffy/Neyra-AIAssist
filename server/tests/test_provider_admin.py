@@ -406,3 +406,25 @@ def test_health_skips_cli_providers():
         }
     }
     assert [c.provider for c in iter_unique_provider_connections(cfg)] == ["llama"]
+
+
+def test_provider_put_accepts_catalog_card_fields(real_api, auth_headers):
+    """Карточка каталога: preset, тип и поля доходят до строки провайдера."""
+    http, agent = real_api
+    agent._setup_llm = lambda: None
+    response = http.put(
+        "/v1/providers/deepgram",
+        json={
+            "base_url": "https://api.deepgram.com/v1",
+            "kind": "openai",
+            "preset": "deepgram-stt",
+            "provider_type": "stt",
+            "fields": {"model": "nova-3", "language": "ru"},
+        },
+        headers=auth_headers[ADMIN],
+    )
+    assert response.status_code == 200, response.text
+    row = response.json()["data"]["provider"]
+    assert row["preset"] == "deepgram-stt"
+    assert row["provider_type"] == "stt"
+    assert row["fields"].get("language") == "ru"
