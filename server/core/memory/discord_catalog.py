@@ -253,9 +253,11 @@ class DiscordCatalogWriter:
     so it never silently loses members/channels.
     """
 
+    _STOP = object()
+
     def __init__(self, store: Any, *, max_queue: int = MAX_QUEUE) -> None:
         self._store = store
-        self._queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(maxsize=max_queue)
+        self._queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=max_queue)
         self._task: Optional[asyncio.Task] = None
         self.dropped = 0
         self.written = 0
@@ -286,33 +288,55 @@ class DiscordCatalogWriter:
 
     async def run(self) -> None:
         while True:
-            kind, payload = await self._queue.get()
+            item = await self._queue.get()
+            if item is self._STOP:
+                self._queue.task_done()
+                return
+            kind, payload = item
             batch = [(kind, payload)]
             while len(batch) < BATCH_SIZE:
                 try:
-                    batch.append(self._queue.get_nowait())
+                    nxt = self._queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-            await asyncio.to_thread(self.apply_batch, batch)
+                if nxt is self._STOP:
+                    self._queue.put_nowait(self._STOP)
+                    self._queue.task_done()
+                    break
+                batch.append(nxt)
+            try:
+                await asyncio.to_thread(self.apply_batch, batch)
+            finally:
+                for _ in batch:
+                    self._queue.task_done()
 
     def start(self) -> None:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self.run(), name="neyra-discord-catalog")
 
     async def stop(self) -> None:
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
+        task = self._task
+        if task is not None and not task.done():
             try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
+                # Дать writer'у опустошить очередь, затем остановить sentinel'ом.
+                await asyncio.wait_for(self._queue.join(), timeout=10)
+                await self._queue.put(self._STOP)
+                await task
+            except Exception:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
         self._task = None
-        rest: list[tuple[str, dict[str, Any]]] = []
+        rest: list[Any] = []
         while True:
             try:
-                rest.append(self._queue.get_nowait())
+                item = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            if item is not self._STOP:
+                rest.append(item)
         if rest:
             await asyncio.to_thread(self.apply_batch, rest)
 

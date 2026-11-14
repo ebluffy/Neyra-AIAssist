@@ -29,7 +29,7 @@ def make_bot(catalog, *, person="person-1", store=None):
         _person_for_discord_id=lambda discord_id: person,
         guilds=[],
     )
-    for name in ("_sync_catalog", "_queue_guild", "on_guild_update", "on_guild_remove"):
+    for name in ("_sync_catalog", "_sync_guild", "_queue_guild", "on_guild_update", "on_guild_remove"):
         setattr(bot, name, getattr(NeyraDiscordBot, name).__get__(bot, SimpleNamespace))
     return bot
 
@@ -88,3 +88,45 @@ def test_person_lookup_reads_existing_account_and_never_creates():
     bot._person_for_discord_id = NeyraDiscordBot._person_for_discord_id.__get__(bot, SimpleNamespace)
     assert bot._person_for_discord_id("42") == "p-existing"
     assert store.calls == 1
+
+
+def test_unavailable_guild_skips_members_and_prune():
+    catalog = FakeCatalog()
+    bot = make_bot(catalog)
+    guild = make_guild()
+    guild.unavailable = True
+    guild.chunked = False
+
+    asyncio.run(bot._sync_guild(guild, "2026-01-01T00:00:00+00:00"))
+
+    kinds = [kind for kind, _ in catalog.waited]
+    assert "member" not in kinds and "guild_prune" not in kinds
+    assert kinds == ["guild", "channel"]
+
+
+def test_guild_join_with_small_queue_keeps_all_members(tmp_path):
+    from core.memory import discord_catalog
+    from core.memory.sqlite_store import SqliteStore
+
+    store = SqliteStore(tmp_path / "hub.db")
+    try:
+        catalog = discord_catalog.DiscordCatalogWriter(store, max_queue=2)
+        bot = make_bot(catalog)
+        bot._catalog_store = lambda: store
+        bot._person_for_discord_id = lambda discord_id: None
+        guild = make_guild()
+        guild.members = [
+            SimpleNamespace(id=100 + index, name=f"u{index}", display_name=f"U{index}", bot=False, guild=guild)
+            for index in range(5)
+        ]
+
+        async def run():
+            catalog.start()
+            await bot._sync_guild(guild, "2026-01-01T00:00:00+00:00")
+            await catalog.stop()
+
+        asyncio.run(run())
+        count = store._conn.execute("SELECT COUNT(*) FROM discord_members").fetchone()[0]
+        assert count == 5
+    finally:
+        store.close()

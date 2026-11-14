@@ -185,13 +185,20 @@ _RATE_LIMIT_CLASS = re.compile(r"ratelimit|rate_limit|too.?many|429", re.IGNOREC
 
 
 def is_rate_limit_error(exc: BaseException | str) -> bool:
-    """True only for the current exception (429/RateLimit), never a global window."""
-    status = getattr(exc, "status_code", None)
-    if status == 429:
+    """True only for the current exception (structural 429/RateLimit).
+
+    Bare "429" inside a token-count string is not a rate limit; require a word
+    boundary and the words "too many requests", not just "too many tokens".
+    """
+    if getattr(exc, "status_code", None) == 429 or getattr(exc, "http_status", None) == 429:
         return True
+    name = type(exc).__name__
+    if re.search(r"ratelimit|rate_limit", name, re.IGNORECASE):
+        return True
+    text = str(exc)
     return bool(
-        _RATE_LIMIT_CLASS.search(str(exc))
-        or _RATE_LIMIT_CLASS.search(type(exc).__name__)
+        re.search(r"\b429\b", text)
+        or re.search(r"too many requests", text, re.IGNORECASE)
     )
 
 
