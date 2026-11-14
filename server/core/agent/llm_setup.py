@@ -188,6 +188,9 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     conn_memory = getattr(agent, "_llm_conn_memory", None) or conn_default
     conn_vision = getattr(agent, "_llm_conn_vision", None) or conn_default
 
+    from core.llm.cli_provider import CliChatModel
+
+    _cli = getattr(agent, "_cli_lane_specs", {})
     cfg = merge_llm_tuning_options(agent.config)
     talk_model = resolved_talk_model(agent.config, conn_talk.provider)
     brain_model = resolved_brain_model(agent.config, conn_brain.provider)
