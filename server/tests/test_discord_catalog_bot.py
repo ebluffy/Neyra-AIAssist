@@ -162,3 +162,25 @@ def test_repeated_start_keeps_one_sync_task():
         await first
 
     asyncio.run(run())
+
+
+def test_guild_join_sync_failure_is_logged(caplog):
+    bot = make_bot(FakeCatalog())
+    bot._catalog_guild_tasks = set()
+
+    async def fail(_guild, _now):
+        raise RuntimeError("boom")
+
+    bot._sync_guild = fail
+    bot._run_guild_sync = NeyraDiscordBot._run_guild_sync.__get__(bot, SimpleNamespace)
+
+    async def run():
+        await NeyraDiscordBot.on_guild_join(bot, SimpleNamespace(id=42))
+        tasks = list(bot._catalog_guild_tasks)
+        assert len(tasks) == 1
+        await asyncio.gather(*tasks)
+
+    with caplog.at_level("ERROR", logger="neyra.discord"):
+        asyncio.run(run())
+    assert "guild join sync failed" in caplog.text
+    assert "42" in caplog.text
