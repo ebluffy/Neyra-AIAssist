@@ -640,19 +640,9 @@ export function AppSidebar({
                           ? 'Попробуйте другой запрос'
                           : 'Диалог появится здесь, как только вы напишете первое сообщение'}
                       </p>
-                      {query ? (
+                      {query && (
                         <Button variant="secondary" size="sm" className="mt-3 min-h-11 sm:min-h-0" onClick={() => setSearchQuery('')}>
                           Сбросить поиск
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="mt-3 min-h-11 gap-1.5 sm:min-h-0"
-                          onClick={handleStartNewChat}
-                        >
-                          <Plus size={13} />
-                          <span>Начать диалог</span>
                         </Button>
                       )}
                     </div>
@@ -668,7 +658,7 @@ export function AppSidebar({
                           key={thread.id}
                           className={`group relative flex items-center justify-between rounded-[var(--radius-sm)] transition-colors ${
                             isActive
-                              ? 'bg-[var(--surface-3)] text-[var(--text)] border-l-2 border-[var(--accent)] font-medium'
+                              ? 'bg-[var(--surface-3)] text-[var(--text)] font-medium'
                               : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'
                           }`}
                         >
