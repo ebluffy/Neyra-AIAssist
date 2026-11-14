@@ -306,3 +306,43 @@ def test_migrate_yaml_key_to_vault(real_api, auth_headers, api_config):
 
     again = http.post("/v1/providers/legacy/migrate-secret", headers=auth_headers[ADMIN])
     assert again.status_code == 400
+
+
+def test_thinking_switch_per_lane(real_api, auth_headers):
+    http, agent = real_api
+    agent._setup_llm = lambda: None
+    updated = http.put(
+        "/v1/config",
+        json={"updates": {"llm.talk_model.thinking": False, "llm.memory_model.thinking": False}},
+        headers=auth_headers[ADMIN],
+    )
+    assert updated.status_code == 200, updated.text
+    lanes = http.get("/v1/config", headers=auth_headers[ADMIN]).json()["data"]["lanes"]
+    assert lanes["talk"]["thinking"] is False
+    assert lanes["memory"]["thinking"] is False
+    rejected = http.put(
+        "/v1/config",
+        json={"updates": {"llm.talk_model.thinking": "нет"}},
+        headers=auth_headers[ADMIN],
+    )
+    assert rejected.status_code == 400
+
+
+def test_extra_body_disables_thinking_only_for_marked_lane():
+    from types import SimpleNamespace
+
+    from core.agent.llm_setup import _lane_extra_body
+
+    agent = SimpleNamespace(
+        config={
+            "llm": {
+                "talk_model": {"thinking": False},
+                "brain_model": {"provider": "x"},
+            }
+        }
+    )
+    assert _lane_extra_body(agent, "talk", {"reasoning_enabled": True}) == {
+        "reasoning_enabled": True,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    assert _lane_extra_body(agent, "brain", {"reasoning_enabled": True}) == {"reasoning_enabled": True}

@@ -37,6 +37,28 @@ def _force_chat_completions(provider: str) -> dict[str, Any]:
     return {}
 
 
+def _lane_thinking(agent: Any, lane: str) -> bool | None:
+    """llm.<lane>_model.thinking: False — просить модель не рассуждать вслух."""
+    llm = agent.config.get("llm") if isinstance(agent.config.get("llm"), dict) else {}
+    role = llm.get(f"{lane}_model") if isinstance(llm, dict) else None
+    if isinstance(role, dict):
+        raw = role.get("thinking")
+        if isinstance(raw, bool):
+            return raw
+    return None
+
+
+def _lane_extra_body(agent: Any, lane: str, base: dict[str, Any]) -> dict[str, Any]:
+    """extra_body с отключённым think для конкретного лейна (llama.cpp/Qwen)."""
+    body = dict(base)
+    if _lane_thinking(agent, lane) is False:
+        kwargs = body.get("chat_template_kwargs")
+        merged = dict(kwargs) if isinstance(kwargs, dict) else {}
+        merged["enable_thinking"] = False
+        body["chat_template_kwargs"] = merged
+    return body
+
+
 def setup_llm_connection(agent: Any) -> None:
     """Resolve default + per-role provider connections and build ChatOpenAI clients."""
     from core.llm.profile import resolve_openai_compatible_connection
@@ -165,6 +187,10 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         extra_body["reasoning_enabled"] = bool(cfg.get("reasoning_enabled"))
     if "include_reasoning" in cfg:
         extra_body["include_reasoning"] = bool(cfg.get("include_reasoning"))
+    extra_talk = _lane_extra_body(agent, "talk", extra_body)
+    extra_brain = _lane_extra_body(agent, "brain", extra_body)
+    extra_memory = _lane_extra_body(agent, "memory", extra_body)
+    extra_vision = _lane_extra_body(agent, "vision", extra_body)
 
     hdr_talk = dict(conn_talk.default_headers)
     talk_kwargs: dict[str, Any] = {
@@ -179,7 +205,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "streaming": True,
         "timeout": talk_timeout,
         "max_retries": talk_retries,
-        "model_kwargs": {"extra_body": extra_body} if extra_body else {},
+        "model_kwargs": {"extra_body": extra_talk} if extra_talk else {},
         "default_headers": hdr_talk,
         "include_response_headers": True,
         "stream_usage": bool(conn_talk.capabilities.get("supports_stream_usage")),
@@ -201,7 +227,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "streaming": False,
         "timeout": brain_timeout,
         "max_retries": brain_retries,
-        "model_kwargs": {"extra_body": extra_body} if extra_body else {},
+        "model_kwargs": {"extra_body": extra_brain} if extra_brain else {},
         "default_headers": hdr_brain,
         "include_response_headers": True,
     }
@@ -220,6 +246,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "streaming": False,
         "timeout": reflection_timeout,
         "max_retries": reflection_retries,
+        "model_kwargs": {"extra_body": extra_memory} if extra_memory else {},
         "default_headers": hdr_memory,
         "include_response_headers": True,
     }
@@ -311,7 +338,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
                 max_tokens=agent.vision_max_tokens,
                 streaming=True,
                 timeout=float(cfg.get("vision_timeout_seconds", 180)),
-                model_kwargs={"extra_body": extra_body} if extra_body else {},
+                model_kwargs={"extra_body": extra_vision} if extra_vision else {},
                 default_headers=hdr_vision,
                 include_response_headers=True,
                 **_force_chat_completions(conn_vision.provider),
