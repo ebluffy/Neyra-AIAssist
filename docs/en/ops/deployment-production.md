@@ -1,7 +1,7 @@
 # Production deployment (baseline checklist)
 
 - Run under a process manager (systemd/supervisor/Docker `restart: unless-stopped`).
-- Set `API_TOKEN` (and viewer/maint tokens if using role separation) in `server/.env`.
+- Set `API_TOKEN` (and viewer/maint/web tokens if using role separation) in `server/.env`. For the site use `API_WEB_TOKEN` and identity `NEYRA_IDENTITY_JWT_SECRET`/`_ISSUER`.
 - Use a reverse proxy with TLS ([api-reverse-proxy](api-reverse-proxy.md), [wss-deployment](wss-deployment.md)).
 - Default bind `127.0.0.1:8787`; do not expose uvicorn directly on the public internet.
 - Restrict inbound access to the API; configure the dashboard access key on first setup.
