@@ -154,6 +154,26 @@ def test_web_only_issuer_is_adopted_by_core(tmp_path: Path) -> None:
     assert web.read_text(encoding="utf-8") == web_before
 
 
+def test_web_token_wins_over_maint_for_site_key(tmp_path: Path) -> None:
+    web = make_env(
+        tmp_path,
+        "web",
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_TOKEN='core-service-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_MAINT_TOKEN='core-maint-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_WEB_TOKEN='core-web-key'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 0, result.stderr
+    assert read_env(web)["NEYRA_SERVICE_KEY"] == "core-web-key"
+
+
 def test_missing_maint_token_is_not_replaced_with_admin_token(tmp_path: Path) -> None:
     web = make_env(
         tmp_path,

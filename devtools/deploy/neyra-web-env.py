@@ -88,8 +88,9 @@ def main() -> int:
     web = read_env(WEB_ENV)
     core = read_env(CORE_ENV) if CORE_ENV.is_file() else {}
 
-    # Сайту нужен ключ не выше maint: admin-токен в интернет-сервис не передаём (AR-16).
-    service_key = (core.get("API_MAINT_TOKEN") or "").strip()
+    # Сайту нужен отдельный web-ключ (#76/AR-23); maint — запасной путь для ядра
+    # без web-роли. Admin-токен в интернет-сервис не передаём (AR-16).
+    service_key = (core.get("API_WEB_TOKEN") or core.get("API_MAINT_TOKEN") or "").strip()
     identity_secret = (core.get("NEYRA_IDENTITY_JWT_SECRET") or "").strip()
     core_issuer = (core.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip()
     web_issuer = (web.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip()
@@ -147,7 +148,7 @@ def main() -> int:
         updates["NEYRA_SERVICE_KEY"] = service_key
     else:
         print(
-            f"внимание: в {CORE_ENV} нет API_MAINT_TOKEN — NEYRA_SERVICE_KEY не записан "
+            f"внимание: в {CORE_ENV} нет API_WEB_TOKEN/API_MAINT_TOKEN — NEYRA_SERVICE_KEY не записан "
             "(админский API_TOKEN сайту не передаётся)",
             file=sys.stderr,
         )
