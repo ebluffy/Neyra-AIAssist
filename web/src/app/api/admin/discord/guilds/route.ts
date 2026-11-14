@@ -18,6 +18,9 @@ export async function GET(request: Request) {
   if (!parsed.ok) return jsonError(400, 'bad_request', parsed.message);
 
   const result = await readDiscordGuilds(parsed.query);
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, available: false, items: [], total: 0, message: result.message });
+  }
   if (result.state !== 'ok') {
     return jsonError(
       discordCoreStatus(result),

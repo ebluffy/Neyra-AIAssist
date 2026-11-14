@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Узкий root-хелпер для деплоя сайта Neyra. Лежит в репозитории, чтобы выкладку
+# можно было воспроизвести: deploy-web.sh вызывает `sudo -n openbot-admin db-dump`.
+#
+# Установка (root):
+#   install -m 0755 devtools/deploy/openbot-admin /usr/local/sbin/openbot-admin
+#   echo 'openbot ALL=(root) NOPASSWD: /usr/local/sbin/openbot-admin db-dump' \
+#     > /etc/sudoers.d/openbot-admin
+#   visudo -cf /etc/sudoers.d/openbot-admin
+#
+# Секреты БД не печатаются: команда отдаёт только путь и размер дампа.
+set -euo pipefail
+
+COMPOSE_FILE="${NEYRA_COMPOSE_FILE:-/opt/neyra/web/docker-compose.yml}"
+BACKUP_DIR="${NEYRA_BACKUP_DIR:-/opt/neyra/web/backups}"
+DB_SERVICE="${NEYRA_DB_SERVICE:-db}"
+DB_USER="${NEYRA_DB_USER:-neyra}"
+DB_NAME="${NEYRA_DB_NAME:-neyra_web}"
+KEEP_DUMPS="${NEYRA_KEEP_DUMPS:-10}"
+
+usage() {
+  cat >&2 <<'EOF'
+Использование: openbot-admin db-dump
+  db-dump  снять pg_dump базы сайта в BACKUP_DIR и напечатать path=/size=
+EOF
+}
+
+case "${1:-}" in
+  db-dump)
+    [ -f "$COMPOSE_FILE" ] || { echo "нет $COMPOSE_FILE" >&2; exit 1; }
+    command -v docker >/dev/null 2>&1 || { echo "docker не найден" >&2; exit 1; }
+    mkdir -p "$BACKUP_DIR"
+    dump="$BACKUP_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
+    if ! docker compose -f "$COMPOSE_FILE" exec -T "$DB_SERVICE" \
+      pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc > "$dump"; then
+      rm -f "$dump"
+      echo "pg_dump не выполнился" >&2
+      exit 1
+    fi
+    if [ ! -s "$dump" ]; then
+      rm -f "$dump"
+      echo "дамп пуст" >&2
+      exit 1
+    fi
+    # Оставляем последние KEEP_DUMPS копий, остальные удаляем.
+    ls -1t "$BACKUP_DIR"/pre-migrate-*.dump 2>/dev/null | tail -n +"$((KEEP_DUMPS + 1))" | xargs -r rm -f
+    echo "path=$dump"
+    echo "size=$(stat -c%s "$dump")"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

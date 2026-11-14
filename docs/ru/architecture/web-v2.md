@@ -346,7 +346,7 @@ UPLOAD_DIR=/data/uploads
 | 2 | `GET /v1/web/me`: `person_id`, роль, лимиты по JWT | Web кеширует в `memory_map` | P1 |
 | 3 | Поле `platform` в `WsChatMessage` | Иначе WS-ход не отличает web от Discord | P1 |
 | 4 | Поле `model` в `ChatRequest`/`WsChatMessage` и override модели в `agent.chat` | Смена модели по ходу чата | P1 |
-| 5 | Контракт вложений: `attachments[]` (`kind`, `path`/`url`, `mime`, `text?`) + маршрутизация в vision/STT/извлечение текста | Сейчас `extra="forbid"`, вложения дают 422 | P1 |
+| 5 | Контракт вложений: загрузка `POST /v1/attachments` → `StoredAttachment` (`id` 32 hex, `kind`, `mime`, `name`, `size`), в чат — те же метаданные + маршрутизация в vision/STT/извлечение текста | Сейчас `extra="forbid"`, старый `path`/`url` не принимается | P1 |
 | 6 | Тип `stop` в WS | Кнопка «Стоп» без разрыва сокета | P1 |
 | 7 | Scope в `/v1/memory/*`: пользователь видит только свой `person_id` | Сейчас ручки отдают всё по service key; нужен новый код проверки scope, а не только identity | P1 |
 | 8 | HTTP-обёртка STT/TTS для веба (`/v1/web/voice` или `/v1/desktop/voice`) | Голос в вебе | P1 |

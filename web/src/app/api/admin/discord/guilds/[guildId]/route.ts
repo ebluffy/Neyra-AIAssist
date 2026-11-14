@@ -27,6 +27,9 @@ export async function GET(request: Request, context: { params: Promise<{ guildId
     readDiscordGuild(id, parsed.query),
     discordPersonMap(),
   ]);
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, available: false, message: result.message });
+  }
   if (result.state !== 'ok') return discordFailure(result, 'Ядро не отдало сервер.');
   const data = result.data;
   if (!data) return jsonOk({});

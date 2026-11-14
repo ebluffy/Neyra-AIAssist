@@ -18,6 +18,9 @@ export async function GET(request: Request) {
   if (!parsed.ok) return jsonError(400, 'bad_request', parsed.message);
 
   const result = await readDiscordMessages(parsed.query);
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, available: false, items: [], total: 0, message: result.message });
+  }
   if (result.state !== 'ok') return discordFailure(result, 'Ядро не отдало историю.');
   return jsonOk(result.data ?? {});
 }

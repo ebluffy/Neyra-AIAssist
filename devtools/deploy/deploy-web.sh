@@ -58,9 +58,23 @@ cd "$SRC"                  # web/
 STAGE=.next/standalone
 [ -f "$STAGE/web/server.js" ] || { echo "Нет $STAGE/web/server.js — проверь output: 'standalone'"; exit 1; }
 
+SCHEMA_MARKER="$DST/web/.schema-migrations.sha"
+CURRENT_SCHEMA="$(find db/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
+
 if [ "${SKIP_DB_MIGRATIONS:-0}" = "1" ]; then
-  echo "== миграции и дамп базы пропущены (SKIP_DB_MIGRATIONS=1)"
-  echo "   допустимо только для веток без изменений web/drizzle; агентам без доступа к docker иначе выкладка недоступна"
+  # Пропуск разрешён только когда набор миграций совпадает с уже выложенным:
+  # иначе сайт стартует на старой схеме и молча теряет новые таблицы/колонки.
+  DEPLOYED_SCHEMA="$(cat "$SCHEMA_MARKER" 2>/dev/null || true)"
+  if [ "$CURRENT_SCHEMA" != "$DEPLOYED_SCHEMA" ]; then
+    echo "ОШИБКА: SKIP_DB_MIGRATIONS=1, но в исходниках есть миграции, которых нет в выложенной схеме." >&2
+    echo "  схема сейчас:   ${DEPLOYED_SCHEMA:-нет отметки в $DST/web/.schema-migrations.sha}" >&2
+    echo "  схема в ветке:  $CURRENT_SCHEMA" >&2
+    echo "  выкладка остановлена: примените миграции обычным запуском (без SKIP_DB_MIGRATIONS)." >&2
+    echo "  ручной обход допустим только после применения SQL и записи хеша в $DST/web/.schema-migrations.sha." >&2
+    exit 1
+  fi
+  echo "== ВНИМАНИЕ: дамп и миграции пропущены (SKIP_DB_MIGRATIONS=1)"
+  echo "   набор миграций совпадает с выложенным ($CURRENT_SCHEMA)"
 else
 
 echo "== резервная копия базы перед миграциями"
@@ -102,6 +116,9 @@ rsync -a --delete .next/static/ "$APP/.next/static/"
 if [ -d public ]; then rsync -a --delete public/ "$APP/public/"; fi
 if [ -d scripts ]; then rsync -a --delete scripts/ "$APP/scripts/"; fi
 if ! (cd "$DST" && "$NODE_BIN/node" -e "require.resolve('next'); require.resolve('pg')"); then echo "в standalone нет next/pg — проверь сборку"; exit 1; fi
+
+# Отметка схемы: следующий SKIP_DB_MIGRATIONS=1 сверит набор миграций с этой выкладкой.
+printf '%s\n' "$CURRENT_SCHEMA" > "$SCHEMA_MARKER"
 
 echo "== перезапуск сайта"
 sudo -n systemctl restart neyra-web.service

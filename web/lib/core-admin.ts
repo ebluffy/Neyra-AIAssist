@@ -2,7 +2,7 @@
 // никогда не покидает сервер и не попадает в ответы API.
 // Разделы настроек ядра в волне 2 — только чтение; отсутствие API показывается честно.
 
-export type CoreState = 'ok' | 'unconfigured' | 'unauthorized' | 'unavailable' | 'error';
+export type CoreState = 'ok' | 'unconfigured' | 'unauthorized' | 'unavailable' | 'error' | 'unsupported';
 
 export interface CoreResult<T> {
   state: CoreState;
@@ -79,6 +79,18 @@ async function request<T>(
     if (!response.ok && accepted) {
       const acceptedData = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
       return { state: 'ok', data: (acceptedData ?? null) as T, status: response.status };
+    }
+    // Ручки может не быть в текущем ядре (#73 без provider/logs/discord API). Это не
+    // авария: FastAPI отвечает 404/405 без нашего конверта {ok:false,error}, и админка
+    // должна показать «ядро не поддерживает», а не 502/404 в консоли.
+    const structuredError = Boolean(payload && typeof payload === 'object' && payload.ok === false && payload.error);
+    if ([404, 405, 501].includes(response.status) && !structuredError) {
+      return {
+        state: 'unsupported',
+        data: null,
+        status: response.status,
+        message: 'Ядро не поддерживает этот раздел. Обновите ядро до версии с этим API.',
+      };
     }
     if (!response.ok) {
       return {

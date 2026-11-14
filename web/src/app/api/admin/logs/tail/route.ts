@@ -11,6 +11,9 @@ export async function GET(request: Request) {
   if (!auth.ok) return auth.response;
   const lines = new URL(request.url).searchParams.get('lines');
   const result = await readAdminLogTail(lines);
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, message: result.message ?? 'Ядро не поддерживает просмотр логов.' });
+  }
   if (result.state !== 'ok') {
     return jsonError(
       result.state === 'unconfigured' ? 503 : 502,

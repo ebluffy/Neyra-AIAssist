@@ -11,7 +11,16 @@ it('validates chat text, chat_id UUID, and forbids unknown keys', () => {
   expect(ChatRequestSchema.safeParse({ text: 'hello', username: 'spoof' }).success).toBe(false);
 });
 it('validates message role and identity', () => { expect(ChatMessageSchema.safeParse({role:'user',content:'x',request_id:uuid}).success).toBe(true); expect(ChatMessageSchema.safeParse({role:'tool',content:'x'}).success).toBe(false); });
-it('supports target v2 attachments and stop', () => { expect(WsChatMessageSchema.safeParse({type:'stop'}).success).toBe(true); expect(ChatRequestSchema.safeParse({text:'x',attachments:[{kind:'image',mime:'image/png'}]}).success).toBe(false); });
+it('supports target v2 attachments and stop', () => {
+  expect(WsChatMessageSchema.safeParse({type:'stop'}).success).toBe(true);
+  const stored = { id: 'a'.repeat(32), kind: 'image', mime: 'image/png', name: 'cat.png', size: 1024 };
+  expect(ChatRequestSchema.safeParse({text:'x',attachments:[stored]}).success).toBe(true);
+  // Формат старого контракта path/url больше не принимается: в чат идут только id сохранённого файла.
+  expect(ChatRequestSchema.safeParse({text:'x',attachments:[{kind:'image',mime:'image/png'}]}).success).toBe(false);
+  expect(ChatRequestSchema.safeParse({text:'x',attachments:[{...stored, id: 'not-hex'}]}).success).toBe(false);
+  expect(ChatRequestSchema.safeParse({text:'x',attachments:[{...stored, size: 9 * 1024 * 1024}]}).success).toBe(false);
+  expect(ChatRequestSchema.safeParse({text:'x',attachments:Array.from({length:5},()=>stored)}).success).toBe(false);
+});
 it('validates streaming tokens', () => { expect(WsChatEventSchema.safeParse({type:'token',text:'x',trace_id:'t'}).success).toBe(true); expect(WsChatEventSchema.safeParse({type:'token',text:3}).success).toBe(false); });
 it('bounds memory search', () => { expect(MemorySearchRequestSchema.parse({query:'x'}).top_k).toBe(3); expect(MemorySearchRequestSchema.safeParse({query:'x',top_k:21}).success).toBe(false); });
 it('bounds memory recall', () => { expect(MemoryRecallRequestSchema.parse({}).limit).toBe(20); expect(MemoryRecallRequestSchema.safeParse({offset:-1}).success).toBe(false); });
@@ -34,7 +43,14 @@ it('validates chat SSE events (token, done, error, thinking) with strict whiteli
   expect(SseChatEventSchema.safeParse({ type: 'thinking', text: 'thinking...' }).success).toBe(true);
   expect(SseChatEventSchema.safeParse({ type: 'thinking' }).success).toBe(true);
   expect(SseChatEventSchema.safeParse({ type: 'done', text: 'final' }).success).toBe(true);
+  expect(SseChatEventSchema.safeParse({ type: 'done', text: 'final', usage: { total: { used: 10, limit: 100 }, lanes: { talk: { used: 10, limit: 100 } } } }).success).toBe(true);
+  expect(SseChatEventSchema.safeParse({ type: 'phase', phase: 'retrieval', label: 'Собираю контекст…' }).success).toBe(true);
   expect(SseChatEventSchema.safeParse({ type: 'error', code: 'chat_error', message: 'fail' }).success).toBe(true);
+
+  // usage без total не выдумывает значения; чужие ключи внутри usage запрещены.
+  expect(SseChatEventSchema.safeParse({ type: 'done', text: 'final', usage: { lanes: { talk: {} } } }).success).toBe(true);
+  expect(SseChatEventSchema.safeParse({ type: 'done', text: 'final', usage: { total: { used: 10 }, extra: 1 } }).success).toBe(false);
+  expect(SseChatEventSchema.safeParse({ type: 'phase', phase: 'retrieval', extra: true }).success).toBe(false);
 
   // Rejects internal leakage: model_trace, thoughts
   expect(SseChatEventSchema.safeParse({ type: 'done', text: 'final', thoughts: 'th' }).success).toBe(false);

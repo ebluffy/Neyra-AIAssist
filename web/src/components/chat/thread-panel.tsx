@@ -20,17 +20,13 @@ import {
   Hash,
   MessageSquare,
 } from 'lucide-react';
+import type { StoredAttachment } from '@neyra/contracts';
 import { Button, IconButton } from '../ui';
 import { playButtonClickSound } from '../../lib/ui-sounds';
 
 export type ThreadPanelTab = 'about' | 'pinned' | 'attachments' | 'voice' | 'settings';
 
-export interface ChatMessageAttachment {
-  id: string;
-  name: string;
-  size: number;
-  isImage: boolean;
-}
+export type ChatMessageAttachment = StoredAttachment;
 
 export interface ChatMessageItem {
   id: string;
@@ -567,7 +563,7 @@ export function ThreadPanel({
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
                         <div className="w-8 h-8 rounded-[var(--radius-sm)] bg-[var(--surface-3)] flex items-center justify-center text-[var(--text-muted)] shrink-0">
-                          {att.isImage ? <ImageIcon size={15} /> : <FileText size={15} />}
+                          {att.kind === 'image' ? <ImageIcon size={15} /> : <FileText size={15} />}
                         </div>
                         <div className="min-w-0">
                           <div

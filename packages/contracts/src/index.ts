@@ -1,29 +1,56 @@
 import { z } from 'zod';
 const identity = { username: z.string().max(120).optional(), platform_user_id: z.string().max(120).optional(), channel_id: z.string().max(120).optional(), author_display_name: z.string().max(120).optional(), platform: z.string().max(40).optional() };
-// Target v2 contract (§9/§15). model/attachments/stop require P1 core support.
-export const AttachmentSchema = z.object({ kind: z.enum(['image', 'file', 'audio', 'text']), path: z.string().optional(), url: z.string().url().optional(), mime: z.string().min(1), text: z.string().optional() }).strict().refine(v => !!(v.path || v.url || v.text), 'Attachment requires a source');
+// Контракт ядра #73 (StoredAttachment): вложение сначала загружается в /v1/attachments,
+// в чат уходят только метаданные уже сохранённого файла. Лимиты ядра: 4 файла, 8 МБ каждый.
+export const ATTACHMENT_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/pdf', 'text/plain', 'text/markdown'] as const;
+export const AttachmentSchema = z.object({
+  id: z.string().regex(/^[a-f0-9]{32}$/, 'Attachment id must be 32 lowercase hex characters'),
+  kind: z.enum(['image', 'file']),
+  mime: z.enum(ATTACHMENT_MIMES),
+  name: z.string().min(1).max(200),
+  size: z.number().int().positive().max(8 * 1024 * 1024),
+}).strict();
+export type StoredAttachment = z.infer<typeof AttachmentSchema>;
+// Лейны и лимиты контекста в формате ядра #73: неизвестные поля отсутствуют, а не равны нулю.
+export const ContextLaneUsageSchema = z.object({
+  used: z.number().int().nonnegative().optional(),
+  limit: z.number().int().positive().optional(),
+}).strict();
+export const ContextUsageSchema = z.object({
+  total: ContextLaneUsageSchema.optional(),
+  lanes: z.object({
+    talk: ContextLaneUsageSchema.optional(),
+    brain: ContextLaneUsageSchema.optional(),
+    memory: ContextLaneUsageSchema.optional(),
+    vision: ContextLaneUsageSchema.optional(),
+  }).strict().optional(),
+}).strict();
+export type ContextUsage = z.infer<typeof ContextUsageSchema>;
 // Личность пользователя подписывает BFF из сессии; клиент не может её прислать.
-export const ChatRequestSchema = z.object({ text: z.string().min(1).max(6000), chat_id: z.string().uuid().optional(), model: z.string().min(1).optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
+export const ChatRequestSchema = z.object({ text: z.string().min(1).max(6000), chat_id: z.string().uuid().optional(), model: z.string().min(1).optional(), attachments: z.array(AttachmentSchema).max(4).optional() }).strict();
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
-export const ChatMessageSchema = z.object({ id: z.union([z.string(), z.number()]).optional(), turn_id: z.string().optional(), request_id: z.string().uuid().optional(), role: z.enum(['user', 'assistant', 'system']), content: z.string(), model: z.string().optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
+export const ChatMessageSchema = z.object({ id: z.union([z.string(), z.number()]).optional(), turn_id: z.string().optional(), request_id: z.string().uuid().optional(), role: z.enum(['user', 'assistant', 'system']), content: z.string(), model: z.string().optional(), attachments: z.array(AttachmentSchema).max(4).optional() }).strict();
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 // The kernel's WsChatMessage has no `platform` (REST only) and forbids unknown fields, so the
 // WS variant is built from explicit fields. model/attachments are target v2 (§15).
-const wsChat = z.object({ type: z.literal('chat'), text: z.string().min(1).max(6000), username: identity.username, platform_user_id: identity.platform_user_id, channel_id: identity.channel_id, author_display_name: identity.author_display_name, display_name: z.string().max(120).optional(), model: z.string().min(1).optional(), attachments: z.array(AttachmentSchema).optional() }).strict();
+const wsChat = z.object({ type: z.literal('chat'), text: z.string().min(1).max(6000), username: identity.username, platform_user_id: identity.platform_user_id, channel_id: identity.channel_id, author_display_name: identity.author_display_name, display_name: z.string().max(120).optional(), model: z.string().min(1).optional(), attachments: z.array(AttachmentSchema).max(4).optional() }).strict();
 export const WsChatMessageSchema = z.discriminatedUnion('type', [wsChat, z.object({ type: z.literal('ping') }).strict(), z.object({ type: z.literal('stop') }).strict()]);
 export const WsChatEventSchema = z.discriminatedUnion('type', [
  z.object({ type: z.literal('hello'), trace_id: z.string(), protocol: z.literal('neyra.ws.chat.v1'), role: z.string(), ping_interval_seconds: z.number(), idle_timeout_seconds: z.number(), reconnect: z.literal('open_new_socket') }),
  z.object({ type: z.literal('pong'), ts: z.string(), trace_id: z.string() }),
  z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string() }),
  z.object({ type: z.literal('thinking'), text: z.string().optional(), trace_id: z.string().optional() }),
- z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), model_trace: z.unknown().optional(), trace_id: z.string() }),
+ z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), usage: ContextUsageSchema.optional(), model_trace: z.unknown().optional(), trace_id: z.string() }),
  z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string(), model_trace: z.unknown().optional() })
 ]);
 export type WsChatEvent = z.infer<typeof WsChatEventSchema>;
 export const SseChatEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('token'), text: z.string() }).strict(),
   z.object({ type: z.literal('thinking'), text: z.string().optional() }).strict(),
-  z.object({ type: z.literal('done'), text: z.string() }).strict(),
+  // Ядро #73 сообщает фазу до первого токена; текст фазы — публичная подпись из ядра.
+  z.object({ type: z.literal('phase'), phase: z.string().min(1).max(40), label: z.string().min(1).max(120).optional() }).strict(),
+  // usage приходит из ядра на done; без данных поле отсутствует, и индикатор скрыт.
+  z.object({ type: z.literal('done'), text: z.string(), usage: ContextUsageSchema.optional() }).strict(),
   z.object({ type: z.literal('error'), code: z.string(), message: z.string() }).strict(),
 ]);
 export type SseChatEvent = z.infer<typeof SseChatEventSchema>;

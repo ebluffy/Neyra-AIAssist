@@ -22,6 +22,9 @@ export async function GET(request: Request, context: { params: Promise<{ personI
   if (!parsed.ok) return jsonError(400, 'bad_request', parsed.message);
 
   const result = await readDiscordUserStats(id, parsed.query);
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, available: false, message: result.message });
+  }
   if (result.state !== 'ok') return discordFailure(result, 'Ядро не отдало статистику.');
   return jsonOk(result.data ?? {});
 }

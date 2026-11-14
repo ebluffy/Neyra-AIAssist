@@ -7,8 +7,8 @@ export interface Member {
   display_name: string | null; is_bot: boolean | number;
 }
 export interface Channel {id: string; name: string | null; type: string | null; parent_id: string | null}
-export interface GuildDetail {guild: Guild; channels: Channel[]; members: Member[]; counts: {channels: number; members: number}}
-export interface Catalog<T> {items: T[]; available?: boolean; total?: number; next_cursor?: number | null}
+export interface GuildDetail {guild: Guild; channels: Channel[]; members: Member[]; counts: {channels: number; members: number}; available?: boolean; message?: string}
+export interface Catalog<T> {items: T[]; available?: boolean; total?: number; next_cursor?: number | null; message?: string}
 export interface Message {
   id: number;
   ts: string;

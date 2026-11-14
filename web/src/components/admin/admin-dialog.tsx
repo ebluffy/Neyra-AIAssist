@@ -723,6 +723,7 @@ function ModelsSection() {
     >
   >({});
   const [savingLane, setSavingLane] = useState<string | null>(null);
+  const [unsupported, setUnsupported] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Record<string, { tone: 'ok' | 'error' | 'warn'; text: string }>>({});
 
   const loadConfig = useCallback(async () => {
@@ -734,8 +735,16 @@ function ModelsSection() {
       if (!res.ok || json?.ok === false) {
         throw new Error(json?.message || 'Ядро не отдало настройки моделей.');
       }
+      const payload = json.data?.config === undefined ? json.data : json.data.config;
+      if (payload?.supported === false || json.data?.supported === false) {
+        const message = payload?.message || json.data?.message || 'Ядро не поддерживает настройки моделей.';
+        setUnsupported(message);
+        setConfig(null);
+        return;
+      }
       const data: ConfigSnapshot = json.data?.config || json.config || json.data;
       setConfig(data);
+      setUnsupported(null);
 
       const initialForms: Record<string, any> = {};
       if (data?.lanes) {
@@ -807,6 +816,9 @@ function ModelsSection() {
       if (!res.ok || json?.ok === false) {
         throw new Error(json?.message || 'Ядро не приняло настройки лейна.');
       }
+      if (json?.data?.supported === false) {
+        throw new Error(json.data.message || 'Ядро не поддерживает настройки моделей.');
+      }
 
       const restart = Boolean(json?.data?.requires_restart || json?.requires_restart);
       setFeedback((prev) => ({
@@ -827,6 +839,15 @@ function ModelsSection() {
 
   if (loading) {
     return <LoadingState message="Загрузка настроек моделей…" />;
+  }
+
+  if (unsupported) {
+    return (
+      <div role="status" className="flex flex-col items-start gap-3 rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--surface-3)] p-4 text-xs text-[var(--text)]">
+        <p>{unsupported}</p>
+        <Button variant="secondary" size="sm" onClick={() => void loadConfig()}>Проверить снова</Button>
+      </div>
+    );
   }
 
   if (error && !config) {
@@ -1038,6 +1059,7 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
   const [config, setConfig] = useState<ConfigSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [configUnsupported, setConfigUnsupported] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -1055,8 +1077,14 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
       }
 
       setIntegrations(intJson?.data || intJson || null);
-      const cfgData = cfgJson?.data?.config || cfgJson?.config || null;
-      setConfig(cfgData);
+      if (cfgJson?.data?.supported === false) {
+        setConfigUnsupported(cfgJson.data.message || 'Ядро не поддерживает настройки провайдеров и MCP.');
+        setConfig(null);
+      } else {
+        const cfgData = cfgJson?.data?.config || cfgJson?.config || null;
+        setConfig(cfgData);
+        setConfigUnsupported(null);
+      }
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка загрузки интеграций.');
@@ -1079,14 +1107,19 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
   }
 
   const activeProviders = integrations?.providers?.names || config?.providers || [];
-  const secrets = config?.secrets || {
+  const secrets = config?.secrets || (configUnsupported ? {} : {
     OPENAI_API_KEY: 'set',
     OPENROUTER_API_KEY: 'set',
     AIHOPE_API_KEY: 'missing',
-  };
+  });
 
   return (
     <div className="space-y-5">
+      {configUnsupported && (
+        <div role="status" className="rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--surface-3)] p-3 text-xs text-[var(--text)]">
+          {configUnsupported}
+        </div>
+      )}
       <div>
         <h3 className="text-base font-semibold text-[var(--text)]">Интеграции и подключения</h3>
         <p className="text-xs text-[var(--text-muted)] mt-0.5">

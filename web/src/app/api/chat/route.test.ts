@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { POST } from './route';
 import { verifyIdentityToken } from '../../../../lib/identity';
 import { getAuth } from '../../../../lib/auth';
+import { CHAT_REQUESTS_PER_WINDOW, resetChatLimitsForTests } from '../../../../lib/chat-limits';
 
 const factory = vi.hoisted(() => ({ create: vi.fn() }));
 vi.mock('../../../../lib/auth', () => ({ getAuth: vi.fn() }));
@@ -26,6 +27,7 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetChatLimitsForTests();
     vi.stubEnv('NEYRA_WS_URL', 'wss://core.test');
     vi.stubEnv('NEYRA_SERVICE_KEY', 'public-test-service-key');
     vi.stubEnv('NEYRA_IDENTITY_JWT_SECRET', jwtSecret);
@@ -47,13 +49,13 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     return new Request('http://localhost/api/chat', { method: 'POST', body: JSON.stringify(body), signal });
   }
   function message(event: unknown) { socket.emit('message', Buffer.from(JSON.stringify(event)), false); }
-  async function connecting(signal?: AbortSignal) {
-    const pending = POST(request(signal));
+  async function connecting(signal?: AbortSignal, body?: unknown) {
+    const pending = POST(request(signal, body));
     await vi.waitFor(() => expect(factory.create).toHaveBeenCalledTimes(1));
     return { pending };
   }
-  async function hello(signal?: AbortSignal) {
-    const { pending } = await connecting(signal);
+  async function hello(signal?: AbortSignal, body?: unknown) {
+    const { pending } = await connecting(signal, body);
     socket.readyState = 1;
     socket.emit('open');
     expect(socket.send).not.toHaveBeenCalled();
@@ -64,6 +66,59 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
   it('returns 401 without a session and never connects to core', async () => {
     vi.mocked(getAuth).mockReturnValue({ api: { getSession: vi.fn().mockResolvedValue(null) } } as unknown as ReturnType<typeof getAuth>);
     expect((await POST(request())).status).toBe(401);
+    expect(factory.create).not.toHaveBeenCalled();
+  });
+
+  it('does not accept the x-smoke-test bypass in production code (AR-16)', async () => {
+    vi.stubEnv('SMOKE_TEST', '1');
+    vi.mocked(getAuth).mockReturnValue({ api: { getSession: vi.fn().mockResolvedValue(null) } } as unknown as ReturnType<typeof getAuth>);
+    const response = await POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-smoke-test': '1' },
+      body: JSON.stringify({ text: 'Привет!', chat_id: validUuid }),
+    }));
+    expect(response.status).toBe(401);
+    expect(factory.create).not.toHaveBeenCalled();
+  });
+
+  it('forwards stored attachments into the WS chat frame and rejects foreign shapes (AR-14)', async () => {
+    const stored = { id: 'a'.repeat(32), kind: 'image', mime: 'image/png', name: 'cat.png', size: 5 };
+    const response = await hello(undefined, { text: 'Привет!', chat_id: validUuid, attachments: [stored] });
+    message({ type: 'done', text: 'ok' });
+    expect(response.status).toBe(200);
+    expect(JSON.parse(socket.send.mock.calls[0][0])).toMatchObject({ attachments: [stored] });
+
+    resetChatLimitsForTests();
+    const bad = await POST(request(undefined, {
+      text: 'Привет!',
+      chat_id: validUuid,
+      attachments: [{ id: crypto.randomUUID(), name: 'cat.png', size: 5, isImage: true }],
+    }));
+    expect(bad.status).toBe(400);
+  });
+
+  it('passes phase and usage from the core and keeps the indicator data intact (AR-15)', async () => {
+    const response = await hello();
+    message({ type: 'phase', phase: 'retrieval', label: 'Собираю контекст…' });
+    message({ type: 'token', text: 'ответ' });
+    message({
+      type: 'done',
+      text: 'ответ',
+      usage: { total: { used: 10, limit: 100 }, lanes: { talk: { used: 10, limit: 100 }, brain: {} } },
+    });
+    const text = await response.text();
+    expect(text).toContain('data: {"type":"phase","phase":"retrieval","label":"Собираю контекст…"}\n\n');
+    expect(text).toContain('"usage":{"total":{"used":10,"limit":100},"lanes":{"talk":{"used":10,"limit":100},"brain":{}}}');
+  });
+
+  it('limits chat requests per user to a minute window (AR-17)', async () => {
+    for (let i = 0; i < CHAT_REQUESTS_PER_WINDOW; i++) {
+      expect((await POST(request(undefined, { text: '' }))).status).toBe(400);
+    }
+    const blocked = await POST(request());
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get('retry-after')).toBeTruthy();
+    expect(await blocked.json()).toMatchObject({ error: 'rate_limited' });
     expect(factory.create).not.toHaveBeenCalled();
   });
 

@@ -54,6 +54,14 @@ function discordProvider() {
   };
 }
 
+// Привязка OAuth-аккаунта — только при подтверждённом email провайдера и локального
+// аккаунта. Discord не входит в trustedProviders: неподтверждённый адрес из Discord
+// не должен привязываться к чужому существующему профилю с тем же email.
+export const ACCOUNT_LINKING = {
+  enabled: true,
+  requireLocalEmailVerified: true,
+} as const;
+
 function createAuth() {
   const env = readAuthEnv();
   return betterAuth({
@@ -74,9 +82,9 @@ function createAuth() {
     },
     user: { additionalFields: { role: roleField } },
     socialProviders: discordProvider(),
-    // Discord считаем доверенным провайдером: при совпадении подтверждённого email
-    // вход привязывается к существующему профилю, а не создаёт второй.
-    account: { accountLinking: { enabled: true, trustedProviders: ['discord'] } },
+    // Implicit linking по совпадению email разрешено Better Auth только когда провайдер
+    // подтвердил email (иначе isTrustedProvider=false и userInfo.emailVerified=false).
+    account: { accountLinking: ACCOUNT_LINKING },
     // No automatic promotion on sign-up: an e-mail is not proof of ownership, and an open
     // registration would let a stranger claim a listed admin address. The first admin is
     // granted from the server with scripts/grant-admin.mjs.

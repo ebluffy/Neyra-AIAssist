@@ -14,6 +14,9 @@ export async function GET(request: Request) {
   if (raw.length > 120) return jsonError(400, 'bad_request', 'Некорректный идентификатор сервера.');
 
   const result = await readDiscordActivity(raw || undefined);
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, available: false, channels: [], people: [], scanned: 0, truncated: false, message: result.message });
+  }
   if (result.state !== 'ok') return discordFailure(result, 'Ядро не отдало сводку диалогов.');
   return jsonOk(result.data ?? {});
 }

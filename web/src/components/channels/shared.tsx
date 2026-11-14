@@ -12,4 +12,6 @@ export function Failure({message,retry}:{message:string;retry:()=>void}) {
 export function Empty({title,text}:{title:string;text:string}) {
   return <div className={s.empty}><Hash size={28} strokeWidth={1} aria-hidden="true" /><h2>{title}</h2><p>{text}</p></div>;
 }
-export function Unavailable() {return <Empty title="Хаб памяти недоступен" text="Данные сейчас нельзя получить. Показания не заменены нулями." />;}
+export function Unavailable({message,title='Хаб памяти недоступен'}:{message?:string;title?:string}) {
+  return <Empty title={title} text={message || 'Данные сейчас нельзя получить. Показания не заменены нулями.'} />;
+}

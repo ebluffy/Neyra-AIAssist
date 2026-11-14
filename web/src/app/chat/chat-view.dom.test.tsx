@@ -232,10 +232,7 @@ describe('ChatView conversation', () => {
       <ChatView
         user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }}
         initialUsage={{
-          prompt_tokens: 100000,
-          completion_tokens: 20000,
-          context_limit: 1000000,
-          context_used: 120000,
+          total: { used: 120000, limit: 1000000 },
           lanes: {
             brain: { used: 50000, limit: 500000 },
             talk: { used: 40000, limit: 250000 },
@@ -262,10 +259,7 @@ describe('ChatView conversation', () => {
       <ChatView
         user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }}
         initialUsage={{
-          prompt_tokens: 100000,
-          completion_tokens: 20000,
-          context_limit: 1000000,
-          context_used: 120000,
+          total: { used: 120000, limit: 1000000 },
           policy: { compaction_enabled: false },
           lanes: {
             brain: { used: 50000, limit: 500000 },
@@ -392,6 +386,40 @@ describe('ChatView conversation', () => {
     expect(toggleBtn.getAttribute('aria-expanded')).toBe('false');
     unmount();
     window.localStorage.clear();
+  });
+
+  it('uploads a selected file and sends only the stored attachment metadata (AR-14)', async () => {
+    const stored = { id: 'b'.repeat(32), kind: 'file', mime: 'text/plain', name: 'doc.txt', size: 5 };
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      if (String(url) === '/api/attachments') {
+        return new Response(JSON.stringify({ attachments: [stored] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseResponse('ок');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { container } = render(
+      <ChatView user={{ id: 'u-att', email: 'att@example.com', name: 'Атт', role: 'user' }} />
+    );
+
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: { files: [new File(['hello'], 'doc.txt', { type: 'text/plain' })] },
+    });
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/attachments')).toBe(true));
+    expect(await screen.findByText('doc.txt')).toBeTruthy();
+
+    const input = screen.getByPlaceholderText(ru.placeholder);
+    fireEvent.change(input, { target: { value: 'смотри файл' } });
+    fireEvent.submit(input.closest('form')!);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/chat')).toBe(true));
+
+    const chatCall = fetchMock.mock.calls.find(([url]) => String(url) === '/api/chat')!;
+    const body = JSON.parse(String(chatCall[1]?.body));
+    expect(body.attachments).toEqual([stored]);
+    expect(body.text).toBe('смотри файл');
   });
 
   it('pins message from message action button and syncs to localStorage and thread panel', () => {

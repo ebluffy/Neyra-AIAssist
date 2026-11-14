@@ -8,6 +8,8 @@ interface Tail {
   count: number;
   truncated: boolean;
   missing: boolean;
+  supported?: boolean;
+  message?: string;
 }
 
 const buttonClass = 'rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-xs hover:bg-white/5 disabled:opacity-40';
@@ -26,6 +28,11 @@ export function LogTail({ lines = 200 }: { lines?: number }) {
       const payload = await response.json().catch(() => null) as { ok?: boolean; data?: Tail; message?: string } | null;
       if (!response.ok || payload?.ok === false || !payload?.data) {
         throw new Error(payload?.message ?? 'Ядро не отдало лог.');
+      }
+      if (payload.data.supported === false) {
+        setData(null);
+        setError(payload.data.message ?? 'Ядро не поддерживает просмотр логов.');
+        return;
       }
       setData(payload.data);
       setUpdatedAt(new Date().toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow' }));

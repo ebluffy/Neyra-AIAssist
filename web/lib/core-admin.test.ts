@@ -91,6 +91,22 @@ describe('coreGet', () => {
     const result = await coreGet('/v1/x', { env, fetchImpl: (async () => jsonResponse({ ok: false })) as typeof fetch });
     expect(result.state).toBe('error');
   });
+
+  it('marks a bare FastAPI 404/405 as unsupported, but keeps a structured 404 as not found', async () => {
+    const missing = await coreGet('/v1/providers', {
+      env,
+      fetchImpl: (async () => jsonResponse({ detail: 'Not Found' }, 404)) as typeof fetch,
+    });
+    expect(missing.state).toBe('unsupported');
+    expect(missing.message).toContain('не поддерживает');
+
+    const notFound = await coreGet('/v1/admin/discord/guilds/x', {
+      env,
+      fetchImpl: (async () => jsonResponse({ ok: false, error: { message: 'Сервер не найден' } }, 404)) as typeof fetch,
+    });
+    expect(notFound.state).toBe('error');
+    expect(notFound.message).toBe('Сервер не найден');
+  });
 });
 
 describe('corePost', () => {

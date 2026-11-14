@@ -59,6 +59,7 @@ export function ProvidersSection() {
   const [data, setData] = useState<ProvidersPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [unsupported, setUnsupported] = useState<string | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -72,7 +73,14 @@ export function ProvidersSection() {
       const response = await fetch('/api/admin/providers', { cache: 'no-store' });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.message || 'Ядро не отдало провайдеров.');
-      setData(payload?.data ?? payload);
+      const next = payload?.data ?? payload;
+      if (next?.supported === false) {
+        setUnsupported(next.message || 'Ядро не поддерживает управление провайдерами.');
+        setData({ providers: [], presets: [], lanes: [] });
+        return;
+      }
+      setUnsupported(null);
+      setData(next);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка загрузки провайдеров.');
     } finally {
@@ -127,6 +135,7 @@ export function ProvidersSection() {
       });
       const savedPayload = await saved.json().catch(() => null);
       if (!saved.ok) throw new Error(savedPayload?.message || 'Ядро не приняло провайдера.');
+      if (savedPayload?.supported === false) throw new Error(savedPayload.message || 'Ядро не поддерживает управление провайдерами.');
 
       if (form.apiKey.trim()) {
         const secret = await fetch(`/api/admin/providers/${encodeURIComponent(name)}/secret`, {
@@ -136,6 +145,7 @@ export function ProvidersSection() {
         });
         const secretPayload = await secret.json().catch(() => null);
         if (!secret.ok) throw new Error(secretPayload?.message || 'Провайдер сохранён, но ключ не принят.');
+        if (secretPayload?.supported === false) throw new Error(secretPayload.message || 'Ядро не поддерживает управление провайдерами.');
       }
       setForm(null);
       setNotice(`Провайдер «${name}» сохранён${form.apiKey.trim() ? ' вместе с ключом' : ''}.`);
@@ -154,6 +164,7 @@ export function ProvidersSection() {
       const response = await fetch(`/api/admin/providers/${encodeURIComponent(name)}`, { method: 'DELETE' });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.message || 'Ядро не удалило провайдера.');
+      if (payload?.supported === false) throw new Error(payload.message || 'Ядро не поддерживает управление провайдерами.');
       setConfirmDelete(null);
       setNotice(`Провайдер «${name}» удалён вместе с ключом.`);
       await load();
@@ -171,6 +182,7 @@ export function ProvidersSection() {
       const response = await fetch(`/api/admin/providers/${encodeURIComponent(name)}`, { method: 'POST' });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.message || 'Ядро не перенесло ключ.');
+      if (payload?.supported === false) throw new Error(payload.message || 'Ядро не поддерживает управление провайдерами.');
       setNotice(`Ключ провайдера «${name}» перенесён в шифрованное хранилище.`);
       await load();
     } catch (e) {
@@ -187,6 +199,7 @@ export function ProvidersSection() {
       const response = await fetch(`/api/admin/providers/${encodeURIComponent(name)}/secret`, { method: 'DELETE' });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.message || 'Ядро не убрало ключ.');
+      if (payload?.supported === false) throw new Error(payload.message || 'Ядро не поддерживает управление провайдерами.');
       setNotice(`Ключ провайдера «${name}» удалён.`);
       await load();
     } catch (e) {
@@ -233,12 +246,22 @@ export function ProvidersSection() {
             size="sm"
             onClick={() => void load()}
           />
-          <Button variant="primary" size="sm" className="gap-1.5" onClick={() => startCreate()}>
+          <Button variant="primary" size="sm" className="gap-1.5" onClick={() => startCreate()} disabled={Boolean(unsupported)}>
             <Plus size={14} />
             Добавить провайдера
           </Button>
         </div>
       </div>
+
+      {unsupported && (
+        <div role="status" className="flex items-center gap-2 p-3 rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-3)] text-xs text-[var(--text)]">
+          <AlertCircle size={14} />
+          <span>{unsupported}</span>
+          <Button variant="secondary" size="sm" className="ml-auto" onClick={() => void load()}>
+            Проверить снова
+          </Button>
+        </div>
+      )}
 
       {error && (
         <div role="alert" className="flex items-center gap-2 p-3 rounded-[var(--radius-sm)] border border-[var(--danger)]/40 bg-[var(--danger-quiet)] text-xs text-[var(--danger)]">

@@ -23,6 +23,9 @@ export async function GET(request: Request) {
     readDiscordMembers(parsed.query),
     discordPersonMap(),
   ]);
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, available: false, items: [], total: 0, message: result.message });
+  }
   if (result.state !== 'ok') return discordFailure(result, 'Ядро не отдало участников.');
   const data = result.data;
   if (!data) return jsonOk({});
