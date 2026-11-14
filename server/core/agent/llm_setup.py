@@ -37,6 +37,41 @@ def _force_chat_completions(provider: str) -> dict[str, Any]:
     return {}
 
 
+THINKING_EFFORTS: tuple[str, ...] = ("default", "off", "low", "medium", "high", "max")
+
+
+def _lane_thinking_effort(agent: Any, lane: str) -> str:
+    """Режим рассуждения лейна: llm.<lane>_model.thinking_effort.
+
+    Старый булев ``thinking`` поддерживается: false → off, true → default.
+    """
+    llm = agent.config.get("llm") if isinstance(agent.config.get("llm"), dict) else {}
+    role = llm.get(f"{lane}_model") if isinstance(llm, dict) else None
+    if isinstance(role, dict):
+        raw = role.get("thinking_effort")
+        if isinstance(raw, str) and raw.strip().lower() in THINKING_EFFORTS:
+            return raw.strip().lower()
+        legacy = role.get("thinking")
+        if isinstance(legacy, bool):
+            return "default" if legacy else "off"
+    return "default"
+
+
+def _lane_extra_body(agent: Any, lane: str, base: dict[str, Any]) -> dict[str, Any]:
+    """extra_body для лейна: off — без think, low/medium/high/max — reasoning_effort."""
+    body = dict(base)
+    effort = _lane_thinking_effort(agent, lane)
+    if effort == "off":
+        kwargs = body.get("chat_template_kwargs")
+        merged = dict(kwargs) if isinstance(kwargs, dict) else {}
+        merged["enable_thinking"] = False
+        body["chat_template_kwargs"] = merged
+    elif effort in {"low", "medium", "high", "max"}:
+        body["reasoning_effort"] = effort
+    return body
+
+
+
 def setup_llm_connection(agent: Any) -> None:
     """Resolve default + per-role provider connections and build ChatOpenAI clients."""
     from core.llm.profile import resolve_openai_compatible_connection
@@ -124,6 +159,31 @@ def setup_openai_compatible_llm(agent: Any) -> None:
                     conn.provider,
                     conn.provider,
                 )
+        elif conn.api_key in {"local", "missing-api-key"}:
+            # Ключа нет: спрашиваем сам шлюз про /models. Открытый локальный
+            # сервер работает без ключа, платный ответит 401 — тогда ключ нужен.
+            from core.llm.provider_probe import probe_models
+
+            probe = probe_models(conn.base_url)
+            if probe.state == "open":
+                logger.info(
+                    "Провайдер %s доступен без ключа: моделей %s",
+                    conn.provider,
+                    probe.models if probe.models is not None else "?",
+                )
+            elif probe.state == "auth_required":
+                logger.error(
+                    "Провайдер %s требует API-ключ: добавьте его в Провайдеры → Ключ (%s)",
+                    conn.provider,
+                    conn.base_url,
+                )
+            else:
+                logger.warning(
+                    "Провайдер %s сейчас недоступен (%s): %s",
+                    conn.provider,
+                    probe.message,
+                    conn.base_url,
+                )
 
     talk_timeout = float(cfg.get("timeout_seconds", cfg.get("primary_timeout_seconds", 120.0)))
     talk_retries = int(cfg.get("max_retries", cfg.get("primary_max_retries", 1)))
@@ -140,6 +200,10 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         extra_body["reasoning_enabled"] = bool(cfg.get("reasoning_enabled"))
     if "include_reasoning" in cfg:
         extra_body["include_reasoning"] = bool(cfg.get("include_reasoning"))
+    extra_talk = _lane_extra_body(agent, "talk", extra_body)
+    extra_brain = _lane_extra_body(agent, "brain", extra_body)
+    extra_memory = _lane_extra_body(agent, "memory", extra_body)
+    extra_vision = _lane_extra_body(agent, "vision", extra_body)
 
     hdr_talk = dict(conn_talk.default_headers)
     talk_kwargs: dict[str, Any] = {
@@ -154,13 +218,13 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "streaming": True,
         "timeout": talk_timeout,
         "max_retries": talk_retries,
-        "model_kwargs": {"extra_body": extra_body} if extra_body else {},
+        "model_kwargs": {"extra_body": extra_talk} if extra_talk else {},
         "default_headers": hdr_talk,
         "include_response_headers": True,
         "stream_usage": bool(conn_talk.capabilities.get("supports_stream_usage")),
     }
     talk_kwargs.update(_force_chat_completions(conn_talk.provider))
-    agent.llm_talk = ChatOpenAI(**talk_kwargs)
+    talk_client = ChatOpenAI(**talk_kwargs)
     # Do not bind stop=… here: some gateways (aihope / deepseek-v4-*) reject
     # stop sequences with gateway_error 400 Invalid request. Think blocks are
     # stripped in reply_postprocess.extract_think_blocks instead.
@@ -176,14 +240,14 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "streaming": False,
         "timeout": brain_timeout,
         "max_retries": brain_retries,
-        "model_kwargs": {"extra_body": extra_body} if extra_body else {},
+        "model_kwargs": {"extra_body": extra_brain} if extra_brain else {},
         "default_headers": hdr_brain,
         "include_response_headers": True,
     }
     brain_llm_kwargs.update(_force_chat_completions(conn_brain.provider))
     if agent.brain_max_tokens is not None:
         brain_llm_kwargs["max_tokens"] = agent.brain_max_tokens
-    agent.llm_brain = ChatOpenAI(**brain_llm_kwargs)
+    brain_client = ChatOpenAI(**brain_llm_kwargs)
 
     hdr_memory = dict(conn_memory.default_headers)
     hdr_memory["X-Title"] = "Neyra Memory"
@@ -195,19 +259,25 @@ def setup_openai_compatible_llm(agent: Any) -> None:
         "streaming": False,
         "timeout": reflection_timeout,
         "max_retries": reflection_retries,
+        "model_kwargs": {"extra_body": extra_memory} if extra_memory else {},
         "default_headers": hdr_memory,
         "include_response_headers": True,
     }
     memory_llm_kwargs.update(_force_chat_completions(conn_memory.provider))
     if agent.reflection_max_tokens is not None:
         memory_llm_kwargs["max_tokens"] = agent.reflection_max_tokens
-    agent.llm_memory = ChatOpenAI(**memory_llm_kwargs)
-    agent.llm_reflection = agent.llm_memory
+    memory_client = ChatOpenAI(**memory_llm_kwargs)
+
+    # Публикуем собранные клиенты одним блоком: читатели не видят полупересборку.
+    agent.llm_talk = talk_client
+    agent.llm_brain = brain_client
+    agent.llm_memory = memory_client
+    agent.llm_reflection = memory_client
     agent.llm_memory_model = memory_model
     agent.llm_reflection_model = memory_model
 
-    agent.llm_primary = agent.llm_talk
-    agent.llm = agent.llm_talk
+    agent.llm_primary = talk_client
+    agent.llm = talk_client
     agent.llm_model = talk_model
     agent.llm_talk_model = talk_model
     agent.llm_primary_model = talk_model
@@ -259,7 +329,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     )
     logger.info("LLM vision_model id (resolved)=%s @%s", vision_model_id, conn_vision.provider)
 
-    agent.llm_with_tools = agent.llm_brain
+    agent.llm_with_tools = brain_client
     agent.llm_capabilities = dict(conn_talk.capabilities)
 
     from core.llm.profile import merged_vision_pipeline
@@ -268,7 +338,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
     agent.llm_vision = None
     if vis.get("enabled"):
         if vis.get("use_brain_model_for_vision"):
-            agent.llm_vision = agent.llm_brain
+            agent.llm_vision = brain_client
             logger.info(
                 "Зрение: unified brain — нативный мультимодальный ввод (%s@%s).",
                 brain_model,
@@ -286,7 +356,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
                 max_tokens=agent.vision_max_tokens,
                 streaming=True,
                 timeout=float(cfg.get("vision_timeout_seconds", 180)),
-                model_kwargs={"extra_body": extra_body} if extra_body else {},
+                model_kwargs={"extra_body": extra_vision} if extra_vision else {},
                 default_headers=hdr_vision,
                 include_response_headers=True,
                 **_force_chat_completions(conn_vision.provider),

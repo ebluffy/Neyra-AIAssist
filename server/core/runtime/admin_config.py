@@ -60,7 +60,7 @@ _LANE_FLOAT_FIELDS: dict[str, tuple[float, float]] = {
 def _lane_paths() -> set[str]:
     out: set[str] = set()
     for lane in LANES:
-        for field in ("provider", "model", *_LANE_FLOAT_FIELDS, *_LANE_INT_FIELDS):
+        for field in ("provider", "model", "thinking", "thinking_effort", *_LANE_FLOAT_FIELDS, *_LANE_INT_FIELDS):
             # talk caps the visible reply with reply_max_tokens; max_tokens is unused there.
             if lane != "talk" and field == "reply_max_tokens":
                 continue
@@ -151,6 +151,24 @@ def validate_admin_updates(
                     f"{path}: провайдер '{provider}' не настроен в llm.providers.",
                 )
             clean[path] = provider
+            continue
+
+        if lane_field == "thinking_effort":
+            from core.agent.llm_setup import THINKING_EFFORTS
+
+            effort = str(value or "").strip().lower()
+            if effort not in THINKING_EFFORTS:
+                raise AdminConfigError(
+                    "invalid_value",
+                    f"{path}: ожидается одно из {', '.join(THINKING_EFFORTS)}.",
+                )
+            clean[path] = effort
+            continue
+
+        if lane_field == "thinking":
+            if type(value) is not bool:
+                raise AdminConfigError("invalid_value", f"{path}: ожидается true или false.")
+            clean[path] = value
             continue
 
         if lane_field == "model":
@@ -282,6 +300,9 @@ def admin_config_snapshot(
             "context_window": role.get("context_window"),
             "max_tokens": role.get("max_tokens", role.get("reply_max_tokens")),
             "enabled": role.get("enabled"),
+            "thinking": role.get("thinking"),
+            "thinking_effort": role.get("thinking_effort")
+            or ("default" if role.get("thinking") is True else "off" if role.get("thinking") is False else "default"),
         }
 
     providers = llm.get("providers") if isinstance(llm.get("providers"), Mapping) else {}
