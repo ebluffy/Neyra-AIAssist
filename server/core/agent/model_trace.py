@@ -43,6 +43,8 @@ class TurnTrace:
     kind: str = "turn"
     parent_turn_id: str | None = None
     memory_owner_id: str | None = None
+    # Verified web identity, if this turn came from a signed request. Never client-supplied.
+    person_id: str | None = None
     affect_generations: dict | None = None
     talk_session: object | None = field(default=None, repr=False)
     conversation_gate: object | None = field(default=None, repr=False)
@@ -180,6 +182,24 @@ def activity_for(agent):
 
 
 _RATE_LIMIT_CLASS = re.compile(r"ratelimit|rate_limit|too.?many|429", re.IGNORECASE)
+
+
+def is_rate_limit_error(exc: BaseException | str) -> bool:
+    """True only for the current exception (structural 429/RateLimit).
+
+    Bare "429" inside a token-count string is not a rate limit; require a word
+    boundary and the words "too many requests", not just "too many tokens".
+    """
+    if getattr(exc, "status_code", None) == 429 or getattr(exc, "http_status", None) == 429:
+        return True
+    name = type(exc).__name__
+    if re.search(r"ratelimit|rate_limit", name, re.IGNORECASE):
+        return True
+    text = str(exc)
+    return bool(
+        re.search(r"\b429\b", text)
+        or re.search(r"too many requests", text, re.IGNORECASE)
+    )
 
 
 def _report_rate_limit(report) -> str | None:

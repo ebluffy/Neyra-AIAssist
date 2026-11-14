@@ -25,7 +25,11 @@ def root(tmp_path, monkeypatch):
     assert unchanged, "CLI test modified the inherited process environment"
 
 
-def database(path, versions=range(1, 8)):
+def database(path, versions=None):
+    if versions is None:
+        from core.memory.migrations import MIGRATIONS
+
+        versions = range(1, len(MIGRATIONS) + 1)
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         conn.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY)")

@@ -190,6 +190,53 @@ CREATE INDEX IF NOT EXISTS idx_affect_mood_actor_ts ON affect_mood_events(actor_
 CREATE INDEX IF NOT EXISTS idx_affect_mood_ts ON affect_mood_events(ts);
 """
 
+# Version 8: Discord catalog (guilds/channels/members) and chat_log origin columns.
+# Old chat_log rows keep NULL platform/guild/message fields: no backfill is attempted.
+MIGRATION_008_SQL = """
+CREATE TABLE IF NOT EXISTS discord_guilds (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    icon_url TEXT,
+    description TEXT,
+    joined_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS discord_channels (
+    id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    name TEXT,
+    type TEXT,
+    parent_id TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_discord_channels_guild ON discord_channels(guild_id);
+
+CREATE TABLE IF NOT EXISTS discord_members (
+    guild_id TEXT NOT NULL,
+    discord_id TEXT NOT NULL,
+    person_id TEXT,
+    username TEXT,
+    display_name TEXT,
+    is_bot INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    PRIMARY KEY (guild_id, discord_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_discord_members_guild ON discord_members(guild_id);
+CREATE INDEX IF NOT EXISTS idx_discord_members_person ON discord_members(person_id);
+CREATE INDEX IF NOT EXISTS idx_discord_members_discord ON discord_members(discord_id);
+
+ALTER TABLE chat_log ADD COLUMN platform TEXT;
+ALTER TABLE chat_log ADD COLUMN guild_id TEXT;
+ALTER TABLE chat_log ADD COLUMN native_message_id TEXT;
+ALTER TABLE chat_log ADD COLUMN native_created_at TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_chat_log_guild_channel_ts ON chat_log(guild_id, channel_id, ts);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001_SQL),
     (2, MIGRATION_002_SQL),
@@ -198,4 +245,5 @@ MIGRATIONS: list[tuple[int, str]] = [
     (5, MIGRATION_005_SQL),
     (6, MIGRATION_006_SQL),
     (7, MIGRATION_007_SQL),
+    (8, MIGRATION_008_SQL),
 ]

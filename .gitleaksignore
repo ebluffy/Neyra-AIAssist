@@ -31,3 +31,11 @@ ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:g
 ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:generic-api-key:85
 ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:generic-api-key:111
 ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:generic-api-key:139
+# Fake vault fixtures in commit 97f26b5 before inline gitleaks:allow markers.
+97f26b5df66a9b9215eb2a8006242eff2d0b86aa:server/tests/test_provider_ar_fixes.py:generic-api-key:24
+97f26b5df66a9b9215eb2a8006242eff2d0b86aa:server/tests/test_provider_ar_fixes.py:generic-api-key:201
+# Fake fixtures in historical #76 commit 98fbc06; tip builds them at runtime.
+98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:248
+98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:249
+98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:255
+98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:265
