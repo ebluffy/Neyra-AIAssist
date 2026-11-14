@@ -733,11 +733,27 @@ class NeyraDiscordBot(discord.Client):
         if self._catalog is not None and guild is not None:
             self._catalog.submit("guild_delete", guild_id=str(guild.id))
 
+    def _start_catalog_sync(self) -> None:
+        if self._catalog is None:
+            return
+        if self._catalog_sync_task is None or self._catalog_sync_task.done():
+            self._catalog_sync_task = asyncio.create_task(
+                self._sync_catalog(), name="neyra-discord-catalog-sync"
+            )
+
+    async def _run_guild_sync(self, guild) -> None:
+        try:
+            await self._sync_guild(guild, datetime.now(timezone.utc).isoformat())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Discord catalog: guild join sync failed | guild=%s", getattr(guild, "id", "?"))
+
     async def on_guild_join(self, guild):
         if self._catalog is None or guild is None:
             return
         task = asyncio.create_task(
-            self._sync_guild(guild, datetime.now(timezone.utc).isoformat()),
+            self._run_guild_sync(guild),
             name=f"neyra-discord-guild-sync-{guild.id}",
         )
         self._catalog_guild_tasks.add(task)
@@ -785,12 +801,7 @@ class NeyraDiscordBot(discord.Client):
         # Shared runtime handle for in-process music + other Discord-adjacent plugins.
         self.agent.discord_client = self
         self._setup_catalog()
-        if self._catalog is not None and (
-            self._catalog_sync_task is None or self._catalog_sync_task.done()
-        ):
-            self._catalog_sync_task = asyncio.create_task(
-                self._sync_catalog(), name="neyra-discord-catalog-sync"
-            )
+        self._start_catalog_sync()
         await self.change_presence(
             activity=discord.Activity(type=discord.ActivityType.listening, name="текст и музыка · Нейра")
         )

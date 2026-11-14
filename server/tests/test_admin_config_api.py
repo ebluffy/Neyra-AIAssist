@@ -314,3 +314,32 @@ def test_config_put_failure_removes_layer_created_by_put(real_api, auth_headers,
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "llm_rebind_failed"
     assert not layer.exists()
+
+
+def test_parallel_config_puts_serialize_rebind(real_api, auth_headers, monkeypatch):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    http, agent = real_api
+    active = 0
+    peak = 0
+    guard = threading.Lock()
+
+    def setup():
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with guard:
+            active -= 1
+
+    monkeypatch.setattr(agent, "_setup_llm", setup)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda model: put_config(http, auth_headers, {"llm.talk_model.model": model}),
+            ["model-a", "model-b"],
+        ))
+    assert [r.status_code for r in results] == [200, 200]
+    assert peak == 1

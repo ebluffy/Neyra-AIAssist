@@ -45,3 +45,61 @@ def test_web_key_cannot_use_admin_or_maint_routes(real_api):
     http, _agent = real_api
     assert http.post("/v1/backup/run", headers=WEB).status_code == 403
     assert http.get("/v1/llm/activity", headers=WEB).status_code == 403
+
+
+def _identity(sub="web-user-1"):
+    from test_web_identity import claims, token
+    return {**WEB, "X-Neyra-Identity": token(claims(sub=sub))}
+
+
+def test_web_key_can_use_scoped_memory_routes(real_api):
+    http, _agent = real_api
+    search = http.post(
+        "/v1/memory/search", headers=_identity(),
+        json={"query": "hello", "user_id": "someone-else", "top_k": 3},
+    )
+    assert search.status_code == 200, search.text
+    from core.runtime.identity import UnifiedIdentityMapper
+
+    person_id = UnifiedIdentityMapper.resolve("web", "web-user-1")
+    assert search.json()["data"]["user_id"] == person_id
+
+    recall = http.post(
+        "/v1/memory/chat/recall", headers=_identity(),
+        json={"user_id": "someone-else", "channel_id": "c1"},
+    )
+    assert recall.status_code == 200, recall.text
+
+    own = http.get(f"/v1/memory/people/{person_id}", headers=_identity())
+    assert own.status_code == 200
+    other = http.get("/v1/memory/people/not-my-person", headers=_identity())
+    assert other.status_code == 403
+
+
+def test_web_key_with_identity_still_denied_admin_and_maint(real_api):
+    http, _agent = real_api
+    assert http.post("/v1/backup/run", headers=_identity()).status_code == 403
+    assert http.post("/v1/system/restart", headers=_identity()).status_code == 403
+
+
+def test_web_key_can_open_ws_chat(real_api, monkeypatch):
+    http, agent = real_api
+
+    def fake_stream(*args, **kwargs):
+        async def stream():
+            yield {"type": "token", "text": "ok"}
+            yield {"type": "done", "text": "ok", "sounds": []}
+        return stream()
+
+    monkeypatch.setattr(agent, "chat_stream", fake_stream)
+    with http.websocket_connect("/v1/ws/chat", headers=_identity()) as socket:
+        hello = socket.receive_json()
+        assert hello["type"] == "hello" and hello["role"] == "web"
+        socket.send_json({"type": "chat", "text": "hi", "channel_id": "web"})
+        final = None
+        while True:
+            event = socket.receive_json()
+            if event["type"] in {"done", "error"}:
+                final = event
+                break
+    assert final["type"] == "done"
