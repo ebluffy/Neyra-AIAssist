@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 from test_web_identity import identity_env, token  # noqa: F401
 from test_web_identity_review import real_api  # noqa: F401
@@ -69,6 +70,7 @@ def test_web_key_can_use_scoped_memory_routes(real_api):
         json={"user_id": "someone-else", "channel_id": "c1"},
     )
     assert recall.status_code == 200, recall.text
+    assert "someone-else" not in recall.text
 
     own = http.get(f"/v1/memory/people/{person_id}", headers=_identity())
     assert own.status_code == 200
@@ -103,3 +105,41 @@ def test_web_key_can_open_ws_chat(real_api, monkeypatch):
                 final = event
                 break
     assert final["type"] == "done"
+
+
+def test_web_key_denied_routes_return_forbidden_code(real_api):
+    http, _agent = real_api
+    response = http.post("/v1/backup/run", headers=_identity())
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+def test_web_key_cannot_modify_people(real_api):
+    http, _agent = real_api
+    from core.runtime.identity import UnifiedIdentityMapper
+
+    person_id = UnifiedIdentityMapper.resolve("web", "web-user-1")
+    assert http.patch(f"/v1/memory/people/{person_id}", headers=_identity(), json={}).status_code == 403
+    assert http.delete(f"/v1/memory/people/{person_id}", headers=_identity()).status_code == 403
+
+
+def test_web_ws_without_identity_is_closed(real_api):
+    http, _agent = real_api
+    with pytest.raises(WebSocketDisconnect) as error:
+        with http.websocket_connect("/v1/ws/chat", headers=WEB) as socket:
+            socket.receive_json()
+    assert error.value.code == 1008
+
+
+def test_web_foreign_attachment_is_not_found(real_api):
+    http, _agent = real_api
+    ref = upload(http).json()["data"]["attachments"][0]
+    with http.websocket_connect("/v1/ws/chat", headers=_identity(sub="other-user")) as socket:
+        assert socket.receive_json()["type"] == "hello"
+        socket.send_json({"type": "chat", "text": "steal", "channel_id": "c1", "attachments": [ref]})
+        while True:
+            event = socket.receive_json()
+            if event["type"] in {"error", "done"}:
+                break
+    assert event["type"] == "error"
+    assert event["code"] == "attachment_not_found"
