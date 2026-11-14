@@ -57,6 +57,8 @@ jobs:
         run: pytest -q devtools/deploy/test_neyra_web_env.py
       - name: Deploy dump helper (symlink-safe dump, postgres → db)
         run: pytest -q devtools/deploy/test_openbot_admin.py
+      - name: Core data_dir must stay inside the deploy tree
+        run: pytest -q devtools/deploy/test_data_dir.py
       - name: Check layout / no legacy paths
         run: python server/scripts/verify_stage_1b.py
       - name: Healthcheck smoke (examples, skip HTTP)

@@ -7,13 +7,15 @@
 # Использование: sudo bash devtools/deploy/neyra-web-setup.sh https://example.test
 #   (публичный HTTPS-origin сайта; можно задать через PUBLIC_URL вместо аргумента)
 #
-# После этого скрипта выкладка сайта не требует root (каталог принадлежит openbot),
-# кроме перезапуска юнита: systemctl restart neyra-web.
+# После этого скрипта выкладка сайта не требует root: openbot владеет только
+# app/, node/ и читает .env; /opt/neyra/web, compose и db.env — root.
+# Root нужен лишь на перезапуск юнита и дамп БД (узкое правило sudoers).
 set -euo pipefail
 
 WEB=/opt/neyra/web
-COMPOSE="docker compose"  # плагин v2; /usr/bin/docker-compose здесь старый 1.29
+BACKUP_DIR=/var/backups/neyra-web
 PG_SERVICE=postgres  # имя сервиса в web/docker-compose.yml
+COMPOSE_PROJECT=web
 UNIT=/etc/systemd/system/neyra-web.service
 
 # Публичный origin сайта: аргумент или PUBLIC_URL. Без него cookie и origin-проверки
@@ -45,19 +47,19 @@ ENV_SYNC="$(dirname "$0")/neyra-web-env.py"
 [ -f "$ENV_SYNC" ] || { echo "не найден $ENV_SYNC" >&2; exit 1; }
 
 echo "== 1/9 каталоги"
-# $WEB принадлежит openbot, поэтому каталоги дампов проверяем на симлинк: root не
-# должен ни chown'ить, ни писать через подложенную ссылку (AR-27).
-for dir in "$WEB/backups" "$WEB/backups-app"; do
+# AR-27: корневые файлы не должны лежать в каталоге, которым владеет openbot.
+# $WEB, $WEB/data и $BACKUP_DIR принадлежат root; openbot — только app/, node/.
+# Симлинк на месте любого из них — отказ: root иначе chown/chmod'нул бы цель ссылки.
+for dir in "$WEB" "$WEB/data" "$BACKUP_DIR"; do
   [ ! -L "$dir" ] || { echo "$dir — символическая ссылка, отказ" >&2; exit 1; }
 done
-mkdir -p "$WEB/app" "$WEB/data/pg" "$WEB/backups" "$WEB/backups-app"
-# backups: сюда пишет только root-хелпер openbot-admin — каталог закрыт от openbot,
-# иначе openbot мог бы подложить симлинк и root записал бы дамп за пределы каталога.
-chown root:root "$WEB/backups"
-chmod 0700 "$WEB/backups"
-# backups-app: запасной путь deploy-web.sh без хелпера — каталог принадлежит openbot.
-chown openbot:openbot "$WEB/backups-app" 2>/dev/null || true
-chmod 0700 "$WEB/backups-app"
+mkdir -p "$WEB/app" "$WEB/data/pg" "$BACKUP_DIR"
+chown root:root "$WEB" "$WEB/data"
+chmod 0755 "$WEB" "$WEB/data"
+# Дампы: /var/backups/neyra-web, родитель /var/backups принадлежит root.
+chown root:root "$BACKUP_DIR"
+chmod 0700 "$BACKUP_DIR"
+chown openbot:openbot "$WEB/app" 2>/dev/null || true
 
 echo "== 2/9 Node $NODE_VERSION рядом с сайтом (системный здесь 18)"
 if [ ! -x "$WEB/node/bin/node" ]; then
@@ -121,9 +123,37 @@ python3 "$ENV_SYNC"
 
 echo "== 5/9 Postgres 16 в контейнере (compose из репозитория), только на 127.0.0.1"
 install -o root -g root -m 644 "$REPO_WEB/docker-compose.yml" "$WEB/docker-compose.yml"
-(cd "$WEB" && $COMPOSE up -d --wait)
+# db.env — только переменные compose (POSTGRES_*), root:root 0600. Compose читает
+# его явно (--env-file), поэтому openbot-овый .env площадки на root не влияет.
+python3 - "$WEB/.env" "$WEB/db.env" <<'PY'
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+want = ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB")
+values = {}
+with open(src, encoding="utf-8") as handle:
+    for line in handle:
+        line = line.rstrip("\n")
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip() in want:
+            values[key.strip()] = value.strip()
+missing = [key for key in want if not values.get(key)]
+if missing:
+    raise SystemExit(f"в {src} нет {', '.join(missing)} — не могу собрать db.env для compose")
+tmp = dst + ".tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    for key in want:
+        handle.write(f"{key}={values[key]}\n")
+os.chmod(tmp, 0o600)
+os.chown(tmp, 0, 0)
+os.replace(tmp, dst)
+PY
+COMPOSE_SITE=(docker compose -p "$COMPOSE_PROJECT" --env-file "$WEB/db.env" -f "$WEB/docker-compose.yml")
+(cd "$WEB" && "${COMPOSE_SITE[@]}" up -d --wait)
 for i in $(seq 1 10); do
-  if (cd "$WEB" && $COMPOSE exec -T $PG_SERVICE pg_isready -U neyra -d neyra_web >/dev/null 2>&1); then
+  if (cd "$WEB" && "${COMPOSE_SITE[@]}" exec -T $PG_SERVICE pg_isready -U neyra -d neyra_web >/dev/null 2>&1); then
     echo "Postgres готов"
     break
   fi
@@ -134,13 +164,20 @@ for i in $(seq 1 10); do
   fi
 done
 
-echo "== 6/9 каталоги приложения принадлежат openbot (выкладка без root)"
+echo "== 6/9 права: openbot пишет только app/ и node/, .env читает"
 # data/pg НЕ трогаем: это bind-mount PGDATA, у него должен остаться владелец контейнера.
-# docker-compose.yml тоже не трогаем: он ставится root:root 0644, чтобы openbot не мог
-# подменить описание сервисов (AR-27). backups остаётся root:root 0700.
+# $WEB, compose и db.env остаются root: openbot не может подменить описание сервисов
+# или переменные compose (AR-27). .env нужен openbot на чтение env-load.py.
 mkdir -p "$WEB/data/pg"
-chown openbot:openbot "$WEB" "$WEB/.env" 2>/dev/null || true
-chown -R openbot:openbot "$WEB/app" "$WEB/node" "$WEB/backups-app"
+chown root:root "$WEB" "$WEB/data" "$WEB/docker-compose.yml" "$WEB/db.env"
+chmod 0755 "$WEB" "$WEB/data"
+chmod 0644 "$WEB/docker-compose.yml"
+chmod 0600 "$WEB/db.env"
+chown -R openbot:openbot "$WEB/app" "$WEB/node" 2>/dev/null || true
+if [ -f "$WEB/.env" ]; then
+  chown root:openbot "$WEB/.env"
+  chmod 0640 "$WEB/.env"
+fi
 
 echo "== 7/9 systemd-юнит neyra-web.service"
 cat > "$UNIT" <<EOF
@@ -176,8 +213,8 @@ else
 fi
 
 echo "== 8/9 узкое правило sudoers: рестарт юнита и дамп базы перед миграциями"
-# Root-хелпер ставится из репозитория: без него дамп снимает запасной путь
-# deploy-web.sh (docker из-под sudo), но штатный путь — хелпер с mktemp-записью.
+# Root-хелпер ставится из репозитория и остаётся единственным путём к docker:
+# прямых правил `docker compose exec` от root в sudoers нет (AR-27).
 install -m 0755 "$(dirname "$0")/openbot-admin" /usr/local/sbin/openbot-admin
 sudoers_tmp=$(mktemp)
 cat > "$sudoers_tmp" <<EOF
@@ -185,8 +222,6 @@ cat > "$sudoers_tmp" <<EOF
 # и pg_dump базы сайта перед миграциями (deploy-web.sh, AR-14).
 openbot ALL=(root) NOPASSWD: /bin/systemctl restart neyra-web.service, /bin/systemctl is-active neyra-web.service, /bin/systemctl status neyra-web.service
 openbot ALL=(root) NOPASSWD: /usr/local/sbin/openbot-admin db-dump
-openbot ALL=(root) NOPASSWD: /usr/bin/docker compose -f /opt/neyra/web/docker-compose.yml exec -T ${PG_SERVICE} pg_dump -U neyra -d neyra_web -Fc
-openbot ALL=(root) NOPASSWD: /usr/bin/docker compose -f /opt/neyra/web/docker-compose.yml exec -T db pg_dump -U neyra -d neyra_web -Fc
 EOF
 chmod 440 "$sudoers_tmp"
 visudo -cf "$sudoers_tmp" >/dev/null

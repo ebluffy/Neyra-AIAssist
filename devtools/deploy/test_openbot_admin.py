@@ -2,14 +2,16 @@
 
 Запуск: pytest -q devtools/deploy/test_openbot_admin.py
 Хелпер запускается под `unshare -r` (root в user-namespace) с подставным
-`docker`: так проверяются порядок сервисов postgres → db и безопасная запись
-дампа без root на настоящей площадке. Если user-namespace недоступны, тесты
-выполнения пропускаются, статические проверки скриптов остаются.
+`docker`: проверяются порядок сервисов postgres → db, безопасная запись дампа,
+права root-каталогов и отказы, если путь контролирует не root. Если
+user-namespace недоступны, тесты выполнения пропускаются, статические проверки
+скриптов остаются.
 """
 from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -25,7 +27,7 @@ echo "$*" >> "$DOCKER_LOG"
 svc=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    -f) shift 2 ;;
+    -p|--env-file|-f) shift 2 ;;
     -T) shift ;;
     exec) shift; [ "$1" = "-T" ] && shift; svc="$1"; shift; break ;;
     *) shift ;;
@@ -33,6 +35,9 @@ while [ $# -gt 0 ]; do
 done
 case "$1" in
   pg_isready)
+    if [ -n "${SWAP_VICTIM:-}" ] && [ -d "$NEYRA_BACKUP_DIR" ] && [ ! -L "$NEYRA_BACKUP_DIR" ]; then
+      mv "$NEYRA_BACKUP_DIR" "${NEYRA_BACKUP_DIR}.real" && ln -s "$SWAP_VICTIM" "$NEYRA_BACKUP_DIR"
+    fi
     [ -z "${DB_OK_SERVICE:-}" ] && exit 0
     [ "$svc" = "$DB_OK_SERVICE" ] && exit 0
     exit 1 ;;
@@ -59,7 +64,8 @@ requires_userns = pytest.mark.skipif(not _userns_works(), reason="user namespace
 
 
 def run_helper(tmp_path: Path, backup_dir: Path, *, ok_service: str = "", fake_date: bool = False,
-               extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+               extra_env: dict[str, str] | None = None, compose_dir: Path | None = None,
+               make_env_file: bool = True) -> subprocess.CompletedProcess:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     docker = bin_dir / "docker"
@@ -70,8 +76,14 @@ def run_helper(tmp_path: Path, backup_dir: Path, *, ok_service: str = "", fake_d
         date.write_text(FAKE_DATE, encoding="utf-8")
         date.chmod(0o755)
 
-    compose = tmp_path / "docker-compose.yml"
+    compose_dir = compose_dir or tmp_path
+    compose = compose_dir / "docker-compose.yml"
     compose.write_text("services:\n  postgres:\n    image: postgres:16\n", encoding="utf-8")
+    compose_env = compose_dir / "db.env"
+    if make_env_file:
+        compose_env.write_text("POSTGRES_USER=neyra\nPOSTGRES_PASSWORD=x\nPOSTGRES_DB=neyra_web\n",
+                               encoding="utf-8")
+        compose_env.chmod(0o600)
     log = tmp_path / "docker.log"
     log.write_text("", encoding="utf-8")
 
@@ -80,6 +92,8 @@ def run_helper(tmp_path: Path, backup_dir: Path, *, ok_service: str = "", fake_d
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "DOCKER_LOG": str(log),
         "NEYRA_COMPOSE_FILE": str(compose),
+        "NEYRA_COMPOSE_ENV_FILE": str(compose_env),
+        "NEYRA_COMPOSE_PROJECT": "web",
         "NEYRA_BACKUP_DIR": str(backup_dir),
         "NEYRA_KEEP_DUMPS": "10",
         "DB_OK_SERVICE": ok_service,
@@ -98,6 +112,10 @@ def dump_path(result: subprocess.CompletedProcess) -> Path:
     raise AssertionError(f"нет path= в выводе: {result.stdout}\n{result.stderr}")
 
 
+def writable_for_group(path: Path) -> None:
+    path.chmod(0o777)
+
+
 @requires_userns
 def test_dump_safe_file_and_service_order(tmp_path: Path) -> None:
     backup = tmp_path / "backups"
@@ -109,15 +127,16 @@ def test_dump_safe_file_and_service_order(tmp_path: Path) -> None:
     assert "exec -T db pg_isready" in calls[1]
     assert "exec -T db pg_dump" in calls[2]
     assert len(calls) == 3
+    # Явные параметры compose: свой проект и root-овый env-файл.
+    assert "-p web" in calls[0]
+    assert "--env-file" in calls[0]
 
     dump = dump_path(result)
     assert dump.parent == backup
     assert dump.read_text(encoding="utf-8") == "PGDUMP-CONTENT"
-    mode = dump.stat().st_mode & 0o777
-    assert mode == 0o600, oct(mode)
+    assert stat.S_IMODE(dump.stat().st_mode) == 0o600
     assert not dump.is_symlink()
-    dir_mode = backup.stat().st_mode & 0o777
-    assert dir_mode == 0o700, oct(dir_mode)
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o700
     assert "size=14" in result.stdout
 
 
@@ -143,6 +162,53 @@ def test_refuses_symlinked_backup_dir(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "символическая ссылка" in result.stderr
     assert list(victim.iterdir()) == []
+
+
+@requires_userns
+def test_refuses_backup_parent_writable_by_group(tmp_path: Path) -> None:
+    parent = tmp_path / "openbot-owned"
+    parent.mkdir()
+    writable_for_group(parent)
+    backup = parent / "backups"
+
+    result = run_helper(tmp_path, backup, ok_service="postgres")
+    assert result.returncode != 0
+    assert "доступен на запись группе/другим" in result.stderr
+
+
+@requires_userns
+def test_refuses_compose_in_writable_dir(tmp_path: Path) -> None:
+    compose_dir = tmp_path / "compose"
+    compose_dir.mkdir()
+    writable_for_group(compose_dir)
+    backup = tmp_path / "backups"
+
+    result = run_helper(tmp_path, backup, ok_service="postgres", compose_dir=compose_dir)
+    assert result.returncode != 0
+    assert "COMPOSE_FILE: родитель" in result.stderr
+
+
+@requires_userns
+def test_refuses_missing_compose_env(tmp_path: Path) -> None:
+    backup = tmp_path / "backups"
+    result = run_helper(tmp_path, backup, ok_service="postgres", make_env_file=False)
+    assert result.returncode != 0
+    assert "COMPOSE_ENV_FILE: нет файла" in result.stderr
+
+
+@requires_userns
+def test_backup_dir_swapped_to_symlink_after_check(tmp_path: Path) -> None:
+    backup = tmp_path / "backups"
+    backup.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+
+    result = run_helper(tmp_path, backup, ok_service="postgres",
+                        extra_env={"SWAP_VICTIM": str(victim)})
+    assert result.returncode != 0
+    assert "подменён после проверки" in result.stderr
+    assert list(victim.iterdir()) == []
+    assert list(backup.glob("pre-migrate-*.dump")) == []
 
 
 @requires_userns
@@ -185,20 +251,25 @@ def test_empty_dump_fails(tmp_path: Path) -> None:
     assert list(backup.glob("pre-migrate-*.dump")) == []
 
 
-def test_setup_keeps_compose_and_backups_root_owned() -> None:
+def test_setup_keeps_root_paths_out_of_openbot_dir() -> None:
     text = SETUP.read_text(encoding="utf-8")
+    assert 'BACKUP_DIR=/var/backups/neyra-web' in text
+    assert 'chown root:root "$WEB" "$WEB/data"' in text
+    assert 'chown -R openbot:openbot "$WEB/app" "$WEB/node"' in text
+    assert "backups-app" not in text
     for line in text.splitlines():
-        if line.lstrip().startswith("chown"):
+        if line.lstrip().startswith("chown") and "openbot:openbot" in line:
             assert "docker-compose.yml" not in line, line
-    assert 'chown root:root "$WEB/backups"' in text
-    assert 'chmod 0700 "$WEB/backups"' in text
-    assert '/usr/local/sbin/openbot-admin db-dump' in text
-    assert '[ ! -L "$dir" ]' in text
+            assert '"$WEB"' not in line, line
+    # Прямых root-правил docker compose в sudoers больше нет (AR-27).
+    assert "NOPASSWD: /usr/bin/docker compose" not in text
+    assert "/usr/local/sbin/openbot-admin db-dump" in text
 
 
-def test_deploy_fallback_is_symlink_safe_and_ordered() -> None:
+def test_deploy_uses_only_the_root_helper() -> None:
     text = DEPLOY.read_text(encoding="utf-8")
-    assert 'DUMP_TMP="$(mktemp' in text
-    assert 'mv -f "$DUMP_TMP" "$DUMP"' in text
-    assert "backups-app" in text
-    assert "for pg_service in postgres db" in text
+    assert "sudo -n openbot-admin db-dump" in text
+    assert "sudo -n docker compose" not in text
+    assert "backups-app" not in text
+    # Дамп пишет только хелпер: своего pre-migrate в deploy нет.
+    assert "pre-migrate" not in text

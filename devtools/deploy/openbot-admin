@@ -2,20 +2,27 @@
 # Узкий root-хелпер для деплоя сайта Neyra. Лежит в репозитории, чтобы выкладку
 # можно было воспроизвести: deploy-web.sh вызывает `sudo -n openbot-admin db-dump`.
 #
-# Установка (root):
+# Установка (root): ставит neyra-web-setup.sh; вручную —
 #   install -m 0755 devtools/deploy/openbot-admin /usr/local/sbin/openbot-admin
 #   echo 'openbot ALL=(root) NOPASSWD: /usr/local/sbin/openbot-admin db-dump' \
 #     > /etc/sudoers.d/openbot-admin
 #   visudo -cf /etc/sudoers.d/openbot-admin
 #
 # Секреты БД не печатаются: команда отдаёт только путь и размер дампа.
-# Безопасность записи: root не пишет дамп в предсказуемое имя в каталоге,
-# которым владеет openbot. Сначала mktemp (O_EXCL, 0600), затем mv в имя
-# pre-migrate-*.dump — mv заменяет подложенный симлинк, а не пишет через него.
+#
+# AR-27: root не пишет в каталоги, которыми владеет openbot. Дампы — в
+# /var/backups/neyra-web (root:root 0700, родитель /var/backups принадлежит root),
+# compose — /opt/neyra/web/docker-compose.yml в root-каталоге, переменные compose —
+# /opt/neyra/web/db.env (root:root 0600). Родитель пути обязан принадлежать root и
+# не быть writable для группы/других, иначе openbot мог бы подменить каталог или
+# файл; при подмене на симлинк — отказ. Запись дампа: mktemp (O_EXCL, 0600)
+# через fd проверенного каталога, затем mv — подложенная ссылка заменяется.
 set -euo pipefail
 
 COMPOSE_FILE="${NEYRA_COMPOSE_FILE:-/opt/neyra/web/docker-compose.yml}"
-BACKUP_DIR="${NEYRA_BACKUP_DIR:-/opt/neyra/web/backups}"
+COMPOSE_ENV_FILE="${NEYRA_COMPOSE_ENV_FILE:-/opt/neyra/web/db.env}"
+COMPOSE_PROJECT="${NEYRA_COMPOSE_PROJECT:-web}"
+BACKUP_DIR="${NEYRA_BACKUP_DIR:-/var/backups/neyra-web}"
 DB_SERVICE="${NEYRA_DB_SERVICE:-}"
 DB_USER="${NEYRA_DB_USER:-neyra}"
 DB_NAME="${NEYRA_DB_NAME:-neyra_web}"
@@ -30,8 +37,35 @@ usage() {
 EOF
 }
 
-# Каталог дампов принадлежит root и закрыт: openbot не может подложить туда
-# симлинк или подменить каталог. Симлинк/файл на месте каталога — отказ.
+# Родитель пути должен принадлежать root и не быть writable для группы/других:
+# иначе openbot (владелец /opt/neyra/web) может подменить каталог или файл.
+require_root_parent() {
+  local target="$1" label="$2" dir owner perms
+  dir="$(dirname "$target")"
+  [ ! -L "$dir" ] || die "$label: родитель $dir — символическая ссылка, отказ"
+  [ -d "$dir" ] || die "$label: нет родительского каталога $dir"
+  owner="$(stat -c %u "$dir")"
+  [ "$owner" = "0" ] || die "$label: родитель $dir принадлежит uid $owner, а не root"
+  perms="$(stat -c %A "$dir")"
+  case "${perms:5:1}${perms:8:1}" in
+    *w*) die "$label: родитель $dir доступен на запись группе/другим ($perms)" ;;
+  esac
+}
+
+# Файл, который читает root: владелец root и не writable для группы/других.
+require_root_file() {
+  local path="$1" label="$2" owner perms
+  [ ! -L "$path" ] || die "$label: $path — символическая ссылка, отказ"
+  [ -f "$path" ] || die "$label: нет файла $path"
+  owner="$(stat -c %u "$path")"
+  [ "$owner" = "0" ] || die "$label: $path принадлежит uid $owner, а не root"
+  perms="$(stat -c %A "$path")"
+  case "${perms:5:1}${perms:8:1}" in
+    *w*) die "$label: $path доступен на запись группе/другим ($perms)" ;;
+  esac
+}
+
+# Каталог дампов: root:root 0700. Симлинк на месте каталога — отказ.
 prepare_backup_dir() {
   [ ! -L "$BACKUP_DIR" ] || die "BACKUP_DIR $BACKUP_DIR — символическая ссылка, отказ"
   if [ -e "$BACKUP_DIR" ] && [ ! -d "$BACKUP_DIR" ]; then
@@ -51,8 +85,7 @@ resolve_db_service() {
   fi
   local candidate
   for candidate in postgres db; do
-    if docker compose -f "$COMPOSE_FILE" exec -T "$candidate" \
-      pg_isready -U "$DB_USER" -d "$DB_NAME" >/dev/null 2>&1; then
+    if compose exec -T "$candidate" pg_isready -U "$DB_USER" -d "$DB_NAME" >/dev/null 2>&1; then
       printf '%s\n' "$candidate"
       return 0
     fi
@@ -61,28 +94,49 @@ resolve_db_service() {
   printf '%s\n' postgres
 }
 
+# Все параметры compose — явно из root-каталога: openbot-овый .env не участвует.
+compose() {
+  docker compose -p "$COMPOSE_PROJECT" --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" "$@"
+}
+
 case "${1:-}" in
   db-dump)
-    [ -f "$COMPOSE_FILE" ] || die "нет $COMPOSE_FILE"
     command -v docker >/dev/null 2>&1 || die "docker не найден"
+    require_root_parent "$BACKUP_DIR" "BACKUP_DIR"
+    require_root_parent "$COMPOSE_FILE" "COMPOSE_FILE"
+    require_root_file "$COMPOSE_FILE" "COMPOSE_FILE"
+    require_root_parent "$COMPOSE_ENV_FILE" "COMPOSE_ENV_FILE"
+    require_root_file "$COMPOSE_ENV_FILE" "COMPOSE_ENV_FILE"
+
     umask 077
     prepare_backup_dir
 
+    # Дескриптор на проверенный каталог: mktemp и mv идут через него, поэтому
+    # даже подмена BACKUP_DIR на симлинк после проверки не уведёт запись.
+    exec {backup_fd}<"$BACKUP_DIR" || die "не удалось открыть BACKUP_DIR"
+    [ "$(stat -Lc %u "/proc/self/fd/$backup_fd")" = "0" ] \
+      || die "BACKUP_DIR $BACKUP_DIR подменён: владелец не root"
+
     service="$(resolve_db_service)"
-    tmp="$(mktemp "$BACKUP_DIR/.pre-migrate.XXXXXXXX")"
+    tmp="$(mktemp "/proc/self/fd/$backup_fd/.pre-migrate.XXXXXXXX")"
     trap 'rm -f "$tmp"' EXIT
-    if ! docker compose -f "$COMPOSE_FILE" exec -T "$service" \
-      pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc > "$tmp"; then
+    if ! compose exec -T "$service" pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc > "$tmp"; then
       die "pg_dump не выполнился (сервис $service)"
     fi
     [ -s "$tmp" ] || die "дамп пуст (сервис $service)"
 
     chown root:root "$tmp"
     chmod 0600 "$tmp"
-    dump="$BACKUP_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
-    # mv заменяет существующий путь целиком: подложенный симлинк не раскрывается.
-    mv -f "$tmp" "$dump"
+    name="pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
+    # Каталог мог быть подменён симлинком уже после проверки: сравниваем inode
+    # открытого fd с тем, что сейчас лежит по пути. Запись всё равно шла через
+    # fd в проверенный каталог, но отдать корректный path= мы не можем — отказ.
+    [ "$(stat -c %i "$BACKUP_DIR")" = "$(stat -Lc %i "/proc/self/fd/$backup_fd")" ] \
+      || die "BACKUP_DIR $BACKUP_DIR подменён после проверки — дамп не сохранён"
+    # rename внутри открытого каталога: подложенный симлинк заменяется целиком.
+    mv -f "$tmp" "/proc/self/fd/$backup_fd/$name"
     trap - EXIT
+    dump="$BACKUP_DIR/$name"
 
     # Оставляем последние KEEP_DUMPS копий, остальные удаляем.
     find "$BACKUP_DIR" -maxdepth 1 -type f -name 'pre-migrate-*.dump' -printf '%T@ %p\n' 2>/dev/null \

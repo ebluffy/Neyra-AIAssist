@@ -96,43 +96,23 @@ if [ "${SKIP_DB_MIGRATIONS:-0}" = "1" ]; then
 else
 
 echo "== резервная копия базы перед миграциями"
-# Штатный путь: узкий root-хелпер openbot-admin db-dump (docker-сокет только у root).
-# Каталог дампов — root:root 0700, поэтому deploy не читает файл, а верит коду
-# возврата и напечатанному размеру: хелпер печатает path=/size= только после
-# успешного непустого pg_dump.
-DUMP_INFO="$(sudo -n openbot-admin db-dump 2>/dev/null || true)"
+# Единственный путь к docker — root-хелпер openbot-admin (AR-27): у openbot нет
+# sudo-правил на `docker compose exec`, а дампы лежат в /var/backups/neyra-web
+# (root:root 0700). Deploy не читает файл из закрытого каталога: хелпер печатает
+# path=/size= только после успешного непустого pg_dump, код возврата — проверка.
+if ! DUMP_INFO="$(sudo -n openbot-admin db-dump)"; then
+  echo "pg_dump не выполнился — миграции отменены, база не тронута." >&2
+  echo "  нужен root-хелпер: sudo bash devtools/deploy/neyra-web-setup.sh <origin>" >&2
+  echo "  (ставит openbot-admin и правило sudoers; см. devtools/deploy/README.md)" >&2
+  exit 1
+fi
 DUMP_PATH="$(printf '%s\n' "$DUMP_INFO" | sed -n 's/^path=//p')"
 DUMP_SIZE="$(printf '%s\n' "$DUMP_INFO" | sed -n 's/^size=//p')"
-if [ -n "$DUMP_PATH" ] && [ "${DUMP_SIZE:-0}" -gt 0 ] 2>/dev/null; then
-  echo "дамп: $DUMP_PATH ($DUMP_SIZE байт)"
-else
-  # Запасной путь: pg_dump из контейнера. В репозитории сервис postgres; на уже
-  # развёрнутых площадках до переименования он мог называться db — пробуем оба.
-  # Каталог дампов открыт только openbot (0700): root сюда не пишет, эскалации нет.
-  BACKUP_DIR="${NEYRA_BACKUP_APP_DIR:-/opt/neyra/web/backups-app}"
-  mkdir -p "$BACKUP_DIR"
-  chmod 700 "$BACKUP_DIR" 2>/dev/null || true
-  DUMP_TMP="$(mktemp "$BACKUP_DIR/.pre-migrate.XXXXXXXX")"
-  DUMP_OK=0
-  for pg_service in postgres db; do
-    if sudo -n docker compose -f /opt/neyra/web/docker-compose.yml exec -T "$pg_service" pg_dump -U neyra -d neyra_web -Fc > "$DUMP_TMP" 2>/dev/null && [ -s "$DUMP_TMP" ]; then
-      DUMP_OK=1
-      break
-    fi
-  done
-  if [ "$DUMP_OK" != "1" ]; then
-    echo "pg_dump не выполнился — миграции отменены, база не тронута" >&2
-    echo "  установите root-хелпер: sudo install -m 0755 devtools/deploy/openbot-admin /usr/local/sbin/openbot-admin" >&2
-    rm -f "$DUMP_TMP"
-    exit 1
-  fi
-  chmod 600 "$DUMP_TMP"
-  DUMP="$BACKUP_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
-  mv -f "$DUMP_TMP" "$DUMP"
-  find "$BACKUP_DIR" -maxdepth 1 -type f -name 'pre-migrate-*.dump' -printf '%T@ %p\n' 2>/dev/null \
-    | sort -rn | tail -n +11 | cut -d' ' -f2- | xargs -r rm -f
-  echo "дамп: $DUMP"
+if [ -z "$DUMP_PATH" ] || ! [ "${DUMP_SIZE:-0}" -gt 0 ] 2>/dev/null; then
+  echo "хелпер не вернул path=/size= — миграции отменены" >&2
+  exit 1
 fi
+echo "дамп: $DUMP_PATH ($DUMP_SIZE байт)"
 
 echo "== миграции базы сайта"
 npx drizzle-kit migrate

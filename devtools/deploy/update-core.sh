@@ -106,6 +106,17 @@ fi
 BACKUP_PARENT=${BACKUP_ROOT:-/opt/neyra}
 [ -d "$BACKUP_PARENT" ] || die "нет каталога для бэкапа: $BACKUP_PARENT"
 
+# AR-29: полный бэкап и автооткат копируют только $DEST. Если ядро берёт данные
+# из каталога вне $DEST (NEYRA_DATA_DIR / paths.data_dir), бэкап их не покроет —
+# отказываем до шага vault, пока ничего не изменено.
+CHECK_DATA="$(cd "$(dirname "$0")" && pwd)/check-data-dir.py"
+[ -f "$CHECK_DATA" ] || die "нет check-data-dir.py рядом с update-core.sh"
+DATA_DIR=""
+if ! DATA_DIR="$(cd "$DEST" && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python "$CHECK_DATA" "$DEST")"; then
+  die "data_dir вне $DEST: полный бэкап и откат покрывают только $DEST (AR-29)"
+fi
+echo "data_dir: $DATA_DIR (внутри $DEST)"
+
 if [ "$DRY" = 1 ]; then
   echo "== проверка (ничего не меняю)"
   rsync -an --itemize-changes "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" | sed -n '1,120p'
