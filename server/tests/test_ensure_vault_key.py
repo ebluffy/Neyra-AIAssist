@@ -174,3 +174,12 @@ def test_root_run_returns_env_and_vault_to_service_owner(tmp_path: Path, monkeyp
     assert any(p.name.startswith(".env.") and (uid, gid) == service_owner for p, uid, gid in chowns)
     assert any(p.name == "providers.json" and (uid, gid) == service_owner for p, uid, gid in chowns)
     assert any(p.name == "secrets" and (uid, gid) == service_owner for p, uid, gid in chowns)
+
+
+def test_empty_vault_key_error_names_real_path(tmp_path: Path):
+    data_dir = tmp_path / "custom-data"
+    (data_dir / "secrets").mkdir(parents=True)
+    (data_dir / "secrets" / "vault.key").write_text("", encoding="utf-8")
+    with pytest.raises(ProviderSecretsError) as error:
+        helper.ensure_vault_key(tmp_path / ".env", data_dir)
+    assert str(data_dir / "secrets" / "vault.key") in str(error.value)

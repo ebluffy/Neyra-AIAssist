@@ -390,3 +390,87 @@ def test_extra_body_maps_effort_levels():
     # Старый булев флаг остаётся понятным.
     legacy = SimpleNamespace(config={"llm": {"talk_model": {"thinking": False}}})
     assert _lane_extra_body(legacy, "talk", {}) == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_provider_vault_honours_neyra_data_dir(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from core.llm.profile import _vault_provider_key
+    from core.llm.provider_secrets import store_for
+
+    data_dir = tmp_path / "env-data"
+    monkeypatch.setenv("NEYRA_DATA_DIR", str(data_dir))
+    store_for(data_dir).set("p", "key-from-env-data")
+    cfg = {"paths": {"data_dir": "relative-data"}}
+    assert _vault_provider_key(cfg, "p") == "key-from-env-data"
+
+
+def test_provider_vault_error_is_loud(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+
+    from core.llm.profile import _vault_provider_key
+    from core.llm.provider_secrets import ProviderSecretsError
+
+    data_dir = tmp_path / "bad-data"
+    secrets = data_dir / "secrets"
+    secrets.mkdir(parents=True)
+    (secrets / "providers.json").write_text(json.dumps({"version": 2, "items": {"p": {"v": 2, "nonce": "AA", "ct": "AA"}}}), encoding="utf-8")
+    monkeypatch.setenv("NEYRA_DATA_DIR", str(data_dir))
+    with pytest.raises(ProviderSecretsError):
+        _vault_provider_key({"paths": {"data_dir": "relative-data"}}, "p")
+
+
+def test_parallel_provider_puts_serialize_rebind(real_api, auth_headers, monkeypatch):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    http, agent = real_api
+    active = 0
+    peak = 0
+    guard = threading.Lock()
+
+    def setup():
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with guard:
+            active -= 1
+
+    monkeypatch.setattr(agent, "_setup_llm", setup)
+    def call(index):
+        return http.put(
+            f"/v1/providers/p{index}",
+            json={"base_url": f"https://p{index}.example/v1", "kind": "openai"},
+            headers=auth_headers["admin"],
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(call, [1, 2]))
+    assert [r.status_code for r in responses] == [200, 200]
+    assert peak == 1
+
+
+def test_provider_vault_uses_configured_data_dir(real_api, auth_headers, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    http, agent = real_api
+    agent._setup_llm = lambda: None
+    data_dir = tmp_path / "runtime-data"
+    monkeypatch.setenv("NEYRA_DATA_DIR", str(data_dir))
+    created = http.put(
+        "/v1/providers/envdir",
+        json={"base_url": "https://envdir.example/v1", "kind": "openai"},
+        headers=auth_headers[ADMIN],
+    )
+    assert created.status_code == 200, created.text
+    secret = http.put(
+        "/v1/providers/envdir/secret",
+        json={"api_key": "sk-envdir-secret-0123"},
+        headers=auth_headers[ADMIN],
+    )
+    assert secret.status_code == 200, secret.text
+    assert (data_dir / "secrets" / "providers.json").is_file()
