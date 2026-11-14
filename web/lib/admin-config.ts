@@ -12,6 +12,7 @@ export interface LaneConfig {
   context_window: number | null;
   max_tokens: number | null;
   enabled: boolean | null;
+  thinking: boolean | null;
 }
 
 export interface MemoryLimits {

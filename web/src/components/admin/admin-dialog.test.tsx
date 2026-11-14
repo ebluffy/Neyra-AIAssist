@@ -305,30 +305,15 @@ describe('AdminDialog', () => {
     expect(await screen.findByText(/Изменение применится после перезапуска ядра/)).toBeDefined();
   });
 
-  it('saves base_url in Integrations section via PUT request', async () => {
+  it('Integrations points to the Providers section instead of duplicating base_url', async () => {
     render(<AdminDialog open={true} onClose={vi.fn()} initialSection="integrations" user={adminUser} />);
 
     expect(await screen.findByText('Интеграции и подключения')).toBeDefined();
+    expect(screen.queryByPlaceholderText('https://openrouter.ai/api/v1')).toBeNull();
 
-    const openrouterInput = screen.getByPlaceholderText('https://openrouter.ai/api/v1');
-    fireEvent.change(openrouterInput, { target: { value: 'https://custom-router.ai/v1' } });
-
-    const saveButtons = screen.getAllByRole('button', { name: 'Сохранить' });
-    fireEvent.click(saveButtons[0]);
-
-    await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
-        '/api/admin/config',
-        expect.objectContaining({
-          method: 'PUT',
-          body: JSON.stringify({
-            updates: { 'llm.providers.openrouter.base_url': 'https://custom-router.ai/v1' },
-          }),
-        })
-      );
-    });
-
-    expect(await screen.findByText('Базовый URL сохранён.')).toBeDefined();
+    const jump = await screen.findByRole('button', { name: 'Открыть провайдеры' });
+    fireEvent.click(jump);
+    expect(await screen.findByText('Любой OpenAI-совместимый шлюз: свой адрес, свой ключ, сколько нужно.', { exact: false })).toBeDefined();
   });
 
   it('handles core error state and allows retry', async () => {

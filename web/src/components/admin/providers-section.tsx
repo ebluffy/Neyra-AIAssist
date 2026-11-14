@@ -31,6 +31,12 @@ const LANE_LABEL: Record<string, string> = {
   vision: 'vision',
 };
 
+const PROBE_TONE: Record<NonNullable<ProviderRow['probe']>['state'], { label: string; className: string }> = {
+  open: { label: 'без ключа, открыт', className: 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]' },
+  auth_required: { label: 'требует ключ', className: 'border-[var(--danger)]/40 bg-[var(--danger-quiet)] text-[var(--danger)]' },
+  unreachable: { label: 'не отвечает', className: 'border-[var(--border)] bg-transparent text-[var(--text-subtle)]' },
+};
+
 const KEY_TONE: Record<ProviderRow['key_source'], { label: string; className: string }> = {
   vault: { label: 'ключ в vault', className: 'border-[var(--border-strong)] bg-[var(--surface-3)] text-[var(--text)]' },
   env: { label: 'ключ из .env', className: 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]' },
@@ -153,6 +159,22 @@ export function ProvidersSection() {
       await load();
     } catch (e) {
       setNotice(e instanceof Error ? e.message : 'Не удалось удалить провайдера.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const migrateKey = async (name: string) => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/admin/providers/${encodeURIComponent(name)}`, { method: 'POST' });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.message || 'Ядро не перенесло ключ.');
+      setNotice(`Ключ провайдера «${name}» перенесён в шифрованное хранилище.`);
+      await load();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'Не удалось перенести ключ.');
     } finally {
       setSaving(false);
     }
@@ -407,6 +429,14 @@ export function ProvidersSection() {
                     )}
                   </div>
                 </div>
+                {row.probe && row.key_source === 'none' && (
+                  <span
+                    className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full border ${PROBE_TONE[row.probe.state].className}`}
+                    title={row.probe.models != null ? `${row.probe.message}: моделей ${row.probe.models}` : row.probe.message}
+                  >
+                    {PROBE_TONE[row.probe.state].label}
+                  </span>
+                )}
                 <span
                   className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full border ${tone.className}`}
                   title={
@@ -458,6 +488,18 @@ export function ProvidersSection() {
                     <Pencil size={12} />
                     Адрес и ключ
                   </Button>
+                  {row.key_source === 'yaml' && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="gap-1.5"
+                      disabled={busy}
+                      onClick={() => void migrateKey(row.name)}
+                    >
+                      <Key size={12} />
+                      Перенести ключ в vault
+                    </Button>
+                  )}
                   {row.key_source === 'vault' && (
                     <Button
                       variant="ghost"

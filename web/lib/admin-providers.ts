@@ -1,7 +1,14 @@
 // Провайдеры LLM для админки: только транспорт к ядру и типы.
 // Ключи никогда не возвращаются: сайт видит лишь «задан / не задан» и источник.
 
-import { coreDelete, coreGet, corePut, type CoreResult } from './core-admin';
+import { coreDelete, coreGet, corePost, corePut, type CoreResult } from './core-admin';
+
+export interface ProviderProbe {
+  state: 'open' | 'auth_required' | 'unreachable';
+  models: number | null;
+  message: string;
+  checked_ago_seconds: number;
+}
 
 export interface ProviderRow {
   name: string;
@@ -12,6 +19,7 @@ export interface ProviderRow {
   has_key: boolean;
   key_source: 'vault' | 'yaml' | 'env' | 'none';
   lanes: string[];
+  probe?: ProviderProbe | null;
 }
 
 export interface ProviderPreset {
@@ -74,6 +82,14 @@ export function writeProviderSecret(name: string, apiKey: string): Promise<CoreR
   return corePut<ProviderWriteResult>(
     `/v1/providers/${encodeURIComponent(name)}/secret`,
     { api_key: apiKey },
+    { timeoutMs: 20000 },
+  );
+}
+
+export function migrateProviderSecret(name: string): Promise<CoreResult<ProviderWriteResult>> {
+  return corePost<ProviderWriteResult>(
+    `/v1/providers/${encodeURIComponent(name)}/migrate-secret`,
+    {},
     { timeoutMs: 20000 },
   );
 }

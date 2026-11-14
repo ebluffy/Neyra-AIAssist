@@ -391,7 +391,7 @@ export function AdminDialog({
             {activeSection === 'overview' && <OverviewSection onNavigate={setActiveSection} />}
             {activeSection === 'models' && <ModelsSection />}
             {activeSection === 'providers' && <ProvidersSection />}
-            {activeSection === 'integrations' && <IntegrationsSection />}
+            {activeSection === 'integrations' && <IntegrationsSection onOpenProviders={() => setActiveSection('providers')} />}
             {activeSection === 'access' && <AccessSection />}
             {activeSection === 'system' && <SystemSection />}
             {activeSection === 'logs' && <AdminPageSection kind="logs" />}
@@ -687,6 +687,7 @@ interface LaneConfig {
   context_window: number | null;
   max_tokens: number | null;
   enabled?: boolean | null;
+  thinking?: boolean | null;
 }
 
 interface ConfigSnapshot {
@@ -708,7 +709,17 @@ function ModelsSection() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [laneForms, setLaneForms] = useState<
-    Record<string, { provider: string; model: string; temperature: string; context_window: string; max_tokens: string }>
+    Record<
+      string,
+      {
+        provider: string;
+        model: string;
+        temperature: string;
+        context_window: string;
+        max_tokens: string;
+        thinking: boolean;
+      }
+    >
   >({});
   const [savingLane, setSavingLane] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Record<string, { tone: 'ok' | 'error' | 'warn'; text: string }>>({});
@@ -734,6 +745,7 @@ function ModelsSection() {
             temperature: val.temperature !== null && val.temperature !== undefined ? String(val.temperature) : '',
             context_window: val.context_window !== null && val.context_window !== undefined ? String(val.context_window) : '',
             max_tokens: val.max_tokens !== null && val.max_tokens !== undefined ? String(val.max_tokens) : '',
+            thinking: val.thinking !== false,
           };
         }
       }
@@ -753,9 +765,10 @@ function ModelsSection() {
     const form = laneForms[laneKey];
     if (!form || savingLane) return;
 
-    const updates: Record<string, string | number> = {
+    const updates: Record<string, string | number | boolean> = {
       [`llm.${laneKey}_model.provider`]: form.provider,
       [`llm.${laneKey}_model.model`]: form.model.trim(),
+      [`llm.${laneKey}_model.thinking`]: form.thinking,
     };
 
     const maxTokensField = laneKey === 'talk' ? 'reply_max_tokens' : 'max_tokens';
@@ -942,6 +955,27 @@ function ModelsSection() {
                 </div>
               </div>
 
+              <label className="flex items-start justify-between gap-3 pt-2 border-t border-[var(--border)] cursor-pointer select-none">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium text-[var(--text)]">Думать перед ответом</div>
+                  <p className="text-[10px] text-[var(--text-subtle)] leading-relaxed">
+                    Reasoning-модели тратят на это десятки секунд. Для локальных моделей обычно лучше выключить.
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={form.thinking}
+                  onChange={(e) =>
+                    setLaneForms((prev) => ({
+                      ...prev,
+                      [laneKey]: { ...form, thinking: e.target.checked },
+                    }))
+                  }
+                  className="mt-0.5 h-4 w-4 accent-[var(--accent)] cursor-pointer"
+                  aria-label={`Думать перед ответом: лейн ${laneKey}`}
+                />
+              </label>
+
               <div className="pt-2 border-t border-[var(--border)] space-y-2">
                 {msg?.text && (
                   <p
@@ -988,17 +1022,11 @@ interface IntegrationsData {
   mcp?: { state: string; message?: string | null };
 }
 
-function IntegrationsSection() {
+function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void }) {
   const [integrations, setIntegrations] = useState<IntegrationsData | null>(null);
   const [config, setConfig] = useState<ConfigSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Base URLs editing
-  const [openrouterUrl, setOpenrouterUrl] = useState('');
-  const [aihopeUrl, setAihopeUrl] = useState('');
-  const [savingUrl, setSavingUrl] = useState<string | null>(null);
-  const [urlMessage, setUrlMessage] = useState<Record<string, { tone: 'ok' | 'error'; text: string }>>({});
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -1019,9 +1047,6 @@ function IntegrationsSection() {
       const cfgData = cfgJson?.data?.config || cfgJson?.config || null;
       setConfig(cfgData);
 
-      // Prepopulate known base URLs if editable or available
-      setOpenrouterUrl('');
-      setAihopeUrl('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка загрузки интеграций.');
     } finally {
@@ -1033,38 +1058,6 @@ function IntegrationsSection() {
     void loadAll();
   }, [loadAll]);
 
-  const handleSaveBaseUrl = async (key: 'openrouter' | 'aihope', val: string) => {
-    const trimmed = val.trim();
-    if (!trimmed) return;
-    setSavingUrl(key);
-    setUrlMessage((prev) => ({ ...prev, [key]: { tone: 'ok', text: '' } }));
-
-    const configKey = `llm.providers.${key}.base_url`;
-    try {
-      const res = await fetch('/api/admin/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ updates: { [configKey]: trimmed } }),
-      });
-      const json = await res.json().catch(() => null);
-
-      if (!res.ok || json?.ok === false) {
-        throw new Error(json?.message || 'Ядро не приняло новый URL.');
-      }
-
-      setUrlMessage((prev) => ({
-        ...prev,
-        [key]: { tone: 'ok', text: 'Базовый URL сохранён.' },
-      }));
-    } catch (err) {
-      setUrlMessage((prev) => ({
-        ...prev,
-        [key]: { tone: 'error', text: err instanceof Error ? err.message : 'Ошибка сохранения.' },
-      }));
-    } finally {
-      setSavingUrl(null);
-    }
-  };
 
   if (loading) {
     return <LoadingState message="Загрузка состояния интеграций…" />;
@@ -1118,65 +1111,16 @@ function IntegrationsSection() {
             </div>
           </div>
 
-          {/* Base URLs */}
-          <div className="pt-2 border-t border-[var(--border)] space-y-2.5">
-            <p className="text-[11px] font-medium text-[var(--text)]">Настройка базовых URL:</p>
-
-            <div className="space-y-1">
-              <label className="text-[10px] text-[var(--text-muted)] block font-mono">
-                llm.providers.openrouter.base_url
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="https://openrouter.ai/api/v1"
-                  value={openrouterUrl}
-                  onChange={(e) => setOpenrouterUrl(e.target.value)}
-                  className="flex-1 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1 text-xs text-[var(--text)] font-mono outline-none focus:border-[var(--accent)]"
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={!openrouterUrl.trim() || savingUrl === 'openrouter'}
-                  onClick={() => handleSaveBaseUrl('openrouter', openrouterUrl)}
-                >
-                  {savingUrl === 'openrouter' ? '…' : 'Сохранить'}
-                </Button>
-              </div>
-              {urlMessage.openrouter && (
-                <p className={`text-[10px] ${urlMessage.openrouter.tone === 'error' ? 'text-[var(--danger)]' : 'text-[var(--text-muted)]'}`}>
-                  {urlMessage.openrouter.text}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-[10px] text-[var(--text-muted)] block font-mono">
-                llm.providers.aihope.base_url
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="https://api.aihope.ru/v1"
-                  value={aihopeUrl}
-                  onChange={(e) => setAihopeUrl(e.target.value)}
-                  className="flex-1 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1 text-xs text-[var(--text)] font-mono outline-none focus:border-[var(--accent)]"
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={!aihopeUrl.trim() || savingUrl === 'aihope'}
-                  onClick={() => handleSaveBaseUrl('aihope', aihopeUrl)}
-                >
-                  {savingUrl === 'aihope' ? '…' : 'Сохранить'}
-                </Button>
-              </div>
-              {urlMessage.aihope && (
-                <p className={`text-[10px] ${urlMessage.aihope.tone === 'error' ? 'text-[var(--danger)]' : 'text-[var(--text-muted)]'}`}>
-                  {urlMessage.aihope.text}
-                </p>
-              )}
-            </div>
+          <div className="pt-2 border-t border-[var(--border)] space-y-2">
+            <p className="text-[11px] font-medium text-[var(--text)]">Адреса и ключи</p>
+            <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
+              Base URL и API-ключи задаются в разделе «Провайдеры»: там же пресеты и проверка, открыт ли шлюз без ключа.
+            </p>
+            {onOpenProviders && (
+              <Button variant="secondary" size="sm" onClick={onOpenProviders}>
+                Открыть провайдеры
+              </Button>
+            )}
           </div>
 
           {/* Secrets status pill list */}
