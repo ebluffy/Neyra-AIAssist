@@ -24,11 +24,12 @@ export const AttachmentSchema = z.object({ upload_id: z.string().min(1).max(120)
 export const BrowserAttachmentSchema = AttachmentSchema;
 export type BrowserAttachment = z.infer<typeof AttachmentSchema>;
 
-// Вложение в кадре BFF → ядро. Только путь внутри uploads/: URL с чужим хостом
-// превратил бы схему в SSRF-канал, поэтому сетевого url здесь нет.
+// Вложение в кадре BFF → ядро. Только относительный путь внутри uploads/:
+// URL с чужим хостом превратил бы схему в SSRF-канал, поэтому url здесь нет,
+// а ведущий слэш запрещён — путь не должен выглядеть абсолютным.
 const uploadPath = z.string().min(1).max(500)
-  .regex(/^\/?uploads\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/, 'path must be inside uploads/')
-  .refine((value) => value.split('/').every((part) => part === '' || (part !== '.' && part !== '..')), 'path traversal is forbidden');
+  .regex(/^uploads\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/, 'path must be relative to uploads/')
+  .refine((value) => value.split('/').every((part) => part && part !== '.' && part !== '..'), 'path traversal is forbidden');
 
 export const KernelAttachmentSchema = z.object({
   kind: z.enum(['image', 'file', 'audio', 'text']),
@@ -145,14 +146,30 @@ export type KernelMemorySearchRequest = z.infer<typeof KernelMemorySearchRequest
 export type KernelMemoryRecallRequest = z.infer<typeof KernelMemoryRecallRequestSchema>;
 export type KernelMemoryWriteRequest = z.infer<typeof KernelMemoryWriteRequestSchema>;
 
-export const WsChatEventSchema = z.discriminatedUnion('type', [
- z.object({ type: z.literal('hello'), trace_id: z.string(), protocol: z.literal('neyra.ws.chat.v1'), role: z.string(), ping_interval_seconds: z.number(), idle_timeout_seconds: z.number(), reconnect: z.literal('open_new_socket') }),
- z.object({ type: z.literal('pong'), ts: z.string(), trace_id: z.string() }),
- z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string() }),
- z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), model_trace: z.unknown().optional(), trace_id: z.string() }),
- z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string(), model_trace: z.unknown().optional() })
+// Браузер получает только безопасные поля: model_trace — внутренняя телеметрия ядра.
+export const BrowserServerEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('hello'), trace_id: z.string(), protocol: z.literal('neyra.ws.chat.v1'), role: z.string(), ping_interval_seconds: z.number(), idle_timeout_seconds: z.number(), reconnect: z.literal('open_new_socket') }).strict(),
+  z.object({ type: z.literal('pong'), ts: z.string(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string() }).strict(),
 ]);
-export type WsChatEvent = z.infer<typeof WsChatEventSchema>;
+export type BrowserServerEvent = z.infer<typeof BrowserServerEventSchema>;
+
+// Кадры ядра BFF → парсер: здесь model_trace допустим и не уходит в браузер.
+export const KernelServerEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('hello'), trace_id: z.string(), protocol: z.literal('neyra.ws.chat.v1'), role: z.string(), ping_interval_seconds: z.number(), idle_timeout_seconds: z.number(), reconnect: z.literal('open_new_socket') }).strict(),
+  z.object({ type: z.literal('pong'), ts: z.string(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), model_trace: z.unknown().optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string(), model_trace: z.unknown().optional() }).strict(),
+]);
+export type KernelServerEvent = z.infer<typeof KernelServerEventSchema>;
+
+// Старое имя валидирует кадры ядра; для ответа браузеру — BrowserServerEventSchema.
+export const WsChatEventSchema = KernelServerEventSchema;
+export type WsChatEvent = KernelServerEvent;
+
 export const DesktopToolSchema = z.enum(['client.list_apps', 'client.open_url', 'client.open_app', 'client.search_web', 'client.list_windows', 'client.focus_window', 'client.close_window', 'client.media', 'client.volume', 'client.shell_exec', 'client.fs_list', 'client.fs_read', 'client.fs_search', 'client.fs_write', 'client.fs_mkdir', 'client.fs_move', 'client.screenshot', 'client.input', 'client.computer_snapshot', 'client.computer_click', 'client.computer_type', 'client.computer_press']);
 export const DesktopManifestSchema = z.object({ protocol: z.literal('neyra.desktop.v1').default('neyra.desktop.v1'), device_id: z.string().uuid(), session_id: z.string().uuid(), name: z.string().min(1).max(90), platform: z.enum(['windows', 'macos', 'linux-wayland', 'linux-x11']), tools: z.array(DesktopToolSchema).max(24).default([]), commands: z.array(z.object({ name: z.string().min(1).max(60), triggers: z.array(z.object({ kind: z.enum(['phrase', 'regex', 'hotkey']), value: z.string().min(1).max(120) }).strict()).max(8).default([]), actions: z.array(z.string()).max(10).default([]) }).strict()).max(32).default([]), features: z.array(z.literal('command_drafts')).max(2).default([]) }).strict();
 export type DesktopManifest = z.infer<typeof DesktopManifestSchema>;

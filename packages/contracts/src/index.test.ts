@@ -16,7 +16,8 @@ import {
   MemorySearchRequestSchema,
   MemoryWriteRequestSchema,
   CaptureEventSchema,
-  WsChatEventSchema,
+  BrowserServerEventSchema,
+  KernelServerEventSchema,
   WsChatMessageSchema,
 } from './index';
 
@@ -50,9 +51,10 @@ describe('browser → BFF: attachments', () => {
     expect(AttachmentSchema.safeParse({ kind: 'image', mime: 'image/png' }).success).toBe(false);
   });
 
-  it('keeps only a contained /uploads path in the kernel attachment schema', () => {
+  it('keeps only a relative uploads path in the kernel attachment schema', () => {
     expect(KernelAttachmentSchema.safeParse(kernelAttachment).success).toBe(true);
-    expect(KernelAttachmentSchema.safeParse({ kind: 'image', path: '/uploads/file.png', mime: 'image/png' }).success).toBe(true);
+    expect(KernelAttachmentSchema.safeParse({ kind: 'image', path: 'uploads/file.png', mime: 'image/png' }).success).toBe(true);
+    expect(KernelAttachmentSchema.safeParse({ kind: 'image', path: '/uploads/file.png', mime: 'image/png' }).success).toBe(false);
     // URL с любым хостом — SSRF-канал, такого поля в контракте больше нет.
     expect(KernelAttachmentSchema.safeParse({ kind: 'image', url: 'http://169.254.169.254/uploads/x', mime: 'image/png' }).success).toBe(false);
     expect(KernelAttachmentSchema.safeParse({ kind: 'image', path: 'uploads/../../etc/passwd', mime: 'text/plain' }).success).toBe(false);
@@ -136,10 +138,13 @@ describe('server-only payloads', () => {
     expect(KernelChatRequestSchema.safeParse({ ...request, attachments: [{ upload_id: uploadId }] }).success).toBe(false);
   });
 
-  it('validates streaming tokens and permits model_trace on kernel events', () => {
-    expect(WsChatEventSchema.safeParse({ type: 'token', text: 'x', trace_id: 't' }).success).toBe(true);
-    expect(WsChatEventSchema.safeParse({ type: 'token', text: 3, trace_id: 't' }).success).toBe(false);
-    expect(WsChatEventSchema.safeParse({ type: 'done', text: 'x', trace_id: 't', model_trace: { lane: 'talk' } }).success).toBe(true);
+  it('keeps model_trace in kernel events and rejects it in browser events', () => {
+    const kernelDone = { type: 'done', text: 'x', trace_id: 't', model_trace: { lane: 'talk' } };
+    expect(KernelServerEventSchema.safeParse(kernelDone).success).toBe(true);
+    expect(BrowserServerEventSchema.safeParse(kernelDone).success).toBe(false);
+    expect(BrowserServerEventSchema.safeParse({ type: 'done', text: 'x', trace_id: 't' }).success).toBe(true);
+    expect(BrowserServerEventSchema.safeParse({ type: 'token', text: 'x', trace_id: 't', extra: 1 }).success).toBe(false);
+    expect(KernelServerEventSchema.safeParse({ type: 'token', text: 3, trace_id: 't' }).success).toBe(false);
   });
 });
 
