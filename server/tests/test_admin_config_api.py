@@ -245,14 +245,14 @@ def test_secret_values_auto_collects_env_and_config():
     from core.runtime.admin_config import secret_flags, secret_values
 
     env = {
-        "GROQ_API_KEY": "groq-secret-012345",
-        "HF_TOKEN": "hf-secret-0123456",
-        "CUSTOM_SECRET": "custom-secret-0123",
+        "GROQ_API_KEY": "groq-secret-012345",  # gitleaks:allow — фикстура теста
+        "HF_TOKEN": "hf-secret-0123456",  # gitleaks:allow — фикстура теста
+        "CUSTOM_SECRET": "custom-secret-0123",  # gitleaks:allow — фикстура теста
         "PUBLIC_VALUE": "public",
     }
-    cfg = {"llm": {"providers": {"custom": {"api_key": "provider-secret-0123"}}}}
+    cfg = {"llm": {"providers": {"custom": {"api_key": "provider-secret-0123"}}}}  # gitleaks:allow — фикстура теста
     values = secret_values(cfg, env)
-    for expected in ("groq-secret-012345", "hf-secret-0123456", "custom-secret-0123", "provider-secret-0123"):
+    for expected in ("groq-secret-012345", "hf-secret-0123456", "custom-secret-0123", "provider-secret-0123"):  # gitleaks:allow — фикстура теста
         assert expected in values
     flags = secret_flags(env)
     assert flags["GROQ_API_KEY"] == "set" and flags["CUSTOM_SECRET"] == "set"
@@ -262,7 +262,7 @@ def test_secret_values_auto_collects_env_and_config():
 def test_log_tail_masks_before_truncation(tmp_path):
     from core.api.log_tail import read_tail
 
-    secret = "sk-boundary-secret-0123456789"
+    secret = "sk-boundary-secret-0123456789"  # gitleaks:allow — фикстура теста
     line = "x" * 3990 + secret + " tail"
     path = tmp_path / "system.log"
     path.write_text(line + "\n", encoding="utf-8")
