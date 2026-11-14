@@ -49,6 +49,7 @@ export function StatusPill({ tone = 'muted', children }: { tone?: Tone; children
 }
 import { playButtonClickSound, playModalCloseSound, playModalOpenSound } from '../../lib/ui-sounds';
 import { ProvidersSection } from './providers-section';
+import { McpSection } from './mcp-section';
 import { AdminPageSection } from './admin-pages';
 
 export type AdminSection =
@@ -56,6 +57,7 @@ export type AdminSection =
   | 'models'
   | 'providers'
   | 'integrations'
+  | 'mcp'
   | 'access'
   | 'system'
   | 'logs'
@@ -68,6 +70,7 @@ const SECTION_HINT: Record<AdminSection, string> = {
   models: 'Провайдер и модель для каждого лейна',
   providers: 'Любой OpenAI-совместимый шлюз и его ключ',
   integrations: 'Инструменты ядра, Discord и служебные подключения',
+  mcp: 'MCP-серверы и их инструменты для Нейры',
   access: 'Пользователи, роли, приглашения и режим регистрации',
   system: 'Сервисы, диск, резервные копии и перезапуск',
   logs: 'Действия админки и операции ядра',
@@ -269,6 +272,13 @@ export function AdminDialog({
           />
           <NavButton
             isMobile
+            active={activeSection === 'mcp'}
+            icon={<Plug size={15} />}
+            label="MCP"
+            onClick={() => setActiveSection('mcp')}
+          />
+          <NavButton
+            isMobile
             active={activeSection === 'access'}
             icon={<Users size={15} />}
             label="Доступ"
@@ -347,6 +357,12 @@ export function AdminDialog({
                 onClick={() => setActiveSection('integrations')}
               />
               <NavButton
+                active={activeSection === 'mcp'}
+                icon={<Plug size={15} />}
+                label="MCP"
+                onClick={() => setActiveSection('mcp')}
+              />
+              <NavButton
                 active={activeSection === 'access'}
                 icon={<Users size={15} />}
                 label="Доступ"
@@ -401,7 +417,8 @@ export function AdminDialog({
             {activeSection === 'overview' && <OverviewSection onNavigate={setActiveSection} />}
             {activeSection === 'models' && <ModelsSection />}
             {activeSection === 'providers' && <ProvidersSection />}
-            {activeSection === 'integrations' && <IntegrationsSection onOpenProviders={() => setActiveSection('providers')} />}
+            {activeSection === 'integrations' && <IntegrationsSection onOpenProviders={() => setActiveSection('providers')} onOpenMcp={() => setActiveSection('mcp')} />}
+            {activeSection === 'mcp' && <McpSection />}
             {activeSection === 'access' && <AccessSection />}
             {activeSection === 'system' && <SystemSection />}
             {activeSection === 'logs' && <AdminPageSection kind="logs" />}
@@ -1054,7 +1071,7 @@ interface IntegrationsData {
   mcp?: { state: string; message?: string | null };
 }
 
-function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void }) {
+function IntegrationsSection({ onOpenProviders, onOpenMcp }: { onOpenProviders?: () => void; onOpenMcp?: () => void }) {
   const [integrations, setIntegrations] = useState<IntegrationsData | null>(null);
   const [config, setConfig] = useState<ConfigSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1111,7 +1128,7 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
       <div>
         <h3 className="text-base font-semibold text-[var(--text)]">Интеграции и подключения</h3>
         <p className="text-xs text-[var(--text-muted)] mt-0.5">
-          Внешние провайдеры нейросетей, инструменты MCP и канал авторизации Discord
+          Внешние провайдеры нейросетей, канал авторизации Discord и MCP-инструменты ядра
         </p>
       </div>
 
@@ -1176,7 +1193,7 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
 
         {/* MCP & Discord */}
         <div className="space-y-4">
-          {/* MCP Tools */}
+          {/* MCP Tools: management lives in its own section, not a read-only copy here */}
           <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-3">
             <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
               <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
@@ -1188,24 +1205,16 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
               </StatusPill>
             </div>
 
-            {Array.isArray(config?.mcp?.servers) && config.mcp.servers.length > 0 ? (
-              <ul className="space-y-1 text-xs">
-                {config.mcp.servers.map((srv) => (
-                  <li key={srv.name} className="flex items-center justify-between py-1 border-b border-[var(--border)] last:border-0">
-                    <span className="font-mono text-[var(--text)]">{srv.name}</span>
-                    <StatusPill tone={srv.enabled ? 'ok' : 'muted'}>
-                      {srv.enabled ? 'активен' : 'отключен'}
-                    </StatusPill>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-xs text-[var(--text-muted)]">Ядро не отдало список MCP-серверов. Возможно, они не загружены при старте.</p>
-            )}
+            <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+              Добавление, изменение, переподключение и удаление MCP-серверов — в разделе «MCP».
+              Там же живой статус, число инструментов и причина ошибки.
+            </p>
 
-            <div className="rounded-[var(--radius-sm)] p-2.5 bg-[var(--surface-2)] border border-[var(--border)] text-[11px] text-[var(--text-subtle)] leading-relaxed">
-              Управление MCP-серверами (добавление, удаление, редактирование) станет доступно после интеграции соответствующего API ядра. Список серверов в настоящий момент доступен только для чтения.
-            </div>
+            {onOpenMcp && (
+              <Button variant="secondary" size="sm" onClick={onOpenMcp}>
+                Открыть MCP
+              </Button>
+            )}
           </div>
 
           {/* Discord */}

@@ -16,6 +16,7 @@ const sections = [
   { href: '/admin/memory', title: 'Память', text: 'Люди, лимиты и автосжатие.' },
   { href: '/admin/files', title: 'Файлы', text: 'Вложения и их доступность.' },
   { href: '/admin/integrations', title: 'Интеграции', text: 'Discord, провайдеры, MCP.' },
+  { href: '/admin/mcp', title: 'MCP', text: 'Инструменты ядра: серверы, статус, env.' },
   { href: '/admin/logs', title: 'Журналы', text: 'Аудит админки, операции и лог ядра.' },
   { href: '/admin/system', title: 'Система', text: 'Здоровье, версия, диск, перезапуск.' },
 ];

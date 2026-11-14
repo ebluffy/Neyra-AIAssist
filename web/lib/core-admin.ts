@@ -38,10 +38,12 @@ const UNCONFIGURED: CoreResult<never> = {
   message: 'Ядро не подключено: в .env сайта нет NEYRA_API_URL и NEYRA_SERVICE_KEY.',
 };
 
-interface CoreRequest {
+export interface CoreRequest {
   env?: Environment;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** Extra headers, e.g. X-Neyra-Identity for user-scoped core calls. */
+  headers?: Record<string, string>;
   /** Statuses whose body is still meaningful, e.g. /v1/health/ready answers 503 with checks. */
   acceptStatus?: number[];
 }
@@ -61,6 +63,7 @@ async function request<T>(
         authorization: `Bearer ${env.token}`,
         accept: 'application/json',
         ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...(options.headers ?? {}),
       },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: AbortSignal.timeout(options.timeoutMs ?? 5000),

@@ -145,6 +145,12 @@ describe('AdminDialog', () => {
           json: async () => ({ ok: true, data: sampleIntegrations }),
         };
       }
+      if (urlStr.includes('/api/admin/mcp/servers')) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { enabled: true, servers: [] } }),
+        };
+      }
       if (urlStr.includes('/api/admin/users')) {
         if (init?.method === 'PATCH') {
           return {
@@ -314,6 +320,18 @@ describe('AdminDialog', () => {
     const jump = await screen.findByRole('button', { name: 'Открыть провайдеры' });
     fireEvent.click(jump);
     expect(await screen.findByText('Любой OpenAI-совместимый шлюз: свой адрес, свой ключ, сколько нужно.', { exact: false })).toBeDefined();
+  });
+
+  it('opens the MCP section from the navigation and from Integrations', async () => {
+    render(<AdminDialog open={true} onClose={vi.fn()} initialSection="integrations" user={adminUser} />);
+
+    expect(await screen.findByText('Интеграции и подключения')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть MCP' }));
+    expect(await screen.findByText('MCP-серверы не подключены')).toBeDefined();
+
+    const mcpButtons = screen.getAllByRole('button', { name: 'MCP' });
+    fireEvent.click(mcpButtons[0]);
+    expect(await screen.findByText('MCP-серверы не подключены')).toBeDefined();
   });
 
   it('handles core error state and allows retry', async () => {
