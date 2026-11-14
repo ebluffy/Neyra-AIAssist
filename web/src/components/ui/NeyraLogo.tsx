@@ -12,13 +12,15 @@ export function NeyraLogo({ size = 32, className = '' }: { size?: number; classN
       aria-hidden="true"
     >
       <rect width="32" height="32" rx="8" fill="var(--surface-3)" stroke="var(--border)" strokeWidth="1" />
+      {/* «N» с точкой на верхнем конце правой ножки: буква плюс узел связи */}
       <path
-        d="M9.5 22.5V9.5L22.5 22.5V9.5"
+        d="M9.5 22.5V9.5L22.5 22.5V15.5"
         stroke="var(--accent)"
         strokeWidth="2.25"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+      <circle cx="22.5" cy="12" r="2.4" fill="var(--accent)" />
     </svg>
   );
 }
