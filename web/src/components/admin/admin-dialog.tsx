@@ -688,6 +688,7 @@ interface LaneConfig {
   max_tokens: number | null;
   enabled?: boolean | null;
   thinking?: boolean | null;
+  thinking_effort?: string | null;
 }
 
 interface ConfigSnapshot {
@@ -717,7 +718,7 @@ function ModelsSection() {
         temperature: string;
         context_window: string;
         max_tokens: string;
-        thinking: boolean;
+        thinking_effort: string;
       }
     >
   >({});
@@ -745,7 +746,8 @@ function ModelsSection() {
             temperature: val.temperature !== null && val.temperature !== undefined ? String(val.temperature) : '',
             context_window: val.context_window !== null && val.context_window !== undefined ? String(val.context_window) : '',
             max_tokens: val.max_tokens !== null && val.max_tokens !== undefined ? String(val.max_tokens) : '',
-            thinking: val.thinking !== false,
+            thinking_effort:
+              val.thinking_effort || (val.thinking === false ? 'off' : 'default'),
           };
         }
       }
@@ -768,7 +770,7 @@ function ModelsSection() {
     const updates: Record<string, string | number | boolean> = {
       [`llm.${laneKey}_model.provider`]: form.provider,
       [`llm.${laneKey}_model.model`]: form.model.trim(),
-      [`llm.${laneKey}_model.thinking`]: form.thinking,
+      [`llm.${laneKey}_model.thinking_effort`]: form.thinking_effort,
     };
 
     const maxTokensField = laneKey === 'talk' ? 'reply_max_tokens' : 'max_tokens';
@@ -955,26 +957,35 @@ function ModelsSection() {
                 </div>
               </div>
 
-              <label className="flex items-start justify-between gap-3 pt-2 border-t border-[var(--border)] cursor-pointer select-none">
-                <div className="min-w-0">
-                  <div className="text-[11px] font-medium text-[var(--text)]">Думать перед ответом</div>
-                  <p className="text-[10px] text-[var(--text-subtle)] leading-relaxed">
-                    Reasoning-модели тратят на это десятки секунд. Для локальных моделей обычно лучше выключить.
-                  </p>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={form.thinking}
+              <div className="pt-2 border-t border-[var(--border)] space-y-1">
+                <label
+                  htmlFor={`thinking-effort-${laneKey}`}
+                  className="text-[11px] font-medium text-[var(--text)] block"
+                >
+                  Рассуждение (think)
+                </label>
+                <select
+                  id={`thinking-effort-${laneKey}`}
+                  value={form.thinking_effort}
                   onChange={(e) =>
                     setLaneForms((prev) => ({
                       ...prev,
-                      [laneKey]: { ...form, thinking: e.target.checked },
+                      [laneKey]: { ...form, thinking_effort: e.target.value },
                     }))
                   }
-                  className="mt-0.5 h-4 w-4 accent-[var(--accent)] cursor-pointer"
-                  aria-label={`Думать перед ответом: лейн ${laneKey}`}
-                />
-              </label>
+                  className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none"
+                >
+                  <option value="default">Default — как в модели</option>
+                  <option value="off">Off — без рассуждения, самый быстрый</option>
+                  <option value="low">Low — короткое рассуждение</option>
+                  <option value="medium">Medium — среднее</option>
+                  <option value="high">High — долгое</option>
+                  <option value="max">Max — без ограничения</option>
+                </select>
+                <p className="text-[10px] text-[var(--text-subtle)] leading-relaxed">
+                  Для локальных reasoning-моделей Off обычно в 5–20 раз быстрее; High/Max — дольше, но глубже.
+                </p>
+              </div>
 
               <div className="pt-2 border-t border-[var(--border)] space-y-2">
                 {msg?.text && (
