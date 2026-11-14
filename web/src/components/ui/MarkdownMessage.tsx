@@ -51,7 +51,7 @@ function CodeBlock({ children, className = '' }: { children: ReactNode; classNam
 
 export function MarkdownMessage({ content }: { content: string }) {
   return (
-    <div className="text-[15px] leading-[24px] text-[var(--text)] space-y-3 break-words">
+    <div className="text-[15px] leading-[24px] text-[var(--text)] space-y-3 break-words [overflow-wrap:anywhere]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

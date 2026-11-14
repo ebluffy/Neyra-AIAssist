@@ -967,7 +967,7 @@ export function ChatView({
                   {ru.emptyChat}
                 </h2>
                 <p className="text-[14px] text-[var(--text-muted)] max-w-[380px]">
-                  Задайте вопрос — или начните с готового сценария под полем ввода.
+                  Задайте вопрос или выберите быстрый сценарий.
                 </p>
               </div>
             )}
@@ -1235,9 +1235,9 @@ export function ChatView({
                 <div className="mb-2 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-center animate-chips">
                   <Chip
                     onClick={() => sendMessage('Что нового в памяти?')}
-                    className="col-span-2 min-h-11 justify-center gap-1.5 py-2.5 sm:col-span-1 sm:min-h-0 sm:py-1.5 !bg-[var(--accent)] !text-[var(--accent-ink)] !border-[var(--accent)] font-medium hover:!bg-[var(--accent-hover)] hover:!border-[var(--accent-hover)]"
+                    className="col-span-2 min-h-11 justify-center gap-1.5 py-2.5 sm:col-span-1 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
                   >
-                    <Sparkles size={14} className="shrink-0" />
+                    <Sparkles size={14} className="shrink-0 text-[var(--text-muted)]" />
                     <span>Что нового в памяти?</span>
                   </Chip>
                   <Chip
@@ -1366,7 +1366,7 @@ export function ChatView({
                       type="submit"
                       aria-label={ru.send}
                       disabled={!input.trim() && attachments.length === 0}
-                      icon={<ArrowUp size={16} />}
+                      icon={<ArrowUp size={20} />}
                       variant={input.trim() || attachments.length > 0 ? 'primary' : 'ghost'}
                       size="md"
                       rounded
@@ -1379,13 +1379,6 @@ export function ChatView({
                   )}
                 </div>
               </div>
-
-              {/* Hint: only visible when chat is empty (§3.4) */}
-              {messages.length === 0 && (
-                <div className="text-[11px] text-[var(--text-subtle)] text-center mt-1.5 select-none">
-                  Enter — отправить, Shift+Enter — новая строка
-                </div>
-              )}
             </form>
           </div>
         </footer>
