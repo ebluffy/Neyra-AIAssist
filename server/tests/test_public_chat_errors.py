@@ -63,25 +63,28 @@ def test_provider_error_never_reaches_public_output(tmp_path, transport, stage):
                     with client.websocket_connect("/v1/ws/chat", headers=headers) as ws:
                         assert ws.receive_json()["type"] == "hello"
                         ws.send_json({"type": "chat", "text": "hello"})
-                        # Кадры фаз приходят до ошибки: они не несут текста провайдера,
-                        # но проверять нужно именно кадр ошибки.
-                        frames = []
+                        # Wave 2: progress frames may precede the terminal frame.
+                        # Проверяем именно кадр error, а не первый пришедший.
+                        output = []
                         error = None
-                        for _ in range(12):
-                            frame = ws.receive_json()
-                            frames.append(frame)
-                            if frame.get("type") == "error":
-                                error = frame
+                        while True:
+                            event = ws.receive_json()
+                            output.append(event)
+                            assert event["type"] in ("phase", "token", "thinking", "error", "done"), event
+                            if event["type"] == "error":
+                                error = event
+                            if event["type"] in ("error", "done"):
                                 break
-                        output = frames
-                        assert error is not None, frames
+                        assert error is not None, output
                         assert error["type"] == "error"
                         assert error["message"] == expected
                         # WS отдаёт тот же семантический код, что stream/REST.
                         assert error["code"] == ("brain_unavailable" if stage == "brain" else "generation_failed")
         assert "PRIVATE-UPSTREAM-DETAIL" not in json.dumps(output)
-        # Публичный кадр WS намеренно без model_trace: трасса остаётся диагностикой.
-        if transport != "ws":
+        if transport == "ws":
+            # Browser frames never carry model_trace (wave 2 contract).
+            assert "model_trace" not in error
+        else:
             assert error["model_trace"]["status"] == "failed"
         failed.assert_called_once()
         assert private in failed.call_args.kwargs["error"]
