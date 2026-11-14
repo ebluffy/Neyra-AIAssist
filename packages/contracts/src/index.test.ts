@@ -50,14 +50,13 @@ describe('browser → BFF: attachments', () => {
     expect(AttachmentSchema.safeParse({ kind: 'image', mime: 'image/png' }).success).toBe(false);
   });
 
-  it('keeps path/url in the kernel schema and contains them inside uploads/', () => {
+  it('keeps only a contained /uploads path in the kernel attachment schema', () => {
     expect(KernelAttachmentSchema.safeParse(kernelAttachment).success).toBe(true);
-    expect(KernelAttachmentSchema.safeParse({ kind: 'image', url: 'https://core.test/uploads/cat.png', mime: 'image/png' }).success).toBe(true);
+    expect(KernelAttachmentSchema.safeParse({ kind: 'image', path: '/uploads/file.png', mime: 'image/png' }).success).toBe(true);
+    // URL с любым хостом — SSRF-канал, такого поля в контракте больше нет.
+    expect(KernelAttachmentSchema.safeParse({ kind: 'image', url: 'http://169.254.169.254/uploads/x', mime: 'image/png' }).success).toBe(false);
     expect(KernelAttachmentSchema.safeParse({ kind: 'image', path: 'uploads/../../etc/passwd', mime: 'text/plain' }).success).toBe(false);
     expect(KernelAttachmentSchema.safeParse({ kind: 'image', path: '../uploads/cat.png', mime: 'image/png' }).success).toBe(false);
-    expect(KernelAttachmentSchema.safeParse({ kind: 'image', path: '/uploads/cat.png', mime: 'image/png' }).success).toBe(false);
-    expect(KernelAttachmentSchema.safeParse({ kind: 'image', url: 'https://evil.test/files/cat.png', mime: 'image/png' }).success).toBe(false);
-    expect(KernelAttachmentSchema.safeParse({ kind: 'image', url: 'https://core.test/uploads/%2e%2e/secret', mime: 'image/png' }).success).toBe(false);
     expect(KernelAttachmentSchema.safeParse({ kind: 'image', path: 'uploads/cat.png', mime: 'image/png', extra: 1 }).success).toBe(false);
   });
 });
@@ -95,6 +94,8 @@ describe('browser → BFF: WebSocket frame', () => {
     expect(KernelWsChatMessageSchema.safeParse(frame).success).toBe(true);
     expect(KernelWsChatMessageSchema.safeParse({ ...frame, extra: true }).success).toBe(false);
     expect(KernelWsChatMessageSchema.safeParse({ ...frame, attachments: [{ upload_id: uploadId }] }).success).toBe(false);
+    // Core WsChatMessage не принимает platform (extra=forbid) — этого поля нет и здесь.
+    expect(KernelWsChatMessageSchema.safeParse({ ...frame, platform: 'web' }).success).toBe(false);
   });
 });
 
@@ -126,16 +127,19 @@ describe('browser → BFF: memory requests', () => {
 });
 
 describe('server-only payloads', () => {
-  it('requires identity fields only in the kernel chat request', () => {
-    const request = { text: 'hello', username: 'alice', platform_user_id: 'usr-1', channel_id: 'web:1', attachments: [kernelAttachment] };
+  it('allows identity only in the kernel chat request, not in the browser request', () => {
+    const request = { text: 'hello', username: 'alice', platform_user_id: 'usr-1', channel_id: 'web:1', platform: 'web', attachments: [kernelAttachment] };
     expect(KernelChatRequestSchema.safeParse(request).success).toBe(true);
+    expect(KernelChatRequestSchema.safeParse({ text: 'hello' }).success).toBe(true);
+    expect(ChatRequestSchema.safeParse({ text: 'hello', username: 'alice' }).success).toBe(false);
     expect(KernelChatRequestSchema.safeParse({ ...request, extra: true }).success).toBe(false);
     expect(KernelChatRequestSchema.safeParse({ ...request, attachments: [{ upload_id: uploadId }] }).success).toBe(false);
   });
 
-  it('validates streaming tokens and keeps model_trace out of the public event', () => {
+  it('validates streaming tokens and permits model_trace on kernel events', () => {
     expect(WsChatEventSchema.safeParse({ type: 'token', text: 'x', trace_id: 't' }).success).toBe(true);
     expect(WsChatEventSchema.safeParse({ type: 'token', text: 3, trace_id: 't' }).success).toBe(false);
+    expect(WsChatEventSchema.safeParse({ type: 'done', text: 'x', trace_id: 't', model_trace: { lane: 'talk' } }).success).toBe(true);
   });
 });
 

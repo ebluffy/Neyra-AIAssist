@@ -11,35 +11,31 @@ const kernelIdentity = {
   author_display_name: z.string().max(120).optional(),
   platform: z.string().max(40).optional(),
 };
+// WS-кадр ядра не принимает platform (extra=forbid в WsChatMessage): он есть только в REST.
+const kernelWsIdentity = {
+  username: kernelIdentity.username,
+  platform_user_id: kernelIdentity.platform_user_id,
+  channel_id: kernelIdentity.channel_id,
+  author_display_name: kernelIdentity.author_display_name,
+};
 
 // Вложение, которое браузер получил от BFF после загрузки. Никаких path/url.
 export const AttachmentSchema = z.object({ upload_id: z.string().min(1).max(120) }).strict();
 export const BrowserAttachmentSchema = AttachmentSchema;
 export type BrowserAttachment = z.infer<typeof AttachmentSchema>;
 
-// Вложение в кадре BFF → ядро. path/url допустимы только здесь и только внутри uploads/.
+// Вложение в кадре BFF → ядро. Только путь внутри uploads/: URL с чужим хостом
+// превратил бы схему в SSRF-канал, поэтому сетевого url здесь нет.
 const uploadPath = z.string().min(1).max(500)
-  .regex(/^uploads\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/, 'path must be inside uploads/')
-  .refine((value) => value.split('/').every((part) => part && part !== '.' && part !== '..'), 'path traversal is forbidden');
-const uploadUrl = z.string().url().refine((value) => {
-  try {
-    const url = new URL(value);
-    const pathname = decodeURIComponent(url.pathname);
-    return (url.protocol === 'http:' || url.protocol === 'https:')
-      && (pathname === '/uploads' || pathname.startsWith('/uploads/'))
-      && !pathname.split('/').includes('..');
-  } catch {
-    return false;
-  }
-}, 'url must point inside uploads/');
+  .regex(/^\/?uploads\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/, 'path must be inside uploads/')
+  .refine((value) => value.split('/').every((part) => part === '' || (part !== '.' && part !== '..')), 'path traversal is forbidden');
 
 export const KernelAttachmentSchema = z.object({
   kind: z.enum(['image', 'file', 'audio', 'text']),
   path: uploadPath.optional(),
-  url: uploadUrl.optional(),
   mime: z.string().min(1),
   text: z.string().optional(),
-}).strict().refine((value) => Boolean(value.path || value.url || value.text), 'Attachment requires a source');
+}).strict().refine((value) => Boolean(value.path || value.text), 'Attachment requires a source');
 export type KernelAttachment = z.infer<typeof KernelAttachmentSchema>;
 
 // Браузер → BFF. chat_id не является личностью: BFF всё равно привязывает его к user.id.
@@ -99,7 +95,7 @@ export const WsChatMessageSchema = z.discriminatedUnion('type', [
 const kernelWsChat = z.object({
   type: z.literal('chat'),
   text: z.string().min(1).max(6000),
-  ...kernelIdentity,
+  ...kernelWsIdentity,
   display_name: z.string().max(120).optional(),
   model: z.string().min(1).optional(),
   attachments: z.array(KernelAttachmentSchema).max(4).optional(),
