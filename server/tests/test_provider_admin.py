@@ -390,3 +390,19 @@ def test_extra_body_maps_effort_levels():
     # Старый булев флаг остаётся понятным.
     legacy = SimpleNamespace(config={"llm": {"talk_model": {"thinking": False}}})
     assert _lane_extra_body(legacy, "talk", {}) == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_health_skips_cli_providers():
+    from core.llm.profile import iter_unique_provider_connections
+
+    cfg = {
+        "llm": {
+            "talk_model": {"provider": "llama", "model": "x"},
+            "memory_model": {"provider": "oc", "model": "opencode/x-free"},
+            "providers": {
+                "llama": {"base_url": "http://100.121.199.40:11435/v1", "kind": "local"},
+                "oc": {"kind": "cli", "cli": "opencode", "cli_path": "/bin/echo"},
+            },
+        }
+    }
+    assert [c.provider for c in iter_unique_provider_connections(cfg)] == ["llama"]

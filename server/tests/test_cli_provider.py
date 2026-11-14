@@ -107,3 +107,20 @@ def test_generate_returns_text(tmp_path: Path):
     with patch("core.llm.cli_provider.run_cli_prompt", return_value="Четыре"):
         result = model.invoke([HumanMessage(content="2+2?")])
     assert result.content == "Четыре"
+
+
+def test_health_skips_cli_providers():
+    from core.llm.profile import iter_unique_provider_connections
+
+    cfg = {
+        "llm": {
+            "talk_model": {"provider": "llama", "model": "local"},
+            "memory_model": {"provider": "oc", "model": "opencode/x-free"},
+            "providers": {
+                "llama": {"base_url": "http://127.0.0.1:11434/v1", "kind": "local"},
+                "oc": {"kind": "cli", "cli": "opencode", "cli_path": "/bin/echo"},
+            },
+        }
+    }
+    providers = [c.provider for c in iter_unique_provider_connections(cfg)]
+    assert providers == ["llama"]
