@@ -5,6 +5,7 @@ export const credentialsSchema = z.object({
   email: z.string().trim().email('Введите корректный email.'),
   password: z.string().min(MIN_PASSWORD_LENGTH, 'Пароль должен содержать не менее 10 символов.').max(MAX_PASSWORD_LENGTH, 'Пароль должен содержать не более 128 символов.'),
 });
+export const inviteCodeSchema = z.string().trim().min(4, 'Код приглашения должен содержать не менее 4 символов.');
 // Never accept a privileged role from registration input.
 export const roleField = { type: ['admin', 'user'] as ('admin' | 'user')[], required: false, defaultValue: 'user', input: false } as const;
 export function authErrorText(code?: string, message?: string): string {
@@ -14,7 +15,13 @@ export function authErrorText(code?: string, message?: string): string {
     case 'INVALID_EMAIL': return 'Введите корректный email.';
     case 'PASSWORD_TOO_SHORT': return 'Пароль должен содержать не менее 10 символов.';
     case 'PASSWORD_TOO_LONG': return 'Пароль должен содержать не более 128 символов.';
-    case 'TOO_MANY_REQUESTS': return 'Слишком много попыток. Попробуйте позже.';
+    case 'TOO_MANY_REQUESTS':
+    case 'RATE_LIMITED':
+      return 'Слишком много попыток. Попробуйте через 15 минут.';
+    case 'INVALID_INVITE_CODE':
+      return 'Недействительный или уже использованный код приглашения.';
+    case 'INVITE_CODE_REQUIRED':
+      return 'Для регистрации требуется код приглашения.';
     default: return message?.trim() || 'Не удалось выполнить запрос. Попробуйте позже.';
   }
 }

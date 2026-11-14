@@ -1,5 +1,6 @@
 import { listAudit, parseAuditQuery } from '../../../../lib/admin-audit';
 import { coreGet } from '../../../../lib/core-admin';
+import { LogTail } from '../../../components/admin/log-tail';
 import { Card, EmptyState, PageHeader, StatusPill, formatDate, tableClass, tdClass, thClass } from '../../../components/admin/ui';
 
 export const dynamic = 'force-dynamic';
@@ -71,7 +72,7 @@ export default async function AdminLogsPage({ searchParams }: {
               {Object.entries(actionLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           </label>
-          <button type="submit" className="rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm hover:bg-white/5">
+          <button type="submit" className="rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm bg-[var(--surface-2)] text-[var(--text)] hover:bg-[var(--surface-3)] font-medium">
             Показать
           </button>
         </form>
@@ -149,6 +150,10 @@ export default async function AdminLogsPage({ searchParams }: {
             </table>
           </div>
         )}
+      </Card>
+
+      <Card title="Хвост лога ядра" description="Последние строки системного лога. Секреты маскирует ядро; путь к файлу не отдаётся.">
+        <LogTail lines={200} />
       </Card>
     </div>
   );

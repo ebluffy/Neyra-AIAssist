@@ -2,3 +2,267 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  color-scheme: dark;
+
+  /* Поверхность — глубокий монохром (чёрный база) */
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --surface-2: #121212;
+  --surface-3: #1a1a1a;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  /* Текст — строгая нейтральная шкала */
+  --text: #f4f4f5;
+  --text-muted: #a1a1aa;
+  --text-subtle: #71717a;
+
+  /* Сигнал — монохромный (белый акцент) */
+  --accent: #ffffff;
+  --accent-hover: #e4e4e7;
+  --accent-ink: #000000;
+  --accent-quiet: rgba(255, 255, 255, 0.08);
+
+  /* Статусы — строгие, только красный для реальной ошибки */
+  --danger: #ef4444;
+  --danger-quiet: rgba(239, 68, 68, 0.12);
+  --success: #e4e4e7;
+
+  /* Типографика */
+  --font-sans: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: var(--font-mono-jetbrains), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --text-xs: 12px;
+  --leading-xs: 16px;
+  --text-sm: 13px;
+  --leading-sm: 20px;
+  --text-base: 15px;
+  --leading-base: 24px;
+  --text-lg: 18px;
+  --leading-lg: 26px;
+  --text-xl: 22px;
+  --leading-xl: 30px;
+  --text-2xl: 32px;
+  --leading-2xl: 40px;
+  --text-3xl: 44px;
+  --leading-3xl: 52px;
+
+  /* Геометрия */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-full: 999px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Движение: только transform/opacity, 120-160ms ease-out */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur: 160ms;
+
+  /* Слой */
+  --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 8px 24px rgba(0, 0, 0, 0.6);
+
+  /* Совместимость с @neyra/ui токенами */
+  --background: var(--bg);
+  --foreground: var(--text);
+  --muted: var(--text-muted);
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible:not(input):not(textarea) {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
+}
+
+@keyframes dot-bounce {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  40% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+.dot-bounce {
+  animation: dot-bounce 1.3s infinite ease-in-out;
+}
+
+@keyframes orb-breathe {
+  0%, 100% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+}
+
+.avatar-thinking {
+  animation: orb-breathe 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot-bounce,
+  .avatar-thinking {
+    animation: none !important;
+    opacity: 0.85 !important;
+  }
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.content-column {
+  max-width: 720px;
+  margin-inline: auto;
+  padding-inline: 24px;
+}
+
+@media (max-width: 640px) {
+  .content-column {
+    padding-inline: 16px;
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-subtle);
+}
+
+/* Фон чата: редкие плывущие точки, свет за курсором и тонкое кольцо.
+   Только transform/opacity; при prefers-reduced-motion всё выключено. */
+@keyframes ambient-drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); opacity: 0.12; }
+  25%  { transform: translate3d(14px, -22px, 0) scale(1.2); opacity: 0.5; }
+  50%  { transform: translate3d(-10px, -40px, 0) scale(0.9); opacity: 0.22; }
+  75%  { transform: translate3d(-18px, -16px, 0) scale(1.1); opacity: 0.45; }
+  100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.12; }
+}
+
+.ambient-dot {
+  position: absolute;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.45);
+  opacity: 0.2;
+  animation-name: ambient-drift;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  will-change: transform, opacity;
+}
+
+.ambient-glow {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    260px 260px at var(--glow-x, 50%) var(--glow-y, 40%),
+    rgba(255, 255, 255, 0.055),
+    rgba(255, 255, 255, 0.015) 45%,
+    transparent 70%
+  );
+  transition: background 90ms linear;
+}
+
+.ambient-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  transform: translate3d(var(--ring-x, -100px), var(--ring-y, -100px), 0);
+  opacity: 0;
+  transition: opacity 160ms ease-out;
+  will-change: transform;
+}
+
+.ambient-ring[data-visible='1'] {
+  opacity: 1;
+}
+
+@keyframes chips-in {
+  from { opacity: 0; transform: translate3d(0, 6px, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+.animate-chips {
+  animation: chips-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-dot,
+  .ambient-ring,
+  .animate-chips {
+    animation: none !important;
+    transition: none !important;
+  }
+  .ambient-ring { display: none; }
+}
+
+/* Модальные окна: мягкое появление панели, без влияния на layout. */
+@keyframes dialog-in {
+  from { opacity: 0; transform: translate3d(0, 8px, 0) scale(0.99); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.animate-dialog { animation: dialog-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.animate-fade { animation: fade-in 140ms ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-dialog, .animate-fade { animation: none; }
+}
+
+
+/* Чат занимает ровно экран: прокручивается только лента сообщений. */
+html:has([data-chat-shell]),
+body:has([data-chat-shell]) {
+  height: 100svh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}

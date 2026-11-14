@@ -20,3 +20,44 @@ export function readAuthEnv(env: Environment = process.env) {
   } catch { throw new Error('Задайте BETTER_AUTH_URL — HTTP(S) origin сайта.'); }
   return { databaseUrl, secret, baseURL: baseURL! };
 }
+export function readChatEnv(env: Environment = process.env) {
+  const wsUrl = (env.NEYRA_WS_URL || 'ws://127.0.0.1:8787').replace(/\/+$/, '');
+  try {
+    const url = new URL(wsUrl);
+    if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
+  } catch { throw new Error('NEYRA_WS_URL должна быть корректным WS(S) URL ядра.'); }
+  const serviceKey = env.NEYRA_SERVICE_KEY || '';
+  const jwtSecret = env.NEYRA_IDENTITY_JWT_SECRET;
+  if (!jwtSecret || jwtSecret.length < 32) {
+    throw new Error('Задайте NEYRA_IDENTITY_JWT_SECRET длиной не менее 32 символов.');
+  }
+  const jwtIssuer = env.NEYRA_IDENTITY_JWT_ISSUER;
+  if (!jwtIssuer || !jwtIssuer.trim()) {
+    throw new Error('Задайте NEYRA_IDENTITY_JWT_ISSUER — эмитент токена идентичности.');
+  }
+  return { wsUrl, serviceKey, jwtSecret, jwtIssuer: jwtIssuer.trim() };
+}
+
+export type AuthMode = 'password' | 'discord' | 'both';
+
+export interface AuthConfig {
+  authMode: AuthMode;
+  inviteRequired: boolean;
+  discordAvailable: boolean;
+}
+
+export function readAuthConfig(env: Environment = process.env): AuthConfig {
+  const rawMode = env.AUTH_MODE?.toLowerCase();
+  const authMode: AuthMode =
+    rawMode === 'discord' ? 'discord' : rawMode === 'both' ? 'both' : 'password';
+  const inviteRequired = env.INVITE_REQUIRED === 'true';
+  const discordAvailable = !!(
+    (env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET) ||
+    env.DISCORD_ENABLED === 'true'
+  );
+  return {
+    authMode: discordAvailable ? authMode : 'password',
+    inviteRequired,
+    discordAvailable,
+  };
+}

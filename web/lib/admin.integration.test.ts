@@ -10,6 +10,14 @@ import { POST as resetPasswordLink } from '../src/app/api/admin/users/[id]/reset
 import { GET as listInvites, POST as createInviteRoute } from '../src/app/api/admin/invites/route';
 import { DELETE as revokeInviteRoute } from '../src/app/api/admin/invites/[id]/route';
 import { GET as listLogs } from '../src/app/api/admin/logs/route';
+import { GET as getCoreConfig, PUT as putCoreConfig } from '../src/app/api/admin/config/route';
+import { GET as getLogTail } from '../src/app/api/admin/logs/tail/route';
+import { GET as discordGuilds } from '../src/app/api/admin/discord/guilds/route';
+import { GET as discordGuild } from '../src/app/api/admin/discord/guilds/[guildId]/route';
+import { GET as discordMembers } from '../src/app/api/admin/discord/members/route';
+import { GET as discordUserStats } from '../src/app/api/admin/discord/users/[personId]/stats/route';
+import { GET as discordMessages } from '../src/app/api/admin/discord/messages/route';
+import { GET as getSettings, PUT as putSettings } from '../src/app/api/admin/settings/route';
 
 const RUN = Boolean(process.env.AUTH_INTEGRATION_DATABASE_URL);
 const BASE = 'http://localhost:3000';
@@ -176,7 +184,10 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
       body: JSON.stringify({ banned: false }),
     }), { params: Promise.resolve({ id: state.memberId }) });
     expect(unban.status).toBe(200);
-    expect((await signIn(state.memberEmail, state.memberPassword)).response.status).toBe(200);
+    const afterUnban = await signIn(state.memberEmail, state.memberPassword);
+    expect(afterUnban.response.status).toBe(200);
+    // Бан удалил сессии: для следующих проверок нужен свежий cookie.
+    state.memberCookie = afterUnban.cookie;
   });
 
   it('создаёт и отзывает инвайт, повторно не пускает', async () => {
@@ -285,5 +296,98 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     const self = await deleteUser(adminRequest(`/api/admin/users/${state.adminId}`, state.adminCookie, { method: 'DELETE' }),
       { params: Promise.resolve({ id: state.adminId }) });
     expect(self.status).toBe(409);
+  });
+
+  it('закрывает настройки ядра и хвост лога от гостя и обычного пользователя', async () => {
+    expect((await getCoreConfig(adminRequest('/api/admin/config'))).status).toBe(401);
+    expect((await getCoreConfig(adminRequest('/api/admin/config', state.memberCookie))).status).toBe(403);
+    expect((await getLogTail(adminRequest('/api/admin/logs/tail?lines=10'))).status).toBe(401);
+    expect((await getLogTail(adminRequest('/api/admin/logs/tail?lines=10', state.memberCookie))).status).toBe(403);
+
+    const memberWrite = await putCoreConfig(adminRequest('/api/admin/config', state.memberCookie, {
+      method: 'PUT',
+      body: JSON.stringify({ updates: { 'llm.talk_model.model': 'member-model' } }),
+    }));
+    expect(memberWrite.status).toBe(403);
+
+    const invalid = await putCoreConfig(adminRequest('/api/admin/config', state.adminCookie, {
+      method: 'PUT',
+      body: JSON.stringify({ updates: {} }),
+    }));
+    expect(invalid.status).toBe(400);
+  });
+
+  it('режим регистрации: админ меняет, хук регистрации слушается', async () => {
+    expect((await getSettings(adminRequest('/api/admin/settings'))).status).toBe(401);
+    expect((await getSettings(adminRequest('/api/admin/settings', state.memberCookie))).status).toBe(403);
+
+    const initial = await getSettings(adminRequest('/api/admin/settings', state.adminCookie));
+    expect(initial.status).toBe(200);
+    expect((await payloadOf(initial))?.data?.registration_mode).toBe('invite');
+
+    const setMode = async (mode: string) => putSettings(adminRequest('/api/admin/settings', state.adminCookie, {
+      method: 'PUT',
+      body: JSON.stringify({ registration_mode: mode }),
+    }));
+
+    try {
+      expect((await setMode('everyone')).status).toBe(400);
+
+      const open = await setMode('open');
+      expect(open.status).toBe(200);
+      expect((await payloadOf(open))?.data?.registration_mode).toBe('open');
+      const openSignup = await authCall('/sign-up/email', {
+        email: uniqueEmail('open-mode'), password: 'open-mode-password-1', name: 'open',
+      });
+      expect(openSignup.response.status).toBe(200);
+
+      expect((await setMode('closed')).status).toBe(200);
+      const closedSignup = await authCall('/sign-up/email', {
+        email: uniqueEmail('closed-mode'), password: 'closed-mode-password-1', name: 'closed', invite: makeInvite(),
+      });
+      expect(closedSignup.response.status).toBe(403);
+      expect(String(closedSignup.json?.message ?? '')).toContain('закрыта');
+
+      expect((await setMode('invite')).status).toBe(200);
+      const withoutInvite = await authCall('/sign-up/email', {
+        email: uniqueEmail('invite-mode-no'), password: 'invite-mode-password-1', name: 'no',
+      });
+      expect(withoutInvite.response.status).toBe(403);
+      const withInvite = await authCall('/sign-up/email', {
+        email: uniqueEmail('invite-mode-yes'), password: 'invite-mode-password-1', name: 'yes', invite: makeInvite(),
+      });
+      expect(withInvite.response.status).toBe(200);
+
+      const logs = await listLogs(adminRequest('/api/admin/logs?limit=100&period=all', state.adminCookie));
+      const items = ((await payloadOf(logs))?.data?.items ?? []) as Array<{ action: string; actorEmail: string }>;
+      expect(items.some(item => item.action === 'settings.write' && item.actorEmail === state.adminEmail)).toBe(true);
+    } finally {
+      await setMode('invite');
+    }
+  });
+
+  it('закрывает каталог Discord от гостя и обычного пользователя', async () => {
+    const guildParams = { params: Promise.resolve({ guildId: 'g1' }) };
+    const statsParams = { params: Promise.resolve({ personId: 'p1' }) };
+    const calls: Array<[string, Promise<Response>]> = [
+      ['guilds', discordGuilds(adminRequest('/api/admin/discord/guilds'))],
+      ['guild', discordGuild(adminRequest('/api/admin/discord/guilds/g1'), guildParams)],
+      ['members', discordMembers(adminRequest('/api/admin/discord/members'))],
+      ['stats', discordUserStats(adminRequest('/api/admin/discord/users/p1/stats'), statsParams)],
+      ['messages', discordMessages(adminRequest('/api/admin/discord/messages'))],
+    ];
+    for (const [name, pending] of calls) {
+      expect((await pending).status, name).toBe(401);
+    }
+    const memberCalls: Array<[string, Promise<Response>]> = [
+      ['guilds', discordGuilds(adminRequest('/api/admin/discord/guilds', state.memberCookie))],
+      ['guild', discordGuild(adminRequest('/api/admin/discord/guilds/g1', state.memberCookie), guildParams)],
+      ['members', discordMembers(adminRequest('/api/admin/discord/members', state.memberCookie))],
+      ['stats', discordUserStats(adminRequest('/api/admin/discord/users/p1/stats', state.memberCookie), statsParams)],
+      ['messages', discordMessages(adminRequest('/api/admin/discord/messages', state.memberCookie))],
+    ];
+    for (const [name, pending] of memberCalls) {
+      expect((await pending).status, name).toBe(403);
+    }
   });
 });

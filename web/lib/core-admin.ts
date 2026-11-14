@@ -2,12 +2,14 @@
 // никогда не покидает сервер и не попадает в ответы API.
 // Разделы настроек ядра в волне 2 — только чтение; отсутствие API показывается честно.
 
-export type CoreState = 'ok' | 'unconfigured' | 'unauthorized' | 'unavailable' | 'error';
+export type CoreState = 'ok' | 'unconfigured' | 'unauthorized' | 'unavailable' | 'error' | 'unsupported';
 
 export interface CoreResult<T> {
   state: CoreState;
   data: T | null;
   message?: string;
+  /** HTTP status from the core, when it answered. Kept so routes can map 400 vs 5xx. */
+  status?: number;
 }
 
 export interface CoreEnv {
@@ -40,6 +42,8 @@ interface CoreRequest {
   env?: Environment;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** Statuses whose body is still meaningful, e.g. /v1/health/ready answers 503 with checks. */
+  acceptStatus?: number[];
   /**
    * AR-30: только доверенные ручки (config) показывают текст ошибки ядра.
    * По умолчанию наружу идёт фиксированный текст.
@@ -48,7 +52,7 @@ interface CoreRequest {
 }
 
 async function request<T>(
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   options: CoreRequest & { body?: unknown } = {},
 ): Promise<CoreResult<T>> {
@@ -68,21 +72,46 @@ async function request<T>(
       cache: 'no-store',
     });
     if (response.status === 401 || response.status === 403) {
-      return { state: 'unauthorized', data: null, message: `Ядро отклонило ключ сайта (${response.status}).` };
+      return {
+        state: 'unauthorized',
+        data: null,
+        status: response.status,
+        message: `Ядро отклонило ключ сайта (${response.status}).`,
+      };
     }
     const payload = await response.json().catch(() => null) as { ok?: boolean; data?: unknown; error?: { message?: string } } | null;
+    const accepted = Boolean(options.acceptStatus?.includes(response.status));
+    if (!response.ok && accepted) {
+      const acceptedData = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
+      return { state: 'ok', data: (acceptedData ?? null) as T, status: response.status };
+    }
+    // Ручки может не быть в текущем ядре (#73 без provider/logs/discord API). Это не
+    // авария: FastAPI отвечает 404/405 без нашего конверта {ok:false,error}, и админка
+    // должна показать «ядро не поддерживает», а не 502/404 в консоли.
+    const structuredError = Boolean(payload && typeof payload === 'object' && payload.ok === false && payload.error);
+    if ([404, 405, 501].includes(response.status) && !structuredError) {
+      return {
+        state: 'unsupported',
+        data: null,
+        status: response.status,
+        message: 'Ядро не поддерживает этот раздел. Обновите ядро до версии с этим API.',
+      };
+    }
+    // Структурированная ошибка ядра ({ok:false,error:{...}}) — это заранее
+    // заданный человеческий текст ручки; сырые 5xx и HTML-страницы наружу не идут.
     const rawMessage = payload?.error?.message;
     const safeMessage = options.forwardMessage
-      ? (rawMessage ?? `Ядро ответило ${response.status}.`)
+      ? String(rawMessage || `Ядро ответило ${response.status}.`).slice(0, 200)
       : 'Ядро вернуло ошибку. Подробности в журнале ядра.';
     if (!response.ok) {
-      return { state: 'error', data: null, message: safeMessage };
+      return { state: 'error', data: null, status: response.status, message: safeMessage };
     }
     if (payload && payload.ok === false) {
-      return { state: 'error', data: null, message: safeMessage };
+      return { state: 'error', data: null, status: response.status, message: safeMessage };
     }
     const data = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
-    return { state: 'ok', data: (data ?? null) as T };
+    // status нужен вызывающим: /v1/health/ready с 200 — «готово», с 503 — «не готово».
+    return { state: 'ok', data: (data ?? null) as T, status: response.status };
   } catch (error) {
     const reason = error instanceof Error && error.name === 'TimeoutError'
       ? 'Ядро не ответило вовремя.'
@@ -95,8 +124,21 @@ export function coreGet<T>(path: string, options: CoreRequest = {}): Promise<Cor
   return request<T>('GET', path, options);
 }
 
+// /v1/health/ready отвечает 503, когда не готов, но тело с checks остаётся полезным.
+export function coreGetReady<T>(path: string, options: CoreRequest = {}): Promise<CoreResult<T>> {
+  return request<T>('GET', path, { ...options, acceptStatus: [200, 503] });
+}
+
 export function corePost<T>(path: string, body: unknown, options: CoreRequest = {}): Promise<CoreResult<T>> {
   return request<T>('POST', path, { ...options, body });
+}
+
+export function corePut<T>(path: string, body: unknown, options: CoreRequest = {}): Promise<CoreResult<T>> {
+  return request<T>('PUT', path, { ...options, body });
+}
+
+export function coreDelete<T>(path: string, options: CoreRequest = {}): Promise<CoreResult<T>> {
+  return request<T>('DELETE', path, options);
 }
 
 export interface CoreHealth {
@@ -107,7 +149,8 @@ export interface CoreHealth {
   uptime_seconds?: number;
   checks?: Array<{ name?: string; ok?: boolean; ms?: number; reason?: string }>;
   llm_providers?: string[];
-  degraded_reason?: string;
+  // Объект {error_class, at}, а не строка: тип не должен врать.
+  degraded_reason?: unknown;
   [key: string]: unknown;
 }
 

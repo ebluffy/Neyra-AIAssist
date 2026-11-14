@@ -1,34 +1,53 @@
 import { requireAdmin } from '../../../../../lib/admin-guard';
+import { readAdminConfig } from '../../../../../lib/admin-config';
 import { coreGet, type CoreHealth } from '../../../../../lib/core-admin';
-import { jsonOk } from '../../../../../lib/admin-http';
+import { readAuthConfig } from '../../../../../lib/env';
+import { jsonError, jsonOk } from '../../../../../lib/admin-http';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// Интеграции: Discord (по наличию настроек в .env сайта), провайдеры моделей (из здоровья ядра),
-// MCP (у ядра нет API управления). Секреты не показываются — только «настроен / не настроен».
+// Интеграции: только статусы и публичные поля конфига. Секреты — флагом,
+// значения ключей не отдаются ни в каком виде.
 export async function GET(request: Request) {
   const auth = await requireAdmin(request);
   if (!auth.ok) return auth.response;
-  const health = await coreGet<CoreHealth>('/v1/health', { timeoutMs: 4000 });
-  const discordConfigured = Boolean(
-    (process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET) || process.env.DISCORD_ENABLED === 'true',
-  );
+
+  const [config, health] = await Promise.all([
+    readAdminConfig(),
+    coreGet<CoreHealth>('/v1/health', { timeoutMs: 4000 }),
+  ]);
+
+  if (config.state !== 'ok' || !config.data) {
+    return jsonError(
+      503,
+      config.state === 'unconfigured' ? 'core_unconfigured' : 'core_unavailable',
+      config.message ?? 'Ядро не отдало конфиг интеграций.',
+    );
+  }
+
+  const authConfig = readAuthConfig();
   return jsonOk({
+    auth: {
+      mode: authConfig.authMode,
+      discord_available: authConfig.discordAvailable,
+      invite_required: authConfig.inviteRequired,
+    },
     discord: {
-      configured: discordConfigured,
-      note: discordConfigured
-        ? 'Вход через Discord настроен в .env сайта.'
-        : 'Вход через Discord не настроен: нет DISCORD_CLIENT_ID и DISCORD_CLIENT_SECRET.',
+      configured: Boolean(process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET),
+      client_id_present: Boolean(process.env.DISCORD_CLIENT_ID),
+      secret_present: Boolean(process.env.DISCORD_CLIENT_SECRET),
     },
-    providers: {
+    providers: config.data.providers,
+    lanes: config.data.lanes,
+    mcp: config.data.mcp,
+    secrets: config.data.secrets,
+    editable: config.data.editable,
+    core: {
       state: health.state,
+      version: health.state === 'ok' ? health.data?.version ?? health.data?.api_version ?? null : null,
+      providers: health.state === 'ok' ? health.data?.llm_providers ?? [] : [],
       message: health.message ?? null,
-      names: health.state === 'ok' ? (health.data?.llm_providers ?? []) : [],
-    },
-    mcp: {
-      state: 'no_api',
-      message: 'У ядра нет API управления MCP-серверами: список и переключатели появятся вместе с ним.',
     },
   });
 }

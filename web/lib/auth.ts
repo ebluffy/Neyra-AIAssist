@@ -14,6 +14,7 @@ import {
 } from './login-throttle';
 import { checkInvite, consumeInvite, readInviteToken, releaseInvite } from './invite';
 import { findBannedByEmail, touchLastLogin } from './admin-users';
+import { getRegistrationMode } from './site-settings';
 import * as schema from '../db/schema';
 
 // Ссылка сброса пароля живёт до первого запроса админа (2 минуты): письма сайт
@@ -29,6 +30,38 @@ export function takeResetLink(email: string): string | null {
   if (Date.now() - entry.at > RESET_LINK_TTL_MS) return null;
   return entry.url;
 }
+
+// Discord OAuth: ключи приходят из env стенда. Если их нет — провайдер не включается
+// вовсе, чтобы кнопка на входе не вела в никуда.
+function discordProvider() {
+  const clientId = process.env.DISCORD_CLIENT_ID?.trim();
+  const clientSecret = process.env.DISCORD_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) return {};
+  return {
+    discord: {
+      clientId,
+      clientSecret,
+      scope: ['identify', 'email'],
+      // Discord — только вход для уже заведённых аккаунтов: OAuth не создаёт
+      // пользователя в обход проверки режима регистрации (closed/invite).
+      // Новые аккаунты заводятся через email по инвайту или в открытом режиме.
+      disableImplicitSignUp: true,
+      // Discord отдаёт email: null для аккаунтов, заведённых только по телефону.
+      // Заглушка не адрес для писем, а стабильный идентификатор внутри .invalid.
+      mapProfileToUser: (profile: { id: string; email?: string | null }) => ({
+        email: profile.email ?? `${profile.id}@discord.placeholder.invalid`,
+      }),
+    },
+  };
+}
+
+// Привязка OAuth-аккаунта — только при подтверждённом email провайдера и локального
+// аккаунта. Discord не входит в trustedProviders: неподтверждённый адрес из Discord
+// не должен привязываться к чужому существующему профилю с тем же email.
+export const ACCOUNT_LINKING = {
+  enabled: true,
+  requireLocalEmailVerified: true,
+} as const;
 
 function createAuth() {
   const env = readAuthEnv();
@@ -49,6 +82,10 @@ function createAuth() {
       },
     },
     user: { additionalFields: { role: roleField } },
+    socialProviders: discordProvider(),
+    // Implicit linking по совпадению email разрешено Better Auth только когда провайдер
+    // подтвердил email (иначе isTrustedProvider=false и userInfo.emailVerified=false).
+    account: { accountLinking: ACCOUNT_LINKING },
     // No automatic promotion on sign-up: an e-mail is not proof of ownership, and an open
     // registration would let a stranger claim a listed admin address. The first admin is
     // granted from the server with scripts/grant-admin.mjs.
@@ -94,7 +131,18 @@ function createAuth() {
           return;
         }
         if (ctx.path === '/sign-up/email') {
-          // AR-2: регистрация только по одноразовому инвайту. Проверка на сервере,
+          // Режим регистрации задаёт админ в site_setting: invite | open | closed.
+          // При недоступной БД getRegistrationMode не бросает и отдаёт безопасный
+          // fallback (env INVITE_REQUIRED, иначе invite).
+          const mode = await getRegistrationMode();
+          if (mode === 'closed') {
+            return ctx.json({ message: 'Регистрация закрыта администратором Нейры.' }, { status: 403 });
+          }
+          if (mode === 'open') {
+            // Открытая регистрация: инвайт не требуется и не расходуется.
+            return;
+          }
+          // AR-2: режим invite — одноразовый токен. Проверка на сервере,
           // до обработки better-auth: без инвайта, с чужим, потраченным или
           // просроченным аккаунт не создаётся.
           let body: unknown = null;

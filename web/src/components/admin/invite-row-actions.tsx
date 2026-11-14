@@ -2,10 +2,9 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Ban } from 'lucide-react';
 import { Dialog } from './dialog';
-
-const buttonClass = 'rounded-[var(--radius)] border border-[var(--border)] px-2.5 py-1 text-xs hover:bg-white/5 disabled:opacity-40';
-const dangerClass = 'rounded-[var(--radius)] border border-red-500/50 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10 disabled:opacity-40';
+import { IconButton, Button } from '../ui';
 
 export function InviteRowActions({ id, disabled }: { id: string; disabled: boolean }) {
   const router = useRouter();
@@ -34,17 +33,31 @@ export function InviteRowActions({ id, disabled }: { id: string; disabled: boole
   }
 
   return (
-    <div className="flex items-center gap-2">
-      <button type="button" className={dangerClass} disabled={disabled || pending} onClick={() => setOpen(true)}>
-        Отозвать
-      </button>
-      {error && !open && <span role="alert" className="text-xs text-red-300">{error}</span>}
+    <div className="flex items-center gap-1.5">
+      <IconButton
+        type="button"
+        aria-label="Отозвать приглашение"
+        tooltip="Отозвать приглашение"
+        icon={<Ban size={15} strokeWidth={1.5} />}
+        variant="ghost"
+        size="sm"
+        disabled={disabled || pending}
+        onClick={() => setOpen(true)}
+        className="text-[var(--danger)] hover:bg-[var(--danger-quiet)]"
+      />
+      {error && !open && <span role="alert" className="text-xs text-[var(--danger)]">{error}</span>}
       <Dialog open={open} title="Отозвать приглашение?" onClose={() => setOpen(false)}>
-        <p className="text-[var(--muted)]">Ссылка перестанет работать. Уже зарегистрированного пользователя это не затронет.</p>
-        {error && <p role="alert" className="mt-2 text-xs text-red-300">{error}</p>}
-        <div className="mt-4 flex justify-end gap-2">
-          <button type="button" className={buttonClass} onClick={() => setOpen(false)}>Отмена</button>
-          <button type="button" className={dangerClass} disabled={pending} onClick={revoke}>Отозвать</button>
+        <p className="text-[var(--text-muted)] leading-relaxed">
+          Ссылка перестанет работать. Уже зарегистрированного пользователя это не затронет.
+        </p>
+        {error && <p role="alert" className="mt-2 text-xs text-[var(--danger)]">{error}</p>}
+        <div className="mt-5 flex justify-end gap-2.5">
+          <Button variant="secondary" size="sm" onClick={() => setOpen(false)}>
+            Отмена
+          </Button>
+          <Button variant="danger" size="sm" disabled={pending} loading={pending} onClick={revoke}>
+            Отозвать
+          </Button>
         </div>
       </Dialog>
     </div>
