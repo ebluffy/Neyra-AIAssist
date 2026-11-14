@@ -18,7 +18,7 @@ English docs live under `docs/en/**`.
 Client reform documents (English summaries; the Russian text is canonical):
 
 - [architecture/web-v2.md](architecture/web-v2.md) — web client v2: decisions D1–D27, data model, identity, deployment, stages P0–P6.
-- [architecture/adr-0001-client-monorepo.md](architecture/adr-0001-client-monorepo.md) — ADR: client monorepo `packages/ui` + `packages/contracts` + `apps/web` + `apps/desktop`; Rust and IPC unchanged.
+- [architecture/adr-0001-client-monorepo.md](architecture/adr-0001-client-monorepo.md) — ADR: client monorepo `packages/ui` + `packages/contracts` + `web` + `desktop`; Rust and IPC unchanged.
 
 **Repository:** [github.com/ebluffy/Neyra-AIAssist](https://github.com/ebluffy/Neyra-AIAssist)
 
