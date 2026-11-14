@@ -21,9 +21,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from threading import Lock
+from threading import Lock, Thread
 
 logger = logging.getLogger("neyra.provider_probe")
 
@@ -94,12 +93,19 @@ def _blocked_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> 
 
 def _resolve(host: str, port: int) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     """Резолв с коротким таймаутом; getaddrinfo сам таймаут не принимает."""
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            infos = pool.submit(
-                socket.getaddrinfo, host, port, 0, socket.SOCK_STREAM
-            ).result(timeout=1.0)
-    except Exception:
+    infos: list = []
+
+    def work() -> None:
+        try:
+            infos.extend(socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM))
+        except Exception:
+            return
+
+    # Демон-поток не держит выход: shutdown(wait=True) ждал бы getaddrinfo целиком.
+    worker = Thread(target=work, daemon=True)
+    worker.start()
+    worker.join(1.0)
+    if worker.is_alive():
         return []
     out: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     for info in infos:
@@ -134,6 +140,10 @@ def _probe_uncached(base_url: str, timeout: float) -> ProbeResult:
     blocked = _target_block_reason(base_url)
     if blocked:
         return ProbeResult("unreachable", None, blocked, time.time())
+    # Остаточный риск: urlopen резолвит имя ещё раз, и DNS с коротким TTL
+    # теоретически может вернуть metadata-адрес между проверкой и запросом.
+    # Probe не передаёт ключ и читает только /models, поэтому риск ограничен;
+    # полная защита — подключаться к уже проверенному IP, это отдельная задача.
     request = urllib.request.Request(
         _endpoint(base_url),
         headers={"Accept": "application/json", "User-Agent": "Neyra-Core/1"},

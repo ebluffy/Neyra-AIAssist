@@ -30,6 +30,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import yaml
+
 SERVER_ROOT = Path(__file__).resolve().parents[1]
 if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
@@ -43,21 +45,51 @@ _KEY = "NEYRA_VAULT_KEY"
 _KEY_FILE = "vault.key"
 
 
-def _read_env_value(env_path: Path) -> str:
+def _read_env_value(env_path: Path, name: str = _KEY) -> str:
     if not env_path.is_file():
         return ""
     for line in env_path.read_text(encoding="utf-8").splitlines():
         text = line.strip()
         if not text or text.startswith("#") or "=" not in text:
             continue
-        name, value = text.split("=", 1)
-        if name.strip() != _KEY:
+        key, value = text.split("=", 1)
+        if key.strip() != name:
             continue
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
             value = value[1:-1]
         return value.strip()
     return ""
+
+
+def _config_data_dir(server_root: Path) -> str:
+    """paths.data_dir из config/*.yaml + config.yaml без полной валидации."""
+    for path in (*sorted((server_root / "config").glob("*.yaml")), server_root / "config.yaml"):
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        paths = raw.get("paths") if isinstance(raw, dict) else None
+        if isinstance(paths, dict):
+            value = str(paths.get("data_dir") or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _resolve_data_dir(server_root: Path, env_path: Path, cli_value: str | None) -> Path:
+    """Тот же приоритет, что у ядра: --data, NEYRA_DATA_DIR, paths.data_dir, ./data."""
+    raw = (cli_value or "").strip()
+    if not raw:
+        raw = (os.environ.get("NEYRA_DATA_DIR") or "").strip()
+    if not raw:
+        raw = _read_env_value(env_path, "NEYRA_DATA_DIR")
+    if not raw:
+        raw = _config_data_dir(server_root)
+    if not raw:
+        raw = "./data"
+    path = Path(raw).expanduser()
+    return path.resolve() if path.is_absolute() else (server_root / path).resolve()
 
 
 def _owner_of(path: Path) -> tuple[int, int] | None:
@@ -126,12 +158,13 @@ def _store(data_dir: Path, raw_key: str) -> ProviderSecretStore:
 
 
 def ensure_vault_key(env_path: Path, data_dir: Path) -> str:
-    """Вернуть источник ключа: 'env' | 'vault.key' | 'generated'."""
-    existing = _read_env_value(env_path)
+    """Вернуть источник ключа: 'environment' | 'env' | 'vault.key' | 'generated'."""
+    process_key = (os.environ.get(_KEY) or "").strip()
+    existing = process_key or _read_env_value(env_path)
     vault_key_path = data_dir / "secrets" / _KEY_FILE
     if existing:
         _store(data_dir, existing).verify()
-        return "env"
+        return "environment" if process_key else "env"
 
     old_key = ""
     if vault_key_path.is_file():
@@ -167,10 +200,14 @@ def ensure_vault_key(env_path: Path, data_dir: Path) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Ensure NEYRA_VAULT_KEY in the core .env")
     parser.add_argument("--env", default=".env", help="path to the core .env")
-    parser.add_argument("--data", default="data", help="path to the core data directory")
+    parser.add_argument(
+        "--data",
+        default=None,
+        help="path to the core data directory (default: NEYRA_DATA_DIR / paths.data_dir / ./data)",
+    )
     args = parser.parse_args(argv)
     env_path = Path(args.env)
-    data_dir = Path(args.data)
+    data_dir = _resolve_data_dir(SERVER_ROOT, env_path, args.data)
     try:
         source = ensure_vault_key(env_path, data_dir)
     except Exception as e:

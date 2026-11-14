@@ -126,6 +126,31 @@ def test_write_env_value_drops_duplicate_key(tmp_path: Path):
     assert "A=1" in text and "B=2" in text
 
 
+def test_process_env_key_wins_without_touching_env_file(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OTHER=1\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    key = "process-only-key"
+    ProviderSecretStore(data_dir / "secrets", env={"NEYRA_VAULT_KEY": key}).set("openai", "sk-x")  # gitleaks:allow
+    monkeypatch.setenv("NEYRA_VAULT_KEY", key)
+
+    assert helper.ensure_vault_key(env_path, data_dir) == "environment"
+    assert "NEYRA_VAULT_KEY" not in env_path.read_text(encoding="utf-8")
+
+
+def test_data_dir_follows_core_resolution(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("NEYRA_DATA_DIR", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("NEYRA_DATA_DIR=/srv/neyra-data\n", encoding="utf-8")
+    assert helper._resolve_data_dir(tmp_path, env_path, None) == Path("/srv/neyra-data")
+
+    env_path.write_text("", encoding="utf-8")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "runtime.yaml").write_text("paths:\n  data_dir: /var/lib/neyra\n", encoding="utf-8")
+    assert helper._resolve_data_dir(tmp_path, env_path, None) == Path("/var/lib/neyra")
+    assert helper._resolve_data_dir(tmp_path, env_path, "./other") == (tmp_path / "other").resolve()
+
+
 def test_root_run_returns_env_and_vault_to_service_owner(tmp_path: Path, monkeypatch):
     """update-core.sh идёт от root: .env и vault не должны остаться root:root."""
     env_path = tmp_path / ".env"

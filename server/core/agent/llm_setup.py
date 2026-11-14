@@ -72,7 +72,7 @@ def _lane_extra_body(agent: Any, lane: str, base: dict[str, Any]) -> dict[str, A
 
 
 
-def setup_llm_connection(agent: Any) -> None:
+def _setup_llm_connection(agent: Any) -> None:
     """Resolve default + per-role provider connections and build ChatOpenAI clients."""
     from core.llm.profile import resolve_openai_compatible_connection
 
@@ -100,6 +100,23 @@ def setup_llm_connection(agent: Any) -> None:
         > 1
     )
     setup_openai_compatible_llm(agent)
+
+
+def setup_llm_connection(agent: Any) -> None:
+    """Собрать новое состояние LLM в стороне и опубликовать после успеха.
+
+    Пересборка идёт в to_thread, пока чат читает агента. Если писать conn'ы,
+    лимиты и клиенты по мере сборки, запрос увидит смесь старого и нового,
+    а исключение оставит агента с новыми conn'ами и старыми клиентами.
+    """
+    from types import SimpleNamespace
+
+    staging = SimpleNamespace(config=agent.config)
+    _setup_llm_connection(staging)
+    for name, value in vars(staging).items():
+        if name == "config":
+            continue
+        setattr(agent, name, value)
 
 
 def setup_openai_compatible_llm(agent: Any) -> None:

@@ -294,3 +294,78 @@ def test_key_reset_failure_rolls_back_base_url(real_api, auth_headers, monkeypat
     )
     assert row["base_url"] == "https://old.example/v1"
     assert row["has_key"] is True
+
+
+def test_llm_rebuild_failure_keeps_old_state(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.agent import llm_setup
+
+    agent = SimpleNamespace(config={}, llm_talk="old-talk", backend="old-backend")
+
+    def boom(_staging):
+        raise RuntimeError("build failed")
+
+    monkeypatch.setattr(llm_setup, "_setup_llm_connection", boom)
+    with pytest.raises(RuntimeError):
+        llm_setup.setup_llm_connection(agent)
+    assert agent.llm_talk == "old-talk"
+    assert agent.backend == "old-backend"
+
+
+def test_llm_rebuild_publishes_after_success(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.agent import llm_setup
+
+    agent = SimpleNamespace(config={}, llm_talk="old-talk", backend="old-backend")
+
+    def build(staging):
+        staging.llm_talk = "new-talk"
+        staging.backend = "new-backend"
+
+    monkeypatch.setattr(llm_setup, "_setup_llm_connection", build)
+    llm_setup.setup_llm_connection(agent)
+    assert agent.llm_talk == "new-talk"
+    assert agent.backend == "new-backend"
+
+
+def test_key_reset_and_rollback_failure_asks_for_manual_action(real_api, auth_headers, monkeypatch):
+    http, agent = real_api
+    agent._setup_llm = lambda: None
+    http.put(
+        "/v1/providers/rollback2",
+        json={"base_url": "https://old.example/v1", "kind": "openai"},
+        headers=auth_headers[ADMIN],
+    )
+    http.put(
+        "/v1/providers/rollback2/secret",
+        json={"api_key": RAW_KEY},
+        headers=auth_headers[ADMIN],
+    )
+
+    def boom(self, name):
+        raise ProviderSecretsError("vault delete failed")
+
+    monkeypatch.setattr(ProviderSecretStore, "delete", boom)
+
+    import core.runtime.config_loader as config_loader
+
+    original = config_loader.persist_allowlisted_updates
+    calls = {"n": 0}
+
+    def failing(root, updates, keep_backup=True):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("rollback write failed")
+        return original(root, updates, keep_backup=keep_backup)
+
+    monkeypatch.setattr(config_loader, "persist_allowlisted_updates", failing)
+    response = http.put(
+        "/v1/providers/rollback2",
+        json={"base_url": "https://new.example/v1", "kind": "openai"},
+        headers=auth_headers[ADMIN],
+    )
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "vault_error"
+    assert "вручную" in response.json()["error"]["message"]

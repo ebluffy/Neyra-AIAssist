@@ -4259,6 +4259,7 @@ def build_app(
                 logger.exception("Failed to reset provider key after base_url change | trace_id=%s", trace_id)
                 # Старый ключ остался: возвращаем прежний адрес, чтобы новый хост
                 # не получил его даже при повторном сохранении.
+                rolled_back = False
                 try:
                     if old_base_url:
                         persist_allowlisted_updates(
@@ -4277,8 +4278,16 @@ def build_app(
                         )
                         if isinstance(config.get("llm", {}).get("providers", {}), dict):
                             config["llm"]["providers"][provider].pop("base_url", None)
+                    rolled_back = True
                 except Exception:
                     logger.exception("Failed to rollback base_url after key reset failure | trace_id=%s", trace_id)
+                if not rolled_back:
+                    raise ApiError(
+                        "vault_error",
+                        "Ключ из vault убрать не удалось, и откат base_url не удался. "
+                        "Проверьте адрес провайдера и удалите ключ вручную.",
+                        500,
+                    ) from e
                 raise ApiError(
                     "vault_error",
                     "Ключ из vault убрать не удалось; сделан откат base_url. "
