@@ -15,6 +15,10 @@ import {
   Image as ImageIcon,
   FileText,
   Check,
+  Sparkles,
+  History,
+  Hash,
+  MessageSquare,
 } from 'lucide-react';
 import { Button, IconButton } from '../ui';
 import { playButtonClickSound } from '../../lib/ui-sounds';
@@ -57,6 +61,8 @@ export interface ThreadPanelProps {
   compactView: boolean;
   onToggleCompactView: (enabled: boolean) => void;
   initialTab?: ThreadPanelTab;
+  /** Пустой диалог: кнопка «Начать диалог» ставит фокус в поле ввода. */
+  onStartChat?: () => void;
 }
 
 function formatFileSize(bytes: number): string {
@@ -84,6 +90,7 @@ export function ThreadPanel({
   compactView,
   onToggleCompactView,
   initialTab = 'about',
+  onStartChat,
 }: ThreadPanelProps) {
   const [activeTab, setActiveTab] = useState<ThreadPanelTab>(initialTab);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -179,7 +186,7 @@ export function ThreadPanel({
         ref={panelRef}
         data-testid="thread-panel"
         aria-label="Панель треда"
-        className={`fixed lg:static inset-y-0 right-0 z-50 lg:z-auto w-[320px] max-w-[85vw] lg:w-[320px] lg:shrink-0 bg-[var(--surface)] border-l border-[var(--border)] flex flex-col h-full shadow-2xl lg:shadow-none transition-transform duration-200 ease-out select-none ${
+        className={`fixed lg:static inset-y-0 right-0 z-50 lg:z-auto w-[320px] max-w-[85vw] lg:w-[288px] xl:w-[320px] lg:shrink-0 bg-[var(--surface)] border-l border-[var(--border)] flex flex-col h-full shadow-2xl lg:shadow-none transition-transform duration-200 ease-out select-none ${
           open ? 'translate-x-0' : 'translate-x-full lg:hidden'
         }`}
       >
@@ -315,46 +322,109 @@ export function ThreadPanel({
                 </div>
               )}
 
-              {/* Stats Card */}
-              <div className="rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] p-3 space-y-2.5">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-[var(--text-muted)]">Модель</span>
-                  <span className="font-medium text-[var(--text)]">{modelName}</span>
+              {/* Stats Card — на пустом диалоге вместо нулей показываем, что умеет Нейра */}
+              {messages.length === 0 ? (
+                <div className="rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] p-3 space-y-3">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text)]">
+                    <Sparkles size={14} className="text-[var(--text-muted)]" />
+                    <span>Возможности Нейры</span>
+                  </div>
+                  <ul className="space-y-2.5">
+                    <li className="flex items-start gap-2.5">
+                      <MessageSquare size={14} className="mt-0.5 shrink-0 text-[var(--text-subtle)]" />
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-medium text-[var(--text)]">Помнит контекст</div>
+                        <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">
+                          История диалогов остаётся в вашем браузере
+                        </p>
+                      </div>
+                    </li>
+                    <li className="flex items-start gap-2.5">
+                      <Paperclip size={14} className="mt-0.5 shrink-0 text-[var(--text-subtle)]" />
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-medium text-[var(--text)]">Файлы и картинки</div>
+                        <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">
+                          Прикрепите скриншот или документ к вопросу
+                        </p>
+                      </div>
+                    </li>
+                    <li className="flex items-start gap-2.5">
+                      <Mic size={14} className="mt-0.5 shrink-0 text-[var(--text-subtle)]" />
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-medium text-[var(--text)]">Голос</div>
+                        <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">
+                          Разговор голосом — в следующем обновлении
+                        </p>
+                      </div>
+                    </li>
+                    <li className="flex items-start gap-2.5">
+                      <Hash size={14} className="mt-0.5 shrink-0 text-[var(--text-subtle)]" />
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-medium text-[var(--text)]">Каналы Discord</div>
+                        <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">
+                          Общая лента для ваших команд
+                        </p>
+                      </div>
+                    </li>
+                  </ul>
+                  {onStartChat && (
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      className="w-full justify-center gap-1.5"
+                      onClick={onStartChat}
+                    >
+                      <History size={13} />
+                      <span>Начать диалог</span>
+                    </Button>
+                  )}
                 </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-[var(--text-muted)]">Всего сообщений</span>
-                  <span className="font-medium text-[var(--text)]">{messages.length}</span>
+              ) : (
+                <div className="rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] p-3 space-y-2.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-[var(--text-muted)]">Модель</span>
+                    <span className="font-medium text-[var(--text)]">{modelName}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-[var(--text-muted)]">Всего сообщений</span>
+                    <span className="font-medium text-[var(--text)]">{messages.length}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-[var(--text-muted)]">От пользователя</span>
+                    <span className="font-medium text-[var(--text)]">
+                      {messages.filter((m) => m.role === 'user').length}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-[var(--text-muted)]">От ассистента</span>
+                    <span className="font-medium text-[var(--text)]">
+                      {messages.filter((m) => m.role === 'assistant').length}
+                    </span>
+                  </div>
+                  {allAttachments.length > 0 && (
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-[var(--text-muted)]">Вложений</span>
+                      <span className="font-medium text-[var(--text)]">{allAttachments.length}</span>
+                    </div>
+                  )}
+                  {pinnedMessageIds.length > 0 && (
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-[var(--text-muted)]">Закреплено</span>
+                      <span className="font-medium text-[var(--text)]">{pinnedMessageIds.length}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between text-xs pt-2 border-t border-[var(--border)]">
+                    <span className="text-[var(--text-muted)]">ID диалога</span>
+                    <span
+                      className="font-mono text-[11px] text-[var(--text-subtle)] truncate max-w-[150px]"
+                      title={threadId}
+                    >
+                      {threadId}
+                    </span>
+                  </div>
                 </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-[var(--text-muted)]">От пользователя</span>
-                  <span className="font-medium text-[var(--text)]">
-                    {messages.filter((m) => m.role === 'user').length}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-[var(--text-muted)]">От ассистента</span>
-                  <span className="font-medium text-[var(--text)]">
-                    {messages.filter((m) => m.role === 'assistant').length}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-[var(--text-muted)]">Вложений</span>
-                  <span className="font-medium text-[var(--text)]">{allAttachments.length}</span>
-                </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-[var(--text-muted)]">Закреплено</span>
-                  <span className="font-medium text-[var(--text)]">{pinnedMessageIds.length}</span>
-                </div>
-                <div className="flex items-center justify-between text-xs pt-2 border-t border-[var(--border)]">
-                  <span className="text-[var(--text-muted)]">ID диалога</span>
-                  <span
-                    className="font-mono text-[11px] text-[var(--text-subtle)] truncate max-w-[150px]"
-                    title={threadId}
-                  >
-                    {threadId}
-                  </span>
-                </div>
-              </div>
+              )}
 
               {/* Clear Conversation Danger Block */}
               <div className="pt-2">
@@ -409,6 +479,11 @@ export function ThreadPanel({
                   <p className="text-xs text-[var(--text-muted)] max-w-[220px] leading-relaxed">
                     Наведите на сообщение в чате и нажмите «Закрепить», чтобы сохранить его здесь.
                   </p>
+                  {onStartChat && (
+                    <Button type="button" variant="secondary" size="sm" className="mt-3" onClick={onStartChat}>
+                      Написать сообщение
+                    </Button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-2.5">
@@ -468,6 +543,11 @@ export function ThreadPanel({
                   <p className="text-xs text-[var(--text-muted)] max-w-[220px] leading-relaxed">
                     Файлы и изображения, отправленные в этот диалог, появятся здесь.
                   </p>
+                  {onStartChat && (
+                    <Button type="button" variant="secondary" size="sm" className="mt-3" onClick={onStartChat}>
+                      Прикрепить файл
+                    </Button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-2">

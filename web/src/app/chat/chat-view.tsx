@@ -22,9 +22,12 @@ import {
   RefreshCw,
   Settings,
   Shield,
+  Sparkles,
   Square,
   Trash2,
   X,
+  History,
+  Activity,
 } from 'lucide-react';
 import { SseChatEventSchema } from '@neyra/contracts';
 import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, type ContextUsage } from '../../components/ui';
@@ -428,6 +431,18 @@ export function ChatView({
     } catch {}
     playModalCloseSound();
     panelToggleRef.current?.focus();
+  };
+
+  // «Начать диалог» из панели треда: на узком экране закрываем drawer,
+  // затем ставим фокус в поле ввода, чтобы сразу писать.
+  const handleStartChatFromPanel = () => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
+      setThreadPanelOpen(false);
+      try {
+        window.localStorage.setItem('neyra:thread-panel-open', '0');
+      } catch {}
+    }
+    requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
   const handleTogglePinMessage = (msgId: string) => {
@@ -1205,10 +1220,28 @@ export function ChatView({
 
               {/* Быстрые сценарии над полем ввода: только в пустом чате */}
               {messages.length === 0 && (
-                <div className="mb-2 flex flex-wrap items-center justify-center gap-2 animate-chips">
-                  <Chip onClick={() => sendMessage('Что нового в памяти?')}>Что нового в памяти?</Chip>
-                  <Chip onClick={() => sendMessage('Суммируй вчерашний диалог')}>Суммируй вчерашний диалог</Chip>
-                  <Chip onClick={() => sendMessage('Проверь состояние сервера')}>Проверь состояние сервера</Chip>
+                <div className="mb-2 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-center animate-chips">
+                  <Chip
+                    onClick={() => sendMessage('Что нового в памяти?')}
+                    className="col-span-2 justify-center gap-1.5 py-2.5 sm:col-span-1 sm:py-1.5 !bg-[var(--accent)] !text-[var(--accent-ink)] !border-[var(--accent)] font-medium hover:!bg-[var(--accent-hover)] hover:!border-[var(--accent-hover)]"
+                  >
+                    <Sparkles size={14} className="shrink-0" />
+                    <span>Что нового в памяти?</span>
+                  </Chip>
+                  <Chip
+                    onClick={() => sendMessage('Суммируй вчерашний диалог')}
+                    className="justify-center gap-1.5 py-2.5 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
+                  >
+                    <History size={14} className="shrink-0 text-[var(--text-muted)]" />
+                    <span className="truncate">Суммируй вчерашний диалог</span>
+                  </Chip>
+                  <Chip
+                    onClick={() => sendMessage('Проверь состояние сервера')}
+                    className="justify-center gap-1.5 py-2.5 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
+                  >
+                    <Activity size={14} className="shrink-0 text-[var(--text-muted)]" />
+                    <span className="truncate">Проверь состояние сервера</span>
+                  </Chip>
                 </div>
               )}
 
@@ -1363,6 +1396,7 @@ export function ChatView({
         compactView={compactViewEnabled}
         onToggleCompactView={handleToggleCompactView}
         initialTab={panelInitialTab}
+        onStartChat={handleStartChatFromPanel}
       />
     </div>
   </div>

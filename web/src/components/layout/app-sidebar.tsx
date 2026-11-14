@@ -628,13 +628,33 @@ export function AppSidebar({
                 {/* Threads list */}
                 <div className="flex-1 overflow-y-auto space-y-0.5 pr-0.5" aria-label="Список чатов">
                   {filteredThreads.length === 0 ? (
-                    <div className="py-8 text-center text-xs text-[var(--text-subtle)]">
-                      <p className="font-medium text-[var(--text-muted)]">
+                    <div className="py-8 px-2 flex flex-col items-center text-center">
+                      <div className="w-10 h-10 rounded-full bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-center text-[var(--text-subtle)] mb-2.5">
+                        <MessageSquare size={17} />
+                      </div>
+                      <p className="text-xs font-medium text-[var(--text)]">
                         {query ? 'Ничего не найдено' : 'Пока нет чатов'}
                       </p>
-                      <p className="mt-1 text-[11px]">
-                        {query ? 'Попробуйте другой запрос' : 'Начните диалог — он появится здесь'}
+                      <p className="mt-1 text-[11px] text-[var(--text-subtle)] leading-relaxed">
+                        {query
+                          ? 'Попробуйте другой запрос'
+                          : 'Диалог появится здесь, как только вы напишете первое сообщение'}
                       </p>
+                      {query ? (
+                        <Button variant="secondary" size="sm" className="mt-3" onClick={() => setSearchQuery('')}>
+                          Сбросить поиск
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="mt-3 gap-1.5"
+                          onClick={handleStartNewChat}
+                        >
+                          <Plus size={13} />
+                          <span>Начать диалог</span>
+                        </Button>
+                      )}
                     </div>
                   ) : (
                     filteredThreads.map((thread) => {
@@ -739,10 +759,23 @@ export function AppSidebar({
                 {/* Notes List */}
                 <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5" aria-label="Список заметок">
                   {notes.length === 0 ? (
-                    <div className="py-8 text-center text-xs text-[var(--text-subtle)]">
-                      <StickyNote size={20} className="mx-auto mb-2 opacity-30" />
-                      <p className="font-medium text-[var(--text-muted)]">Заметок пока нет</p>
-                      <p className="mt-1 text-[11px]">Нажмите «+», чтобы создать заметку</p>
+                    <div className="py-8 px-2 flex flex-col items-center text-center">
+                      <div className="w-10 h-10 rounded-full bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-center text-[var(--text-subtle)] mb-2.5">
+                        <StickyNote size={17} />
+                      </div>
+                      <p className="text-xs font-medium text-[var(--text)]">Заметок пока нет</p>
+                      <p className="mt-1 text-[11px] text-[var(--text-subtle)] leading-relaxed">
+                        Короткие записи для себя — останутся в этом браузере
+                      </p>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="mt-3 gap-1.5"
+                        onClick={handleCreateNote}
+                      >
+                        <Plus size={13} />
+                        <span>Создать заметку</span>
+                      </Button>
                     </div>
                   ) : (
                     notes.map((note) => (

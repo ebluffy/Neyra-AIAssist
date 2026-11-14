@@ -246,3 +246,76 @@ describe('ThreadPanel', () => {
     expect(rawHtml).not.toContain('model_trace');
   });
 });
+
+describe('ThreadPanel — пустой диалог', () => {
+  const emptyProps = {
+    open: true,
+    onClose: vi.fn(),
+    threadId: 'th-empty',
+    threadTitle: 'Новый диалог',
+    modelName: 'Neyra AI (основная)',
+    messages: [] as ChatMessageItem[],
+    pinnedMessageIds: [] as string[],
+    onTogglePinMessage: vi.fn(),
+    onJumpToMessage: vi.fn(),
+    onRenameThread: vi.fn(),
+    onClearThread: vi.fn(),
+    autoScroll: true,
+    onToggleAutoScroll: vi.fn(),
+    uiSounds: true,
+    onToggleUiSounds: vi.fn(),
+    compactView: false,
+    onToggleCompactView: vi.fn(),
+    onStartChat: vi.fn(),
+  };
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it('вместо нулевых счётчиков показывает возможности Нейры', () => {
+    render(<ThreadPanel {...emptyProps} />);
+    expect(screen.getByText('Возможности Нейры')).toBeTruthy();
+    expect(screen.queryByText('Всего сообщений')).toBeNull();
+    expect(screen.queryByText('От пользователя')).toBeNull();
+  });
+
+  it('кнопка «Начать диалог» отдаёт управление в чат', () => {
+    render(<ThreadPanel {...emptyProps} />);
+    fireEvent.click(screen.getByRole('button', { name: /Начать диалог/i }));
+    expect(emptyProps.onStartChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('на пустом треде нет бейджей с нулём у вкладок', () => {
+    const { container } = render(<ThreadPanel {...emptyProps} />);
+    const tablist = container.querySelector('[role="tablist"]');
+    expect(tablist?.textContent).not.toContain('0');
+  });
+
+  it('пустые «Закреплённые» и «Вложения» предлагают действие', () => {
+    render(<ThreadPanel {...emptyProps} initialTab="pinned" />);
+    expect(screen.getByText('Нет закреплённых сообщений')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Написать сообщение/i })).toBeTruthy();
+
+    cleanup();
+    render(<ThreadPanel {...emptyProps} initialTab="attachments" />);
+    expect(screen.getByText('Вложений пока нет')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Прикрепить файл/i })).toBeTruthy();
+  });
+
+  it('на заполненном треде остаются счётчики', () => {
+    render(
+      <ThreadPanel
+        {...emptyProps}
+        messages={[
+          { id: 'm1', role: 'user', content: 'привет' },
+          { id: 'm2', role: 'assistant', content: 'здравствуйте' },
+        ]}
+        pinnedMessageIds={['m2']}
+      />,
+    );
+    expect(screen.getByText('Всего сообщений')).toBeTruthy();
+    expect(screen.queryByText('Возможности Нейры')).toBeNull();
+  });
+});
