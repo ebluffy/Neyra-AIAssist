@@ -439,26 +439,28 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
   it('два параллельных понижения не оставляют сайт без админа (AR-30)', async () => {
     // Второй админ — бывший участник; пароль изменён тестом сброса.
     grantAdmin(state.memberEmail);
-    const memberLogin = await signIn(state.memberEmail, 'member-new-password-2');
-    expect(memberLogin.response.status).toBe(200);
-    const memberCookie = memberLogin.cookie;
+    try {
+      const memberLogin = await signIn(state.memberEmail, 'member-new-password-2');
+      expect(memberLogin.response.status).toBe(200);
+      const memberCookie = memberLogin.cookie;
 
-    const [demoteMember, demoteAdmin] = await Promise.all([
-      patchUser(adminRequest(`/api/admin/users/${state.memberId}`, state.adminCookie, {
-        method: 'PATCH',
-        body: JSON.stringify({ role: 'user' }),
-      }), { params: Promise.resolve({ id: state.memberId }) }),
-      patchUser(adminRequest(`/api/admin/users/${state.adminId}`, memberCookie, {
-        method: 'PATCH',
-        body: JSON.stringify({ role: 'user' }),
-      }), { params: Promise.resolve({ id: state.adminId }) }),
-    ]);
-    expect([demoteMember.status, demoteAdmin.status].sort()).toEqual([200, 409]);
-
-    // Восстанавливаем исходные роли.
-    grantAdmin(state.adminEmail);
-    execFileSync(process.execPath, [join(repoRoot(), 'web/scripts/grant-admin.mjs'), state.memberEmail, '--revoke'],
-      { env: process.env, encoding: 'utf-8' });
+      const [demoteMember, demoteAdmin] = await Promise.all([
+        patchUser(adminRequest(`/api/admin/users/${state.memberId}`, state.adminCookie, {
+          method: 'PATCH',
+          body: JSON.stringify({ role: 'user' }),
+        }), { params: Promise.resolve({ id: state.memberId }) }),
+        patchUser(adminRequest(`/api/admin/users/${state.adminId}`, memberCookie, {
+          method: 'PATCH',
+          body: JSON.stringify({ role: 'user' }),
+        }), { params: Promise.resolve({ id: state.adminId }) }),
+      ]);
+      expect([demoteMember.status, demoteAdmin.status].sort()).toEqual([200, 409]);
+    } finally {
+      // Восстанавливаем исходные роли даже при падении проверки.
+      grantAdmin(state.adminEmail);
+      execFileSync(process.execPath, [join(repoRoot(), 'web/scripts/grant-admin.mjs'), state.memberEmail, '--revoke'],
+        { env: process.env, encoding: 'utf-8' });
+    }
   });
 
   it('роль цели перечитывается под блокировкой (AR-34)', async () => {
