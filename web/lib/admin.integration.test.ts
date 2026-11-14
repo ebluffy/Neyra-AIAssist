@@ -66,11 +66,35 @@ async function signIn(email: string, password: string) {
   return authCall('/sign-in/email', { email, password });
 }
 
+// AR-28: замер времени ответа на вход — бан не должен отвечать быстрее, чем
+// настоящая ошибка пароля (иначе он виден по таймингу).
+async function timedSignIn(email: string, password: string): Promise<number> {
+  const started = performance.now();
+  await signIn(email, password);
+  return performance.now() - started;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+}
+
 function adminRequest(path: string, cookie?: string, init: RequestInit = {}): Request {
   const headers = new Headers(init.headers);
   if (cookie) headers.set('cookie', cookie);
   headers.set('content-type', 'application/json');
   return new Request(`${BASE}${path}`, { ...init, headers });
+}
+
+async function pgQuery(query: string, params: unknown[] = []) {
+  const { Client } = await import('pg');
+  const client = new Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 5000 });
+  await client.connect();
+  try {
+    return await client.query(query, params);
+  } finally {
+    await client.end().catch(() => {});
+  }
 }
 
 async function payloadOf(response: Response) {
@@ -159,6 +183,13 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     // Ответ на настоящий неверный пароль — эталон для AR-28.
     const wrong = await signIn(state.memberEmail, 'definitely-wrong-password');
     expect(wrong.response.status).toBe(401);
+    // AR-28: время ответа не должно выдавать бан. Ранний отказ до проверки
+    // пароля отвечает за единицы миллисекунд, а обычный вход сначала хеширует
+    // пароль (scrypt), поэтому сравниваем медианы на прогретом прогоне.
+    const wrongTimes = [
+      await timedSignIn(state.memberEmail, 'definitely-wrong-password-2'),
+      await timedSignIn(state.memberEmail, 'definitely-wrong-password-3'),
+    ];
 
     const ban = await patchUser(adminRequest(`/api/admin/users/${state.memberId}`, state.adminCookie, {
       method: 'PATCH',
@@ -170,6 +201,12 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     // AR-28: байт-в-байт тот же ответ, что Better Auth даёт на неверный пароль.
     expect(blocked.response.status).toBe(wrong.response.status);
     expect(blocked.json).toEqual(wrong.json);
+    const blockedTimes = [
+      await timedSignIn(state.memberEmail, state.memberPassword),
+      await timedSignIn(state.memberEmail, state.memberPassword),
+    ];
+    expect(median(blockedTimes)).toBeGreaterThan(5);
+    expect(median(blockedTimes)).toBeGreaterThan(median(wrongTimes) / 2);
 
     const list = await payloadOf(await listUsers(adminRequest(`/api/admin/users?q=${encodeURIComponent(state.memberEmail)}`, state.adminCookie)));
     const banned = ((list?.data?.items ?? []) as Array<{ banned: boolean }>)[0];
@@ -314,5 +351,67 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     grantAdmin(state.adminEmail);
     execFileSync(process.execPath, [join(repoRoot(), 'web/scripts/grant-admin.mjs'), state.memberEmail, '--revoke'],
       { env: process.env, encoding: 'utf-8' });
+  });
+
+  it('роль цели перечитывается под блокировкой (AR-34)', async () => {
+    const password = 'ar34-password-77';
+    const adminEmail = uniqueEmail('ar34-admin');
+    const userEmail = uniqueEmail('ar34-user');
+
+    expect((await signUp(adminEmail, password)).response.status).toBe(200);
+    expect((await signUp(userEmail, password)).response.status).toBe(200);
+    grantAdmin(adminEmail);
+
+    const adminLogin = await signIn(adminEmail, password);
+    expect(adminLogin.response.status).toBe(200);
+    const actorId = String((adminLogin.json as { user?: { id?: string } } | null)?.user?.id ?? '');
+    const userLogin = await signIn(userEmail, password);
+    expect(userLogin.response.status).toBe(200);
+    const targetId = String((userLogin.json as { user?: { id?: string } } | null)?.user?.id ?? '');
+    expect(actorId).toBeTruthy();
+    expect(targetId).toBeTruthy();
+
+    // Прежние админы вернутся после теста: сценарию нужен ровно один админ.
+    const adminsBefore = ((await pgQuery(`SELECT id FROM "user" WHERE role = 'admin'`)) as {
+      rows: Array<{ id: string }>;
+    }).rows.map(row => row.id);
+
+    const { Client } = await import('pg');
+    const holder = new Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 5000 });
+    await holder.connect();
+    let pending: Promise<Response> | undefined;
+    try {
+      // Держим advisory-lock, как это делает параллельное изменение ролей.
+      await holder.query('BEGIN');
+      await holder.query('SELECT pg_advisory_xact_lock(734002)');
+
+      // Удаление читает цель как обычного пользователя и встаёт на блокировку.
+      pending = deleteUser(adminRequest(`/api/admin/users/${targetId}`, adminLogin.cookie, { method: 'DELETE' }),
+        { params: Promise.resolve({ id: targetId }) });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      // Пока запрос ждёт: цель становится админом, а прежний админ — обычным
+      // пользователем. Единственный админ теперь — цель удаления.
+      await holder.query(`UPDATE "user" SET role = 'admin' WHERE id = $1`, [targetId]);
+      await holder.query(`UPDATE "user" SET role = 'user' WHERE role = 'admin' AND id <> $1`, [targetId]);
+      const [counted] = (await holder.query(`SELECT count(*)::int AS admins FROM "user" WHERE role = 'admin'`)).rows as Array<{ admins: number }>;
+      expect(counted.admins).toBe(1);
+      await holder.query('COMMIT');
+    } finally {
+      await holder.query('ROLLBACK').catch(() => {});
+      await holder.end().catch(() => {});
+    }
+
+    const response = await pending!;
+    // Старое чтение роли дало бы 200 и удалило последнего админа.
+    expect(response.status).toBe(409);
+    expect(((await payloadOf(response)) as { error?: string } | null)?.error).toBe('last-admin');
+
+    const still = await pgQuery(`SELECT role FROM "user" WHERE id = $1`, [targetId]);
+    expect((still as { rows: Array<{ role: string }> }).rows[0]?.role).toBe('admin');
+
+    // Убираем тестовые аккаунты и возвращаем прежние роли админов.
+    await pgQuery(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [[actorId, targetId]]);
+    await pgQuery(`UPDATE "user" SET role = 'admin' WHERE id = ANY($1::text[])`, [adminsBefore]);
   });
 });

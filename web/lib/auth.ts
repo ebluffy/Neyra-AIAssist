@@ -14,7 +14,7 @@ import {
   readFailures,
 } from './login-throttle';
 import { checkInvite, consumeInvite, readInviteToken, releaseInvite } from './invite';
-import { findBannedByEmail, touchLastLogin } from './admin-users';
+import { isUserBanned, touchLastLogin } from './admin-users';
 import * as schema from '../db/schema';
 
 // Ссылка сброса пароля живёт до первого запроса админа (2 минуты): письма сайт
@@ -50,6 +50,21 @@ function createAuth() {
       },
     },
     user: { additionalFields: { role: roleField } },
+    // AR-28: бан останавливает выдачу сессии уже после проверки пароля, поэтому
+    // ответ забаненному неотличим от ответа на неверный пароль ни телом, ни
+    // временем. Хук срабатывает и для email/пароля, и для OAuth-входа.
+    databaseHooks: {
+      session: {
+        create: {
+          before: async (data) => {
+            if (await isUserBanned(String(data.userId))) {
+              throw APIError.from('UNAUTHORIZED', BASE_ERROR_CODES.INVALID_EMAIL_OR_PASSWORD);
+            }
+            return true;
+          },
+        },
+      },
+    },
     // No automatic promotion on sign-up: an e-mail is not proof of ownership, and an open
     // registration would let a stranger claim a listed admin address. The first admin is
     // granted from the server with scripts/grant-admin.mjs.
@@ -80,12 +95,10 @@ function createAuth() {
           signInEmail.set(ctx.request, email);
           const ip = clientIp(ctx.request);
           signInIp.set(ctx.request, ip);
-          // AR-28: забаненный аккаунт получает байт-в-байт тот же ответ, что
-          // Better Auth отдаёт на неверный пароль (код и тело совпадают).
-          const state = await findBannedByEmail(email).catch(() => null);
-          if (state?.banned) {
-            throw APIError.from('UNAUTHORIZED', BASE_ERROR_CODES.INVALID_EMAIL_OR_PASSWORD);
-          }
+          // AR-28: бан проверяется не здесь. Ранний возврат отвечает без
+          // проверки пароля, то есть заметно быстрее настоящей ошибки Better
+          // Auth (scrypt), и по времени видно и адрес, и блокировку. Бан
+          // блокирует создание сессии в databaseHooks.session.create.before.
           if ((await readFailures(email, ip)) >= FAILED_LOGIN_MAX_ATTEMPTS) {
             return ctx.json(
               { message: 'Слишком много неудачных попыток входа. Попробуйте позже.' },
