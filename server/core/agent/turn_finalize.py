@@ -26,6 +26,7 @@ async def finalize_successful_turn(
     source: str = "chat",
     stm_trimmed: bool = False,
     extra_meta: Optional[dict] = None,
+    origin: Optional[dict] = None,
 ) -> dict:
     """Update STM, Hub chat_log, LTM, diaries/jobs, and Event Bus. Returns metadata dict."""
     spoken_user = agent._format_spoken_user_message(user_message, speaker_label)
@@ -61,6 +62,7 @@ async def finalize_successful_turn(
         channel_id=channel_id,
         source=source,
         meta=metadata,
+        origin=origin,
     )
     hub = getattr(agent, "memory_hub", None)
     active = ACTIVE_TRACE.get()

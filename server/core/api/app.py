@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -359,6 +360,7 @@ def _role_at_least(role: str, minimum: str) -> bool:
     if minimum == "web_memory":
         return role in {"web", "maint", "admin"}
     if role == "web":
+        # Web key is deliberately lower than viewer: only dep_web routes accept it.
         return False
     return _ROLE_RANK.get(role, 0) >= _ROLE_RANK.get(minimum, 0)
 
@@ -611,6 +613,10 @@ class ResetContextDebugRequest(_ApiBody):
 
 
 class ConfigUpdateRequest(_ApiBody):
+    updates: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdminConfigPutRequest(_ApiBody):
     updates: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1303,6 +1309,7 @@ def build_app(
             str(_api_for_redact.get("viewer_token") or "").strip(),
             str(_api_for_redact.get("maint_token") or "").strip(),
             str(_api_for_redact.get("webhook_inbound_secret") or "").strip(),
+            str(_api_for_redact.get("web_token") or "").strip(),
         ]
     )
     if shared_agent is not None:
@@ -3901,6 +3908,18 @@ def build_app(
         response.headers["x-trace-id"] = trace_id
         return response
 
+    config_write_lock = asyncio.Lock()
+
+    def _serialized_config_write(fn):
+        import functools
+
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            async with config_write_lock:
+                return await fn(*args, **kwargs)
+
+        return wrapper
+
     def _safe_set(cfg: dict, path: str, value: Any) -> None:
         keys = path.split(".")
         cur = cfg
@@ -3926,6 +3945,7 @@ def build_app(
         }
 
     @app.post("/v1/config/update")
+    @_serialized_config_write
     async def v1_config_update(body: ConfigUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
         """Apply allowlisted keys: persist to layer YAML first, then runtime + LLM rebind."""
         trace_id = _trace_id(request)
@@ -4016,6 +4036,344 @@ def build_app(
                 "llm_rebound": llm_rebound,
             },
         }
+
+    @app.get("/v1/config")
+    async def v1_admin_config(request: Request, _: str = Depends(dep_admin)):
+        """Read-only config snapshot for the admin panel. Secrets are flags only."""
+        from core.agent.chat_progress import context_policy
+        from core.llm.profile import (
+            resolve_role_provider,
+            resolved_brain_model,
+            resolved_memory_model,
+            resolved_talk_model,
+            resolved_vision_model_id,
+        )
+        from core.runtime.admin_config import admin_config_snapshot
+
+        trace_id = _trace_id(request)
+        resolvers = {
+            "talk": resolved_talk_model,
+            "brain": resolved_brain_model,
+            "memory": resolved_memory_model,
+            "vision": resolved_vision_model_id,
+        }
+        resolved: dict[str, str] = {}
+        for lane, resolver in resolvers.items():
+            provider = resolve_role_provider(config, f"{lane}_model")
+            try:
+                resolved[lane] = str(resolver(config, provider))
+            except Exception:
+                resolved[lane] = ""
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": admin_config_snapshot(
+                config,
+                version=API_VERSION,
+                uptime_seconds=int(max(0, time.time() - _PROCESS_STARTED_AT)),
+                policy=context_policy(config),
+                resolved_models=resolved,
+            ),
+        }
+
+    def _config_drop_path(cfg: dict[str, Any], path: str) -> None:
+        keys = [part for part in str(path).split(".") if part]
+        if not keys:
+            return
+        stack: list[tuple[dict[str, Any], str]] = []
+        cur: dict[str, Any] = cfg
+        for key in keys[:-1]:
+            nxt = cur.get(key)
+            if not isinstance(nxt, dict):
+                return
+            stack.append((cur, key))
+            cur = nxt
+        cur.pop(keys[-1], None)
+        for parent, key in reversed(stack):
+            value = parent.get(key)
+            if isinstance(value, dict) and not value:
+                parent.pop(key, None)
+
+    @app.put("/v1/config")
+    @_serialized_config_write
+    async def v1_admin_config_put(
+        body: AdminConfigPutRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Write allowlisted fields: validate → persist (tmp+rename, .bak) → apply."""
+        from core.runtime.admin_config import (
+            AdminConfigError,
+            requires_restart_fields,
+            validate_admin_updates,
+        )
+        from core.runtime.config_loader import persist_allowlisted_updates
+
+        trace_id = _trace_id(request)
+        try:
+            updates = validate_admin_updates(
+                body.updates,
+                config,
+                configured_llm_providers(config),
+            )
+        except AdminConfigError as e:
+            raise ApiError(e.code, e.message, e.status)
+
+        restart_fields = requires_restart_fields(updates)
+        rollback = {path: _config_get_path(config, path) for path in updates}
+        config_dir = root / "config"
+        before_files = {
+            path.name: path.is_file()
+            for path in config_dir.glob("*.yaml")
+        } if config_dir.is_dir() else {}
+        try:
+            persisted = persist_allowlisted_updates(root, updates, keep_backup=True)
+        except Exception as e:
+            logger.exception("Failed to persist admin config | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Не удалось записать конфиг на диск.", 500) from e
+
+        for path, value in updates.items():
+            _safe_set(config, path, value)
+
+        llm_rebound = False
+        if any(path.startswith("llm.") for path in updates):
+            try:
+                await asyncio.to_thread(agent._setup_llm)
+                llm_rebound = True
+            except Exception as e:
+                logger.exception("LLM rebind after admin config write failed | trace_id=%s", trace_id)
+                # Restore files from the .bak that persist_allowlisted_updates wrote,
+                # drop newly added keys from memory, and rebuild LLM on the old config.
+                for rel in persisted:
+                    layer = root / rel
+                    if not before_files.get(layer.name, False):
+                        # Слоя до PUT не было: откат обязан удалить созданный файл.
+                        try:
+                            layer.unlink(missing_ok=True)
+                        except OSError:
+                            logger.exception("Failed to remove config layer created by PUT | layer=%s", layer)
+                        continue
+                    bak = layer.with_suffix(layer.suffix + ".bak")
+                    try:
+                        if bak.is_file():
+                            shutil.copy2(bak, layer)
+                    except OSError:
+                        logger.exception("Failed to restore config layer from backup | layer=%s", layer)
+                for path, old in rollback.items():
+                    if old is None:
+                        _config_drop_path(config, path)
+                    else:
+                        _safe_set(config, path, old)
+                try:
+                    await asyncio.to_thread(agent._setup_llm)
+                except Exception:
+                    logger.exception("LLM rebind on rolled-back config failed | trace_id=%s", trace_id)
+                raise ApiError(
+                    "llm_rebind_failed",
+                    "Конфиг откатан из .bak, LLM пересобрана на прежних значениях. Проверьте лог.",
+                    500,
+                ) from e
+            from core.agent.talk_sessions import sessions_for
+
+            manager = sessions_for(agent)
+            manager.invalidate()
+            manager.start_warmup()
+
+        _audit(
+            "config_write",
+            trace_id,
+            api_role,
+            {"keys": sorted(updates), "requires_restart": bool(restart_fields)},
+        )
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "applied": updates,
+                "persisted": persisted,
+                "backups": [
+                    f"{rel}.bak" for rel in persisted
+                    if before_files.get((root / rel).name, False)
+                ],
+                "requires_restart": bool(restart_fields),
+                "restart_fields": restart_fields,
+                "llm_rebound": llm_rebound,
+            },
+        }
+
+    @app.get("/v1/logs/tail")
+    async def v1_logs_tail(
+        request: Request,
+        lines: int = Query(200, ge=1, le=1000),
+        _: str = Depends(dep_admin),
+    ):
+        """Last lines of the core system log with secrets masked (admin only)."""
+        from core.api.log_tail import read_tail
+        from core.runtime.admin_config import secret_values
+
+        trace_id = _trace_id(request)
+        logging_cfg = config.get("logging") if isinstance(config.get("logging"), dict) else {}
+        rel = str(logging_cfg.get("system_log", "./logs/system.log")).strip()
+        path = Path(rel)
+        if not path.is_absolute():
+            path = root / path
+        # API tokens live in config, not env: mask them in the tail as well.
+        api_cfg = config.get("api") if isinstance(config.get("api"), dict) else {}
+        config_secrets = [
+            str(api_cfg.get(key) or "").strip()
+            for key in ("token", "viewer_token", "maint_token", "web_token", "webhook_inbound_secret")
+        ]
+        extra = [value for value in [*secret_values(config), *config_secrets] if len(value) >= 8]
+        data = await asyncio.to_thread(read_tail, path, lines, extra_secrets=extra)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    def _discord_catalog_store():
+        """Memory Hub SQLite if it exists; None on agents without memory (tests, early boot)."""
+        hub = getattr(agent, "memory_hub", None)
+        return getattr(hub, "sqlite", None) if hub is not None else None
+
+    def _iso_filter(value: Optional[str], field: str, *, end: bool = False) -> tuple[Optional[str], bool]:
+        if value is None or not str(value).strip():
+            return None, False
+        import re
+        from datetime import timedelta
+
+        from core.runtime.timeutil import parse_ts, to_utc_iso
+
+        raw = str(value).strip()
+        dt = parse_ts(raw)
+        if dt is None:
+            raise ApiError("bad_request", f"{field}: ожидается ISO-время", 400)
+        date_only = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw))
+        if end and date_only:
+            return to_utc_iso(dt + timedelta(days=1)), True
+        return to_utc_iso(dt), False
+
+    @app.get("/v1/admin/discord/guilds")
+    async def v1_admin_discord_guilds(
+        request: Request,
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        _: str = Depends(dep_admin),
+    ):
+        """Known Discord guilds with channel and member counts (admin only)."""
+        from core.memory.discord_catalog import list_guilds
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        if store is None:
+            data = {"items": [], "total": 0, "limit": limit, "offset": offset, "available": False}
+        else:
+            data = {**await asyncio.to_thread(list_guilds, store, limit=limit, offset=offset), "available": True}
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/guilds/{guild_id}")
+    async def v1_admin_discord_guild(
+        guild_id: str,
+        request: Request,
+        member_limit: int = Query(200, ge=1, le=500),
+        _: str = Depends(dep_admin),
+    ):
+        """One guild with channels and known members (admin only)."""
+        from core.memory.discord_catalog import get_guild
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        data = await asyncio.to_thread(get_guild, store, guild_id, member_limit=member_limit) if store is not None else None
+        if data is None:
+            raise ApiError("not_found", "Сервер не найден в каталоге.", 404)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/members")
+    async def v1_admin_discord_members(
+        request: Request,
+        guild_id: Optional[str] = Query(default=None, max_length=120),
+        q: Optional[str] = Query(default=None, max_length=120),
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        _: str = Depends(dep_admin),
+    ):
+        """Known guild members with optional search (admin only)."""
+        from core.memory.discord_catalog import list_members
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        if store is None:
+            data = {"items": [], "total": 0, "limit": limit, "offset": offset, "available": False}
+        else:
+            data = {
+                **await asyncio.to_thread(
+                    list_members, store, guild_id=guild_id, q=q, limit=limit, offset=offset
+                ),
+                "available": True,
+            }
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/users/{person_id}/stats")
+    async def v1_admin_discord_user_stats(
+        person_id: str,
+        request: Request,
+        days: int = Query(30, ge=1, le=365),
+        _: str = Depends(dep_admin),
+    ):
+        """How often a person talked to Neyra: messages, turns, channels, last days."""
+        from core.memory.discord_catalog import person_stats
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        if store is None:
+            data = {"person_id": person_id, "messages": 0, "turns": 0, "channels": [],
+                    "first_contact": None, "last_contact": None, "days": [], "available": False}
+        else:
+            data = {**await asyncio.to_thread(person_stats, store, person_id, days=days), "available": True}
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/messages")
+    async def v1_admin_discord_messages(
+        request: Request,
+        guild_id: Optional[str] = Query(default=None, max_length=120),
+        channel_id: Optional[str] = Query(default=None, max_length=120),
+        person_id: Optional[str] = Query(default=None, max_length=120),
+        date_from: Optional[str] = Query(default=None, alias="from", max_length=40),
+        date_to: Optional[str] = Query(default=None, alias="to", max_length=40),
+        q: Optional[str] = Query(default=None, max_length=200),
+        cursor: Optional[int] = Query(default=None, ge=0),
+        limit: int = Query(50, ge=1, le=200),
+        _: str = Depends(dep_admin),
+    ):
+        """Dialog history from chat_log with filters and an id cursor (admin only)."""
+        from core.memory.discord_catalog import list_messages
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        since, _ = _iso_filter(date_from, "from")
+        until, until_exclusive = _iso_filter(date_to, "to", end=True)
+        if since and until:
+            from core.runtime.timeutil import parse_ts
+
+            since_dt, until_dt = parse_ts(since), parse_ts(until)
+            if since_dt is not None and until_dt is not None and since_dt >= until_dt:
+                raise ApiError("bad_request", "from: начало не раньше конца", 400)
+        if store is None:
+            data = {"items": [], "total": 0, "limit": limit, "next_cursor": None, "available": False}
+        else:
+            data = {
+                **await asyncio.to_thread(
+                    list_messages,
+                    store,
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    person_id=person_id,
+                    date_from=since,
+                    date_to=until,
+                    date_to_exclusive=until_exclusive,
+                    q=q,
+                    cursor=cursor,
+                    limit=limit,
+                ),
+                "available": True,
+            }
+        return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.post("/v1/backup/run")
     async def v1_backup_run(request: Request, api_role: str = Depends(dep_maint)):
@@ -4442,6 +4800,8 @@ def build_app(
                 if not _is_console_local_client(peer=peer, headers=websocket.headers):
                     raise ApiError("unauthorized", "Missing bearer token", 401)
             ws_identity = websocket.scope.get("state", {}).get("web_identity")
+            # Admin keeps the old access. The site uses a separate web key and must
+            # present a verified X-Neyra-Identity; viewer/maint still cannot chat.
             if ws_role == "web":
                 if ws_identity is None:
                     raise ApiError("forbidden", "WebSocket chat requires X-Neyra-Identity", 403)
@@ -4550,8 +4910,18 @@ def build_app(
                             }
                         )
                     elif chunk.get("type") == "error":
+                        code = str(chunk.get("code") or "chat_error").strip() or "chat_error"
+                        # Rate limit is decided by the current turn's exception, not by
+                        # any 429 from another user/background job in the last 10 min.
+                        if chunk.get("rate_limit"):
+                            from core.agent.public_errors import provider_rate_limit_message
+
+                            code = "provider_rate_limit"
+                            message = provider_rate_limit_message()
+                        else:
+                            message = public_chat_error({"code": code})
                         await websocket.send_json(
-                            {"type": "error", "code": "chat_error", "message": public_chat_error(chunk), "trace_id": trace_id}
+                            {"type": "error", "code": code, "message": message, "trace_id": trace_id}
                         )
             except WebSocketDisconnect:
                 break

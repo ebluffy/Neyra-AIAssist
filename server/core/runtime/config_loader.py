@@ -286,10 +286,17 @@ def _set_dotted(cfg: dict[str, Any], path: str, value: Any) -> None:
     cur[keys[-1]] = value
 
 
-def persist_allowlisted_updates(server_root: Path, updates: dict[str, Any]) -> list[str]:
+def persist_allowlisted_updates(
+    server_root: Path,
+    updates: dict[str, Any],
+    *,
+    keep_backup: bool = False,
+) -> list[str]:
     """Write dotted allowlisted keys into layer YAML files. Returns relative paths touched.
 
     Does not touch root ``config.yaml`` or secrets. Layer comments may be rewritten by PyYAML.
+    With ``keep_backup=True`` the previous layer file stays next to the new one as
+    ``<layer>.yaml.bak`` (one generation), as required for admin-panel edits.
     """
     if not updates:
         return []
@@ -360,12 +367,13 @@ def persist_allowlisted_updates(server_root: Path, updates: dict[str, Any]) -> l
                 pass
         raise
     else:
-        for _layer_path, bak in backups:
-            if bak is None:
-                continue
-            try:
-                if bak.is_file():
-                    bak.unlink()
-            except OSError:
-                pass
+        if not keep_backup:
+            for _layer_path, bak in backups:
+                if bak is None:
+                    continue
+                try:
+                    if bak.is_file():
+                        bak.unlink()
+                except OSError:
+                    pass
     return touched

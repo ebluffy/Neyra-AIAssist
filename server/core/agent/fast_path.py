@@ -221,6 +221,7 @@ async def try_handle_fast_path(
     lyrics_marker: str,
     source: str,
     person_id: Optional[str] = None,
+    origin: Optional[dict] = None,
 ) -> Optional[dict[str, Any]]:
     """
     If Fast-Path hits: publish home.* event, finalize turn, return chat result dict.
@@ -291,6 +292,7 @@ async def try_handle_fast_path(
         saved_facts=[],
         source=source,
         stm_trimmed=False,
+        origin=origin,
         extra_meta={
             "fast_path": {
                 "intent": hit.intent,

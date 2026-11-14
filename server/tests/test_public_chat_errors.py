@@ -64,17 +64,22 @@ def test_provider_error_never_reaches_public_output(tmp_path, transport, stage):
                         assert ws.receive_json()["type"] == "hello"
                         ws.send_json({"type": "chat", "text": "hello"})
                         # Wave 2: progress frames may precede the terminal frame.
+                        # Проверяем именно кадр error, а не первый пришедший.
                         output = []
+                        error = None
                         while True:
                             event = ws.receive_json()
                             output.append(event)
                             assert event["type"] in ("phase", "token", "thinking", "error", "done"), event
+                            if event["type"] == "error":
+                                error = event
                             if event["type"] in ("error", "done"):
                                 break
-                        error = output[-1]
+                        assert error is not None, output
                         assert error["type"] == "error"
                         assert error["message"] == expected
-                        assert error["code"] == "chat_error"
+                        # WS отдаёт тот же семантический код, что stream/REST.
+                        assert error["code"] == ("brain_unavailable" if stage == "brain" else "generation_failed")
         assert "PRIVATE-UPSTREAM-DETAIL" not in json.dumps(output)
         if transport == "ws":
             # Browser frames never carry model_trace (wave 2 contract).
