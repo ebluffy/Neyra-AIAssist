@@ -83,13 +83,10 @@ export function AdminDialog({
       const originalOverflow = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
 
-      // Focus first focusable element inside dialog
+      // Focus the dialog itself: screen readers announce its title, and the
+      // close button does not flash its tooltip on touch devices.
       const timer = setTimeout(() => {
-        if (!dialogRef.current) return;
-        const focusable = dialogRef.current.querySelector<HTMLElement>(
-          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        );
-        focusable?.focus();
+        dialogRef.current?.focus();
       }, 50);
 
       return () => {
@@ -131,10 +128,13 @@ export function AdminDialog({
         const first = focusables[0];
         const last = focusables[focusables.length - 1];
 
-        if (event.shiftKey && document.activeElement === first) {
+        const active = document.activeElement;
+        const inside = active instanceof Node && dialogRef.current.contains(active);
+
+        if (event.shiftKey && (active === first || !inside || active === dialogRef.current)) {
           event.preventDefault();
           last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
+        } else if (!event.shiftKey && active === last) {
           event.preventDefault();
           first.focus();
         }
@@ -162,7 +162,8 @@ export function AdminDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="admin-dialog-title"
-        className="relative w-full h-full lg:h-[86vh] lg:max-h-[860px] lg:max-w-[1040px] bg-[var(--surface-2)] border border-[var(--border-strong)] lg:rounded-[var(--radius)] shadow-panel flex flex-col overflow-hidden text-[var(--text)]"
+        tabIndex={-1}
+        className="relative w-full h-full lg:h-[86vh] lg:max-h-[860px] lg:max-w-[1040px] bg-[var(--surface-2)] border border-[var(--border-strong)] lg:rounded-[var(--radius)] shadow-panel flex flex-col overflow-hidden text-[var(--text)] outline-none"
       >
         {/* Header */}
         <header className="flex items-center justify-between px-4 sm:px-6 py-3.5 border-b border-[var(--border)] bg-[var(--surface)] shrink-0">
