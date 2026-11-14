@@ -1233,7 +1233,7 @@ export function ChatView({
                     className="min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
                   >
                     <History size={14} className="shrink-0 text-[var(--text-muted)]" />
-                    <span className="sm:hidden">Суммируй вчера</span>
+                    <span className="sm:hidden whitespace-nowrap">Суммируй вчера</span>
                     <span className="hidden sm:inline">Суммируй вчерашний диалог</span>
                   </Chip>
                   <Chip
@@ -1241,7 +1241,7 @@ export function ChatView({
                     className="min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
                   >
                     <Activity size={14} className="shrink-0 text-[var(--text-muted)]" />
-                    <span className="sm:hidden">Состояние сервера</span>
+                    <span className="sm:hidden whitespace-nowrap">Статус сервера</span>
                     <span className="hidden sm:inline">Проверь состояние сервера</span>
                   </Chip>
                 </div>
