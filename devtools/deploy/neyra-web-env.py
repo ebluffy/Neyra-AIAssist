@@ -117,9 +117,26 @@ def main() -> int:
             status = 2
     admin_key = (core.get("API_MAINT_TOKEN") or "").strip()
     admin_token = (core.get("API_TOKEN") or "").strip()
-    # AR-38: web-ключ сравниваем с обоими admin-секретами: с maint и с admin
-    # API_TOKEN. Совпадение с любым — отказ до любых записей.
-    for label, secret in (("API_MAINT_TOKEN", admin_key), ("API_TOKEN", admin_token)):
+    api_key = (core.get("API_KEY") or "").strip()
+    # AR-38: API_KEY — алиас API_TOKEN в ядре; оба заданными и разными ядро не примет.
+    if admin_token and api_key and admin_token != api_key:
+        print(
+            "ОШИБКА: API_TOKEN и API_KEY оба заданы и различаются — ядро их не примет, "
+            "ничего не записано",
+            file=sys.stderr,
+        )
+        return 1
+    admin_alias = admin_token or api_key
+    # AR-38(a): maint-ключ не должен совпадать с admin-секретом (ни с одним из имён).
+    if admin_key and admin_alias and admin_key == admin_alias:
+        print(
+            "ОШИБКА: API_MAINT_TOKEN совпадает с API_TOKEN/API_KEY — разделите ключи, "
+            "ничего не записано",
+            file=sys.stderr,
+        )
+        return 1
+    # AR-38: web-ключ сравниваем со всеми admin-секретами. Совпадение — отказ до записей.
+    for label, secret in (("API_MAINT_TOKEN", admin_key), ("API_TOKEN", admin_token), ("API_KEY", api_key)):
         if web_key and secret and web_key == secret:
             print(
                 f"ОШИБКА: API_WEB_TOKEN совпадает с {label} — разделите ключи, "
@@ -187,9 +204,15 @@ def main() -> int:
     # либо удаляется, если maint-ключа нет. Оставлять вчерашний (тем более равный
     # API_TOKEN) нельзя: скрипт пишет «не записан», а ключ продолжает жить.
     remove_keys: set[str] = {"NEYRA_SERVICE_KEY"}
+    existing_admin = (web.get("NEYRA_ADMIN_KEY") or "").strip()
     if admin_key:
         updates["NEYRA_ADMIN_KEY"] = admin_key
     else:
+        remove_keys.add("NEYRA_ADMIN_KEY")
+    # AR-38(b): старый ключ, равный admin-секрету (API_TOKEN/API_KEY), не должен
+    # пережить запуск: если выбран другой maint-ключ — он перезапишется, иначе удалим.
+    if existing_admin and (existing_admin == admin_token or existing_admin == api_key) \
+            and existing_admin != admin_key:
         remove_keys.add("NEYRA_ADMIN_KEY")
     # Старое имя ключа не поддерживаем: оно смешивало web- и admin-роль.
     # Всё, что пишем, обязано читаться тем же парсером: иначе loader отвергнет файл.

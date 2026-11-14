@@ -26,8 +26,16 @@ function arg(name, fallback) {
 const ttlHours = Number.parseFloat(arg('ttl-hours', '24'));
 const createdBy = (arg('by', '') ?? '').trim().toLowerCase() || null;
 const noExpiry = args.includes('--no-expiry');
-const usesRaw = (arg('uses', '1') ?? '').trim().toLowerCase();
-const maxUses = usesRaw === 'unlimited' ? null : Number.parseInt(usesRaw, 10);
+const usesRaw = String(arg('uses', '1') ?? '').trim().toLowerCase();
+let maxUses = null;
+if (usesRaw !== 'unlimited') {
+  // AR-41: строго целое, без parseInt-усечения: '5abc', '1.9', '' — ошибка.
+  if (!/^\d+$/.test(usesRaw)) {
+    console.error('Укажите --uses целым числом от 1 до 10000 или unlimited.');
+    process.exit(2);
+  }
+  maxUses = Number(usesRaw);
+}
 const email = (arg('email', '') ?? '').trim().toLowerCase() || null;
 
 if (!noExpiry && (!Number.isFinite(ttlHours) || ttlHours <= 0 || ttlHours > 24 * 30)) {

@@ -152,8 +152,9 @@ export async function recordInviteUse(useId: string, email: string, userId: stri
       .returning({ inviteId: inviteUse.inviteId });
     const row = rows[0];
     if (!row) return;
+    // Без user.id актором остаётся email (или «система»), а не выдуманный id.
     await recordAudit(
-      { id: userId ?? 'invite', email },
+      { id: userId ?? (email || 'system'), email: email || 'система' },
       'invite.use',
       { type: 'invite', id: row.inviteId },
       { email, userId },

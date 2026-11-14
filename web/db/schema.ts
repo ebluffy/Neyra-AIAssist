@@ -75,7 +75,7 @@ export const inviteUse = pgTable('invite_use', {
   id: text('id').primaryKey(),
   inviteId: text('invite_id').notNull().references(() => invite.id, { onDelete: 'cascade' }),
   email: text('email').notNull(),
-  userId: text('user_id'),
+  userId: text('user_id').references(() => user.id, { onDelete: 'set null' }),
   usedAt: timestamp('used_at', { withTimezone: true }).defaultNow().notNull(),
 }, table => [index('invite_use_invite_idx').on(table.inviteId, table.usedAt)]);
 

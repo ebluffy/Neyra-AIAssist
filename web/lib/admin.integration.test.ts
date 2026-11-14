@@ -366,6 +366,27 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     expect(own.response.status).toBe(200);
   });
 
+  it('использование инвайта переживает удаление пользователя (AR-42)', async () => {
+    const created = await makeInviteViaApi({ ttlHours: 1, maxUses: 1 });
+    const email = uniqueEmail('fk');
+    const signUp = await authCall('/sign-up/email', {
+      email, password: 'fk-password-12', name: 'fk', invite: created.token,
+    });
+    expect(signUp.response.status).toBe(200);
+
+    const users = await pgQuery(`SELECT id FROM "user" WHERE lower(email) = lower($1)`, [email]);
+    const userId = (users as { rows: Array<{ id: string }> }).rows[0]?.id;
+    expect(userId).toBeTruthy();
+
+    const before = await pgQuery(`SELECT user_id FROM invite_use WHERE invite_id = $1`, [created.id]);
+    expect((before as { rows: Array<{ user_id: string | null }> }).rows[0]?.user_id).toBe(userId);
+
+    // Миграция 0007: FK user_id → user(id) ON DELETE SET NULL, строка не висит.
+    await pgQuery(`DELETE FROM "user" WHERE id = $1`, [userId]);
+    const after = await pgQuery(`SELECT user_id FROM invite_use WHERE invite_id = $1`, [created.id]);
+    expect((after as { rows: Array<{ user_id: string | null }> }).rows[0]?.user_id).toBeNull();
+  });
+
   it('истёкший и безлимитный инвайты (AR-35)', async () => {
     const expired = await makeInviteViaApi({ expiresAt: new Date(Date.now() + 3600_000).toISOString(), maxUses: 1 });
     await pgQuery(`UPDATE "invite" SET expires_at = now() - interval '1 hour' WHERE id = $1`, [expired.id]);

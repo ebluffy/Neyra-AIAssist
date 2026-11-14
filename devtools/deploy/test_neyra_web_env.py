@@ -327,3 +327,76 @@ def test_web_key_matching_admin_token_is_refused(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "совпадает с API_TOKEN" in result.stderr
     assert web.read_text(encoding="utf-8") == original
+
+
+def test_maint_equal_to_admin_token_is_refused(tmp_path: Path) -> None:
+    original = (
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n"  # gitleaks:allow — фиктивная фикстура теста
+    )
+    web = make_env(tmp_path, "web", original)
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_TOKEN='same-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_MAINT_TOKEN='same-key'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 1
+    assert "API_MAINT_TOKEN совпадает" in result.stderr
+    assert web.read_text(encoding="utf-8") == original
+
+
+def test_maint_equal_to_api_key_alias_is_refused(tmp_path: Path) -> None:
+    web = make_env(
+        tmp_path,
+        "web",
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_KEY='alias-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_MAINT_TOKEN='alias-key'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 1
+    assert "API_MAINT_TOKEN совпадает" in result.stderr
+
+
+def test_web_key_equal_to_api_key_alias_is_refused(tmp_path: Path) -> None:
+    web = make_env(
+        tmp_path,
+        "web",
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_KEY='alias-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_MAINT_TOKEN='maint-key'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_WEB_TOKEN='alias-key'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 1
+    assert "API_WEB_TOKEN совпадает с API_KEY" in result.stderr
+
+
+def test_token_and_key_alias_mismatch_is_refused(tmp_path: Path) -> None:
+    web = make_env(
+        tmp_path,
+        "web",
+        "DATABASE_URL='postgres://x'\n"
+        "BETTER_AUTH_SECRET='secret-0123456789abcdef0123456789abcdef'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    core = make_env(
+        tmp_path,
+        "core",
+        "API_TOKEN='token-one'\n"  # gitleaks:allow — фиктивная фикстура теста
+        "API_KEY='key-two'\n",  # gitleaks:allow — фиктивная фикстура теста
+    )
+    result = run_sync(tmp_path, web, core)
+    assert result.returncode == 1
+    assert "API_TOKEN и API_KEY" in result.stderr
