@@ -463,6 +463,38 @@ class ChatRequest(_ApiBody):
     avatar_url: Optional[str] = Field(default=None, max_length=500)
     platform: Optional[str] = Field(default=None, max_length=40)
     discord_context: DiscordContext | None = None
+    # История веб-чата: тред и клиентский id сообщения (для идемпотентности).
+    thread_id: Optional[str] = Field(default=None, max_length=64)
+    client_message_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class WebThreadCreateRequest(_ApiBody):
+    title: Optional[str] = Field(default=None, max_length=200)
+
+
+class WebThreadPatchRequest(_ApiBody):
+    title: Optional[str] = Field(default=None, max_length=200)
+    archived: Optional[bool] = None
+
+
+class WebMessageRequest(_ApiBody):
+    content: str = Field(min_length=1, max_length=20000)
+    role: Optional[Literal["user", "assistant"]] = None
+    attachments: Optional[list[dict[str, Any]]] = Field(default=None, max_length=10)
+    model: Optional[str] = Field(default=None, max_length=120)
+    client_message_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class WebNoteCreateRequest(_ApiBody):
+    text: str = Field(min_length=1, max_length=20000)
+    thread_id: Optional[str] = Field(default=None, max_length=64)
+    pinned: bool = False
+
+
+class WebNotePatchRequest(_ApiBody):
+    text: Optional[str] = Field(default=None, max_length=20000)
+    pinned: Optional[bool] = None
+    thread_id: Optional[str] = Field(default=None, max_length=64)
 
 
 class DashboardGateKeyRequest(_ApiBody):
@@ -685,6 +717,8 @@ class WsChatMessage(_ApiBody):
     display_name: Optional[str] = Field(default=None, max_length=120)
     discord_context: DiscordContext | None = None
     attachments: list[StoredAttachment] = Field(default_factory=list, max_length=4)
+    thread_id: Optional[str] = Field(default=None, max_length=64)
+    client_message_id: Optional[str] = Field(default=None, max_length=64)
 
 
 def _utc_now() -> str:
@@ -1746,6 +1780,18 @@ def build_app(
     async def v1_chat(body: ChatRequest, request: Request, _role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
         web_identity = getattr(request.state, "web_identity", None)
+        history_store = None
+        user_history_message = None
+        thread_id = (body.thread_id or "").strip() or None
+        if thread_id:
+            if web_identity is None:
+                raise ApiError("web_identity_required", "Web identity required", 401)
+            history_store = _web_history_store()
+            user_history_message = _append_history_message(
+                history_store, web_identity, thread_id, body.text, client_id=body.client_message_id
+            )
+            if user_history_message is None:
+                raise ApiError("thread_not_found", "Тред не найден.", 404)
         out = await agent.chat(
             user_message=body.text,
             username=web_identity.person_id if web_identity is not None else body.username or "api_user",
@@ -1756,7 +1802,234 @@ def build_app(
             person_id=web_identity.person_id if web_identity is not None else None,
             **({"discord_context": body.discord_context} if web_identity is None and body.discord_context is not None else {}),
         )
+        if user_history_message is not None and history_store is not None and isinstance(out, dict):
+            _append_history_message(
+                history_store, web_identity, thread_id, str(out.get("text") or ""),
+                role="assistant", client_id=f"assistant:{user_history_message['id']}",
+            )
         return {"ok": True, "trace_id": trace_id, "data": out}
+
+    # --- Web chat history and notes (signed web user) ------------------------
+
+    def dep_user(request: Request):
+        """Signed web identity is the only source of the scope."""
+        identity = getattr(request.state, "web_identity", None)
+        if identity is None:
+            raise ApiError("web_identity_required", "Web identity required", 401)
+        return identity
+
+    def _web_history_store():
+        hub = getattr(agent, "memory_hub", None)
+        store = getattr(hub, "sqlite", None) if hub is not None else None
+        if store is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        return store
+
+    def _thread_payload(store, user_id: str, thread_id: str, *, limit: int, before: Optional[int]) -> dict[str, Any]:
+        from core.memory import web_history
+
+        thread = web_history.get_thread(store, user_id, thread_id)
+        if thread is None:
+            raise ApiError("not_found", "Тред не найден.", 404)
+        page = web_history.list_messages(store, user_id, thread_id, limit=limit, before=before)
+        return {
+            "thread": thread,
+            "messages": page["messages"],
+            "has_more": page["has_more"],
+            "next_before": page["next_before"],
+        }
+
+    def _append_history_message(
+        store,
+        identity,
+        thread_id: str,
+        content: str,
+        *,
+        role: str = "user",
+        attachments: Optional[list[Any]] = None,
+        model: Optional[str] = None,
+        client_id: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        from core.memory import web_history
+
+        if not str(content or "").strip():
+            return None
+        try:
+            return web_history.append_message(
+                store,
+                identity.user_id,
+                thread_id,
+                role=role,
+                content=str(content),
+                attachments=attachments,
+                model=model,
+                client_id=client_id,
+            )
+        except Exception:
+            logger.exception("web_history: message append failed")
+            return None
+
+    @app.get("/v1/threads")
+    async def v1_threads_list(
+        request: Request,
+        limit: int = Query(50, ge=1, le=100),
+        cursor: Optional[str] = Query(default=None, max_length=200),
+        user=Depends(dep_user),
+    ):
+        from core.memory import web_history
+
+        trace_id = _trace_id(request)
+        page = web_history.list_threads(_web_history_store(), user.user_id, limit=limit, cursor=cursor)
+        return {"ok": True, "trace_id": trace_id, "data": page}
+
+    @app.post("/v1/threads")
+    async def v1_threads_create(body: WebThreadCreateRequest, request: Request, user=Depends(dep_user)):
+        from core.memory import web_history
+
+        trace_id = _trace_id(request)
+        thread = web_history.create_thread(_web_history_store(), user.user_id, body.title)
+        return {"ok": True, "trace_id": trace_id, "data": thread}
+
+    @app.get("/v1/threads/{thread_id}")
+    async def v1_threads_get(
+        thread_id: str,
+        request: Request,
+        limit: int = Query(100, ge=1, le=100),
+        before: Optional[int] = Query(default=None, ge=1),
+        user=Depends(dep_user),
+    ):
+        trace_id = _trace_id(request)
+        payload = _thread_payload(_web_history_store(), user.user_id, thread_id, limit=limit, before=before)
+        return {"ok": True, "trace_id": trace_id, "data": payload}
+
+    @app.patch("/v1/threads/{thread_id}")
+    async def v1_threads_update(
+        thread_id: str,
+        body: WebThreadPatchRequest,
+        request: Request,
+        user=Depends(dep_user),
+    ):
+        from core.memory import web_history
+
+        trace_id = _trace_id(request)
+        fields = body.model_fields_set
+        thread = web_history.update_thread(
+            _web_history_store(),
+            user.user_id,
+            thread_id,
+            **({"title": body.title} if "title" in fields else {}),
+            **({"archived": bool(body.archived)} if "archived" in fields else {}),
+        )
+        if thread is None:
+            raise ApiError("not_found", "Тред не найден.", 404)
+        return {"ok": True, "trace_id": trace_id, "data": thread}
+
+    @app.delete("/v1/threads/{thread_id}")
+    async def v1_threads_delete(thread_id: str, request: Request, user=Depends(dep_user)):
+        from core.memory import web_history
+
+        trace_id = _trace_id(request)
+        if not web_history.soft_delete_thread(_web_history_store(), user.user_id, thread_id):
+            raise ApiError("not_found", "Тред не найден.", 404)
+        return {"ok": True, "trace_id": trace_id, "data": {"deleted": True}}
+
+    @app.post("/v1/threads/{thread_id}/messages")
+    async def v1_thread_messages_create(
+        thread_id: str,
+        body: WebMessageRequest,
+        request: Request,
+        user=Depends(dep_user),
+    ):
+        from core.memory import web_history
+
+        trace_id = _trace_id(request)
+        message = web_history.append_message(
+            _web_history_store(),
+            user.user_id,
+            thread_id,
+            role=body.role or "user",
+            content=body.content,
+            attachments=body.attachments,
+            model=body.model,
+            client_id=body.client_message_id,
+        )
+        if message is None:
+            raise ApiError("not_found", "Тред не найден.", 404)
+        return {"ok": True, "trace_id": trace_id, "data": message}
+
+    @app.delete("/v1/threads/{thread_id}/messages/{message_id}")
+    async def v1_thread_messages_delete(
+        thread_id: str,
+        message_id: str,
+        request: Request,
+        user=Depends(dep_user),
+    ):
+        from core.memory import web_history
+
+        trace_id = _trace_id(request)
+        if not web_history.delete_message(_web_history_store(), user.user_id, thread_id, message_id):
+            raise ApiError("not_found", "Сообщение не найдено.", 404)
+        return {"ok": True, "trace_id": trace_id, "data": {"deleted": True}}
+
+    @app.get("/v1/notes")
+    async def v1_notes_list(
+        request: Request,
+        thread_id: Optional[str] = Query(default=None, max_length=64),
+        limit: int = Query(50, ge=1, le=100),
+        cursor: Optional[str] = Query(default=None, max_length=200),
+        user=Depends(dep_user),
+    ):
+        from core.memory import web_history
+
+        trace_id = _trace_id(request)
+        page = web_history.list_notes(
+            _web_history_store(), user.user_id, thread_id=thread_id, limit=limit, cursor=cursor
+        )
+        return {"ok": True, "trace_id": trace_id, "data": page}
+
+    @app.post("/v1/notes")
+    async def v1_notes_create(body: WebNoteCreateRequest, request: Request, user=Depends(dep_user)):
+        from core.memory import web_history
+
+        trace_id = _trace_id(request)
+        note = web_history.create_note(
+            _web_history_store(), user.user_id, text=body.text, thread_id=body.thread_id, pinned=body.pinned
+        )
+        return {"ok": True, "trace_id": trace_id, "data": note}
+
+    @app.patch("/v1/notes/{note_id}")
+    async def v1_notes_update(
+        note_id: str,
+        body: WebNotePatchRequest,
+        request: Request,
+        user=Depends(dep_user),
+    ):
+        from core.memory import web_history
+
+        trace_id = _trace_id(request)
+        fields = body.model_fields_set
+        if "text" in fields and not str(body.text or "").strip():
+            raise ApiError("bad_request", "text: заметка не может быть пустой.", 400)
+        note = web_history.update_note(
+            _web_history_store(),
+            user.user_id,
+            note_id,
+            **({"text": body.text} if "text" in fields else {}),
+            **({"pinned": bool(body.pinned)} if "pinned" in fields else {}),
+            **({"thread_id": body.thread_id} if "thread_id" in fields else {}),
+        )
+        if note is None:
+            raise ApiError("not_found", "Заметка не найдена.", 404)
+        return {"ok": True, "trace_id": trace_id, "data": note}
+
+    @app.delete("/v1/notes/{note_id}")
+    async def v1_notes_delete(note_id: str, request: Request, user=Depends(dep_user)):
+        from core.memory import web_history
+
+        trace_id = _trace_id(request)
+        if not web_history.soft_delete_note(_web_history_store(), user.user_id, note_id):
+            raise ApiError("not_found", "Заметка не найдена.", 404)
+        return {"ok": True, "trace_id": trace_id, "data": {"deleted": True}}
 
     @app.get("/v1/llm/activity")
     async def v1_llm_activity(request: Request, limit: int = Query(default=20, ge=1, le=100), _: str = Depends(dep_viewer)):
@@ -4977,6 +5250,28 @@ def build_app(
             except (AttachmentError, ApiError) as error:
                 await websocket.send_json({"type": "error", "code": error.code, "message": error.message, "trace_id": trace_id})
                 continue
+            history_store = None
+            history_user = None
+            user_history_message = None
+            thread_id = (parsed.thread_id or "").strip() or None
+            if thread_id:
+                if ws_identity is None:
+                    await websocket.send_json(
+                        {"type": "error", "code": "web_identity_required",
+                         "message": "Нужна подписанная личность пользователя.", "trace_id": trace_id}
+                    )
+                    continue
+                history_store = _web_history_store()
+                history_user = ws_identity
+                user_history_message = _append_history_message(
+                    history_store, history_user, thread_id, text, client_id=parsed.client_message_id
+                )
+                if user_history_message is None:
+                    await websocket.send_json(
+                        {"type": "error", "code": "thread_not_found",
+                         "message": "Тред не найден.", "trace_id": trace_id}
+                    )
+                    continue
             phases = set()
             try:
                 async for chunk in agent.chat_stream(
@@ -5017,6 +5312,11 @@ def build_app(
                                 "trace_id": trace_id,
                             }
                         )
+                        if user_history_message is not None and history_store is not None:
+                            _append_history_message(
+                                history_store, history_user, thread_id, str(chunk.get("text") or ""),
+                                role="assistant", client_id=f"assistant:{user_history_message['id']}",
+                            )
                     elif chunk.get("type") == "error":
                         code = str(chunk.get("code") or "chat_error").strip() or "chat_error"
                         message = str(chunk.get("text") or "").strip() or public_chat_error(chunk)

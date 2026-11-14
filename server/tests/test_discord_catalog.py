@@ -96,7 +96,7 @@ def test_migration_up_on_empty_database(tmp_path: Path):
     db = tmp_path / "empty.db"
     item = SqliteStore(db)
     try:
-        assert [int(r[0]) for r in item._conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 9))
+        assert [int(r[0]) for r in item._conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [version for version, _ in MIGRATIONS]
         tables = {r[0] for r in item._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {"discord_guilds", "discord_channels", "discord_members"} <= tables
         assert set(NEW_COLUMNS) <= columns(item, "chat_log")
@@ -111,7 +111,7 @@ def test_migration_up_keeps_populated_v7_rows_with_nulls(tmp_path: Path):
     make_v7(db, chat_rows=3)
     item = SqliteStore(db)
     try:
-        assert [int(r[0]) for r in item._conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 9))
+        assert [int(r[0]) for r in item._conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [version for version, _ in MIGRATIONS]
         rows = item._conn.execute("SELECT text, platform, guild_id, native_message_id, native_created_at FROM chat_log ORDER BY id").fetchall()
         assert len(rows) == 3
         assert all(row["text"].startswith("old message") for row in rows)
@@ -134,7 +134,7 @@ def test_migration_round_trip_down_and_up(tmp_path: Path):
         }
         assert item._conn.execute("SELECT COUNT(*) FROM chat_log").fetchone()[0] == 2
         item.migrate()
-        assert [int(r[0]) for r in item._conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 9))
+        assert [int(r[0]) for r in item._conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [version for version, _ in MIGRATIONS]
         assert set(NEW_COLUMNS) <= columns(item, "chat_log")
         assert item._conn.execute("SELECT COUNT(*) FROM chat_log").fetchone()[0] == 2
     finally:

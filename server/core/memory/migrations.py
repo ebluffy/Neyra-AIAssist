@@ -237,6 +237,53 @@ ALTER TABLE chat_log ADD COLUMN native_created_at TEXT;
 CREATE INDEX IF NOT EXISTS idx_chat_log_guild_channel_ts ON chat_log(guild_id, channel_id, ts);
 """
 
+# Version 9: web chat history (threads/messages) and per-user notes.
+# Soft delete: deleted_at is set, rows stay for audit/undo.
+MIGRATION_009_SQL = """
+CREATE TABLE IF NOT EXISTS web_threads (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    title TEXT,
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_threads_user_updated ON web_threads(user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_web_threads_user_id ON web_threads(user_id, id);
+
+CREATE TABLE IF NOT EXISTS web_thread_messages (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    attachments_json TEXT,
+    model TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(thread_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_thread_messages_thread_seq ON web_thread_messages(thread_id, seq);
+CREATE INDEX IF NOT EXISTS idx_web_thread_messages_user ON web_thread_messages(user_id);
+
+CREATE TABLE IF NOT EXISTS web_notes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    thread_id TEXT,
+    text TEXT NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_notes_user_updated ON web_notes(user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_web_notes_user_id ON web_notes(user_id, id);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001_SQL),
     (2, MIGRATION_002_SQL),
@@ -246,4 +293,5 @@ MIGRATIONS: list[tuple[int, str]] = [
     (6, MIGRATION_006_SQL),
     (7, MIGRATION_007_SQL),
     (8, MIGRATION_008_SQL),
+    (9, MIGRATION_009_SQL),
 ]
