@@ -4178,11 +4178,17 @@ def build_app(
         except Exception:
             logger.warning("Provider vault unavailable", exc_info=True)
             vault_names = []
+        from core.llm.provider_probe import cached_probe
+
+        rows = provider_rows(config, vault_names=vault_names)
+        for row in rows:
+            probe = cached_probe(row.get("base_url") or "")
+            row["probe"] = probe.as_payload() if probe else None
         return {
             "ok": True,
             "trace_id": trace_id,
             "data": {
-                "providers": provider_rows(config, vault_names=vault_names),
+                "providers": rows,
                 "presets": preset_catalog(),
                 "lanes": list(LANES),
             },
@@ -4357,6 +4363,55 @@ def build_app(
             "ok": True,
             "trace_id": trace_id,
             "data": {"provider": _provider_row(provider), "removed": removed, "llm_rebound": llm_rebound},
+        }
+
+    @app.post("/v1/providers/{name}/migrate-secret")
+    async def v1_provider_migrate_secret(
+        name: str,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Перенести ключ из llm.providers.<name>.api_key в шифрованный vault."""
+        from core.llm.provider_admin import ProviderAdminError, normalize_provider_name
+        from core.llm.provider_secrets import ProviderSecretsError
+
+        trace_id = _trace_id(request)
+        try:
+            provider = normalize_provider_name(name)
+        except ProviderAdminError as e:
+            raise ApiError(e.code, e.message, e.status)
+
+        providers_cfg = config.get("llm", {}).get("providers") if isinstance(config.get("llm"), dict) else None
+        block = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+        yaml_key = str((block or {}).get("api_key") or "").strip() if isinstance(block, dict) else ""
+        if not yaml_key:
+            raise ApiError("no_yaml_key", "У этого провайдера нет ключа в конфиге: переносить нечего.", 400)
+        if len(yaml_key) < 8:
+            raise ApiError("invalid_key", "Ключ в конфиге слишком короткий: проверьте вручную.", 400)
+        try:
+            _vault().set(provider, yaml_key)
+        except ProviderSecretsError as e:
+            raise ApiError("vault_error", f"Хранилище ключей недоступно: {e}", 500) from e
+        try:
+            _vault().get(provider)
+        except Exception as e:
+            raise ApiError("vault_error", "Ключ записан, но не читается — отмена.", 500) from e
+
+        from core.runtime.config_loader import persist_dotted_removals
+
+        try:
+            persisted = persist_dotted_removals(root, [f"llm.providers.{provider}.api_key"], keep_backup=True)
+        except Exception as e:
+            logger.exception("Failed to remove yaml api_key | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Ключ в vault, но из yaml убрать не удалось.", 500) from e
+        if isinstance(block, dict):
+            block.pop("api_key", None)
+        llm_rebound = _rebind_llm_after_provider_change()
+        _audit("provider_secret_migrate", trace_id, api_role, {"provider": provider})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"provider": _provider_row(provider), "persisted": persisted, "llm_rebound": llm_rebound},
         }
 
     @app.get("/v1/logs/tail")

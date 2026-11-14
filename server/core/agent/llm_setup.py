@@ -124,6 +124,31 @@ def setup_openai_compatible_llm(agent: Any) -> None:
                     conn.provider,
                     conn.provider,
                 )
+        elif conn.api_key in {"local", "missing-api-key"}:
+            # Ключа нет: спрашиваем сам шлюз про /models. Открытый локальный
+            # сервер работает без ключа, платный ответит 401 — тогда ключ нужен.
+            from core.llm.provider_probe import probe_models
+
+            probe = probe_models(conn.base_url)
+            if probe.state == "open":
+                logger.info(
+                    "Провайдер %s доступен без ключа: моделей %s",
+                    conn.provider,
+                    probe.models if probe.models is not None else "?",
+                )
+            elif probe.state == "auth_required":
+                logger.error(
+                    "Провайдер %s требует API-ключ: добавьте его в Провайдеры → Ключ (%s)",
+                    conn.provider,
+                    conn.base_url,
+                )
+            else:
+                logger.warning(
+                    "Провайдер %s сейчас недоступен (%s): %s",
+                    conn.provider,
+                    probe.message,
+                    conn.base_url,
+                )
 
     talk_timeout = float(cfg.get("timeout_seconds", cfg.get("primary_timeout_seconds", 120.0)))
     talk_retries = int(cfg.get("max_retries", cfg.get("primary_max_retries", 1)))

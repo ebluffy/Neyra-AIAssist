@@ -218,3 +218,91 @@ def test_remote_provider_without_key_keeps_core_alive():
     }
     conn = resolve_openai_compatible_connection(cfg, role="talk_model")
     assert conn.api_key == "missing-api-key"
+
+
+# ── проверка шлюза без ключа ─────────────────────────────────────────────
+def _stub_endpoint(status: int, body: bytes = b'{"data":[{"id":"m1"},{"id":"m2"}]}'):
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            return
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}/v1"
+
+
+def test_probe_open_endpoint_without_key():
+    from core.llm.provider_probe import probe_models
+
+    server, base_url = _stub_endpoint(200)
+    try:
+        result = probe_models(base_url, force=True)
+        assert result.state == "open"
+        assert result.models == 2
+    finally:
+        server.shutdown()
+
+
+def test_probe_requires_key_when_401():
+    from core.llm.provider_probe import probe_models
+
+    server, base_url = _stub_endpoint(401, b'{"error":"api key required"}')
+    try:
+        result = probe_models(base_url, force=True)
+        assert result.state == "auth_required"
+    finally:
+        server.shutdown()
+
+
+def test_probe_unreachable_is_not_fatal():
+    from core.llm.provider_probe import probe_models
+
+    result = probe_models("http://127.0.0.1:1/v1", timeout=0.3, force=True)
+    assert result.state == "unreachable"
+
+
+def test_providers_api_reports_probe_state(real_api, auth_headers):
+    from core.llm.provider_probe import probe_models
+
+    http, agent = real_api
+    agent._setup_llm = lambda: None
+    server, base_url = _stub_endpoint(200)
+    try:
+        http.put("/v1/providers/probed", json={"base_url": base_url, "kind": "local"}, headers=auth_headers[ADMIN])
+        probe_models(base_url, force=True)
+        rows = http.get("/v1/providers", headers=auth_headers[ADMIN]).json()["data"]["providers"]
+        row = next(r for r in rows if r["name"] == "probed")
+        assert row["probe"]["state"] == "open"
+        assert row["probe"]["models"] == 2
+    finally:
+        server.shutdown()
+
+
+def test_migrate_yaml_key_to_vault(real_api, auth_headers, api_config):
+    http, agent = real_api
+    agent._setup_llm = lambda: None
+    legacy = "sk-legacy-yaml-0123456789"
+    api_config.setdefault("llm", {}).setdefault("providers", {})["legacy"] = {
+        "base_url": "https://legacy.example/v1",
+        "api_key": legacy,
+    }
+
+    migrated = http.post("/v1/providers/legacy/migrate-secret", headers=auth_headers[ADMIN])
+    assert migrated.status_code == 200, migrated.text
+    assert migrated.json()["data"]["provider"]["key_source"] == "vault"
+    assert "api_key" not in api_config["llm"]["providers"]["legacy"]
+    assert legacy not in json.dumps(migrated.json())
+
+    again = http.post("/v1/providers/legacy/migrate-secret", headers=auth_headers[ADMIN])
+    assert again.status_code == 400
