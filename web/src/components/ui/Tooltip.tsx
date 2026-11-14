@@ -33,7 +33,18 @@ export function Tooltip({
       className={`relative inline-flex items-center ${className}`}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
-      onFocus={() => setOpen(true)}
+      onFocus={(e) => {
+        const target = e.target as HTMLElement;
+        let keyboardFocus = false;
+        try {
+          keyboardFocus = typeof target.matches === 'function' && target.matches(':focus-visible');
+        } catch {
+          keyboardFocus = false;
+        }
+        if (keyboardFocus) {
+          setOpen(true);
+        }
+      }}
       onBlur={() => setOpen(false)}
     >
       {children}
