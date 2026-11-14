@@ -128,23 +128,51 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6, AR-2, AR-4)', () =
     expect(other.response.status).toBe(401);
   });
 
-  it('счётчик по аккаунту: после 5 неудач с разных IP вход блокируется для этого email (AR-4)', async () => {
+  it('счётчик по паре email+IP: чужой адрес не блокирует владельца (AR-27)', async () => {
     const email = uniqueEmail('acct-limit');
     const up = await signUp(email, '192.0.2.1', 'Acct');
     expect(up.response.status).toBe(200);
+
+    // 5 неудач с одного адреса блокируют только эту пару.
     for (let attempt = 1; attempt <= 5; attempt++) {
-      const r = await call('/sign-in/email', { email, password: 'wrong-password' }, undefined, `192.0.2.${attempt}`);
+      const r = await call('/sign-in/email', { email, password: 'wrong-password' }, undefined, '198.51.100.10');
       expect(r.response.status, `failure ${attempt}`).toBe(401);
     }
-    // Шестая неудача с нового IP: лимит по аккаунту, а не по адресу.
-    const sixth = await call('/sign-in/email', { email, password: 'wrong-password' }, undefined, '192.0.2.99');
-    expect(sixth.response.status).toBe(429);
-    // Другой аккаунт с того же адреса не затронт.
-    const other = uniqueEmail('acct-other');
-    const otherUp = await signUp(other, '192.0.2.99', 'Other');
-    expect(otherUp.response.status).toBe(200);
-    const otherTry = await call('/sign-in/email', { email: other, password: 'wrong-password' }, undefined, '192.0.2.99');
-    expect(otherTry.response.status).toBe(401);
+    const blocked = await call('/sign-in/email', { email, password: 'wrong-password' }, undefined, '198.51.100.10');
+    expect(blocked.response.status).toBe(429);
+
+    // Владелец с другого адреса входит нормально: аккаунт не заблокирован.
+    const owner = await call('/sign-in/email', { email, password: PASSWORD }, undefined, '198.51.100.11');
+    expect(owner.response.status).toBe(200);
+  });
+
+  it('публичная регистрация не выдаёт admin даже для «админского» адреса (AR-1)', async () => {
+    const email = uniqueEmail('admin-lookalike');
+    const result = await signUp(email, '203.0.113.70', 'Admin');
+    expect(result.response.status).toBe(200);
+    // Ответ регистрации роль не отдаёт; проверяем факт в базе.
+    const { rows } = await sql('select role from "user" where lower(email) = lower($1)', [email]) as {
+      rows: Array<{ role: string }>;
+    };
+    expect(rows[0]?.role).toBe('user');
+  });
+
+  it('инвайт тратится атомарно: две параллельные регистрации — одна проходит (AR-26)', async () => {
+    const token = makeInvite();
+    const [first, second] = await Promise.all([
+      call('/sign-up/email', { email: uniqueEmail('race-a'), password: PASSWORD, name: 'A', invite: token }, undefined, '203.0.113.71'),
+      call('/sign-up/email', { email: uniqueEmail('race-b'), password: PASSWORD, name: 'B', invite: token }, undefined, '203.0.113.72'),
+    ]);
+    expect([first.response.status, second.response.status].sort()).toEqual([200, 403]);
+  });
+
+  it('неудачная регистрация возвращает инвайт (AR-26)', async () => {
+    const token = makeInvite();
+    const email = uniqueEmail('invite-release');
+    const failed = await call('/sign-up/email', { email, password: 'short', name: 'X', invite: token }, undefined, '203.0.113.73');
+    expect(failed.response.status).toBeGreaterThanOrEqual(400);
+    const retry = await call('/sign-up/email', { email, password: PASSWORD, name: 'X', invite: token }, undefined, '203.0.113.74');
+    expect(retry.response.status).toBe(200);
   });
 
   it('регистрация только по инвайту: без него, чужой, просроченный — отказ (AR-2)', async () => {
@@ -157,7 +185,7 @@ describe.skipIf(!RUN)('auth flow on real PostgreSQL 16 (AR-6, AR-2, AR-4)', () =
     expect(unknown.response.status).toBe(403);
     // Просроченный инвайт (expires_at в прошлом).
     const { createHash, randomUUID } = await import('node:crypto');
-    const expiredToken = 'expired-token-0123456789abcdef';
+    const expiredToken = `expired-token-${randomUUID()}`;
     await sql('insert into "invite" (id, token_hash, expires_at) values ($1, $2, $3)',
       [randomUUID(), createHash('sha256').update(expiredToken, 'utf8').digest('hex'), new Date(Date.now() - 60_000).toISOString()]);
     const expired = await call('/sign-up/email', { email: uniqueEmail('expired'), password: PASSWORD, name: 'X', invite: expiredToken }, undefined, '203.0.113.52');

@@ -44,6 +44,11 @@ interface CoreRequest {
   timeoutMs?: number;
   /** Statuses whose body is still meaningful, e.g. /v1/health/ready answers 503 with checks. */
   acceptStatus?: number[];
+  /**
+   * AR-30: только доверенные ручки (config) показывают текст ошибки ядра.
+   * По умолчанию наружу идёт фиксированный текст.
+   */
+  forwardMessage?: boolean;
 }
 
 async function request<T>(
@@ -92,21 +97,17 @@ async function request<T>(
         message: 'Ядро не поддерживает этот раздел. Обновите ядро до версии с этим API.',
       };
     }
+    // Структурированная ошибка ядра ({ok:false,error:{...}}) — это заранее
+    // заданный человеческий текст ручки; сырые 5xx и HTML-страницы наружу не идут.
+    const rawMessage = payload?.error?.message;
+    const safeMessage = options.forwardMessage
+      ? String(rawMessage || `Ядро ответило ${response.status}.`).slice(0, 200)
+      : 'Ядро вернуло ошибку. Подробности в журнале ядра.';
     if (!response.ok) {
-      return {
-        state: 'error',
-        data: null,
-        status: response.status,
-        message: payload?.error?.message ?? `Ядро ответило ${response.status}.`,
-      };
+      return { state: 'error', data: null, status: response.status, message: safeMessage };
     }
     if (payload && payload.ok === false) {
-      return {
-        state: 'error',
-        data: null,
-        status: response.status,
-        message: payload.error?.message ?? 'Ядро вернуло ошибку.',
-      };
+      return { state: 'error', data: null, status: response.status, message: safeMessage };
     }
     const data = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
     // status нужен вызывающим: /v1/health/ready с 200 — «готово», с 503 — «не готово».

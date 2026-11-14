@@ -10,15 +10,22 @@ export const FAILED_LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
 const KEY_PREFIX = 'login-fail:';
 
-export function failedLoginKey(email: string): string {
-  return `${KEY_PREFIX}${email.trim().toLowerCase()}`;
+// AR-27: счётчик привязан к паре email+IP, иначе чужой человек блокирует
+// владельца аккаунта, зная только его адрес.
+export function failedLoginKey(email: string, ip: string = 'unknown'): string {
+  return `${KEY_PREFIX}${email.trim().toLowerCase()}:${(ip || '').trim() || 'unknown'}`;
 }
 
-export async function readFailures(email: string): Promise<number> {
+// Только доверенный заголовок края (nginx/frp), как в better-auth rate limit.
+export function clientIp(request: Request): string {
+  return (request.headers.get('x-real-ip') || '').trim().slice(0, 64) || 'unknown';
+}
+
+export async function readFailures(email: string, ip: string = 'unknown'): Promise<number> {
   try {
     const { db } = getDatabase();
     const rows = await db.select().from(verification)
-      .where(eq(verification.identifier, failedLoginKey(email)))
+      .where(eq(verification.identifier, failedLoginKey(email, ip)))
       .limit(1);
     const row = rows[0];
     if (!row) return 0;
@@ -31,10 +38,10 @@ export async function readFailures(email: string): Promise<number> {
   }
 }
 
-export async function noteFailure(email: string): Promise<void> {
+export async function noteFailure(email: string, ip: string = 'unknown'): Promise<void> {
   try {
     const { db } = getDatabase();
-    const key = failedLoginKey(email);
+    const key = failedLoginKey(email, ip);
     const existing = (await db.select().from(verification).where(eq(verification.identifier, key)).limit(1))[0];
     const count = existing ? Number.parseInt(existing.value, 10) || 0 : 0;
     const expiresAt = new Date(Date.now() + FAILED_LOGIN_WINDOW_MS);
@@ -48,10 +55,10 @@ export async function noteFailure(email: string): Promise<void> {
   }
 }
 
-export async function clearFailures(email: string): Promise<void> {
+export async function clearFailures(email: string, ip: string = 'unknown'): Promise<void> {
   try {
     const { db } = getDatabase();
-    await db.delete(verification).where(eq(verification.identifier, failedLoginKey(email)));
+    await db.delete(verification).where(eq(verification.identifier, failedLoginKey(email, ip)));
   } catch {
     // Best effort.
   }

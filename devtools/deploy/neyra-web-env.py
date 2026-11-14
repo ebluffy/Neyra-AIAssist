@@ -88,7 +88,8 @@ def main() -> int:
     web = read_env(WEB_ENV)
     core = read_env(CORE_ENV) if CORE_ENV.is_file() else {}
 
-    service_key = (core.get("API_TOKEN") or core.get("API_KEY") or "").strip()
+    # Сайту нужен ключ не выше maint: admin-токен в интернет-сервис не передаём (AR-16).
+    service_key = (core.get("API_MAINT_TOKEN") or "").strip()
     identity_secret = (core.get("NEYRA_IDENTITY_JWT_SECRET") or "").strip()
     core_issuer = (core.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip()
     web_issuer = (web.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip()
@@ -145,7 +146,11 @@ def main() -> int:
     if service_key:
         updates["NEYRA_SERVICE_KEY"] = service_key
     else:
-        print(f"внимание: в {CORE_ENV} нет API_TOKEN/API_KEY — впиши NEYRA_SERVICE_KEY вручную", file=sys.stderr)
+        print(
+            f"внимание: в {CORE_ENV} нет API_MAINT_TOKEN — NEYRA_SERVICE_KEY не записан "
+            "(админский API_TOKEN сайту не передаётся)",
+            file=sys.stderr,
+        )
         status = 2
     # Всё, что пишем, обязано читаться тем же парсером: иначе loader отвергнет файл.
     for key, value in updates.items():

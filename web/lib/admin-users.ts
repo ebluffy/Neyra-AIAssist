@@ -122,11 +122,22 @@ export type MutationResult<T> = { ok: true; value: T } | { ok: false; error: Adm
 export async function setUserRole(actorId: string, targetId: string, nextRole: 'admin' | 'user'): Promise<MutationResult<{ role: string }>> {
   const target = await getUser(targetId);
   if (!target) return { ok: false, error: 'not-found' };
-  const verdict = checkRoleChange(actorId, target, nextRole, await adminCount());
-  if (verdict) return { ok: false, error: verdict };
+  if (target.id === actorId && nextRole !== 'admin') return { ok: false, error: 'self' };
   try {
     const { db } = getDatabase();
-    await db.update(user).set({ role: nextRole, updatedAt: new Date() }).where(eq(user.id, targetId));
+    // AR-30: проверка «последний админ» атомарна — в одном UPDATE, иначе два
+    // одновременных понижения оставят сайт без администратора.
+    const result = await db.execute(sql`
+      UPDATE "user" SET role = ${nextRole}, updated_at = now()
+      WHERE id = ${targetId}
+        AND (${nextRole} = 'admin'
+             OR (SELECT count(*) FROM "user" WHERE role = 'admin') > 1)
+      RETURNING id
+    `);
+    const changed = Array.isArray((result as { rows?: unknown[] }).rows)
+      ? ((result as { rows: unknown[] }).rows.length)
+      : 0;
+    if (!changed) return { ok: false, error: 'last-admin' };
     return { ok: true, value: { role: nextRole } };
   } catch {
     return { ok: false, error: 'db' };
@@ -155,11 +166,20 @@ export async function setUserBanned(targetId: string, banned: boolean, reason: s
 export async function deleteUser(actorId: string, targetId: string): Promise<MutationResult<{ email: string }>> {
   const target = await getUser(targetId);
   if (!target) return { ok: false, error: 'not-found' };
-  const verdict = checkDelete(actorId, target, await adminCount());
-  if (verdict) return { ok: false, error: verdict };
+  if (target.id === actorId) return { ok: false, error: 'self' };
   try {
     const { db } = getDatabase();
-    await db.delete(user).where(eq(user.id, targetId));
+    const result = await db.execute(sql`
+      DELETE FROM "user"
+      WHERE id = ${targetId}
+        AND (role <> 'admin'
+             OR (SELECT count(*) FROM "user" WHERE role = 'admin') > 1)
+      RETURNING id
+    `);
+    const changed = Array.isArray((result as { rows?: unknown[] }).rows)
+      ? ((result as { rows: unknown[] }).rows.length)
+      : 0;
+    if (!changed) return { ok: false, error: 'last-admin' };
     return { ok: true, value: { email: target.email } };
   } catch {
     return { ok: false, error: 'db' };

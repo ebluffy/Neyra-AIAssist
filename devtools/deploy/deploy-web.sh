@@ -78,23 +78,26 @@ if [ "${SKIP_DB_MIGRATIONS:-0}" = "1" ]; then
 else
 
 echo "== резервная копия базы перед миграциями"
+BACKUP_DIR=/opt/neyra/web/backups
+mkdir -p "$BACKUP_DIR"
+DUMP="$BACKUP_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
 # Штатный путь: узкий root-хелпер openbot-admin db-dump (docker-сокет только у root).
 DUMP_INFO="$(sudo -n openbot-admin db-dump 2>/dev/null || true)"
 DUMP_PATH="$(printf '%s\n' "$DUMP_INFO" | sed -n 's/^path=//p')"
 if [ -n "$DUMP_PATH" ] && [ -s "$DUMP_PATH" ]; then
   echo "дамп: $DUMP_PATH ($(printf '%s\n' "$DUMP_INFO" | sed -n 's/^size=//p') байт)"
 else
-  # Запасной путь для площадок без хелпера: pg_dump из контейнера.
-  BACKUP_DIR=/opt/neyra/web/backups
-  mkdir -p "$BACKUP_DIR"
-  DUMP="$BACKUP_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
-  if ! sudo -n docker compose -f /opt/neyra/web/docker-compose.yml exec -T db pg_dump -U neyra -d neyra_web -Fc > "$DUMP" 2>/dev/null; then
+  # Запасной путь: pg_dump из контейнера. В репозитории сервис postgres; на уже
+  # развёрнутых площадках до переименования он мог называться db — пробуем оба.
+  DUMP_OK=0
+  for pg_service in postgres db; do
+    if sudo -n docker compose -f /opt/neyra/web/docker-compose.yml exec -T "$pg_service" pg_dump -U neyra -d neyra_web -Fc > "$DUMP" 2>/dev/null && [ -s "$DUMP" ]; then
+      DUMP_OK=1
+      break
+    fi
+  done
+  if [ "$DUMP_OK" != "1" ]; then
     echo "pg_dump не выполнился — миграции отменены, база не тронута" >&2
-    rm -f "$DUMP"
-    exit 1
-  fi
-  if [ ! -s "$DUMP" ]; then
-    echo "дамп пуст — миграции отменены, база не тронута" >&2
     rm -f "$DUMP"
     exit 1
   fi

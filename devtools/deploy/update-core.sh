@@ -69,8 +69,24 @@ done
 nested_link=$(find "$DEST/data" "$DEST/config" -type l -print -quit 2>/dev/null || true)
 [ -z "$nested_link" ] || die "в data/config есть симлинк $nested_link — полный снимок невозможен"
 
-HEAD=$(git -C "$SRC" -c safe.directory="*" rev-parse HEAD 2>/dev/null || echo unknown)
-echo "источник: $SRC ($HEAD)"
+GIT_ROOT=$(git -C "$SRC" rev-parse --show-toplevel 2>/dev/null) \
+  || die "$SRC не в git-репозитории: выкладка возможна только из закоммиченного кода"
+REL=$(realpath --relative-to="$GIT_ROOT" "$SRC")
+[ "$REL" = "server" ] || die "ожидается каталог server/ в корне репозитория, получено $REL"
+DIRTY=$(git -C "$GIT_ROOT" status --porcelain 2>/dev/null || true)
+[ -z "$DIRTY" ] || die "рабочая копия грязная: закоммить или stash изменения перед выкладкой"
+HEAD=$(git -C "$GIT_ROOT" -c safe.directory="*" rev-parse HEAD 2>/dev/null) || die "не удалось определить HEAD"
+command -v tar >/dev/null || die "нужен tar"
+
+# Выкладываем только файлы коммита: gitignored данные/конфиги рабочей копии
+# не попадают в архив и не могут перезаписать боевые (AR-20).
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+git -C "$GIT_ROOT" archive "$HEAD" -- "$REL" | tar -x -C "$STAGE" --strip-components=1 \
+  || die "git archive HEAD не удался"
+[ -f "$STAGE/main.py" ] || die "в архиве коммита нет main.py"
+SYNC_SRC="$STAGE"
+echo "источник: $SRC ($HEAD, git archive)"
 echo "назначение: $DEST"
 if service_idle; then
   echo "сервис $SERVICE: остановлен или failed без jobs"
@@ -86,8 +102,8 @@ BACKUP_PARENT=${BACKUP_ROOT:-/opt/neyra}
 
 if [ "$DRY" = 1 ]; then
   echo "== проверка (ничего не меняю)"
-  rsync -an --itemize-changes "${EXCLUDES[@]}" "$SRC/" "$DEST/" | sed -n '1,120p'
-  count=$(rsync -an --itemize-changes "${EXCLUDES[@]}" "$SRC/" "$DEST/" | grep -c '^[<>ch]' || true)
+  rsync -an --itemize-changes "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" | sed -n '1,120p'
+  count=$(rsync -an --itemize-changes "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" | grep -c '^[<>ch]' || true)
   echo "изменений кода: $count"
   echo "размер полного бэкапа: $(du -sh "$DEST" 2>/dev/null | cut -f1)"
   echo "свободно под бэкап на $(df -P "$BACKUP_PARENT" | awk 'NR==2 {print $6}'): $(df -Ph "$BACKUP_PARENT" | awk 'NR==2 {print $4}')"
@@ -131,10 +147,11 @@ restore() {
     echo "АВТООТКАТ НЕ УДАЛСЯ. Вручную: rsync -a --delete $BACKUP/ $DEST/" >&2
   fi
 }
-trap 'rc=$?; if [ "$rc" -ne 0 ]; then restore; fi; exit "$rc"' EXIT
+trap 'rc=$?; rm -rf "$STAGE"; if [ "$rc" -ne 0 ]; then restore; fi; exit "$rc"' EXIT
 
 echo "== 2/6 синхронизация кода (data/config/models/.env не трогаются)"
-rsync -a "${EXCLUDES[@]}" "$SRC/" "$DEST/" || die "rsync кода не удался"
+rsync -a --no-owner --no-group --chown=root:root "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" \
+  || die "rsync кода не удался"
 
 echo "== 3/6 зависимости в $DEST/.venv"
 "$DEST/.venv/bin/python" -m pip install --disable-pip-version-check -r "$DEST/requirements.txt" \
@@ -143,7 +160,7 @@ echo "== 3/6 зависимости в $DEST/.venv"
 
 echo "== 4/6 import-smoke без запуска агента"
 SMOKE_DATA=$(mktemp -d)
-trap 'rc=$?; rm -rf "$SMOKE_DATA"; if [ "$rc" -ne 0 ]; then restore; fi; exit "$rc"' EXIT
+trap 'rc=$?; rm -rf "$SMOKE_DATA" "$STAGE"; if [ "$rc" -ne 0 ]; then restore; fi; exit "$rc"' EXIT
 (cd "$DEST" && NEYRA_DATA_DIR="$SMOKE_DATA" PYTHONDONTWRITEBYTECODE=1 \
   .venv/bin/python -c "import jwt, core.api.app, core.neyra") || die "import-smoke не прошёл"
 
@@ -154,7 +171,7 @@ echo "== 5/6 compileall"
 echo "== 6/6 отметка сборки"
 printf '%s\n' "$HEAD" > "$DEST/.deploy-sha"
 trap - EXIT
-rm -rf "$SMOKE_DATA"
+rm -rf "$SMOKE_DATA" "$STAGE"
 
 cat <<EOF
 ядро обновлено и проверено, сервис НЕ запущен.

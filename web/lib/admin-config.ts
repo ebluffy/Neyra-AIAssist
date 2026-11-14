@@ -120,19 +120,19 @@ export interface AdminCoreOptions {
 }
 
 export function readAdminConfig(options: AdminCoreOptions = {}): Promise<CoreResult<ConfigSnapshot>> {
-  return coreGet<ConfigSnapshot>('/v1/config', { timeoutMs: 4000, ...options });
+  return coreGet<ConfigSnapshot>('/v1/config', { timeoutMs: 4000, forwardMessage: true, ...options });
 }
 
 export function writeAdminConfig(
   updates: Record<string, ScalarUpdate>,
   options: AdminCoreOptions = {},
 ): Promise<CoreResult<ConfigWriteResult>> {
-  return corePut<ConfigWriteResult>('/v1/config', { updates }, { timeoutMs: 10000, ...options });
+  return corePut<ConfigWriteResult>('/v1/config', { updates }, { timeoutMs: 10000, forwardMessage: true, ...options });
 }
 
 export function readAdminLogTail(
   lines: unknown = LOG_LINES_DEFAULT,
   options: AdminCoreOptions = {},
 ): Promise<CoreResult<LogTail>> {
-  return coreGet<LogTail>(`/v1/logs/tail?lines=${clampLogLines(lines)}`, { timeoutMs: 5000, ...options });
+  return coreGet<LogTail>(`/v1/logs/tail?lines=${clampLogLines(lines)}`, { timeoutMs: 5000, forwardMessage: true, ...options });
 }
