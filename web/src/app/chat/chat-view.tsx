@@ -165,7 +165,12 @@ export function ChatView({
       setSidebarCollapsed(window.localStorage.getItem('neyra:sidebar-collapsed') === '1');
       if (initialThreadPanelOpen === undefined) {
         const savedPanelOpen = window.localStorage.getItem('neyra:thread-panel-open');
-        if (savedPanelOpen !== null) {
+        // На телефоне панель — drawer на 320 px и закрывает чат с композером.
+        // Сохранённое «открыто» с десктопа не должно открывать её поверх чата.
+        const narrow = typeof window.matchMedia === 'function'
+          ? window.matchMedia('(max-width: 1023px)').matches
+          : false;
+        if (savedPanelOpen !== null && !narrow) {
           setThreadPanelOpen(savedPanelOpen === '1');
         }
       }

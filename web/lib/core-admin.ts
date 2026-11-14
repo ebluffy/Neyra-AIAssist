@@ -97,7 +97,8 @@ async function request<T>(
       };
     }
     const data = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
-    return { state: 'ok', data: (data ?? null) as T };
+    // status нужен вызывающим: /v1/health/ready с 200 — «готово», с 503 — «не готово».
+    return { state: 'ok', data: (data ?? null) as T, status: response.status };
   } catch (error) {
     const reason = error instanceof Error && error.name === 'TimeoutError'
       ? 'Ядро не ответило вовремя.'

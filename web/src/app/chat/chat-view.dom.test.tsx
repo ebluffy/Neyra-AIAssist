@@ -372,6 +372,28 @@ describe('ChatView conversation', () => {
     remount.unmount();
   });
 
+  it('does not reopen the thread panel from localStorage on a phone', () => {
+    const userId = 'u-panel-mobile';
+    window.localStorage.setItem('neyra:thread-panel-open', '1');
+    vi.stubGlobal('matchMedia', vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(max-width: 1023px)',
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => false),
+    })));
+    const { unmount } = render(
+      <ChatView user={{ id: userId, email: 'mobile@example.com', name: 'Моб', role: 'user' }} />
+    );
+    const toggleBtn = screen.getByRole('button', { name: 'Панель треда' });
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('false');
+    unmount();
+    window.localStorage.clear();
+  });
+
   it('pins message from message action button and syncs to localStorage and thread panel', () => {
     const userId = 'u-pin-test';
     const threadId = 'th-pin-1';

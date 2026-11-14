@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coreGet, corePost, readCoreEnv } from './core-admin';
+import { coreGet, coreGetReady, corePost, readCoreEnv } from './core-admin';
 
 const env = { NEYRA_API_URL: 'http://127.0.0.1:8787', NEYRA_SERVICE_KEY: 'test-key' };
 
@@ -47,9 +47,23 @@ describe('coreGet', () => {
         return jsonResponse({ ok: true, data: { ok: true } });
       }) as typeof fetch,
     });
-    expect(result).toEqual({ state: 'ok', data: { ok: true } });
+    expect(result).toEqual({ state: 'ok', data: { ok: true }, status: 200 });
     expect(seen.url).toBe('http://127.0.0.1:8787/v1/meta');
     expect(seen.auth).toBe('Bearer test-key');
+  });
+
+  it('keeps the HTTP status on success so readiness can tell 200 from 503', async () => {
+    const ready200 = await coreGetReady('/v1/health/ready', {
+      env,
+      fetchImpl: (async () => jsonResponse({ ok: true, data: { checks: [] } })) as typeof fetch,
+    });
+    expect(ready200).toMatchObject({ state: 'ok', status: 200 });
+
+    const ready503 = await coreGetReady('/v1/health/ready', {
+      env,
+      fetchImpl: (async () => jsonResponse({ ok: false, data: { checks: [] } }, 503)) as typeof fetch,
+    });
+    expect(ready503).toMatchObject({ state: 'ok', status: 503 });
   });
 
   it('reports rejected keys separately from outages', async () => {

@@ -1,5 +1,5 @@
 import { coreGet, coreGetReady, type CoreHealth, type CoreMeta } from '../../../../lib/core-admin';
-import { readBackups, readDiskUsage } from '../../../../lib/admin-system';
+import { readBackups, readDeployCommit, readDiskUsage } from '../../../../lib/admin-system';
 import { describeDegradedReason, reasonText } from '../../../../lib/core-status';
 import { RestartCore } from '../../../components/admin/restart-core';
 import { WarmupSessions } from '../../../components/admin/warmup-sessions';
@@ -13,13 +13,14 @@ interface ReadyReport {
 }
 
 export default async function AdminSystemPage() {
-  const [health, ready, meta, disk, backups, history] = await Promise.all([
+  const [health, ready, meta, disk, backups, history, deployCommit] = await Promise.all([
     coreGet<CoreHealth>('/v1/health', { timeoutMs: 4000 }),
     coreGetReady<ReadyReport>('/v1/health/ready', { timeoutMs: 4000 }),
     coreGet<CoreMeta>('/v1/meta', { timeoutMs: 3000 }),
     readDiskUsage(),
     readBackups(process.env.NEYRA_BACKUP_DIR),
     coreGet<{ points?: Array<{ timestamp?: string; ok?: boolean }> }>('/v1/health/history?hours=24', { timeoutMs: 4000 }),
+    readDeployCommit(),
   ]);
   const points = (history.state === 'ok' ? history.data?.points ?? [] : []).slice(-12).reverse();
 
@@ -38,7 +39,7 @@ export default async function AdminSystemPage() {
         <Stat label="Uptime сайта" value={formatDuration(process.uptime())} hint="процесс Next" />
         <Stat label="Диск свободно" value={disk ? formatBytes(disk.freeBytes) : '—'} hint={disk ? `из ${formatBytes(disk.totalBytes)}` : 'не удалось прочитать'} />
         <Stat label="Версия сайта" value={process.env.NEYRA_WEB_VERSION ?? 'не задано в .env'} hint="NEYRA_WEB_VERSION" />
-        <Stat label="Коммит" value={process.env.NEYRA_COMMIT ? process.env.NEYRA_COMMIT.slice(0, 12) : 'не задано в .env'} hint="NEYRA_COMMIT" />
+        <Stat label="Коммит" value={deployCommit ?? (process.env.NEYRA_COMMIT ? process.env.NEYRA_COMMIT.slice(0, 12) : 'не задано')} hint={deployCommit ? 'из .deploy-sha' : 'NEYRA_COMMIT'} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
