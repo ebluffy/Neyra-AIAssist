@@ -120,7 +120,7 @@ else
   msg="$(cat "$CHECK_ERR")"
   rm -f "$CHECK_ERR"
   case "$rc" in
-    3) die "$msg" ;;
+    3) die "data_dir вне $DEST: $msg" ;;
     4) die "не удалось определить data_dir ядра: $msg" ;;
     *) die "check-data-dir.py завершился с кодом $rc: $msg" ;;
   esac
