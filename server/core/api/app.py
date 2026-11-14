@@ -603,6 +603,19 @@ class AdminConfigPutRequest(_ApiBody):
     updates: dict[str, Any] = Field(default_factory=dict)
 
 
+class McpServerBody(_ApiBody):
+    """One MCP server from the admin API; unset fields keep their current value."""
+
+    name: Optional[str] = Field(default=None, max_length=64)
+    transport: Optional[str] = Field(default=None, max_length=10)
+    command: Optional[str] = Field(default=None, max_length=500)
+    args: Optional[list[str]] = None
+    url: Optional[str] = Field(default=None, max_length=2000)
+    cwd: Optional[str] = Field(default=None, max_length=300)
+    env: Optional[dict[str, str]] = None
+    enabled: Optional[bool] = None
+
+
 class PluginStateUpdateRequest(_ApiBody):
     enabled: bool
 
@@ -1367,6 +1380,13 @@ def build_app(
             reflection.start_scheduler()
         monitor.start()
         await monitor.run_once()
+        try:
+            from core.runtime.mcp_client import migrate_servers_config
+
+            if migrate_servers_config(config, root):
+                logger.info("MCP: legacy servers config migrated to the list structure")
+        except Exception:
+            logger.exception("MCP config migration failed (non-fatal)")
         try:
             await agent.start_mcp_clients()
         except Exception:
@@ -4155,6 +4175,203 @@ def build_app(
         except Exception as e:
             raise ApiError("bad_request", f"{field}: ожидается ISO-время", 400) from e
         return raw
+
+    # --- MCP servers (admin) -------------------------------------------------
+
+    def _mcp_client_cfg() -> dict[str, Any]:
+        raw = config.get("mcp_client")
+        if not isinstance(raw, dict):
+            raw = {}
+            config["mcp_client"] = raw
+        return raw
+
+    def _mcp_servers() -> list[dict[str, Any]]:
+        from core.runtime.mcp_client import normalize_servers
+
+        servers, _ = normalize_servers(_mcp_client_cfg().get("servers"))
+        return servers
+
+    def _save_mcp_servers(servers: list[dict[str, Any]]) -> None:
+        from core.runtime.config_loader import persist_allowlisted_updates
+
+        persist_allowlisted_updates(root, {"mcp_client.servers": servers}, keep_backup=True)
+        _mcp_client_cfg()["servers"] = servers
+
+    async def _rebuild_mcp() -> None:
+        """Reconnect the MCP client from the current config (no core restart)."""
+        from core.agent.bootstrap import ensure_mcp
+        from core.runtime.mcp_client import MCPClientManager
+
+        old = getattr(agent, "mcp_manager", None)
+        if old is not None:
+            for lc_name in list(getattr(old, "_lc_route", {}) or {}):
+                agent.tools.pop(lc_name, None)
+            try:
+                await old.stop()
+            except Exception:
+                logger.debug("MCP: old manager stop failed", exc_info=True)
+            agent.mcp_manager = None
+        if not bool(_mcp_client_cfg().get("enabled")):
+            agent._mcp_merge_done = True
+            return
+        manager = MCPClientManager(config)
+        # Admin request must not hang for the full 45s connect timeout.
+        manager._connect_timeout = min(float(getattr(manager, "_connect_timeout", 5.0)), 5.0)
+        agent.mcp_manager = manager
+        agent._mcp_merge_done = False
+        await ensure_mcp(agent)
+
+    def _mcp_status_payload() -> dict[str, Any]:
+        from core.runtime.mcp_client import mask_env, mask_url
+
+        mc = _mcp_client_cfg()
+        manager = getattr(agent, "mcp_manager", None)
+        snapshot = manager.status_snapshot() if manager is not None and hasattr(manager, "status_snapshot") else {}
+        items: list[dict[str, Any]] = []
+        for server in _mcp_servers():
+            name = server["name"]
+            live = snapshot.get(name) or {}
+            state = live.get("state")
+            if state is None:
+                state = "disabled" if (not mc.get("enabled") or not server.get("enabled", True)) else "disconnected"
+            items.append(
+                {
+                    "name": name,
+                    "enabled": bool(server.get("enabled", True)),
+                    "transport": server.get("transport"),
+                    "command": server.get("command"),
+                    "args": list(server.get("args") or []),
+                    "url": mask_url(server.get("url")),
+                    "cwd": server.get("cwd"),
+                    "env": mask_env(server.get("env")),
+                    "status": state,
+                    "tools": int(live.get("tools") or 0),
+                    "last_error": live.get("last_error"),
+                    "checked_at": live.get("checked_at"),
+                }
+            )
+        return {"enabled": bool(mc.get("enabled")), "servers": items}
+
+    @app.get("/v1/mcp/servers")
+    async def v1_mcp_servers(request: Request, _: str = Depends(dep_admin)):
+        """Configured MCP servers with masked env and live status (admin only)."""
+        trace_id = _trace_id(request)
+        return {"ok": True, "trace_id": trace_id, "data": _mcp_status_payload()}
+
+    @app.post("/v1/mcp/servers")
+    async def v1_mcp_server_create(
+        body: McpServerBody,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        from core.runtime.mcp_client import MCPServerConfigError, validate_server_payload
+
+        trace_id = _trace_id(request)
+        try:
+            spec = validate_server_payload(body.model_dump(exclude_unset=True))
+        except MCPServerConfigError as e:
+            raise ApiError("bad_request", str(e), 400)
+        servers = _mcp_servers()
+        if any(item["name"] == spec["name"] for item in servers):
+            raise ApiError("conflict", "Сервер с таким именем уже настроен.", 409)
+        try:
+            _save_mcp_servers([*servers, spec])
+        except Exception as e:
+            logger.exception("MCP: persist failed | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Не удалось записать config/modules.yaml.", 500) from e
+        await _rebuild_mcp()
+        _audit("mcp_server_create", trace_id, api_role, {"name": spec["name"]})
+        return {"ok": True, "trace_id": trace_id, "data": _mcp_status_payload()}
+
+    @app.put("/v1/mcp/servers/{name}")
+    async def v1_mcp_server_update(
+        name: str,
+        body: McpServerBody,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        from core.runtime.mcp_client import MCPServerConfigError, validate_server_payload
+
+        trace_id = _trace_id(request)
+        servers = _mcp_servers()
+        existing = next((item for item in servers if item["name"] == name), None)
+        if existing is None:
+            raise ApiError("not_found", "Сервер не найден.", 404)
+        payload = body.model_dump(exclude_unset=True)
+        payload.pop("name", None)
+        merged = {**existing, **payload}
+        try:
+            spec = validate_server_payload(merged, name=name)
+        except MCPServerConfigError as e:
+            raise ApiError("bad_request", str(e), 400)
+        updated = [spec if item["name"] == name else item for item in servers]
+        try:
+            _save_mcp_servers(updated)
+        except Exception as e:
+            logger.exception("MCP: persist failed | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Не удалось записать config/modules.yaml.", 500) from e
+        await _rebuild_mcp()
+        _audit("mcp_server_update", trace_id, api_role, {"name": name, "keys": sorted(payload)})
+        return {"ok": True, "trace_id": trace_id, "data": _mcp_status_payload()}
+
+    @app.delete("/v1/mcp/servers/{name}")
+    async def v1_mcp_server_delete(
+        name: str,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        servers = _mcp_servers()
+        if not any(item["name"] == name for item in servers):
+            raise ApiError("not_found", "Сервер не найден.", 404)
+        try:
+            _save_mcp_servers([item for item in servers if item["name"] != name])
+        except Exception as e:
+            logger.exception("MCP: persist failed | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Не удалось записать config/modules.yaml.", 500) from e
+        await _rebuild_mcp()
+        _audit("mcp_server_delete", trace_id, api_role, {"name": name})
+        return {"ok": True, "trace_id": trace_id, "data": _mcp_status_payload()}
+
+    @app.post("/v1/mcp/servers/{name}/restart")
+    async def v1_mcp_server_restart(
+        name: str,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        trace_id = _trace_id(request)
+        servers = _mcp_servers()
+        if not any(item["name"] == name for item in servers):
+            raise ApiError("not_found", "Сервер не найден.", 404)
+        manager = getattr(agent, "mcp_manager", None)
+        if manager is None:
+            raise ApiError("mcp_disabled", "MCP-клиент выключен в конфиге (mcp_client.enabled).", 409)
+        restarted = await manager.restart_server(name)
+        if not restarted:
+            raise ApiError("mcp_disabled", "Сервер выключен; включите его перед перезапуском.", 409)
+        _audit("mcp_server_restart", trace_id, api_role, {"name": name})
+        return {"ok": True, "trace_id": trace_id, "data": _mcp_status_payload()}
+
+    @app.post("/v1/mcp/reload")
+    async def v1_mcp_reload(request: Request, api_role: str = Depends(dep_admin)):
+        """Re-read config/modules.yaml and reconnect every server."""
+        from core.runtime.config_loader import load_layered_yaml
+        from core.runtime.mcp_client import normalize_servers
+
+        trace_id = _trace_id(request)
+        try:
+            layer = load_layered_yaml(root)
+        except Exception as e:
+            raise ApiError("config_error", "Не удалось прочитать config/modules.yaml.", 500) from e
+        file_mc = layer.get("mcp_client") if isinstance(layer.get("mcp_client"), dict) else None
+        if file_mc is not None:
+            servers, _ = normalize_servers(file_mc.get("servers"))
+            _mcp_client_cfg()["servers"] = servers
+            if "enabled" in file_mc:
+                _mcp_client_cfg()["enabled"] = bool(file_mc.get("enabled"))
+        await _rebuild_mcp()
+        _audit("mcp_reload", trace_id, api_role)
+        return {"ok": True, "trace_id": trace_id, "data": _mcp_status_payload()}
 
     @app.get("/v1/admin/discord/guilds")
     async def v1_admin_discord_guilds(
