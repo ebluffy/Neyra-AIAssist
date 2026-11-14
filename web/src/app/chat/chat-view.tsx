@@ -28,9 +28,10 @@ import {
   X,
   History,
   Activity,
+  Mic,
 } from 'lucide-react';
 import { SseChatEventSchema } from '@neyra/contracts';
-import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, type ContextUsage } from '../../components/ui';
+import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, type ContextUsage } from '../../components/ui';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
 import { SettingsDialog } from '../../components/settings-dialog';
@@ -907,7 +908,12 @@ export function ChatView({
       {/* Main Column */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
         {/* Header 56px (§2: No «← На главную», mobile menu on right with «Новый чат») */}
-        <header className="h-14 min-h-[56px] border-b border-[var(--border)] bg-[var(--bg)] px-3 sm:px-4 flex items-center justify-between gap-2 z-20 pt-[env(safe-area-inset-top)]">
+        <header
+          data-context="thread-header"
+          data-id={chatId}
+          data-title={threadTitle}
+          className="h-14 min-h-[56px] border-b border-[var(--border)] bg-[var(--bg)] px-3 sm:px-4 flex items-center justify-between gap-2 z-20 pt-[env(safe-area-inset-top)]"
+        >
           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 mr-2">
             <IconButton
               type="button"
@@ -977,6 +983,10 @@ export function ChatView({
               <div
                 key={msg.id}
                 id={`message-${msg.id}`}
+                data-context="chat-message"
+                data-id={msg.id}
+                data-text={msg.content}
+                data-role={msg.role}
                 className={`flex flex-col w-full ${msg.role === 'user' ? 'items-end' : 'items-start'} ${
                   highlightedMessageId === msg.id
                     ? 'ring-2 ring-[var(--accent)] bg-[var(--surface-2)]/70 rounded-[var(--radius)] p-2.5 transition-all duration-300'
@@ -1198,7 +1208,7 @@ export function ChatView({
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="flex flex-col">
+            <form onSubmit={handleSubmit} data-context="composer" className="flex flex-col">
               {/* Hidden file inputs (§3.2) */}
               <input
                 ref={fileInputRef}
@@ -1335,6 +1345,21 @@ export function ChatView({
                       </div>
                     )}
                   </div>
+
+                  {/* Voice input stub */}
+                  <SoonAction featureName="Голосовой ввод">
+                    <IconButton
+                      type="button"
+                      aria-label="Голосовой ввод"
+                      tooltip="Голосовой ввод"
+                      icon={<Mic size={15} />}
+                      variant="ghost"
+                      size="md"
+                      rounded
+                      disabled={streaming}
+                      className="text-[var(--text-muted)] hover:text-[var(--text)] bg-[var(--surface-3)] shrink-0"
+                    />
+                  </SoonAction>
 
                   {/* Textarea without inner focus ring (§3.1) */}
                   <textarea

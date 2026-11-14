@@ -23,3 +23,6 @@ export * from './MarkdownMessage';
 export * from './ContextIndicator';
 export * from './Tooltip';
 export * from './AmbientBackground';
+export * from './ToastHost';
+export * from './SoonAction';
+export * from './ContextMenu';

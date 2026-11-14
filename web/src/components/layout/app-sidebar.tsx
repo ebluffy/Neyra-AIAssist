@@ -656,6 +656,9 @@ export function AppSidebar({
                       return (
                         <div
                           key={thread.id}
+                          data-context="chat-item"
+                          data-id={thread.id}
+                          data-title={thread.title}
                           className={`group relative flex items-center justify-between rounded-[var(--radius-sm)] transition-colors ${
                             isActive
                               ? 'bg-[var(--surface-3)] text-[var(--text)] font-medium'
@@ -771,6 +774,10 @@ export function AppSidebar({
                     notes.map((note) => (
                       <div
                         key={note.id}
+                        data-context="note-item"
+                        data-id={note.id}
+                        data-title={note.title}
+                        data-text={note.content}
                         className="group relative p-2 rounded-[var(--radius-sm)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--border)] transition-colors text-left"
                       >
                         <div className="flex items-start justify-between gap-1">
@@ -819,6 +826,9 @@ export function AppSidebar({
             <button
               ref={profileTriggerRef}
               type="button"
+              data-context="profile-avatar"
+              data-id={user?.id}
+              data-title={displayName}
               aria-haspopup="menu"
               aria-expanded={profileMenuOpen}
               aria-label="Меню профиля пользователя"

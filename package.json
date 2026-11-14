@@ -17,7 +17,7 @@
     "build": "npm run build:packages && npm run build -w @neyra/web",
     "build:packages": "tsc --build packages/contracts packages/ui",
     "typecheck": "npm run build:packages && tsc --noEmit -p web",
-    "test": "vitest run"
+    "test": "NODE_OPTIONS=\"--localstorage-file=/tmp/ls\" vitest run"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
