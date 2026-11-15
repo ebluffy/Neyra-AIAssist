@@ -240,6 +240,11 @@ class CliSettings:
             raise CliProviderError(
                 f"CLI '{cli}' не найден в PATH; задайте llm.providers.<name>.cli_path"
             )
+        if "cli_roots" in block:
+            raise CliProviderError(
+                "cli_roots больше не поддерживаются: укажите cli_path в "
+                "provider-runtimes/opencode/<platform>/<version>"
+            )
         extra = block.get("extra_args")
         if extra not in (None, [], ()):
             raise CliProviderError(
@@ -279,22 +284,9 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
             f"CLI-путь {root} — широкий корень ФС; укажите каталог версии OpenCode"
         )
 
-    internal_runtime = False
-    if settings.data_dir:
-        data_root_path = Path(settings.data_dir).expanduser().resolve()
-        if _is_under(root, data_root_path / "cli-runtime") or _is_under(
-            root, data_root_path / SANDBOX_DIR_NAME / "runtime"
-        ):
-            # AR-75: внутренний рантайм тоже обязан быть каталогом версии.
-            internal_runtime = _is_opencode_runtime_root(root)
-    if not internal_runtime and not _is_opencode_runtime_root(root):
-        # AR-68: корень верхнего уровня (`/data`, `/backup`, `/usr/local`) —
-        # это целый диск или системный каталог, а не поставка CLI.
-        if len(root.parts) < 4:
-            raise CliProviderError(
-                f"CLI-путь {root} слишком широкий: нужен каталог поставки "
-                "вида /opt/vendor/opencode или версия provider-runtimes/opencode"
-            )
+    if not _is_opencode_runtime_root(root):
+        # AR-68/75: любой путь, который не является каталогом версии, — это
+        # диск или системный каталог; широкие префиксы отклоняются явно.
         for prefix in _FORBIDDEN_ROOT_PREFIXES:
             base = Path(prefix)
             if root == base or _is_under(root, base):
@@ -341,7 +333,7 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
             f"CLI-путь {root} должен совпадать с "
             "provider-runtimes/opencode/<platform>/<version>"
         )
-    if not _is_opencode_runtime_root(root) and not internal_runtime:
+    if not _is_opencode_runtime_root(root):
         raise CliProviderError(
             f"CLI-путь {root} вне разрешённых каталогов: нужен каталог версии "
             f"({RUNTIME_MARKER}/opencode/<platform>/<version>) с проверенной версией"

@@ -287,6 +287,52 @@ def test_only_verified_opencode_version_is_allowed(tmp_path: Path):
         _validate_cli_root(other, settings)
 
 
+def test_cli_bypasses_are_closed(tmp_path: Path):
+    """AR-79: обходы AR-75 закреплены тестами, а не только коммитом."""
+    from core.llm.cli_provider import CliSettings, _cli_mount_root, _validate_cli_root
+
+    settings = _settings(tmp_path)
+    for bad in (
+        "/usr/bin/oc",
+        "/usr/local/bin/opencode-ai",
+        "/bin/echo",
+    ):
+        with pytest.raises(CliProviderError, match="вне разрешённых|широкий|нельзя"):
+            _cli_mount_root(Path(bad), settings)
+
+    data = Path(settings.data_dir)
+    plain = data / "cli-runtime" / "bin" / "opencode"
+    plain.parent.mkdir(parents=True)
+    plain.write_text("#!/bin/sh\n", encoding="utf-8")
+    with pytest.raises(CliProviderError, match="вне разрешённых|широкий|нельзя"):
+        _cli_mount_root(plain, settings)
+
+    old = data / "cli-runtime" / "provider-runtimes" / "opencode" / "linux-x64" / "9.9.9" / "bin" / "opencode"
+    old.parent.mkdir(parents=True)
+    old.write_text("#!/bin/sh\n", encoding="utf-8")
+    with pytest.raises(CliProviderError, match="не проверена"):
+        _cli_mount_root(old, settings)
+
+    fresh = data / "cli-runtime" / "provider-runtimes" / "opencode" / "linux-x64" / "2.3.0" / "bin" / "opencode"
+    fresh.parent.mkdir(parents=True)
+    fresh.write_text("#!/bin/sh\n", encoding="utf-8")
+    assert _cli_mount_root(fresh, settings) == fresh.parent.parent
+
+    with pytest.raises(CliProviderError, match="cli_roots"):
+        CliSettings.from_config(
+            {
+                "kind": "cli",
+                "cli": "opencode",
+                "cli_path": str(fresh),
+                "cli_roots": ["/opt/x"],
+                "experimental": True,
+                "sandbox": str(data / "cli-sandbox"),
+            },
+            model="m",
+            data_dir=str(data),
+        )
+
+
 def test_sandbox_must_live_in_data_dir(tmp_path: Path):
     data = tmp_path / "data"
     with pytest.raises(CliProviderError, match="cli-sandbox"):
