@@ -254,6 +254,7 @@ class CliSettings:
             experimental=True,
         )
         validate_settings(settings)
+        validate_auth(settings)
         return settings
 
 
@@ -337,8 +338,7 @@ def validate_settings(settings: CliSettings) -> None:
         raise CliProviderError(
             f"Sandbox CLI {resolved} должен лежать в <data_dir>/{SANDBOX_DIR_NAME}"
         )
-    # AR-71/88: OAuth в read-only auth.json не обновится — отказ на старте.
-    _validate_auth_settings(settings, resolved)
+
 
 
 def _resolve_config_path(value: str, data_dir: str, sandbox: Optional[Path] = None) -> Path:
@@ -446,11 +446,11 @@ def _remove_quietly(path: Path) -> None:
         return
 
 
-def _resolve_auth_file(settings: CliSettings, sandbox: Path, *, strict: bool) -> Optional[Path]:
-    """Единственная логика выбора `auth.json` для старта и для вызова (AR-88).
+def _resolve_auth_file(settings: CliSettings, sandbox: Path) -> Optional[Path]:
+    """Единственная логика выбора `auth.json` для старта и вызова (AR-88/91).
 
-    `strict` — старт: явный `auth_file` обязан существовать. Оба режима
-    отклоняют симлинк и файл вне sandbox.
+    Явный `auth_file` обязан существовать; симлинк и файл вне sandbox
+    отклоняются. Поведение одинаково на старте и в `_prepare`.
     """
     if settings.auth_file:
         candidates = [(_resolve_config_path(settings.auth_file, settings.data_dir), True)]
@@ -465,7 +465,7 @@ def _resolve_auth_file(settings: CliSettings, sandbox: Path, *, strict: bool) ->
                 f"Файл авторизации CLI не может быть симлинком: {candidate}"
             )
         if not candidate.is_file():
-            if explicit and strict:
+            if explicit:
                 raise CliProviderError(f"Файл авторизации CLI не найден: {candidate}")
             continue
         resolved = candidate.resolve()
@@ -502,9 +502,10 @@ def _validate_auth_payload(path: Path) -> None:
         )
 
 
-def _validate_auth_settings(settings: CliSettings, sandbox: Path) -> None:
-    """Стартовая проверка тем же кодом, что и при вызове (AR-88)."""
-    _resolve_auth_file(settings, sandbox, strict=True)
+def validate_auth(settings: CliSettings) -> None:
+    """Стартовая проверка `auth.json` (AR-71/88): до первого запроса."""
+    sandbox = _resolve_config_path(settings.sandbox, settings.data_dir)
+    _resolve_auth_file(settings, sandbox)
 
 
 def _cli_mount_root(cli_path: Path, settings: CliSettings) -> Path:
@@ -719,7 +720,7 @@ def _prepare(settings: CliSettings) -> tuple[list[str], dict[str, str], Path, st
     sandbox = _ensure_sandbox(settings)
     assets = _write_opencode_assets(sandbox)
     try:
-        auth_file = _resolve_auth_file(settings, sandbox, strict=False)
+        auth_file = _resolve_auth_file(settings, sandbox)
         cli_path = Path(settings.cli_path).expanduser().resolve()
         if not cli_path.is_file():
             raise CliProviderError(f"CLI не найден: {cli_path}")

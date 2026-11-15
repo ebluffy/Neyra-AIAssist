@@ -926,7 +926,7 @@ def test_settings_load_rejects_oauth_auth_file(tmp_path: Path):
 
 
 def test_settings_load_checks_auth_symlink_and_location(tmp_path: Path):
-    """AR-88: стартовая проверка повторяет правила `_find_auth_file`."""
+    """AR-88: стартовая проверка `auth.json` — симлинк и выход за sandbox."""
     from core.llm.cli_provider import CliSettings
 
     data = tmp_path / "data"
