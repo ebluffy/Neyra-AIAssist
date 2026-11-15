@@ -5,9 +5,10 @@ fallback нет. Внутри namespaces видны read-only системные
 (read-only), свежий tmpfs вместо HOME на каждый вызов, `/tmp`, `/proc`, `/dev`.
 Сеть остаётся (`--share-net`), потому что OpenCode ходит к модели.
 
-Инструменты OpenCode выключены сгенерированным конфигом (`tools: false`,
-`permission: deny`), который монтируется read-only через `OPENCODE_CONFIG`:
-модель не может его переписать. HOME и cwd — одноразовый tmpfs, поэтому
+Инструменты OpenCode выключены двумя слоями: сгенерированный конфиг
+(`tools: false`, `permission: deny` по именам) и плагин на хуке `context`,
+который удаляет все инструменты из запроса к модели. Конфиг и плагин
+монтируются read-only, переписать их из песочницы нельзя. HOME и cwd — одноразовый tmpfs, поэтому
 история сессий, `AGENTS.md` и мусор не переживают вызов. Авторизация
 пробрасывается одним файлом read-only внутрь `XDG_DATA_HOME`.
 
@@ -51,6 +52,7 @@ SANDBOX_CONFIG_PATH = f"{SANDBOX_HOME}/config/opencode/opencode.json"
 SANDBOX_CONFIG_DIR = f"{SANDBOX_HOME}/config/opencode"
 SANDBOX_AUTH_DIR = f"{SANDBOX_HOME}/data/opencode"
 SANDBOX_AUTH_PATH = f"{SANDBOX_AUTH_DIR}/auth.json"
+SANDBOX_PLUGIN_DIR = f"{SANDBOX_HOME}/plugin"
 SANDBOX_DIR_NAME = "cli-sandbox"
 
 # Широкие корни, которые нельзя монтировать в песочницу целиком (AR-68).
@@ -104,6 +106,12 @@ _OPENCODE_TOOLS: tuple[str, ...] = (
     "todoread",
     "question",
     "lsp",
+    # AR-71: Code Mode и встроенные инструменты CLI не перечислены в списке
+    # обычных tools, но приходят модели, пока их не выключат по имени.
+    "execute",
+    "opencode_models",
+    "opencode_list_mcp_resources",
+    "opencode_read_mcp_resource",
 )
 
 
@@ -138,6 +146,7 @@ def _opencode_config_text() -> str:
         "share": "disabled",
         "tools": {name: False for name in _OPENCODE_TOOLS},
         "permission": {name: "deny" for name in _OPENCODE_TOOLS},
+        "plugins": [SANDBOX_PLUGIN_DIR],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
@@ -348,30 +357,64 @@ def _ensure_sandbox(settings: CliSettings) -> Path:
     return resolved
 
 
-def _write_opencode_config(sandbox: Path) -> Path:
-    """Одноразовый конфиг с выключенными tools: файл уникален для вызова.
+# AR-71: конфиг 2.3.0 не умеет «ноль инструментов» — `tools: false` убирает
+# только перечисленные имена, а `policies: tool.use` лишь запрещает запуск.
+# Поэтому в запрос к модели инструменты вырезает плагин на хуке `context`:
+# `event.tools` — это карта «имя → инструмент» уже собранного запроса.
+PLUGIN_PACKAGE_JSON = """{
+  "name": "neyra-no-tools",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js"
+}
+"""
 
-    Общий файл не годится: параллельные ходы удаляли бы temp друг друга, и bwrap
+PLUGIN_INDEX_JS = """export default {
+  id: "neyra-no-tools",
+  setup(ctx) {
+    ctx.session.hook("context", (event) => {
+      if (!event || !event.tools) return;
+      for (const name of Object.keys(event.tools)) delete event.tools[name];
+    });
+  },
+};
+"""
+
+
+def _write_opencode_assets(sandbox: Path) -> Path:
+    """Одноразовые конфиг и плагин: каталог уникален для вызова.
+
+    Общий каталог не годится: параллельные ходы удаляли бы temp друг друга, и bwrap
     мог смонтировать пустой opencode.json — то есть стартовать без deny (AR-67).
+    Каталог монтируется внутрь целиком, поэтому конфиг и плагин не разъезжаются.
     """
     try:
-        fd, name = tempfile.mkstemp(prefix=".opencode-", suffix=".json", dir=sandbox)
+        root = Path(tempfile.mkdtemp(prefix=".opencode-", dir=sandbox))
     except OSError as e:
         raise CliProviderError(f"Не удалось создать конфиг OpenCode в {sandbox}: {e}") from e
+    plugin_dir = root / "plugin"
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(_opencode_config_text())
-            stream.flush()
-            os.fsync(stream.fileno())
+        plugin_dir.mkdir()
+        (plugin_dir / "package.json").write_text(PLUGIN_PACKAGE_JSON, encoding="utf-8")
+        (plugin_dir / "index.js").write_text(PLUGIN_INDEX_JS, encoding="utf-8")
+        config = root / "opencode.json"
+        config.write_text(_opencode_config_text(), encoding="utf-8")
+        for path in (config, plugin_dir / "package.json", plugin_dir / "index.js"):
+            with open(path, "rb") as stream:
+                os.fsync(stream.fileno())
     except OSError as e:
-        _remove_quietly(Path(name))
+        _remove_quietly(root)
         raise CliProviderError(f"Не удалось записать конфиг OpenCode в {sandbox}: {e}") from e
-    return Path(name)
+    return root
 
 
 def _remove_quietly(path: Path) -> None:
     try:
-        path.unlink()
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink()
     except OSError:
         return
 
@@ -517,7 +560,7 @@ def _bwrap_argv(
     settings: CliSettings,
     cli_path: Path,
     *,
-    config_file: Path,
+    assets: Path,
     auth_file: Optional[Path],
 ) -> list[str]:
     argv = [
@@ -562,8 +605,12 @@ def _bwrap_argv(
         "--dir",
         SANDBOX_CONFIG_DIR,
         "--ro-bind",
-        str(config_file),
+        str(assets / "opencode.json"),
         SANDBOX_CONFIG_PATH,
+        # AR-71: плагин вырезает инструменты из запроса к модели.
+        "--ro-bind",
+        str(assets / "plugin"),
+        SANDBOX_PLUGIN_DIR,
     ]
     if auth_file is not None:
         argv += ["--dir", SANDBOX_AUTH_DIR, "--ro-bind", str(auth_file), SANDBOX_AUTH_PATH]
@@ -605,17 +652,17 @@ def _prepare(settings: CliSettings) -> tuple[list[str], dict[str, str]]:
         )
     validate_settings(settings)
     sandbox = _ensure_sandbox(settings)
-    config_file = _write_opencode_config(sandbox)
+    assets = _write_opencode_assets(sandbox)
     try:
         auth_file = _find_auth_file(settings, sandbox)
         cli_path = Path(settings.cli_path).expanduser().resolve()
         if not cli_path.is_file():
             raise CliProviderError(f"CLI не найден: {cli_path}")
-        argv = _bwrap_argv(settings, cli_path, config_file=config_file, auth_file=auth_file)
+        argv = _bwrap_argv(settings, cli_path, assets=assets, auth_file=auth_file)
     except BaseException:
-        _remove_quietly(config_file)
+        _remove_quietly(assets)
         raise
-    return argv, _child_env(), config_file
+    return argv, _child_env(), assets
 
 
 def _timeout_error(settings: CliSettings) -> CliProviderError:
@@ -707,11 +754,11 @@ def _run_sync(
 
 def run_cli_prompt(settings: CliSettings, prompt: str) -> str:
     """Синхронный вызов OpenCode через bwrap. Возвращает текст ответа."""
-    argv, env, config_file = _prepare(settings)
+    argv, env, assets = _prepare(settings)
     try:
         stdout, stderr, returncode = _run_sync(settings, argv, env, prompt)
     finally:
-        _remove_quietly(config_file)
+        _remove_quietly(assets)
     return _answer_from_output(settings, stdout, stderr, returncode=returncode)
 
 
@@ -788,7 +835,7 @@ async def _read_capped(stream: Any, limit: int) -> bytes:
 
 async def run_cli_prompt_async(settings: CliSettings, prompt: str) -> str:
     """Async-вызов OpenCode: CancelledError/таймаут убивают bwrap и всё дерево."""
-    argv, env, config_file = _prepare(settings)
+    argv, env, assets = _prepare(settings)
     try:
         async with _semaphore():
             proc = await asyncio.create_subprocess_exec(
@@ -814,7 +861,7 @@ async def run_cli_prompt_async(settings: CliSettings, prompt: str) -> str:
                 await _reap(proc)
                 raise
     finally:
-        _remove_quietly(config_file)
+        _remove_quietly(assets)
     text = _answer_from_output(
         settings,
         (stdout or b"").decode("utf-8", "replace"),

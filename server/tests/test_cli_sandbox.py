@@ -130,13 +130,17 @@ def test_argv_denies_tools_and_uses_throwaway_home(tmp_path: Path, monkeypatch):
     # AR-67: конфиг уникален для вызова и монтируется read-only.
     assert "/home/sandbox/config/opencode/opencode.json" in flat
     assert "--ro-bind" in argv
-    bound = argv[argv.index("--ro-bind") + 1]
-    assert Path(bound).name.startswith(".opencode-") and bound.endswith(".json")
+    bound = Path(argv[argv.index("--ro-bind") + 1])
+    assert bound.name == "opencode.json"
+    assert bound.parent.name.startswith(".opencode-")
     assert proc.kwargs["env"]["OPENCODE_CONFIG"] == "/home/sandbox/config/opencode/opencode.json"
+    # AR-71: плагин без инструментов монтируется рядом и включён в конфиг.
+    assert f"--ro-bind {bound.parent / 'plugin'} /home/sandbox/plugin" in flat
     config = json.loads(_config_text(tmp_path))
     assert config["tools"] and not any(config["tools"].values())
-    assert {"bash", "edit", "write", "webfetch"} <= set(config["permission"])
+    assert {"bash", "edit", "write", "webfetch", "execute"} <= set(config["permission"])
     assert set(config["permission"].values()) == {"deny"}
+    assert config["plugins"] == ["/home/sandbox/plugin"]
 
     # AR-7: новая сессия (TIOCSTI) и без capabilities.
     assert "--new-session" in argv
@@ -619,17 +623,21 @@ def test_prepare_uses_per_call_config_with_tools_denied(tmp_path: Path):
     Path(settings.sandbox).mkdir(parents=True, exist_ok=True)
 
     def _one(_: int):
-        argv, _env, config = _prepare(settings)
-        payload = json.loads(Path(config).read_text(encoding="utf-8"))
+        argv, _env, assets = _prepare(settings)
+        payload = json.loads((Path(assets) / "opencode.json").read_text(encoding="utf-8"))
         assert payload["permission"]["bash"] == "deny", payload
         assert payload["tools"]["bash"] is False, payload
-        Path(config).unlink()
-        return str(config)
+        assert payload["plugins"] == ["/home/sandbox/plugin"], payload
+        plugin_dir = Path(assets) / "plugin"
+        assert (plugin_dir / "index.js").is_file()
+        assert "delete event.tools" in (plugin_dir / "index.js").read_text(encoding="utf-8")
+        shutil.rmtree(assets)
+        return str(assets)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         paths = list(pool.map(_one, range(64)))
     assert len(set(paths)) == len(paths)
-    assert not list(Path(settings.sandbox).glob("opencode.json"))
+    assert not list(Path(settings.sandbox).glob(".opencode-*"))
 
 
 def test_cli_roots_cannot_open_data_dir_or_wide_roots(tmp_path: Path):
