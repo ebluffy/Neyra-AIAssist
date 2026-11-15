@@ -31,6 +31,9 @@ export async function PUT(request: Request, context: { params: Promise<{ name: s
   const kind = typeof raw.kind === 'string' && KINDS.has(raw.kind) ? raw.kind : 'openai';
 
   const result = await writeProvider(name.trim().toLowerCase(), { base_url: baseUrl, kind });
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, message: result.message ?? 'Ядро не поддерживает управление провайдерами.' });
+  }
   if (result.state !== 'ok' || !result.data) {
     return jsonError(
       result.status === 400 ? 400 : 502,
@@ -54,6 +57,9 @@ export async function DELETE(request: Request, context: { params: Promise<{ name
     return jsonError(400, 'invalid_provider', 'Некорректное имя провайдера.');
   }
   const result = await deleteProvider(name.trim().toLowerCase());
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, message: result.message ?? 'Ядро не поддерживает управление провайдерами.' });
+  }
   if (result.state !== 'ok' || !result.data) {
     const conflict = result.status === 409;
     return jsonError(
@@ -77,6 +83,9 @@ export async function POST(request: Request, context: { params: Promise<{ name: 
     return jsonError(400, 'invalid_provider', 'Некорректное имя провайдера.');
   }
   const result = await migrateProviderSecret(name.trim().toLowerCase());
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, message: result.message ?? 'Ядро не поддерживает управление провайдерами.' });
+  }
   if (result.state !== 'ok' || !result.data) {
     return jsonError(result.status === 400 ? 400 : 502, 'core_unavailable', result.message ?? 'Ядро не перенесло ключ.');
   }

@@ -1,8 +1,10 @@
-// Клиент ядра для админки. Сайт ходит в ядро только с сервера, ключ (NEYRA_SERVICE_KEY)
-// никогда не покидает сервер и не попадает в ответы API.
+// Клиент ядра для серверных роутов сайта. Ключи живут только на сервере и не
+// попадают в ответы API. AR-23/AR-36: ключи разделены — NEYRA_ADMIN_KEY (admin/
+// maint-роль ядра) для /api/admin/* и NEYRA_WEB_KEY (web-роль, API_WEB_TOKEN) для
+// чата, вложений и /v1/web/me. Отката с одного на другой нет.
 // Разделы настроек ядра в волне 2 — только чтение; отсутствие API показывается честно.
 
-export type CoreState = 'ok' | 'unconfigured' | 'unauthorized' | 'unavailable' | 'error';
+export type CoreState = 'ok' | 'unconfigured' | 'unauthorized' | 'unavailable' | 'error' | 'unsupported';
 
 export interface CoreResult<T> {
   state: CoreState;
@@ -19,9 +21,9 @@ export interface CoreEnv {
 
 export type Environment = Record<string, string | undefined>;
 
-export function readCoreEnv(env: Environment = process.env): CoreEnv | null {
-  const url = (env.NEYRA_API_URL ?? '').trim().replace(/\/+$/, '');
-  const token = (env.NEYRA_SERVICE_KEY ?? '').trim();
+function parseCoreEnv(urlRaw: string | undefined, tokenRaw: string | undefined): CoreEnv | null {
+  const url = (urlRaw ?? '').trim().replace(/\/+$/, '');
+  const token = (tokenRaw ?? '').trim();
   if (!url || !token) return null;
   try {
     const parsed = new URL(url);
@@ -32,10 +34,20 @@ export function readCoreEnv(env: Environment = process.env): CoreEnv | null {
   return { url, token };
 }
 
+// Админские ручки ядра: ключ роли admin/maint.
+export function readCoreEnv(env: Environment = process.env): CoreEnv | null {
+  return parseCoreEnv(env.NEYRA_API_URL, env.NEYRA_ADMIN_KEY);
+}
+
+// Web-ручки ядра (вложения, /v1/web/me): ключ web-роли, не admin.
+export function readWebCoreEnv(env: Environment = process.env): CoreEnv | null {
+  return parseCoreEnv(env.NEYRA_API_URL, env.NEYRA_WEB_KEY);
+}
+
 const UNCONFIGURED: CoreResult<never> = {
   state: 'unconfigured',
   data: null,
-  message: 'Ядро не подключено: в .env сайта нет NEYRA_API_URL и NEYRA_SERVICE_KEY.',
+  message: 'Ядро не подключено: в .env сайта нет NEYRA_API_URL и NEYRA_ADMIN_KEY.',
 };
 
 interface CoreRequest {
@@ -44,6 +56,11 @@ interface CoreRequest {
   timeoutMs?: number;
   /** Statuses whose body is still meaningful, e.g. /v1/health/ready answers 503 with checks. */
   acceptStatus?: number[];
+  /**
+   * AR-30: только доверенные ручки (config) показывают текст ошибки ядра.
+   * По умолчанию наружу идёт фиксированный текст.
+   */
+  forwardMessage?: boolean;
 }
 
 async function request<T>(
@@ -80,21 +97,29 @@ async function request<T>(
       const acceptedData = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
       return { state: 'ok', data: (acceptedData ?? null) as T, status: response.status };
     }
-    if (!response.ok) {
+    // Ручки может не быть в текущем ядре (#73 без provider/logs/discord API). Это не
+    // авария: FastAPI отвечает 404/405 без нашего конверта {ok:false,error}, и админка
+    // должна показать «ядро не поддерживает», а не 502/404 в консоли.
+    const structuredError = Boolean(payload && typeof payload === 'object' && payload.ok === false && payload.error);
+    if ([404, 405, 501].includes(response.status) && !structuredError) {
       return {
-        state: 'error',
+        state: 'unsupported',
         data: null,
         status: response.status,
-        message: payload?.error?.message ?? `Ядро ответило ${response.status}.`,
+        message: 'Ядро не поддерживает этот раздел. Обновите ядро до версии с этим API.',
       };
     }
+    // Структурированная ошибка ядра ({ok:false,error:{...}}) — это заранее
+    // заданный человеческий текст ручки; сырые 5xx и HTML-страницы наружу не идут.
+    const rawMessage = payload?.error?.message;
+    const safeMessage = options.forwardMessage
+      ? String(rawMessage || `Ядро ответило ${response.status}.`).slice(0, 200)
+      : 'Ядро вернуло ошибку. Подробности в журнале ядра.';
+    if (!response.ok) {
+      return { state: 'error', data: null, status: response.status, message: safeMessage };
+    }
     if (payload && payload.ok === false) {
-      return {
-        state: 'error',
-        data: null,
-        status: response.status,
-        message: payload.error?.message ?? 'Ядро вернуло ошибку.',
-      };
+      return { state: 'error', data: null, status: response.status, message: safeMessage };
     }
     const data = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
     // status нужен вызывающим: /v1/health/ready с 200 — «готово», с 503 — «не готово».

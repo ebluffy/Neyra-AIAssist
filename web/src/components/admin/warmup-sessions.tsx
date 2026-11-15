@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import React, { useState } from 'react';
+import { adminFetch } from './admin-fetch';
 
 const buttonClass = 'rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm hover:bg-white/5 disabled:opacity-40';
 
@@ -13,7 +14,7 @@ export function WarmupSessions() {
     setPending(true);
     setMessage(null);
     try {
-      const response = await fetch('/api/admin/system/warmup', { method: 'POST' });
+      const response = await adminFetch('/api/admin/system/warmup', { method: 'POST' });
       const payload = await response.json().catch(() => null) as
         | { ok?: boolean; data?: { accepted?: boolean }; message?: string }
         | null;

@@ -28,6 +28,9 @@ export async function PUT(request: Request, context: { params: Promise<{ name: s
   }
 
   const result = await writeProviderSecret(name.trim().toLowerCase(), apiKey);
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, message: result.message ?? 'Ядро не поддерживает управление провайдерами.' });
+  }
   if (result.state !== 'ok' || !result.data) {
     return jsonError(result.status === 400 ? 400 : 502, 'core_unavailable', result.message ?? 'Ядро не приняло ключ.');
   }
@@ -46,6 +49,9 @@ export async function DELETE(request: Request, context: { params: Promise<{ name
     return jsonError(400, 'invalid_provider', 'Некорректное имя провайдера.');
   }
   const result = await deleteProviderSecret(name.trim().toLowerCase());
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, message: result.message ?? 'Ядро не поддерживает управление провайдерами.' });
+  }
   if (result.state !== 'ok' || !result.data) {
     return jsonError(502, 'core_unavailable', result.message ?? 'Ядро не убрало ключ.');
   }

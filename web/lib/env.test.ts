@@ -11,14 +11,24 @@ it('reads chat environment with valid secret and issuer', () => {
   const secret = 'a'.repeat(32);
   const custom = readChatEnv({
     NEYRA_WS_URL: 'wss://core.internal:9000/',
-    NEYRA_SERVICE_KEY: 'sk',
+    NEYRA_WEB_KEY: 'web-sk',
     NEYRA_IDENTITY_JWT_SECRET: secret,
     NEYRA_IDENTITY_JWT_ISSUER: 'neyra-web',
   });
   expect(custom.wsUrl).toBe('wss://core.internal:9000');
-  expect(custom.serviceKey).toBe('sk');
+  expect(custom.webKey).toBe('web-sk');
   expect(custom.jwtSecret).toBe(secret);
   expect(custom.jwtIssuer).toBe('neyra-web');
+});
+
+it('does not fall back to admin/maint keys when the web key is missing', () => {
+  const secret = 'a'.repeat(32);
+  const onlyAdmin = readChatEnv({
+    NEYRA_ADMIN_KEY: 'admin-sk',
+    NEYRA_IDENTITY_JWT_SECRET: secret,
+    NEYRA_IDENTITY_JWT_ISSUER: 'neyra-web',
+  });
+  expect(onlyAdmin.webKey).toBe('');
 });
 
 it('requires NEYRA_IDENTITY_JWT_SECRET of at least 32 characters', () => {

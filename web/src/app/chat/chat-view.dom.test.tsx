@@ -232,10 +232,7 @@ describe('ChatView conversation', () => {
       <ChatView
         user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }}
         initialUsage={{
-          prompt_tokens: 100000,
-          completion_tokens: 20000,
-          context_limit: 1000000,
-          context_used: 120000,
+          total: { used: 120000, limit: 1000000 },
           lanes: {
             brain: { used: 50000, limit: 500000 },
             talk: { used: 40000, limit: 250000 },
@@ -262,10 +259,7 @@ describe('ChatView conversation', () => {
       <ChatView
         user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }}
         initialUsage={{
-          prompt_tokens: 100000,
-          completion_tokens: 20000,
-          context_limit: 1000000,
-          context_used: 120000,
+          total: { used: 120000, limit: 1000000 },
           policy: { compaction_enabled: false },
           lanes: {
             brain: { used: 50000, limit: 500000 },
@@ -392,6 +386,158 @@ describe('ChatView conversation', () => {
     expect(toggleBtn.getAttribute('aria-expanded')).toBe('false');
     unmount();
     window.localStorage.clear();
+  });
+
+  it('uploads a selected file and sends only the stored attachment metadata (AR-14)', async () => {
+    const stored = { id: 'b'.repeat(32), kind: 'file', mime: 'text/plain', name: 'doc.txt', size: 5 };
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      if (String(url) === '/api/attachments') {
+        return new Response(JSON.stringify({ attachments: [stored] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseResponse('ок');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { container } = render(
+      <ChatView user={{ id: 'u-att', email: 'att@example.com', name: 'Атт', role: 'user' }} />
+    );
+
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: { files: [new File(['hello'], 'doc.txt', { type: 'text/plain' })] },
+    });
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/attachments')).toBe(true));
+    expect(await screen.findByText('doc.txt')).toBeTruthy();
+
+    const input = screen.getByPlaceholderText(ru.placeholder);
+    fireEvent.change(input, { target: { value: 'смотри файл' } });
+    fireEvent.submit(input.closest('form')!);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/chat')).toBe(true));
+
+    const chatCall = fetchMock.mock.calls.find(([url]) => String(url) === '/api/chat')!;
+    const body = JSON.parse(String(chatCall[1]?.body));
+    expect(body.attachments).toEqual([stored]);
+    expect(body.text).toBe('смотри файл');
+  });
+
+  it('clears attachments and usage when switching to another thread (AR-24)', async () => {
+    const userId = 'u-switch';
+    const tabKey = resolveTabKey(window);
+    const thread1Id = 'th-switch-1';
+    const thread2Id = 'th-switch-2';
+    sessionStorage.setItem(`neyra.chat_id:${userId}:${tabKey}`, thread1Id);
+    window.localStorage.setItem(`neyra:threads:${userId}`, JSON.stringify([
+      { id: thread1Id, title: 'Первый тред', updatedAt: '2026-11-14T10:00:00Z' },
+      { id: thread2Id, title: 'Второй тред', updatedAt: '2026-11-14T11:00:00Z' },
+    ]));
+    window.localStorage.setItem(`neyra:thread-messages:${userId}:${thread1Id}`, JSON.stringify([
+      { id: 'm1', role: 'user', content: 'Первый вопрос' },
+      { id: 'm2', role: 'assistant', content: 'Первый ответ' },
+    ]));
+    window.localStorage.setItem(`neyra:thread-messages:${userId}:${thread2Id}`, JSON.stringify([
+      { id: 'm3', role: 'user', content: 'Второй вопрос' },
+      { id: 'm4', role: 'assistant', content: 'Второй ответ' },
+    ]));
+
+    const stored = { id: 'c'.repeat(32), kind: 'file', mime: 'text/plain', name: 'switch.txt', size: 5 };
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url) === '/api/attachments') {
+        return new Response(JSON.stringify({ attachments: [stored] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseResponse('ок');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { container } = render(
+      <ChatView
+        user={{ id: userId, email: 'switch@example.com', name: 'Свитч', role: 'user' }}
+        initialUsage={{ total: { used: 10, limit: 100 } }}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: /контекст диалога/i })).toBeTruthy();
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: { files: [new File(['hello'], 'switch.txt', { type: 'text/plain' })] },
+    });
+    expect(await screen.findByText('switch.txt')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Второй тред'));
+
+    expect(screen.queryByText('switch.txt')).toBeNull();
+    expect(screen.queryByRole('button', { name: /контекст диалога/i })).toBeNull();
+    expect(screen.getByText('Второй ответ')).toBeTruthy();
+  });
+
+  it('does not attach an upload that finished after the thread changed (AR-24)', async () => {
+    const userId = 'u-upload-switch';
+    const tabKey = resolveTabKey(window);
+    const thread1Id = 'th-upload-1';
+    const thread2Id = 'th-upload-2';
+    sessionStorage.setItem(`neyra.chat_id:${userId}:${tabKey}`, thread1Id);
+    window.localStorage.setItem(`neyra:threads:${userId}`, JSON.stringify([
+      { id: thread1Id, title: 'Старый тред', updatedAt: '2026-11-14T10:00:00Z' },
+      { id: thread2Id, title: 'Новый тред', updatedAt: '2026-11-14T11:00:00Z' },
+    ]));
+
+    let resolveUpload: ((response: Response) => void) | undefined;
+    const uploadPromise = new Promise<Response>((resolve) => { resolveUpload = resolve; });
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url) === '/api/attachments') return uploadPromise;
+      return sseResponse('ок');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { container } = render(
+      <ChatView user={{ id: userId, email: 'late@example.com', name: 'Поздний', role: 'user' }} />
+    );
+
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: { files: [new File(['hello'], 'late.txt', { type: 'text/plain' })] },
+    });
+    await waitFor(() => expect(screen.getByText('Загружаю вложение…')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Новый тред'));
+    resolveUpload?.(new Response(JSON.stringify({
+      attachments: [{ id: 'd'.repeat(32), kind: 'file', mime: 'text/plain', name: 'late.txt', size: 5 }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    await waitFor(() => expect(screen.queryByText('Загружаю вложение…')).toBeNull());
+    expect(screen.queryByText('late.txt')).toBeNull();
+  });
+
+  it('drops old-format attachments when retrying a failed answer (AR-24)', async () => {
+    const userId = 'u-retry-legacy';
+    const tabKey = resolveTabKey(window);
+    const threadId = 'th-retry-legacy';
+    sessionStorage.setItem(`neyra.chat_id:${userId}:${tabKey}`, threadId);
+    window.localStorage.setItem(`neyra:threads:${userId}`, JSON.stringify([
+      { id: threadId, title: 'Старый тред', updatedAt: '2026-11-14T10:00:00Z' },
+    ]));
+    window.localStorage.setItem(`neyra:thread-messages:${userId}:${threadId}`, JSON.stringify([
+      {
+        id: 'u-old',
+        role: 'user',
+        content: 'Старый вопрос',
+        attachments: [{ id: crypto.randomUUID(), name: 'old.txt', size: 5, isImage: false }],
+      },
+      { id: 'a-old', role: 'assistant', content: '', error: 'Сеть недоступна' },
+    ]));
+
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => sseResponse('ответ'));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ChatView user={{ id: userId, email: 'retry@example.com', name: 'Ретрай', role: 'user' }} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.text).toBe('Старый вопрос');
+    expect(body.attachments).toBeUndefined();
   });
 
   it('pins message from message action button and syncs to localStorage and thread panel', () => {

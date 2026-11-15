@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { coreGet, coreGetReady, corePost, readCoreEnv } from './core-admin';
+import { coreGet, coreGetReady, corePost, readCoreEnv, readWebCoreEnv } from './core-admin';
 
-const env = { NEYRA_API_URL: 'http://127.0.0.1:8787', NEYRA_SERVICE_KEY: 'test-key' };
+const env = { NEYRA_API_URL: 'http://127.0.0.1:8787', NEYRA_ADMIN_KEY: 'test-key' };
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -11,16 +11,34 @@ describe('readCoreEnv', () => {
   it('requires both url and key', () => {
     expect(readCoreEnv({})).toBeNull();
     expect(readCoreEnv({ NEYRA_API_URL: 'http://127.0.0.1:8787' })).toBeNull();
-    expect(readCoreEnv({ NEYRA_SERVICE_KEY: 'k' })).toBeNull();
+    expect(readCoreEnv({ NEYRA_ADMIN_KEY: 'k' })).toBeNull();
   });
 
   it('rejects non-http urls and urls with credentials', () => {
-    expect(readCoreEnv({ NEYRA_API_URL: 'ftp://core', NEYRA_SERVICE_KEY: 'k' })).toBeNull();
-    expect(readCoreEnv({ NEYRA_API_URL: 'http://user:pass@core', NEYRA_SERVICE_KEY: 'k' })).toBeNull();
-    expect(readCoreEnv({ NEYRA_API_URL: 'http://core:8787/', NEYRA_SERVICE_KEY: 'k' })).toEqual({
+    expect(readCoreEnv({ NEYRA_API_URL: 'ftp://core', NEYRA_ADMIN_KEY: 'k' })).toBeNull();
+    expect(readCoreEnv({ NEYRA_API_URL: 'http://user:pass@core', NEYRA_ADMIN_KEY: 'k' })).toBeNull();
+    expect(readCoreEnv({ NEYRA_API_URL: 'http://core:8787/', NEYRA_ADMIN_KEY: 'k' })).toEqual({
       url: 'http://core:8787',
       token: 'k',
     });
+  });
+});
+
+describe('two keys (AR-23/AR-36)', () => {
+  it('admin routes use NEYRA_ADMIN_KEY and ignore the web key', () => {
+    expect(readCoreEnv({ NEYRA_API_URL: 'http://core', NEYRA_ADMIN_KEY: 'admin-key' })).toEqual({
+      url: 'http://core',
+      token: 'admin-key',
+    });
+    expect(readCoreEnv({ NEYRA_API_URL: 'http://core', NEYRA_WEB_KEY: 'web-key' })).toBeNull();
+  });
+
+  it('web routes use NEYRA_WEB_KEY and ignore the admin key', () => {
+    expect(readWebCoreEnv({ NEYRA_API_URL: 'http://core', NEYRA_WEB_KEY: 'web-key' })).toEqual({
+      url: 'http://core',
+      token: 'web-key',
+    });
+    expect(readWebCoreEnv({ NEYRA_API_URL: 'http://core', NEYRA_ADMIN_KEY: 'admin-key' })).toBeNull();
   });
 });
 
@@ -78,18 +96,47 @@ describe('coreGet', () => {
     expect(unavailable.message).toBe('Ядро не ответило вовремя.');
   });
 
-  it('surfaces the core error message without leaking the raw body', async () => {
+  it('hides the core error text from admin responses by default (AR-30)', async () => {
     const result = await coreGet('/v1/memory/people', {
       env,
-      fetchImpl: (async () => jsonResponse({ ok: false, error: { message: 'Memory Hub is not initialized' } }, 503)) as typeof fetch,
+      fetchImpl: (async () => jsonResponse({ ok: false, error: { message: 'Memory Hub is not initialized at /opt/neyra' } }, 503)) as typeof fetch,
     });
     expect(result.state).toBe('error');
-    expect(result.message).toBe('Memory Hub is not initialized');
+    expect(result.message).not.toContain('Memory Hub');
+    expect(result.message).not.toContain('/opt/neyra');
+  });
+
+  it('forwards the core message only when the caller opts in', async () => {
+    const result = await coreGet('/v1/config', {
+      env,
+      forwardMessage: true,
+      fetchImpl: (async () => jsonResponse({ ok: false, error: { message: 'unknown_field: api.token' } }, 400)) as typeof fetch,
+    });
+    expect(result.state).toBe('error');
+    expect(result.message).toBe('unknown_field: api.token');
   });
 
   it('treats ok:false with 200 as an error', async () => {
     const result = await coreGet('/v1/x', { env, fetchImpl: (async () => jsonResponse({ ok: false })) as typeof fetch });
     expect(result.state).toBe('error');
+  });
+
+  it('marks a bare FastAPI 404/405 as unsupported, but keeps a structured 404 as not found', async () => {
+    const missing = await coreGet('/v1/providers', {
+      env,
+      fetchImpl: (async () => jsonResponse({ detail: 'Not Found' }, 404)) as typeof fetch,
+    });
+    expect(missing.state).toBe('unsupported');
+    expect(missing.message).toContain('не поддерживает');
+
+    // Доверенные админские ручки (конфиг, Discord) показывают текст ядра явно.
+    const notFound = await coreGet('/v1/admin/discord/guilds/x', {
+      env,
+      forwardMessage: true,
+      fetchImpl: (async () => jsonResponse({ ok: false, error: { message: 'Сервер не найден' } }, 404)) as typeof fetch,
+    });
+    expect(notFound.state).toBe('error');
+    expect(notFound.message).toBe('Сервер не найден');
   });
 });
 

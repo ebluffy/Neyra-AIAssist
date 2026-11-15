@@ -19,7 +19,11 @@ import { GET as discordUserStats } from '../src/app/api/admin/discord/users/[per
 import { GET as discordMessages } from '../src/app/api/admin/discord/messages/route';
 import { GET as getSettings, PUT as putSettings } from '../src/app/api/admin/settings/route';
 
-const RUN = Boolean(process.env.AUTH_INTEGRATION_DATABASE_URL);
+const TEST_DB_URL = process.env.AUTH_INTEGRATION_DATABASE_URL;
+const RUN = Boolean(TEST_DB_URL);
+// Тесты не должны случайно достучаться до боевой базы: все pg-соединения
+// идут только на AUTH_INTEGRATION_DATABASE_URL, и auth получает её же.
+if (TEST_DB_URL) process.env.DATABASE_URL = TEST_DB_URL;
 const BASE = 'http://localhost:3000';
 
 function repoRoot(): string {
@@ -74,11 +78,35 @@ async function signIn(email: string, password: string) {
   return authCall('/sign-in/email', { email, password });
 }
 
+// AR-28: замер времени ответа на вход — бан не должен отвечать быстрее, чем
+// настоящая ошибка пароля (иначе он виден по таймингу).
+async function timedSignIn(email: string, password: string): Promise<number> {
+  const started = performance.now();
+  await signIn(email, password);
+  return performance.now() - started;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+}
+
 function adminRequest(path: string, cookie?: string, init: RequestInit = {}): Request {
   const headers = new Headers(init.headers);
   if (cookie) headers.set('cookie', cookie);
   headers.set('content-type', 'application/json');
   return new Request(`${BASE}${path}`, { ...init, headers });
+}
+
+async function pgQuery(query: string, params: unknown[] = []) {
+  const { Client } = await import('pg');
+  const client = new Client({ connectionString: TEST_DB_URL, connectionTimeoutMillis: 5000 });
+  await client.connect();
+  try {
+    return await client.query(query, params);
+  } finally {
+    await client.end().catch(() => {});
+  }
 }
 
 async function payloadOf(response: Response) {
@@ -164,6 +192,17 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
   });
 
   it('блокирует вход и удаляет живые сессии', async () => {
+    // Ответ на настоящий неверный пароль — эталон для AR-28.
+    const wrong = await signIn(state.memberEmail, 'definitely-wrong-password');
+    expect(wrong.response.status).toBe(401);
+    // AR-28: время ответа не должно выдавать бан. Ранний отказ до проверки
+    // пароля отвечает за единицы миллисекунд, а обычный вход сначала хеширует
+    // пароль (scrypt), поэтому сравниваем медианы на прогретом прогоне.
+    const wrongTimes = [
+      await timedSignIn(state.memberEmail, 'definitely-wrong-password-2'),
+      await timedSignIn(state.memberEmail, 'definitely-wrong-password-3'),
+    ];
+
     const ban = await patchUser(adminRequest(`/api/admin/users/${state.memberId}`, state.adminCookie, {
       method: 'PATCH',
       body: JSON.stringify({ banned: true, banReason: 'проверка' }),
@@ -171,7 +210,15 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     expect(ban.status).toBe(200);
 
     const blocked = await signIn(state.memberEmail, state.memberPassword);
-    expect(blocked.response.status).toBe(403);
+    // AR-28: байт-в-байт тот же ответ, что Better Auth даёт на неверный пароль.
+    expect(blocked.response.status).toBe(wrong.response.status);
+    expect(blocked.json).toEqual(wrong.json);
+    const blockedTimes = [
+      await timedSignIn(state.memberEmail, state.memberPassword),
+      await timedSignIn(state.memberEmail, state.memberPassword),
+    ];
+    expect(median(blockedTimes)).toBeGreaterThan(5);
+    expect(median(blockedTimes)).toBeGreaterThan(median(wrongTimes) / 2);
 
     const list = await payloadOf(await listUsers(adminRequest(`/api/admin/users?q=${encodeURIComponent(state.memberEmail)}`, state.adminCookie)));
     const banned = ((list?.data?.items ?? []) as Array<{ banned: boolean }>)[0];
@@ -188,35 +235,176 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     state.memberCookie = afterUnban.cookie;
   });
 
-  it('создаёт и отзывает инвайт, повторно не пускает', async () => {
-    const created = await createInviteRoute(adminRequest('/api/admin/invites', state.adminCookie, {
+  async function makeInviteViaApi(body: Record<string, unknown>) {
+    const response = await createInviteRoute(adminRequest('/api/admin/invites', state.adminCookie, {
       method: 'POST',
-      body: JSON.stringify({ ttlHours: 1 }),
+      body: JSON.stringify(body),
     }));
-    expect(created.status).toBe(200);
-    const createdPayload = await payloadOf(created);
-    const url = String(createdPayload?.data?.url ?? '');
-    const id = String(createdPayload?.data?.id ?? '');
-    const token = url.split('invite=')[1] ?? '';
-    expect(token).toBeTruthy();
+    const payload = await payloadOf(response);
+    const data = (payload?.data ?? {}) as {
+      id?: string; url?: string; maxUses?: number | null; usedCount?: number; expiresAt?: string | null; email?: string | null;
+    };
+    return { response, id: data.id ?? '', token: (data.url ?? '').split('invite=')[1] ?? '', data };
+  }
+
+  it('создаёт одноразовый инвайт по умолчанию: второй раз не пускает, отзыв работает', async () => {
+    const created = await makeInviteViaApi({ ttlHours: 1 });
+    expect(created.response.status).toBe(200);
+    expect(created.token).toBeTruthy();
+    expect(created.data.maxUses).toBe(1);
+    expect(created.data.usedCount).toBe(0);
 
     const invited = await authCall('/sign-up/email', {
-      email: uniqueEmail('invited'), password: 'invited-password-1', name: 'invited', invite: token,
+      email: uniqueEmail('invited'), password: 'invited-password-1', name: 'invited', invite: created.token,
     });
     expect(invited.response.status).toBe(200);
 
     const again = await authCall('/sign-up/email', {
-      email: uniqueEmail('invited'), password: 'invited-password-1', name: 'invited', invite: token,
+      email: uniqueEmail('invited'), password: 'invited-password-1', name: 'invited', invite: created.token,
     });
     expect(again.response.status).toBe(403);
 
-    const revoke = await revokeInviteRoute(adminRequest(`/api/admin/invites/${id}`, state.adminCookie, { method: 'DELETE' }),
-      { params: Promise.resolve({ id }) });
-    expect(revoke.status).toBe(409);
+    // AR-35: отзыв разрешён и после использования — многоразовый мог быть не исчерпан.
+    const revoke = await revokeInviteRoute(adminRequest(`/api/admin/invites/${created.id}`, state.adminCookie, { method: 'DELETE' }),
+      { params: Promise.resolve({ id: created.id }) });
+    expect(revoke.status).toBe(200);
+
+    const list = await listInvites(adminRequest('/api/admin/invites?state=revoked', state.adminCookie));
+    expect(list.status).toBe(200);
+    const items = ((await payloadOf(list))?.data?.items ?? []) as Array<{ id: string; usedCount: number; maxUses: number | null }>;
+    const row = items.find(item => item.id === created.id);
+    expect(row).toMatchObject({ usedCount: 1, maxUses: 1 });
+  });
+
+  it('многоразовый инвайт: лимит 2, два успеха и отказ третьему (AR-35)', async () => {
+    const created = await makeInviteViaApi({ ttlHours: 1, maxUses: 2 });
+    expect(created.response.status).toBe(200);
+    expect(created.data.maxUses).toBe(2);
+
+    const usedEmails: string[] = [];
+    for (let index = 0; index < 2; index++) {
+      const email = uniqueEmail(`multi-${index}`);
+      usedEmails.push(email);
+      const signUp = await authCall('/sign-up/email', {
+        email, password: 'multi-password-12', name: `multi-${index}`, invite: created.token,
+      });
+      expect(signUp.response.status).toBe(200);
+    }
+    const third = await authCall('/sign-up/email', {
+      email: uniqueEmail('multi-third'), password: 'multi-password-12', name: 'multi-third', invite: created.token,
+    });
+    expect(third.response.status).toBe(403);
+    expect(String(third.json?.message ?? '')).toContain('Лимит');
 
     const list = await listInvites(adminRequest('/api/admin/invites?state=used', state.adminCookie));
-    expect(list.status).toBe(200);
-    expect(((await payloadOf(list))?.data?.items as unknown[]).length).toBeGreaterThan(0);
+    const items = ((await payloadOf(list))?.data?.items ?? []) as Array<{
+      id: string; usedCount: number; maxUses: number | null; usedBy: string | null;
+    }>;
+    expect(items.find(item => item.id === created.id)).toMatchObject({
+      usedCount: 2, maxUses: 2, usedBy: usedEmails[1],
+    });
+
+    // AR-39: каждое использование пишет audit invite.use (актор — новый аккаунт).
+    const logs = await payloadOf(await listLogs(adminRequest('/api/admin/logs?limit=100&action=invite.use', state.adminCookie)));
+    const uses = ((logs?.data?.items ?? []) as Array<{
+      action: string; targetId: string | null; actorEmail: string; details: { email?: string } | null;
+    }>).filter(item => item.action === 'invite.use' && item.targetId === created.id);
+    expect(uses).toHaveLength(2);
+    expect(uses.map(item => item.details?.email).sort()).toEqual([...usedEmails].sort());
+    expect(uses.every(item => usedEmails.includes(item.actorEmail))).toBe(true);
+  });
+
+  it('неудачная регистрация возвращает расход и не портит «последнее использование» (AR-40)', async () => {
+    const created = await makeInviteViaApi({ ttlHours: 1, maxUses: 2 });
+    const email = uniqueEmail('release');
+    const first = await authCall('/sign-up/email', {
+      email, password: 'release-password-12', name: 'release', invite: created.token,
+    });
+    expect(first.response.status).toBe(200);
+
+    // Повторная регистрация того же адреса: расход уже сделан в before-хуке,
+    // after возвращает его, потому что аккаунт не создан.
+    const duplicate = await authCall('/sign-up/email', {
+      email, password: 'release-password-12', name: 'release', invite: created.token,
+    });
+    expect(duplicate.response.status).not.toBe(200);
+
+    const list = await listInvites(adminRequest('/api/admin/invites?state=all', state.adminCookie));
+    const items = ((await payloadOf(list))?.data?.items ?? []) as Array<{
+      id: string; usedCount: number; usedBy: string | null;
+    }>;
+    expect(items.find(item => item.id === created.id)).toMatchObject({ usedCount: 1, usedBy: email });
+  });
+
+  it('две параллельные регистрации по одноразовому инвайту: один успех и один отказ (AR-35)', async () => {
+    const created = await makeInviteViaApi({ ttlHours: 1, maxUses: 1 });
+    const [first, second] = await Promise.all([
+      authCall('/sign-up/email', {
+        email: uniqueEmail('race-a'), password: 'race-password-12', name: 'race-a', invite: created.token,
+      }),
+      authCall('/sign-up/email', {
+        email: uniqueEmail('race-b'), password: 'race-password-12', name: 'race-b', invite: created.token,
+      }),
+    ]);
+    expect([first.response.status, second.response.status].sort()).toEqual([200, 403]);
+  });
+
+  it('инвайт с привязкой к email отклоняет чужой адрес (AR-35)', async () => {
+    const boundEmail = uniqueEmail('bound');
+    const created = await makeInviteViaApi({ ttlHours: 1, maxUses: 1, email: boundEmail });
+    expect(created.data.email).toBe(boundEmail);
+
+    const foreign = await authCall('/sign-up/email', {
+      email: uniqueEmail('foreign'), password: 'foreign-password-1', name: 'foreign', invite: created.token,
+    });
+    expect(foreign.response.status).toBe(403);
+    expect(String(foreign.json?.message ?? '')).toContain('другого адреса');
+
+    const own = await authCall('/sign-up/email', {
+      email: boundEmail, password: 'bound-password-12', name: 'bound', invite: created.token,
+    });
+    expect(own.response.status).toBe(200);
+  });
+
+  it('использование инвайта переживает удаление пользователя (AR-42)', async () => {
+    const created = await makeInviteViaApi({ ttlHours: 1, maxUses: 1 });
+    const email = uniqueEmail('fk');
+    const signUp = await authCall('/sign-up/email', {
+      email, password: 'fk-password-12', name: 'fk', invite: created.token,
+    });
+    expect(signUp.response.status).toBe(200);
+
+    const users = await pgQuery(`SELECT id FROM "user" WHERE lower(email) = lower($1)`, [email]);
+    const userId = (users as { rows: Array<{ id: string }> }).rows[0]?.id;
+    expect(userId).toBeTruthy();
+
+    const before = await pgQuery(`SELECT user_id FROM invite_use WHERE invite_id = $1`, [created.id]);
+    expect((before as { rows: Array<{ user_id: string | null }> }).rows[0]?.user_id).toBe(userId);
+
+    // Миграция 0007: FK user_id → user(id) ON DELETE SET NULL, строка не висит.
+    await pgQuery(`DELETE FROM "user" WHERE id = $1`, [userId]);
+    const after = await pgQuery(`SELECT user_id FROM invite_use WHERE invite_id = $1`, [created.id]);
+    expect((after as { rows: Array<{ user_id: string | null }> }).rows[0]?.user_id).toBeNull();
+  });
+
+  it('истёкший и безлимитный инвайты (AR-35)', async () => {
+    const expired = await makeInviteViaApi({ expiresAt: new Date(Date.now() + 3600_000).toISOString(), maxUses: 1 });
+    await pgQuery(`UPDATE "invite" SET expires_at = now() - interval '1 hour' WHERE id = $1`, [expired.id]);
+    const late = await authCall('/sign-up/email', {
+      email: uniqueEmail('late'), password: 'late-password-12', name: 'late', invite: expired.token,
+    });
+    expect(late.response.status).toBe(403);
+    expect(String(late.json?.message ?? '')).toContain('Срок');
+
+    const unlimited = await makeInviteViaApi({ ttlHours: null, maxUses: null });
+    expect(unlimited.data.maxUses).toBeNull();
+    expect(unlimited.data.expiresAt).toBeNull();
+    for (let index = 0; index < 2; index++) {
+      const signUp = await authCall('/sign-up/email', {
+        email: uniqueEmail(`unlimited-${index}`), password: 'unlimited-pw-12', name: `u${index}`, invite: unlimited.token,
+      });
+      expect(signUp.response.status).toBe(200);
+    }
   });
 
   it('отзывает неиспользованный инвайт: регистрация по нему невозможна', async () => {
@@ -266,13 +454,29 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     expect(secondUse.status).toBe(400);
   });
 
+  it('защищает изменяющие запросы админки от чужого Origin и не-JSON (AR-29)', async () => {
+    const plain = await createInviteRoute(new Request(`${BASE}/api/admin/invites`, {
+      method: 'POST',
+      headers: { cookie: state.adminCookie, 'content-type': 'text/plain' },
+      body: 'x',
+    }));
+    expect(plain.status).toBe(415);
+
+    const foreign = await createInviteRoute(new Request(`${BASE}/api/admin/invites`, {
+      method: 'POST',
+      headers: { cookie: state.adminCookie, 'content-type': 'application/json', origin: 'https://evil.example' },
+      body: '{}',
+    }));
+    expect(foreign.status).toBe(403);
+  });
+
   it('пишет действия в журнал и не даёт удалить себя', async () => {
     const logs = await listLogs(adminRequest('/api/admin/logs?limit=100&period=all', state.adminCookie));
     expect(logs.status).toBe(200);
     const items = ((await payloadOf(logs))?.data?.items ?? []) as Array<{ action: string; actorEmail: string }>;
     const actions = items.map(item => item.action);
     for (const action of ['user.role_change', 'user.ban', 'invite.create', 'user.password_reset']) {
-      expect(items.some(item => item.action === action && item.actorEmail === state.adminEmail)).toBe(true);
+      expect(items.some(item => item.action === action && item.actorEmail === state.adminEmail), action).toBe(true);
     }
 
     const self = await deleteUser(adminRequest(`/api/admin/users/${state.adminId}`, state.adminCookie, { method: 'DELETE' }),
@@ -370,6 +574,97 @@ describe.skipIf(!RUN)('админ-панель на PostgreSQL', () => {
     ];
     for (const [name, pending] of memberCalls) {
       expect((await pending).status, name).toBe(403);
+    }
+  });
+
+  it('два параллельных понижения не оставляют сайт без админа (AR-30)', async () => {
+    // Второй админ — бывший участник; пароль изменён тестом сброса.
+    grantAdmin(state.memberEmail);
+    try {
+      const memberLogin = await signIn(state.memberEmail, 'member-new-password-2');
+      expect(memberLogin.response.status).toBe(200);
+      const memberCookie = memberLogin.cookie;
+
+      const [demoteMember, demoteAdmin] = await Promise.all([
+        patchUser(adminRequest(`/api/admin/users/${state.memberId}`, state.adminCookie, {
+          method: 'PATCH',
+          body: JSON.stringify({ role: 'user' }),
+        }), { params: Promise.resolve({ id: state.memberId }) }),
+        patchUser(adminRequest(`/api/admin/users/${state.adminId}`, memberCookie, {
+          method: 'PATCH',
+          body: JSON.stringify({ role: 'user' }),
+        }), { params: Promise.resolve({ id: state.adminId }) }),
+      ]);
+      expect([demoteMember.status, demoteAdmin.status].sort()).toEqual([200, 409]);
+    } finally {
+      // Восстанавливаем исходные роли даже при падении проверки.
+      grantAdmin(state.adminEmail);
+      execFileSync(process.execPath, [join(repoRoot(), 'web/scripts/grant-admin.mjs'), state.memberEmail, '--revoke'],
+        { env: process.env, encoding: 'utf-8' });
+    }
+  });
+
+  it('роль цели перечитывается под блокировкой (AR-34)', async () => {
+    const password = 'ar34-password-77';
+    const adminEmail = uniqueEmail('ar34-admin');
+    const userEmail = uniqueEmail('ar34-user');
+
+    expect((await signUp(adminEmail, password)).response.status).toBe(200);
+    expect((await signUp(userEmail, password)).response.status).toBe(200);
+    grantAdmin(adminEmail);
+
+    const adminLogin = await signIn(adminEmail, password);
+    expect(adminLogin.response.status).toBe(200);
+    const actorId = String((adminLogin.json as { user?: { id?: string } } | null)?.user?.id ?? '');
+    const userLogin = await signIn(userEmail, password);
+    expect(userLogin.response.status).toBe(200);
+    const targetId = String((userLogin.json as { user?: { id?: string } } | null)?.user?.id ?? '');
+    expect(actorId).toBeTruthy();
+    expect(targetId).toBeTruthy();
+
+    // Прежние админы вернутся после теста: сценарию нужен ровно один админ.
+    const adminsBefore = ((await pgQuery(`SELECT id FROM "user" WHERE role = 'admin'`)) as {
+      rows: Array<{ id: string }>;
+    }).rows.map(row => row.id);
+
+    const { Client } = await import('pg');
+    const holder = new Client({ connectionString: TEST_DB_URL, connectionTimeoutMillis: 5000 });
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.connect();
+      try {
+        // Держим advisory-lock, как это делает параллельное изменение ролей.
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock(734002)');
+
+        // Удаление читает цель как обычного пользователя и встаёт на блокировку.
+        pending = deleteUser(adminRequest(`/api/admin/users/${targetId}`, adminLogin.cookie, { method: 'DELETE' }),
+          { params: Promise.resolve({ id: targetId }) });
+        await new Promise((resolve) => setTimeout(resolve, 400));
+
+        // Пока запрос ждёт: цель становится админом, а прежний админ — обычным
+        // пользователем. Единственный админ теперь — цель удаления.
+        await holder.query(`UPDATE "user" SET role = 'admin' WHERE id = $1`, [targetId]);
+        await holder.query(`UPDATE "user" SET role = 'user' WHERE role = 'admin' AND id <> $1`, [targetId]);
+        const [counted] = (await holder.query(`SELECT count(*)::int AS admins FROM "user" WHERE role = 'admin'`)).rows as Array<{ admins: number }>;
+        expect(counted.admins).toBe(1);
+        await holder.query('COMMIT');
+      } finally {
+        await holder.query('ROLLBACK').catch(() => {});
+        await holder.end().catch(() => {});
+      }
+
+      const response = await pending!;
+      // Старое чтение роли дало бы 200 и удалило последнего админа.
+      expect(response.status).toBe(409);
+      expect(((await payloadOf(response)) as { error?: string } | null)?.error).toBe('last-admin');
+
+      const still = await pgQuery(`SELECT role FROM "user" WHERE id = $1`, [targetId]);
+      expect((still as { rows: Array<{ role: string }> }).rows[0]?.role).toBe('admin');
+    } finally {
+      // Убираем тестовые аккаунты и возвращаем прежние роли админов даже при падении.
+      await pgQuery(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [[actorId, targetId]]);
+      await pgQuery(`UPDATE "user" SET role = 'admin' WHERE id = ANY($1::text[])`, [adminsBefore]);
     }
   });
 });

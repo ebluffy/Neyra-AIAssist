@@ -297,7 +297,7 @@ describe('AdminDialog', () => {
         '/api/admin/config',
         expect.objectContaining({
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: expect.any(Headers),
         })
       );
     });

@@ -22,6 +22,9 @@ export async function GET(request: Request) {
   const auth = await requireAdmin(request);
   if (!auth.ok) return auth.response;
   const result = await readAdminConfig();
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, config: null, message: result.message ?? 'Ядро не поддерживает настройки моделей.' });
+  }
   if (result.state !== 'ok') {
     return jsonError(
       coreErrorStatus(result.status),
@@ -39,6 +42,9 @@ export async function PUT(request: Request) {
   if (!parsed.ok) return jsonError(400, 'bad_request', parsed.message);
 
   const result = await writeAdminConfig(parsed.updates);
+  if (result.state === 'unsupported') {
+    return jsonOk({ supported: false, message: result.message ?? 'Ядро не поддерживает настройки моделей.' });
+  }
   if (result.state !== 'ok') {
     return jsonError(
       coreErrorStatus(result.status),

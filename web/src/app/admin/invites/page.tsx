@@ -29,7 +29,7 @@ export default async function AdminInvitesPage({ searchParams }: {
     <div className="space-y-4">
       <PageHeader
         title="Приглашения"
-        description="Регистрация на сайте — только по одноразовой ссылке. В базе хранится лишь хэш токена: ссылку нельзя восстановить, только создать новую."
+        description="Регистрация на сайте — только по инвайту: одноразовому или многоразовому, при желании с привязкой к email. В базе хранится лишь хэш токена: ссылку нельзя восстановить, только создать новую."
       />
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -38,7 +38,7 @@ export default async function AdminInvitesPage({ searchParams }: {
         <Stat label="Использованы" value={counts?.used ?? '—'} />
       </div>
 
-      <Card title="Новое приглашение" description="Ссылка показывается один раз. Передайте её лично: письма сайт не отправляет.">
+      <Card title="Новое приглашение" description="Ссылка показывается один раз. Передайте её лично: письма сайт не отправляет. Лимит использований и срок можно не задавать.">
         <InviteCreate />
       </Card>
 
@@ -72,9 +72,11 @@ export default async function AdminInvitesPage({ searchParams }: {
                   <tr>
                     <th className={thClass}>Создано</th>
                     <th className={thClass}>Кем</th>
+                    <th className={thClass}>Использовано</th>
+                    <th className={thClass}>Email</th>
                     <th className={thClass}>Действует до</th>
                     <th className={thClass}>Состояние</th>
-                    <th className={thClass}>Использовал</th>
+                    <th className={thClass}>Последнее использование</th>
                     <th className={thClass}>Действия</th>
                   </tr>
                 </thead>
@@ -83,7 +85,12 @@ export default async function AdminInvitesPage({ searchParams }: {
                     <tr key={row.id} className="hover:bg-[var(--surface-2)]">
                       <td className={`${tdClass} whitespace-nowrap text-xs text-[var(--text-muted)]`}>{formatDate(row.createdAt)}</td>
                       <td className={`${tdClass} text-xs text-[var(--text)]`}>{row.createdBy ?? '—'}</td>
-                      <td className={`${tdClass} whitespace-nowrap text-xs text-[var(--text-muted)]`}>{formatDate(row.expiresAt)}</td>
+                      <td className={`${tdClass} whitespace-nowrap text-xs`}>
+                        <span className="text-[var(--text)]">{row.usedCount}</span>
+                        <span className="text-[var(--text-muted)]"> / {row.maxUses ?? '∞'}</span>
+                      </td>
+                      <td className={`${tdClass} text-xs text-[var(--text-muted)]`}>{row.email ?? 'любой'}</td>
+                      <td className={`${tdClass} whitespace-nowrap text-xs text-[var(--text-muted)]`}>{row.expiresAt ? formatDate(row.expiresAt) : 'бессрочно'}</td>
                       <td className={tdClass}><StatusPill tone={stateTone[row.state]}>{stateLabel[row.state]}</StatusPill></td>
                       <td className={`${tdClass} text-xs`}>
                         {row.usedBy ? (
@@ -94,7 +101,7 @@ export default async function AdminInvitesPage({ searchParams }: {
                         ) : '—'}
                       </td>
                       <td className={tdClass}>
-                        <InviteRowActions id={row.id} disabled={row.state !== 'active'} />
+                        <InviteRowActions id={row.id} disabled={row.state === 'revoked'} />
                       </td>
                     </tr>
                   ))}
@@ -111,17 +118,25 @@ export default async function AdminInvitesPage({ searchParams }: {
                     <span className="text-xs text-[var(--text-subtle)]">{formatDate(row.createdAt)}</span>
                   </div>
                   <div className="text-xs text-[var(--text-muted)] flex justify-between">
+                    <span>Использовано:</span>
+                    <span>{row.usedCount} / {row.maxUses ?? '∞'}</span>
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)] flex justify-between">
+                    <span>Email:</span>
+                    <span>{row.email ?? 'любой'}</span>
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)] flex justify-between">
                     <span>Действует до:</span>
-                    <span>{formatDate(row.expiresAt)}</span>
+                    <span>{row.expiresAt ? formatDate(row.expiresAt) : 'бессрочно'}</span>
                   </div>
                   {row.usedBy && (
                     <div className="text-xs text-[var(--text-muted)] flex justify-between">
-                      <span>Использовал:</span>
+                      <span>Последний:</span>
                       <span className="text-[var(--text)]">{row.usedBy}</span>
                     </div>
                   )}
                   <div className="pt-2 border-t border-[var(--border)] flex justify-end">
-                    <InviteRowActions id={row.id} disabled={row.state !== 'active'} />
+                    <InviteRowActions id={row.id} disabled={row.state === 'revoked'} />
                   </div>
                 </div>
               ))}

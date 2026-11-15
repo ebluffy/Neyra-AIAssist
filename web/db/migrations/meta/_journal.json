@@ -36,6 +36,27 @@
       "when": 1794593314324,
       "tag": "0004_aberrant_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794686978903,
+      "tag": "0005_nice_karnak",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794688034795,
+      "tag": "0006_wise_electro",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794689524848,
+      "tag": "0007_clever_lorna_dane",
+      "breakpoints": true
     }
   ]
 }

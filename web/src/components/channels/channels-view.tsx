@@ -178,7 +178,7 @@ export function ChannelsView({
             ) : list.error ? (
               <Failure message={list.error} retry={list.retry} />
             ) : list.data?.available === false ? (
-              <Unavailable />
+              <Unavailable message={list.data.message} />
             ) : !guilds.length ? (
               <Empty
                 title="Серверов пока нет"
@@ -255,6 +255,8 @@ function GuildScreen({ guild }: { guild: Guild }) {
     <Loading />
   ) : detail.error ? (
     <Failure message={detail.error} retry={detail.retry} />
+  ) : detail.data?.available === false ? (
+    <Unavailable message={detail.data.message} />
   ) : detail.data ? (
     <GuildContent guild={guild} detail={detail.data} />
   ) : null;

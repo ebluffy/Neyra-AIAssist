@@ -111,10 +111,83 @@ export function normalizeInviteTtl(value: unknown): number | null {
   return Math.round(hours * 60) / 60;
 }
 
+export const INVITE_MAX_USES_LIMIT = 10000;
+const RELATIVE_TTL_MS = 60 * 60 * 1000;
+
+// AR-35: лимит использований. undefined — значение по умолчанию (одноразовый),
+// null/'unlimited' — без лимита, число 1..10000. Иначе 'invalid'.
+export function normalizeInviteMaxUses(value: unknown, fallback: number | null = 1): number | null | 'invalid' {
+  if (value === undefined) return fallback;
+  if (value === null) return null;
+  let parsed: number;
+  if (typeof value === 'number') {
+    // AR-41: только целое; 1.9 и NaN — отказ, без усечения.
+    if (!Number.isInteger(value)) return 'invalid';
+    parsed = value;
+  } else if (typeof value === 'string') {
+    const text = value.trim().toLowerCase();
+    if (['unlimited', 'none', '∞'].includes(text)) return null;
+    // Пустая строка, '5abc', '1.9' — не число, а не «сколько получится».
+    if (!/^\d+$/.test(text)) return 'invalid';
+    parsed = Number(text);
+  } else {
+    return 'invalid';
+  }
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > INVITE_MAX_USES_LIMIT) return 'invalid';
+  return parsed;
+}
+
+// AR-35: срок. expiresAt (ISO) приоритетнее ttlHours; null у любого — без срока;
+// undefined у обоих — прежние сутки. Прошедшая дата — 'invalid'.
+export function normalizeInviteExpiry(
+  value: { expiresAt?: unknown; ttlHours?: unknown },
+  now = Date.now(),
+): Date | null | 'invalid' {
+  if (value.expiresAt === null) return null;
+  if (typeof value.expiresAt === 'string' && value.expiresAt.trim()) {
+    const at = new Date(value.expiresAt.trim());
+    if (Number.isNaN(at.getTime()) || at.getTime() <= now) return 'invalid';
+    return at;
+  }
+  if (value.ttlHours === null) return null;
+  if (value.ttlHours === undefined) return new Date(now + 24 * RELATIVE_TTL_MS);
+  const hours = normalizeInviteTtl(value.ttlHours);
+  return hours === null ? 'invalid' : new Date(now + hours * RELATIVE_TTL_MS);
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_INVITE_EMAIL = 320;
+
+// AR-35: необязательная привязка к адресу. null — любой; строка — только этот.
+export function normalizeInviteEmail(value: unknown): string | null | 'invalid' {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') return 'invalid';
+  const email = value.trim().toLowerCase();
+  if (!email) return null;
+  if (email.length > MAX_INVITE_EMAIL || !EMAIL_RE.test(email)) return 'invalid';
+  return email;
+}
+
 export type InviteState = 'active' | 'used' | 'expired' | 'revoked';
 
-export function inviteState(row: { usedAt: Date | string | null; revokedAt: Date | string | null; expiresAt: Date | string }, now = Date.now()): InviteState {
+// AR-35: «использован» — исчерпан лимит. max_uses = null — без лимита.
+// Старые строки без maxUses в тестах трактуем по usedAt (совместимость).
+export function inviteState(
+  row: {
+    usedAt: Date | string | null;
+    revokedAt: Date | string | null;
+    expiresAt: Date | string | null;
+    maxUses?: number | null;
+    usedCount?: number;
+  },
+  now = Date.now(),
+): InviteState {
   if (row.revokedAt) return 'revoked';
-  if (row.usedAt) return 'used';
+  if (row.maxUses === undefined) {
+    if (row.usedAt) return 'used';
+  } else if (row.maxUses !== null && (row.usedCount ?? 0) >= row.maxUses) {
+    return 'used';
+  }
+  if (!row.expiresAt) return 'active';
   return new Date(row.expiresAt).getTime() <= now ? 'expired' : 'active';
 }

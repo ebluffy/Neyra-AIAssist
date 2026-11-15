@@ -45,7 +45,7 @@ export default async function AdminSystemPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Ядро" description={health.state === 'ok' ? 'GET /v1/health' : health.message ?? ''}>
           {health.state !== 'ok' ? (
-            <EmptyState title="Ядро недоступно" text={health.message ?? 'Проверьте NEYRA_API_URL и NEYRA_SERVICE_KEY в .env сайта.'} />
+            <EmptyState title="Ядро недоступно" text={health.message ?? 'Проверьте NEYRA_API_URL и NEYRA_ADMIN_KEY в .env сайта.'} />
           ) : (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">

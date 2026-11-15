@@ -203,7 +203,7 @@ interface PeopleResponse {
 // по аккаунтам памяти, иначе карточка человека не может показать статистику.
 export async function discordPersonMap(): Promise<Map<string, string>> {
   const map = new Map<string, string>();
-  const result = await coreGet<PeopleResponse>('/v1/memory/people?limit=500', { timeoutMs: 5000 });
+  const result = await coreGet<PeopleResponse>('/v1/memory/people?limit=500', { timeoutMs: 5000, forwardMessage: true });
   if (result.state !== 'ok' || !result.data) return map;
   for (const person of result.data.people ?? []) {
     const personId = person.id;
@@ -334,29 +334,29 @@ export async function readDiscordActivity(guildId?: string): Promise<CoreResult<
 }
 
 export function readDiscordGuilds(query: string): Promise<CoreResult<DiscordGuildPage>> {
-  return coreGet<DiscordGuildPage>(`/v1/admin/discord/guilds${query}`, { timeoutMs: 5000 });
+  return coreGet<DiscordGuildPage>(`/v1/admin/discord/guilds${query}`, { timeoutMs: 5000, forwardMessage: true });
 }
 
 export function readDiscordGuild(guildId: string, query: string): Promise<CoreResult<DiscordGuildDetail>> {
   return coreGet<DiscordGuildDetail>(
     `/v1/admin/discord/guilds/${encodeURIComponent(guildId)}${query}`,
-    { timeoutMs: 5000 },
+    { timeoutMs: 5000, forwardMessage: true },
   );
 }
 
 export function readDiscordMembers(query: string): Promise<CoreResult<DiscordMemberPage>> {
-  return coreGet<DiscordMemberPage>(`/v1/admin/discord/members${query}`, { timeoutMs: 5000 });
+  return coreGet<DiscordMemberPage>(`/v1/admin/discord/members${query}`, { timeoutMs: 5000, forwardMessage: true });
 }
 
 export function readDiscordUserStats(personId: string, query: string): Promise<CoreResult<DiscordPersonStats>> {
   return coreGet<DiscordPersonStats>(
     `/v1/admin/discord/users/${encodeURIComponent(personId)}/stats${query}`,
-    { timeoutMs: 5000 },
+    { timeoutMs: 5000, forwardMessage: true },
   );
 }
 
 export function readDiscordMessages(query: string): Promise<CoreResult<DiscordMessagePage>> {
-  return coreGet<DiscordMessagePage>(`/v1/admin/discord/messages${query}`, { timeoutMs: 5000 });
+  return coreGet<DiscordMessagePage>(`/v1/admin/discord/messages${query}`, { timeoutMs: 5000, forwardMessage: true });
 }
 
 // Ошибка ядра → статус сайта: 400/404 сохраняем, недоступность — 502/503.

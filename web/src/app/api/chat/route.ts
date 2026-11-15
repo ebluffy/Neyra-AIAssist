@@ -5,10 +5,15 @@ if (!process.env.WS_NO_BUFFER_UTIL) process.env.WS_NO_BUFFER_UTIL = '1';
 if (!process.env.WS_NO_UTF_8_VALIDATE) process.env.WS_NO_UTF_8_VALIDATE = '1';
 
 import WebSocket from 'ws';
-import { ChatRequestSchema, SseChatEventSchema, type SseChatEvent } from '@neyra/contracts';
+import { ChatRequestSchema, ContextUsageSchema, SseChatEventSchema, type SseChatEvent } from '@neyra/contracts';
 import { getAuth } from '../../../../lib/auth';
 import { readChatEnv } from '../../../../lib/env';
 import { createIdentityToken } from '../../../../lib/identity';
+import {
+  beginChatStream,
+  checkChatRateLimit,
+  endChatStream,
+} from '../../../../lib/chat-limits';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -37,25 +42,27 @@ function getSafeErrorMessage(code: string): string {
 
 export async function POST(request: Request) {
   let session;
-  if (process.env.SMOKE_TEST === '1' && request.headers.get('x-smoke-test') === '1') {
-    session = {
-      user: { id: 'usr-smoke-1', name: 'Smoke User', email: 'smoke@example.test', role: 'user' },
-    };
-  } else {
-    try {
-      session = await getAuth().api.getSession({ headers: request.headers });
-    } catch {
-      return NextResponse.json(
-        { error: 'auth_unavailable', message: 'Сервис аутентификации временно недоступен.' },
-        { status: 503 }
-      );
-    }
+  try {
+    session = await getAuth().api.getSession({ headers: request.headers });
+  } catch {
+    return NextResponse.json(
+      { error: 'auth_unavailable', message: 'Сервис аутентификации временно недоступен.' },
+      { status: 503 }
+    );
   }
 
   if (!session || !session.user) {
     return NextResponse.json(
       { error: 'unauthorized', message: 'Требуется авторизация для доступа к чату.' },
       { status: 401 }
+    );
+  }
+
+  const limit = checkChatRateLimit(session.user.id);
+  if (!limit.ok) {
+    return NextResponse.json(
+      { error: 'rate_limited', message: SAFE_ERROR_MESSAGES.rate_limited },
+      { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds ?? 60) } }
     );
   }
 
@@ -94,8 +101,14 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
-  const { wsUrl, serviceKey, jwtSecret, jwtIssuer } = env;
-  if (!jwtSecret || !serviceKey || !jwtIssuer) {
+  const { wsUrl, webKey, jwtSecret, jwtIssuer } = env;
+  if (!webKey) {
+    return NextResponse.json(
+      { error: 'configuration_error', message: 'Не задан NEYRA_WEB_KEY — ключ web-роли ядра (API_WEB_TOKEN).' },
+      { status: 500 }
+    );
+  }
+  if (!jwtSecret || !jwtIssuer) {
     return NextResponse.json(
       { error: 'configuration_error', message: 'Не настроена конфигурация ядра или ключи идентичности.' },
       { status: 500 }
@@ -130,7 +143,16 @@ export async function POST(request: Request) {
     username: session.user.email,
     platform_user_id: session.user.id,
     channel_id: channelId,
+    ...(parsed.data.attachments?.length ? { attachments: parsed.data.attachments } : {}),
   };
+
+  const userId = session.user.id;
+  if (!beginChatStream(userId)) {
+    return NextResponse.json(
+      { error: 'rate_limited', message: 'Слишком много одновременных ответов. Дождитесь завершения текущего.' },
+      { status: 429 }
+    );
+  }
 
   return new Promise<Response>((resolve) => {
     let socket: WebSocket | undefined;
@@ -151,6 +173,7 @@ export async function POST(request: Request) {
     function finish(force = false) {
       if (finished) return;
       finished = true;
+      endChatStream(userId);
       clearTimeout(helloDeadline);
       clearTimeout(idleTimer);
       clearTimeout(overallTimer);
@@ -206,7 +229,7 @@ export async function POST(request: Request) {
 
     try {
       socket = new WebSocket(`${wsUrl}/v1/ws/chat`, {
-        headers: { Authorization: `Bearer ${serviceKey}`, 'X-Neyra-Identity': identityJwt },
+        headers: { Authorization: `Bearer ${webKey}`, 'X-Neyra-Identity': identityJwt },
         handshakeTimeout: 10_000,
         maxPayload: 1024 * 1024,
       });
@@ -269,14 +292,25 @@ export async function POST(request: Request) {
 
       resetIdleTimer();
 
-      if (!['token', 'thinking', 'done', 'error'].includes(String(event.type))) return;
+      if (!['token', 'thinking', 'phase', 'done', 'error'].includes(String(event.type))) return;
 
       if ((event.type === 'token' || event.type === 'done') && typeof event.text !== 'string') {
         fail('core_protocol_error', getSafeErrorMessage('core_protocol_error'));
         return;
       }
 
-      if (event.type === 'token') {
+      if (event.type === 'phase') {
+        if (typeof event.phase !== 'string' || !event.phase.trim()) return;
+        const label = typeof event.label === 'string' && event.label.trim()
+          ? event.label.trim().slice(0, 120)
+          : undefined;
+        const sanitized = SseChatEventSchema.parse({
+          type: 'phase',
+          phase: event.phase.trim().slice(0, 40),
+          ...(label ? { label } : {}),
+        });
+        emitSanitized(sanitized);
+      } else if (event.type === 'token') {
         const sanitized = SseChatEventSchema.parse({
           type: 'token',
           text: String(event.text),
@@ -289,9 +323,11 @@ export async function POST(request: Request) {
         });
         emitSanitized(sanitized);
       } else if (event.type === 'done') {
+        const usage = ContextUsageSchema.safeParse(event.usage);
         const sanitized = SseChatEventSchema.parse({
           type: 'done',
           text: String(event.text),
+          ...(usage.success ? { usage: usage.data } : {}),
         });
         emitSanitized(sanitized);
         finish();

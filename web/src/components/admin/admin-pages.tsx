@@ -1,5 +1,6 @@
 'use client';
 
+import { adminFetch } from './admin-fetch';
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertCircle, Database, FileText, Folder, Key, Loader2, RefreshCw, Search } from 'lucide-react';
 import { Button, IconButton } from '../ui';
@@ -69,7 +70,7 @@ export function AdminPageSection({ kind }: { kind: PageKind }) {
     setNote(null);
     try {
       if (kind === 'logs') {
-        const response = await fetch('/api/admin/logs?limit=50', { cache: 'no-store' });
+        const response = await adminFetch('/api/admin/logs?limit=50', { cache: 'no-store' });
         const payload = await response.json().catch(() => null);
         if (!response.ok) throw new Error(payload?.message || 'Журнал недоступен.');
         const data = payload?.data ?? payload;
@@ -82,12 +83,12 @@ export function AdminPageSection({ kind }: { kind: PageKind }) {
         const url = query.trim()
           ? `/api/admin/memory?q=${encodeURIComponent(query.trim())}`
           : '/api/admin/memory';
-        const response = await fetch(url, { cache: 'no-store' });
+        const response = await adminFetch(url, { cache: 'no-store' });
         const payload = await response.json().catch(() => null);
         if (!response.ok) throw new Error(payload?.message || 'Память недоступна.');
         setMemory(payload?.data ?? payload);
       } else {
-        const response = await fetch(`/api/admin/${kind}`, { cache: 'no-store' });
+        const response = await adminFetch(`/api/admin/${kind}`, { cache: 'no-store' });
         const payload = await response.json().catch(() => null);
         if (!response.ok) throw new Error(payload?.message || 'Раздел недоступен.');
         const data = payload?.data ?? payload;

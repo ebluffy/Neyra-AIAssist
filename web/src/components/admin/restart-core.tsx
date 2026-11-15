@@ -1,5 +1,6 @@
 'use client';
 
+import { adminFetch } from './admin-fetch';
 import { useState } from 'react';
 import { RotateCw } from 'lucide-react';
 import { Dialog } from './dialog';
@@ -17,7 +18,7 @@ export function RestartCore() {
     setError('');
     setMessage('');
     try {
-      const response = await fetch('/api/admin/system/restart', {
+      const response = await adminFetch('/api/admin/system/restart', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ target: 'core' }),

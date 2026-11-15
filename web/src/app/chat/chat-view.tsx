@@ -30,7 +30,7 @@ import {
   Activity,
   Mic,
 } from 'lucide-react';
-import { SseChatEventSchema } from '@neyra/contracts';
+import { SseChatEventSchema, StoredAttachmentSchema, type StoredAttachment } from '@neyra/contracts';
 import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, type ContextUsage } from '../../components/ui';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
@@ -47,12 +47,7 @@ import {
 } from '../../lib/ui-sounds';
 import { ru } from '../../i18n';
 
-export interface ChatMessageAttachment {
-  id: string;
-  name: string;
-  size: number;
-  isImage: boolean;
-}
+export type ChatMessageAttachment = StoredAttachment;
 
 export interface ChatMessageItem {
   id: string;
@@ -163,6 +158,10 @@ export function ChatView({
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<ChatMessageAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [attachmentsAvailable, setAttachmentsAvailable] = useState(true);
+  const [attachmentsChecked, setAttachmentsChecked] = useState(false);
+  const [uploadingCount, setUploadingCount] = useState(0);
+  const [phaseLabel, setPhaseLabel] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(() => initialUsage || null);
 
   useEffect(() => {
@@ -218,6 +217,12 @@ export function ChatView({
     if (typeof window === 'undefined') return resolveChatId(null, 'ssr', user.id);
     return resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
   });
+  // Актуальный тред для асинхронной загрузки: результат не должен прилипнуть
+  // к диалогу, который уже сменили.
+  const chatIdRef = useRef(chatId);
+  useEffect(() => {
+    chatIdRef.current = chatId;
+  }, [chatId]);
 
   // Load pinned messages whenever chatId or user.id changes
   useEffect(() => {
@@ -358,6 +363,14 @@ export function ChatView({
       stopGeneration();
     }
     setChatId(targetThreadId);
+    chatIdRef.current = targetThreadId;
+    // Состояние композера и индикаторов принадлежит прошлому треду: не переносим
+    // вложения, usage и фазу в чужой диалог.
+    setAttachments([]);
+    setAttachmentError(null);
+    setAttachMenuOpen(false);
+    setUsage(null);
+    setPhaseLabel(null);
     try {
       sessionStorage.setItem(`neyra.chat_id:${user.id}:${resolveTabKey(window)}`, targetThreadId);
       const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
@@ -410,6 +423,7 @@ export function ChatView({
         ? resolveChatId(null, 'ssr', user.id)
         : resetChatId(window.sessionStorage, resolveTabKey(window), user.id);
     setChatId(newId);
+    chatIdRef.current = newId;
     setMessages([]);
     setPinnedMessageIds([]);
     setCustomTitle(null);
@@ -418,6 +432,8 @@ export function ChatView({
     setSidebarOpen(false);
     setAttachments([]);
     setAttachmentError(null);
+    setUsage(null);
+    setPhaseLabel(null);
     if (textareaRef.current) {
       textareaRef.current.focus();
     }
@@ -587,36 +603,90 @@ export function ChatView({
     }
   };
 
-  // Attachment handling (§3.2: limit 4 files, 8MB each)
-  const handleFilesSelected = (files: FileList | null, isImage: boolean) => {
+  // Возможность вложений проверяем один раз при открытии меню: при выключенном
+  // ядре кнопка честно гаснет, а не обещает загрузку.
+  const toggleAttachMenu = async () => {
+    if (attachMenuOpen) {
+      setAttachMenuOpen(false);
+      return;
+    }
+    if (!attachmentsChecked) {
+      try {
+        const response = await fetch('/api/attachments', { cache: 'no-store' });
+        const payload = await response.json().catch(() => null) as { available?: boolean; message?: string } | null;
+        setAttachmentsChecked(true);
+        if (payload?.available === false) {
+          setAttachmentsAvailable(false);
+          setAttachmentError(payload.message || 'Вложения скоро: ядро не подключено.');
+          return;
+        }
+      } catch {
+        // Сеть недоступна — не блокируем меню, ошибка покажется при загрузке.
+      }
+    }
+    setAttachMenuOpen(true);
+  };
+
+  // Attachment handling (§3.2: limit 4 files, 8MB each). Файл сначала уходит
+  // в /api/attachments, и в сообщение попадают только id/kind/mime/name/size из ответа.
+  const handleFilesSelected = async (files: FileList | null) => {
     setAttachMenuOpen(false);
     if (!files || files.length === 0) return;
 
     setAttachmentError(null);
-    const maxFiles = 4;
-    const maxSizeBytes = 8 * 1024 * 1024; // 8 MB
-
-    if (attachments.length + files.length > maxFiles) {
-      setAttachmentError(`Максимум ${maxFiles} файла(ов).`);
+    if (!attachmentsAvailable) {
+      setAttachmentError('Вложения скоро: ядро не подключено.');
       return;
     }
 
-    const newAttachments: ChatMessageAttachment[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    const maxFiles = 4;
+    const maxSizeBytes = 8 * 1024 * 1024; // 8 MB
+    const selected = Array.from(files);
+
+    if (attachments.length + selected.length > maxFiles) {
+      setAttachmentError(`Максимум ${maxFiles} файла(ов).`);
+      return;
+    }
+    for (const file of selected) {
       if (file.size > maxSizeBytes) {
         setAttachmentError(`Файл «${file.name}» превышает лимит 8 МБ.`);
         return;
       }
-      newAttachments.push({
-        id: crypto.randomUUID(),
-        name: file.name,
-        size: file.size,
-        isImage: isImage || file.type.startsWith('image/'),
-      });
     }
 
-    setAttachments(prev => [...prev, ...newAttachments]);
+    setUploadingCount(count => count + 1);
+    const uploadChatId = chatId;
+    try {
+      const form = new FormData();
+      form.set('chat_id', uploadChatId);
+      for (const file of selected) form.append('files', file, file.name);
+      const response = await fetch('/api/attachments', { method: 'POST', body: form });
+      const payload = await response.json().catch(() => null) as {
+        attachments?: unknown;
+        data?: { attachments?: unknown };
+        error?: string;
+        message?: string;
+      } | null;
+
+      if (!response.ok) {
+        if (payload?.error === 'attachments_unavailable') setAttachmentsAvailable(false);
+        throw new Error(payload?.message || 'Не удалось загрузить вложение.');
+      }
+
+      const raw = Array.isArray(payload?.attachments) ? payload.attachments : payload?.data?.attachments;
+      const parsed = StoredAttachmentSchema.array().safeParse(raw);
+      if (!parsed.success || parsed.data.length !== selected.length) {
+        throw new Error('Ядро вернуло вложение в неизвестном формате.');
+      }
+      if (chatIdRef.current !== uploadChatId) return;
+      setAttachments(prev => [...prev, ...parsed.data]);
+    } catch (error) {
+      if (chatIdRef.current === uploadChatId) {
+        setAttachmentError(error instanceof Error ? error.message : 'Не удалось загрузить вложение.');
+      }
+    } finally {
+      setUploadingCount(count => Math.max(0, count - 1));
+    }
   };
 
   const removeAttachment = (id: string) => {
@@ -714,6 +784,7 @@ export function ChatView({
 
             if (event.type === 'token') {
               setThinking(false);
+              setPhaseLabel(null);
               assistantText += event.text;
               const updatedText = assistantText;
               setMessages(prev =>
@@ -725,8 +796,12 @@ export function ChatView({
               );
             } else if (event.type === 'thinking') {
               setThinking(true);
+            } else if (event.type === 'phase') {
+              setThinking(true);
+              setPhaseLabel(event.label || event.phase);
             } else if (event.type === 'done') {
               setThinking(false);
+              setPhaseLabel(null);
               if (event.text) {
                 assistantText = event.text;
                 setMessages(prev =>
@@ -737,12 +812,10 @@ export function ChatView({
                   )
                 );
               }
-              // Extract usage if present in rawEvent
-              if (rawEvent.usage && typeof rawEvent.usage === 'object') {
-                setUsage(rawEvent.usage);
-              }
+              if (event.usage) setUsage(event.usage);
             } else if (event.type === 'error') {
               setThinking(false);
+              setPhaseLabel(null);
               const errMsg = event.message || 'Ошибка обработки запроса.';
               setMessages(prev =>
                 prev.map(m =>
@@ -780,13 +853,14 @@ export function ChatView({
     } finally {
       setStreaming(false);
       setThinking(false);
+      setPhaseLabel(null);
       abortControllerRef.current = null;
     }
   };
 
   const sendMessage = async (textToSend: string) => {
     const text = textToSend.trim();
-    if (!text || streaming) return;
+    if (!text || streaming || uploadingCount > 0) return;
 
     setInput('');
     setLastUserMessage(text);
@@ -819,7 +893,12 @@ export function ChatView({
     for (let i = assistantIndex - 1; i >= 0; i--) {
       if (messages[i].role === 'user') {
         userText = messages[i].content;
-        userAttachments = messages[i].attachments || [];
+        // В localStorage могли остаться вложения старого формата (local id/isImage).
+        // В ядро уходят только метаданные, прошедшие StoredAttachmentSchema.
+        userAttachments = (messages[i].attachments ?? []).flatMap((attachment) => {
+          const parsed = StoredAttachmentSchema.safeParse(attachment);
+          return parsed.success ? [parsed.data] : [];
+        });
         break;
       }
     }
@@ -1046,7 +1125,7 @@ export function ChatView({
                               key={att.id}
                               className="inline-flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius-sm)] bg-[var(--surface-3)] text-xs text-[var(--text-muted)]"
                             >
-                              {att.isImage ? <ImageIcon size={12} /> : <FileText size={12} />}
+                              {att.kind === 'image' ? <ImageIcon size={12} /> : <FileText size={12} />}
                               <span>{att.name}</span>
                               <span className="text-[10px] text-[var(--text-subtle)]">({formatFileSize(att.size)})</span>
                             </span>
@@ -1199,7 +1278,7 @@ export function ChatView({
                           aria-label="Нейра думает…"
                         >
                           <span className="sr-only">Нейра думает…</span>
-                          <span className="text-[13px] text-[var(--text-muted)] font-medium">Думаю…</span>
+                          <span className="text-[13px] text-[var(--text-muted)] font-medium">{phaseLabel || 'Думаю…'}</span>
                           <div className="flex items-center gap-1">
                             <span
                               className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] dot-bounce"
@@ -1256,7 +1335,7 @@ export function ChatView({
                 type="file"
                 multiple
                 className="hidden"
-                onChange={e => handleFilesSelected(e.target.files, false)}
+                onChange={e => void handleFilesSelected(e.target.files)}
               />
               <input
                 ref={imageInputRef}
@@ -1264,7 +1343,7 @@ export function ChatView({
                 accept="image/*"
                 multiple
                 className="hidden"
-                onChange={e => handleFilesSelected(e.target.files, true)}
+                onChange={e => void handleFilesSelected(e.target.files)}
               />
 
               {/* Attachment error banner */}
@@ -1281,6 +1360,12 @@ export function ChatView({
                 </div>
               )}
 
+              {uploadingCount > 0 && (
+                <div role="status" className="mb-1.5 px-3 py-1.5 text-xs text-[var(--text-muted)] bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)]">
+                  Загружаю вложение…
+                </div>
+              )}
+
 
               {/* Composer container */}
               <div className="relative rounded-[var(--radius-lg)] bg-[var(--surface-2)] border border-[var(--border)] p-2.5 shadow-panel focus-within:border-[var(--accent)] transition-colors flex flex-col gap-2">
@@ -1292,7 +1377,7 @@ export function ChatView({
                         key={att.id}
                         className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[var(--radius-sm)] bg-[var(--surface-3)] border border-[var(--border)] text-xs text-[var(--text)] group"
                       >
-                        {att.isImage ? (
+                        {att.kind === 'image' ? (
                           <ImageIcon size={13} className="text-[var(--accent)] shrink-0" />
                         ) : (
                           <FileText size={13} className="text-[var(--text-muted)] shrink-0" />
@@ -1321,17 +1406,17 @@ export function ChatView({
                     <IconButton
                       type="button"
                       aria-label="Прикрепить файл"
-                      title="Прикрепить файл"
+                      title={attachmentsAvailable ? 'Прикрепить файл' : 'Вложения скоро: ядро не подключено'}
                       icon={<Plus size={16} />}
                       variant="ghost"
                       size="md"
                       rounded
-                      disabled={streaming}
-                      onClick={() => setAttachMenuOpen(prev => !prev)}
+                      disabled={streaming || uploadingCount > 0 || !attachmentsAvailable}
+                      onClick={() => void toggleAttachMenu()}
                       className="text-[var(--text-muted)] hover:text-[var(--text)] bg-[var(--surface-3)]"
                     />
 
-                    {attachMenuOpen && (
+                    {attachMenuOpen && attachmentsAvailable && (
                       <div
                         role="menu"
                         aria-label="Прикрепить"
@@ -1403,7 +1488,7 @@ export function ChatView({
                     <IconButton
                       type="submit"
                       aria-label={ru.send}
-                      disabled={!input.trim() && attachments.length === 0}
+                      disabled={(!input.trim() && attachments.length === 0) || uploadingCount > 0}
                       icon={<ArrowUp size={20} />}
                       variant={input.trim() || attachments.length > 0 ? 'primary' : 'ghost'}
                       size="md"

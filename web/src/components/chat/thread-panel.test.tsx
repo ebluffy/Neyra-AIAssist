@@ -11,8 +11,8 @@ describe('ThreadPanel', () => {
       role: 'user',
       content: 'Привет! Помоги настроить Docker контейнер.',
       attachments: [
-        { id: 'att-1', name: 'docker-compose.yml', size: 1024, isImage: false },
-        { id: 'att-2', name: 'diagram.png', size: 204800, isImage: true },
+        { id: 'att-1', name: 'docker-compose.yml', size: 1024, kind: 'file', mime: 'text/plain' },
+        { id: 'att-2', name: 'diagram.png', size: 204800, kind: 'image', mime: 'image/png' },
       ],
     },
     {

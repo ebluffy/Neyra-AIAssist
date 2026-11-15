@@ -22,6 +22,7 @@ const actionLabels: Record<string, string> = {
   'user.password_reset': 'Сброс пароля',
   'invite.create': 'Создание приглашения',
   'invite.revoke': 'Отзыв приглашения',
+  'invite.use': 'Использование приглашения',
   'system.restart': 'Перезапуск ядра',
 };
 

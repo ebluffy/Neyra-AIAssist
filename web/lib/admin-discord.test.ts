@@ -62,7 +62,7 @@ describe('buildCoreQuery', () => {
 describe('core calls', () => {
   it('builds the guild path with encoded id and query', async () => {
     vi.stubEnv('NEYRA_API_URL', 'http://core.test');
-    vi.stubEnv('NEYRA_SERVICE_KEY', 'test-key');
+    vi.stubEnv('NEYRA_ADMIN_KEY', 'test-key');
     let url = '';
     vi.stubGlobal('fetch', vi.fn(async (target: string | URL | Request) => {
       url = String(target);
@@ -78,7 +78,7 @@ describe('core calls', () => {
 
   it('forwards the messages cursor and limit', async () => {
     vi.stubEnv('NEYRA_API_URL', 'http://core.test');
-    vi.stubEnv('NEYRA_SERVICE_KEY', 'test-key');
+    vi.stubEnv('NEYRA_ADMIN_KEY', 'test-key');
     let url = '';
     vi.stubGlobal('fetch', vi.fn(async (target: string | URL | Request) => {
       url = String(target);
@@ -95,7 +95,7 @@ describe('core calls', () => {
 describe('discord activity', () => {
   it('counts only dialogs per channel and people, and pages until the cursor ends', async () => {
     vi.stubEnv('NEYRA_API_URL', 'http://core.test');
-    vi.stubEnv('NEYRA_SERVICE_KEY', 'test-key');
+    vi.stubEnv('NEYRA_ADMIN_KEY', 'test-key');
     const urls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (target: string | URL | Request) => {
       const url = String(target);
@@ -128,7 +128,7 @@ describe('discord activity', () => {
 
   it('limits a guild to its own channels', async () => {
     vi.stubEnv('NEYRA_API_URL', 'http://core.test');
-    vi.stubEnv('NEYRA_SERVICE_KEY', 'test-key');
+    vi.stubEnv('NEYRA_ADMIN_KEY', 'test-key');
     vi.stubGlobal('fetch', vi.fn(async (target: string | URL | Request) => {
       const url = String(target);
       if (url.includes('/guilds/g1')) {
@@ -149,7 +149,7 @@ describe('discord activity', () => {
 describe('discord person links', () => {
   it('maps discord ids from person accounts and keeps a member id when it is already set', async () => {
     vi.stubEnv('NEYRA_API_URL', 'http://core.test');
-    vi.stubEnv('NEYRA_SERVICE_KEY', 'test-key');
+    vi.stubEnv('NEYRA_ADMIN_KEY', 'test-key');
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       ok: true,
       data: {
@@ -174,7 +174,7 @@ describe('discord person links', () => {
 
   it('returns an empty map when the core is unavailable', async () => {
     vi.stubEnv('NEYRA_API_URL', '');
-    vi.stubEnv('NEYRA_SERVICE_KEY', '');
+    vi.stubEnv('NEYRA_ADMIN_KEY', '');
     const map = await discordPersonMap();
     expect(map.size).toBe(0);
   });

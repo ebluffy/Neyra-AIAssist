@@ -1,5 +1,6 @@
 'use client';
 
+import { adminFetch } from './admin-fetch';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
@@ -128,6 +129,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
   const [data, setData] = useState<ProvidersPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [unsupported, setUnsupported] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   // Selected provider for Dedicated Provider Screen
@@ -169,10 +171,17 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/admin/providers', { cache: 'no-store' });
+      const response = await adminFetch('/api/admin/providers', { cache: 'no-store' });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.message || 'Ядро не отдало провайдеров.');
-      setData(payload?.data ?? payload);
+      const next = payload?.data ?? payload;
+      if (next?.supported === false) {
+        setUnsupported(next.message || 'Ядро не поддерживает управление провайдерами.');
+        setData({ providers: [], presets: [], lanes: [] });
+        return;
+      }
+      setUnsupported(null);
+      setData(next);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка загрузки провайдеров.');
     } finally {
@@ -208,7 +217,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
   const handleVerify = async (name: string, baseUrl?: string, apiKey?: string) => {
     setVerifyingProvider(name);
     try {
-      const res = await fetch(`/api/admin/providers/${encodeURIComponent(name)}/verify`, {
+      const res = await adminFetch(`/api/admin/providers/${encodeURIComponent(name)}/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ base_url: baseUrl, api_key: apiKey }),
@@ -248,7 +257,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
     if (!cleanKey) return;
     setSavingKeyFor(name);
     try {
-      const res = await fetch(`/api/admin/providers/${encodeURIComponent(name)}/secret`, {
+      const res = await adminFetch(`/api/admin/providers/${encodeURIComponent(name)}/secret`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ api_key: cleanKey }),
@@ -276,7 +285,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
   // Handle Delete Key
   const handleDeleteKey = async (name: string) => {
     try {
-      const res = await fetch(`/api/admin/providers/${encodeURIComponent(name)}/secret`, {
+      const res = await adminFetch(`/api/admin/providers/${encodeURIComponent(name)}/secret`, {
         method: 'DELETE',
       });
       if (!res.ok) {
@@ -295,7 +304,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
     if (deleteConfirmInput.trim().toLowerCase() !== p.name.toLowerCase()) return;
     setDeletingProvider(true);
     try {
-      const res = await fetch(`/api/admin/providers/${encodeURIComponent(p.name)}`, {
+      const res = await adminFetch(`/api/admin/providers/${encodeURIComponent(p.name)}`, {
         method: 'DELETE',
       });
       const json = await res.json().catch(() => null);
@@ -333,7 +342,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
     setAddingProvider(true);
     setAddFormNotice(null);
     try {
-      const res = await fetch(`/api/admin/providers/${encodeURIComponent(cleanName)}`, {
+      const res = await adminFetch(`/api/admin/providers/${encodeURIComponent(cleanName)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ base_url: formBaseUrl.trim(), kind: formKind }),
@@ -342,7 +351,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
       if (!res.ok) throw new Error(json?.message || 'Ядро не приняло провайдера.');
 
       if (formKey.trim()) {
-        const secRes = await fetch(`/api/admin/providers/${encodeURIComponent(cleanName)}/secret`, {
+        const secRes = await adminFetch(`/api/admin/providers/${encodeURIComponent(cleanName)}/secret`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ api_key: formKey.trim() }),
@@ -838,6 +847,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
             variant="primary"
             size="sm"
             className="gap-1.5"
+            disabled={Boolean(unsupported)}
             onClick={() => {
               playButtonClickSound();
               setAddModalOpen(true);
@@ -854,6 +864,19 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
           </Button>
         </div>
       </div>
+
+      {unsupported && (
+        <div
+          role="status"
+          className="flex items-center gap-2 p-3 rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-3)] text-xs text-[var(--text)]"
+        >
+          <AlertCircle size={14} />
+          <span>{unsupported}</span>
+          <Button variant="secondary" size="sm" className="ml-auto" onClick={() => void load()}>
+            Проверить снова
+          </Button>
+        </div>
+      )}
 
       {error && (
         <div

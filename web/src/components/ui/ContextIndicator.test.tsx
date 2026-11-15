@@ -30,10 +30,7 @@ describe('ContextIndicator', () => {
     render(
       <ContextIndicator
         usage={{
-          prompt_tokens: 100_000,
-          completion_tokens: 38_600,
-          context_used: 138_600,
-          context_limit: 1_000_000,
+          total: { used: 138_600, limit: 1_000_000 },
           lanes: {
             brain: { used: 60_000, limit: 500_000 },
             talk: { used: 50_000, limit: 250_000 },
@@ -76,10 +73,7 @@ describe('ContextIndicator', () => {
     render(
       <ContextIndicator
         usage={{
-          prompt_tokens: 100_000,
-          completion_tokens: 38_600,
-          context_used: 138_600,
-          context_limit: 1_000_000,
+          total: { used: 138_600, limit: 1_000_000 },
           policy: {
             compaction_enabled: false,
             mode: 'off',
@@ -101,28 +95,30 @@ describe('ContextIndicator', () => {
     expect(screen.queryByText(/порог/i)).toBeNull();
   });
 
-  it('renders explicit lane threshold when provided from kernel', () => {
+  it('renders only lanes with both used and limit from the kernel', () => {
     render(
       <ContextIndicator
         usage={{
-          prompt_tokens: 100_000,
-          completion_tokens: 38_600,
-          context_used: 138_600,
-          context_limit: 1_000_000,
+          total: { used: 100, limit: 1_000 },
           lanes: {
-            brain: { used: 60_000, limit: 500_000, threshold_pct: 75 },
-            talk: { used: 50_000, limit: 250_000 },
-            vision: { used: 15_000, limit: 150_000 },
-            memory: { used: 13_600, limit: 100_000 },
+            talk: { used: 60, limit: 300 },
+            brain: { limit: 500 },
+            memory: { used: 40 },
           },
         }}
       />
     );
 
-    // Open popover
     fireEvent.click(screen.getByRole('button', { name: /контекст диалога/i }));
 
-    expect(screen.getByText('порог 75%')).toBeTruthy();
-    expect(screen.getByText('Автосжатие при пороге 75%')).toBeTruthy();
+    expect(screen.getByText('Диалог (Talk)')).toBeTruthy();
+    expect(screen.queryByText('Рассуждения (Brain)')).toBeNull();
+    expect(screen.queryByText('Память (Memory)')).toBeNull();
+    expect(screen.queryByText(/порог/i)).toBeNull();
+  });
+
+  it('hides itself when the kernel sent no total used/limit pair', () => {
+    const { container } = render(<ContextIndicator usage={{ lanes: { talk: { used: 10, limit: 100 } } }} />);
+    expect(container.firstChild).toBeNull();
   });
 });

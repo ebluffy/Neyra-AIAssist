@@ -1,18 +1,21 @@
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
-import { createAuthMiddleware } from 'better-auth/api';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
+import { BASE_ERROR_CODES } from '@better-auth/core/error';
 import { getDatabase } from './db';
 import { readAuthEnv } from './env';
 import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, roleField } from './auth-policy';
 import {
   FAILED_LOGIN_MAX_ATTEMPTS,
   clearFailures,
+  clientIp,
   noteFailure,
   readEmail,
   readFailures,
 } from './login-throttle';
-import { checkInvite, consumeInvite, readInviteToken } from './invite';
-import { findBannedByEmail, touchLastLogin } from './admin-users';
+import { checkInvite, consumeInvite, readInviteToken, releaseInvite } from './invite';
+import { isUserBanned, touchLastLogin } from './admin-users';
+import { recordInviteUse } from './admin-invites';
 import { getRegistrationMode } from './site-settings';
 import * as schema from '../db/schema';
 
@@ -54,6 +57,14 @@ function discordProvider() {
   };
 }
 
+// Привязка OAuth-аккаунта — только при подтверждённом email провайдера и локального
+// аккаунта. Discord не входит в trustedProviders: неподтверждённый адрес из Discord
+// не должен привязываться к чужому существующему профилю с тем же email.
+export const ACCOUNT_LINKING = {
+  enabled: true,
+  requireLocalEmailVerified: true,
+} as const;
+
 function createAuth() {
   const env = readAuthEnv();
   return betterAuth({
@@ -74,9 +85,24 @@ function createAuth() {
     },
     user: { additionalFields: { role: roleField } },
     socialProviders: discordProvider(),
-    // Discord считаем доверенным провайдером: при совпадении подтверждённого email
-    // вход привязывается к существующему профилю, а не создаёт второй.
-    account: { accountLinking: { enabled: true, trustedProviders: ['discord'] } },
+    // Implicit linking по совпадению email разрешено Better Auth только когда провайдер
+    // подтвердил email (иначе isTrustedProvider=false и userInfo.emailVerified=false).
+    account: { accountLinking: ACCOUNT_LINKING },
+    // AR-28: бан останавливает выдачу сессии уже после проверки пароля, поэтому
+    // ответ забаненному неотличим от ответа на неверный пароль ни телом, ни
+    // временем. Хук срабатывает и для email/пароля, и для OAuth-входа.
+    databaseHooks: {
+      session: {
+        create: {
+          before: async (data) => {
+            if (await isUserBanned(String(data.userId))) {
+              throw APIError.from('UNAUTHORIZED', BASE_ERROR_CODES.INVALID_EMAIL_OR_PASSWORD);
+            }
+            return true;
+          },
+        },
+      },
+    },
     // No automatic promotion on sign-up: an e-mail is not proof of ownership, and an open
     // registration would let a stranger claim a listed admin address. The first admin is
     // granted from the server with scripts/grant-admin.mjs.
@@ -105,12 +131,13 @@ function createAuth() {
           const email = await readEmail(ctx.request);
           if (!email) return;
           signInEmail.set(ctx.request, email);
-          // Блокировка админом действует и на новый вход, даже если старые сессии уже удалены.
-          const state = await findBannedByEmail(email).catch(() => null);
-          if (state?.banned) {
-            return ctx.json({ message: 'Аккаунт заблокирован администратором Нейры.' }, { status: 403 });
-          }
-          if ((await readFailures(email)) >= FAILED_LOGIN_MAX_ATTEMPTS) {
+          const ip = clientIp(ctx.request);
+          signInIp.set(ctx.request, ip);
+          // AR-28: бан проверяется не здесь. Ранний возврат отвечает без
+          // проверки пароля, то есть заметно быстрее настоящей ошибки Better
+          // Auth (scrypt), и по времени видно и адрес, и блокировку. Бан
+          // блокирует создание сессии в databaseHooks.session.create.before.
+          if ((await readFailures(email, ip)) >= FAILED_LOGIN_MAX_ATTEMPTS) {
             return ctx.json(
               { message: 'Слишком много неудачных попыток входа. Попробуйте позже.' },
               { status: 429 },
@@ -130,7 +157,7 @@ function createAuth() {
             // Открытая регистрация: инвайт не требуется и не расходуется.
             return;
           }
-          // AR-2: режим invite — одноразовый токен. Проверка на сервере,
+          // AR-2/AR-35: режим invite — токен с лимитом использований (max_uses). Проверка на сервере,
           // до обработки better-auth: без инвайта, с чужим, потраченным или
           // просроченным аккаунт не создаётся.
           let body: unknown = null;
@@ -143,13 +170,30 @@ function createAuth() {
           if (!inviteToken) {
             return ctx.json({ message: 'Регистрация на сайте — только по инвайту. Обратитесь к администратору Нейры.' }, { status: 403 });
           }
-          const verdict = await checkInvite(inviteToken);
+          const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+          const verdict = await checkInvite(inviteToken, normalizedEmail);
           if (verdict !== 'ok') {
-            const message = verdict === 'error'
-              ? 'Не удалось проверить инвайт. Попробуйте позже.'
-              : 'Инвайт недействителен, уже использован или истёк. Запросите новый.';
+            const messages: Record<string, string> = {
+              error: 'Не удалось проверить инвайт. Попробуйте позже.',
+              used: 'Лимит использований этого инвайта исчерпан. Запросите новый.',
+              expired: 'Срок действия инвайта истёк. Запросите новый.',
+              revoked: 'Инвайт отозван администратором. Запросите новый.',
+              'email-mismatch': 'Этот инвайт выдан для другого адреса почты.',
+              'not-found': 'Инвайт недействителен. Запросите новый.',
+            };
+            const message = messages[verdict] ?? 'Инвайт недействителен. Запросите новый.';
             return ctx.json({ message }, { status: 403 });
           }
+          // AR-26/AR-35: инвайт тратится атомарно ДО создания аккаунта; лимит
+          // проверяется тем же UPDATE. При ошибке after вернёт расход.
+          const consumed = await consumeInvite(inviteToken, normalizedEmail, normalizedEmail);
+          if (!consumed) {
+            return ctx.json(
+              { message: 'Инвайт недействителен, лимит исчерпан или истёк. Запросите новый.' },
+              { status: 403 },
+            );
+          }
+          signUpInvite.set(ctx.request, { invite: inviteToken, email: normalizedEmail, useId: consumed.useId });
         }
       }),
       after: createAuthMiddleware(async (ctx) => {
@@ -162,22 +206,29 @@ function createAuth() {
           // Count failures, reset on success. On error `returned` is the APIError
           // thrown by the endpoint (has statusCode); on success it is the body object.
           const email = signInEmail.get(ctx.request);
+          const ip = signInIp.get(ctx.request) ?? 'unknown';
           signInEmail.delete(ctx.request);
+          signInIp.delete(ctx.request);
           if (!email) return;
           if (statusCode === 429) return; // already throttled; do not stack counters
           if (statusCode === undefined) {
-            await clearFailures(email); // success body
+            await clearFailures(email, ip); // success body
             await touchLastLogin(email);
-          } else if (statusCode === 401) await noteFailure(email);
+          } else if (statusCode === 401) await noteFailure(email, ip);
           return;
         }
         if (ctx.path === '/sign-up/email') {
-          // Успешная регистрация тратит инвайт атомарно (used_by/used_at).
+          // Инвайт уже потрачен в before; неудачная регистрация возвращает расход,
+          // успешная — пишет audit invite.use (AR-39) и привязывает аккаунт.
           const pending = signUpInvite.get(ctx.request);
           signUpInvite.delete(ctx.request);
-          if (!pending?.invite) return;
-          if (statusCode !== undefined) return; // регистрация не прошла — инвайт не тратим
-          await consumeInvite(pending.invite, pending.email);
+          if (!pending?.invite || !pending.useId) return;
+          if (statusCode !== undefined) {
+            await releaseInvite(pending.useId);
+          } else {
+            const user = (returned as { user?: { id?: string } } | null)?.user;
+            await recordInviteUse(pending.useId, pending.email, user?.id ?? null);
+          }
         }
       }),
     },
@@ -189,5 +240,7 @@ export function getAuth() { return auth ??= createAuth(); }
 // Email from the request body is captured in the before hook: by the after hook
 // the body stream is already consumed by the endpoint, so it is carried per-request.
 const signInEmail = new WeakMap<Request, string>();
+// IP запроса для счётчика неудач (email + IP), см. AR-27.
+const signInIp = new WeakMap<Request, string>();
 // Same idea for invite-only sign-up: invite token and email ride the request object.
-const signUpInvite = new WeakMap<Request, { invite: string; email: string }>();
+const signUpInvite = new WeakMap<Request, { invite: string; email: string; useId?: string }>();
