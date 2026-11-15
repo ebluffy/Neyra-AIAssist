@@ -220,6 +220,8 @@ async def try_handle_fast_path(
     vision_images: Optional[list],
     lyrics_marker: str,
     source: str,
+    person_id: Optional[str] = None,
+    origin: Optional[dict] = None,
 ) -> Optional[dict[str, Any]]:
     """
     If Fast-Path hits: publish home.* event, finalize turn, return chat result dict.
@@ -236,7 +238,7 @@ async def try_handle_fast_path(
     if hit is None:
         return None
 
-    internal_uid = agent._resolve_internal_user_id(discord_user_id, username)
+    internal_uid = agent._resolve_internal_user_id(discord_user_id, username, person_id)
     from core.agent.model_trace import ACTIVE_TRACE
     trace = ACTIVE_TRACE.get()
     if trace is not None:
@@ -290,6 +292,7 @@ async def try_handle_fast_path(
         saved_facts=[],
         source=source,
         stm_trimmed=False,
+        origin=origin,
         extra_meta={
             "fast_path": {
                 "intent": hit.intent,

@@ -21,9 +21,11 @@ def schedule_turn_diary(agent, *, user_message, assistant_text, internal_user_id
     turn_id = trace.id if trace else None
     if not turn_id or getattr(agent, "memory_hub", None) is None:
         return
-    person = agent.memory_hub.find_person("", discord_id=trace.user_id) if trace.user_id else None
-    person_id = person.get("id") if person else None
-
+    # A signed web identity is canonical; Discord lookup is only the fallback without it.
+    person_id = getattr(trace, "person_id", None)
+    if not person_id and trace.user_id:
+        person = agent.memory_hub.find_person("", discord_id=trace.user_id)
+        person_id = person.get("id") if person else None
     async def generate():
         from langchain_core.messages import HumanMessage, SystemMessage
         from core.llm.retry import ainvoke_with_rate_limit_backoff

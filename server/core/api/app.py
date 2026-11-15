@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -41,6 +42,7 @@ from core.api.client_ip import resolve_client_ip as _resolve_client_ip_pure
 from core.api.log_redaction import install_log_filters
 from core.api.request_context import get_trace_id, resolve_trace_id, set_trace_id
 from core.api.security_headers import SecurityHeadersMiddleware
+from core.api.web_identity import InvalidWebIdentity, verify_web_identity
 from core.neyra import NeyraAgent
 from core.runtime.features import FEATURE_DEFAULTS
 from core.runtime.backup import BackupManager
@@ -277,6 +279,7 @@ def api_tokens_configured(cfg: dict) -> bool:
         str(api.get("token") or "").strip()
         or str(api.get("viewer_token") or "").strip()
         or str(api.get("maint_token") or "").strip()
+        or str(api.get("web_token") or "").strip()
     )
 
 
@@ -290,13 +293,13 @@ def assert_api_bind_safe(cfg: dict) -> None:
     if public:
         raise RuntimeError(
             f"api.public_base_url={public!r} is set but API tokens are empty. "
-            "Set API_TOKEN (and preferably viewer/maint) before publishing."
+            "Set API_TOKEN (and preferably viewer/maint/web) before publishing."
         )
     if _is_loopback_host(host):
         return
     raise RuntimeError(
         f"api.host={host!r} is not loopback but API_TOKEN / API_KEY / "
-        "API_VIEWER_TOKEN / API_MAINT_TOKEN are empty. Set tokens or bind 127.0.0.1."
+        "API_VIEWER_TOKEN / API_MAINT_TOKEN / API_WEB_TOKEN are empty. Set tokens or bind 127.0.0.1."
     )
 
 
@@ -309,7 +312,7 @@ def _api_token(cfg: dict) -> str:
     return str(api_cfg.get("token") or "").strip()
 
 
-_ROLE_RANK = {"anon": 0, "viewer": 1, "maint": 2, "admin": 3}
+_ROLE_RANK = {"anon": 0, "web": 0, "viewer": 1, "maint": 2, "admin": 3}
 
 
 def _resolve_role(
@@ -326,7 +329,8 @@ def _resolve_role(
     primary = str(api.get("token") or "").strip()
     viewer = str(api.get("viewer_token") or "").strip()
     maint = str(api.get("maint_token") or "").strip()
-    if not primary and not viewer and not maint:
+    web = str(api.get("web_token") or "").strip()
+    if not primary and not viewer and not maint and not web:
         return "anon"
     raw = (authorization or "").strip()
     if not raw.startswith("Bearer "):
@@ -338,6 +342,8 @@ def _resolve_role(
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
+    if _token_eq(got, web):
+        return "web"
     if dash_auth is not None and dash_auth.verify_session(got):
         return "admin"
     raise ApiError("unauthorized", "Invalid bearer token", 401)
@@ -347,6 +353,15 @@ def _role_at_least(role: str, minimum: str) -> bool:
     # anon is treated as full access only for console-local requests (see RequireRole).
     if role == "anon":
         return True
+    if minimum == "web":
+        return role in {"web", "viewer", "maint", "admin"}
+    if minimum == "web_admin":
+        return role in {"web", "admin"}
+    if minimum == "web_memory":
+        return role in {"web", "maint", "admin"}
+    if role == "web":
+        # Web key is deliberately lower than viewer: only dep_web routes accept it.
+        return False
     return _ROLE_RANK.get(role, 0) >= _ROLE_RANK.get(minimum, 0)
 
 
@@ -364,7 +379,8 @@ def _require_ws_auth(
     primary = str(api.get("token") or "").strip()
     viewer = str(api.get("viewer_token") or "").strip()
     maint = str(api.get("maint_token") or "").strip()
-    if not primary and not viewer and not maint:
+    web = str(api.get("web_token") or "").strip()
+    if not primary and not viewer and not maint and not web:
         return "anon"
     got = ""
     if authorization and authorization.strip().startswith("Bearer "):
@@ -379,6 +395,8 @@ def _require_ws_auth(
         return "maint"
     if _token_eq(got, viewer):
         return "viewer"
+    if _token_eq(got, web):
+        return "web"
     if dash_auth is not None and dash_auth.verify_session(got):
         return "admin"
     raise ApiError("unauthorized", "Invalid bearer token for WebSocket", 401)
@@ -598,6 +616,20 @@ class ConfigUpdateRequest(_ApiBody):
     updates: dict[str, Any] = Field(default_factory=dict)
 
 
+class AdminConfigPutRequest(_ApiBody):
+    updates: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProviderUpsertRequest(_ApiBody):
+    base_url: str = ""
+    kind: str = "openai"
+    default_headers: dict[str, str] | None = None
+
+
+class ProviderSecretRequest(_ApiBody):
+    api_key: str = ""
+
+
 class PluginStateUpdateRequest(_ApiBody):
     enabled: bool
 
@@ -649,6 +681,14 @@ class DashboardRotateRequest(_ApiBody):
     new_key: str = Field(min_length=MIN_KEY_LEN, max_length=256)
 
 
+class StoredAttachment(_ApiBody):
+    id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    kind: Literal['image', 'file']
+    mime: Literal['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/pdf', 'text/plain', 'text/markdown']
+    name: str = Field(min_length=1, max_length=200)
+    size: int = Field(strict=True, gt=0, le=8 * 1024 * 1024)
+
+
 class WsChatMessage(_ApiBody):
     type: Literal["ping", "chat"]
     text: str = Field(default="", max_length=6000)
@@ -658,6 +698,7 @@ class WsChatMessage(_ApiBody):
     author_display_name: Optional[str] = Field(default=None, max_length=120)
     display_name: Optional[str] = Field(default=None, max_length=120)
     discord_context: DiscordContext | None = None
+    attachments: list[StoredAttachment] = Field(default_factory=list, max_length=4)
 
 
 def _utc_now() -> str:
@@ -1278,6 +1319,7 @@ def build_app(
             str(_api_for_redact.get("viewer_token") or "").strip(),
             str(_api_for_redact.get("maint_token") or "").strip(),
             str(_api_for_redact.get("webhook_inbound_secret") or "").strip(),
+            str(_api_for_redact.get("web_token") or "").strip(),
         ]
     )
     if shared_agent is not None:
@@ -1313,6 +1355,9 @@ def build_app(
     dash_auth = DashboardAuthStore(resolve_data_dir(root, config) / "dashboard_auth.sqlite")
     app.state.dashboard_auth = dash_auth
     main_loop: list[asyncio.AbstractEventLoop | None] = [None]
+    # Один lock на все пересборки LLM: параллельные admin-запросы не должны
+    # одновременно пересоздавать клиентов и менять agent.tools.
+    llm_rebind_lock = asyncio.Lock()
 
     def _schedule_webhook_fanout(event_type: str, source: str, payload: dict[str, Any]) -> None:
         # Always hop to the uvicorn loop — Discord/resident threads have their own loops.
@@ -1351,6 +1396,11 @@ def build_app(
             agent.start_talk_sessions()
         if reflection is not None:
             reflection.start_scheduler()
+        try:
+            _vault().verify()
+        except Exception as e:
+            logger.error("Provider vault unavailable: %s", e)
+            raise
         monitor.start()
         await monitor.run_once()
         try:
@@ -1439,10 +1489,15 @@ def build_app(
                 peer = request.client.host if request.client else "unknown"
                 if not _is_console_local_client(peer=peer, headers=request.headers):
                     raise ApiError("unauthorized", "Missing bearer token", 401)
+            if role == "web" and getattr(request.state, "web_identity", None) is None:
+                raise ApiError("web_identity_required", "Web identity required", 403)
             if not _role_at_least(role, self.min_role):
                 raise ApiError("forbidden", "Insufficient API token scope", 403)
             return role
 
+    dep_web = RequireRole("web")
+    dep_web_admin = RequireRole("web_admin")
+    dep_web_memory = RequireRole("web_memory")
     dep_viewer = RequireRole("viewer")
     dep_maint = RequireRole("maint")
     dep_admin = RequireRole("admin")
@@ -1520,6 +1575,98 @@ def build_app(
                 return
             await self.app(scope, receive, send)
 
+    class _WebIdentityASGI:
+        def __init__(self, app_):
+            self.app = app_
+
+        @staticmethod
+        def _provision(agent_, identity):
+            """Read account ownership first (including admin merges); write only on first contact."""
+            from dataclasses import replace
+
+            hub = getattr(agent_, "memory_hub", None)
+            if hub is None:
+                return identity
+            account = hub.sqlite.get_account("web", identity.user_id)
+            if account is not None:
+                person_id = account.get("person_id")
+            else:
+                row = hub.ensure_person_for_account(
+                    platform="web", platform_user_id=identity.user_id,
+                    display_name=(identity.name or "").strip() or None,
+                )
+                person_id = row.get("id")
+            if not isinstance(person_id, str) or not person_id.strip():
+                raise RuntimeError("Invalid web account owner")
+            return replace(identity, person_id=person_id)
+
+        @staticmethod
+        async def _deny(scope, receive, send, status, code, message):
+            from starlette.requests import HTTPConnection
+
+            tid = _trace_id(HTTPConnection(scope))
+            response = JSONResponse(status_code=status, content=_err_payload(tid, code, message),
+                                    headers={"x-trace-id": tid})
+            if scope["type"] == "websocket":
+                from starlette.websockets import WebSocket as StarletteWebSocket
+
+                socket = StarletteWebSocket(scope, receive, send)
+                if "websocket.http.response" in scope.get("extensions", {}):
+                    await socket.send_denial_response(response)
+                else:
+                    await socket.close(code=1011 if status >= 500 else 1008)
+            else:
+                await response(scope, receive, send)
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] not in ("http", "websocket"):
+                await self.app(scope, receive, send)
+                return
+            tokens = [value for key, value in scope.get("headers", []) if key.lower() == b"x-neyra-identity"]
+            if tokens:
+                from starlette.requests import HTTPConnection
+
+                connection = HTTPConnection(scope)
+                try:
+                    if len(tokens) != 1:
+                        raise InvalidWebIdentity()
+                    identity = verify_web_identity(tokens[0].decode("ascii"))
+                    dash = getattr(app.state, "dashboard_auth", None)
+                    authorization = connection.headers.get("authorization")
+                    if scope["type"] == "websocket":
+                        api_role = _require_ws_auth(connection.query_params.get("token"), authorization, config, dash)
+                    else:
+                        api_role = _resolve_role(authorization, config, dash)
+                    if api_role == "anon":
+                        raise InvalidWebIdentity()
+                except (InvalidWebIdentity, ApiError, UnicodeError):
+                    await self._deny(scope, receive, send, 401, "invalid_web_identity", "Invalid web identity")
+                    return
+                try:
+                    identity = await asyncio.to_thread(self._provision, agent, identity)
+                except Exception:
+                    logger.exception("web person provisioning failed")
+                    await self._deny(scope, receive, send, 503, "identity_storage_unavailable", "Identity storage unavailable")
+                    return
+                scope.setdefault("state", {})["web_identity"] = identity
+                # Default-deny every memory route for a signed user, including future
+                # routes and mutations carried by an admin service key. Only explicitly
+                # scoped reads are allowed; JWT admins and legacy callers retain ops API.
+                from starlette._utils import get_route_path
+
+                path = get_route_path(scope).rstrip("/")
+                if identity.role == "user" and (path == "/v1/memory" or path.startswith("/v1/memory/")):
+                    allowed = (scope["type"] == "http" and (
+                        (scope.get("method") == "POST" and path in ("/v1/memory/search", "/v1/memory/chat/recall"))
+                        or (scope.get("method") == "GET" and path == f"/v1/memory/people/{identity.person_id}")
+                    ))
+                    if not allowed:
+                        await self._deny(scope, receive, send, 403, "web_memory_forbidden", "Memory access forbidden")
+                        return
+            await self.app(scope, receive, send)
+
+    app.add_middleware(_WebIdentityASGI)
+
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(_TraceDocsASGI)
     app.add_middleware(_RateLimitASGI)
@@ -1531,17 +1678,104 @@ def build_app(
             row.update(extra)
         _audit_file_append(config, root, row)
 
+    from core.api.attachments import AttachmentError, AttachmentStore, MAX_FILE_SIZE, MAX_FILES
+    attachment_store = AttachmentStore(resolve_data_dir(root, config) / "attachments")
+
+    def _attachment_owner(connection):
+        identity = getattr(connection.state, "web_identity", None)
+        if identity is not None:
+            return "web:" + identity.user_id
+        authorization = connection.headers.get("authorization", "")
+        if not authorization and connection.scope["type"] == "websocket" and connection.query_params.get("token"):
+            authorization = "Bearer " + connection.query_params["token"]
+        if not api_tokens_configured(config) or not authorization.startswith("Bearer "):
+            raise ApiError("unauthorized", "Нужна авторизация владельца вложения.", 401)
+        return "api:" + hashlib.sha256(authorization.encode()).hexdigest()
+
+    # Bounded, process-local last-turn readings, scoped exactly like attachments.
+    # No shared person/channel lookup: a caller cannot select another owner's data.
+    from collections import OrderedDict
+    context_readings = OrderedDict()
+
+    @app.get("/v1/context/limits")
+    async def v1_context_limits(request: Request, channel_id: str = Query(min_length=1, max_length=120),
+                                _: str = Depends(dep_web_admin)):
+        from core.agent.chat_progress import context_usage, context_policy
+        inputs = context_readings.get((_attachment_owner(request), channel_id), {})
+        return {"ok": True, "trace_id": _trace_id(request),
+                "data": {**context_usage(agent.config, inputs), "policy": context_policy(agent.config)}}
+
+    @app.post("/v1/attachments")
+    async def v1_attachments(request: Request, _: str = Depends(dep_web_admin)):
+        from starlette.datastructures import UploadFile as StarletteUploadFile
+        from starlette.exceptions import HTTPException
+        from starlette.formparsers import MultiPartException
+
+        owner = _attachment_owner(request)
+        max_body = MAX_FILES * MAX_FILE_SIZE + 64 * 1024
+        overflow = False
+        received = 0
+        async def bounded_receive():
+            nonlocal received, overflow
+            message = await request.receive()
+            received += len(message.get("body", b""))
+            if received > max_body:
+                overflow = True
+                # Multipart parser closes its temporary files on MultiPartException.
+                raise MultiPartException("attachment body limit")
+            return message
+        bounded = Request(request.scope, bounded_receive)
+        try:
+            async with bounded.form(max_files=MAX_FILES, max_fields=1, max_part_size=MAX_FILE_SIZE) as form:
+                channel = form.get("channel_id")
+                if not isinstance(channel, str) or not channel.strip() or len(channel) > 120:
+                    raise AttachmentError("attachment_channel", "Укажите канал вложения.")
+                files = form.getlist("files")
+                if not 1 <= len(files) <= MAX_FILES or any(not isinstance(f, StarletteUploadFile) for f in files):
+                    raise AttachmentError("attachment_count", "Можно прикрепить от 1 до 4 файлов.")
+                payloads = [(f.filename or 'file', f.content_type or '', await f.read(MAX_FILE_SIZE + 1)) for f in files]
+                saved = await asyncio.to_thread(attachment_store.save_batch, owner, channel.strip(), payloads)
+        except AttachmentError as error:
+            raise ApiError(error.code, error.message, error.status)
+        except HTTPException:
+            raise ApiError("attachment_size" if overflow else "invalid_multipart", "Превышен лимит загрузки." if overflow else "Неверный multipart или больше 4 файлов.", 413 if overflow else 400)
+        return {"ok": True, "trace_id": _trace_id(request), "data": {"attachments": saved}}
+
+    @app.get("/v1/attachments/{attachment_id}")
+    async def v1_attachment(attachment_id: str, request: Request, channel_id: str = Query(min_length=1, max_length=120), _: str = Depends(dep_web_admin)):
+        try:
+            meta, path = await asyncio.to_thread(attachment_store.load, attachment_id, _attachment_owner(request), channel_id)
+        except AttachmentError as error:
+            raise ApiError(error.code, error.message, error.status)
+        return FileResponse(path, media_type=meta['mime'], filename=meta['name'])
+
+    @app.get("/v1/web/me")
+    async def v1_web_me(request: Request, _: str = Depends(dep_web)):
+        identity = getattr(request.state, "web_identity", None)
+        if identity is None:
+            raise ApiError("web_identity_required", "Web identity required", 401)
+        return {"ok": True, "trace_id": _trace_id(request), "data": {
+            "person_id": identity.person_id, "role": identity.role,
+            "name": identity.name, "user_id": identity.user_id, "limits": None,
+        }}
+
+    def _memory_user_id(request: Request, supplied: Optional[str]) -> Optional[str]:
+        identity = getattr(request.state, "web_identity", None)
+        return identity.person_id if identity is not None else (supplied or "").strip() or None
+
     @app.post("/v1/chat")
     async def v1_chat(body: ChatRequest, request: Request, _role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
+        web_identity = getattr(request.state, "web_identity", None)
         out = await agent.chat(
             user_message=body.text,
-            username=body.username or "api_user",
-            discord_user_id=body.platform_user_id,
+            username=web_identity.person_id if web_identity is not None else body.username or "api_user",
+            discord_user_id=None if web_identity is not None else body.platform_user_id,
             channel_id=body.channel_id,
-            author_display_name=body.author_display_name,
-            avatar_url=body.avatar_url,
-            **({"discord_context": body.discord_context} if body.discord_context is not None else {}),
+            author_display_name=web_identity.name if web_identity is not None else body.author_display_name,
+            avatar_url=None if web_identity is not None else body.avatar_url,
+            person_id=web_identity.person_id if web_identity is not None else None,
+            **({"discord_context": body.discord_context} if web_identity is None and body.discord_context is not None else {}),
         )
         return {"ok": True, "trace_id": trace_id, "data": out}
 
@@ -1566,9 +1800,9 @@ def build_app(
         return {"ok": True, "trace_id": _trace_id(request), "data": {"accepted": accepted, **manager.status()}}
 
     @app.post("/v1/memory/search")
-    async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_maint)):
+    async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_web_memory)):
         trace_id = _trace_id(request)
-        uid = (body.user_id or "").strip() or None
+        uid = _memory_user_id(request, body.user_id)
         if not uid:
             raise ApiError(
                 "memory_search_user_required",
@@ -1583,13 +1817,13 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": {"results": rows, "user_id": uid}}
 
     @app.post("/v1/memory/chat/recall")
-    async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_maint)):
+    async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_web_memory)):
         """Chronological list from SQLite chat_log (Memory Hub). Requires user_id and/or channel_id."""
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
-        uid = (body.user_id or "").strip() or None
+        uid = _memory_user_id(request, body.user_id)
         cid = (body.channel_id or "").strip() or None
         if not uid and not cid:
             raise ApiError(
@@ -2607,7 +2841,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/memory/people/{person_id}")
-    async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_maint)):
+    async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_web_memory)):
         """Person card: accounts + facts (no анкета)."""
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
@@ -3692,6 +3926,18 @@ def build_app(
         response.headers["x-trace-id"] = trace_id
         return response
 
+    config_write_lock = asyncio.Lock()
+
+    def _serialized_config_write(fn):
+        import functools
+
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            async with config_write_lock:
+                return await fn(*args, **kwargs)
+
+        return wrapper
+
     def _safe_set(cfg: dict, path: str, value: Any) -> None:
         keys = path.split(".")
         cur = cfg
@@ -3717,6 +3963,7 @@ def build_app(
         }
 
     @app.post("/v1/config/update")
+    @_serialized_config_write
     async def v1_config_update(body: ConfigUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
         """Apply allowlisted keys: persist to layer YAML first, then runtime + LLM rebind."""
         trace_id = _trace_id(request)
@@ -3766,7 +4013,8 @@ def build_app(
         llm_rebound = False
         if any(str(k).startswith("llm.") and not str(k).startswith("llm.talk_model.responses.") for k in updates_applied):
             try:
-                agent._setup_llm()
+                async with llm_rebind_lock:
+                    await asyncio.to_thread(agent._setup_llm)
                 llm_rebound = True
             except Exception as e:
                 logger.exception("LLM rebind after config update failed; rolling back memory | trace_id=%s", trace_id)
@@ -3807,6 +4055,702 @@ def build_app(
                 "llm_rebound": llm_rebound,
             },
         }
+
+    @app.get("/v1/config")
+    async def v1_admin_config(request: Request, _: str = Depends(dep_admin)):
+        """Read-only config snapshot for the admin panel. Secrets are flags only."""
+        from core.agent.chat_progress import context_policy
+        from core.llm.profile import (
+            resolve_role_provider,
+            resolved_brain_model,
+            resolved_memory_model,
+            resolved_talk_model,
+            resolved_vision_model_id,
+        )
+        from core.runtime.admin_config import admin_config_snapshot
+
+        trace_id = _trace_id(request)
+        resolvers = {
+            "talk": resolved_talk_model,
+            "brain": resolved_brain_model,
+            "memory": resolved_memory_model,
+            "vision": resolved_vision_model_id,
+        }
+        resolved: dict[str, str] = {}
+        for lane, resolver in resolvers.items():
+            provider = resolve_role_provider(config, f"{lane}_model")
+            try:
+                resolved[lane] = str(resolver(config, provider))
+            except Exception:
+                resolved[lane] = ""
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": admin_config_snapshot(
+                config,
+                version=API_VERSION,
+                uptime_seconds=int(max(0, time.time() - _PROCESS_STARTED_AT)),
+                policy=context_policy(config),
+                resolved_models=resolved,
+            ),
+        }
+
+    def _config_drop_path(cfg: dict[str, Any], path: str) -> None:
+        keys = [part for part in str(path).split(".") if part]
+        if not keys:
+            return
+        stack: list[tuple[dict[str, Any], str]] = []
+        cur: dict[str, Any] = cfg
+        for key in keys[:-1]:
+            nxt = cur.get(key)
+            if not isinstance(nxt, dict):
+                return
+            stack.append((cur, key))
+            cur = nxt
+        cur.pop(keys[-1], None)
+        for parent, key in reversed(stack):
+            value = parent.get(key)
+            if isinstance(value, dict) and not value:
+                parent.pop(key, None)
+
+    @app.put("/v1/config")
+    @_serialized_config_write
+    async def v1_admin_config_put(
+        body: AdminConfigPutRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Write allowlisted fields: validate → persist (tmp+rename, .bak) → apply."""
+        from core.runtime.admin_config import (
+            AdminConfigError,
+            requires_restart_fields,
+            validate_admin_updates,
+        )
+        from core.runtime.config_loader import persist_allowlisted_updates
+
+        trace_id = _trace_id(request)
+        try:
+            updates = validate_admin_updates(
+                body.updates,
+                config,
+                configured_llm_providers(config),
+            )
+        except AdminConfigError as e:
+            raise ApiError(e.code, e.message, e.status)
+
+        restart_fields = requires_restart_fields(updates)
+        rollback = {path: _config_get_path(config, path) for path in updates}
+        config_dir = root / "config"
+        before_files = {
+            path.name: path.is_file()
+            for path in config_dir.glob("*.yaml")
+        } if config_dir.is_dir() else {}
+        try:
+            persisted = persist_allowlisted_updates(root, updates, keep_backup=True)
+        except Exception as e:
+            logger.exception("Failed to persist admin config | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Не удалось записать конфиг на диск.", 500) from e
+
+        for path, value in updates.items():
+            _safe_set(config, path, value)
+
+        llm_rebound = False
+        if any(path.startswith("llm.") for path in updates):
+            try:
+                async with llm_rebind_lock:
+                    await asyncio.to_thread(agent._setup_llm)
+                llm_rebound = True
+            except Exception as e:
+                logger.exception("LLM rebind after admin config write failed | trace_id=%s", trace_id)
+                # Restore files from the .bak that persist_allowlisted_updates wrote,
+                # drop newly added keys from memory, and rebuild LLM on the old config.
+                for rel in persisted:
+                    layer = root / rel
+                    if not before_files.get(layer.name, False):
+                        # Слоя до PUT не было: откат обязан удалить созданный файл.
+                        try:
+                            layer.unlink(missing_ok=True)
+                        except OSError:
+                            logger.exception("Failed to remove config layer created by PUT | layer=%s", layer)
+                        continue
+                    bak = layer.with_suffix(layer.suffix + ".bak")
+                    try:
+                        if bak.is_file():
+                            shutil.copy2(bak, layer)
+                    except OSError:
+                        logger.exception("Failed to restore config layer from backup | layer=%s", layer)
+                for path, old in rollback.items():
+                    if old is None:
+                        _config_drop_path(config, path)
+                    else:
+                        _safe_set(config, path, old)
+                try:
+                    await asyncio.to_thread(agent._setup_llm)
+                except Exception:
+                    logger.exception("LLM rebind on rolled-back config failed | trace_id=%s", trace_id)
+                raise ApiError(
+                    "llm_rebind_failed",
+                    "Конфиг откатан из .bak, LLM пересобрана на прежних значениях. Проверьте лог.",
+                    500,
+                ) from e
+            from core.agent.talk_sessions import sessions_for
+
+            manager = sessions_for(agent)
+            manager.invalidate()
+            manager.start_warmup()
+
+        _audit(
+            "config_write",
+            trace_id,
+            api_role,
+            {"keys": sorted(updates), "requires_restart": bool(restart_fields)},
+        )
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "applied": updates,
+                "persisted": persisted,
+                "backups": [
+                    f"{rel}.bak" for rel in persisted
+                    if before_files.get((root / rel).name, False)
+                ],
+                "requires_restart": bool(restart_fields),
+                "restart_fields": restart_fields,
+                "llm_rebound": llm_rebound,
+            },
+        }
+
+    # ── Провайдеры LLM: любые OpenAI-совместимые шлюзы ─────────────────────
+    def _provider_data_dir() -> str:
+        from core.runtime.paths import resolve_data_dir
+
+        return str(resolve_data_dir(root, config))
+
+    def _vault():
+        from core.llm.provider_secrets import store_for
+
+        return store_for(_provider_data_dir())
+
+    async def _rebind_llm_after_provider_change() -> bool:
+        try:
+            async with llm_rebind_lock:
+                await asyncio.to_thread(agent._setup_llm)
+        except Exception as e:
+            logger.exception("LLM rebind after provider change failed")
+            raise ApiError(
+                "llm_rebind_failed",
+                "Провайдер сохранён, но LLM-клиенты не пересобраны; нужен рестарт ядра.",
+                500,
+            ) from e
+        try:
+            from core.agent.talk_sessions import sessions_for
+
+            manager = sessions_for(agent)
+            manager.invalidate()
+            manager.start_warmup()
+        except Exception:
+            logger.exception("Session warmup after provider change failed")
+        return True
+
+    def _provider_row(name: str) -> dict[str, Any]:
+        from core.llm.provider_admin import provider_rows
+
+        try:
+            vault_names = _vault().names()
+        except Exception:
+            vault_names = []
+        for row in provider_rows(config, vault_names=vault_names):
+            if row["name"] == name:
+                return row
+        return {"name": name, "base_url": "", "kind": "openai", "builtin": False, "has_key": False, "key_source": "none", "lanes": []}
+
+    @app.get("/v1/providers")
+    async def v1_providers(request: Request, _: str = Depends(dep_admin)):
+        """Провайдеры из llm.providers + каталог пресетов. Секреты не отдаются."""
+        from core.llm.provider_admin import LANES, preset_catalog, provider_rows
+
+        trace_id = _trace_id(request)
+        try:
+            vault_names = _vault().names()
+        except Exception:
+            logger.warning("Provider vault unavailable", exc_info=True)
+            vault_names = []
+        from core.llm.provider_probe import cached_probe
+
+        rows = provider_rows(config, vault_names=vault_names)
+        for row in rows:
+            probe = cached_probe(row.get("base_url") or "")
+            row["probe"] = probe.as_payload() if probe else None
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "providers": rows,
+                "presets": preset_catalog(),
+                "lanes": list(LANES),
+            },
+        }
+
+    @app.put("/v1/providers/{name}")
+    @_serialized_config_write
+    async def v1_provider_put(
+        name: str,
+        body: ProviderUpsertRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Создать или обновить провайдера: base_url уходит в llm.yaml."""
+        from core.llm.provider_admin import ProviderAdminError, normalize_provider_name, validate_base_url
+
+        trace_id = _trace_id(request)
+        try:
+            provider = normalize_provider_name(name)
+            base_url = validate_base_url(body.base_url)
+            kind = str(body.kind or "openai").strip().lower()
+            if kind not in {"openai", "local", "proxy"}:
+                kind = "openai"
+        except ProviderAdminError as e:
+            raise ApiError(e.code, e.message, e.status)
+
+        from core.runtime.config_loader import persist_allowlisted_updates
+
+        providers_cfg = config.get("llm", {}).get("providers") if isinstance(config.get("llm"), dict) else None
+        old_block = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+        old_base_url = str((old_block or {}).get("base_url") or "").strip().rstrip("/") if isinstance(old_block, dict) else ""
+        base_url_changed = isinstance(old_block, dict) and old_base_url != base_url
+
+        updates: dict[str, Any] = {
+            f"llm.providers.{provider}.base_url": base_url,
+            f"llm.providers.{provider}.kind": kind,
+        }
+        headers = {str(k): str(v) for k, v in (body.default_headers or {}).items() if str(k).strip()}
+        if headers:
+            updates[f"llm.providers.{provider}.default_headers"] = headers
+        try:
+            persisted = persist_allowlisted_updates(root, updates, keep_backup=True)
+        except Exception as e:
+            logger.exception("Failed to persist provider config | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Не удалось записать провайдера в конфиг.", 500) from e
+
+        for path, value in updates.items():
+            _safe_set(config, path, value)
+
+        # Конфиг уже записан; только теперь убираем старый ключ, чтобы новый
+        # адрес никогда не получил ключ от прежнего хоста.
+        key_reset = False
+        if base_url_changed:
+            try:
+                if _vault().has(provider):
+                    key_reset = _vault().delete(provider)
+            except Exception as e:
+                logger.exception("Failed to reset provider key after base_url change | trace_id=%s", trace_id)
+                # Старый ключ остался: возвращаем прежний адрес, чтобы новый хост
+                # не получил его даже при повторном сохранении.
+                rolled_back = False
+                try:
+                    if old_base_url:
+                        persist_allowlisted_updates(
+                            root,
+                            {f"llm.providers.{provider}.base_url": old_base_url},
+                            keep_backup=True,
+                        )
+                        _safe_set(config, f"llm.providers.{provider}.base_url", old_base_url)
+                    else:
+                        from core.runtime.config_loader import persist_dotted_removals
+
+                        persist_dotted_removals(
+                            root,
+                            [f"llm.providers.{provider}.base_url"],
+                            keep_backup=True,
+                        )
+                        if isinstance(config.get("llm", {}).get("providers", {}), dict):
+                            config["llm"]["providers"][provider].pop("base_url", None)
+                    rolled_back = True
+                except Exception:
+                    logger.exception("Failed to rollback base_url after key reset failure | trace_id=%s", trace_id)
+                if not rolled_back:
+                    raise ApiError(
+                        "vault_error",
+                        "Ключ из vault убрать не удалось, и откат base_url не удался. "
+                        "Проверьте адрес провайдера и удалите ключ вручную.",
+                        500,
+                    ) from e
+                raise ApiError(
+                    "vault_error",
+                    "Ключ из vault убрать не удалось; сделан откат base_url. "
+                    "Повторите сохранение нового адреса.",
+                    500,
+                ) from e
+
+        llm_rebound = await _rebind_llm_after_provider_change()
+        _audit("provider_write", trace_id, api_role, {"provider": provider, "base_url": base_url, "key_reset": key_reset})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "provider": _provider_row(provider),
+                "persisted": persisted,
+                "backups": [f"{rel}.bak" for rel in persisted],
+                "llm_rebound": llm_rebound,
+                "key_reset": key_reset,
+            },
+        }
+
+    @app.delete("/v1/providers/{name}")
+    @_serialized_config_write
+    async def v1_provider_delete(
+        name: str,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Удалить провайдера и его ключ. Занятые лейны не дают удалить."""
+        from core.llm.provider_admin import (
+            ProviderAdminError,
+            lanes_for_provider,
+            normalize_provider_name,
+        )
+
+        trace_id = _trace_id(request)
+        try:
+            provider = normalize_provider_name(name)
+        except ProviderAdminError as e:
+            raise ApiError(e.code, e.message, e.status)
+        used = lanes_for_provider(config, provider)
+        if used:
+            raise ApiError(
+                "provider_in_use",
+                f"Провайдер используется лейнами: {', '.join(used)}. Сначала переключите их на другого.",
+                409,
+            )
+
+        from core.runtime.config_loader import persist_dotted_removals
+
+        paths = [
+            f"llm.providers.{provider}.base_url",
+            f"llm.providers.{provider}.kind",
+            f"llm.providers.{provider}.default_headers",
+        ]
+        try:
+            persisted = persist_dotted_removals(root, paths, keep_backup=True)
+        except Exception as e:
+            logger.exception("Failed to remove provider config | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Не удалось убрать провайдера из конфига.", 500) from e
+
+        llm_cfg = config.get("llm") if isinstance(config.get("llm"), dict) else None
+        if isinstance(llm_cfg, dict):
+            providers_cfg = llm_cfg.get("providers")
+            if isinstance(providers_cfg, dict):
+                providers_cfg.pop(provider, None)
+        key_removed = False
+        try:
+            key_removed = _vault().delete(provider)
+        except Exception:
+            logger.warning("Vault delete failed | provider=%s", provider, exc_info=True)
+        llm_rebound = await _rebind_llm_after_provider_change()
+        _audit("provider_delete", trace_id, api_role, {"provider": provider, "key_removed": key_removed})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "deleted": provider,
+                "key_removed": key_removed,
+                "persisted": persisted,
+                "llm_rebound": llm_rebound,
+            },
+        }
+
+    @app.put("/v1/providers/{name}/secret")
+    @_serialized_config_write
+    async def v1_provider_secret_put(
+        name: str,
+        body: ProviderSecretRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Сохранить API-ключ в шифрованном vault (в YAML и логи не попадает)."""
+        from core.llm.provider_admin import ProviderAdminError, normalize_provider_name
+        from core.llm.provider_secrets import ProviderSecretsError
+
+        trace_id = _trace_id(request)
+        try:
+            provider = normalize_provider_name(name)
+        except ProviderAdminError as e:
+            raise ApiError(e.code, e.message, e.status)
+        api_key = str(body.api_key or "").strip()
+        if len(api_key) < 8:
+            raise ApiError("invalid_key", "Ключ слишком короткий: нужно не меньше 8 символов.", 400)
+        if len(api_key) > 4096:
+            raise ApiError("invalid_key", "Ключ слишком длинный.", 400)
+        try:
+            _vault().set(provider, api_key)
+        except ProviderSecretsError as e:
+            raise ApiError("vault_error", "Хранилище ключей недоступно.", 500) from e
+        llm_rebound = await _rebind_llm_after_provider_change()
+        _audit("provider_secret_write", trace_id, api_role, {"provider": provider, "length": len(api_key)})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"provider": _provider_row(provider), "llm_rebound": llm_rebound},
+        }
+
+    @app.delete("/v1/providers/{name}/secret")
+    @_serialized_config_write
+    async def v1_provider_secret_delete(
+        name: str,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Убрать ключ из vault; провайдер остаётся, но без ключа."""
+        from core.llm.provider_admin import ProviderAdminError, normalize_provider_name
+
+        trace_id = _trace_id(request)
+        try:
+            provider = normalize_provider_name(name)
+        except ProviderAdminError as e:
+            raise ApiError(e.code, e.message, e.status)
+        try:
+            removed = _vault().delete(provider)
+        except Exception as e:
+            raise ApiError("vault_error", "Хранилище ключей недоступно.", 500) from e
+        llm_rebound = await _rebind_llm_after_provider_change()
+        _audit("provider_secret_delete", trace_id, api_role, {"provider": provider, "removed": removed})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"provider": _provider_row(provider), "removed": removed, "llm_rebound": llm_rebound},
+        }
+
+    @app.post("/v1/providers/{name}/migrate-secret")
+    @_serialized_config_write
+    async def v1_provider_migrate_secret(
+        name: str,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Перенести ключ из llm.providers.<name>.api_key в шифрованный vault."""
+        from core.llm.provider_admin import ProviderAdminError, normalize_provider_name
+        from core.llm.provider_secrets import ProviderSecretsError
+
+        trace_id = _trace_id(request)
+        try:
+            provider = normalize_provider_name(name)
+        except ProviderAdminError as e:
+            raise ApiError(e.code, e.message, e.status)
+
+        providers_cfg = config.get("llm", {}).get("providers") if isinstance(config.get("llm"), dict) else None
+        block = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+        yaml_key = str((block or {}).get("api_key") or "").strip() if isinstance(block, dict) else ""
+        if not yaml_key:
+            raise ApiError("no_yaml_key", "У этого провайдера нет ключа в конфиге: переносить нечего.", 400)
+        if len(yaml_key) < 8:
+            raise ApiError("invalid_key", "Ключ в конфиге слишком короткий: проверьте вручную.", 400)
+        try:
+            _vault().set(provider, yaml_key)
+        except ProviderSecretsError as e:
+            raise ApiError("vault_error", "Хранилище ключей недоступно.", 500) from e
+        try:
+            stored = _vault().get_strict(provider)
+        except Exception as e:
+            raise ApiError("vault_error", "Ключ записан, но не читается — отмена.", 500) from e
+        if stored != yaml_key:
+            raise ApiError("vault_error", "Ключ записан, но не читается — отмена.", 500)
+
+        from core.runtime.config_loader import persist_dotted_removals, scrub_layer_backups
+
+        try:
+            persisted = persist_dotted_removals(root, [f"llm.providers.{provider}.api_key"], keep_backup=False)
+        except Exception as e:
+            logger.exception("Failed to remove yaml api_key | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Ключ в vault, но из yaml убрать не удалось.", 500) from e
+        try:
+            scrub_layer_backups(root, "llm.yaml", [f"llm.providers.{provider}.api_key"])
+        except Exception:
+            logger.exception("Failed to scrub yaml backups after secret migration | trace_id=%s", trace_id)
+            raise ApiError("persist_failed", "Ключ перенесён, но backup конфига не очищен. Остановите ядро и удалите config/llm.yaml.bak вручную.", 500)
+        if isinstance(block, dict):
+            block.pop("api_key", None)
+        llm_rebound = await _rebind_llm_after_provider_change()
+        _audit("provider_secret_migrate", trace_id, api_role, {"provider": provider})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {"provider": _provider_row(provider), "persisted": persisted, "llm_rebound": llm_rebound},
+        }
+
+    @app.get("/v1/logs/tail")
+    async def v1_logs_tail(
+        request: Request,
+        lines: int = Query(200, ge=1, le=1000),
+        _: str = Depends(dep_admin),
+    ):
+        """Last lines of the core system log with secrets masked (admin only)."""
+        from core.api.log_tail import read_tail
+        from core.runtime.admin_config import secret_values
+
+        trace_id = _trace_id(request)
+        logging_cfg = config.get("logging") if isinstance(config.get("logging"), dict) else {}
+        rel = str(logging_cfg.get("system_log", "./logs/system.log")).strip()
+        path = Path(rel)
+        if not path.is_absolute():
+            path = root / path
+        # API tokens live in config, not env: mask them in the tail as well.
+        api_cfg = config.get("api") if isinstance(config.get("api"), dict) else {}
+        config_secrets = [
+            str(api_cfg.get(key) or "").strip()
+            for key in ("token", "viewer_token", "maint_token", "web_token", "webhook_inbound_secret")
+        ]
+        extra = [value for value in [*secret_values(config), *config_secrets] if len(value) >= 8]
+        data = await asyncio.to_thread(read_tail, path, lines, extra_secrets=extra)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    def _discord_catalog_store():
+        """Memory Hub SQLite if it exists; None on agents without memory (tests, early boot)."""
+        hub = getattr(agent, "memory_hub", None)
+        return getattr(hub, "sqlite", None) if hub is not None else None
+
+    def _iso_filter(value: Optional[str], field: str, *, end: bool = False) -> tuple[Optional[str], bool]:
+        if value is None or not str(value).strip():
+            return None, False
+        import re
+        from datetime import timedelta
+
+        from core.runtime.timeutil import parse_ts, to_utc_iso
+
+        raw = str(value).strip()
+        dt = parse_ts(raw)
+        if dt is None:
+            raise ApiError("bad_request", f"{field}: ожидается ISO-время", 400)
+        date_only = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw))
+        if end and date_only:
+            return to_utc_iso(dt + timedelta(days=1)), True
+        return to_utc_iso(dt), False
+
+    @app.get("/v1/admin/discord/guilds")
+    async def v1_admin_discord_guilds(
+        request: Request,
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        _: str = Depends(dep_admin),
+    ):
+        """Known Discord guilds with channel and member counts (admin only)."""
+        from core.memory.discord_catalog import list_guilds
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        if store is None:
+            data = {"items": [], "total": 0, "limit": limit, "offset": offset, "available": False}
+        else:
+            data = {**await asyncio.to_thread(list_guilds, store, limit=limit, offset=offset), "available": True}
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/guilds/{guild_id}")
+    async def v1_admin_discord_guild(
+        guild_id: str,
+        request: Request,
+        member_limit: int = Query(200, ge=1, le=500),
+        _: str = Depends(dep_admin),
+    ):
+        """One guild with channels and known members (admin only)."""
+        from core.memory.discord_catalog import get_guild
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        data = await asyncio.to_thread(get_guild, store, guild_id, member_limit=member_limit) if store is not None else None
+        if data is None:
+            raise ApiError("not_found", "Сервер не найден в каталоге.", 404)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/members")
+    async def v1_admin_discord_members(
+        request: Request,
+        guild_id: Optional[str] = Query(default=None, max_length=120),
+        q: Optional[str] = Query(default=None, max_length=120),
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        _: str = Depends(dep_admin),
+    ):
+        """Known guild members with optional search (admin only)."""
+        from core.memory.discord_catalog import list_members
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        if store is None:
+            data = {"items": [], "total": 0, "limit": limit, "offset": offset, "available": False}
+        else:
+            data = {
+                **await asyncio.to_thread(
+                    list_members, store, guild_id=guild_id, q=q, limit=limit, offset=offset
+                ),
+                "available": True,
+            }
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/users/{person_id}/stats")
+    async def v1_admin_discord_user_stats(
+        person_id: str,
+        request: Request,
+        days: int = Query(30, ge=1, le=365),
+        _: str = Depends(dep_admin),
+    ):
+        """How often a person talked to Neyra: messages, turns, channels, last days."""
+        from core.memory.discord_catalog import person_stats
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        if store is None:
+            data = {"person_id": person_id, "messages": 0, "turns": 0, "channels": [],
+                    "first_contact": None, "last_contact": None, "days": [], "available": False}
+        else:
+            data = {**await asyncio.to_thread(person_stats, store, person_id, days=days), "available": True}
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/admin/discord/messages")
+    async def v1_admin_discord_messages(
+        request: Request,
+        guild_id: Optional[str] = Query(default=None, max_length=120),
+        channel_id: Optional[str] = Query(default=None, max_length=120),
+        person_id: Optional[str] = Query(default=None, max_length=120),
+        date_from: Optional[str] = Query(default=None, alias="from", max_length=40),
+        date_to: Optional[str] = Query(default=None, alias="to", max_length=40),
+        q: Optional[str] = Query(default=None, max_length=200),
+        cursor: Optional[int] = Query(default=None, ge=0),
+        limit: int = Query(50, ge=1, le=200),
+        _: str = Depends(dep_admin),
+    ):
+        """Dialog history from chat_log with filters and an id cursor (admin only)."""
+        from core.memory.discord_catalog import list_messages
+
+        trace_id = _trace_id(request)
+        store = _discord_catalog_store()
+        since, _ = _iso_filter(date_from, "from")
+        until, until_exclusive = _iso_filter(date_to, "to", end=True)
+        if since and until:
+            from core.runtime.timeutil import parse_ts
+
+            since_dt, until_dt = parse_ts(since), parse_ts(until)
+            if since_dt is not None and until_dt is not None and since_dt >= until_dt:
+                raise ApiError("bad_request", "from: начало не раньше конца", 400)
+        if store is None:
+            data = {"items": [], "total": 0, "limit": limit, "next_cursor": None, "available": False}
+        else:
+            data = {
+                **await asyncio.to_thread(
+                    list_messages,
+                    store,
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    person_id=person_id,
+                    date_from=since,
+                    date_to=until,
+                    date_to_exclusive=until_exclusive,
+                    q=q,
+                    cursor=cursor,
+                    limit=limit,
+                ),
+                "available": True,
+            }
+        return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.post("/v1/backup/run")
     async def v1_backup_run(request: Request, api_role: str = Depends(dep_maint)):
@@ -4232,9 +5176,14 @@ def build_app(
                 peer = websocket.client.host if websocket.client else "unknown"
                 if not _is_console_local_client(peer=peer, headers=websocket.headers):
                     raise ApiError("unauthorized", "Missing bearer token", 401)
-            # Same bar as POST /v1/chat (admin): viewer must not mutate memory / spend LLM.
-            if not _role_at_least(ws_role, "admin"):
-                raise ApiError("forbidden", "WebSocket chat requires admin (same as POST /v1/chat)", 403)
+            ws_identity = websocket.scope.get("state", {}).get("web_identity")
+            # Admin keeps the old access. The site uses a separate web key and must
+            # present a verified X-Neyra-Identity; viewer/maint still cannot chat.
+            if ws_role == "web":
+                if ws_identity is None:
+                    raise ApiError("forbidden", "WebSocket chat requires X-Neyra-Identity", 403)
+            elif not _role_at_least(ws_role, "admin"):
+                raise ApiError("forbidden", "WebSocket chat requires admin or web identity", 403)
         except ApiError:
             # 1008: Policy Violation
             await websocket.close(code=1008, reason="unauthorized")
@@ -4289,32 +5238,67 @@ def build_app(
             ws_disp = parsed.author_display_name or parsed.display_name
             ws_author_disp = str(ws_disp).strip() if ws_disp else None
 
+            ws_identity = websocket.scope.get("state", {}).get("web_identity")
+            try:
+                vision_images, attachment_text = await asyncio.to_thread(
+                    attachment_store.resolve_for_chat, parsed.attachments, _attachment_owner(websocket), channel_id,
+                ) if parsed.attachments else (None, '')
+            except (AttachmentError, ApiError) as error:
+                await websocket.send_json({"type": "error", "code": error.code, "message": error.message, "trace_id": trace_id})
+                continue
+            phases = set()
             try:
                 async for chunk in agent.chat_stream(
-                    text,
-                    username=username,
-                    discord_user_id=platform_user_id,
+                    text + attachment_text,
+                    vision_images=vision_images, progress=True,
+                    username=ws_identity.person_id if ws_identity is not None else username,
+                    discord_user_id=None if ws_identity is not None else platform_user_id,
                     channel_id=channel_id,
-                    author_display_name=ws_author_disp,
-                    **({"discord_context": parsed.discord_context} if parsed.discord_context is not None else {}),
+                    author_display_name=ws_identity.name if ws_identity is not None else ws_author_disp,
+                    person_id=getattr(ws_identity, "person_id", None),
+                    **({"discord_context": parsed.discord_context} if ws_identity is None and parsed.discord_context is not None else {}),
                 ):
-                    if chunk.get("type") == "token":
+                    if chunk.get("type") == "phase":
+                        from core.agent.chat_progress import PHASES
+                        phase = chunk.get("phase")
+                        if phase in PHASES and phase not in phases:
+                            phases.add(phase)
+                            await websocket.send_json({"type": "phase", "phase": phase, "label": PHASES[phase]})
+                    elif chunk.get("type") == "token":
                         await websocket.send_json(
                             {"type": "token", "text": chunk.get("text", ""), "trace_id": trace_id}
                         )
                     elif chunk.get("type") == "done":
+                        from core.agent.chat_progress import context_usage, lane_inputs
+                        inputs = lane_inputs(chunk.get("model_trace"))
+                        key = (_attachment_owner(websocket), channel_id)
+                        context_readings[key] = inputs
+                        context_readings.move_to_end(key)
+                        if len(context_readings) > 256:
+                            context_readings.popitem(last=False)
+                        usage = context_usage(agent.config, inputs)
                         await websocket.send_json(
                             {
                                 "type": "done",
                                 "text": chunk.get("text", ""),
                                 "sounds": chunk.get("sounds", []),
-                                "model_trace": chunk.get("model_trace"),
+                                "usage": usage,
                                 "trace_id": trace_id,
                             }
                         )
                     elif chunk.get("type") == "error":
+                        code = str(chunk.get("code") or "chat_error").strip() or "chat_error"
+                        # Rate limit is decided by the current turn's exception, not by
+                        # any 429 from another user/background job in the last 10 min.
+                        if chunk.get("rate_limit"):
+                            from core.agent.public_errors import provider_rate_limit_message
+
+                            code = "provider_rate_limit"
+                            message = provider_rate_limit_message()
+                        else:
+                            message = public_chat_error({"code": code})
                         await websocket.send_json(
-                            {"type": "error", "code": "chat_error", "message": public_chat_error(chunk), "model_trace": chunk.get("model_trace"), "trace_id": trace_id}
+                            {"type": "error", "code": code, "message": message, "trace_id": trace_id}
                         )
             except WebSocketDisconnect:
                 break
