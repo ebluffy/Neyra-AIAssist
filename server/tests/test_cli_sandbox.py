@@ -1004,25 +1004,17 @@ def test_valid_auth_file_passes_settings_load(tmp_path: Path):
     )
     assert settings.auth_file.endswith("auth.json")
 
-    # AR-94: data_dir через симлинк и `..` в sandbox — те же правила.
-    real = tmp_path / "realdata"
-    real.mkdir()
-    (real / "cli-sandbox" / "data" / "opencode").mkdir(parents=True)
-    (real / "cli-sandbox" / "data" / "opencode" / "auth.json").write_text(
-        json.dumps({"p": {"type": "api", "key": "k"}}), encoding="utf-8"
-    )
-    linked = tmp_path / "linked"
-    linked.symlink_to(real)
+    # AR-94: `..` в sandbox — без resolved sandbox в validate_auth падает.
     CliSettings.from_config(
         {
             "kind": "cli",
             "cli": "opencode",
             "cli_path": str(_runtime_bin(tmp_path)),
             "experimental": True,
-            "sandbox": "cli-sandbox/data/../cli-sandbox",
+            "sandbox": "cli-sandbox/../cli-sandbox",
         },
         model="m",
-        data_dir=str(linked),
+        data_dir=str(data),
     )
 
 
