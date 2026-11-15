@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -53,6 +54,7 @@ SANDBOX_CONFIG_DIR = f"{SANDBOX_HOME}/config/opencode"
 SANDBOX_AUTH_DIR = f"{SANDBOX_HOME}/data/opencode"
 SANDBOX_AUTH_PATH = f"{SANDBOX_AUTH_DIR}/auth.json"
 SANDBOX_PLUGIN_DIR = f"{SANDBOX_HOME}/plugin"
+SANDBOX_STATE_DIR = f"{SANDBOX_HOME}/state"
 SANDBOX_DIR_NAME = "cli-sandbox"
 
 # Широкие корни, которые нельзя монтировать в песочницу целиком (AR-68).
@@ -61,6 +63,23 @@ _WIDE_ROOTS = {
     "/mnt", "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/tmp",
     "/usr", "/var",
 }
+# Префиксы, под которыми лежат чужие данные, сокеты и временные каталоги:
+# `cli_roots` оттуда не принимаются, даже если это не сам широкий корень.
+_FORBIDDEN_ROOT_PREFIXES: tuple[str, ...] = (
+    "/run",
+    "/media",
+    "/mnt",
+    "/var",
+    "/srv",
+    "/tmp",
+    "/home",
+    "/root",
+    "/etc",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/boot",
+)
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_CONCURRENT_CLI = 4
 CHARS_PER_TOKEN = 4
@@ -245,16 +264,33 @@ def _allowed_cli_roots(settings: CliSettings) -> tuple[Path, ...]:
 
 
 def _validate_cli_root(root: Path, settings: CliSettings) -> None:
-    """Allowlist: системные read-only каталоги, рантайм OpenCode или cli_roots.
+    """Allowlist: каталог версии OpenCode или ровно элемент `cli_roots`.
 
-    Denylist-подход не годится: подкаталог `/opt/neyra`, `$HOME` или `data`
-    монтируется целиком и открывает секреты.
+    AR-68: проверяется форма пути, а не список плохих каталогов. Один лишний
+    компонент (`/run` → `/run/media`) не должен открывать целый диск, поэтому
+    `cli_roots` не принимается из `/run`, `/media`, `/mnt`, `/var`, `/srv`,
+    `/tmp`, `/home`, `/root`, `/etc`, `/proc`, `/sys`, `/dev`, `/boot`.
     """
     root = root.expanduser().resolve()
     if str(root) in _WIDE_ROOTS:
         raise CliProviderError(
             f"CLI-путь {root} — широкий корень ФС; укажите каталог версии OpenCode"
         )
+
+    internal_runtime = False
+    if settings.data_dir:
+        data_root_path = Path(settings.data_dir).expanduser().resolve()
+        internal_runtime = _is_under(root, data_root_path / "cli-runtime") or _is_under(
+            root, data_root_path / SANDBOX_DIR_NAME / "runtime"
+        )
+    if not internal_runtime and not _is_opencode_runtime_root(root):
+        for prefix in _FORBIDDEN_ROOT_PREFIXES:
+            base = Path(prefix)
+            if root == base or _is_under(root, base):
+                raise CliProviderError(
+                    f"CLI-путь {root} лежит в {prefix}: такие каталоги нельзя "
+                    "монтировать в песочницу; укажите каталог версии OpenCode"
+                )
     data_root = Path(settings.data_dir).expanduser().resolve() if settings.data_dir else None
     if data_root is not None and (root == data_root or root in data_root.parents):
         raise CliProviderError(
@@ -290,10 +326,11 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
             f"CLI-путь {root} должен совпадать с "
             "provider-runtimes/opencode/<platform>/<version>"
         )
-    if not _is_opencode_runtime_root(root) and not any(_is_under(root, item) for item in allowed):
+    if not _is_opencode_runtime_root(root) and root not in allowed:
         raise CliProviderError(
             f"CLI-путь {root} вне разрешённых каталогов: ожидается версия OpenCode "
-            f"({RUNTIME_MARKER}/opencode/<platform>/<version>) или cli_roots"
+            f"({RUNTIME_MARKER}/opencode/<platform>/<version>) или ровно каталог "
+            "из cli_roots"
         )
 
 
@@ -370,12 +407,28 @@ PLUGIN_PACKAGE_JSON = """{
 }
 """
 
-PLUGIN_INDEX_JS = """export default {
+PLUGIN_INDEX_JS = """import { writeFileSync } from "node:fs";
+
+const NONCE = process.env.NEYRA_PLUGIN_NONCE || "";
+
+function report(tools) {
+  try {
+    writeFileSync(
+      "/home/sandbox/state/plugin.json",
+      JSON.stringify({ nonce: NONCE, tools }),
+    );
+  } catch {
+    // ядро увидит отсутствие манифеста и откажет (AR-75)
+  }
+}
+
+export default {
   id: "neyra-no-tools",
   setup(ctx) {
     ctx.session.hook("context", (event) => {
       if (!event || !event.tools) return;
       for (const name of Object.keys(event.tools)) delete event.tools[name];
+      report(Object.keys(event.tools).length);
     });
   },
 };
@@ -394,8 +447,10 @@ def _write_opencode_assets(sandbox: Path) -> Path:
     except OSError as e:
         raise CliProviderError(f"Не удалось создать конфиг OpenCode в {sandbox}: {e}") from e
     plugin_dir = root / "plugin"
+    state_dir = root / "state"
     try:
         plugin_dir.mkdir()
+        state_dir.mkdir()
         (plugin_dir / "package.json").write_text(PLUGIN_PACKAGE_JSON, encoding="utf-8")
         (plugin_dir / "index.js").write_text(PLUGIN_INDEX_JS, encoding="utf-8")
         config = root / "opencode.json"
@@ -519,12 +574,14 @@ def _parse_json_events(stdout: str) -> str:
     return "".join(chunks).strip()
 
 
-def _child_env() -> dict[str, str]:
+def _child_env(nonce: str) -> dict[str, str]:
     """Минимальное окружение потомка: без секретов ядра и токенов сервисов."""
     allowed = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM")
     env = {name: os.environ[name] for name in allowed if os.environ.get(name)}
     env.update(
         {
+            # AR-75: одноразовый маркер, который печатает только наш плагин.
+            "NEYRA_PLUGIN_NONCE": nonce,
             "HOME": SANDBOX_HOME,
             "TMPDIR": f"{SANDBOX_HOME}/tmp",
             "XDG_CACHE_HOME": f"{SANDBOX_HOME}/cache",
@@ -611,6 +668,10 @@ def _bwrap_argv(
         "--ro-bind",
         str(assets / "plugin"),
         SANDBOX_PLUGIN_DIR,
+        # AR-75: сюда плагин пишет манифест; каталог пуст на каждый вызов.
+        "--bind",
+        str(assets / "state"),
+        SANDBOX_STATE_DIR,
     ]
     if auth_file is not None:
         argv += ["--dir", SANDBOX_AUTH_DIR, "--ro-bind", str(auth_file), SANDBOX_AUTH_PATH]
@@ -644,7 +705,7 @@ def _bwrap_argv(
     return argv
 
 
-def _prepare(settings: CliSettings) -> tuple[list[str], dict[str, str]]:
+def _prepare(settings: CliSettings) -> tuple[list[str], dict[str, str], Path, str]:
     """Проверить конфиг, подготовить sandbox/конфиг/авторизацию и argv bwrap."""
     if not settings.experimental:
         raise CliProviderError(
@@ -662,7 +723,8 @@ def _prepare(settings: CliSettings) -> tuple[list[str], dict[str, str]]:
     except BaseException:
         _remove_quietly(assets)
         raise
-    return argv, _child_env(), assets
+    nonce = secrets.token_hex(16)
+    return argv, _child_env(nonce), assets, nonce
 
 
 def _timeout_error(settings: CliSettings) -> CliProviderError:
@@ -754,12 +816,32 @@ def _run_sync(
 
 def run_cli_prompt(settings: CliSettings, prompt: str) -> str:
     """Синхронный вызов OpenCode через bwrap. Возвращает текст ответа."""
-    argv, env, assets = _prepare(settings)
+    argv, env, assets, nonce = _prepare(settings)
     try:
         stdout, stderr, returncode = _run_sync(settings, argv, env, prompt)
+        _require_plugin_manifest(assets, nonce)
     finally:
         _remove_quietly(assets)
     return _answer_from_output(settings, stdout, stderr, returncode=returncode)
+
+
+def _require_plugin_manifest(assets: Path, nonce: str) -> None:
+    """AR-75: плагин обязан оставить манифест с пустым списком инструментов.
+
+    stderr для этого не годится: OpenCode забирает вывод плагина в свой лог.
+    Каталог `state` монтируется записываемым и пуст на каждый вызов, поэтому
+    старый манифест не подойдёт.
+    """
+    path = Path(assets) / "state" / "plugin.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        payload = None
+    if not isinstance(payload, dict) or payload.get("nonce") != nonce or payload.get("tools") != 0:
+        raise CliProviderError(
+            "Плагин CLI не подтвердил отключение инструментов: ответ отклонён. "
+            "Проверьте версию OpenCode и каталог плагина"
+        )
 
 
 def _reject_tool_events(stdout: str) -> None:
@@ -835,7 +917,7 @@ async def _read_capped(stream: Any, limit: int) -> bytes:
 
 async def run_cli_prompt_async(settings: CliSettings, prompt: str) -> str:
     """Async-вызов OpenCode: CancelledError/таймаут убивают bwrap и всё дерево."""
-    argv, env, assets = _prepare(settings)
+    argv, env, assets, nonce = _prepare(settings)
     try:
         async with _semaphore():
             proc = await asyncio.create_subprocess_exec(
@@ -860,6 +942,7 @@ async def run_cli_prompt_async(settings: CliSettings, prompt: str) -> str:
                 _kill_quietly(proc)
                 await _reap(proc)
                 raise
+        _require_plugin_manifest(assets, nonce)
     finally:
         _remove_quietly(assets)
     text = _answer_from_output(

@@ -83,10 +83,24 @@ class _FakePopen:
         self.returncode = -9
 
 
-def _patch_popen(monkeypatch, stdout: str = TEXT_EVENT, stderr: str = "", returncode: int = 0):
+def _patch_popen(
+    monkeypatch,
+    stdout: str = TEXT_EVENT,
+    stderr: str = "",
+    returncode: int = 0,
+    markers: bool = True,
+):
     holder: dict[str, _FakePopen] = {}
 
     def _factory(argv, **kwargs):  # noqa: ANN001
+        nonce = (kwargs.get("env") or {}).get("NEYRA_PLUGIN_NONCE", "")
+        if markers and nonce:
+            state = _manifest_state_dir(argv)
+            if state is not None:
+                state.mkdir(parents=True, exist_ok=True)
+                (state / "plugin.json").write_text(
+                    json.dumps({"nonce": nonce, "tools": 0}), encoding="utf-8"
+                )
         proc = _FakePopen(stdout, stderr, returncode)
         proc.argv = list(argv)
         proc.kwargs = kwargs
@@ -96,6 +110,14 @@ def _patch_popen(monkeypatch, stdout: str = TEXT_EVENT, stderr: str = "", return
     monkeypatch.setattr("core.llm.cli_provider.subprocess.Popen", _factory)
     monkeypatch.setattr("core.llm.cli_provider.shutil.which", lambda name: "/usr/bin/bwrap")
     return holder
+
+
+def _manifest_state_dir(argv: list[str]) -> Path | None:
+    """Хостовый каталог, смонтированный в /home/sandbox/state."""
+    for index, item in enumerate(argv):
+        if item == "/home/sandbox/state" and index >= 2 and argv[index - 2] in {"--bind", "--ro-bind"}:
+            return Path(argv[index - 1])
+    return None
 
 
 def _config_text(tmp_path: Path) -> str:
@@ -175,6 +197,7 @@ def test_env_whitelist_has_no_core_secrets(tmp_path: Path, monkeypatch):
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
         "OPENCODE_CONFIG",
+        "NEYRA_PLUGIN_NONCE",
     }
 
 
@@ -402,9 +425,16 @@ def test_async_stream_returns_single_chunk(tmp_path: Path, monkeypatch):
     proc = _FakeAsyncProc()
     proc.stdout = _ReadyStream(payload)
     proc.stderr = _ReadyStream(b"")
-    proc.returncode = 0
 
     async def _spawn(*argv, **kwargs):  # noqa: ANN002, ANN003
+        nonce = (kwargs.get("env") or {}).get("NEYRA_PLUGIN_NONCE", "")
+        state = _manifest_state_dir(list(argv))
+        if state is not None:
+            state.mkdir(parents=True, exist_ok=True)
+            (state / "plugin.json").write_text(
+                json.dumps({"nonce": nonce, "tools": 0}), encoding="utf-8"
+            )
+        proc.returncode = 0
         return proc
 
     monkeypatch.setattr("core.llm.cli_provider.shutil.which", lambda name: "/usr/bin/bwrap")
@@ -428,6 +458,7 @@ def test_actual_bwrap_denies_tools_and_forgets_home(tmp_path: Path):
     script.write_text(
         "#!/bin/sh\n"
         "read line\n"
+        'printf \'{"nonce":"%s","tools":0}\\n\' "$NEYRA_PLUGIN_NONCE" > "$HOME/state/plugin.json"\n'
         'if [ ! -f "$HOME/.seen" ]; then\n'
         '  touch "$HOME/.seen"\n'
         '  if grep -q \'"bash": false\' "$OPENCODE_CONFIG"; then\n'
@@ -550,23 +581,39 @@ def test_provider_put_does_not_rewrite_cli_kind(real_api, auth_headers):
 # ─── Второй раунд авторевью #77 (AR-67…AR-71) ────────────────────────────────
 
 
-def test_cli_roots_cannot_open_data_or_wide_roots(tmp_path: Path):
-    """AR-68: cli_roots не обходит allowlist."""
-    data = tmp_path / "data"
+def test_cli_roots_reject_broad_prefixes_and_require_exact_root(tmp_path: Path):
+    """AR-68: форма пути, а не список плохих каталогов; монтируется ровно элемент."""
+    from core.llm.cli_provider import _validate_cli_root
+
+    settings = _settings(tmp_path)
+    # Подкаталоги широких префиксов не открывают диск «на один компонент глубже».
     for bad in (
-        str(data / "memory"),
-        str(data / "memory" / "bin" / "opencode"),
-        "/srv",
-        "/mnt",
+        "/run",
         "/run/media",
+        "/run/media/ebluffy",
+        "/run/user/1000",
+        "/mnt/data",
+        "/media/disk",
+        "/var/log",
+        "/var/lib/other",
+        "/srv/www",
+        "/tmp/tools",
+        "/home/someone/opencode",
+        "/root/opencode",
+        "/etc/opencode",
     ):
-        settings = _settings(
-            tmp_path,
-            cli_path=str(data / "memory" / "bin" / "opencode"),
-            cli_roots=(bad,),
-        )
-        with pytest.raises(CliProviderError):
-            run_cli_prompt(settings, "hi")
+        with pytest.raises(CliProviderError, match="нельзя монтировать|широкий корень|вне разрешённых"):
+            _validate_cli_root(Path(bad), settings)
+
+    entry = Path("/opt/vendor/opencode")
+    allowed = _settings(tmp_path, cli_roots=(str(entry),))
+    _validate_cli_root(entry, allowed)  # ровно элемент cli_roots — можно
+    with pytest.raises(CliProviderError, match="вне разрешённых"):
+        _validate_cli_root(entry / "bin", allowed)  # подкаталог — нет
+
+    runtime = tmp_path / "provider-runtimes" / "opencode" / "linux-x64" / "2.3.0"
+    runtime.mkdir(parents=True)
+    _validate_cli_root(runtime, settings)  # каталог версии OpenCode — можно
 
 
 def test_auth_file_must_stay_inside_sandbox(tmp_path: Path):
@@ -592,6 +639,36 @@ def test_relative_paths_resolve_from_data_dir(tmp_path: Path, monkeypatch):
     (data / "cli-sandbox" / "data" / "opencode" / "auth.json").write_text("{}", encoding="utf-8")
     settings = _settings(tmp_path, sandbox="cli-sandbox", auth_file="cli-sandbox/data/opencode/auth.json")
     assert run_cli_prompt(settings, "hi") == "ответ"
+
+
+def test_plugin_manifest_is_required_fail_closed(tmp_path: Path, monkeypatch):
+    """AR-75: без манифеста плагина ответ отклоняется, а не уходит с инструментами."""
+    _patch_popen(monkeypatch, markers=False)
+    with pytest.raises(CliProviderError, match="не подтвердил отключение инструментов"):
+        run_cli_prompt(_settings(tmp_path), "hi")
+
+
+def test_plugin_manifest_nonce_and_tools_are_checked(tmp_path: Path):
+    """AR-75: чужой nonce или оставшиеся инструменты не считаются успехом."""
+    from core.llm.cli_provider import _require_plugin_manifest
+
+    assets = tmp_path / "assets"
+    (assets / "state").mkdir(parents=True)
+    manifest = assets / "state" / "plugin.json"
+
+    with pytest.raises(CliProviderError, match="не подтвердил"):
+        _require_plugin_manifest(assets, "cafe")  # файла нет
+
+    manifest.write_text(json.dumps({"nonce": "deadbeef", "tools": 0}), encoding="utf-8")
+    with pytest.raises(CliProviderError, match="не подтвердил"):
+        _require_plugin_manifest(assets, "cafe")
+
+    manifest.write_text(json.dumps({"nonce": "cafe", "tools": 3}), encoding="utf-8")
+    with pytest.raises(CliProviderError, match="не подтвердил"):
+        _require_plugin_manifest(assets, "cafe")
+
+    manifest.write_text(json.dumps({"nonce": "cafe", "tools": 0}), encoding="utf-8")
+    _require_plugin_manifest(assets, "cafe")
 
 
 def test_tool_event_fails_closed(tmp_path: Path, monkeypatch):
@@ -623,7 +700,7 @@ def test_prepare_uses_per_call_config_with_tools_denied(tmp_path: Path):
     Path(settings.sandbox).mkdir(parents=True, exist_ok=True)
 
     def _one(_: int):
-        argv, _env, assets = _prepare(settings)
+        argv, _env, assets, _nonce = _prepare(settings)
         payload = json.loads((Path(assets) / "opencode.json").read_text(encoding="utf-8"))
         assert payload["permission"]["bash"] == "deny", payload
         assert payload["tools"]["bash"] is False, payload
@@ -640,31 +717,18 @@ def test_prepare_uses_per_call_config_with_tools_denied(tmp_path: Path):
     assert not list(Path(settings.sandbox).glob(".opencode-*"))
 
 
-def test_cli_roots_cannot_open_data_dir_or_wide_roots(tmp_path: Path):
-    """AR-68: cli_roots внутри data_dir и широкие корни отклоняются."""
-    data = tmp_path / "data"
-    for bad in (str(data / "memory"), "/srv", "/mnt", "/run/media"):
-        with pytest.raises(CliProviderError):
-            run_cli_prompt(_settings(tmp_path, cli_roots=(bad,)), "hi")
+def test_real_2_3_0_events_are_parsed_and_tool_events_rejected(tmp_path: Path):
+    """AR-71: фикстуры — сырой вывод настоящего 2.3.0, не выдуманный JSON."""
+    from core.llm.cli_provider import _answer_from_output, _reject_tool_events
 
+    fixtures = Path(__file__).parent / "fixtures" / "cli"
+    clean = (fixtures / "opencode-2.3.0-text.jsonl").read_text(encoding="utf-8")
+    assert _answer_from_output(_settings(tmp_path), clean, "", returncode=0) == "pong"
+    _reject_tool_events(clean)  # чистое событие не падает
 
-def test_auth_file_must_live_in_sandbox(tmp_path: Path):
-    """AR-69: auth_file из data_dir (память, vault) в песочницу не монтируется."""
-    data = tmp_path / "data"
-    foreign = data / "memory" / "vault.json"
-    foreign.parent.mkdir(parents=True)
-    foreign.write_text("{}", encoding="utf-8")
-    with pytest.raises(CliProviderError, match="вне cli-sandbox"):
-        run_cli_prompt(_settings(tmp_path, auth_file=str(foreign)), "hi")
-
-
-def test_relative_sandbox_resolves_from_data_dir(tmp_path: Path):
-    """AR-70: относительный sandbox считается от data_dir, а не от cwd."""
-    settings = _settings(tmp_path, sandbox="cli-sandbox")
-    Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
-    from core.llm.cli_provider import validate_settings
-
-    validate_settings(settings)
+    tool = (fixtures / "opencode-2.3.0-tool-use.jsonl").read_text(encoding="utf-8")
+    with pytest.raises(CliProviderError, match="инструмент"):
+        _reject_tool_events(tool)
 
 
 def test_tool_events_are_rejected_fail_closed(tmp_path: Path):
