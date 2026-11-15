@@ -133,3 +133,11 @@ def test_broken_paths_module_returns_4_not_traceback(tmp_path: Path) -> None:
     assert result.returncode == 4
     assert "core.runtime.paths" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_unresolvable_data_dir_returns_4_not_traceback(tmp_path: Path) -> None:
+    root = make_root(tmp_path)
+    result = run(root, data_dir="~nosuchuser/data")
+    assert result.returncode == 4
+    assert "не удалось разрешить data_dir" in result.stderr
+    assert "Traceback" not in result.stderr

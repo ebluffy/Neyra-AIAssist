@@ -54,7 +54,10 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001 — обещаем код 4, а не traceback
         return fail(f"не удалось загрузить core.runtime.paths из {root}: {exc}")
 
-    data_dir = resolve_data_dir(root, config if isinstance(config, dict) else {})
+    try:
+        data_dir = resolve_data_dir(root, config if isinstance(config, dict) else {})
+    except Exception as exc:  # noqa: BLE001 — битый ~/путь не должен давать traceback
+        return fail(f"не удалось разрешить data_dir: {exc}")
     print(data_dir)
     if data_dir != root and root not in data_dir.parents:
         print(
