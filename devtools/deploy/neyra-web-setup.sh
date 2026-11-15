@@ -11,6 +11,16 @@
 # кроме перезапуска юнита: systemctl restart neyra-web.
 set -euo pipefail
 
+# Чистая VM: сервисного пользователя, его HOME и rsync может не быть.
+if ! getent group openbot >/dev/null; then groupadd --system openbot; fi
+if ! id openbot >/dev/null 2>&1; then
+  useradd --system --gid openbot --create-home --home-dir /home/openbot --shell /usr/sbin/nologin openbot
+fi
+install -d -m 700 -o openbot -g openbot /home/openbot
+if ! command -v rsync >/dev/null; then
+  apt-get update -qq && apt-get install -y -qq rsync
+fi
+
 WEB=/opt/neyra/web
 COMPOSE="docker compose"  # плагин v2; /usr/bin/docker-compose здесь старый 1.29
 PG_SERVICE=postgres  # имя сервиса в web/docker-compose.yml
