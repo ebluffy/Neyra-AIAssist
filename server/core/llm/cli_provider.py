@@ -446,15 +446,29 @@ def _remove_quietly(path: Path) -> None:
         return
 
 
-def _find_auth_file(settings: CliSettings, sandbox: Path) -> Optional[Path]:
-    """Файл авторизации OpenCode: read-only bind и только из sandbox (AR-69)."""
+def _resolve_auth_file(settings: CliSettings, sandbox: Path, *, strict: bool) -> Optional[Path]:
+    """Единственная логика выбора `auth.json` для старта и для вызова (AR-88).
 
-    def _checked(candidate: Path) -> Path:
+    `strict` — старт: явный `auth_file` обязан существовать. Оба режима
+    отклоняют симлинк и файл вне sandbox.
+    """
+    if settings.auth_file:
+        candidates = [(_resolve_config_path(settings.auth_file, settings.data_dir), True)]
+    else:
+        candidates = [
+            (sandbox / "data" / "opencode" / "auth.json", False),
+            (sandbox / "auth.json", False),
+        ]
+    for candidate, explicit in candidates:
         if candidate.is_symlink():
-            raise CliProviderError(f"Файл авторизации CLI не может быть симлинком: {candidate}")
+            raise CliProviderError(
+                f"Файл авторизации CLI не может быть симлинком: {candidate}"
+            )
+        if not candidate.is_file():
+            if explicit and strict:
+                raise CliProviderError(f"Файл авторизации CLI не найден: {candidate}")
+            continue
         resolved = candidate.resolve()
-        if not resolved.is_file():
-            raise CliProviderError(f"Файл авторизации CLI не найден: {resolved}")
         if not _is_under(resolved, sandbox):
             raise CliProviderError(
                 f"Файл авторизации CLI {resolved} вне {SANDBOX_DIR_NAME}: "
@@ -462,12 +476,6 @@ def _find_auth_file(settings: CliSettings, sandbox: Path) -> Optional[Path]:
             )
         _validate_auth_payload(resolved)
         return resolved
-
-    if settings.auth_file:
-        return _checked(_resolve_config_path(settings.auth_file, settings.data_dir))
-    for candidate in (sandbox / "data" / "opencode" / "auth.json", sandbox / "auth.json"):
-        if candidate.is_file() and not candidate.is_symlink():
-            return _checked(candidate)
     return None
 
 
@@ -495,30 +503,8 @@ def _validate_auth_payload(path: Path) -> None:
 
 
 def _validate_auth_settings(settings: CliSettings, sandbox: Path) -> None:
-    """Те же правила, что у `_find_auth_file`, но без запуска CLI (AR-88)."""
-    if settings.auth_file:
-        candidate = _resolve_config_path(settings.auth_file, settings.data_dir)
-        if candidate.is_symlink():
-            raise CliProviderError(
-                f"Файл авторизации CLI не может быть симлинком: {candidate}"
-            )
-        if not candidate.is_file():
-            raise CliProviderError(f"Файл авторизации CLI не найден: {candidate}")
-        resolved = candidate.resolve()
-        if not _is_under(resolved, sandbox):
-            raise CliProviderError(
-                f"Файл авторизации CLI {resolved} вне {SANDBOX_DIR_NAME}: "
-                "секреты ядра в песочницу не монтируются"
-            )
-        _validate_auth_payload(resolved)
-        return
-    for candidate in (sandbox / "data" / "opencode" / "auth.json", sandbox / "auth.json"):
-        if candidate.is_symlink():
-            raise CliProviderError(
-                f"Файл авторизации CLI не может быть симлинком: {candidate}"
-            )
-        if candidate.is_file():
-            _validate_auth_payload(candidate.resolve())
+    """Стартовая проверка тем же кодом, что и при вызове (AR-88)."""
+    _resolve_auth_file(settings, sandbox, strict=True)
 
 
 def _cli_mount_root(cli_path: Path, settings: CliSettings) -> Path:
@@ -733,7 +719,7 @@ def _prepare(settings: CliSettings) -> tuple[list[str], dict[str, str], Path, st
     sandbox = _ensure_sandbox(settings)
     assets = _write_opencode_assets(sandbox)
     try:
-        auth_file = _find_auth_file(settings, sandbox)
+        auth_file = _resolve_auth_file(settings, sandbox, strict=False)
         cli_path = Path(settings.cli_path).expanduser().resolve()
         if not cli_path.is_file():
             raise CliProviderError(f"CLI не найден: {cli_path}")
