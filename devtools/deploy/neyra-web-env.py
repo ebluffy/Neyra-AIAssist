@@ -90,6 +90,9 @@ def main() -> int:
 
     # Сайту нужен ключ не выше maint: admin-токен в интернет-сервис не передаём (AR-16).
     service_key = (core.get("API_MAINT_TOKEN") or "").strip()
+    # Новые раздельные ключи (#74): web — для чата/вложений, admin — только /api/admin.
+    web_key = (core.get("API_WEB_TOKEN") or service_key or "").strip()
+    admin_key = (core.get("API_MAINT_TOKEN") or core.get("API_TOKEN") or "").strip()
     identity_secret = (core.get("NEYRA_IDENTITY_JWT_SECRET") or "").strip()
     core_issuer = (core.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip()
     web_issuer = (web.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip()
@@ -145,7 +148,11 @@ def main() -> int:
         updates["NEYRA_IDENTITY_JWT_SECRET"] = identity_secret
     if service_key:
         updates["NEYRA_SERVICE_KEY"] = service_key
-    else:
+    if web_key:
+        updates["NEYRA_WEB_KEY"] = web_key
+    if admin_key:
+        updates["NEYRA_ADMIN_KEY"] = admin_key
+    if not service_key:
         print(
             f"внимание: в {CORE_ENV} нет API_MAINT_TOKEN — NEYRA_SERVICE_KEY не записан "
             "(админский API_TOKEN сайту не передаётся)",
