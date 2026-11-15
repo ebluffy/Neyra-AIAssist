@@ -3,6 +3,17 @@
 import type { Flag } from '../feature-flags';
 import { soonToast, emitToast } from '../toast';
 
+// AR-78: «скопировано» говорим только после успешной записи в буфер.
+export async function copyText(text: string, okMessage: string): Promise<void> {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+    await navigator.clipboard.writeText(text);
+    emitToast({ message: okMessage, tone: 'success' });
+  } catch {
+    emitToast({ message: 'Не удалось скопировать: браузер запретил доступ к буферу.', tone: 'danger' });
+  }
+}
+
 export function isMac(): boolean {
   if (typeof window === 'undefined') return false;
   return /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent || navigator.platform || '');
@@ -83,8 +94,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           label: 'Скопировать ссылку',
           iconName: 'Share2',
           run: () => {
-            navigator.clipboard.writeText(`${window.location.origin}/chat?th=${target.id || ''}`);
-            emitToast({ message: 'Ссылка на чат скопирована в буфер', tone: 'success' });
+            void copyText(`${window.location.origin}/chat?th=${target.id || ''}`, 'Ссылка на чат скопирована в буфер');
           },
         },
         {
@@ -108,6 +118,11 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           danger: true,
           shortcut: 'Delete',
           run: () => {
+            // AR-78: массовое удаление не реализовано — не удаляем один чат под видом N.
+            if (isMulti) {
+              soonToast('Массовое удаление чатов');
+              return;
+            }
             if (target.element) {
               const delBtn = target.element.querySelector('button[aria-label*="Удалить"]') as HTMLButtonElement | null;
               if (delBtn) {
@@ -159,8 +174,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           shortcut: cmdShortcut('C'),
           run: () => {
             if (target.text || target.title) {
-              navigator.clipboard.writeText(`${target.title || ''}\n${target.text || ''}`);
-              emitToast({ message: 'Текст заметки скопирован', tone: 'success' });
+              void copyText(`${target.title || ''}\n${target.text || ''}`, 'Текст заметки скопирован');
             }
           },
         },
@@ -229,8 +243,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           shortcut: cmdShortcut('C'),
           run: () => {
             if (target.text) {
-              navigator.clipboard.writeText(target.text);
-              emitToast({ message: 'Сообщение скопировано в буфер', tone: 'success' });
+              void copyText(target.text, 'Сообщение скопировано в буфер');
             }
           },
         },
@@ -240,8 +253,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           iconName: 'FileCode',
           run: () => {
             if (target.text) {
-              navigator.clipboard.writeText(target.text);
-              emitToast({ message: 'Markdown скопирован', tone: 'success' });
+              void copyText(target.text, 'Markdown скопирован');
             }
           },
         },
@@ -433,8 +445,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           iconName: 'Link',
           run: () => {
             if (target.url) {
-              navigator.clipboard.writeText(target.url);
-              emitToast({ message: 'Ссылка скопирована', tone: 'success' });
+              void copyText(target.url, 'Ссылка скопирована');
             }
           },
         },
@@ -487,8 +498,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           iconName: 'Hash',
           run: () => {
             if (target.id) {
-              navigator.clipboard.writeText(target.id);
-              emitToast({ message: `ID скопирован: ${target.id}`, tone: 'success' });
+              void copyText(target.id, `ID скопирован: ${target.id}`);
             }
           },
         },
@@ -498,8 +508,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           iconName: 'Clipboard',
           run: () => {
             if (target.text) {
-              navigator.clipboard.writeText(target.text);
-              emitToast({ message: 'Значение скопировано', tone: 'success' });
+              void copyText(target.text, 'Значение скопировано');
             }
           },
         },
@@ -546,8 +555,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           iconName: 'Hash',
           run: () => {
             if (target.id) {
-              navigator.clipboard.writeText(target.id);
-              emitToast({ message: `Код инвайта скопирован: ${target.id}`, tone: 'success' });
+              void copyText(target.id, `Код инвайта скопирован: ${target.id}`);
             }
           },
         },
@@ -557,8 +565,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           iconName: 'Link',
           run: () => {
             const url = `${window.location.origin}/login?invite=${target.id || ''}`;
-            navigator.clipboard.writeText(url);
-            emitToast({ message: 'Ссылка с инвайтом скопирована', tone: 'success' });
+            void copyText(url, 'Ссылка с инвайтом скопирована');
           },
         },
         { separator: true, id: 'sep-inv', label: '' },
@@ -593,8 +600,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           iconName: 'Copy',
           run: () => {
             if (target.text) {
-              navigator.clipboard.writeText(target.text);
-              emitToast({ message: 'Значение скопировано', tone: 'success' });
+              void copyText(target.text, 'Значение скопировано');
             }
           },
         },
@@ -676,8 +682,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           iconName: 'Copy',
           run: () => {
             if (target.url) {
-              navigator.clipboard.writeText(target.url);
-              emitToast({ message: 'Адрес ссылки скопирован', tone: 'success' });
+              void copyText(target.url, 'Адрес ссылки скопирован');
             }
           },
         },
@@ -687,8 +692,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           iconName: 'FileText',
           run: () => {
             if (target.text) {
-              navigator.clipboard.writeText(target.text);
-              emitToast({ message: 'Текст ссылки скопирован', tone: 'success' });
+              void copyText(target.text, 'Текст ссылки скопирован');
             }
           },
         },
@@ -704,8 +708,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           shortcut: cmdShortcut('C'),
           run: () => {
             if (target.text) {
-              navigator.clipboard.writeText(target.text);
-              emitToast({ message: 'Выделенный фрагмент скопирован', tone: 'success' });
+              void copyText(target.text, 'Выделенный фрагмент скопирован');
             }
           },
         },
@@ -759,8 +762,7 @@ export function getMenu(kind: string, target: MenuTarget): MenuItem[] {
           iconName: 'Link',
           run: () => {
             if (target.url) {
-              navigator.clipboard.writeText(target.url);
-              emitToast({ message: 'URL изображения скопирован', tone: 'success' });
+              void copyText(target.url, 'URL изображения скопирован');
             }
           },
         },

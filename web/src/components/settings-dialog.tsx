@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Bell,
   KeyRound,
@@ -116,10 +117,12 @@ function SwitchControl({
   checked,
   onChange,
   label,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex items-center min-h-[44px]">
@@ -128,11 +131,15 @@ function SwitchControl({
         role="switch"
         aria-checked={checked}
         aria-label={label}
+        disabled={disabled}
         onClick={() => {
+          if (disabled) return;
           playButtonClickSound();
           onChange(!checked);
         }}
-        className={`relative h-6 w-11 rounded-full border transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)] ${
+        className={`relative h-6 w-11 rounded-full border transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)] ${
+          disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
+        } ${
           checked
             ? 'bg-[var(--accent)] border-[var(--accent)]'
             : 'bg-[var(--surface-3)] border-[var(--border-control)] hover:border-[var(--accent)]'
@@ -159,6 +166,7 @@ export function SettingsDialog({
 }: SettingsDialogProps) {
   const [section, setSection] = useState<SectionId>(initialTab);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const router = useRouter();
 
   // Appearance
   const [particles, setParticles] = useState(true);
@@ -184,25 +192,30 @@ export function SettingsDialog({
   const handleSaveProfile = async () => {
     if (!hasNameChanged || savingName) return;
     if (!user.id) {
-      soonToast('Сохранение профиля');
+      emitToast({ message: 'Не удалось определить профиль. Перезайдите в аккаунт.', tone: 'danger' });
       return;
     }
     setSavingName(true);
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(user.id)}`, {
+      // AR-74: своё имя меняет сам пользователь; админская ручка здесь даёт 403.
+      const res = await fetch('/api/me', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: editName.trim() }),
       });
       if (res.ok) {
         emitToast({ message: 'Имя профиля сохранено', tone: 'success' });
+        // Обновляем имя в шапке, сайдбаре и диалоге из серверной сессии.
+        router.refresh();
       } else {
         const err = await res.json().catch(() => ({}));
-        if (res.status === 401 || res.status === 403) {
-          soonToast('Сохранение профиля', 'В данный момент доступно администраторам');
-        } else {
-          emitToast({ message: err.message || 'Не удалось сохранить имя профиля', tone: 'danger' });
-        }
+        emitToast({
+          message:
+            res.status === 401
+              ? 'Сессия истекла. Войдите заново, чтобы изменить имя.'
+              : err.message || 'Не удалось сохранить имя профиля',
+          tone: 'danger',
+        });
       }
     } catch {
       emitToast({ message: 'Ошибка сети при сохранении профиля', tone: 'danger' });
@@ -216,7 +229,6 @@ export function SettingsDialog({
 
   // Danger Zone
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-  const [deleteConfirmText, setDeleteConfirmText] = useState('');
 
   useEffect(() => {
     if (!open) return;
@@ -225,8 +237,6 @@ export function SettingsDialog({
     setCursorRing(readFlag('neyra:cursor-ring', true));
     setSounds(isUiSoundsEnabled());
     setContextMenuNeyra(readFlag('neyra:context-menu-mode-neyra', true));
-    setRememberContext(readFlag('neyra:remember-context', true));
-    setSyncDiscord(readFlag('neyra:sync-discord', true));
     setEditName(user.name || '');
   }, [open, initialTab, user.name]);
 
@@ -702,43 +712,84 @@ export function SettingsDialog({
             {/* 5. ПРИВАТНОСТЬ И ПАМЯТЬ */}
             {section === 'privacy' && (
               <div className="space-y-3">
+                <p className="text-[11px] text-[var(--text-subtle)] leading-relaxed rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2">
+                  Переключатели памяти пока не применяются: ручек управления памятью в ядре ещё нет.
+                  Ниже честно показано, что появится.
+                </p>
+
                 <Row
                   label="Помнить контекст диалогов"
-                  hint="Ассистент сохраняет факты и предпочтения из бесед для ответов в будущем."
+                  hint="Появится вместе с серверной ручкой памяти. Сейчас переключатель ничего не меняет."
                 >
-                  <SwitchControl
-                    checked={rememberContext}
-                    label="Память контекста"
-                    onChange={(next) => {
-                      setRememberContext(next);
-                      writeFlag('neyra:remember-context', next);
-                    }}
-                  />
+                  <div className="flex items-center gap-2">
+                    <SoonAction
+                      featureName="Память контекста"
+                      description="Управление памятью из веба появится вместе с серверной ручкой"
+                    >
+                      <button
+                        type="button"
+                        className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-subtle)] hover:text-[var(--text)]"
+                      >
+                        Скоро
+                      </button>
+                    </SoonAction>
+                    <SwitchControl
+                      checked={rememberContext}
+                      onChange={setRememberContext}
+                      label="Память контекста"
+                      disabled
+                    />
+                  </div>
                 </Row>
 
                 <Row
                   label="Синхронизация истории Discord"
-                  hint="Подтягивать историю сообщений из привязанных каналов Discord в общую память."
+                  hint="Появится вместе с серверной ручкой истории. Сейчас переключатель ничего не меняет."
                 >
-                  <SwitchControl
-                    checked={syncDiscord}
-                    label="История Discord"
-                    onChange={(next) => {
-                      setSyncDiscord(next);
-                      writeFlag('neyra:sync-discord', next);
-                    }}
-                  />
+                  <div className="flex items-center gap-2">
+                    <SoonAction
+                      featureName="История Discord"
+                      description="Синхронизация истории каналов появится вместе с серверной ручкой"
+                    >
+                      <button
+                        type="button"
+                        className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-subtle)] hover:text-[var(--text)]"
+                      >
+                        Скоро
+                      </button>
+                    </SoonAction>
+                    <SwitchControl
+                      checked={syncDiscord}
+                      onChange={setSyncDiscord}
+                      label="История Discord"
+                      disabled
+                    />
+                  </div>
                 </Row>
 
                 <Row
                   label="Исключить из обучения моделей"
-                  hint="Ваши персональные сообщения и факты не отправляются для дообучения."
+                  hint="Серверная ручка согласия на обучение ещё не подключена. Сейчас переключатель ничего не меняет."
                 >
-                  <SwitchControl
-                    checked={trainOptOut}
-                    label="Запрет обучения"
-                    onChange={setTrainOptOut}
-                  />
+                  <div className="flex items-center gap-2">
+                    <SoonAction
+                      featureName="Запрет обучения"
+                      description="Согласие на обучение появится вместе с серверной ручкой"
+                    >
+                      <button
+                        type="button"
+                        className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-subtle)] hover:text-[var(--text)]"
+                      >
+                        Скоро
+                      </button>
+                    </SoonAction>
+                    <SwitchControl
+                      checked={trainOptOut}
+                      onChange={setTrainOptOut}
+                      label="Запрет обучения"
+                      disabled
+                    />
+                  </div>
                 </Row>
 
                 <div className="pt-2 border-t border-[var(--border)] flex items-center justify-between">
@@ -801,6 +852,11 @@ export function SettingsDialog({
                         </div>
                       </div>
                     </div>
+                    {onSignOut && (
+                      <Button variant="secondary" size="sm" onClick={onSignOut}>
+                        Выйти
+                      </Button>
+                    )}
                   </div>
 
                   {/* Second Session Stub */}
@@ -841,23 +897,24 @@ export function SettingsDialog({
             {/* 7. ОПАСНАЯ ЗОНА */}
             {section === 'danger' && (
               <div className="space-y-4">
-                <div className="p-3.5 rounded-[var(--radius-sm)] bg-[var(--danger-quiet)] border border-[var(--danger)] text-xs text-[var(--danger)] space-y-1">
-                  <div className="font-semibold flex items-center gap-1.5">
+                <div className="p-3.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] text-xs text-[var(--text-muted)] space-y-1">
+                  <div className="font-semibold flex items-center gap-1.5 text-[var(--text)]">
                     <AlertTriangle size={15} />
-                    <span>Необратимые действия</span>
+                    <span>Удаление аккаунта пока недоступно</span>
                   </div>
                   <p className="text-[11px] leading-relaxed">
-                    Удаление аккаунта приведет к безвозвратному стиранию диалогов, заметок, памяти и отвязке всех площадок.
+                    На сервере ещё нет удаления своего профиля с каскадом по диалогам, памяти и привязкам.
+                    Пока эта функция не подключена, кнопка ниже ничего не удаляет.
                   </p>
                 </div>
 
                 <div className="p-3.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-between gap-3">
                   <div>
                     <div className="text-xs font-semibold text-[var(--text)]">Удалить профиль Neyra</div>
-                    <div className="text-[11px] text-[var(--text-subtle)]">Стирает все личные данные и сессии</div>
+                    <div className="text-[11px] text-[var(--text-subtle)]">Появится после подключения удаления в ядре</div>
                   </div>
                   <Button
-                    variant="danger"
+                    variant="secondary"
                     size="sm"
                     onClick={() => setDeleteModalOpen(true)}
                   >
@@ -917,34 +974,31 @@ export function SettingsDialog({
         open={deleteModalOpen}
         onClose={() => setDeleteModalOpen(false)}
         title="Удаление профиля"
-        description="Это действие сотрет все данные без возможности восстановления"
+        description="Функция пока недоступна"
       >
         <div className="space-y-4 text-xs">
-          <p className="text-[var(--danger)] font-medium">
-            Внимание! Все диалоги, память и связи с Discord будут безвозвратно удалены.
-          </p>
-          <TextField
-            label='Для подтверждения введите "удалить":'
-            value={deleteConfirmText}
-            onChange={(e) => setDeleteConfirmText(e.target.value)}
-            placeholder="удалить"
-          />
+          <div className="p-3.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] space-y-1.5 text-[var(--text-muted)] leading-relaxed">
+            <p className="font-medium text-[var(--text)]">Пока ничего не удаляется.</p>
+            <p>
+              Удаление своего аккаунта с каскадом по диалогам, заметкам, памяти и привязкам ещё не
+              подключено к ядру. Когда ручка появится, здесь будет подтверждение и настоящее удаление.
+            </p>
+            <p className="text-[11px] text-[var(--text-subtle)]">
+              Если нужно завершить сессию, используйте кнопку «Выйти» в разделе «Данные и сессии».
+            </p>
+          </div>
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border)]">
             <Button variant="secondary" size="sm" onClick={() => setDeleteModalOpen(false)}>
-              Отмена
+              Понятно
             </Button>
-            <Button
-              variant="danger"
-              size="sm"
-              disabled={deleteConfirmText.trim().toLowerCase() !== 'удалить'}
-              onClick={() => {
-                setDeleteModalOpen(false);
-                onClose();
-                onSignOut?.();
-              }}
+            <SoonAction
+              featureName="Удаление аккаунта"
+              description="Ручка удаления своего профиля с каскадом по данным ещё не готова"
             >
-              Удалить навсегда
-            </Button>
+              <Button variant="danger" size="sm">
+                Удалить навсегда
+              </Button>
+            </SoonAction>
           </div>
         </div>
       </Dialog>

@@ -87,6 +87,8 @@ export function AuthForm({
   const inviteRequired = registrationMode
     ? registrationMode === 'invite'
     : (config?.inviteRequired ?? false);
+  // AR-67: код приглашения нужен только при регистрации, не при входе.
+  const inviteRequiredForSignup = inviteRequired && mode === 'signup';
   const discordAvailable = config?.discordAvailable ?? true;
   const showDiscord = discordAvailable && authMode !== 'password';
 
@@ -100,8 +102,8 @@ export function AuthForm({
     setDiscordPending(true);
     setError('');
 
-    // If invite is required and code not entered
-    if (inviteRequired && !inviteCode.trim()) {
+    // If invite is required for signup and code not entered
+    if (inviteRequiredForSignup && !inviteCode.trim()) {
       setError('Для входа требуется код приглашения. Введите код ниже.');
       setDiscordPending(false);
       return;
@@ -111,7 +113,7 @@ export function AuthForm({
       // Simulate or call Discord OAuth provider
       await signIn.social({
         provider: 'discord',
-        callbackURL: '/onboarding',
+        callbackURL: '/',
       });
     } catch {
       setError('Не удалось подключиться к Discord. Попробуйте позже.');
@@ -140,7 +142,7 @@ export function AuthForm({
     }
 
     const token = inviteCode.trim();
-    if (inviteRequired && !hasAppliedInvite && !token) {
+    if (inviteRequiredForSignup && !hasAppliedInvite && !token) {
       nextFieldErrors.inviteCode = ru.inviteRequired;
     }
 
@@ -219,7 +221,7 @@ export function AuthForm({
         )}
 
         {/* Invite code input if required and not applied */}
-        {inviteRequired && !hasAppliedInvite && (
+        {inviteRequiredForSignup && !hasAppliedInvite && (
           <div className="space-y-1.5">
             <TextField
               label="Код приглашения"

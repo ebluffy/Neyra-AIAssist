@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { lookup } from 'node:dns/promises';
 import { POST } from './route';
+
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]),
+}));
 
 // Mock requireAdmin to authenticate as admin
 vi.mock('../../../../../../../lib/admin-guard', () => ({
@@ -156,10 +161,10 @@ describe('POST /api/admin/providers/[name]/verify', () => {
     expect(json.models_count).toBe(1);
   });
 
-  it('adds warning when using non-localhost HTTP', async () => {
-    global.fetch = vi.fn(async () => {
-      return new Response(JSON.stringify({ data: [] }), { status: 200 });
-    });
+  it('blocks targets inside the private network (AR-70)', async () => {
+    vi.mocked(lookup).mockResolvedValueOnce([{ address: '192.168.1.100', family: 4 }] as never);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock;
 
     const req = new Request('http://localhost/api/admin/providers/remotehttp/verify', {
       method: 'POST',
@@ -169,25 +174,57 @@ describe('POST /api/admin/providers/[name]/verify', () => {
 
     const res = await POST(req, { params: Promise.resolve({ name: 'remotehttp' }) });
     const json = await res.json();
-    expect(json.warning).toBeDefined();
-    expect(json.warning).toContain('незащищённое соединение HTTP');
+    expect(json.ok).toBe(false);
+    expect(json.error).toBe('blocked_target');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('handles network error gracefully and returns unreachable error', async () => {
+  it('blocks the cloud metadata address (AR-70)', async () => {
+    vi.mocked(lookup).mockResolvedValueOnce([{ address: '169.254.169.254', family: 4 }] as never);
+    const req = new Request('http://localhost/api/admin/providers/meta/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: 'http://169.254.169.254/latest' }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ name: 'meta' }) });
+    const json = await res.json();
+    expect(json.error).toBe('blocked_target');
+  });
+
+  it('does not verify a saved key by sending it from the site (AR-69)', async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock;
+
+    const req = new Request('http://localhost/api/admin/providers/openrouter/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ name: 'openrouter' }) });
+    const json = await res.json();
+    expect(json.ok).toBe(false);
+    expect(json.error).toBe('key_in_core');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('handles network error gracefully and does not leak the exception text (AR-70)', async () => {
     global.fetch = vi.fn(async () => {
-      throw new Error('Connection refused');
+      throw new Error('Connection refused at 127.0.0.1:8787');
     });
 
     const req = new Request('http://localhost/api/admin/providers/dead/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url: 'http://localhost:9999/v1' }),
+      body: JSON.stringify({ base_url: 'https://dead.example.test/v1' }),
     });
 
     const res = await POST(req, { params: Promise.resolve({ name: 'dead' }) });
     const json = await res.json();
     expect(json.ok).toBe(false);
     expect(json.error).toBe('unreachable');
-    expect(json.message).toContain('Connection refused');
+    expect(json.message).not.toContain('Connection refused');
+    expect(json.message).not.toContain('127.0.0.1');
   });
 });

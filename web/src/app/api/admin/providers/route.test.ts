@@ -60,4 +60,14 @@ describe('GET /api/admin/providers', () => {
       },
     });
   });
+
+  it('returns 502 when the core is down instead of a fake catalog (AR-68)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed'); }));
+
+    const response = await GET(new Request('http://localhost/api/admin/providers'));
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body).toMatchObject({ ok: false, error: 'core_unavailable' });
+    expect(JSON.stringify(body)).not.toContain('openai');
+  });
 });

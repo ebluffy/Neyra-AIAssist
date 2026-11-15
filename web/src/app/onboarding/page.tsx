@@ -2,47 +2,73 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { User, Sparkles, Brain, Check, ArrowRight } from 'lucide-react';
-import { Button, TextField, Switch, Avatar, NeyraLogo } from '../../components/ui';
+import { Sparkles, Brain, Check, ArrowRight } from 'lucide-react';
+import { Button, TextField, Switch, Avatar, NeyraLogo, SoonAction } from '../../components/ui';
 import { emitToast } from '../../lib/toast';
 
 export default function OnboardingPage() {
   const router = useRouter();
   const [step, setStep] = useState<1 | 2>(1);
-  const [displayName, setDisplayName] = useState('NeyraUser');
+  const [displayName, setDisplayName] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  // Step 2 toggles
-  const [rememberContext, setRememberContext] = useState(true);
-  const [syncDiscord, setSyncDiscord] = useState(true);
+  // AR-72: переключатели памяти пока не имеют серверной ручки, поэтому они
+  // только показывают будущие настройки и ничего не сохраняют.
+  const [rememberContext] = useState(true);
+  const [syncDiscord] = useState(true);
 
   const handleNext = () => {
     if (step === 1) {
       setStep(2);
     } else {
-      finishOnboarding();
+      void finishOnboarding();
     }
   };
 
-  const handleSkip = () => {
-    if (step === 1) {
-      setStep(2);
-    } else {
-      finishOnboarding();
+  const finishOnboarding = async () => {
+    if (saving) return;
+    const name = displayName.trim();
+    let saved = false;
+    setSaving(true);
+    if (name) {
+      try {
+        // AR-74: имя сохраняется настоящей ручкой профиля, а не в localStorage.
+        const res = await fetch('/api/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        saved = res.ok;
+      } catch {
+        saved = false;
+      }
     }
-  };
-
-  const finishOnboarding = () => {
+    setSaving(false);
     try {
       window.localStorage.setItem('neyra:onboarding-complete', '1');
-      window.localStorage.setItem('neyra:remember-context', rememberContext ? '1' : '0');
-      window.localStorage.setItem('neyra:sync-discord', syncDiscord ? '1' : '0');
     } catch {}
 
-    emitToast({
-      title: 'Добро пожаловать в Neyra!',
-      message: 'Профиль успешно настроен. Приятного общения!',
-      tone: 'success',
-    });
+    if (name) {
+      emitToast(
+        saved
+          ? {
+              title: 'Имя сохранено',
+              message: 'Изменить его можно в настройках профиля.',
+              tone: 'success',
+            }
+          : {
+              title: 'Имя не сохранено',
+              message: 'Сервер не принял имя. Задайте его позже в настройках профиля.',
+              tone: 'danger',
+            },
+      );
+    } else {
+      emitToast({
+        title: 'Добро пожаловать в Neyra!',
+        message: 'Имя не задано — его можно указать позже в настройках профиля.',
+        tone: 'info',
+      });
+    }
     router.replace('/chat');
   };
 
@@ -68,7 +94,7 @@ export default function OnboardingPage() {
                 Как к тебе обращаться?
               </h1>
               <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-                Задайте отображаемое имя и выберите аватар для диалогов и командных каналов.
+                Имя можно не указывать: тогда его зададите позже в настройках профиля.
               </p>
             </div>
 
@@ -82,15 +108,8 @@ export default function OnboardingPage() {
               <div className="flex-1 space-y-1">
                 <div className="text-xs font-medium text-[var(--text)]">Аватар профиля</div>
                 <div className="text-[11px] text-[var(--text-subtle)]">
-                  Сгенерирован на основе вашего имени
+                  Инициалы берутся из имени, которое вы введёте
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setDisplayName((prev) => (prev.endsWith(' ') ? prev.trim() : prev + ' '))}
-                  className="text-xs text-[var(--text)] hover:underline font-medium cursor-pointer pt-0.5 inline-block"
-                >
-                  Обновить инициалы
-                </button>
               </div>
             </div>
 
@@ -100,7 +119,7 @@ export default function OnboardingPage() {
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               placeholder="Ваше имя или ник"
-              hint="Будет использоваться ассистентом в ответах"
+              hint="Сохранится в профиле; можно изменить в настройках"
             />
           </div>
         )}
@@ -110,10 +129,10 @@ export default function OnboardingPage() {
           <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-150">
             <div className="space-y-1">
               <h1 className="text-lg font-semibold tracking-tight text-[var(--text)]">
-                Что помнить?
+                Память и каналы
               </h1>
               <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-                Управляйте долговременной памятью и синхронизацией внешних каналов.
+                Эти настройки появятся позже: серверных ручек управления памятью пока нет.
               </p>
             </div>
 
@@ -125,36 +144,65 @@ export default function OnboardingPage() {
                     <span>Помнить контекст диалогов</span>
                   </div>
                   <p className="text-[11px] text-[var(--text-subtle)] leading-relaxed">
-                    Ассистент сохраняет ключевые факты и предпочтения из бесед для точных ответов.
+                    Появится вместе с серверной ручкой памяти. Сейчас переключатель ничего не меняет.
                   </p>
                 </div>
-                <Switch
-                  checked={rememberContext}
-                  onChange={(checked) => setRememberContext(checked)}
-                  aria-label="Помнить контекст диалогов"
-                />
+                <div className="flex items-center gap-2 shrink-0">
+                  <SoonAction
+                    featureName="Память контекста"
+                    description="Управление памятью из веба появится вместе с серверной ручкой"
+                  >
+                    <button
+                      type="button"
+                      className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-subtle)] hover:text-[var(--text)]"
+                    >
+                      Скоро
+                    </button>
+                  </SoonAction>
+                  <Switch
+                    checked={rememberContext}
+                    onChange={() => {}}
+                    disabled
+                    aria-label="Помнить контекст диалогов"
+                  />
+                </div>
               </div>
 
-            <div className="p-3.5 rounded-[var(--radius-sm)] bg-[var(--surface-3)] border border-[var(--border)] flex items-start justify-between gap-3">
+              <div className="p-3.5 rounded-[var(--radius-sm)] bg-[var(--surface-3)] border border-[var(--border)] flex items-start justify-between gap-3">
                 <div className="space-y-1">
                   <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--text)]">
                     <Sparkles size={14} className="text-[var(--text-muted)] shrink-0" />
                     <span>Подтягивать историю Discord</span>
                   </div>
                   <p className="text-[11px] text-[var(--text-subtle)] leading-relaxed">
-                    Синхронизирует сообщения и контекст каналов Discord с вашим единым профилем.
+                    Появится вместе с серверной ручкой истории. Сейчас переключатель ничего не меняет.
                   </p>
                 </div>
-                <Switch
-                  checked={syncDiscord}
-                  onChange={(checked) => setSyncDiscord(checked)}
-                  aria-label="Подтягивать историю Discord"
-                />
+                <div className="flex items-center gap-2 shrink-0">
+                  <SoonAction
+                    featureName="История Discord"
+                    description="Синхронизация истории каналов появится вместе с серверной ручкой"
+                  >
+                    <button
+                      type="button"
+                      className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-subtle)] hover:text-[var(--text)]"
+                    >
+                      Скоро
+                    </button>
+                  </SoonAction>
+                  <Switch
+                    checked={syncDiscord}
+                    onChange={() => {}}
+                    disabled
+                    aria-label="Подтягивать историю Discord"
+                  />
+                </div>
               </div>
             </div>
 
             <p className="text-[11px] text-[var(--text-subtle)] leading-relaxed p-2 rounded bg-[var(--surface)] border border-[var(--border)]">
-              Эти параметры можно в любой момент изменить или полностью очистить в разделе <strong>Настройки → Приватность и память</strong>.
+              Когда появятся серверные настройки, их можно будет изменить в разделе{' '}
+              <strong>Настройки → Приватность и память</strong>.
             </p>
           </div>
         )}
@@ -163,7 +211,7 @@ export default function OnboardingPage() {
         <div className="flex items-center justify-between pt-2 border-t border-[var(--border)]">
           <button
             type="button"
-            onClick={handleSkip}
+            onClick={handleNext}
             className="text-xs text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors cursor-pointer py-2 px-1"
           >
             Пропустить
@@ -174,6 +222,7 @@ export default function OnboardingPage() {
             variant="primary"
             size="md"
             onClick={handleNext}
+            loading={saving}
             className="h-10 min-h-[40px] px-4 gap-1.5 text-xs font-medium"
           >
             <span>{step === 1 ? 'Далее' : 'Завершить настройку'}</span>

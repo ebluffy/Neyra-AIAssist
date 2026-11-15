@@ -13,7 +13,29 @@ const webDir = join(repoRoot, 'web');
 const PORT = 3456;
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const CHROMIUM_PATH = '/usr/bin/chromium';
-const DB_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@127.0.0.1:5432/neyra';
+// AR-73: только одноразовая тестовая база, заданная явно. Боевой DATABASE_URL
+// из окружения не подхватывается: раннер пишет в чат и создаёт инвайты.
+const DB_URL = process.env.UI_SHOTS_DATABASE_URL || '';
+if (!DB_URL) {
+  console.error('[ui-shots] Задайте UI_SHOTS_DATABASE_URL — строку подключения к одноразовой тестовой базе.');
+  process.exit(2);
+}
+{
+  let dbName = '';
+  try {
+    dbName = decodeURIComponent(new URL(DB_URL).pathname.replace(/^\//, ''));
+  } catch {
+    console.error('[ui-shots] UI_SHOTS_DATABASE_URL не разбирается как URL.');
+    process.exit(2);
+  }
+  if (!/(test|shots)/i.test(dbName)) {
+    console.error(`[ui-shots] База «${dbName}» не похожа на тестовую: в имени нужен test или shots.`);
+    process.exit(2);
+  }
+}
+
+// Ядро подключается только по явному разрешению: иначе раннер не наследует NEYRA_*.
+const USE_LIVE_CORE = process.env.UI_SHOTS_LIVE_CORE === '1';
 
 // Parse arguments
 const args = process.argv.slice(2);
@@ -59,8 +81,7 @@ async function startServer() {
   await ensureStaticAssets();
 
   if (await isServerReady()) {
-    console.log(`[ui-shots] Using existing server on ${BASE_URL}`);
-    return null;
+    throw new Error(`Порт ${PORT} уже занят другим сервером. Остановите его: раннер не переиспользует чужой сервер.`);
   }
 
   console.log(`[ui-shots] Starting Next.js standalone server on port ${PORT}...`);
@@ -72,7 +93,12 @@ async function startServer() {
   const child = spawn(process.execPath, [serverJs], {
     cwd: webDir,
     env: {
-      ...process.env,
+      PATH: process.env.PATH ?? '',
+      HOME: process.env.HOME ?? '',
+      ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
+      ...(USE_LIVE_CORE
+        ? Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('NEYRA_')))
+        : {}),
       PORT: String(PORT),
       HOSTNAME: '127.0.0.1',
       DATABASE_URL: DB_URL,

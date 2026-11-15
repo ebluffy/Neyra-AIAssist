@@ -34,6 +34,7 @@ import {
   type ProvidersPayload,
 } from '../../../lib/admin-providers';
 import { playButtonClickSound } from '../../lib/ui-sounds';
+import { isEnabled } from '../../lib/feature-flags';
 import { emitToast, soonToast } from '../../lib/toast';
 
 interface ProvidersSectionProps {
@@ -165,6 +166,10 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
   const [cliAuthModalOpen, setCliAuthModalOpen] = useState(false);
   const [cliSetupModalOpen, setCliSetupModalOpen] = useState(false);
   const [cliCopied, setCliCopied] = useState(false);
+
+  // AR-75: CLI-провайдер живёт в #77 (там открыт P1 по песочнице). До мержа
+  // витрину не показываем, чтобы админ не ставил CLI «в пустоту».
+  const providersCatalogEnabled = isEnabled('providersCatalog');
 
   // Load providers from API
   const load = useCallback(async () => {
@@ -1168,61 +1173,65 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
 
       {/* ------------------------------------------------------------------- */}
       {/* CLI PROVIDERS BLOCK (OpenCode)                                      */}
+      {/* AR-75: витрина без функции. CLI-провайдер появится в #77; до мержа  */}
+      {/* блок и его модалки скрыты за флагом providersCatalog.               */}
       {/* ------------------------------------------------------------------- */}
-      <div className="pt-2 border-t border-[var(--border)] space-y-3">
-        <div>
-          <h4 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
-            <Terminal size={16} className="text-[var(--text-muted)]" />
-            <span>CLI-провайдеры (OpenCode)</span>
-          </h4>
-          <p className="text-xs text-[var(--text-muted)] mt-0.5">
-            Использование локального OpenCode CLI для моделей, требующих веб-авторизации или локального контекста разработчика.
-          </p>
-        </div>
+      {providersCatalogEnabled && (
+        <div className="pt-2 border-t border-[var(--border)] space-y-3">
+          <div>
+            <h4 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
+              <Terminal size={16} className="text-[var(--text-muted)]" />
+              <span>CLI-провайдеры (OpenCode)</span>
+            </h4>
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">
+              Использование локального OpenCode CLI для моделей, требующих веб-авторизации или локального контекста разработчика.
+            </p>
+          </div>
 
-        <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <div className="flex items-start gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-center shrink-0">
-              <Terminal size={18} className="text-[var(--text)]" />
-            </div>
-            <div className="space-y-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-[var(--text)]">OpenCode CLI Bridge</span>
-                <span className="px-1.5 py-0.2 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
-                  Локальный
-                </span>
-                <span className="flex items-center gap-1 text-[11px] text-[var(--text-subtle)]">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-subtle)]" />
-                  CLI не обнаружен
-                </span>
+          <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-center shrink-0">
+                <Terminal size={18} className="text-[var(--text)]" />
               </div>
-              <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-                Позволяет использовать ваши существующие подписки (ChatGPT Plus/Team, Claude Pro) без прямых API-ключей через терминальный шлюз.
-              </p>
+              <div className="space-y-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-[var(--text)]">OpenCode CLI Bridge</span>
+                  <span className="px-1.5 py-0.2 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
+                    Локальный
+                  </span>
+                  <span className="flex items-center gap-1 text-[11px] text-[var(--text-subtle)]">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-subtle)]" />
+                    CLI не обнаружен
+                  </span>
+                </div>
+                <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+                  Позволяет использовать ваши существующие подписки (ChatGPT Plus/Team, Claude Pro) без прямых API-ключей через терминальный шлюз.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="text-xs flex-1 sm:flex-none"
+                onClick={() => setCliSetupModalOpen(true)}
+              >
+                Инструкция
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                className="text-xs flex-1 sm:flex-none gap-1.5"
+                onClick={() => setCliAuthModalOpen(true)}
+              >
+                <Terminal size={13} />
+                <span>Авторизация в терминале</span>
+              </Button>
             </div>
           </div>
-
-          <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
-            <Button
-              variant="secondary"
-              size="sm"
-              className="text-xs flex-1 sm:flex-none"
-              onClick={() => setCliSetupModalOpen(true)}
-            >
-              Инструкция
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              className="text-xs flex-1 sm:flex-none gap-1.5"
-              onClick={() => setCliAuthModalOpen(true)}
-            >
-              <Terminal size={13} />
-              <span>Авторизация в терминале</span>
-            </Button>
-          </div>
         </div>
-      </div>
+      )}
 
       {/* ------------------------------------------------------------------- */}
       {/* 2-STEP ADD PROVIDER MODAL                                           */}
@@ -1373,7 +1382,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
       {/* ------------------------------------------------------------------- */}
       {/* OPENCODE CLI COMMAND MODAL                                          */}
       {/* ------------------------------------------------------------------- */}
-      {cliAuthModalOpen && (
+      {providersCatalogEnabled && cliAuthModalOpen && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center p-3 sm:p-6">
           <div
             className="absolute inset-0 bg-black/75 backdrop-blur-sm animate-fade"
@@ -1443,7 +1452,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
       {/* ------------------------------------------------------------------- */}
       {/* OPENCODE CLI SETUP MODAL                                            */}
       {/* ------------------------------------------------------------------- */}
-      {cliSetupModalOpen && (
+      {providersCatalogEnabled && cliSetupModalOpen && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center p-3 sm:p-6">
           <div
             className="absolute inset-0 bg-black/75 backdrop-blur-sm animate-fade"

@@ -86,4 +86,65 @@ describe('Honest Actions & Zero Fake Successes Audit (§5)', () => {
     );
     expect(registryContent).toContain('soonToast');
   });
+
+  // AR-71: «Удалить навсегда» раньше только закрывала диалог и разлогинивала,
+  // обещая безвозвратное удаление данных.
+  it('AR-71: delete-account dialog does not promise deletion it cannot do', () => {
+    const content = fs.readFileSync(
+      path.join(srcDir, 'components', 'settings-dialog.tsx'),
+      'utf-8',
+    );
+    const modalStart = content.indexOf('{/* Delete Account Modal */}');
+    expect(modalStart).toBeGreaterThan(-1);
+    const modal = content.slice(modalStart);
+
+    expect(content).not.toMatch(/безвозвратн/i);
+    expect(modal).not.toContain('onSignOut');
+    const soon = modal.indexOf('<SoonAction');
+    const button = modal.indexOf('Удалить навсегда');
+    expect(soon).toBeGreaterThan(-1);
+    expect(button).toBeGreaterThan(soon);
+  });
+
+  // AR-72: переключатели приватности и онбординг не должны изображать
+  // сохранение настроек, которого нет.
+  it('AR-72: privacy switches stay read-only and onboarding does not fake success', () => {
+    const settings = fs.readFileSync(
+      path.join(srcDir, 'components', 'settings-dialog.tsx'),
+      'utf-8',
+    );
+    expect(settings).not.toContain("writeFlag('neyra:remember-context'");
+    expect(settings).not.toContain("writeFlag('neyra:sync-discord'");
+    expect(settings).toContain('label="Память контекста"');
+    expect(settings).toMatch(/label="Память контекста"\s+disabled/);
+    expect(settings).toMatch(/label="Запрет обучения"\s+disabled/);
+
+    const onboarding = fs.readFileSync(path.join(srcDir, 'app', 'onboarding', 'page.tsx'), 'utf-8');
+    expect(onboarding).not.toMatch(/успешно настроен/i);
+    expect(onboarding).not.toContain("setItem('neyra:remember-context'");
+    expect(onboarding).not.toContain("setItem('neyra:sync-discord'");
+    expect(onboarding).toContain("fetch('/api/me'");
+    expect(onboarding).toMatch(/disabled/);
+  });
+
+  // AR-74: своё имя меняется через /api/me, а не через админскую ручку.
+  it('AR-74: profile name is saved through the own-user route', () => {
+    const settings = fs.readFileSync(
+      path.join(srcDir, 'components', 'settings-dialog.tsx'),
+      'utf-8',
+    );
+    expect(settings).toContain("fetch('/api/me'");
+    expect(settings).not.toContain('/api/admin/users/${encodeURIComponent(user.id)}');
+    expect(settings).toContain('router.refresh()');
+  });
+
+  // AR-75: витрина OpenCode CLI без функции не показывается до #77.
+  it('AR-75: OpenCode CLI block and its modals stay behind the flag', () => {
+    const providers = fs.readFileSync(
+      path.join(srcDir, 'components', 'admin', 'providers-section.tsx'),
+      'utf-8',
+    );
+    expect(providers).toContain("isEnabled('providersCatalog')");
+    expect(providers.match(/providersCatalogEnabled &&/g)).toHaveLength(3);
+  });
 });
