@@ -187,3 +187,8 @@ skills-lock.json
 node_modules/
 .next/
 *.tsbuildinfo
+
+# Web local configuration and PostgreSQL volume
+web/.env*
+!web/.env.example
+web/data/

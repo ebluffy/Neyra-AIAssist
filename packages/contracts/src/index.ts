@@ -139,7 +139,7 @@ export const KernelMemoryWriteRequestSchema = z.object({
   username: z.string().max(120).optional(),
   platform_user_id: z.string().max(120).optional(),
 }).strict();
-export const MemoryAddRequestSchema = z.object({ text: z.string().min(1).max(24000), metadata: z.record(z.unknown()).default({}) }).strict();
+export const MemoryAddRequestSchema = z.object({ text: z.string().min(1).max(24000), metadata: z.record(z.string(), z.unknown()).default({}) }).strict();
 export type MemorySearchRequest = z.infer<typeof MemorySearchRequestSchema>;
 export type MemoryRecallRequest = z.infer<typeof MemoryRecallRequestSchema>;
 export type KernelMemorySearchRequest = z.infer<typeof KernelMemorySearchRequestSchema>;

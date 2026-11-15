@@ -48,11 +48,13 @@ jobs:
       - name: Install minimal deps
         run: pip install -q pyyaml python-dotenv httpx
       - name: compileall (server + MCP)
-        run: python -m compileall -q server devtools/mcp_server
+        run: python -m compileall -q server devtools/mcp_server devtools/deploy
       - name: Dev MCP offline contracts
         run: |
           pip install -q -r devtools/mcp_server/requirements.txt pytest
           pytest -q devtools/mcp_server/test_server.py
+      - name: Web env sync on copies (identity issuer, idempotency)
+        run: pytest -q devtools/deploy/test_neyra_web_env.py
       - name: Check layout / no legacy paths
         run: python server/scripts/verify_stage_1b.py
       - name: Healthcheck smoke (examples, skip HTTP)
