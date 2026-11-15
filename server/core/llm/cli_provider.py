@@ -265,7 +265,9 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
     всё остальное (широкие корни, `<data_dir>`, системные бинарники) — отказ.
     """
     root = root.expanduser().resolve()
-    if str(root) in _WIDE_ROOTS:
+    if str(root) in _WIDE_ROOTS or any(
+        _is_under(root, item.resolve()) for item in PRE_MOUNTED_ROOTS
+    ):
         raise CliProviderError(
             f"CLI-путь {root} — широкий корень ФС; укажите каталог версии OpenCode"
         )

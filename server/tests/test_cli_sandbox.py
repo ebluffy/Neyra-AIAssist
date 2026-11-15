@@ -292,14 +292,17 @@ def test_cli_bypasses_are_closed(tmp_path: Path):
     from core.llm.cli_provider import CliSettings, _cli_mount_root, _validate_cli_root
 
     settings = _settings(tmp_path)
-    # AR-79: точный текст ошибки, а не «одно из трёх».
+    # AR-79: точный текст ошибки, без зависимости от симлинков раннера.
     for bad, message in (
-        ("/usr/bin/oc", "широкий корень"),
-        ("/bin/echo", "широкий корень"),
-        ("/usr/local/bin/opencode-ai", "вне разрешённых"),
+        ("/usr", "широкий корень"),
+        ("/bin", "широкий корень"),
+        ("/usr/local", "широкий корень"),
     ):
         with pytest.raises(CliProviderError, match=message):
-            _cli_mount_root(Path(bad), settings)
+            _validate_cli_root(Path(bad), settings)
+    # Системный бинарник уходит в ту же проверку, что бы из него ни было symlink'ом.
+    with pytest.raises(CliProviderError):
+        _cli_mount_root(Path("/bin/echo"), settings)
 
     data = Path(settings.data_dir)
     plain = data / "cli-runtime" / "bin" / "opencode"
