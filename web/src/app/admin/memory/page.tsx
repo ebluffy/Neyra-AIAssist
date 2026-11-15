@@ -1,5 +1,8 @@
 import { coreGet } from '../../../../lib/core-admin';
+import { readAdminConfig } from '../../../../lib/admin-config';
 import { ExportPeople } from '../../../components/admin/export-button';
+import { MemoryLimitsForm } from '../../../components/admin/memory-limits-form';
+import { accountLabels, discordLabels, personAliases, personIdLabel, personTitle } from '../../../../lib/admin-memory';
 import { Card, EmptyState, PageHeader, Stat, StatusPill, tableClass, tdClass, thClass } from '../../../components/admin/ui';
 
 export const dynamic = 'force-dynamic';
@@ -8,7 +11,7 @@ interface MemoryPerson {
   id?: string;
   display_name?: string;
   names?: string[];
-  accounts?: string[];
+  accounts?: Array<string | { platform?: string; handle?: string | null; platform_user_id?: string | null }>;
   discord_ids?: string[];
 }
 
@@ -31,10 +34,12 @@ export default async function AdminMemoryPage({ searchParams }: {
 }) {
   const params = await searchParams;
   const q = (typeof params.q === 'string' ? params.q : '').trim().slice(0, 120);
-  const [people, stats] = await Promise.all([
+  const [people, stats, configResult] = await Promise.all([
     coreGet<MemoryPeople>('/v1/memory/people?limit=500', { timeoutMs: 5000 }),
     coreGet<MemoryStats>('/v1/memory/stats', { timeoutMs: 4000 }),
+    readAdminConfig(),
   ]);
+  const config = configResult.state === 'ok' ? configResult.data : null;
   const rows = people.state === 'ok' ? people.data?.people ?? [] : [];
   const needle = q.toLowerCase();
   const filtered = needle
@@ -59,13 +64,24 @@ export default async function AdminMemoryPage({ searchParams }: {
         <Stat label="Короткая память" value={stats.state === 'ok' ? stats.data?.short_memory_size ?? '—' : '—'} hint="сообщений в контексте" />
       </div>
 
+      <Card
+        title="Лимиты и автосжатие"
+        description={config ? 'Сохранение идёт в конфиг ядра. Лимиты памяти применяются после перезапуска.' : configResult.message ?? 'Ядро не отдало конфиг.'}
+      >
+        {config ? (
+          <MemoryLimitsForm limits={config.memory.limits} autocompact={config.memory.autocompact} />
+        ) : (
+          <EmptyState title="Настройки недоступны" text="Проверьте подключение ядра и ключ сайта." />
+        )}
+      </Card>
+
       <Card>
         <form method="get" className="mb-4 flex flex-wrap items-end gap-2">
           <label className="grid gap-1 text-xs">
             Поиск по людям
             <input name="q" defaultValue={q} placeholder="имя, аккаунт, discord id" className={fieldClass} />
           </label>
-          <button type="submit" className="rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm hover:bg-white/5">
+          <button type="submit" className="rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm bg-[var(--surface-2)] text-[var(--text)] hover:bg-[var(--surface-3)] font-medium">
             Найти
           </button>
         </form>
@@ -92,17 +108,20 @@ export default async function AdminMemoryPage({ searchParams }: {
                 </tr>
               </thead>
               <tbody>
-                {filtered.slice(0, 200).map(person => (
-                  <tr key={person.id ?? person.display_name}>
-                    <td className={tdClass}>
-                      <span className="block text-sm">{person.display_name || '—'}</span>
-                      <span className="font-mono text-xs text-[var(--muted)]">{person.id ?? ''}</span>
-                    </td>
-                    <td className={`${tdClass} text-xs`}>{(person.names ?? []).join(', ') || '—'}</td>
-                    <td className={`${tdClass} text-xs`}>{(person.accounts ?? []).join(', ') || '—'}</td>
-                    <td className={`${tdClass} text-xs`}>{(person.discord_ids ?? []).join(', ') || '—'}</td>
-                  </tr>
-                ))}
+                {filtered.slice(0, 200).map(person => {
+                  const idLabel = personIdLabel(person);
+                  return (
+                    <tr key={person.id ?? personTitle(person)}>
+                      <td className={tdClass}>
+                        <span className="block text-sm">{personTitle(person)}</span>
+                        {idLabel && <span className="block font-mono text-xs text-[var(--muted)]">{idLabel}</span>}
+                      </td>
+                      <td className={`${tdClass} text-xs`}>{personAliases(person).join(', ') || '—'}</td>
+                      <td className={`${tdClass} text-xs`}>{accountLabels(person.accounts).join(', ') || '—'}</td>
+                      <td className={`${tdClass} text-xs`}>{discordLabels(person).join(', ') || '—'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -114,10 +133,10 @@ export default async function AdminMemoryPage({ searchParams }: {
           </span>
           <ExportPeople people={filtered.slice(0, 200).map(person => ({
             id: person.id ?? '',
-            displayName: person.display_name ?? '',
-            names: person.names ?? [],
-            accounts: person.accounts ?? [],
-            discordIds: person.discord_ids ?? [],
+            displayName: personTitle(person),
+            names: personAliases(person),
+            accounts: accountLabels(person.accounts),
+            discordIds: discordLabels(person),
           }))} />
         </div>
       </Card>

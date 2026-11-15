@@ -1,5 +1,6 @@
+import { readFile } from 'node:fs/promises';
 import { requireAdmin } from '../../../../../lib/admin-guard';
-import { coreGet, type CoreHealth, type CoreMeta } from '../../../../../lib/core-admin';
+import { coreGet, coreGetReady, type CoreHealth, type CoreMeta } from '../../../../../lib/core-admin';
 import { readBackups, readDiskUsage } from '../../../../../lib/admin-system';
 import { jsonOk } from '../../../../../lib/admin-http';
 
@@ -16,17 +17,19 @@ interface ReadyReport {
 export async function GET(request: Request) {
   const auth = await requireAdmin(request);
   if (!auth.ok) return auth.response;
-  const [health, ready, meta, disk, backups] = await Promise.all([
+  const deployShaFile = process.env.NEYRA_DEPLOY_SHA_FILE ?? '/opt/neyra/web/app/.deploy-sha';
+  const [health, ready, meta, disk, backups, deployCommit] = await Promise.all([
     coreGet<CoreHealth>('/v1/health', { timeoutMs: 4000 }),
-    coreGet<ReadyReport>('/v1/health/ready', { timeoutMs: 4000 }),
+    coreGetReady<ReadyReport>('/v1/health/ready', { timeoutMs: 4000 }),
     coreGet<CoreMeta>('/v1/meta', { timeoutMs: 3000 }),
     readDiskUsage(),
     readBackups(process.env.NEYRA_BACKUP_DIR),
+    readFile(deployShaFile, 'utf8').then((value) => value.trim() || null).catch(() => null),
   ]);
   return jsonOk({
     site: {
       version: process.env.NEYRA_WEB_VERSION ?? null,
-      commit: process.env.NEYRA_COMMIT ?? null,
+      commit: deployCommit ?? process.env.NEYRA_COMMIT ?? null,
       uptimeSeconds: Math.round(process.uptime()),
       disk,
       backups,

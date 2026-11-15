@@ -1,4 +1,4 @@
-import { readdir, stat, statfs } from 'node:fs/promises';
+import { readdir, readFile, stat, statfs } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface DiskUsage {
@@ -11,7 +11,8 @@ export async function readDiskUsage(path = '/'): Promise<DiskUsage | null> {
     const info = await statfs(path);
     return {
       totalBytes: Number(info.blocks) * Number(info.bsize),
-      freeBytes: Number(info.bfree) * Number(info.bsize),
+      // bavail — сколько реально доступно процессу сайта; bfree включает зарезерв root.
+      freeBytes: Number(info.bavail ?? info.bfree) * Number(info.bsize),
     };
   } catch {
     return null;
@@ -22,6 +23,19 @@ export interface BackupFile {
   name: string;
   size: number;
   modifiedAt: string;
+}
+
+// Коммит сайта берём из файла выкладки: NEYRA_COMMIT в .env остаётся от сборки
+// и после `deploy-web.sh` показывает старый SHA. Файл пишет сам деплой.
+export async function readDeployCommit(
+  file = process.env.NEYRA_DEPLOY_SHA_FILE ?? '/opt/neyra/web/app/.deploy-sha',
+): Promise<string | null> {
+  try {
+    const value = (await readFile(file, 'utf8')).trim();
+    return value ? value.slice(0, 12) : null;
+  } catch {
+    return null;
+  }
 }
 
 // Список бэкапов читается только если администратор задал NEYRA_BACKUP_DIR.

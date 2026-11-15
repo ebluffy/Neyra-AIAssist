@@ -1,7 +1,7 @@
 import { it, expect } from 'vitest';
 import { getTableColumns, getTableName } from 'drizzle-orm';
 import { getTableConfig } from 'drizzle-orm/pg-core';
-import { user, session, account, verification, invite, adminAudit, roleEnum } from './schema';
+import { user, session, account, verification, invite, adminAudit, siteSetting, roleEnum } from './schema';
 it('provides all four Better Auth tables and core columns', () => {
  expect([user,session,account,verification].map(getTableName)).toEqual(['user','session','account','verification']);
  expect(Object.keys(getTableColumns(user))).toEqual(expect.arrayContaining(['id','name','email','emailVerified','role','createdAt','updatedAt']));
@@ -22,4 +22,11 @@ it('carries admin fields: ban, last login and audit log', () => {
  expect(getTableName(adminAudit)).toBe('admin_audit');
  expect(Object.keys(getTableColumns(adminAudit))).toEqual(expect.arrayContaining(['actorId','actorEmail','action','targetType','targetId','details','createdAt']));
  expect(Object.keys(getTableColumns(invite))).toEqual(expect.arrayContaining(['revokedAt']));
+});
+
+it('stores admin-managed site settings', () => {
+ expect(getTableName(siteSetting)).toBe('site_setting');
+ expect(Object.keys(getTableColumns(siteSetting))).toEqual(expect.arrayContaining(['key','value','updatedAt']));
+ expect(siteSetting.key.primary).toBe(true);
+ expect(siteSetting.value.notNull).toBe(true);
 });

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Связка .env сайта с ядром Neyra: NEYRA_* без дублей, атомарно, без печати значений.
 
-Идемпотентно. Секреты (service key, identity secret) всегда приводятся к значениям
-ядра; URL заполняются только если пусты, чтобы не затирать явную настройку.
-Identity-issuer — одно значение для ядра и сайта: по умолчанию "neyra-web";
-уже заданное непустое не перезаписывается, расхождение сайта с ядром
+Идемпотентно. Два ключа ядра разделены (AR-23/AR-36): NEYRA_WEB_KEY = web-роль
+ядра (API_WEB_TOKEN; генерируется, если пуст) для чата и вложений, NEYRA_ADMIN_KEY =
+API_MAINT_TOKEN (только он; admin-токен API_TOKEN сайту не передаётся) для серверных роутов /api/admin/*.
+Отката с одного ключа на другой нет; без admin-ключа админка честно сообщает,
+что ядро не подключено. URL заполняются только если пусты, чтобы не затирать
+явную настройку. Identity-issuer — одно значение для ядра и сайта: по умолчанию
+"neyra-web"; уже заданное непустое не перезаписывается, расхождение сайта с ядром
 приводится к значению ядра с предупреждением.
-Коды выхода: 0 — всё связано; 2 — частично (чат не готов), 1 — фатальная ошибка.
+Коды выхода: 0 — всё связано; 2 — частично (чат или админка не готовы), 1 — фатальная ошибка.
 """
 from __future__ import annotations
 
@@ -31,15 +34,16 @@ def serialize(key: str, value: str) -> str:
     return f"{key}='{value}'"
 
 
-def write_atomic(path: Path, updates: dict[str, str]) -> None:
-    """Заменить/добавить ключи, убрать дубли, сохранить владельца; права 0600."""
+def write_atomic(path: Path, updates: dict[str, str], remove: set[str] | None = None) -> None:
+    """Заменить/добавить ключи, убрать дубли и удалить remove-ключи; сохранить владельца; права 0600."""
+    drop = remove or set()
     lines: list[str] = []
     if path.is_file():
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             stripped = line.strip()
             if stripped and not stripped.startswith("#") and "=" in line:
                 key = line.partition("=")[0].strip()
-                if key in updates:
+                if key in updates or key in drop:
                     continue
             lines.append(line)
     for key, value in updates.items():
@@ -88,11 +92,6 @@ def main() -> int:
     web = read_env(WEB_ENV)
     core = read_env(CORE_ENV) if CORE_ENV.is_file() else {}
 
-    # Сайту нужен ключ не выше maint: admin-токен в интернет-сервис не передаём (AR-16).
-    service_key = (core.get("API_MAINT_TOKEN") or "").strip()
-    # Новые раздельные ключи (#74): web — для чата/вложений, admin — только /api/admin.
-    web_key = (core.get("API_WEB_TOKEN") or service_key or "").strip()
-    admin_key = (core.get("API_MAINT_TOKEN") or core.get("API_TOKEN") or "").strip()
     identity_secret = (core.get("NEYRA_IDENTITY_JWT_SECRET") or "").strip()
     core_issuer = (core.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip()
     web_issuer = (web.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip()
@@ -100,6 +99,59 @@ def main() -> int:
 
     status = 0
     core_changed = False
+    core_updates: dict[str, str] = {}
+
+    # AR-23/AR-36/AR-38: два разных ключа, без отката одного на другой.
+    # NEYRA_WEB_KEY — web-роль ядра (API_WEB_TOKEN): чат, вложения, /v1/web/me.
+    # NEYRA_ADMIN_KEY — API_MAINT_TOKEN, только для серверных роутов /api/admin/*.
+    # API_TOKEN (роль admin) в интернет-сервис не передаётся ни при каких условиях.
+    web_key = (core.get("API_WEB_TOKEN") or "").strip()
+    if not web_key:
+        # Web-роль без токена не пустит чат: генерируем и пишем ядру, как identity.
+        web_key = secrets.token_hex(32)
+        core_updates["API_WEB_TOKEN"] = web_key
+        if core_ok:
+            core_changed = True
+        else:
+            print(f"нет {CORE_ENV}: web-ключ записан только сайту, чат не заработает", file=sys.stderr)
+            status = 2
+    admin_key = (core.get("API_MAINT_TOKEN") or "").strip()
+    admin_token = (core.get("API_TOKEN") or "").strip()
+    api_key = (core.get("API_KEY") or "").strip()
+    # AR-38: API_KEY — алиас API_TOKEN в ядре; оба заданными и разными ядро не примет.
+    if admin_token and api_key and admin_token != api_key:
+        print(
+            "ОШИБКА: API_TOKEN и API_KEY оба заданы и различаются — ядро их не примет, "
+            "ничего не записано",
+            file=sys.stderr,
+        )
+        return 1
+    admin_alias = admin_token or api_key
+    # AR-38(a): maint-ключ не должен совпадать с admin-секретом (ни с одним из имён).
+    if admin_key and admin_alias and admin_key == admin_alias:
+        print(
+            "ОШИБКА: API_MAINT_TOKEN совпадает с API_TOKEN/API_KEY — разделите ключи, "
+            "ничего не записано",
+            file=sys.stderr,
+        )
+        return 1
+    # AR-38: web-ключ сравниваем со всеми admin-секретами. Совпадение — отказ до записей.
+    for label, secret in (("API_MAINT_TOKEN", admin_key), ("API_TOKEN", admin_token), ("API_KEY", api_key)):
+        if web_key and secret and web_key == secret:
+            print(
+                f"ОШИБКА: API_WEB_TOKEN совпадает с {label} — разделите ключи, "
+                "ничего не записано",
+                file=sys.stderr,
+            )
+            return 1
+    if not admin_key:
+        print(
+            f"внимание: в {CORE_ENV} нет API_MAINT_TOKEN — NEYRA_ADMIN_KEY не записан, "
+            "админка не прочитает ядро (API_TOKEN сайту не передаётся)",
+            file=sys.stderr,
+        )
+        status = 2
+
     if not identity_secret:
         identity_secret = secrets.token_hex(32)
         core_changed = core_ok
@@ -146,35 +198,39 @@ def main() -> int:
     if identity_secret and (web.get("NEYRA_IDENTITY_JWT_SECRET") or "").strip() != identity_secret:
         # Секрет сайта всегда равен ядру: иначе подпись отклоняется.
         updates["NEYRA_IDENTITY_JWT_SECRET"] = identity_secret
-    if service_key:
-        updates["NEYRA_SERVICE_KEY"] = service_key
     if web_key:
         updates["NEYRA_WEB_KEY"] = web_key
+    # AR-38: старый NEYRA_ADMIN_KEY либо перезаписывается выбранным maint-ключом,
+    # либо удаляется, если maint-ключа нет. Оставлять вчерашний (тем более равный
+    # API_TOKEN) нельзя: скрипт пишет «не записан», а ключ продолжает жить.
+    remove_keys: set[str] = {"NEYRA_SERVICE_KEY"}
+    existing_admin = (web.get("NEYRA_ADMIN_KEY") or "").strip()
     if admin_key:
         updates["NEYRA_ADMIN_KEY"] = admin_key
-    if not service_key:
-        print(
-            f"внимание: в {CORE_ENV} нет API_MAINT_TOKEN — NEYRA_SERVICE_KEY не записан "
-            "(админский API_TOKEN сайту не передаётся)",
-            file=sys.stderr,
-        )
-        status = 2
+    else:
+        remove_keys.add("NEYRA_ADMIN_KEY")
+    # AR-38(b): старый ключ, равный admin-секрету (API_TOKEN/API_KEY), не должен
+    # пережить запуск: если выбран другой maint-ключ — он перезапишется, иначе удалим.
+    if existing_admin and (existing_admin == admin_token or existing_admin == api_key) \
+            and existing_admin != admin_key:
+        remove_keys.add("NEYRA_ADMIN_KEY")
+    # Старое имя ключа не поддерживаем: оно смешивало web- и admin-роль.
     # Всё, что пишем, обязано читаться тем же парсером: иначе loader отвергнет файл.
     for key, value in updates.items():
         if parse_env(serialize(key, value)).get(key) != value:
             raise ValueError(f"{key}: значение не переживает запись в .env")
 
     if core_changed:
-        core_updates = {}
         if not (core.get("NEYRA_IDENTITY_JWT_SECRET") or "").strip():
             core_updates["NEYRA_IDENTITY_JWT_SECRET"] = identity_secret
         if (core.get("NEYRA_IDENTITY_JWT_ISSUER") or "").strip() != core_issuer:
             core_updates["NEYRA_IDENTITY_JWT_ISSUER"] = core_issuer
         if core_updates:
             write_atomic(CORE_ENV, core_updates)
-            print(f"identity (секрет/issuer) добавлен в {CORE_ENV} (значения не печатаю)")
-    if updates:
-        write_atomic(WEB_ENV, updates)
+            print(f"ядру добавлены ключи (identity/web; значения не печатаю): {CORE_ENV}")
+    legacy_keys = set(read_env(WEB_ENV)) & remove_keys
+    if updates or legacy_keys:
+        write_atomic(WEB_ENV, updates, remove=remove_keys)
 
     if core_changed:
         print("ядру нужен один перезапуск: sudo systemctl restart neyra.service")

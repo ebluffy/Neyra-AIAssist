@@ -9,6 +9,10 @@
 # Скрипт делает полный бэкап /opt/neyra/server (код, .venv, data, config, .env),
 # обновляет код и зависимости, проверяет pip check/imports/compileall и при
 # любой ошибке сам откатывается целиком. Сервис не запускает и не перезапускает.
+# Шаг vault меняет $DEST/.env (NEYRA_VAULT_KEY, 0600) и $DEST/data/secrets
+# (v1 -> v2, удаляет vault.key). Полный бэкап и автооткат возвращают и их;
+# при ручном откате верните .env и data/secrets из бэкапа, иначе секреты
+# провайдеров не расшифруются.
 set -euo pipefail
 
 SRC=${1:-$(cd "$(dirname "$0")/../../server" && pwd)}
@@ -102,6 +106,27 @@ fi
 BACKUP_PARENT=${BACKUP_ROOT:-/opt/neyra}
 [ -d "$BACKUP_PARENT" ] || die "нет каталога для бэкапа: $BACKUP_PARENT"
 
+# AR-29: полный бэкап и автооткат копируют только $DEST. Если ядро берёт данные
+# из каталога вне $DEST (NEYRA_DATA_DIR / paths.data_dir), бэкап их не покроет —
+# отказываем до шага vault, пока ничего не изменено.
+CHECK_DATA="$(cd "$(dirname "$0")" && pwd)/check-data-dir.py"
+[ -f "$CHECK_DATA" ] || die "нет check-data-dir.py рядом с update-core.sh"
+DATA_DIR=""
+CHECK_ERR="$(mktemp)"
+if DATA_DIR="$(cd "$DEST" && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python "$CHECK_DATA" "$DEST" 2>"$CHECK_ERR")"; then
+  rm -f "$CHECK_ERR"
+else
+  rc=$?
+  msg="$(cat "$CHECK_ERR")"
+  rm -f "$CHECK_ERR"
+  case "$rc" in
+    3) die "data_dir вне $DEST: $msg" ;;
+    4) die "не удалось определить data_dir ядра: $msg" ;;
+    *) die "check-data-dir.py завершился с кодом $rc: $msg" ;;
+  esac
+fi
+echo "data_dir: $DATA_DIR (внутри $DEST)"
+
 if [ "$DRY" = 1 ]; then
   echo "== проверка (ничего не меняю)"
   rsync -an --itemize-changes "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" | sed -n '1,120p'
@@ -151,7 +176,7 @@ restore() {
 }
 trap 'rc=$?; rm -rf "$STAGE"; if [ "$rc" -ne 0 ]; then restore; fi; exit "$rc"' EXIT
 
-echo "== 2/7 синхронизация кода (data/config/models/.env не трогаются)"
+echo "== 2/7 синхронизация кода (data/config/models/.env не перезаписываются rsync)"
 rsync -a --no-owner --no-group --chown=root:root "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" \
   || die "rsync кода не удался"
 

@@ -1,5 +1,25 @@
-:root { color-scheme: dark; --background: #18181b; --foreground: #fafafa; --muted: #a1a1aa; --border: #3f3f46; --accent: #e4e4e7; --font-sans: system-ui, sans-serif; --font-mono: ui-monospace, monospace; --radius: 10px; font-family: var(--font-sans); color: var(--foreground); background: var(--background); }
-button, input { font: inherit; border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; min-height: 40px; }
-button { cursor: pointer; } button:disabled { cursor: default; }
+:root {
+  color-scheme: dark;
+  --background: #000000;
+  --foreground: #ffffff;
+  --muted: #888888;
+  --border: rgba(255, 255, 255, 0.12);
+  --accent: #ffffff;
+  --font-sans: system-ui, sans-serif;
+  --font-mono: ui-monospace, monospace;
+  --radius: 10px;
+  font-family: var(--font-sans);
+  color: var(--foreground);
+  background: var(--background);
+}
+button, input {
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  min-height: 40px;
+}
+button { cursor: pointer; }
+button:disabled { cursor: default; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 label { display: grid; gap: 8px; }

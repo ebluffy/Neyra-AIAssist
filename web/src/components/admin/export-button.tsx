@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+import { Download } from 'lucide-react';
+import { Button } from '../ui';
 
 export interface ExportPerson {
   id: string;
@@ -10,8 +12,6 @@ export interface ExportPerson {
   discordIds: string[];
 }
 
-// Экспорт ровно того, что показано: ядро не отдаёт полного экспорта памяти,
-// поэтому выгружаем список людей из текущей выборки, без домыслов.
 export function ExportPeople({ people }: { people: ExportPerson[] }) {
   const [error, setError] = useState('');
 
@@ -34,15 +34,16 @@ export function ExportPeople({ people }: { people: ExportPerson[] }) {
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <button
-        type="button"
-        onClick={download}
+      <Button
+        variant="secondary"
+        size="sm"
         disabled={people.length === 0}
-        className="rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-xs hover:bg-white/5 disabled:opacity-40"
+        onClick={download}
       >
-        Экспорт списка (JSON)
-      </button>
-      {error && <span role="alert" className="text-xs text-red-300">{error}</span>}
+        <Download size={14} className="mr-1.5" />
+        <span>Экспорт списка (JSON)</span>
+      </Button>
+      {error && <span role="alert" className="text-xs text-[var(--danger)]">{error}</span>}
     </div>
   );
 }

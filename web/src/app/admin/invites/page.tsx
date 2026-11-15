@@ -7,7 +7,7 @@ import { Card, EmptyState, PageHeader, Stat, StatusPill, formatDate, tableClass,
 
 export const dynamic = 'force-dynamic';
 
-const fieldClass = 'rounded-[var(--radius)] border border-[var(--border)] bg-transparent px-2 py-1.5 text-sm';
+const fieldClass = 'rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 text-sm text-[var(--text)] focus-visible:outline-none';
 
 const stateTone = { active: 'ok', used: 'muted', expired: 'warn', revoked: 'error' } as const;
 const stateLabel = { active: 'активен', used: 'использован', expired: 'истёк', revoked: 'отозван' } as const;
@@ -29,7 +29,7 @@ export default async function AdminInvitesPage({ searchParams }: {
     <div className="space-y-4">
       <PageHeader
         title="Приглашения"
-        description="Регистрация на сайте — только по одноразовой ссылке. В базе хранится лишь хэш токена: ссылку нельзя восстановить, только создать новую."
+        description="Регистрация на сайте — только по инвайту: одноразовому или многоразовому, при желании с привязкой к email. В базе хранится лишь хэш токена: ссылку нельзя восстановить, только создать новую."
       />
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -38,13 +38,13 @@ export default async function AdminInvitesPage({ searchParams }: {
         <Stat label="Использованы" value={counts?.used ?? '—'} />
       </div>
 
-      <Card title="Новое приглашение" description="Ссылка показывается один раз. Передайте её лично: письма сайт не отправляет.">
+      <Card title="Новое приглашение" description="Ссылка показывается один раз. Передайте её лично: письма сайт не отправляет. Лимит использований и срок можно не задавать.">
         <InviteCreate />
       </Card>
 
       <Card>
-        <form method="get" className="mb-4 flex flex-wrap items-end gap-2">
-          <label className="grid gap-1 text-xs">
+        <form method="get" className="mb-4 flex flex-wrap items-end gap-2 border-b border-[var(--border)] pb-4">
+          <label className="grid gap-1 text-xs text-[var(--text-muted)]">
             Состояние
             <select name="state" defaultValue={query.state} className={fieldClass}>
               <option value="all">все</option>
@@ -54,7 +54,7 @@ export default async function AdminInvitesPage({ searchParams }: {
               <option value="revoked">отозванные</option>
             </select>
           </label>
-          <button type="submit" className="rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm hover:bg-white/5">
+          <button type="submit" className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-2)] px-3.5 py-1.5 text-sm font-medium text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors">
             Показать
           </button>
         </form>
@@ -64,51 +64,94 @@ export default async function AdminInvitesPage({ searchParams }: {
         ) : !page || page.items.length === 0 ? (
           <EmptyState title="Приглашений нет" text="Создайте первое приглашение — без него зарегистрироваться нельзя." />
         ) : (
-          <div className="overflow-x-auto">
-            <table className={tableClass}>
-              <thead>
-                <tr>
-                  <th className={thClass}>Создано</th>
-                  <th className={thClass}>Кем</th>
-                  <th className={thClass}>Действует до</th>
-                  <th className={thClass}>Состояние</th>
-                  <th className={thClass}>Использовал</th>
-                  <th className={thClass}>Действия</th>
-                </tr>
-              </thead>
-              <tbody>
-                {page.items.map(row => (
-                  <tr key={row.id}>
-                    <td className={`${tdClass} whitespace-nowrap text-xs text-[var(--muted)]`}>{formatDate(row.createdAt)}</td>
-                    <td className={`${tdClass} text-xs`}>{row.createdBy ?? '—'}</td>
-                    <td className={`${tdClass} whitespace-nowrap text-xs text-[var(--muted)]`}>{formatDate(row.expiresAt)}</td>
-                    <td className={tdClass}><StatusPill tone={stateTone[row.state]}>{stateLabel[row.state]}</StatusPill></td>
-                    <td className={`${tdClass} text-xs`}>
-                      {row.usedBy ? (
-                        <>
-                          <span className="block">{row.usedBy}</span>
-                          <span className="text-[var(--muted)]">{formatDate(row.usedAt)}</span>
-                        </>
-                      ) : '—'}
-                    </td>
-                    <td className={tdClass}>
-                      <InviteRowActions id={row.id} disabled={row.state !== 'active'} />
-                    </td>
+          <>
+            {/* Desktop table view */}
+            <div className="hidden sm:block overflow-x-auto">
+              <table className={tableClass}>
+                <thead>
+                  <tr>
+                    <th className={thClass}>Создано</th>
+                    <th className={thClass}>Кем</th>
+                    <th className={thClass}>Использовано</th>
+                    <th className={thClass}>Email</th>
+                    <th className={thClass}>Действует до</th>
+                    <th className={thClass}>Состояние</th>
+                    <th className={thClass}>Последнее использование</th>
+                    <th className={thClass}>Действия</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+                </thead>
+                <tbody>
+                  {page.items.map(row => (
+                    <tr key={row.id} className="hover:bg-[var(--surface-2)]">
+                      <td className={`${tdClass} whitespace-nowrap text-xs text-[var(--text-muted)]`}>{formatDate(row.createdAt)}</td>
+                      <td className={`${tdClass} text-xs text-[var(--text)]`}>{row.createdBy ?? '—'}</td>
+                      <td className={`${tdClass} whitespace-nowrap text-xs`}>
+                        <span className="text-[var(--text)]">{row.usedCount}</span>
+                        <span className="text-[var(--text-muted)]"> / {row.maxUses ?? '∞'}</span>
+                      </td>
+                      <td className={`${tdClass} text-xs text-[var(--text-muted)]`}>{row.email ?? 'любой'}</td>
+                      <td className={`${tdClass} whitespace-nowrap text-xs text-[var(--text-muted)]`}>{row.expiresAt ? formatDate(row.expiresAt) : 'бессрочно'}</td>
+                      <td className={tdClass}><StatusPill tone={stateTone[row.state]}>{stateLabel[row.state]}</StatusPill></td>
+                      <td className={`${tdClass} text-xs`}>
+                        {row.usedBy ? (
+                          <>
+                            <span className="block text-[var(--text)]">{row.usedBy}</span>
+                            <span className="text-[var(--text-subtle)]">{formatDate(row.usedAt)}</span>
+                          </>
+                        ) : '—'}
+                      </td>
+                      <td className={tdClass}>
+                        <InviteRowActions id={row.id} disabled={row.state === 'revoked'} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
 
-        {page && (
-          <Pagination
-            page={page.page}
-            pageSize={page.pageSize}
-            total={page.total}
-            basePath="/admin/invites"
-            params={{ state: query.state }}
-          />
+            {/* Mobile card view (390px) */}
+            <div className="sm:hidden space-y-3">
+              {page.items.map(row => (
+                <div key={row.id} className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <StatusPill tone={stateTone[row.state]}>{stateLabel[row.state]}</StatusPill>
+                    <span className="text-xs text-[var(--text-subtle)]">{formatDate(row.createdAt)}</span>
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)] flex justify-between">
+                    <span>Использовано:</span>
+                    <span>{row.usedCount} / {row.maxUses ?? '∞'}</span>
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)] flex justify-between">
+                    <span>Email:</span>
+                    <span>{row.email ?? 'любой'}</span>
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)] flex justify-between">
+                    <span>Действует до:</span>
+                    <span>{row.expiresAt ? formatDate(row.expiresAt) : 'бессрочно'}</span>
+                  </div>
+                  {row.usedBy && (
+                    <div className="text-xs text-[var(--text-muted)] flex justify-between">
+                      <span>Последний:</span>
+                      <span className="text-[var(--text)]">{row.usedBy}</span>
+                    </div>
+                  )}
+                  <div className="pt-2 border-t border-[var(--border)] flex justify-end">
+                    <InviteRowActions id={row.id} disabled={row.state === 'revoked'} />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {page && (
+              <Pagination
+                page={page.page}
+                pageSize={page.pageSize}
+                total={page.total}
+                basePath="/admin/invites"
+                params={{ state: query.state }}
+              />
+            )}
+          </>
         )}
       </Card>
     </div>

@@ -44,7 +44,7 @@ if [ "$DRY" != 1 ]; then
     exit 1
   fi
   while IFS= read -r -d '' kv; do export "$kv"; done < "$TMP_ENV"
-  for v in NEYRA_WS_URL NEYRA_SERVICE_KEY NEYRA_WEB_KEY NEYRA_ADMIN_KEY NEYRA_IDENTITY_JWT_SECRET NEYRA_IDENTITY_JWT_ISSUER; do
+  for v in NEYRA_WS_URL NEYRA_WEB_KEY NEYRA_ADMIN_KEY NEYRA_IDENTITY_JWT_SECRET NEYRA_IDENTITY_JWT_ISSUER; do
     if [ -z "${!v:-}" ]; then echo "внимание: $v пуст — чат сайта вернёт 503" >&2; fi
   done
 fi
@@ -76,35 +76,48 @@ if [ "$DRY" = 1 ]; then
   exit 0
 fi
 
-echo "== резервная копия базы перед миграциями"
-BACKUP_DIR=/opt/neyra/web/backups
-mkdir -p "$BACKUP_DIR"
-DUMP="$BACKUP_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
-# pg_dump только из контейнера (клиента на хосте нет); вывод — на хост в $DUMP.
-# В репозитории сервис называется postgres; на уже развёрнутых площадках до
-# переименования он мог называться db — пробуем оба, пока дамп не получится.
-DUMP_OK=0
-for pg_service in postgres db; do
-  if sudo -n docker compose -f /opt/neyra/web/docker-compose.yml exec -T "$pg_service" pg_dump -U neyra -d neyra_web -Fc > "$DUMP" 2>/dev/null && [ -s "$DUMP" ]; then
-    DUMP_OK=1
-    break
+SCHEMA_MARKER="$DST/web/.schema-migrations.sha"
+CURRENT_SCHEMA="$(find db/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
+
+if [ "${SKIP_DB_MIGRATIONS:-0}" = "1" ]; then
+  # Пропуск разрешён только когда набор миграций совпадает с уже выложенным:
+  # иначе сайт стартует на старой схеме и молча теряет новые таблицы/колонки.
+  DEPLOYED_SCHEMA="$(cat "$SCHEMA_MARKER" 2>/dev/null || true)"
+  if [ "$CURRENT_SCHEMA" != "$DEPLOYED_SCHEMA" ]; then
+    echo "ОШИБКА: SKIP_DB_MIGRATIONS=1, но в исходниках есть миграции, которых нет в выложенной схеме." >&2
+    echo "  схема сейчас:   ${DEPLOYED_SCHEMA:-нет отметки в $DST/web/.schema-migrations.sha}" >&2
+    echo "  схема в ветке:  $CURRENT_SCHEMA" >&2
+    echo "  выкладка остановлена: примените миграции обычным запуском (без SKIP_DB_MIGRATIONS)." >&2
+    echo "  ручной обход допустим только после применения SQL и записи хеша в $DST/web/.schema-migrations.sha." >&2
+    exit 1
   fi
-done
-if [ "$DUMP_OK" != "1" ]; then
-  echo "pg_dump не выполнился — миграции отменены, база не тронута" >&2
-  rm -f "$DUMP"
+  echo "== ВНИМАНИЕ: дамп и миграции пропущены (SKIP_DB_MIGRATIONS=1)"
+  echo "   набор миграций совпадает с выложенным ($CURRENT_SCHEMA)"
+else
+
+echo "== резервная копия базы перед миграциями"
+# Единственный путь к docker — root-хелпер openbot-admin (AR-27): у openbot нет
+# sudo-правил на `docker compose exec`, а дампы лежат в /var/backups/neyra-web
+# (root:root 0700). Deploy не читает файл из закрытого каталога: хелпер печатает
+# path=/size= только после успешного непустого pg_dump, код возврата — проверка.
+if ! DUMP_INFO="$(sudo -n openbot-admin db-dump)"; then
+  echo "pg_dump не выполнился — миграции отменены, база не тронута." >&2
+  echo "  нужен root-хелпер: sudo bash devtools/deploy/neyra-web-setup.sh <origin>" >&2
+  echo "  (ставит openbot-admin и правило sudoers; см. devtools/deploy/README.md)" >&2
   exit 1
 fi
-if [ ! -s "$DUMP" ]; then
-  echo "дамп пуст — миграции отменены, база не тронута" >&2
-  rm -f "$DUMP"
+DUMP_PATH="$(printf '%s\n' "$DUMP_INFO" | sed -n 's/^path=//p')"
+DUMP_SIZE="$(printf '%s\n' "$DUMP_INFO" | sed -n 's/^size=//p')"
+if [ -z "$DUMP_PATH" ] || ! [ "${DUMP_SIZE:-0}" -gt 0 ] 2>/dev/null; then
+  echo "хелпер не вернул path=/size= — миграции отменены" >&2
   exit 1
 fi
-ls -1t "$BACKUP_DIR"/pre-migrate-*.dump | tail -n +11 | xargs -r rm -f
-echo "дамп: $DUMP"
+echo "дамп: $DUMP_PATH ($DUMP_SIZE байт)"
 
 echo "== миграции базы сайта"
 npx drizzle-kit migrate
+
+fi
 
 echo "== выкладка в $DST"
 # Копируем всё дерево standalone: рядом с web/ лежат node_modules (next, pg).
@@ -115,6 +128,9 @@ rsync -a --delete .next/static/ "$APP/.next/static/"
 if [ -d public ]; then rsync -a --delete public/ "$APP/public/"; fi
 if [ -d scripts ]; then rsync -a --delete scripts/ "$APP/scripts/"; fi
 if ! (cd "$DST" && "$NODE_BIN/node" -e "require.resolve('next'); require.resolve('pg')"); then echo "в standalone нет next/pg — проверь сборку"; exit 1; fi
+
+# Отметка схемы: следующий SKIP_DB_MIGRATIONS=1 сверит набор миграций с этой выкладкой.
+printf '%s\n' "$CURRENT_SCHEMA" > "$SCHEMA_MARKER"
 
 echo "== перезапуск сайта"
 sudo -n systemctl restart neyra-web.service

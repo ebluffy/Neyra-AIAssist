@@ -1,3 +1,14 @@
 import type { NextConfig } from 'next';
-const config: NextConfig = { transpilePackages: ['@neyra/ui', '@neyra/contracts'], experimental: { cpus: 2 }, output: 'standalone' };
+
+const config: NextConfig = {
+  transpilePackages: ['@neyra/ui', '@neyra/contracts'],
+  serverExternalPackages: ['ws', 'bufferutil', 'utf-8-validate'],
+  env: {
+    WS_NO_BUFFER_UTIL: '1',
+    WS_NO_UTF_8_VALIDATE: '1',
+  },
+  experimental: { cpus: 2 },
+  output: 'standalone',
+};
+
 export default config;
