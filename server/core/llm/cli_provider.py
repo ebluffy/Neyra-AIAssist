@@ -82,9 +82,9 @@ CLI_GUARD = (
     "который требуется в запросе."
 )
 
-# Разметка, которой модели изображают вызов инструмента. Ищем структуру в
-# начале строки, а не слово в прозе: цитата `<tool_call>` в объяснении или
-# в JSON рефлексии не должна ронять лейн (AR-80).
+# Разметка, которой модели изображают вызов инструмента. Ищем структуру
+# вызова в любом месте ответа и в любом регистре (AR-85), но JSON-ответы,
+# fenced-блоки и inline-код считаются данными (AR-80/87).
 TOOL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -92,12 +92,11 @@ TOOL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"<\s*(?:function_calls|function_call|tool_calls?)\s*>",
         r"<\s*invoke\s+name\s*=",
         r"<\s*function\s*=",
-        r"antml:(?:invoke|tool)\b",
+        r"antml:invoke\s+name\s*=",
     )
 )
 
-# Каталоги, которые и так смонтированы read-only в namespace: CLI оттуда
-# дополнительно bind'ить не нужно.
+# Системные каталоги: CLI оттуда не принимается (AR-75), поэтому bind не нужен.
 PRE_MOUNTED_ROOTS: tuple[Path, ...] = tuple(
     Path(p) for p in ("/usr", "/bin", "/sbin", "/lib", "/lib64")
 )
@@ -338,6 +337,18 @@ def validate_settings(settings: CliSettings) -> None:
         raise CliProviderError(
             f"Sandbox CLI {resolved} должен лежать в <data_dir>/{SANDBOX_DIR_NAME}"
         )
+    # AR-71: OAuth в read-only auth.json не обновится — отказ на старте.
+    if settings.auth_file:
+        candidate = _resolve_config_path(settings.auth_file, settings.data_dir)
+        if candidate.is_file() and _is_under(candidate.resolve(), resolved):
+            _validate_auth_payload(candidate)
+    else:
+        for candidate in (
+            resolved / "data" / "opencode" / "auth.json",
+            resolved / "auth.json",
+        ):
+            if candidate.is_file():
+                _validate_auth_payload(candidate)
 
 
 def _resolve_config_path(value: str, data_dir: str, sandbox: Optional[Path] = None) -> Path:
@@ -892,6 +903,7 @@ def _answer_from_output(
     prose = ""
     if not structured:
         prose = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+        prose = re.sub(r"``[^`]*``", "", prose)
         prose = re.sub(r"`[^`\n]*`", "", prose)
     if prose and any(pattern.search(prose) for pattern in TOOL_MARKUP_PATTERNS):
         raise CliProviderError(

@@ -880,6 +880,8 @@ def test_real_model_answer_is_plain_text_and_markup_is_rejected(tmp_path: Path):
         '{"people_updates":[{"note":"обсуждали <tool_call>"}]}',
         "Пример:\n```xml\n<tool_call>{\"name\":\"x\"}</tool_call>\n```\nТак модель просит инструмент.",
         "Поле называется `<tool_call>`, цитата в inline-коде.",
+        "Двойной код: ``<tool_call>`` тоже цитата.",
+        "В Anthropic API используется antml:invoke.",
     ):
         payload = json.dumps({"type": "text", "part": {"text": prose}}, ensure_ascii=False)
         assert _answer_from_output(_settings(tmp_path), payload, "", returncode=0)
@@ -897,6 +899,29 @@ def test_real_model_answer_is_plain_text_and_markup_is_rejected(tmp_path: Path):
         payload = json.dumps({"type": "text", "part": {"text": bad + "\nхвост"}}, ensure_ascii=False)
         with pytest.raises(CliProviderError, match="разметку вызова инструмента"):
             _answer_from_output(_settings(tmp_path), payload, "", returncode=0)
+
+
+def test_settings_load_rejects_oauth_auth_file(tmp_path: Path):
+    """AR-71: ошибка конфига всплывает при запуске, а не в чате у пользователя."""
+    from core.llm.cli_provider import CliSettings
+
+    data = tmp_path / "data"
+    sandbox = data / "cli-sandbox"
+    auth = sandbox / "data" / "opencode" / "auth.json"
+    auth.parent.mkdir(parents=True)
+    auth.write_text(json.dumps({"p": {"type": "oauth", "access": "x"}}), encoding="utf-8")
+    with pytest.raises(CliProviderError, match="не API-ключи"):
+        CliSettings.from_config(
+            {
+                "kind": "cli",
+                "cli": "opencode",
+                "cli_path": str(_runtime_bin(tmp_path)),
+                "experimental": True,
+                "sandbox": str(sandbox),
+            },
+            model="m",
+            data_dir=str(data),
+        )
 
 
 def test_auth_file_must_be_api_key_not_oauth(tmp_path: Path):
