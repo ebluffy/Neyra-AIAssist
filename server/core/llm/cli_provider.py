@@ -92,6 +92,23 @@ VERIFIED_OPENCODE_VERSIONS: frozenset[str] = frozenset({"2.3.0"})
 # символов, без ведущего дефиса (иначе это флаг OpenCode, а не модель).
 MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$")
 
+# AR-71: у CLI-лейна нет инструментов, и модель не должна их изображать.
+CLI_GUARD = (
+    "У тебя нет инструментов: ни bash, ни файлов, ни сети. "
+    "Не вызывай и не изображай вызовы инструментов; отвечай обычным текстом."
+)
+
+# Разметка, которой модели изображают вызов инструмента вместо ответа.
+TOOL_MARKUP_MARKERS: tuple[str, ...] = (
+    "DSML",
+    "<|DSML|",
+    "</|DSML|",
+    "antml:",
+    "<function_calls>",
+    "<function_call>",
+    '"tool_calls"',
+)
+
 # Каталоги, которые и так смонтированы read-only в namespace: CLI оттуда
 # дополнительно bind'ить не нужно.
 PRE_MOUNTED_ROOTS: tuple[Path, ...] = tuple(
@@ -525,7 +542,7 @@ def _messages_to_prompt(messages: Sequence[BaseMessage]) -> str:
             raise CliProviderError("CLI-провайдер не поддерживает результаты инструментов")
         else:
             dialog.append(text)
-    head = "\n\n".join(part for part in system_parts if part.strip())
+    head = "\n\n".join([CLI_GUARD, *(part for part in system_parts if part.strip())])
     body = "\n\n".join(dialog)
     return f"{head}\n\n{body}".strip() if head else body
 
@@ -890,6 +907,10 @@ def _answer_from_output(
         raise CliProviderError(f"CLI завершился с кодом {returncode}: {' | '.join(tail)}")
     _reject_tool_events(stdout)
     text = _parse_json_events(stdout)
+    if any(marker in text for marker in TOOL_MARKUP_MARKERS):
+        raise CliProviderError(
+            "CLI вернул разметку вызова инструмента вместо текста: ответ отклонён"
+        )
     if not text:
         tail = (stderr or "").strip().splitlines()[-3:]
         raise CliProviderError(f"CLI не вернул текст ответа: {' | '.join(tail) or 'пусто'}")

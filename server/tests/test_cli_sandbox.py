@@ -802,6 +802,31 @@ def test_prepare_uses_per_call_config_with_tools_denied(tmp_path: Path):
     assert not list(Path(settings.sandbox).glob(".opencode-*"))
 
 
+def test_real_model_answer_is_plain_text_and_markup_is_rejected(tmp_path: Path):
+    """AR-71: живой ответ модели и её же DSML-разметка из прогона 2.3.0."""
+    from core.llm.cli_provider import _answer_from_output
+
+    fixtures = Path(__file__).parent / "fixtures" / "cli"
+    answer = (fixtures / "opencode-2.3.0-real-answer.jsonl").read_text(encoding="utf-8")
+    text = _answer_from_output(_settings(tmp_path), answer, "", returncode=0)
+    assert "нет доступа" in text and "<|DSML|" not in text
+
+    markup = (fixtures / "opencode-2.3.0-real-tool-markup.jsonl").read_text(encoding="utf-8")
+    with pytest.raises(CliProviderError, match="разметку вызова инструмента"):
+        _answer_from_output(_settings(tmp_path), markup, "", returncode=0)
+
+
+def test_prompt_carries_no_tools_guard():
+    """AR-71: модель получает инструкцию не изображать инструменты."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from core.llm.cli_provider import _messages_to_prompt
+
+    prompt = _messages_to_prompt([SystemMessage(content="Ты Нейра"), HumanMessage(content="привет")])
+    assert prompt.startswith("У тебя нет инструментов")
+    assert "Ты Нейра" in prompt and prompt.rstrip().endswith("Пользователь: привет")
+
+
 def test_real_2_3_0_events_are_parsed_and_tool_events_rejected(tmp_path: Path):
     """AR-71: фикстуры — сырой вывод настоящего 2.3.0, не выдуманный JSON."""
     from core.llm.cli_provider import _answer_from_output, _reject_tool_events
