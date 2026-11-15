@@ -493,16 +493,8 @@ def _validate_auth_payload(path: Path) -> None:
         )
 
 
-def _cli_mount_root(cli_path: Path, settings: CliSettings) -> Optional[Path]:
-    """Каталог CLI для bind: None, если он уже виден read-only из /usr и т.п."""
-    resolved_cli = cli_path.resolve()
-    for item in PRE_MOUNTED_ROOTS:
-        if _is_under(resolved_cli, item.resolve()):
-            # AR-75: системный бинарник без каталога версии не проверен —
-            # имя файла ничего не гарантирует (opencode-ai, oc).
-            root = resolved_cli.parent.parent if resolved_cli.parent.name in {"bin", "sbin"} else resolved_cli.parent
-            _validate_cli_root(root, settings)
-            return None
+def _cli_mount_root(cli_path: Path, settings: CliSettings) -> Path:
+    """Каталог версии CLI для bind; всё остальное отклоняется в валидации."""
     parent = cli_path.parent
     root = parent.parent if parent.name in {"bin", "sbin"} else parent
     root = root.resolve()
@@ -684,13 +676,12 @@ def _bwrap_argv(
     ]
 
     cli_root = _cli_mount_root(cli_path, settings)
-    if cli_root is not None:
-        # Монтируется после /tmp: иначе CLI внутри /tmp скрывается tmpfs.
-        for parent in _parent_dirs(cli_path):
-            if parent == "/tmp" or parent.startswith("/tmp/"):
-                continue
-            argv += ["--dir", parent]
-        argv += ["--ro-bind", str(cli_root), str(cli_root)]
+    # Монтируется после /tmp: иначе CLI внутри /tmp скрывается tmpfs.
+    for parent in _parent_dirs(cli_path):
+        if parent == "/tmp" or parent.startswith("/tmp/"):
+            continue
+        argv += ["--dir", parent]
+    argv += ["--ro-bind", str(cli_root), str(cli_root)]
     argv += [
         "--chdir",
         SANDBOX_HOME,
@@ -898,7 +889,10 @@ def _answer_from_output(
     except ValueError:
         structured = False
     # Пример в fenced-блоке — это объяснение, а не вызов инструмента.
-    prose = "" if structured else re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    prose = ""
+    if not structured:
+        prose = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+        prose = re.sub(r"`[^`\n]*`", "", prose)
     if prose and any(pattern.search(prose) for pattern in TOOL_MARKUP_PATTERNS):
         raise CliProviderError(
             "CLI вернул разметку вызова инструмента вместо текста: ответ отклонён"

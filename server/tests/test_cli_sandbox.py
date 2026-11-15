@@ -300,9 +300,14 @@ def test_cli_bypasses_are_closed(tmp_path: Path):
     ):
         with pytest.raises(CliProviderError, match=message):
             _validate_cli_root(Path(bad), settings)
-    # Системный бинарник уходит в ту же проверку, что бы из него ни было symlink'ом.
-    with pytest.raises(CliProviderError):
-        _cli_mount_root(Path("/bin/echo"), settings)
+    # AR-79: системные бинарники через _cli_mount_root — точный текст.
+    for bad, message in (
+        ("/usr/bin/oc", "широкий корень"),
+        ("/usr/local/bin/opencode-ai", "широкий корень"),
+        ("/bin/echo", "широкий корень"),
+    ):
+        with pytest.raises(CliProviderError, match=message):
+            _cli_mount_root(Path(bad), settings)
 
     data = Path(settings.data_dir)
     plain = data / "cli-runtime" / "bin" / "opencode"
@@ -874,6 +879,7 @@ def test_real_model_answer_is_plain_text_and_markup_is_rejected(tmp_path: Path):
         "В OpenAI это поле tool_calls, а DSML — разметка.",
         '{"people_updates":[{"note":"обсуждали <tool_call>"}]}',
         "Пример:\n```xml\n<tool_call>{\"name\":\"x\"}</tool_call>\n```\nТак модель просит инструмент.",
+        "Поле называется `<tool_call>`, цитата в inline-коде.",
     ):
         payload = json.dumps({"type": "text", "part": {"text": prose}}, ensure_ascii=False)
         assert _answer_from_output(_settings(tmp_path), payload, "", returncode=0)
@@ -911,6 +917,8 @@ def test_prompt_carries_no_tools_guard():
 
     prompt = _messages_to_prompt([SystemMessage(content="Ты Нейра"), HumanMessage(content="привет")])
     assert prompt.startswith("У тебя нет инструментов")
+    assert "обычным текстом" not in prompt  # AR-81: не ломает JSON-лейны
+    assert "в том формате" in prompt
     assert "Ты Нейра" in prompt and prompt.rstrip().endswith("Пользователь: привет")
 
 
