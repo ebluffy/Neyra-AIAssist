@@ -184,6 +184,8 @@ server/config.yaml.bak*
 skills-lock.json
 
 # Client monorepo
+# Symlinked local deps are files to git; never commit them.
+node_modules
 node_modules/
 .next/
 *.tsbuildinfo
