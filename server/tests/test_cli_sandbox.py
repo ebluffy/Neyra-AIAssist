@@ -893,6 +893,7 @@ def test_real_model_answer_is_plain_text_and_markup_is_rejected(tmp_path: Path):
         "<function=bash>{\"command\":\"id\"}</function>",
         "  <|DSML| invoke name=\"bash\">",
         "antml:invoke name=id",
+        "``многострочный\n<tool_call>{}\n``",
         "хвост <TOOL_CALL>{}",  # AR-85: середина строки и верхний регистр
         "Вот вызов: <invoke name=\"bash\">",
     ):
@@ -916,6 +917,49 @@ def test_settings_load_rejects_oauth_auth_file(tmp_path: Path):
                 "kind": "cli",
                 "cli": "opencode",
                 "cli_path": str(_runtime_bin(tmp_path)),
+                "experimental": True,
+                "sandbox": str(sandbox),
+            },
+            model="m",
+            data_dir=str(data),
+        )
+
+
+def test_settings_load_checks_auth_symlink_and_location(tmp_path: Path):
+    """AR-88: стартовая проверка повторяет правила `_find_auth_file`."""
+    from core.llm.cli_provider import CliSettings
+
+    data = tmp_path / "data"
+    sandbox = data / "cli-sandbox"
+    (sandbox / "data" / "opencode").mkdir(parents=True)
+    real = tmp_path / "real-auth.json"
+    real.write_text(json.dumps({"p": {"type": "api", "key": "k"}}), encoding="utf-8")
+
+    link = sandbox / "data" / "opencode" / "auth.json"
+    link.symlink_to(real)
+    with pytest.raises(CliProviderError, match="симлинком"):
+        CliSettings.from_config(
+            {
+                "kind": "cli",
+                "cli": "opencode",
+                "cli_path": str(_runtime_bin(tmp_path)),
+                "experimental": True,
+                "sandbox": str(sandbox),
+            },
+            model="m",
+            data_dir=str(data),
+        )
+    link.unlink()
+
+    foreign = tmp_path / "foreign.json"
+    foreign.write_text(json.dumps({"p": {"type": "api", "key": "k"}}), encoding="utf-8")
+    with pytest.raises(CliProviderError, match="вне cli-sandbox"):
+        CliSettings.from_config(
+            {
+                "kind": "cli",
+                "cli": "opencode",
+                "cli_path": str(_runtime_bin(tmp_path)),
+                "auth_file": str(foreign),
                 "experimental": True,
                 "sandbox": str(sandbox),
             },

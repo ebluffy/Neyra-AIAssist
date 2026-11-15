@@ -337,18 +337,8 @@ def validate_settings(settings: CliSettings) -> None:
         raise CliProviderError(
             f"Sandbox CLI {resolved} должен лежать в <data_dir>/{SANDBOX_DIR_NAME}"
         )
-    # AR-71: OAuth в read-only auth.json не обновится — отказ на старте.
-    if settings.auth_file:
-        candidate = _resolve_config_path(settings.auth_file, settings.data_dir)
-        if candidate.is_file() and _is_under(candidate.resolve(), resolved):
-            _validate_auth_payload(candidate)
-    else:
-        for candidate in (
-            resolved / "data" / "opencode" / "auth.json",
-            resolved / "auth.json",
-        ):
-            if candidate.is_file():
-                _validate_auth_payload(candidate)
+    # AR-71/88: OAuth в read-only auth.json не обновится — отказ на старте.
+    _validate_auth_settings(settings, resolved)
 
 
 def _resolve_config_path(value: str, data_dir: str, sandbox: Optional[Path] = None) -> Path:
@@ -502,6 +492,32 @@ def _validate_auth_payload(path: Path) -> None:
             + ", ".join(map(str, oauth))
             + "): OAuth-токен в read-only файле не обновится. Используйте API-ключ"
         )
+
+
+def _validate_auth_settings(settings: CliSettings, sandbox: Path) -> None:
+    """Те же правила, что у `_find_auth_file`, но без запуска CLI (AR-88)."""
+    if settings.auth_file:
+        candidate = _resolve_config_path(settings.auth_file, settings.data_dir)
+        if candidate.is_symlink():
+            raise CliProviderError(
+                f"Файл авторизации CLI не может быть симлинком: {candidate}"
+            )
+        if candidate.is_file():
+            resolved = candidate.resolve()
+            if not _is_under(resolved, sandbox):
+                raise CliProviderError(
+                    f"Файл авторизации CLI {resolved} вне {SANDBOX_DIR_NAME}: "
+                    "секреты ядра в песочницу не монтируются"
+                )
+            _validate_auth_payload(resolved)
+        return
+    for candidate in (sandbox / "data" / "opencode" / "auth.json", sandbox / "auth.json"):
+        if candidate.is_symlink():
+            raise CliProviderError(
+                f"Файл авторизации CLI не может быть симлинком: {candidate}"
+            )
+        if candidate.is_file():
+            _validate_auth_payload(candidate.resolve())
 
 
 def _cli_mount_root(cli_path: Path, settings: CliSettings) -> Path:
@@ -903,7 +919,7 @@ def _answer_from_output(
     prose = ""
     if not structured:
         prose = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
-        prose = re.sub(r"``[^`]*``", "", prose)
+        prose = re.sub(r"``[^`\n]*``", "", prose)
         prose = re.sub(r"`[^`\n]*`", "", prose)
     if prose and any(pattern.search(prose) for pattern in TOOL_MARKUP_PATTERNS):
         raise CliProviderError(
