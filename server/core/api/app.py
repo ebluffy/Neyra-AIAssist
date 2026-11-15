@@ -1399,8 +1399,12 @@ def build_app(
         try:
             _vault().verify()
         except Exception as e:
+            # Стенд без NEYRA_VAULT_KEY должен подниматься: чат и память
+            # работают, админские ручки провайдеров отвечают 503. Строгий
+            # режим для прода — NEYRA_VAULT_REQUIRED=1.
             logger.error("Provider vault unavailable: %s", e)
-            raise
+            if (os.environ.get("NEYRA_VAULT_REQUIRED") or "").strip() == "1":
+                raise
         monitor.start()
         await monitor.run_once()
         try:
