@@ -7,6 +7,7 @@ import io
 import json
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -97,6 +98,13 @@ def _patch_popen(monkeypatch, stdout: str = TEXT_EVENT, stderr: str = "", return
     return holder
 
 
+def _config_text(tmp_path: Path) -> str:
+    """Текст конфига, который ядро пишет в sandbox на вызов (AR-67)."""
+    from core.llm.cli_provider import _opencode_config_text
+
+    return _opencode_config_text()
+
+
 def _flat(argv: list[str]) -> str:
     return " ".join(argv)
 
@@ -119,10 +127,13 @@ def test_argv_denies_tools_and_uses_throwaway_home(tmp_path: Path, monkeypatch):
     # AR-1: свежий tmpfs вместо постоянного writable HOME, конфиг ro.
     assert f"--tmpfs /home/sandbox" in flat
     assert f"--bind {tmp_path / 'data' / 'cli-sandbox'} /home/sandbox" not in flat
-    config_host = tmp_path / "data" / "cli-sandbox" / "opencode.json"
-    assert f"--ro-bind {config_host} /home/sandbox/config/opencode/opencode.json" in flat
+    # AR-67: конфиг уникален для вызова и монтируется read-only.
+    assert "/home/sandbox/config/opencode/opencode.json" in flat
+    assert "--ro-bind" in argv
+    bound = argv[argv.index("--ro-bind") + 1]
+    assert Path(bound).name.startswith(".opencode-") and bound.endswith(".json")
     assert proc.kwargs["env"]["OPENCODE_CONFIG"] == "/home/sandbox/config/opencode/opencode.json"
-    config = json.loads(config_host.read_text(encoding="utf-8"))
+    config = json.loads(_config_text(tmp_path))
     assert config["tools"] and not any(config["tools"].values())
     assert {"bash", "edit", "write", "webfetch"} <= set(config["permission"])
     assert set(config["permission"].values()) == {"deny"}
@@ -177,7 +188,7 @@ def test_auth_file_is_mounted_read_only_from_sandbox(tmp_path: Path, monkeypatch
 
     foreign = tmp_path / "foreign.json"
     foreign.write_text("{}", encoding="utf-8")
-    with pytest.raises(CliProviderError, match="вне sandbox"):
+    with pytest.raises(CliProviderError, match="вне cli-sandbox"):
         run_cli_prompt(_settings(tmp_path, auth_file=str(foreign)), "hi")
 
 
@@ -271,18 +282,14 @@ def test_experimental_model_and_extra_args_are_validated(tmp_path: Path):
         )
 
 
-def test_broken_config_symlink_is_replaced_not_crashing(tmp_path: Path, monkeypatch):
+def test_broken_config_symlink_is_ignored_not_crashing(tmp_path: Path, monkeypatch):
     settings = _settings(tmp_path)
     sandbox = Path(settings.sandbox)
     sandbox.mkdir(parents=True)
-    target = tmp_path / "target.json"
-    target.write_text("keep", encoding="utf-8")
     (sandbox / "opencode.json").symlink_to(tmp_path / "missing.json")
     _patch_popen(monkeypatch)
     assert run_cli_prompt(settings, "hi") == "ответ"
-    config = sandbox / "opencode.json"
-    assert config.is_file() and not config.is_symlink()
-    assert target.read_text(encoding="utf-8") == "keep"
+    assert not list(sandbox.glob(".opencode-*.json"))
 
 
 def test_output_cap_kills_process(tmp_path: Path, monkeypatch):
@@ -534,3 +541,133 @@ def test_provider_put_does_not_rewrite_cli_kind(real_api, auth_headers):
         headers=auth_headers[ADMIN],
     )
     assert created.status_code == 409
+
+
+# ─── Второй раунд авторевью #77 (AR-67…AR-71) ────────────────────────────────
+
+
+def test_cli_roots_cannot_open_data_or_wide_roots(tmp_path: Path):
+    """AR-68: cli_roots не обходит allowlist."""
+    data = tmp_path / "data"
+    for bad in (
+        str(data / "memory"),
+        str(data / "memory" / "bin" / "opencode"),
+        "/srv",
+        "/mnt",
+        "/run/media",
+    ):
+        settings = _settings(
+            tmp_path,
+            cli_path=str(data / "memory" / "bin" / "opencode"),
+            cli_roots=(bad,),
+        )
+        with pytest.raises(CliProviderError):
+            run_cli_prompt(settings, "hi")
+
+
+def test_auth_file_must_stay_inside_sandbox(tmp_path: Path):
+    """AR-69: vault и память ядра в песочницу не монтируются."""
+    settings = _settings(tmp_path)
+    data = Path(settings.data_dir)
+    (data / "memory").mkdir(parents=True)
+    (data / "memory" / "vault.json").write_text("{}", encoding="utf-8")
+    bad = _settings(
+        tmp_path,
+        auth_file=str(data / "memory" / "vault.json"),
+    )
+    with pytest.raises(CliProviderError, match="вне cli-sandbox"):
+        run_cli_prompt(bad, "hi")
+
+
+def test_relative_paths_resolve_from_data_dir(tmp_path: Path, monkeypatch):
+    """AR-70: относительные sandbox/auth_file не зависят от cwd."""
+    _patch_popen(monkeypatch)
+    settings = _settings(tmp_path, sandbox="cli-sandbox")
+    data = Path(settings.data_dir)
+    (data / "cli-sandbox" / "data" / "opencode").mkdir(parents=True)
+    (data / "cli-sandbox" / "data" / "opencode" / "auth.json").write_text("{}", encoding="utf-8")
+    settings = _settings(tmp_path, sandbox="cli-sandbox", auth_file="cli-sandbox/data/opencode/auth.json")
+    assert run_cli_prompt(settings, "hi") == "ответ"
+
+
+def test_tool_event_fails_closed(tmp_path: Path, monkeypatch):
+    """AR-71: если CLI всё-таки вызвал инструмент, ответ не отдаём."""
+    tool_event = json.dumps(
+        {"type": "tool_use", "part": {"tool": "bash", "input": {"command": "id"}}},
+        ensure_ascii=False,
+    )
+    _patch_popen(monkeypatch, stdout=tool_event + "\n" + TEXT_EVENT + "\n")
+    with pytest.raises(CliProviderError, match="вызвал инструмент"):
+        run_cli_prompt(_settings(tmp_path), "hi")
+
+
+def test_example_config_points_inside_default_data_dir():
+    """AR-70: пример llm.example.yaml не ведёт на /opt/neyra/data."""
+    example = Path(__file__).resolve().parents[1] / "config" / "llm.example.yaml"
+    text = example.read_text(encoding="utf-8")
+    assert "/opt/neyra/data" not in text
+    assert "cli-sandbox" in text
+
+
+def test_prepare_uses_per_call_config_with_tools_denied(tmp_path: Path):
+    """AR-67: параллельные вызовы не делят конфиг и не публикуют пустой файл."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from core.llm.cli_provider import _prepare
+
+    settings = _settings(tmp_path)
+    Path(settings.sandbox).mkdir(parents=True, exist_ok=True)
+
+    def _one(_: int):
+        argv, _env, config = _prepare(settings)
+        payload = json.loads(Path(config).read_text(encoding="utf-8"))
+        assert payload["permission"]["bash"] == "deny", payload
+        assert payload["tools"]["bash"] is False, payload
+        Path(config).unlink()
+        return str(config)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        paths = list(pool.map(_one, range(64)))
+    assert len(set(paths)) == len(paths)
+    assert not list(Path(settings.sandbox).glob("opencode.json"))
+
+
+def test_cli_roots_cannot_open_data_dir_or_wide_roots(tmp_path: Path):
+    """AR-68: cli_roots внутри data_dir и широкие корни отклоняются."""
+    data = tmp_path / "data"
+    for bad in (str(data / "memory"), "/srv", "/mnt", "/run/media"):
+        with pytest.raises(CliProviderError):
+            run_cli_prompt(_settings(tmp_path, cli_roots=(bad,)), "hi")
+
+
+def test_auth_file_must_live_in_sandbox(tmp_path: Path):
+    """AR-69: auth_file из data_dir (память, vault) в песочницу не монтируется."""
+    data = tmp_path / "data"
+    foreign = data / "memory" / "vault.json"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("{}", encoding="utf-8")
+    with pytest.raises(CliProviderError, match="вне cli-sandbox"):
+        run_cli_prompt(_settings(tmp_path, auth_file=str(foreign)), "hi")
+
+
+def test_relative_sandbox_resolves_from_data_dir(tmp_path: Path):
+    """AR-70: относительный sandbox считается от data_dir, а не от cwd."""
+    settings = _settings(tmp_path, sandbox="cli-sandbox")
+    Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
+    from core.llm.cli_provider import validate_settings
+
+    validate_settings(settings)
+
+
+def test_tool_events_are_rejected_fail_closed(tmp_path: Path):
+    """AR-71: если CLI всё-таки вызвал инструмент, ответ не отдаётся."""
+    from core.llm.cli_provider import _answer_from_output
+
+    raw = "\n".join(
+        [
+            json.dumps({"type": "tool", "part": {"tool": "bash", "input": {"cmd": "id"}}}),
+            TEXT_EVENT,
+        ]
+    )
+    with pytest.raises(CliProviderError, match="инструмент"):
+        _answer_from_output(_settings(tmp_path), raw, "", returncode=0)

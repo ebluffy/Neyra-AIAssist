@@ -22,13 +22,15 @@ llm:
     #   experimental: true
     #   # Каталог версии CLI; допускается также путь под cli_roots ниже.
     #   cli_path: "/var/lib/openbot/.config/OpenBot/provider-runtimes/opencode/linux-x64/2.3.0/bin/opencode"
-    #   # Необязателен: по умолчанию <paths.data_dir>/cli-sandbox, другой путь
-    #   # внутри этого каталога задаётся абсолютно. Вне data_dir sandbox запрещён.
-    #   # sandbox: "/opt/neyra/data/cli-sandbox"
+    #   # Необязателен: по умолчанию <paths.data_dir>/cli-sandbox. Относительный
+    #   # путь считается от data_dir, абсолютный должен быть внутри него.
+    #   # sandbox: "<путь из paths.data_dir>/cli-sandbox"
     #   # Файл авторизации OpenCode; read-only bind внутрь песочницы.
-    #   # auth_file: "./data/cli-sandbox/data/opencode/auth.json"
-    #   # Дополнительные разрешённые каталоги CLI (абсолютные пути).
-    #   # cli_roots: ["/opt/opencode"]
+    #   # Только внутри cli-sandbox. Относительный путь — от data_dir.
+    #   # auth_file: "<путь из paths.data_dir>/cli-sandbox/data/opencode/auth.json"
+    #   # Дополнительные разрешённые каталоги CLI (абсолютные пути, не широкие
+    #   # корни вроде /srv или /mnt и не подкаталоги data_dir).
+    #   # cli_roots: ["/opt/opencode-runtimes"]
     #   timeout_seconds: 120
     # Затем: talk_model/brain_model/memory_model: {provider: oc, model: "opencode/<model>"}
 

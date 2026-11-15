@@ -30,6 +30,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import weakref
 from dataclasses import dataclass
@@ -51,6 +52,13 @@ SANDBOX_CONFIG_DIR = f"{SANDBOX_HOME}/config/opencode"
 SANDBOX_AUTH_DIR = f"{SANDBOX_HOME}/data/opencode"
 SANDBOX_AUTH_PATH = f"{SANDBOX_AUTH_DIR}/auth.json"
 SANDBOX_DIR_NAME = "cli-sandbox"
+
+# Широкие корни, которые нельзя монтировать в песочницу целиком (AR-68).
+_WIDE_ROOTS = {
+    "/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64", "/media",
+    "/mnt", "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/tmp",
+    "/usr", "/var",
+}
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_CONCURRENT_CLI = 4
 CHARS_PER_TOKEN = 4
@@ -234,14 +242,27 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
     монтируется целиком и открывает секреты.
     """
     root = root.expanduser().resolve()
-    if root == Path("/"):
-        raise CliProviderError("CLI не может лежать в корне ФС: укажите каталог версии OpenCode")
+    if str(root) in _WIDE_ROOTS:
+        raise CliProviderError(
+            f"CLI-путь {root} — широкий корень ФС; укажите каталог версии OpenCode"
+        )
     data_root = Path(settings.data_dir).expanduser().resolve() if settings.data_dir else None
     if data_root is not None and (root == data_root or root in data_root.parents):
         raise CliProviderError(
             f"CLI-путь {root} открывает data_dir или его родителя; "
             "укажите каталог версии OpenCode"
         )
+    if data_root is not None and _is_under(root, data_root):
+        # AR-68: внутри data_dir разрешены только каталоги рантайма CLI,
+        # иначе одна строка cli_roots открывает память или vault процессу с сетью.
+        runtime_ok = _is_under(root, data_root / "cli-runtime") or _is_under(
+            root, data_root / SANDBOX_DIR_NAME / "runtime"
+        )
+        if not runtime_ok:
+            raise CliProviderError(
+                f"CLI-путь {root} лежит в data_dir вне cli-runtime/cli-sandbox/runtime; "
+                "память и vault монтировать нельзя"
+            )
     for sensitive in _SENSITIVE_TREES:
         base = Path(sensitive)
         if base == root or root in base.parents:
@@ -281,7 +302,7 @@ def validate_settings(settings: CliSettings) -> None:
     if not settings.data_dir:
         raise CliProviderError("CLI-провайдеру нужен paths.data_dir: sandbox живёт только внутри него")
     data_root = Path(settings.data_dir).expanduser().resolve()
-    sandbox = Path(settings.sandbox).expanduser()
+    sandbox = _resolve_config_path(settings.sandbox, settings.data_dir)
     if sandbox.is_symlink():
         raise CliProviderError(f"Sandbox CLI не может быть симлинком: {sandbox}")
     resolved = sandbox.resolve()
@@ -303,9 +324,18 @@ def validate_settings(settings: CliSettings) -> None:
         _validate_cli_root(root.resolve(), settings)
 
 
+def _resolve_config_path(value: str, data_dir: str, sandbox: Optional[Path] = None) -> Path:
+    """Относительный путь в конфиге считается от data_dir, а не от cwd (AR-70)."""
+    candidate = Path(value).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    base = Path(data_dir).expanduser() if data_dir else (sandbox or Path.cwd())
+    return base / candidate
+
+
 def _ensure_sandbox(settings: CliSettings) -> Path:
     """Каталог sandbox на хосте: только внутри data_dir, не симлинк, создаётся в try."""
-    sandbox = Path(settings.sandbox).expanduser()
+    sandbox = _resolve_config_path(settings.sandbox, settings.data_dir)
     if sandbox.is_symlink():
         raise CliProviderError(f"Sandbox CLI не может быть симлинком: {sandbox}")
     try:
@@ -319,45 +349,54 @@ def _ensure_sandbox(settings: CliSettings) -> Path:
 
 
 def _write_opencode_config(sandbox: Path) -> Path:
-    """Записать конфиг с выключенными tools и вернуть его путь на хосте."""
-    target = sandbox / "opencode.json"
-    temp = sandbox / ".opencode.json.tmp"
+    """Одноразовый конфиг с выключенными tools: файл уникален для вызова.
+
+    Общий файл не годится: параллельные ходы удаляли бы temp друг друга, и bwrap
+    мог смонтировать пустой opencode.json — то есть стартовать без deny (AR-67).
+    """
     try:
-        if temp.is_symlink() or temp.exists():
-            temp.unlink()
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        fd, name = tempfile.mkstemp(prefix=".opencode-", suffix=".json", dir=sandbox)
+    except OSError as e:
+        raise CliProviderError(f"Не удалось создать конфиг OpenCode в {sandbox}: {e}") from e
+    try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             stream.write(_opencode_config_text())
-        os.replace(temp, target)
+            stream.flush()
+            os.fsync(stream.fileno())
     except OSError as e:
+        _remove_quietly(Path(name))
         raise CliProviderError(f"Не удалось записать конфиг OpenCode в {sandbox}: {e}") from e
-    return target
+    return Path(name)
+
+
+def _remove_quietly(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        return
 
 
 def _find_auth_file(settings: CliSettings, sandbox: Path) -> Optional[Path]:
-    """Файл авторизации OpenCode: read-only bind, только из sandbox/data_dir."""
-    data_root = Path(settings.data_dir).expanduser().resolve()
+    """Файл авторизации OpenCode: read-only bind и только из sandbox (AR-69)."""
 
     def _checked(candidate: Path) -> Path:
+        if candidate.is_symlink():
+            raise CliProviderError(f"Файл авторизации CLI не может быть симлинком: {candidate}")
         resolved = candidate.resolve()
         if not resolved.is_file():
             raise CliProviderError(f"Файл авторизации CLI не найден: {resolved}")
-        if not (_is_under(resolved, sandbox) or _is_under(resolved, data_root)):
+        if not _is_under(resolved, sandbox):
             raise CliProviderError(
-                f"Файл авторизации CLI {resolved} вне sandbox/data_dir: "
-                "секрет не должен попадать в песочницу из чужого каталога"
+                f"Файл авторизации CLI {resolved} вне {SANDBOX_DIR_NAME}: "
+                "секреты ядра в песочницу не монтируются"
             )
         return resolved
 
     if settings.auth_file:
-        return _checked(Path(settings.auth_file).expanduser())
+        return _checked(_resolve_config_path(settings.auth_file, settings.data_dir))
     for candidate in (sandbox / "data" / "opencode" / "auth.json", sandbox / "auth.json"):
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            continue
-        if resolved.is_file() and (_is_under(resolved, sandbox) or _is_under(resolved, data_root)):
-            return resolved
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate.resolve()
     return None
 
 
@@ -567,12 +606,16 @@ def _prepare(settings: CliSettings) -> tuple[list[str], dict[str, str]]:
     validate_settings(settings)
     sandbox = _ensure_sandbox(settings)
     config_file = _write_opencode_config(sandbox)
-    auth_file = _find_auth_file(settings, sandbox)
-    cli_path = Path(settings.cli_path).expanduser().resolve()
-    if not cli_path.is_file():
-        raise CliProviderError(f"CLI не найден: {cli_path}")
-    argv = _bwrap_argv(settings, cli_path, config_file=config_file, auth_file=auth_file)
-    return argv, _child_env()
+    try:
+        auth_file = _find_auth_file(settings, sandbox)
+        cli_path = Path(settings.cli_path).expanduser().resolve()
+        if not cli_path.is_file():
+            raise CliProviderError(f"CLI не найден: {cli_path}")
+        argv = _bwrap_argv(settings, cli_path, config_file=config_file, auth_file=auth_file)
+    except BaseException:
+        _remove_quietly(config_file)
+        raise
+    return argv, _child_env(), config_file
 
 
 def _timeout_error(settings: CliSettings) -> CliProviderError:
@@ -664,9 +707,40 @@ def _run_sync(
 
 def run_cli_prompt(settings: CliSettings, prompt: str) -> str:
     """Синхронный вызов OpenCode через bwrap. Возвращает текст ответа."""
-    argv, env = _prepare(settings)
-    stdout, stderr, returncode = _run_sync(settings, argv, env, prompt)
+    argv, env, config_file = _prepare(settings)
+    try:
+        stdout, stderr, returncode = _run_sync(settings, argv, env, prompt)
+    finally:
+        _remove_quietly(config_file)
     return _answer_from_output(settings, stdout, stderr, returncode=returncode)
+
+
+def _reject_tool_events(stdout: str) -> None:
+    """Fail-closed: если CLI всё-таки вызвал инструмент, ответ не отдаём (AR-71)."""
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        for part in _iter_event_parts(event):
+            kind = str(part.get("type") or "")
+            if kind in {"tool", "tool_use", "tool-call", "tool_call"} or "tool" in part:
+                raise CliProviderError(
+                    "CLI вызвал инструмент, хотя tools выключены: ответ отброшен"
+                )
+
+
+def _iter_event_parts(event: Any) -> Iterator[dict[str, Any]]:
+    if isinstance(event, dict):
+        yield event
+        for value in event.values():
+            yield from _iter_event_parts(value)
+    elif isinstance(event, list):
+        for item in event:
+            yield from _iter_event_parts(item)
 
 
 def _answer_from_output(
@@ -675,6 +749,7 @@ def _answer_from_output(
     if returncode != 0:
         tail = (stderr or stdout or "").strip().splitlines()[-3:]
         raise CliProviderError(f"CLI завершился с кодом {returncode}: {' | '.join(tail)}")
+    _reject_tool_events(stdout)
     text = _parse_json_events(stdout)
     if not text:
         tail = (stderr or "").strip().splitlines()[-3:]
@@ -713,30 +788,33 @@ async def _read_capped(stream: Any, limit: int) -> bytes:
 
 async def run_cli_prompt_async(settings: CliSettings, prompt: str) -> str:
     """Async-вызов OpenCode: CancelledError/таймаут убивают bwrap и всё дерево."""
-    argv, env = _prepare(settings)
-    async with _semaphore():
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-        try:
-            async with asyncio.timeout(settings.timeout):
-                stdout, stderr = await _communicate(proc, prompt)
-        except TimeoutError as e:
-            _kill_quietly(proc)
-            await _reap(proc)
-            raise _timeout_error(settings) from e
-        except asyncio.CancelledError:
-            _kill_quietly(proc)
-            await _reap(proc)
-            raise
-        except BaseException:
-            _kill_quietly(proc)
-            await _reap(proc)
-            raise
+    argv, env, config_file = _prepare(settings)
+    try:
+        async with _semaphore():
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            try:
+                async with asyncio.timeout(settings.timeout):
+                    stdout, stderr = await _communicate(proc, prompt)
+            except TimeoutError as e:
+                _kill_quietly(proc)
+                await _reap(proc)
+                raise _timeout_error(settings) from e
+            except asyncio.CancelledError:
+                _kill_quietly(proc)
+                await _reap(proc)
+                raise
+            except BaseException:
+                _kill_quietly(proc)
+                await _reap(proc)
+                raise
+    finally:
+        _remove_quietly(config_file)
     text = _answer_from_output(
         settings,
         (stdout or b"").decode("utf-8", "replace"),
