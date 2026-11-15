@@ -223,7 +223,7 @@ def test_auth_file_is_mounted_read_only_from_sandbox(tmp_path: Path, monkeypatch
     settings = _settings(tmp_path)
     auth = Path(settings.sandbox) / "data" / "opencode" / "auth.json"
     auth.parent.mkdir(parents=True)
-    auth.write_text("{}", encoding="utf-8")
+    auth.write_text(json.dumps({"p": {"type": "api", "key": "k"}}), encoding="utf-8")
     holder = _patch_popen(monkeypatch)
     run_cli_prompt(settings, "hi")
     argv = holder["proc"].argv
@@ -292,19 +292,20 @@ def test_cli_bypasses_are_closed(tmp_path: Path):
     from core.llm.cli_provider import CliSettings, _cli_mount_root, _validate_cli_root
 
     settings = _settings(tmp_path)
-    for bad in (
-        "/usr/bin/oc",
-        "/usr/local/bin/opencode-ai",
-        "/bin/echo",
+    # AR-79: точный текст ошибки, а не «одно из трёх».
+    for bad, message in (
+        ("/usr/bin/oc", "широкий корень"),
+        ("/bin/echo", "широкий корень"),
+        ("/usr/local/bin/opencode-ai", "вне разрешённых"),
     ):
-        with pytest.raises(CliProviderError, match="вне разрешённых|широкий|нельзя"):
+        with pytest.raises(CliProviderError, match=message):
             _cli_mount_root(Path(bad), settings)
 
     data = Path(settings.data_dir)
     plain = data / "cli-runtime" / "bin" / "opencode"
     plain.parent.mkdir(parents=True)
     plain.write_text("#!/bin/sh\n", encoding="utf-8")
-    with pytest.raises(CliProviderError, match="вне разрешённых|широкий|нельзя"):
+    with pytest.raises(CliProviderError, match="вне разрешённых"):
         _cli_mount_root(plain, settings)
 
     old = data / "cli-runtime" / "provider-runtimes" / "opencode" / "linux-x64" / "9.9.9" / "bin" / "opencode"
@@ -725,7 +726,9 @@ def test_relative_paths_resolve_from_data_dir(tmp_path: Path, monkeypatch):
     settings = _settings(tmp_path, sandbox="cli-sandbox")
     data = Path(settings.data_dir)
     (data / "cli-sandbox" / "data" / "opencode").mkdir(parents=True)
-    (data / "cli-sandbox" / "data" / "opencode" / "auth.json").write_text("{}", encoding="utf-8")
+    (data / "cli-sandbox" / "data" / "opencode" / "auth.json").write_text(
+        json.dumps({"p": {"type": "api", "key": "k"}}), encoding="utf-8"
+    )
     settings = _settings(tmp_path, sandbox="cli-sandbox", auth_file="cli-sandbox/data/opencode/auth.json")
     assert run_cli_prompt(settings, "hi") == "ответ"
 
@@ -855,20 +858,45 @@ def test_real_model_answer_is_plain_text_and_markup_is_rejected(tmp_path: Path):
     fixtures = Path(__file__).parent / "fixtures" / "cli"
     answer = (fixtures / "opencode-2.3.0-real-answer.jsonl").read_text(encoding="utf-8")
     text = _answer_from_output(_settings(tmp_path), answer, "", returncode=0)
-    assert "нет доступа" in text and "<|DSML|" not in text
+    assert "нет доступа" in text
+    assert "｜DSML｜" not in text
 
     markup = (fixtures / "opencode-2.3.0-real-tool-markup.jsonl").read_text(encoding="utf-8")
+    assert "｜DSML｜" in markup  # фикстура действительно содержит разметку
     with pytest.raises(CliProviderError, match="разметку вызова инструмента"):
         _answer_from_output(_settings(tmp_path), markup, "", returncode=0)
 
-    # AR-80: обычный текст про API не должен считаться разметкой.
-    prose = json.dumps({"type": "text", "part": {"text": "В OpenAI это поле tool_calls, а DSML — разметка."}}, ensure_ascii=False)
-    assert "tool_calls" in _answer_from_output(_settings(tmp_path), prose, "", returncode=0)
+    # AR-80: цитаты в прозе проходят, структура в начале строки — нет.
+    for prose in (
+        "В OpenAI это поле tool_calls, а DSML — разметка.",
+        "Пример формата Qwen: <tool_call>{\"name\":\"x\"} — так модель просит инструмент.",
+        '{"people_updates":[{"note":"обсуждали <tool_call>"}]}',
+        "В Anthropic API используются теги antml:invoke",
+    ):
+        payload = json.dumps({"type": "text", "part": {"text": prose}}, ensure_ascii=False)
+        assert _answer_from_output(_settings(tmp_path), payload, "", returncode=0)
 
-    for bad in ("<tool_call>", "<invoke name=\"bash\">", "antml:invoke"):
-        payload = json.dumps({"type": "text", "part": {"text": f"ответ {bad} хвост"}}, ensure_ascii=False)
+    for bad in (
+        "<tool_call>{}",
+        "<tool_call >{}",
+        "<invoke  name=\"bash\">",
+        "<function=bash>{\"command\":\"id\"}</function>",
+        "  <|DSML| invoke name=\"bash\">",
+        "antml:invoke name=id",
+    ):
+        payload = json.dumps({"type": "text", "part": {"text": bad + "\nхвост"}}, ensure_ascii=False)
         with pytest.raises(CliProviderError, match="разметку вызова инструмента"):
             _answer_from_output(_settings(tmp_path), payload, "", returncode=0)
+
+
+def test_auth_file_must_be_api_key_not_oauth(tmp_path: Path):
+    """AR-71: OAuth-токен в read-only файле обновить нельзя — отказ на старте."""
+    settings = _settings(tmp_path)
+    auth = Path(settings.sandbox) / "data" / "opencode" / "auth.json"
+    auth.parent.mkdir(parents=True, exist_ok=True)
+    auth.write_text(json.dumps({"p": {"type": "oauth", "access": "x"}}), encoding="utf-8")
+    with pytest.raises(CliProviderError, match="не API-ключи"):
+        run_cli_prompt(settings, "hi")
 
 
 def test_prompt_carries_no_tools_guard():

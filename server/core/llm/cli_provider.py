@@ -78,20 +78,22 @@ MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$")
 # AR-71: у CLI-лейна нет инструментов, и модель не должна их изображать.
 CLI_GUARD = (
     "У тебя нет инструментов: ни bash, ни файлов, ни сети. "
-    "Не вызывай и не изображай вызовы инструментов; отвечай обычным текстом."
+    "Не вызывай и не изображай вызовы инструментов; отвечай в том формате, "
+    "который требуется в запросе."
 )
 
-# Разметка, которой модели изображают вызов инструмента вместо ответа.
-TOOL_MARKUP_MARKERS: tuple[str, ...] = (
-    "<|DSML|",
-    "｜DSML｜",
-    "antml:invoke",
-    "antml:tool",
-    "<function_calls>",
-    "<function_call>",
-    "<tool_call>",
-    "<tool_calls>",
-    "<invoke name=",
+# Разметка, которой модели изображают вызов инструмента. Ищем структуру в
+# начале строки, а не слово в прозе: цитата `<tool_call>` в объяснении или
+# в JSON рефлексии не должна ронять лейн (AR-80).
+TOOL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern, re.MULTILINE)
+    for pattern in (
+        r"^\s*<\s*[|｜]\s*DSML\s*[|｜]",
+        r"^\s*<\s*(?:function_calls|function_call|tool_calls?)\s*>",
+        r"^\s*<\s*invoke\s+name\s*=",
+        r"^\s*<\s*function\s*=",
+        r"^\s*antml:(?:invoke|tool)\b",
+    )
 )
 
 # Каталоги, которые и так смонтированы read-only в namespace: CLI оттуда
@@ -259,9 +261,8 @@ class CliSettings:
 def _validate_cli_root(root: Path, settings: CliSettings) -> None:
     """Allowlist: только каталог версии OpenCode с проверенной версией.
 
-    AR-68/75: принимается только каталог версии OpenCode с проверенной версией.
-    Один лишний компонент (`/run` → `/run/media`) не должен открывать диск,
-    поэтому широкие префиксы отклоняются явно.
+    AR-68/75: принимается только каталог версии OpenCode с проверенной версией;
+    всё остальное (широкие корни, `<data_dir>`, системные бинарники) — отказ.
     """
     root = root.expanduser().resolve()
     if str(root) in _WIDE_ROOTS:
@@ -456,14 +457,38 @@ def _find_auth_file(settings: CliSettings, sandbox: Path) -> Optional[Path]:
                 f"Файл авторизации CLI {resolved} вне {SANDBOX_DIR_NAME}: "
                 "секреты ядра в песочницу не монтируются"
             )
+        _validate_auth_payload(resolved)
         return resolved
 
     if settings.auth_file:
         return _checked(_resolve_config_path(settings.auth_file, settings.data_dir))
     for candidate in (sandbox / "data" / "opencode" / "auth.json", sandbox / "auth.json"):
         if candidate.is_file() and not candidate.is_symlink():
-            return candidate.resolve()
+            return _checked(candidate)
     return None
+
+
+def _validate_auth_payload(path: Path) -> None:
+    """AR-71: только API-ключ. OAuth-токен нельзя обновить в read-only файле."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise CliProviderError(
+            f"Файл авторизации CLI не читается как JSON: {path}"
+        ) from e
+    if not isinstance(payload, dict) or not payload:
+        raise CliProviderError(f"Файл авторизации CLI пуст или не объект: {path}")
+    oauth = [
+        name
+        for name, item in payload.items()
+        if not isinstance(item, dict) or item.get("type") != "api"
+    ]
+    if oauth:
+        raise CliProviderError(
+            "Файл авторизации CLI содержит не API-ключи ("
+            + ", ".join(map(str, oauth))
+            + "): OAuth-токен в read-only файле не обновится. Используйте API-ключ"
+        )
 
 
 def _cli_mount_root(cli_path: Path, settings: CliSettings) -> Optional[Path]:
@@ -865,7 +890,7 @@ def _answer_from_output(
         raise CliProviderError(f"CLI завершился с кодом {returncode}: {' | '.join(tail)}")
     _reject_tool_events(stdout)
     text = _parse_json_events(stdout)
-    if any(marker in text for marker in TOOL_MARKUP_MARKERS):
+    if any(pattern.search(text) for pattern in TOOL_MARKUP_PATTERNS):
         raise CliProviderError(
             "CLI вернул разметку вызова инструмента вместо текста: ответ отклонён"
         )
