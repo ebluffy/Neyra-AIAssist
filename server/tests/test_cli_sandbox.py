@@ -6,8 +6,6 @@ import asyncio
 import io
 import json
 import shutil
-import subprocess
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -165,7 +163,7 @@ def test_argv_denies_tools_and_uses_throwaway_home(tmp_path: Path, monkeypatch):
     flat = _flat(argv)
 
     # AR-1: свежий tmpfs вместо постоянного writable HOME, конфиг ro.
-    assert f"--tmpfs /home/sandbox" in flat
+    assert "--tmpfs /home/sandbox" in flat
     assert f"--bind {tmp_path / 'data' / 'cli-sandbox'} /home/sandbox" not in flat
     # AR-67: конфиг уникален для вызова и монтируется read-only.
     assert "/home/sandbox/config/opencode/opencode.json" in flat
@@ -999,11 +997,33 @@ def test_valid_auth_file_passes_settings_load(tmp_path: Path):
             "cli_path": str(_runtime_bin(tmp_path)),
             "experimental": True,
             "sandbox": str(sandbox),
+            "auth_file": str(auth),
         },
         model="m",
         data_dir=str(data),
     )
-    assert settings.auth_file == ""
+    assert settings.auth_file.endswith("auth.json")
+
+    # AR-94: data_dir через симлинк и `..` в sandbox — те же правила.
+    real = tmp_path / "realdata"
+    real.mkdir()
+    (real / "cli-sandbox" / "data" / "opencode").mkdir(parents=True)
+    (real / "cli-sandbox" / "data" / "opencode" / "auth.json").write_text(
+        json.dumps({"p": {"type": "api", "key": "k"}}), encoding="utf-8"
+    )
+    linked = tmp_path / "linked"
+    linked.symlink_to(real)
+    CliSettings.from_config(
+        {
+            "kind": "cli",
+            "cli": "opencode",
+            "cli_path": str(_runtime_bin(tmp_path)),
+            "experimental": True,
+            "sandbox": "cli-sandbox/data/../cli-sandbox",
+        },
+        model="m",
+        data_dir=str(linked),
+    )
 
 
 def test_auth_file_must_be_api_key_not_oauth(tmp_path: Path):
