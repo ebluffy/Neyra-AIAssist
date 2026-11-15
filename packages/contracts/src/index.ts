@@ -24,6 +24,44 @@ export const AttachmentSchema = z.object({ upload_id: z.string().min(1).max(120)
 export const BrowserAttachmentSchema = AttachmentSchema;
 export type BrowserAttachment = z.infer<typeof AttachmentSchema>;
 
+// Метаданные уже сохранённого вложения (#73): BFF отдаёт их после загрузки,
+// браузер возвращает их в чат. path/url сюда не входят, ядро проверяет owner/id.
+export const ATTACHMENT_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/pdf', 'text/plain', 'text/markdown'] as const;
+export const StoredAttachmentSchema = z.object({
+  id: z.string().regex(/^[a-f0-9]{32}$/, 'Attachment id must be 32 lowercase hex characters'),
+  kind: z.enum(['image', 'file']),
+  mime: z.enum(ATTACHMENT_MIMES),
+  name: z.string().min(1).max(200),
+  size: z.number().int().positive().max(8 * 1024 * 1024),
+}).strict();
+export type StoredAttachment = z.infer<typeof StoredAttachmentSchema>;
+
+// Лейны и лимиты контекста в формате ядра #73.
+export const ContextLaneUsageSchema = z.object({
+  used: z.number().int().nonnegative().optional(),
+  limit: z.number().int().positive().optional(),
+}).strict();
+export const ContextUsageSchema = z.object({
+  total: ContextLaneUsageSchema.optional(),
+  lanes: z.object({
+    talk: ContextLaneUsageSchema.optional(),
+    brain: ContextLaneUsageSchema.optional(),
+    memory: ContextLaneUsageSchema.optional(),
+    vision: ContextLaneUsageSchema.optional(),
+  }).strict().optional(),
+}).strict();
+export type ContextUsage = z.infer<typeof ContextUsageSchema>;
+
+// SSE-кадры BFF → браузер: без model_trace, usage только из ядра.
+export const SseChatEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('token'), text: z.string() }).strict(),
+  z.object({ type: z.literal('thinking'), text: z.string().optional() }).strict(),
+  z.object({ type: z.literal('phase'), phase: z.string().min(1).max(40), label: z.string().min(1).max(120).optional() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string(), usage: ContextUsageSchema.optional() }).strict(),
+  z.object({ type: z.literal('error'), code: z.string(), message: z.string() }).strict(),
+]);
+export type SseChatEvent = z.infer<typeof SseChatEventSchema>;
+
 // Вложение в кадре BFF → ядро. Только относительный путь внутри uploads/:
 // URL с чужим хостом превратил бы схему в SSRF-канал, поэтому url здесь нет,
 // а ведущий слэш запрещён — путь не должен выглядеть абсолютным.
@@ -44,7 +82,7 @@ export const ChatRequestSchema = z.object({
   text: z.string().min(1).max(6000),
   chat_id: z.string().uuid().optional(),
   model: z.string().min(1).optional(),
-  attachments: z.array(AttachmentSchema).max(4).optional(),
+  attachments: z.array(z.union([AttachmentSchema, StoredAttachmentSchema])).max(4).optional(),
 }).strict();
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 
@@ -64,7 +102,7 @@ export const ChatMessageSchema = z.object({
   role: z.enum(['user', 'assistant', 'system']),
   content: z.string(),
   model: z.string().optional(),
-  attachments: z.array(AttachmentSchema).max(4).optional(),
+  attachments: z.array(z.union([AttachmentSchema, StoredAttachmentSchema])).max(4).optional(),
 }).strict();
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 

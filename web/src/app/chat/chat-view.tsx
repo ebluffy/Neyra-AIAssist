@@ -29,7 +29,7 @@ import {
   History,
   Activity,
 } from 'lucide-react';
-import { SseChatEventSchema, AttachmentSchema, type StoredAttachment } from '@neyra/contracts';
+import { SseChatEventSchema, StoredAttachmentSchema, type StoredAttachment } from '@neyra/contracts';
 import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, type ContextUsage } from '../../components/ui';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
@@ -660,7 +660,7 @@ export function ChatView({
       }
 
       const raw = Array.isArray(payload?.attachments) ? payload.attachments : payload?.data?.attachments;
-      const parsed = AttachmentSchema.array().safeParse(raw);
+      const parsed = StoredAttachmentSchema.array().safeParse(raw);
       if (!parsed.success || parsed.data.length !== selected.length) {
         throw new Error('Ядро вернуло вложение в неизвестном формате.');
       }
@@ -880,9 +880,9 @@ export function ChatView({
       if (messages[i].role === 'user') {
         userText = messages[i].content;
         // В localStorage могли остаться вложения старого формата (local id/isImage).
-        // В ядро уходят только метаданные, прошедшие AttachmentSchema.
+        // В ядро уходят только метаданные, прошедшие StoredAttachmentSchema.
         userAttachments = (messages[i].attachments ?? []).flatMap((attachment) => {
-          const parsed = AttachmentSchema.safeParse(attachment);
+          const parsed = StoredAttachmentSchema.safeParse(attachment);
           return parsed.success ? [parsed.data] : [];
         });
         break;

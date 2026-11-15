@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { AttachmentSchema } from '@neyra/contracts';
+import { StoredAttachmentSchema } from '@neyra/contracts';
 import { getAuth } from '../../../../lib/auth';
 import { readWebCoreEnv } from '../../../../lib/core-admin';
 import { readChatEnv } from '../../../../lib/env';
@@ -224,7 +224,7 @@ export async function POST(request: Request) {
     }
     const attachments = [];
     for (const item of raw) {
-      const parsed = AttachmentSchema.safeParse(item);
+      const parsed = StoredAttachmentSchema.safeParse(item);
       if (!parsed.success) {
         return jsonError(502, 'attachment_contract', 'Ядро вернуло вложение в неизвестном формате.');
       }
