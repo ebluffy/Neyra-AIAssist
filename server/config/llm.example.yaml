@@ -13,14 +13,14 @@ llm:
 
     # Experimental CLI backend (#77): ядро вызывает установленный OpenCode через
     # bwrap. Требует bubblewrap на хосте, experimental: true и путь к версии CLI.
-    # Инструменты OpenCode выключены read-only конфигом, HOME — одноразовый tmpfs.
+    # Инструменты в запрос не попадают: read-only конфиг + плагин, HOME — tmpfs.
     # Ограничения: brain без tools, vision нет, max_tokens не поддерживается.
     # oc:
     #   kind: cli
     #   cli: opencode
     #   backend: run
     #   experimental: true
-    #   # Каталог версии CLI; допускается также путь под cli_roots ниже.
+    #   # Только каталог проверенной версии CLI (provider-runtimes/opencode/...).
     #   cli_path: "/var/lib/openbot/.config/OpenBot/provider-runtimes/opencode/linux-x64/2.3.0/bin/opencode"
     #   # Необязателен: по умолчанию <paths.data_dir>/cli-sandbox. Относительный
     #   # путь считается от data_dir, абсолютный должен быть внутри него.
@@ -28,9 +28,6 @@ llm:
     #   # Файл авторизации OpenCode; read-only bind внутрь песочницы.
     #   # Только внутри cli-sandbox. Относительный путь — от data_dir.
     #   # auth_file: "<путь из paths.data_dir>/cli-sandbox/data/opencode/auth.json"
-    #   # Дополнительные разрешённые каталоги CLI (абсолютные пути, не широкие
-    #   # корни вроде /srv или /mnt и не подкаталоги data_dir).
-    #   # cli_roots: ["/opt/opencode-runtimes"]
     #   timeout_seconds: 120
     # Затем: talk_model/brain_model/memory_model: {provider: oc, model: "opencode/<model>"}
 

@@ -64,7 +64,7 @@ _WIDE_ROOTS = {
     "/usr", "/var",
 }
 # Префиксы, под которыми лежат чужие данные, сокеты и временные каталоги:
-# `cli_roots` оттуда не принимаются, даже если это не сам широкий корень.
+# Любой корень оттуда отклоняется, даже если это не сам широкий корень.
 _FORBIDDEN_ROOT_PREFIXES: tuple[str, ...] = (
     "/run",
     "/media",
@@ -181,7 +181,6 @@ class CliSettings:
     sandbox: str
     cli_path: str
     data_dir: str = ""
-    cli_roots: tuple[str, ...] = ()
     auth_file: str = ""
     timeout: float = DEFAULT_TIMEOUT_SECONDS
     extra_args: tuple[str, ...] = ()
@@ -229,12 +228,6 @@ class CliSettings:
             raise CliProviderError(
                 "extra_args не поддерживаются: CLI-лейн принимает только собранные ядром аргументы"
             )
-        cli_roots_raw = block.get("cli_roots")
-        cli_roots = (
-            tuple(str(item) for item in cli_roots_raw)
-            if isinstance(cli_roots_raw, (list, tuple))
-            else ()
-        )
         timeout_raw = block.get("timeout_seconds")
         timeout = (
             float(timeout_raw)
@@ -248,7 +241,6 @@ class CliSettings:
             sandbox=sandbox,
             cli_path=cli_path,
             data_dir=str(data_root),
-            cli_roots=cli_roots,
             auth_file=str(block.get("auth_file") or "").strip(),
             timeout=timeout,
             experimental=True,
@@ -260,10 +252,9 @@ class CliSettings:
 def _validate_cli_root(root: Path, settings: CliSettings) -> None:
     """Allowlist: только каталог версии OpenCode с проверенной версией.
 
-    AR-68: проверяется форма пути, а не список плохих каталогов. Один лишний
-    компонент (`/run` → `/run/media`) не должен открывать целый диск, поэтому
-    `cli_roots` не принимается из `/run`, `/media`, `/mnt`, `/var`, `/srv`,
-    `/tmp`, `/home`, `/root`, `/etc`, `/proc`, `/sys`, `/dev`, `/boot`.
+    AR-68/75: принимается только каталог версии OpenCode с проверенной версией.
+    Один лишний компонент (`/run` → `/run/media`) не должен открывать диск,
+    поэтому широкие префиксы отклоняются явно.
     """
     root = root.expanduser().resolve()
     if str(root) in _WIDE_ROOTS:
@@ -274,9 +265,11 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
     internal_runtime = False
     if settings.data_dir:
         data_root_path = Path(settings.data_dir).expanduser().resolve()
-        internal_runtime = _is_under(root, data_root_path / "cli-runtime") or _is_under(
+        if _is_under(root, data_root_path / "cli-runtime") or _is_under(
             root, data_root_path / SANDBOX_DIR_NAME / "runtime"
-        )
+        ):
+            # AR-75: внутренний рантайм тоже обязан быть каталогом версии.
+            internal_runtime = _is_opencode_runtime_root(root)
     if not internal_runtime and not _is_opencode_runtime_root(root):
         # AR-68: корень верхнего уровня (`/data`, `/backup`, `/usr/local`) —
         # это целый диск или системный каталог, а не поставка CLI.
@@ -300,7 +293,7 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
         )
     if data_root is not None and _is_under(root, data_root):
         # AR-68: внутри data_dir разрешены только каталоги рантайма CLI,
-        # иначе одна строка cli_roots открывает память или vault процессу с сетью.
+        # иначе путь открывает память или vault процессу с сетью.
         runtime_ok = _is_under(root, data_root / "cli-runtime") or _is_under(
             root, data_root / SANDBOX_DIR_NAME / "runtime"
         )
@@ -340,11 +333,6 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
 
 def validate_settings(settings: CliSettings) -> None:
     """Проверки конфига без создания каталогов: модель, sandbox, CLI-путь."""
-    if settings.cli_roots:
-        raise CliProviderError(
-            "cli_roots отключены: укажите cli_path в "
-            "provider-runtimes/opencode/<platform>/<version>"
-        )
     if not MODEL_PATTERN.match(str(settings.model or "")):
         raise CliProviderError(
             f"Модель CLI '{settings.model}' недопустима: разрешены буквы, цифры, . _ / : - "
@@ -372,11 +360,6 @@ def validate_settings(settings: CliSettings) -> None:
         raise CliProviderError(
             f"Sandbox CLI {resolved} должен лежать в <data_dir>/{SANDBOX_DIR_NAME}"
         )
-    for item in settings.cli_roots:
-        root = Path(item).expanduser()
-        if not root.is_absolute():
-            raise CliProviderError(f"cli_roots должен содержать абсолютные пути: {item}")
-        _validate_cli_root(root.resolve(), settings)
 
 
 def _resolve_config_path(value: str, data_dir: str, sandbox: Optional[Path] = None) -> Path:
@@ -513,13 +496,10 @@ def _cli_mount_root(cli_path: Path, settings: CliSettings) -> Optional[Path]:
     resolved_cli = cli_path.resolve()
     for item in PRE_MOUNTED_ROOTS:
         if _is_under(resolved_cli, item.resolve()):
-            # AR-75: системный opencode без каталога версии не проверен.
-            # Другие бинарники (например, тестовый /bin/echo) не наш CLI.
-            if resolved_cli.name == "opencode":
-                raise CliProviderError(
-                    f"CLI {resolved_cli} лежит в системном каталоге без версии: "
-                    "используйте provider-runtimes/opencode/<platform>/<version>"
-                )
+            # AR-75: системный бинарник без каталога версии не проверен —
+            # имя файла ничего не гарантирует (opencode-ai, oc).
+            root = resolved_cli.parent.parent if resolved_cli.parent.name in {"bin", "sbin"} else resolved_cli.parent
+            _validate_cli_root(root, settings)
             return None
     parent = cli_path.parent
     root = parent.parent if parent.name in {"bin", "sbin"} else parent

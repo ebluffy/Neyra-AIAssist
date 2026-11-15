@@ -33,7 +33,25 @@ ADMIN = "admin"
 TEXT_EVENT = json.dumps({"type": "text", "part": {"text": "ответ"}}, ensure_ascii=False)
 
 
-def _settings(tmp_path: Path, cli_path: str = "/bin/echo", **changes) -> CliSettings:
+def _runtime_bin(tmp_path: Path) -> Path:
+    """Фейковый CLI в каталоге проверенной версии — единственный разрешённый вид."""
+    path = (
+        tmp_path
+        / "provider-runtimes"
+        / "opencode"
+        / "linux-x64"
+        / "2.3.0"
+        / "bin"
+        / "opencode"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+    return path
+
+
+def _settings(tmp_path: Path, cli_path: str | None = None, **changes) -> CliSettings:
     data = tmp_path / "data"
     values = dict(
         cli="opencode",
@@ -41,7 +59,7 @@ def _settings(tmp_path: Path, cli_path: str = "/bin/echo", **changes) -> CliSett
         model="opencode/x-free",
         sandbox=str(data / "cli-sandbox"),
         data_dir=str(data),
-        cli_path=cli_path,
+        cli_path=cli_path if cli_path is not None else str(_runtime_bin(tmp_path)),
         experimental=True,
     )
     values.update(changes)
@@ -253,8 +271,9 @@ def test_cli_root_allowlist(tmp_path: Path):
         with pytest.raises(CliProviderError):
             _cli_mount_root(Path(bad), settings)
 
-    # /usr и /bin уже смонтированы read-only: лишний bind не нужен.
-    assert _cli_mount_root(Path("/bin/echo"), settings) is None
+    # AR-75: системный бинарник без каталога версии не принимается.
+    with pytest.raises(CliProviderError, match="вне разрешённых|широкий"):
+        _cli_mount_root(Path("/bin/echo"), settings)
 
 
 def test_only_verified_opencode_version_is_allowed(tmp_path: Path):
@@ -287,21 +306,21 @@ def test_experimental_model_and_extra_args_are_validated(tmp_path: Path):
     data = str(tmp_path / "data")
     with pytest.raises(CliProviderError, match="experimental"):
         CliSettings.from_config(
-            {"cli": "opencode", "cli_path": "/bin/echo"}, model="m", data_dir=data
+            {"cli": "opencode", "cli_path": str(_runtime_bin(tmp_path))}, model="m", data_dir=data
         )
     with pytest.raises(CliProviderError, match="sandbox"):
         CliSettings.from_config(
-            {"cli": "opencode", "cli_path": "/bin/echo", "experimental": True, "sandbox": ""},
+            {"cli": "opencode", "cli_path": str(_runtime_bin(tmp_path)), "experimental": True, "sandbox": ""},
             model="m",
             data_dir=data,
         )
     with pytest.raises(CliProviderError, match="data_dir"):
         CliSettings.from_config(
-            {"cli": "opencode", "cli_path": "/bin/echo", "experimental": True}, model="m"
+            {"cli": "opencode", "cli_path": str(_runtime_bin(tmp_path)), "experimental": True}, model="m"
         )
     with pytest.raises(CliProviderError, match="Модель"):
         CliSettings.from_config(
-            {"cli": "opencode", "cli_path": "/bin/echo", "experimental": True},
+            {"cli": "opencode", "cli_path": str(_runtime_bin(tmp_path)), "experimental": True},
             model="--port=1",
             data_dir=data,
             default_sandbox=str(Path(data) / "cli-sandbox"),
@@ -310,7 +329,7 @@ def test_experimental_model_and_extra_args_are_validated(tmp_path: Path):
         CliSettings.from_config(
             {
                 "cli": "opencode",
-                "cli_path": "/bin/echo",
+                "cli_path": str(_runtime_bin(tmp_path)),
                 "experimental": True,
                 "extra_args": ["--dangerously-skip-permissions"],
             },
@@ -463,8 +482,15 @@ def test_async_stream_returns_single_chunk(tmp_path: Path, monkeypatch):
 def test_actual_bwrap_denies_tools_and_forgets_home(tmp_path: Path):
     if not shutil.which("bwrap"):
         pytest.skip("bwrap not installed in this environment")
-    runtime = tmp_path / "data" / "cli-runtime" / "bin"
-    runtime.mkdir(parents=True)
+    runtime = (
+        tmp_path
+        / "provider-runtimes"
+        / "opencode"
+        / "linux-x64"
+        / "2.3.0"
+        / "bin"
+    )
+    runtime.mkdir(parents=True, exist_ok=True)
     script = runtime / "opencode"
     script.write_text(
         "#!/bin/sh\n"
@@ -592,8 +618,8 @@ def test_provider_put_does_not_rewrite_cli_kind(real_api, auth_headers):
 # ─── Второй раунд авторевью #77 (AR-67…AR-71) ────────────────────────────────
 
 
-def test_cli_roots_reject_broad_prefixes_and_require_exact_root(tmp_path: Path):
-    """AR-68: форма пути, а не список плохих каталогов; монтируется ровно элемент."""
+def test_cli_root_must_be_verified_version_dir(tmp_path: Path):
+    """AR-68/75: принимается только каталог проверенной версии OpenCode."""
     from core.llm.cli_provider import _validate_cli_root
 
     settings = _settings(tmp_path)
@@ -623,7 +649,7 @@ def test_cli_roots_reject_broad_prefixes_and_require_exact_root(tmp_path: Path):
             _validate_cli_root(Path(bad), settings)
 
     runtime = tmp_path / "provider-runtimes" / "opencode" / "linux-x64" / "2.3.0"
-    runtime.mkdir(parents=True)
+    runtime.mkdir(parents=True, exist_ok=True)
     _validate_cli_root(runtime, settings)  # каталог версии OpenCode — можно
 
     # AR-75: произвольная поставка без каталога версии не принимается.
@@ -696,6 +722,31 @@ def test_plugin_manifest_nonce_and_tools_are_checked(tmp_path: Path):
 
     manifest.write_text(json.dumps({"nonce": "cafe", "before": 11, "after": 0}), encoding="utf-8")
     _require_plugin_manifest(assets, "cafe")
+
+
+def test_async_real_cli_error_is_not_masked_by_plugin_check(tmp_path: Path, monkeypatch):
+    """AR-76: async-путь тоже отдаёт ошибку CLI раньше проверки плагина."""
+    class _ReadyStream:
+        def __init__(self, data: bytes):
+            self.data = data
+
+        async def read(self, limit: int) -> bytes:
+            chunk, self.data = self.data[:limit], self.data[limit:]
+            return chunk
+
+    proc = _FakeAsyncProc()
+    proc.stdout = _ReadyStream(b"")
+    proc.stderr = _ReadyStream(b"auth missing")
+
+    async def _spawn(*argv, **kwargs):  # noqa: ANN002, ANN003
+        proc.returncode = 2
+        return proc
+
+    monkeypatch.setattr("core.llm.cli_provider.shutil.which", lambda name: "/usr/bin/bwrap")
+    monkeypatch.setattr("core.llm.cli_provider.asyncio.create_subprocess_exec", _spawn)
+
+    with pytest.raises(CliProviderError, match="кодом 2"):
+        asyncio.run(run_cli_prompt_async(_settings(tmp_path), "hi"))
 
 
 def test_real_cli_error_is_not_masked_by_plugin_check(tmp_path: Path, monkeypatch):
