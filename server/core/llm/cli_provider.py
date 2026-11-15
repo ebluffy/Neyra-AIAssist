@@ -63,23 +63,6 @@ _WIDE_ROOTS = {
     "/mnt", "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/tmp",
     "/usr", "/var",
 }
-# Префиксы, под которыми лежат чужие данные, сокеты и временные каталоги:
-# Любой корень оттуда отклоняется, даже если это не сам широкий корень.
-_FORBIDDEN_ROOT_PREFIXES: tuple[str, ...] = (
-    "/run",
-    "/media",
-    "/mnt",
-    "/var",
-    "/srv",
-    "/tmp",
-    "/home",
-    "/root",
-    "/etc",
-    "/proc",
-    "/sys",
-    "/dev",
-    "/boot",
-)
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_CONCURRENT_CLI = 4
 CHARS_PER_TOKEN = 4
@@ -100,13 +83,15 @@ CLI_GUARD = (
 
 # Разметка, которой модели изображают вызов инструмента вместо ответа.
 TOOL_MARKUP_MARKERS: tuple[str, ...] = (
-    "DSML",
     "<|DSML|",
-    "</|DSML|",
-    "antml:",
+    "｜DSML｜",
+    "antml:invoke",
+    "antml:tool",
     "<function_calls>",
     "<function_call>",
-    '"tool_calls"',
+    "<tool_call>",
+    "<tool_calls>",
+    "<invoke name=",
 )
 
 # Каталоги, которые и так смонтированы read-only в namespace: CLI оттуда
@@ -285,15 +270,16 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
         )
 
     if not _is_opencode_runtime_root(root):
-        # AR-68/75: любой путь, который не является каталогом версии, — это
-        # диск или системный каталог; широкие префиксы отклоняются явно.
-        for prefix in _FORBIDDEN_ROOT_PREFIXES:
-            base = Path(prefix)
-            if root == base or _is_under(root, base):
-                raise CliProviderError(
-                    f"CLI-путь {root} лежит в {prefix}: такие каталоги нельзя "
-                    "монтировать в песочницу; укажите каталог версии OpenCode"
-                )
+        raise CliProviderError(
+            f"CLI-путь {root} вне разрешённых каталогов: нужен каталог версии "
+            f"({RUNTIME_MARKER}/opencode/<platform>/<version>) с проверенной версией"
+        )
+    if root.name not in VERIFIED_OPENCODE_VERSIONS:
+        raise CliProviderError(
+            f"Версия OpenCode {root.name} не проверена: отключение инструментов "
+            f"подтверждено только для {', '.join(sorted(VERIFIED_OPENCODE_VERSIONS))}"
+        )
+
     data_root = Path(settings.data_dir).expanduser().resolve() if settings.data_dir else None
     if data_root is not None and (root == data_root or root in data_root.parents):
         raise CliProviderError(
@@ -318,26 +304,6 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
                 f"CLI-путь {root} открывает слишком широкий каталог; "
                 "укажите каталог версии OpenCode"
             )
-        if _is_under(root, base) and not _is_opencode_runtime_root(root):
-            raise CliProviderError(
-                f"CLI-путь {root} лежит в защищённом каталоге {sensitive}; "
-                "разрешён только каталог версии OpenCode"
-            )
-    if _is_opencode_runtime_root(root) and root.name not in VERIFIED_OPENCODE_VERSIONS:
-        raise CliProviderError(
-            f"Версия OpenCode {root.name} не проверена: отключение инструментов "
-            f"подтверждено только для {', '.join(sorted(VERIFIED_OPENCODE_VERSIONS))}"
-        )
-    if _is_under(root, OPENBOT_CONFIG_ROOT) and not _is_opencode_runtime_root(root):
-        raise CliProviderError(
-            f"CLI-путь {root} должен совпадать с "
-            "provider-runtimes/opencode/<platform>/<version>"
-        )
-    if not _is_opencode_runtime_root(root):
-        raise CliProviderError(
-            f"CLI-путь {root} вне разрешённых каталогов: нужен каталог версии "
-            f"({RUNTIME_MARKER}/opencode/<platform>/<version>) с проверенной версией"
-        )
 
 
 def validate_settings(settings: CliSettings) -> None:

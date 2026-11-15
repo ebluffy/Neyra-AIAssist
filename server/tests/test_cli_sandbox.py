@@ -861,6 +861,15 @@ def test_real_model_answer_is_plain_text_and_markup_is_rejected(tmp_path: Path):
     with pytest.raises(CliProviderError, match="разметку вызова инструмента"):
         _answer_from_output(_settings(tmp_path), markup, "", returncode=0)
 
+    # AR-80: обычный текст про API не должен считаться разметкой.
+    prose = json.dumps({"type": "text", "part": {"text": "В OpenAI это поле tool_calls, а DSML — разметка."}}, ensure_ascii=False)
+    assert "tool_calls" in _answer_from_output(_settings(tmp_path), prose, "", returncode=0)
+
+    for bad in ("<tool_call>", "<invoke name=\"bash\">", "antml:invoke"):
+        payload = json.dumps({"type": "text", "part": {"text": f"ответ {bad} хвост"}}, ensure_ascii=False)
+        with pytest.raises(CliProviderError, match="разметку вызова инструмента"):
+            _answer_from_output(_settings(tmp_path), payload, "", returncode=0)
+
 
 def test_prompt_carries_no_tools_guard():
     """AR-71: модель получает инструкцию не изображать инструменты."""
