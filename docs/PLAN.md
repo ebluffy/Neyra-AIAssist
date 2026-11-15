@@ -622,7 +622,7 @@ MVP описан в §2.2 и уже работает; здесь — что ос
 - **Одноразовый HOME:** на каждый вызов свежий tmpfs вместо `data/cli-sandbox`; история сессий, `AGENTS.md` и прочий мусор не переживают вызов. Авторизация пробрасывается одним файлом read-only из sandbox в `XDG_DATA_HOME`.
 - **Границы:** `cli_path` — allowlist (системные read-only каталоги, `provider-runtimes/opencode/<platform>/<version>` или `cli_roots`); `sandbox` — только `<data_dir>/cli-sandbox`, без симлинков; модель проверяется по шаблону, `extra_args` не поддерживаются.
 - **Ограничения:** brain на CLI не умеет tools — конфиг с `mcp_client.llm_tool_calls`/`desktop_agent.enabled` отклоняется на старте, а ход без поддержки tools идёт без tool-loop с warning; vision на CLI нет (картинки заменяются плейсхолдером, unified brain-vision отключается); `max_tokens` CLI не принимает — ответ обрезается с warning; нативного стриминга нет.
-- **Не проверено вживую:** реальный OpenCode на стенде (бинарник 2.3.0, авторизация внутри tmpfs HOME, поведение конфига `tools/permission`, работа инструментов и сети внутри sandbox), remote CI. Offline-проверки: argv bwrap, реальный smoke с bwrap, отсутствие bwrap, env whitelist, JSON, отмена процесса, лимит вывода, симлинки.
+- **Не проверено вживую:** реальный OpenCode на стенде (бинарник 2.3.0, авторизация внутри tmpfs HOME, поведение конфига `tools/permission`, работа инструментов и сети внутри sandbox; remote CI зелёный, но живой OpenCode не проверен). Offline-проверки: argv bwrap, реальный smoke с bwrap, отсутствие bwrap, env whitelist, JSON, отмена процесса, лимит вывода, симлинки.
 
 ## 9. Этап 6 (постоянно): эксплуатация и публикация
 
