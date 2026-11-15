@@ -340,7 +340,6 @@ def validate_settings(settings: CliSettings) -> None:
         )
 
 
-
 def _resolve_config_path(value: str, data_dir: str, sandbox: Optional[Path] = None) -> Path:
     """Относительный путь в конфиге считается от data_dir, а не от cwd (AR-70)."""
     candidate = Path(value).expanduser()
@@ -504,7 +503,7 @@ def _validate_auth_payload(path: Path) -> None:
 
 def validate_auth(settings: CliSettings) -> None:
     """Стартовая проверка `auth.json` (AR-71/88): до первого запроса."""
-    sandbox = _resolve_config_path(settings.sandbox, settings.data_dir)
+    sandbox = _resolve_config_path(settings.sandbox, settings.data_dir).resolve()
     _resolve_auth_file(settings, sandbox)
 
 

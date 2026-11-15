@@ -983,6 +983,29 @@ def test_settings_load_checks_auth_symlink_and_location(tmp_path: Path):
         )
 
 
+def test_valid_auth_file_passes_settings_load(tmp_path: Path):
+    """AR-92: валидный API-ключ в sandbox не падает на старте (регрессия)."""
+    from core.llm.cli_provider import CliSettings
+
+    data = tmp_path / "data"
+    sandbox = data / "cli-sandbox"
+    auth = sandbox / "data" / "opencode" / "auth.json"
+    auth.parent.mkdir(parents=True)
+    auth.write_text(json.dumps({"p": {"type": "api", "key": "k"}}), encoding="utf-8")
+    settings = CliSettings.from_config(
+        {
+            "kind": "cli",
+            "cli": "opencode",
+            "cli_path": str(_runtime_bin(tmp_path)),
+            "experimental": True,
+            "sandbox": str(sandbox),
+        },
+        model="m",
+        data_dir=str(data),
+    )
+    assert settings.auth_file == ""
+
+
 def test_auth_file_must_be_api_key_not_oauth(tmp_path: Path):
     """AR-71: OAuth-токен в read-only файле обновить нельзя — отказ на старте."""
     settings = _settings(tmp_path)
