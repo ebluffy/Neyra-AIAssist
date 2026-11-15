@@ -1,8 +1,11 @@
-"""CLI-провайдер: bwrap, env whitelist, stdin, JSON и staging-публикация."""
+"""CLI-провайдер: bwrap, запрет инструментов, allowlist путей, отмена, лимиты."""
 
 from __future__ import annotations
 
+import asyncio
+import io
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,20 +14,32 @@ from unittest.mock import patch
 import pytest
 
 from core.llm.cli_provider import (
+    MAX_OUTPUT_BYTES,
     CliChatModel,
     CliProviderError,
     CliSettings,
+    _cli_mount_root,
+    _messages_to_prompt,
     _parse_json_events,
+    _truncate_answer,
     run_cli_prompt,
+    run_cli_prompt_async,
 )
+
+from test_web_identity_review import real_api  # noqa: F401  (fixture)
+
+ADMIN = "admin"
+TEXT_EVENT = json.dumps({"type": "text", "part": {"text": "ответ"}}, ensure_ascii=False)
 
 
 def _settings(tmp_path: Path, cli_path: str = "/bin/echo", **changes) -> CliSettings:
+    data = tmp_path / "data"
     values = dict(
         cli="opencode",
         backend="run",
         model="opencode/x-free",
-        sandbox=str(tmp_path / "sandbox"),
+        sandbox=str(data / "cli-sandbox"),
+        data_dir=str(data),
         cli_path=cli_path,
         experimental=True,
     )
@@ -32,34 +47,94 @@ def _settings(tmp_path: Path, cli_path: str = "/bin/echo", **changes) -> CliSett
     return CliSettings(**values)
 
 
+class _FakeStdin:
+    def __init__(self):
+        self.chunks: list[str] = []
+        self.closed = False
+
+    def write(self, data: str) -> None:
+        self.chunks.append(data)
+
+    def close(self) -> None:
+        self.closed = True
+
+    def getvalue(self) -> str:
+        return "".join(self.chunks)
+
+
+class _FakePopen:
+    """Минимальный Popen: stdin/stdout/stderr как StringIO, без процессов."""
+
+    def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0):
+        self.argv: list[str] = []
+        self.kwargs: dict = {}
+        self.stdin = _FakeStdin()
+        self.stdout = io.StringIO(stdout)
+        self.stderr = io.StringIO(stderr)
+        self.returncode = returncode
+        self.killed = False
+
+    def wait(self, timeout=None):  # noqa: ANN001, ARG002
+        return self.returncode
+
+    def kill(self):  # noqa: D401
+        self.killed = True
+        self.returncode = -9
+
+
+def _patch_popen(monkeypatch, stdout: str = TEXT_EVENT, stderr: str = "", returncode: int = 0):
+    holder: dict[str, _FakePopen] = {}
+
+    def _factory(argv, **kwargs):  # noqa: ANN001
+        proc = _FakePopen(stdout, stderr, returncode)
+        proc.argv = list(argv)
+        proc.kwargs = kwargs
+        holder["proc"] = proc
+        return proc
+
+    monkeypatch.setattr("core.llm.cli_provider.subprocess.Popen", _factory)
+    monkeypatch.setattr("core.llm.cli_provider.shutil.which", lambda name: "/usr/bin/bwrap")
+    return holder
+
+
+def _flat(argv: list[str]) -> str:
+    return " ".join(argv)
+
+
 def test_bwrap_is_required_and_no_direct_fallback(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("core.llm.cli_provider.shutil.which", lambda name: None)
-    with patch("core.llm.cli_provider.subprocess.run") as run:
+    with patch("core.llm.cli_provider.subprocess.Popen") as popen:
         with pytest.raises(CliProviderError, match="bwrap"):
             run_cli_prompt(_settings(tmp_path), "hi")
-    run.assert_not_called()
+    popen.assert_not_called()
 
 
-def test_argv_has_bwrap_mounts_and_prompt_is_stdin(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("core.llm.cli_provider.shutil.which", lambda name: "/usr/bin/bwrap")
-    completed = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout=json.dumps({"type": "text", "part": {"text": "ответ"}}),
-        stderr="",
-    )
-    with patch("core.llm.cli_provider.subprocess.run", return_value=completed) as run:
-        assert run_cli_prompt(_settings(tmp_path), "не-в-argv") == "ответ"
-    argv = run.call_args.args[0]
-    flat = " ".join(argv)
-    assert "--unshare-user" in flat and "--unshare-pid" in flat
-    assert "--share-net" in flat
-    assert "--die-with-parent" in flat
-    assert f"--bind {tmp_path / 'sandbox'} /home/sandbox" in flat
-    assert "--chdir /home/sandbox" in flat
+def test_argv_denies_tools_and_uses_throwaway_home(tmp_path: Path, monkeypatch):
+    holder = _patch_popen(monkeypatch)
+    assert run_cli_prompt(_settings(tmp_path), "не-в-argv") == "ответ"
+    proc = holder["proc"]
+    argv = proc.argv
+    flat = _flat(argv)
+
+    # AR-1: свежий tmpfs вместо постоянного writable HOME, конфиг ro.
+    assert f"--tmpfs /home/sandbox" in flat
+    assert f"--bind {tmp_path / 'data' / 'cli-sandbox'} /home/sandbox" not in flat
+    config_host = tmp_path / "data" / "cli-sandbox" / "opencode.json"
+    assert f"--ro-bind {config_host} /home/sandbox/config/opencode/opencode.json" in flat
+    assert proc.kwargs["env"]["OPENCODE_CONFIG"] == "/home/sandbox/config/opencode/opencode.json"
+    config = json.loads(config_host.read_text(encoding="utf-8"))
+    assert config["tools"] and not any(config["tools"].values())
+    assert {"bash", "edit", "write", "webfetch"} <= set(config["permission"])
+    assert set(config["permission"].values()) == {"deny"}
+
+    # AR-7: новая сессия (TIOCSTI) и без capabilities.
+    assert "--new-session" in argv
+    assert "--cap-drop" in argv and argv[argv.index("--cap-drop") + 1] == "ALL"
+
+    # Промпт — stdin, не argv.
     assert "не-в-argv" not in flat
-    assert run.call_args.kwargs["input"] == "не-в-argv"
-    assert run.call_args.kwargs["env"]["HOME"] == "/home/sandbox"
+    assert proc.stdin.getvalue() == "не-в-argv"
+    assert "--chdir /home/sandbox" in flat
 
 
 def test_env_whitelist_has_no_core_secrets(tmp_path: Path, monkeypatch):
@@ -67,14 +142,43 @@ def test_env_whitelist_has_no_core_secrets(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("NEYRA_VAULT_KEY", "vault-secret")
     monkeypatch.setenv("DISCORD_TOKEN", "discord-secret")
     monkeypatch.setenv("DEEPGRAM_API_KEY", "deepgram-secret")
-    monkeypatch.setattr("core.llm.cli_provider.shutil.which", lambda name: "/usr/bin/bwrap")
-    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout='{"type":"text","part":{"text":"ok"}}', stderr="")
-    with patch("core.llm.cli_provider.subprocess.run", return_value=completed) as run:
-        run_cli_prompt(_settings(tmp_path), "hi")
-    env = run.call_args.kwargs["env"]
+    holder = _patch_popen(monkeypatch)
+    run_cli_prompt(_settings(tmp_path), "hi")
+    env = holder["proc"].kwargs["env"]
     for name in ("API_TOKEN", "NEYRA_VAULT_KEY", "DISCORD_TOKEN", "DEEPGRAM_API_KEY"):
         assert name not in env
-    assert set(env) <= {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "HOME", "TMPDIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"}
+    assert set(env) <= {
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "TERM",
+        "HOME",
+        "TMPDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "OPENCODE_CONFIG",
+    }
+
+
+def test_auth_file_is_mounted_read_only_from_sandbox(tmp_path: Path, monkeypatch):
+    settings = _settings(tmp_path)
+    auth = Path(settings.sandbox) / "data" / "opencode" / "auth.json"
+    auth.parent.mkdir(parents=True)
+    auth.write_text("{}", encoding="utf-8")
+    holder = _patch_popen(monkeypatch)
+    run_cli_prompt(settings, "hi")
+    argv = holder["proc"].argv
+    flat = _flat(argv)
+    assert f"--ro-bind {auth} /home/sandbox/data/opencode/auth.json" in flat
+    assert holder["proc"].kwargs["env"]["XDG_DATA_HOME"] == "/home/sandbox/data"
+
+    foreign = tmp_path / "foreign.json"
+    foreign.write_text("{}", encoding="utf-8")
+    with pytest.raises(CliProviderError, match="вне sandbox"):
+        run_cli_prompt(_settings(tmp_path, auth_file=str(foreign)), "hi")
 
 
 def test_json_events_and_bind_tools(tmp_path: Path):
@@ -93,52 +197,265 @@ def test_json_events_and_bind_tools(tmp_path: Path):
         model.bind_tools([])
 
 
-def test_experimental_and_sandbox_are_required(tmp_path: Path):
+def test_cli_root_allowlist(tmp_path: Path):
+    settings = _settings(tmp_path)
+    canonical = Path(
+        "/var/lib/openbot/.config/OpenBot/provider-runtimes/opencode/linux-x64/2.3.0/bin/opencode"
+    )
+    assert _cli_mount_root(canonical, settings) == canonical.parent.parent
+
+    for bad in (
+        "/home/ebluffy/opencode/bin/opencode",
+        "/root/opencode/bin/opencode",
+        "/etc/opencode/bin/opencode",
+        "/opt/neyra/server/data/opencode/bin/opencode",
+        "/var/lib/openbot/.config/OpenBot/opencode/bin/opencode",
+        "/var/lib/openbot/server/opencode/bin/opencode",
+    ):
+        with pytest.raises(CliProviderError):
+            _cli_mount_root(Path(bad), settings)
+
+    # /usr и /bin уже смонтированы read-only: лишний bind не нужен.
+    assert _cli_mount_root(Path("/bin/echo"), settings) is None
+
+
+def test_sandbox_must_live_in_data_dir(tmp_path: Path):
+    data = tmp_path / "data"
+    with pytest.raises(CliProviderError, match="cli-sandbox"):
+        run_cli_prompt(_settings(tmp_path, sandbox=str(data)), "hi")
+    with pytest.raises(CliProviderError, match="cli-sandbox"):
+        run_cli_prompt(_settings(tmp_path, sandbox=str(data / "other")), "hi")
+    with pytest.raises(CliProviderError, match="cli-sandbox"):
+        run_cli_prompt(_settings(tmp_path, sandbox=str(tmp_path / "outside")), "hi")
+
+    link = tmp_path / "link-sandbox"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(CliProviderError, match="симлинк"):
+        run_cli_prompt(_settings(tmp_path, sandbox=str(link)), "hi")
+
+
+def test_experimental_model_and_extra_args_are_validated(tmp_path: Path):
+    data = str(tmp_path / "data")
     with pytest.raises(CliProviderError, match="experimental"):
-        CliSettings.from_config({"cli": "opencode", "cli_path": "/bin/echo"}, model="m")
+        CliSettings.from_config(
+            {"cli": "opencode", "cli_path": "/bin/echo"}, model="m", data_dir=data
+        )
     with pytest.raises(CliProviderError, match="sandbox"):
+        CliSettings.from_config(
+            {"cli": "opencode", "cli_path": "/bin/echo", "experimental": True, "sandbox": ""},
+            model="m",
+            data_dir=data,
+        )
+    with pytest.raises(CliProviderError, match="data_dir"):
         CliSettings.from_config(
             {"cli": "opencode", "cli_path": "/bin/echo", "experimental": True}, model="m"
         )
+    with pytest.raises(CliProviderError, match="Модель"):
+        CliSettings.from_config(
+            {"cli": "opencode", "cli_path": "/bin/echo", "experimental": True},
+            model="--port=1",
+            data_dir=data,
+            default_sandbox=str(Path(data) / "cli-sandbox"),
+        )
+    with pytest.raises(CliProviderError, match="extra_args"):
+        CliSettings.from_config(
+            {
+                "cli": "opencode",
+                "cli_path": "/bin/echo",
+                "experimental": True,
+                "extra_args": ["--dangerously-skip-permissions"],
+            },
+            model="m",
+            data_dir=data,
+            default_sandbox=str(Path(data) / "cli-sandbox"),
+        )
 
 
-def test_actual_bwrap_runs_prompt_through_stdin(tmp_path: Path):
-    if not __import__("shutil").which("bwrap"):
+def test_broken_config_symlink_is_replaced_not_crashing(tmp_path: Path, monkeypatch):
+    settings = _settings(tmp_path)
+    sandbox = Path(settings.sandbox)
+    sandbox.mkdir(parents=True)
+    target = tmp_path / "target.json"
+    target.write_text("keep", encoding="utf-8")
+    (sandbox / "opencode.json").symlink_to(tmp_path / "missing.json")
+    _patch_popen(monkeypatch)
+    assert run_cli_prompt(settings, "hi") == "ответ"
+    config = sandbox / "opencode.json"
+    assert config.is_file() and not config.is_symlink()
+    assert target.read_text(encoding="utf-8") == "keep"
+
+
+def test_output_cap_kills_process(tmp_path: Path, monkeypatch):
+    holder = _patch_popen(monkeypatch, stdout="x" * (MAX_OUTPUT_BYTES + 10))
+    with pytest.raises(CliProviderError, match="больше"):
+        run_cli_prompt(_settings(tmp_path), "hi")
+    assert holder["proc"].killed is True
+
+
+def test_images_become_placeholder_not_base64():
+    from langchain_core.messages import HumanMessage
+
+    prompt = _messages_to_prompt(
+        [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "что на фото?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,QUJDREVG"},
+                    },
+                ]
+            )
+        ]
+    )
+    assert "что на фото?" in prompt
+    assert "изображение не передано" in prompt
+    assert "base64" not in prompt and "QUJDREVG" not in prompt
+
+
+def test_max_tokens_truncates_answer(tmp_path: Path, monkeypatch):
+    long_text = "я" * 500
+    _patch_popen(
+        monkeypatch,
+        stdout=json.dumps({"type": "text", "part": {"text": long_text}}, ensure_ascii=False),
+    )
+    model = CliChatModel(settings=_settings(tmp_path), provider_name="oc")
+    result = model.bind(max_tokens=10).invoke("привет")
+    assert len(result.content) <= 10 * 4
+    assert _truncate_answer(_settings(tmp_path), long_text, None) == long_text
+
+
+class _BlockingStream:
+    async def read(self, limit: int) -> bytes:  # noqa: ARG002
+        await asyncio.sleep(30)
+        return b""
+
+
+class _FakeAsyncStdin:
+    def write(self, data: bytes) -> None:  # noqa: ARG002
+        return None
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class _FakeAsyncProc:
+    def __init__(self):
+        self.stdin = _FakeAsyncStdin()
+        self.stdout = _BlockingStream()
+        self.stderr = _BlockingStream()
+        self.returncode = None
+        self.killed = False
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    async def wait(self) -> int:
+        while self.returncode is None:
+            await asyncio.sleep(0.01)
+        return self.returncode
+
+
+def test_cancelled_async_run_kills_process(tmp_path: Path, monkeypatch):
+    proc = _FakeAsyncProc()
+
+    async def _spawn(*argv, **kwargs):  # noqa: ANN002, ANN003
+        return proc
+
+    monkeypatch.setattr("core.llm.cli_provider.shutil.which", lambda name: "/usr/bin/bwrap")
+    monkeypatch.setattr("core.llm.cli_provider.asyncio.create_subprocess_exec", _spawn)
+
+    async def _run():
+        with pytest.raises((TimeoutError, asyncio.TimeoutError)):
+            await asyncio.wait_for(run_cli_prompt_async(_settings(tmp_path), "hi"), 0.05)
+        return proc.killed
+
+    assert asyncio.run(_run()) is True
+
+
+def test_async_stream_returns_single_chunk(tmp_path: Path, monkeypatch):
+    payload = json.dumps({"type": "text", "part": {"text": "поток"}}, ensure_ascii=False).encode()
+
+    class _ReadyStream:
+        def __init__(self, data: bytes):
+            self.data = data
+
+        async def read(self, limit: int) -> bytes:
+            chunk, self.data = self.data[:limit], self.data[limit:]
+            return chunk
+
+    proc = _FakeAsyncProc()
+    proc.stdout = _ReadyStream(payload)
+    proc.stderr = _ReadyStream(b"")
+    proc.returncode = 0
+
+    async def _spawn(*argv, **kwargs):  # noqa: ANN002, ANN003
+        return proc
+
+    monkeypatch.setattr("core.llm.cli_provider.shutil.which", lambda name: "/usr/bin/bwrap")
+    monkeypatch.setattr("core.llm.cli_provider.asyncio.create_subprocess_exec", _spawn)
+    model = CliChatModel(settings=_settings(tmp_path), provider_name="oc")
+
+    async def _collect():
+        return [chunk async for chunk in model.astream("привет")]
+
+    chunks = asyncio.run(_collect())
+    assert chunks and chunks[0].content == "поток"
+    assert "".join(str(chunk.content or "") for chunk in chunks) == "поток"
+
+
+def test_actual_bwrap_denies_tools_and_forgets_home(tmp_path: Path):
+    if not shutil.which("bwrap"):
         pytest.skip("bwrap not installed in this environment")
-    cli_dir = tmp_path / "cli"
-    cli_dir.mkdir()
-    script = cli_dir / "opencode"
+    runtime = tmp_path / "data" / "cli-runtime" / "bin"
+    runtime.mkdir(parents=True)
+    script = runtime / "opencode"
     script.write_text(
         "#!/bin/sh\n"
         "read line\n"
-        "printf '%s\\n' '{\"type\":\"text\",\"part\":{\"text\":\"sandbox-ok\"}}'\n",
+        'if [ ! -f "$HOME/.seen" ]; then\n'
+        '  touch "$HOME/.seen"\n'
+        '  if grep -q \'"bash": false\' "$OPENCODE_CONFIG"; then\n'
+        "    printf '%s\\n' '{\"type\":\"text\",\"part\":{\"text\":\"clean\"}}'\n"
+        "  else\n"
+        "    printf '%s\\n' '{\"type\":\"text\",\"part\":{\"text\":\"config-missing\"}}'\n"
+        "  fi\n"
+        "else\n"
+        "  printf '%s\\n' '{\"type\":\"text\",\"part\":{\"text\":\"state-leaked\"}}'\n"
+        "fi\n",
         encoding="utf-8",
     )
     script.chmod(0o755)
     settings = _settings(tmp_path, cli_path=str(script))
-    assert run_cli_prompt(settings, "hello") == "sandbox-ok"
+    assert run_cli_prompt(settings, "hello") == "clean"
+    # tmpfs HOME на каждый вызов: файл первого вызова во втором не виден.
+    assert run_cli_prompt(settings, "hello") == "clean"
 
 
-def _cli_agent(tmp_path: Path) -> SimpleNamespace:
+def _cli_agent(tmp_path: Path, **extra) -> SimpleNamespace:
     block = {
         "kind": "cli",
         "cli": "opencode",
         "cli_path": "/bin/echo",
         "experimental": True,
-        "sandbox": str(tmp_path / "sandbox"),
+        "sandbox": str(tmp_path / "data" / "cli-sandbox"),
     }
-    return SimpleNamespace(
-        config={
-            "paths": {"data_dir": str(tmp_path / "data")},
-            "llm": {
-                "providers": {"oc": block},
-                "talk_model": {"provider": "oc", "model": "opencode/x"},
-                "brain_model": {"provider": "oc", "model": "opencode/x"},
-                "memory_model": {"provider": "oc", "model": "opencode/x"},
-                "vision_model": {"provider": "oc", "model": "opencode/x"},
-            },
-        }
-    )
+    config = {
+        "paths": {"data_dir": str(tmp_path / "data")},
+        "llm": {
+            "providers": {"oc": block, "plain": {"base_url": "http://127.0.0.1:11434/v1"}},
+            "talk_model": {"provider": "oc", "model": "opencode/x"},
+            "brain_model": {"provider": "oc", "model": "opencode/x"},
+            "memory_model": {"provider": "oc", "model": "opencode/x"},
+            "vision_model": {"provider": "oc", "model": "opencode/x"},
+        },
+    }
+    config.update(extra)
+    return SimpleNamespace(config=config)
 
 
 def test_cli_lanes_are_staged_and_vision_cli_does_not_crash(tmp_path: Path):
@@ -155,13 +472,65 @@ def test_cli_lanes_are_staged_and_vision_cli_does_not_crash(tmp_path: Path):
         agent.llm_brain.bind_tools([])
 
 
-def test_broad_cli_root_is_refused(tmp_path: Path):
-    from core.llm.cli_provider import _validate_cli_root
+def test_brain_cli_with_tools_is_refused_at_setup(tmp_path: Path):
+    from core.agent.llm_setup import setup_llm_connection
 
-    with pytest.raises(CliProviderError):
-        _validate_cli_root(Path("/var/lib/openbot"), tmp_path / "sandbox")
-    with pytest.raises(CliProviderError):
-        _validate_cli_root(Path("/opt"), tmp_path / "sandbox")
-    # A versioned OpenCode directory is allowed.
-    _validate_cli_root(Path("/var/lib/openbot/.config/OpenBot/provider-runtimes/opencode/linux-x64/2.3.0"),
-                       tmp_path / "sandbox")
+    with pytest.raises(CliProviderError, match="tools"):
+        setup_llm_connection(_cli_agent(tmp_path, mcp_client={"llm_tool_calls": True}))
+    with pytest.raises(CliProviderError, match="tools"):
+        setup_llm_connection(_cli_agent(tmp_path, desktop_agent={"enabled": True}))
+
+
+def test_brain_tool_loop_is_skipped_without_tool_support():
+    from core.agent.brain_phase import _brain_tool_loop_enabled
+
+    tools = {"client.open_url": object()}
+    assert _brain_tool_loop_enabled(
+        SimpleNamespace(llm_brain_capabilities={"supports_tool_calls": False}), tools
+    ) is False
+    assert _brain_tool_loop_enabled(SimpleNamespace(llm_brain_capabilities={}), tools) is True
+    assert _brain_tool_loop_enabled(SimpleNamespace(), {}) is False
+
+
+def test_unified_brain_vision_is_disabled_for_cli_brain(tmp_path: Path):
+    from core.agent.llm_setup import setup_llm_connection
+
+    agent = _cli_agent(tmp_path)
+    llm = agent.config["llm"]
+    llm["brain_model"] = {"provider": "oc", "model": "opencode/x"}
+    llm["vision_model"] = {
+        "enabled": True,
+        "use_brain_model_for_vision": True,
+        "provider": "plain",
+        "model": "some-vl",
+    }
+    setup_llm_connection(agent)
+    assert agent.llm_vision is None
+
+
+def test_provider_put_does_not_rewrite_cli_kind(real_api, auth_headers):
+    http, agent = real_api
+    agent._setup_llm = lambda: None
+    cfg = http.app.state.config
+    blocks = cfg.setdefault("llm", {}).setdefault("providers", {})
+    blocks["oc"] = {
+        "kind": "cli",
+        "cli": "opencode",
+        "experimental": True,
+        "sandbox": str(Path(cfg["paths"]["data_dir"]) / "cli-sandbox"),
+    }
+    response = http.put(
+        "/v1/providers/oc",
+        json={"base_url": "http://192.168.1.10:8000/v1", "kind": "openai"},
+        headers=auth_headers[ADMIN],
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "provider_kind_cli"
+    assert blocks["oc"]["kind"] == "cli"
+
+    created = http.put(
+        "/v1/providers/cli-only",
+        json={"base_url": "http://192.168.1.10:8000/v1", "kind": "cli"},
+        headers=auth_headers[ADMIN],
+    )
+    assert created.status_code == 409

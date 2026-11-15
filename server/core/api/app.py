@@ -4308,6 +4308,21 @@ def build_app(
             provider = normalize_provider_name(name)
             base_url = validate_base_url(body.base_url)
             kind = str(body.kind or "openai").strip().lower()
+            if kind == "cli":
+                raise ApiError(
+                    "provider_kind_cli",
+                    "CLI-провайдер нельзя создать через API: опишите llm.providers.<name> в конфиге ядра.",
+                    409,
+                )
+            providers_cfg = config.get("llm", {}).get("providers") if isinstance(config.get("llm"), dict) else None
+            old_block = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+            old_kind = str((old_block or {}).get("kind") or "").strip().lower() if isinstance(old_block, dict) else ""
+            if old_kind == "cli":
+                raise ApiError(
+                    "provider_kind_cli",
+                    "CLI-провайдер правится только конфигом ядра: PUT /v1/providers не меняет kind: cli.",
+                    409,
+                )
             if kind not in {"openai", "local", "proxy"}:
                 kind = "openai"
         except ProviderAdminError as e:
@@ -4315,8 +4330,6 @@ def build_app(
 
         from core.runtime.config_loader import persist_allowlisted_updates
 
-        providers_cfg = config.get("llm", {}).get("providers") if isinstance(config.get("llm"), dict) else None
-        old_block = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
         old_base_url = str((old_block or {}).get("base_url") or "").strip().rstrip("/") if isinstance(old_block, dict) else ""
         base_url_changed = isinstance(old_block, dict) and old_base_url != base_url
 

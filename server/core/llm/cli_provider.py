@@ -2,33 +2,43 @@
 
 Запуск возможен только через `bwrap`: без него провайдер отказывает, прямого
 fallback нет. Внутри namespaces видны read-only системные каталоги, сам CLI
-(read-only), writable sandbox как `/home/sandbox`, `/tmp`, `/proc`, `/dev`.
-Сеть остаётся (`--share-net`), потому что OpenCode ходит к модели; инструменты
-OpenCode работают внутри sandbox и не видят хост-ФС, `/opt/neyra`, `.env`,
-`data` и секреты ядра.
+(read-only), свежий tmpfs вместо HOME на каждый вызов, `/tmp`, `/proc`, `/dev`.
+Сеть остаётся (`--share-net`), потому что OpenCode ходит к модели.
 
-Env потомка — whitelist: PATH/LANG/LC_*/TZ/TERM и HOME/TMPDIR/XDG внутри
-sandbox. `API_TOKEN`, `NEYRA_*`, Discord/Deepgram-токены не передаются.
-Промпт идёт через stdin, не в argv.
+Инструменты OpenCode выключены сгенерированным конфигом (`tools: false`,
+`permission: deny`), который монтируется read-only через `OPENCODE_CONFIG`:
+модель не может его переписать. HOME и cwd — одноразовый tmpfs, поэтому
+история сессий, `AGENTS.md` и мусор не переживают вызов. Авторизация
+пробрасывается одним файлом read-only внутрь `XDG_DATA_HOME`.
 
-Ограничения: нет стриминга; brain на CLI не умеет tools (`bind_tools`
-бросает понятную ошибку); vision на CLI не поддерживается.
+Env потомка — whitelist: PATH/LANG/LC_*/TZ/TERM; HOME/TMPDIR/XDG и
+OPENCODE_CONFIG задаёт ядро внутри sandbox. `API_TOKEN`, `NEYRA_*`,
+Discord/Deepgram-токены не передаются. Промпт идёт через stdin, не в argv.
+
+Ограничения: нет нативного стриминга (ответ одним куском); brain на CLI не
+умеет tools (`bind_tools` бросает понятную ошибку, конфиг с tools отклоняется
+на старте); vision на CLI не поддерживается — картинки заменяются
+плейсхолдером; `max_tokens` CLI не принимает, ответ обрезается с warning.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
+import threading
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional, Sequence
+from typing import Any, AsyncIterator, Iterator, Optional, Sequence
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 logger = logging.getLogger("neyra.llm_cli")
 
@@ -36,10 +46,92 @@ CLI_KINDS: tuple[str, ...] = ("opencode",)
 CLI_BACKENDS: tuple[str, ...] = ("run",)
 DEFAULT_TIMEOUT_SECONDS = 120.0
 SANDBOX_HOME = "/home/sandbox"
+SANDBOX_CONFIG_PATH = f"{SANDBOX_HOME}/config/opencode/opencode.json"
+SANDBOX_CONFIG_DIR = f"{SANDBOX_HOME}/config/opencode"
+SANDBOX_AUTH_DIR = f"{SANDBOX_HOME}/data/opencode"
+SANDBOX_AUTH_PATH = f"{SANDBOX_AUTH_DIR}/auth.json"
+SANDBOX_DIR_NAME = "cli-sandbox"
+MAX_OUTPUT_BYTES = 2 * 1024 * 1024
+MAX_CONCURRENT_CLI = 4
+CHARS_PER_TOKEN = 4
+IMAGE_PLACEHOLDER = "[изображение не передано: CLI-провайдер не поддерживает зрение]"
+
+# Модель приходит из конфига и меняется через API: только безопасный набор
+# символов, без ведущего дефиса (иначе это флаг OpenCode, а не модель).
+MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$")
+
+# Каталоги, которые и так смонтированы read-only в namespace: CLI оттуда
+# дополнительно bind'ить не нужно.
+PRE_MOUNTED_ROOTS: tuple[Path, ...] = tuple(
+    Path(p) for p in ("/usr", "/bin", "/sbin", "/lib", "/lib64")
+)
+
+# Единственный разрешённый каталог рантаймов OpenCode на хосте.
+OPENBOT_CONFIG_ROOT = Path("/var/lib/openbot/.config/OpenBot")
+RUNTIME_MARKER = "provider-runtimes"
+
+_SENSITIVE_TREES: tuple[str, ...] = (
+    "/etc",
+    "/root",
+    "/home",
+    "/opt/neyra",
+    "/var/lib/openbot",
+)
+
+_OPENCODE_TOOLS: tuple[str, ...] = (
+    "bash",
+    "edit",
+    "multiedit",
+    "write",
+    "patch",
+    "read",
+    "grep",
+    "glob",
+    "list",
+    "webfetch",
+    "websearch",
+    "task",
+    "skill",
+    "todowrite",
+    "todoread",
+    "question",
+    "lsp",
+)
 
 
 class CliProviderError(RuntimeError):
     """CLI не найден, bwrap недоступен, процесс упал или вернул мусор."""
+
+
+def _is_under(path: Path, parent: Path) -> bool:
+    """path == parent или лежит внутри parent (без resolve: пути уже resolved)."""
+    return path == parent or parent in path.parents
+
+
+def _is_opencode_runtime_root(path: Path) -> bool:
+    """`.../provider-runtimes/opencode/<platform>/<version>` — каталог версии."""
+    parts = path.parts
+    for index, part in enumerate(parts):
+        if part != RUNTIME_MARKER:
+            continue
+        if index + 1 >= len(parts) or parts[index + 1] != "opencode":
+            continue
+        tail = parts[index + 2 :]
+        if len(tail) == 2 and all(tail):
+            return True
+    return False
+
+
+def _opencode_config_text() -> str:
+    """Конфиг OpenCode: все инструменты и разрешения выключены."""
+    payload = {
+        "$schema": "https://opencode.ai/config.json",
+        "autoupdate": False,
+        "share": "disabled",
+        "tools": {name: False for name in _OPENCODE_TOOLS},
+        "permission": {name: "deny" for name in _OPENCODE_TOOLS},
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 @dataclass(frozen=True)
@@ -49,6 +141,9 @@ class CliSettings:
     model: str
     sandbox: str
     cli_path: str
+    data_dir: str = ""
+    cli_roots: tuple[str, ...] = ()
+    auth_file: str = ""
     timeout: float = DEFAULT_TIMEOUT_SECONDS
     extra_args: tuple[str, ...] = ()
     experimental: bool = False
@@ -59,6 +154,7 @@ class CliSettings:
         block: dict[str, Any],
         *,
         model: str,
+        data_dir: str = "",
         default_sandbox: str = "",
     ) -> "CliSettings":
         cli = str(block.get("cli") or "opencode").strip().lower()
@@ -71,7 +167,12 @@ class CliSettings:
             raise CliProviderError(
                 "CLI-провайдер экспериментальный: без явного experimental: true он не включается."
             )
-        sandbox = str(block.get("sandbox") or default_sandbox).strip()
+        if not str(data_dir or "").strip():
+            raise CliProviderError(
+                "CLI-провайдеру нужен paths.data_dir ядра: sandbox разрешён только внутри него"
+            )
+        data_root = Path(str(data_dir)).expanduser().resolve()
+        sandbox = str(block.get("sandbox") or default_sandbox or "").strip()
         if not sandbox:
             raise CliProviderError(
                 "Не задан sandbox CLI: укажите llm.providers.<name>.sandbox "
@@ -84,20 +185,193 @@ class CliSettings:
             raise CliProviderError(
                 f"CLI '{cli}' не найден в PATH; задайте llm.providers.<name>.cli_path"
             )
-        timeout_raw = block.get("timeout_seconds")
-        timeout = float(timeout_raw) if isinstance(timeout_raw, (int, float)) and timeout_raw > 0 else DEFAULT_TIMEOUT_SECONDS
         extra = block.get("extra_args")
-        extra_args = tuple(str(a) for a in extra) if isinstance(extra, list) else ()
-        return cls(
+        if extra not in (None, [], ()):
+            raise CliProviderError(
+                "extra_args не поддерживаются: CLI-лейн принимает только собранные ядром аргументы"
+            )
+        cli_roots_raw = block.get("cli_roots")
+        cli_roots = (
+            tuple(str(item) for item in cli_roots_raw)
+            if isinstance(cli_roots_raw, (list, tuple))
+            else ()
+        )
+        timeout_raw = block.get("timeout_seconds")
+        timeout = (
+            float(timeout_raw)
+            if isinstance(timeout_raw, (int, float)) and timeout_raw > 0
+            else DEFAULT_TIMEOUT_SECONDS
+        )
+        settings = cls(
             cli=cli,
             backend=backend,
-            model=model,
+            model=str(model),
             sandbox=sandbox,
             cli_path=cli_path,
+            data_dir=str(data_root),
+            cli_roots=cli_roots,
+            auth_file=str(block.get("auth_file") or "").strip(),
             timeout=timeout,
-            extra_args=extra_args,
             experimental=True,
         )
+        validate_settings(settings)
+        return settings
+
+
+def _allowed_cli_roots(settings: CliSettings) -> tuple[Path, ...]:
+    roots: list[Path] = [
+        Path(settings.data_dir) / "cli-runtime",
+        Path(settings.data_dir) / SANDBOX_DIR_NAME / "runtime",
+    ]
+    roots.extend(Path(item).expanduser() for item in settings.cli_roots)
+    return tuple(root.resolve() for root in roots)
+
+
+def _validate_cli_root(root: Path, settings: CliSettings) -> None:
+    """Allowlist: системные read-only каталоги, рантайм OpenCode или cli_roots.
+
+    Denylist-подход не годится: подкаталог `/opt/neyra`, `$HOME` или `data`
+    монтируется целиком и открывает секреты.
+    """
+    root = root.expanduser().resolve()
+    if root == Path("/"):
+        raise CliProviderError("CLI не может лежать в корне ФС: укажите каталог версии OpenCode")
+    data_root = Path(settings.data_dir).expanduser().resolve() if settings.data_dir else None
+    if data_root is not None and (root == data_root or root in data_root.parents):
+        raise CliProviderError(
+            f"CLI-путь {root} открывает data_dir или его родителя; "
+            "укажите каталог версии OpenCode"
+        )
+    for sensitive in _SENSITIVE_TREES:
+        base = Path(sensitive)
+        if base == root or root in base.parents:
+            raise CliProviderError(
+                f"CLI-путь {root} открывает слишком широкий каталог; "
+                "укажите каталог версии OpenCode"
+            )
+        if _is_under(root, base) and not _is_opencode_runtime_root(root):
+            raise CliProviderError(
+                f"CLI-путь {root} лежит в защищённом каталоге {sensitive}; "
+                "разрешён только каталог версии OpenCode"
+            )
+    allowed = _allowed_cli_roots(settings)
+    if _is_under(root, OPENBOT_CONFIG_ROOT) and not _is_opencode_runtime_root(root):
+        raise CliProviderError(
+            f"CLI-путь {root} должен совпадать с "
+            "provider-runtimes/opencode/<platform>/<version>"
+        )
+    if not _is_opencode_runtime_root(root) and not any(_is_under(root, item) for item in allowed):
+        raise CliProviderError(
+            f"CLI-путь {root} вне разрешённых каталогов: ожидается версия OpenCode "
+            f"({RUNTIME_MARKER}/opencode/<platform>/<version>) или cli_roots"
+        )
+
+
+def validate_settings(settings: CliSettings) -> None:
+    """Проверки конфига без создания каталогов: модель, sandbox, CLI-путь."""
+    if not MODEL_PATTERN.match(str(settings.model or "")):
+        raise CliProviderError(
+            f"Модель CLI '{settings.model}' недопустима: разрешены буквы, цифры, . _ / : - "
+            "без ведущего дефиса"
+        )
+    if settings.extra_args:
+        raise CliProviderError(
+            "extra_args не поддерживаются: CLI-лейн принимает только собранные ядром аргументы"
+        )
+    if not settings.data_dir:
+        raise CliProviderError("CLI-провайдеру нужен paths.data_dir: sandbox живёт только внутри него")
+    data_root = Path(settings.data_dir).expanduser().resolve()
+    sandbox = Path(settings.sandbox).expanduser()
+    if sandbox.is_symlink():
+        raise CliProviderError(f"Sandbox CLI не может быть симлинком: {sandbox}")
+    resolved = sandbox.resolve()
+    try:
+        relative = resolved.relative_to(data_root)
+    except ValueError as e:
+        raise CliProviderError(
+            f"Sandbox CLI {resolved} вне data_dir {data_root}: разрешён только "
+            f"<data_dir>/{SANDBOX_DIR_NAME}"
+        ) from e
+    if not relative.parts or relative.parts[0] != SANDBOX_DIR_NAME:
+        raise CliProviderError(
+            f"Sandbox CLI {resolved} должен лежать в <data_dir>/{SANDBOX_DIR_NAME}"
+        )
+    for item in settings.cli_roots:
+        root = Path(item).expanduser()
+        if not root.is_absolute():
+            raise CliProviderError(f"cli_roots должен содержать абсолютные пути: {item}")
+        _validate_cli_root(root.resolve(), settings)
+
+
+def _ensure_sandbox(settings: CliSettings) -> Path:
+    """Каталог sandbox на хосте: только внутри data_dir, не симлинк, создаётся в try."""
+    sandbox = Path(settings.sandbox).expanduser()
+    if sandbox.is_symlink():
+        raise CliProviderError(f"Sandbox CLI не может быть симлинком: {sandbox}")
+    try:
+        sandbox.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise CliProviderError(f"Песочница CLI недоступна: {sandbox}") from e
+    resolved = sandbox.resolve()
+    if not resolved.is_dir():
+        raise CliProviderError(f"Песочница CLI не каталог: {resolved}")
+    return resolved
+
+
+def _write_opencode_config(sandbox: Path) -> Path:
+    """Записать конфиг с выключенными tools и вернуть его путь на хосте."""
+    target = sandbox / "opencode.json"
+    temp = sandbox / ".opencode.json.tmp"
+    try:
+        if temp.is_symlink() or temp.exists():
+            temp.unlink()
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(_opencode_config_text())
+        os.replace(temp, target)
+    except OSError as e:
+        raise CliProviderError(f"Не удалось записать конфиг OpenCode в {sandbox}: {e}") from e
+    return target
+
+
+def _find_auth_file(settings: CliSettings, sandbox: Path) -> Optional[Path]:
+    """Файл авторизации OpenCode: read-only bind, только из sandbox/data_dir."""
+    data_root = Path(settings.data_dir).expanduser().resolve()
+
+    def _checked(candidate: Path) -> Path:
+        resolved = candidate.resolve()
+        if not resolved.is_file():
+            raise CliProviderError(f"Файл авторизации CLI не найден: {resolved}")
+        if not (_is_under(resolved, sandbox) or _is_under(resolved, data_root)):
+            raise CliProviderError(
+                f"Файл авторизации CLI {resolved} вне sandbox/data_dir: "
+                "секрет не должен попадать в песочницу из чужого каталога"
+            )
+        return resolved
+
+    if settings.auth_file:
+        return _checked(Path(settings.auth_file).expanduser())
+    for candidate in (sandbox / "data" / "opencode" / "auth.json", sandbox / "auth.json"):
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved.is_file() and (_is_under(resolved, sandbox) or _is_under(resolved, data_root)):
+            return resolved
+    return None
+
+
+def _cli_mount_root(cli_path: Path, settings: CliSettings) -> Optional[Path]:
+    """Каталог CLI для bind: None, если он уже виден read-only из /usr и т.п."""
+    resolved_cli = cli_path.resolve()
+    for item in PRE_MOUNTED_ROOTS:
+        if _is_under(resolved_cli, item.resolve()):
+            return None
+    parent = cli_path.parent
+    root = parent.parent if parent.name in {"bin", "sbin"} else parent
+    root = root.resolve()
+    _validate_cli_root(root, settings)
+    return root
 
 
 def _messages_to_prompt(messages: Sequence[BaseMessage]) -> str:
@@ -106,8 +380,7 @@ def _messages_to_prompt(messages: Sequence[BaseMessage]) -> str:
     dialog: list[str] = []
     for message in messages:
         role = getattr(message, "type", "")
-        content = message.content
-        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        text = _content_to_text(message.content)
         if role in {"system", "developer"}:
             system_parts.append(text)
         elif role == "human":
@@ -121,6 +394,27 @@ def _messages_to_prompt(messages: Sequence[BaseMessage]) -> str:
     head = "\n\n".join(part for part in system_parts if part.strip())
     body = "\n\n".join(dialog)
     return f"{head}\n\n{body}".strip() if head else body
+
+
+def _content_to_text(content: Any) -> str:
+    """Текст из content: картинки и прочие блоки не сериализуются в base64."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, (list, tuple)):
+        return str(content)
+    parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            parts.append(str(part))
+            continue
+        kind = str(part.get("type") or "").strip().lower()
+        if kind in {"image", "image_url", "input_image"}:
+            parts.append(IMAGE_PLACEHOLDER)
+        elif kind in {"text", "input_text"}:
+            parts.append(str(part.get("text") or ""))
+        else:
+            parts.append(f"[{kind or 'часть'} не передаётся CLI-провайдеру]")
+    return "\n".join(item for item in parts if item)
 
 
 def _parse_json_events(stdout: str) -> str:
@@ -143,7 +437,7 @@ def _parse_json_events(stdout: str) -> str:
     return "".join(chunks).strip()
 
 
-def _child_env(sandbox: Path) -> dict[str, str]:
+def _child_env() -> dict[str, str]:
     """Минимальное окружение потомка: без секретов ядра и токенов сервисов."""
     allowed = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM")
     env = {name: os.environ[name] for name in allowed if os.environ.get(name)}
@@ -154,6 +448,7 @@ def _child_env(sandbox: Path) -> dict[str, str]:
             "XDG_CACHE_HOME": f"{SANDBOX_HOME}/cache",
             "XDG_CONFIG_HOME": f"{SANDBOX_HOME}/config",
             "XDG_DATA_HOME": f"{SANDBOX_HOME}/data",
+            "OPENCODE_CONFIG": SANDBOX_CONFIG_PATH,
         }
     )
     return env
@@ -179,30 +474,19 @@ def _parent_dirs(path: Path) -> list[str]:
     return list(reversed(out))
 
 
-def _validate_cli_root(cli_root: Path, sandbox: Path) -> None:
-    """Не давать bind'ом открыть весь /var/lib/openbot, /.config или /opt/neyra."""
-    root = cli_root.resolve()
-    if root == Path("/"):
-        raise CliProviderError("CLI не может лежать в корне ФС: укажите каталог версии OpenCode")
-    for sensitive in (Path("/var/lib/openbot/.config"), Path("/opt/neyra")):
-        if root == sensitive or root in sensitive.parents:
-            raise CliProviderError(
-                f"CLI-путь {root} открывает слишком широкий каталог; "
-                "укажите каталог версии OpenCode, например .../provider-runtimes/opencode/.../2.3.0"
-            )
-    try:
-        sandbox.resolve().relative_to(root)
-    except ValueError:
-        pass
-    else:
-        raise CliProviderError("Sandbox не может находиться внутри read-only каталога CLI")
-
-
-def _bwrap_argv(settings: CliSettings, cli_path: Path) -> list[str]:
-    sandbox = Path(settings.sandbox)
+def _bwrap_argv(
+    settings: CliSettings,
+    cli_path: Path,
+    *,
+    config_file: Path,
+    auth_file: Optional[Path],
+) -> list[str]:
     argv = [
         _bwrap_path(),
         "--die-with-parent",
+        "--new-session",
+        "--cap-drop",
+        "ALL",
         "--unshare-user",
         "--unshare-pid",
         "--unshare-ipc",
@@ -226,84 +510,314 @@ def _bwrap_argv(settings: CliSettings, cli_path: Path) -> list[str]:
     ):
         argv += ["--ro-bind-try", source, source]
 
+    # HOME — свежий tmpfs: ни истории сессий, ни AGENTS.md, ни чужого конфига.
     argv += [
-        "--dir", "/home",
-        "--bind", str(sandbox), SANDBOX_HOME,
-        "--tmpfs", "/tmp",
-        "--proc", "/proc",
-        "--dev", "/dev",
+        "--dir",
+        "/home",
+        "--tmpfs",
+        SANDBOX_HOME,
+        "--dir",
+        f"{SANDBOX_HOME}/tmp",
+        "--dir",
+        f"{SANDBOX_HOME}/cache",
+        "--dir",
+        SANDBOX_CONFIG_DIR,
+        "--ro-bind",
+        str(config_file),
+        SANDBOX_CONFIG_PATH,
     ]
-    # OpenCode read-only по тому же пути, но не весь /var/lib/openbot.
-    # Монтируется после /tmp: иначе CLI в /tmp скрывается tmpfs.
-    _validate_cli_root(cli_path.parent, sandbox)
-    cli_root = str(cli_path.parent)
-    for parent in _parent_dirs(cli_path):
-        if parent == "/tmp" or parent.startswith("/tmp/"):
-            continue
-        argv += ["--dir", parent]
-    argv += ["--ro-bind", cli_root, cli_root]
+    if auth_file is not None:
+        argv += ["--dir", SANDBOX_AUTH_DIR, "--ro-bind", str(auth_file), SANDBOX_AUTH_PATH]
     argv += [
-        "--chdir", SANDBOX_HOME,
+        "--tmpfs",
+        "/tmp",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+    ]
+
+    cli_root = _cli_mount_root(cli_path, settings)
+    if cli_root is not None:
+        # Монтируется после /tmp: иначе CLI внутри /tmp скрывается tmpfs.
+        for parent in _parent_dirs(cli_path):
+            if parent == "/tmp" or parent.startswith("/tmp/"):
+                continue
+            argv += ["--dir", parent]
+        argv += ["--ro-bind", str(cli_root), str(cli_root)]
+    argv += [
+        "--chdir",
+        SANDBOX_HOME,
         str(cli_path),
         "run",
         "--format",
         "json",
         "--model",
         settings.model,
-        *settings.extra_args,
     ]
     return argv
 
 
-def run_cli_prompt(settings: CliSettings, prompt: str) -> str:
-    """Синхронный вызов OpenCode через bwrap. Возвращает текст ответа."""
+def _prepare(settings: CliSettings) -> tuple[list[str], dict[str, str]]:
+    """Проверить конфиг, подготовить sandbox/конфиг/авторизацию и argv bwrap."""
     if not settings.experimental:
         raise CliProviderError(
             "CLI-провайдер не включён: нужен явный experimental: true в llm.providers.<name>"
         )
-    sandbox = Path(settings.sandbox)
-    try:
-        sandbox.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        raise CliProviderError(f"Песочница CLI недоступна: {sandbox}") from e
-    for subdir in ("tmp", "cache", "config", "data"):
-        (sandbox / subdir).mkdir(parents=True, exist_ok=True)
-
-    cli_path = Path(settings.cli_path).resolve()
+    validate_settings(settings)
+    sandbox = _ensure_sandbox(settings)
+    config_file = _write_opencode_config(sandbox)
+    auth_file = _find_auth_file(settings, sandbox)
+    cli_path = Path(settings.cli_path).expanduser().resolve()
     if not cli_path.is_file():
         raise CliProviderError(f"CLI не найден: {cli_path}")
-    argv = _bwrap_argv(settings, cli_path)
-    env = _child_env(sandbox)
+    argv = _bwrap_argv(settings, cli_path, config_file=config_file, auth_file=auth_file)
+    return argv, _child_env()
 
+
+def _timeout_error(settings: CliSettings) -> CliProviderError:
+    return CliProviderError(
+        f"CLI не ответил за {settings.timeout:g} с (модель {settings.model})"
+    )
+
+
+def _output_error() -> CliProviderError:
+    return CliProviderError(
+        f"CLI вернул больше {MAX_OUTPUT_BYTES} байт вывода: процесс остановлен"
+    )
+
+
+def _kill_quietly(proc: Any) -> None:
     try:
-        completed = subprocess.run(
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        return
+
+
+def _run_sync(
+    settings: CliSettings, argv: list[str], env: dict[str, str], prompt: str
+) -> tuple[str, str, int]:
+    """Popen с потолком вывода и watchdog-таймаутом; stderr вычитывается в потоке."""
+    try:
+        proc = subprocess.Popen(
             argv,
-            input=prompt,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=settings.timeout,
             env=env,
         )
-    except subprocess.TimeoutExpired as e:
-        raise CliProviderError(
-            f"CLI не ответил за {settings.timeout:g} с (модель {settings.model})"
-        ) from e
     except OSError as e:
         raise CliProviderError(f"CLI не запустился: {e}") from e
 
-    if completed.returncode != 0:
-        tail = (completed.stderr or completed.stdout or "").strip().splitlines()[-3:]
-        raise CliProviderError(f"CLI завершился с кодом {completed.returncode}: {' | '.join(tail)}")
+    timed_out = threading.Event()
 
-    text = _parse_json_events(completed.stdout)
+    def _on_timeout() -> None:
+        timed_out.set()
+        _kill_quietly(proc)
+
+    timer = threading.Timer(settings.timeout, _on_timeout)
+    timer.daemon = True
+    timer.start()
+
+    stderr_tail: list[str] = []
+
+    def _drain_stderr() -> None:
+        try:
+            while True:
+                chunk = proc.stderr.read(4096)
+                if not chunk:
+                    break
+                if sum(len(item) for item in stderr_tail) < 8192:
+                    stderr_tail.append(chunk)
+        except (OSError, ValueError):
+            return
+
+    drain = threading.Thread(target=_drain_stderr, daemon=True)
+    drain.start()
+    try:
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        try:
+            stdout = proc.stdout.read(MAX_OUTPUT_BYTES + 1) or ""
+        except (OSError, ValueError):
+            stdout = ""
+        if len(stdout.encode("utf-8", "ignore")) > MAX_OUTPUT_BYTES:
+            _kill_quietly(proc)
+            raise _output_error()
+        try:
+            returncode = proc.wait(timeout=max(1.0, settings.timeout))
+        except subprocess.TimeoutExpired:
+            _kill_quietly(proc)
+            raise _timeout_error(settings)
+    finally:
+        timer.cancel()
+        drain.join(timeout=1.0)
+
+    if timed_out.is_set():
+        raise _timeout_error(settings)
+    return stdout, "".join(stderr_tail), returncode
+
+
+def run_cli_prompt(settings: CliSettings, prompt: str) -> str:
+    """Синхронный вызов OpenCode через bwrap. Возвращает текст ответа."""
+    argv, env = _prepare(settings)
+    stdout, stderr, returncode = _run_sync(settings, argv, env, prompt)
+    return _answer_from_output(settings, stdout, stderr, returncode=returncode)
+
+
+def _answer_from_output(
+    settings: CliSettings, stdout: str, stderr: str, *, returncode: int
+) -> str:
+    if returncode != 0:
+        tail = (stderr or stdout or "").strip().splitlines()[-3:]
+        raise CliProviderError(f"CLI завершился с кодом {returncode}: {' | '.join(tail)}")
+    text = _parse_json_events(stdout)
     if not text:
-        tail = (completed.stderr or "").strip().splitlines()[-3:]
+        tail = (stderr or "").strip().splitlines()[-3:]
         raise CliProviderError(f"CLI не вернул текст ответа: {' | '.join(tail) or 'пусто'}")
     return text
 
 
+# ─── Async-путь: отмена и таймаут убивают процесс ───────────────────────────
+
+_SEMAPHORES: "weakref.WeakKeyDictionary[Any, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+
+def _semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    semaphore = _SEMAPHORES.get(loop)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_CLI)
+        _SEMAPHORES[loop] = semaphore
+    return semaphore
+
+
+async def _read_capped(stream: Any, limit: int) -> bytes:
+    """Читать поток, но не больше limit байт: лишнее — ошибка вывода."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise _output_error()
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def run_cli_prompt_async(settings: CliSettings, prompt: str) -> str:
+    """Async-вызов OpenCode: CancelledError/таймаут убивают bwrap и всё дерево."""
+    argv, env = _prepare(settings)
+    async with _semaphore():
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        try:
+            async with asyncio.timeout(settings.timeout):
+                stdout, stderr = await _communicate(proc, prompt)
+        except TimeoutError as e:
+            _kill_quietly(proc)
+            await _reap(proc)
+            raise _timeout_error(settings) from e
+        except asyncio.CancelledError:
+            _kill_quietly(proc)
+            await _reap(proc)
+            raise
+        except BaseException:
+            _kill_quietly(proc)
+            await _reap(proc)
+            raise
+    text = _answer_from_output(
+        settings,
+        (stdout or b"").decode("utf-8", "replace"),
+        (stderr or b"").decode("utf-8", "replace"),
+        returncode=proc.returncode or 0,
+    )
+    return text
+
+
+async def _communicate(proc: Any, prompt: str) -> tuple[bytes, bytes]:
+    async def _write() -> None:
+        if proc.stdin is None:
+            return
+        try:
+            proc.stdin.write(prompt.encode("utf-8"))
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+        finally:
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+    writer = asyncio.ensure_future(_write())
+    try:
+        stdout, stderr = await asyncio.gather(
+            _read_capped(proc.stdout, MAX_OUTPUT_BYTES),
+            _read_capped(proc.stderr, MAX_OUTPUT_BYTES),
+        )
+    finally:
+        if not writer.done():
+            writer.cancel()
+    await proc.wait()
+    return stdout, stderr
+
+
+async def _reap(proc: Any) -> None:
+    """Дождаться убитого процесса, не давая зомби и висящим трубам."""
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+    except (TimeoutError, asyncio.TimeoutError, ProcessLookupError, OSError):
+        return
+
+
+def _truncate_answer(settings: CliSettings, text: str, max_tokens: Optional[int]) -> str:
+    """CLI не принимает лимит токенов: обрезаем ответ и пишем один warning."""
+    if not max_tokens or max_tokens <= 0:
+        return text
+    limit = int(max_tokens) * CHARS_PER_TOKEN
+    if len(text) <= limit:
+        return text
+    logger.warning(
+        "CLI не поддерживает max_tokens=%s: ответ обрезан до %s символов (модель %s)",
+        max_tokens,
+        limit,
+        settings.model,
+    )
+    return text[:limit].rstrip()
+
+
+def _bound_limit(model: Any, kwargs: dict[str, Any]) -> Optional[int]:
+    raw = kwargs.get("max_tokens")
+    if raw is None:
+        raw = getattr(model, "max_tokens", None)
+    try:
+        value = int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+    return value if value and value > 0 else None
+
+
+def _apply_stop(text: str, stop: Optional[list[str]]) -> str:
+    for token in stop or []:
+        if token and token in text:
+            text = text.split(token, 1)[0]
+    return text
+
+
 class CliChatModel(BaseChatModel):
-    """LangChain-модель поверх CLI. Без стриминга и без инструментов."""
+    """LangChain-модель поверх CLI. Без инструментов; стрим — один chunk."""
 
     settings: CliSettings
     provider_name: str = "cli"
@@ -326,10 +840,21 @@ class CliChatModel(BaseChatModel):
     ) -> ChatResult:
         prompt = _messages_to_prompt(messages)
         text = run_cli_prompt(self.settings, prompt)
-        if stop:
-            for token in stop:
-                if token and token in text:
-                    text = text.split(token, 1)[0]
+        text = _truncate_answer(self.settings, text, _bound_limit(self, kwargs))
+        text = _apply_stop(text, stop)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        prompt = _messages_to_prompt(messages)
+        text = await run_cli_prompt_async(self.settings, prompt)
+        text = _truncate_answer(self.settings, text, _bound_limit(self, kwargs))
+        text = _apply_stop(text, stop)
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
 
     def _stream(
@@ -342,3 +867,13 @@ class CliChatModel(BaseChatModel):
         """Без нативного стрима: отдаём ответ одним куском."""
         result = self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
         yield result.generations[0]
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        result = await self._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        yield ChatGenerationChunk(message=AIMessageChunk(content=result.generations[0].message.content))

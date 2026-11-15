@@ -613,6 +613,17 @@ MVP описан в §2.2 и уже работает; здесь — что ос
 - [ ] Доверенная привязка app/local_voice account → canonical `person_id` до записи персональных фактов.
 - [ ] После стабилизации памяти — Agent loop (§11.3), без ожидания расширенных отношений.
 
+### 8.8. CLI-провайдер OpenCode в bwrap (#77)
+
+Экспериментальный лейн `llm.providers.<name>: {kind: cli, cli: opencode}`: ядро вызывает установленный OpenCode как бэкенд модели. Включение только явное (`experimental: true`), запуск — только через `bwrap`; без bubblewrap провайдер отказывает, прямого запуска нет.
+
+- **Песочница:** user/pid/ipc/uts/cgroup namespaces, `--die-with-parent`, `--new-session`, `--cap-drop ALL`; read-only `/usr`, `/bin`, `/lib*`, нужные `/etc/*`; сеть остаётся (`--share-net`) — OpenCode ходит к модели.
+- **Инструменты выключены:** ядро пишет конфиг OpenCode с `tools: false` и `permission: deny` для bash/edit/write/webfetch и остальных, монтирует его read-only и передаёт через `OPENCODE_CONFIG`; переписать конфиг из песочницы нельзя.
+- **Одноразовый HOME:** на каждый вызов свежий tmpfs вместо `data/cli-sandbox`; история сессий, `AGENTS.md` и прочий мусор не переживают вызов. Авторизация пробрасывается одним файлом read-only из sandbox в `XDG_DATA_HOME`.
+- **Границы:** `cli_path` — allowlist (системные read-only каталоги, `provider-runtimes/opencode/<platform>/<version>` или `cli_roots`); `sandbox` — только `<data_dir>/cli-sandbox`, без симлинков; модель проверяется по шаблону, `extra_args` не поддерживаются.
+- **Ограничения:** brain на CLI не умеет tools — конфиг с `mcp_client.llm_tool_calls`/`desktop_agent.enabled` отклоняется на старте, а ход без поддержки tools идёт без tool-loop с warning; vision на CLI нет (картинки заменяются плейсхолдером, unified brain-vision отключается); `max_tokens` CLI не принимает — ответ обрезается с warning; нативного стриминга нет.
+- **Не проверено вживую:** реальный OpenCode на стенде (бинарник 2.3.0, авторизация внутри tmpfs HOME, поведение конфига `tools/permission`, работа инструментов и сети внутри sandbox), remote CI. Offline-проверки: argv bwrap, реальный smoke с bwrap, отсутствие bwrap, env whitelist, JSON, отмена процесса, лимит вывода, симлинки.
+
 ## 9. Этап 6 (постоянно): эксплуатация и публикация
 
 - Docker Compose и systemd — поддерживаемые способы запуска; `run_neyra.bat` — Windows entrypoint.

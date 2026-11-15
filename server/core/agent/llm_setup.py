@@ -90,6 +90,7 @@ def _cli_settings(agent: Any, lane: str):
     """CliSettings для лейна, если провайдер помечен kind: cli."""
     from core.llm.cli_provider import CliProviderError, CliSettings
     from core.llm.profile import resolved_brain_model, resolved_memory_model, resolved_talk_model
+    from core.runtime.paths import resolve_data_dir
 
     name, block = _lane_provider_block(agent, lane)
     if str(block.get("kind") or "").strip().lower() != "cli":
@@ -103,10 +104,22 @@ def _cli_settings(agent: Any, lane: str):
             model = ""
     if not model:
         raise CliProviderError(f"llm.{lane}_model.model не задан для CLI-провайдера '{name}'")
-    paths = agent.config.get("paths") if isinstance(agent.config.get("paths"), dict) else {}
-    data_dir = str((paths or {}).get("data_dir") or "").strip()
-    default_sandbox = str(Path(data_dir) / "cli-sandbox") if data_dir else ""
-    return CliSettings.from_config(block, model=model, default_sandbox=default_sandbox)
+    server_root = Path(__file__).resolve().parents[2]
+    data_dir = resolve_data_dir(server_root, agent.config)
+    return CliSettings.from_config(
+        block,
+        model=model,
+        data_dir=str(data_dir),
+        default_sandbox=str(data_dir / "cli-sandbox"),
+    )
+
+
+def _cli_tools_requested(agent: Any) -> bool:
+    """Могут ли инструменты попасть в brain-ход при таком конфиге ядра."""
+    mcp_cfg = agent.config.get("mcp_client") if isinstance(agent.config.get("mcp_client"), dict) else {}
+    desktop_cfg = agent.config.get("desktop_agent") if isinstance(agent.config.get("desktop_agent"), dict) else {}
+    return bool((mcp_cfg or {}).get("llm_tool_calls")) or bool((desktop_cfg or {}).get("enabled"))
+
 
 
 def _cli_connection(name: str):
@@ -131,6 +144,14 @@ def _setup_llm_connection(agent: Any) -> None:
         if spec is not None:
             cli_specs[lane] = spec
             logger.info("CLI-провайдер | lane=%s cli=%s model=%s", lane, spec.cli, spec.model)
+    if "brain" in cli_specs and _cli_tools_requested(agent):
+        from core.llm.cli_provider import CliProviderError
+
+        raise CliProviderError(
+            "Brain на CLI не умеет инструменты: отключите mcp_client.llm_tool_calls и "
+            "desktop_agent или выберите brain-провайдера с поддержкой tools. "
+            "Иначе каждый ход падал бы в brain_unavailable."
+        )
     agent._cli_lane_specs = cli_specs
 
     vision_name, vision_block = _lane_provider_block(agent, "vision")
@@ -453,6 +474,7 @@ def setup_openai_compatible_llm(agent: Any) -> None:
 
     agent.llm_with_tools = brain_client
     agent.llm_capabilities = dict(conn_talk.capabilities)
+    agent.llm_brain_capabilities = dict(conn_brain.capabilities)
 
     from core.llm.profile import merged_vision_pipeline
 
@@ -463,12 +485,18 @@ def setup_openai_compatible_llm(agent: Any) -> None:
             logger.warning("Зрение отключено: vision-провайдер на CLI не поддерживает картинки")
     elif vis.get("enabled"):
         if vis.get("use_brain_model_for_vision"):
-            agent.llm_vision = brain_client
-            logger.info(
-                "Зрение: unified brain — нативный мультимодальный ввод (%s@%s).",
-                brain_model,
-                conn_brain.provider,
-            )
+            if "brain" in _cli:
+                logger.warning(
+                    "Зрение отключено: brain на CLI не принимает картинки; "
+                    "укажите отдельный vision-провайдер"
+                )
+            else:
+                agent.llm_vision = brain_client
+                logger.info(
+                    "Зрение: unified brain — нативный мультимодальный ввод (%s@%s).",
+                    brain_model,
+                    conn_brain.provider,
+                )
         else:
             vmodel = str(vision_model_id).strip()
             hdr_vision = dict(conn_vision.default_headers)
