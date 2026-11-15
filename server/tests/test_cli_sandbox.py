@@ -951,6 +951,36 @@ def test_settings_load_checks_auth_symlink_and_location(tmp_path: Path):
         )
     link.unlink()
 
+    missing = sandbox / "no-such-auth.json"
+    with pytest.raises(CliProviderError, match="не найден"):
+        CliSettings.from_config(
+            {
+                "kind": "cli",
+                "cli": "opencode",
+                "cli_path": str(_runtime_bin(tmp_path)),
+                "auth_file": str(missing),
+                "experimental": True,
+                "sandbox": str(sandbox),
+            },
+            model="m",
+            data_dir=str(data),
+        )
+
+    missing = sandbox / "no-such-auth.json"
+    with pytest.raises(CliProviderError, match="не найден"):
+        CliSettings.from_config(
+            {
+                "kind": "cli",
+                "cli": "opencode",
+                "cli_path": str(_runtime_bin(tmp_path)),
+                "auth_file": str(missing),
+                "experimental": True,
+                "sandbox": str(sandbox),
+            },
+            model="m",
+            data_dir=str(data),
+        )
+
     foreign = tmp_path / "foreign.json"
     foreign.write_text(json.dumps({"p": {"type": "api", "key": "k"}}), encoding="utf-8")
     with pytest.raises(CliProviderError, match="вне cli-sandbox"):

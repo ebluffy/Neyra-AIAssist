@@ -502,14 +502,15 @@ def _validate_auth_settings(settings: CliSettings, sandbox: Path) -> None:
             raise CliProviderError(
                 f"Файл авторизации CLI не может быть симлинком: {candidate}"
             )
-        if candidate.is_file():
-            resolved = candidate.resolve()
-            if not _is_under(resolved, sandbox):
-                raise CliProviderError(
-                    f"Файл авторизации CLI {resolved} вне {SANDBOX_DIR_NAME}: "
-                    "секреты ядра в песочницу не монтируются"
-                )
-            _validate_auth_payload(resolved)
+        if not candidate.is_file():
+            raise CliProviderError(f"Файл авторизации CLI не найден: {candidate}")
+        resolved = candidate.resolve()
+        if not _is_under(resolved, sandbox):
+            raise CliProviderError(
+                f"Файл авторизации CLI {resolved} вне {SANDBOX_DIR_NAME}: "
+                "секреты ядра в песочницу не монтируются"
+            )
+        _validate_auth_payload(resolved)
         return
     for candidate in (sandbox / "data" / "opencode" / "auth.json", sandbox / "auth.json"):
         if candidate.is_symlink():
