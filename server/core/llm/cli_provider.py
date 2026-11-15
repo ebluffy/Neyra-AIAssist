@@ -86,13 +86,13 @@ CLI_GUARD = (
 # начале строки, а не слово в прозе: цитата `<tool_call>` в объяснении или
 # в JSON рефлексии не должна ронять лейн (AR-80).
 TOOL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(pattern, re.MULTILINE)
+    re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"^\s*<\s*[|｜]\s*DSML\s*[|｜]",
-        r"^\s*<\s*(?:function_calls|function_call|tool_calls?)\s*>",
-        r"^\s*<\s*invoke\s+name\s*=",
-        r"^\s*<\s*function\s*=",
-        r"^\s*antml:(?:invoke|tool)\b",
+        r"<\s*[|｜]\s*DSML\s*[|｜]",
+        r"<\s*(?:function_calls|function_call|tool_calls?)\s*>",
+        r"<\s*invoke\s+name\s*=",
+        r"<\s*function\s*=",
+        r"antml:(?:invoke|tool)\b",
     )
 )
 
@@ -892,7 +892,14 @@ def _answer_from_output(
         raise CliProviderError(f"CLI завершился с кодом {returncode}: {' | '.join(tail)}")
     _reject_tool_events(stdout)
     text = _parse_json_events(stdout)
-    if any(pattern.search(text) for pattern in TOOL_MARKUP_PATTERNS):
+    # JSON-ответ (память, рефлексия) может цитировать разметку как данные.
+    try:
+        structured = isinstance(json.loads(text), (dict, list))
+    except ValueError:
+        structured = False
+    # Пример в fenced-блоке — это объяснение, а не вызов инструмента.
+    prose = "" if structured else re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    if prose and any(pattern.search(prose) for pattern in TOOL_MARKUP_PATTERNS):
         raise CliProviderError(
             "CLI вернул разметку вызова инструмента вместо текста: ответ отклонён"
         )

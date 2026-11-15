@@ -872,9 +872,8 @@ def test_real_model_answer_is_plain_text_and_markup_is_rejected(tmp_path: Path):
     # AR-80: цитаты в прозе проходят, структура в начале строки — нет.
     for prose in (
         "В OpenAI это поле tool_calls, а DSML — разметка.",
-        "Пример формата Qwen: <tool_call>{\"name\":\"x\"} — так модель просит инструмент.",
         '{"people_updates":[{"note":"обсуждали <tool_call>"}]}',
-        "В Anthropic API используются теги antml:invoke",
+        "Пример:\n```xml\n<tool_call>{\"name\":\"x\"}</tool_call>\n```\nТак модель просит инструмент.",
     ):
         payload = json.dumps({"type": "text", "part": {"text": prose}}, ensure_ascii=False)
         assert _answer_from_output(_settings(tmp_path), payload, "", returncode=0)
@@ -886,6 +885,8 @@ def test_real_model_answer_is_plain_text_and_markup_is_rejected(tmp_path: Path):
         "<function=bash>{\"command\":\"id\"}</function>",
         "  <|DSML| invoke name=\"bash\">",
         "antml:invoke name=id",
+        "хвост <TOOL_CALL>{}",  # AR-85: середина строки и верхний регистр
+        "Вот вызов: <invoke name=\"bash\">",
     ):
         payload = json.dumps({"type": "text", "part": {"text": bad + "\nхвост"}}, ensure_ascii=False)
         with pytest.raises(CliProviderError, match="разметку вызова инструмента"):
