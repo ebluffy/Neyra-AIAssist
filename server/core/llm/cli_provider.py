@@ -85,6 +85,9 @@ MAX_CONCURRENT_CLI = 4
 CHARS_PER_TOKEN = 4
 IMAGE_PLACEHOLDER = "[изображение не передано: CLI-провайдер не поддерживает зрение]"
 
+# Версии OpenCode, на которых проверено отключение инструментов (AR-75).
+VERIFIED_OPENCODE_VERSIONS: frozenset[str] = frozenset({"2.3.0"})
+
 # Модель приходит из конфига и меняется через API: только безопасный набор
 # символов, без ведущего дефиса (иначе это флаг OpenCode, а не модель).
 MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$")
@@ -284,6 +287,13 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
             root, data_root_path / SANDBOX_DIR_NAME / "runtime"
         )
     if not internal_runtime and not _is_opencode_runtime_root(root):
+        # AR-68: корень верхнего уровня (`/data`, `/backup`, `/usr/local`) —
+        # это целый диск или системный каталог, а не поставка CLI.
+        if len(root.parts) < 4:
+            raise CliProviderError(
+                f"CLI-путь {root} слишком широкий: нужен каталог поставки "
+                "вида /opt/vendor/opencode или версия provider-runtimes/opencode"
+            )
         for prefix in _FORBIDDEN_ROOT_PREFIXES:
             base = Path(prefix)
             if root == base or _is_under(root, base):
@@ -321,6 +331,11 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
                 "разрешён только каталог версии OpenCode"
             )
     allowed = _allowed_cli_roots(settings)
+    if _is_opencode_runtime_root(root) and root.name not in VERIFIED_OPENCODE_VERSIONS:
+        raise CliProviderError(
+            f"Версия OpenCode {root.name} не проверена: отключение инструментов "
+            f"подтверждено только для {', '.join(sorted(VERIFIED_OPENCODE_VERSIONS))}"
+        )
     if _is_under(root, OPENBOT_CONFIG_ROOT) and not _is_opencode_runtime_root(root):
         raise CliProviderError(
             f"CLI-путь {root} должен совпадать с "
@@ -411,11 +426,11 @@ PLUGIN_INDEX_JS = """import { writeFileSync } from "node:fs";
 
 const NONCE = process.env.NEYRA_PLUGIN_NONCE || "";
 
-function report(tools) {
+function report(before, after) {
   try {
     writeFileSync(
       "/home/sandbox/state/plugin.json",
-      JSON.stringify({ nonce: NONCE, tools }),
+      JSON.stringify({ nonce: NONCE, before, after }),
     );
   } catch {
     // ядро увидит отсутствие манифеста и откажет (AR-75)
@@ -427,8 +442,9 @@ export default {
   setup(ctx) {
     ctx.session.hook("context", (event) => {
       if (!event || !event.tools) return;
+      const before = Object.keys(event.tools).length;
       for (const name of Object.keys(event.tools)) delete event.tools[name];
-      report(Object.keys(event.tools).length);
+      report(before, Object.keys(event.tools).length);
     });
   },
 };
@@ -819,10 +835,12 @@ def run_cli_prompt(settings: CliSettings, prompt: str) -> str:
     argv, env, assets, nonce = _prepare(settings)
     try:
         stdout, stderr, returncode = _run_sync(settings, argv, env, prompt)
+        # AR-76: сначала настоящая ошибка CLI/ответ, потом проверка плагина.
+        text = _answer_from_output(settings, stdout, stderr, returncode=returncode)
         _require_plugin_manifest(assets, nonce)
     finally:
         _remove_quietly(assets)
-    return _answer_from_output(settings, stdout, stderr, returncode=returncode)
+    return text
 
 
 def _require_plugin_manifest(assets: Path, nonce: str) -> None:
@@ -837,7 +855,12 @@ def _require_plugin_manifest(assets: Path, nonce: str) -> None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         payload = None
-    if not isinstance(payload, dict) or payload.get("nonce") != nonce or payload.get("tools") != 0:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("nonce") != nonce
+        or payload.get("after") != 0
+        or not isinstance(payload.get("before"), int)
+    ):
         raise CliProviderError(
             "Плагин CLI не подтвердил отключение инструментов: ответ отклонён. "
             "Проверьте версию OpenCode и каталог плагина"
@@ -942,15 +965,16 @@ async def run_cli_prompt_async(settings: CliSettings, prompt: str) -> str:
                 _kill_quietly(proc)
                 await _reap(proc)
                 raise
+        # AR-76: сначала настоящая ошибка CLI/ответ, потом проверка плагина.
+        text = _answer_from_output(
+            settings,
+            (stdout or b"").decode("utf-8", "replace"),
+            (stderr or b"").decode("utf-8", "replace"),
+            returncode=proc.returncode or 0,
+        )
         _require_plugin_manifest(assets, nonce)
     finally:
         _remove_quietly(assets)
-    text = _answer_from_output(
-        settings,
-        (stdout or b"").decode("utf-8", "replace"),
-        (stderr or b"").decode("utf-8", "replace"),
-        returncode=proc.returncode or 0,
-    )
     return text
 
 

@@ -99,7 +99,7 @@ def _patch_popen(
             if state is not None:
                 state.mkdir(parents=True, exist_ok=True)
                 (state / "plugin.json").write_text(
-                    json.dumps({"nonce": nonce, "tools": 0}), encoding="utf-8"
+                    json.dumps({"nonce": nonce, "before": 11, "after": 0}), encoding="utf-8"
                 )
         proc = _FakePopen(stdout, stderr, returncode)
         proc.argv = list(argv)
@@ -255,6 +255,17 @@ def test_cli_root_allowlist(tmp_path: Path):
 
     # /usr и /bin уже смонтированы read-only: лишний bind не нужен.
     assert _cli_mount_root(Path("/bin/echo"), settings) is None
+
+
+def test_only_verified_opencode_version_is_allowed(tmp_path: Path):
+    """AR-75: непроверенная версия CLI не получает доступ к песочнице."""
+    from core.llm.cli_provider import _validate_cli_root
+
+    settings = _settings(tmp_path)
+    other = tmp_path / "provider-runtimes" / "opencode" / "linux-x64" / "9.9.9"
+    other.mkdir(parents=True)
+    with pytest.raises(CliProviderError, match="не проверена"):
+        _validate_cli_root(other, settings)
 
 
 def test_sandbox_must_live_in_data_dir(tmp_path: Path):
@@ -432,7 +443,7 @@ def test_async_stream_returns_single_chunk(tmp_path: Path, monkeypatch):
         if state is not None:
             state.mkdir(parents=True, exist_ok=True)
             (state / "plugin.json").write_text(
-                json.dumps({"nonce": nonce, "tools": 0}), encoding="utf-8"
+                json.dumps({"nonce": nonce, "before": 11, "after": 0}), encoding="utf-8"
             )
         proc.returncode = 0
         return proc
@@ -458,7 +469,7 @@ def test_actual_bwrap_denies_tools_and_forgets_home(tmp_path: Path):
     script.write_text(
         "#!/bin/sh\n"
         "read line\n"
-        'printf \'{"nonce":"%s","tools":0}\\n\' "$NEYRA_PLUGIN_NONCE" > "$HOME/state/plugin.json"\n'
+        'printf \'{"nonce":"%s","before":11,"after":0}\\n\' "$NEYRA_PLUGIN_NONCE" > "$HOME/state/plugin.json"\n'
         'if [ ! -f "$HOME/.seen" ]; then\n'
         '  touch "$HOME/.seen"\n'
         '  if grep -q \'"bash": false\' "$OPENCODE_CONFIG"; then\n'
@@ -601,8 +612,14 @@ def test_cli_roots_reject_broad_prefixes_and_require_exact_root(tmp_path: Path):
         "/home/someone/opencode",
         "/root/opencode",
         "/etc/opencode",
+        "/data",
+        "/backup",
+        "/usr/local",
     ):
-        with pytest.raises(CliProviderError, match="нельзя монтировать|широкий корень|вне разрешённых"):
+        with pytest.raises(
+            CliProviderError,
+            match="нельзя монтировать|широкий корень|вне разрешённых|слишком широкий",
+        ):
             _validate_cli_root(Path(bad), settings)
 
     entry = Path("/opt/vendor/opencode")
@@ -659,15 +676,15 @@ def test_plugin_manifest_nonce_and_tools_are_checked(tmp_path: Path):
     with pytest.raises(CliProviderError, match="не подтвердил"):
         _require_plugin_manifest(assets, "cafe")  # файла нет
 
-    manifest.write_text(json.dumps({"nonce": "deadbeef", "tools": 0}), encoding="utf-8")
+    manifest.write_text(json.dumps({"nonce": "deadbeef", "before": 11, "after": 0}), encoding="utf-8")
     with pytest.raises(CliProviderError, match="не подтвердил"):
         _require_plugin_manifest(assets, "cafe")
 
-    manifest.write_text(json.dumps({"nonce": "cafe", "tools": 3}), encoding="utf-8")
+    manifest.write_text(json.dumps({"nonce": "cafe", "before": 11, "after": 3}), encoding="utf-8")
     with pytest.raises(CliProviderError, match="не подтвердил"):
         _require_plugin_manifest(assets, "cafe")
 
-    manifest.write_text(json.dumps({"nonce": "cafe", "tools": 0}), encoding="utf-8")
+    manifest.write_text(json.dumps({"nonce": "cafe", "before": 11, "after": 0}), encoding="utf-8")
     _require_plugin_manifest(assets, "cafe")
 
 
