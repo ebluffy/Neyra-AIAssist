@@ -257,17 +257,8 @@ class CliSettings:
         return settings
 
 
-def _allowed_cli_roots(settings: CliSettings) -> tuple[Path, ...]:
-    roots: list[Path] = [
-        Path(settings.data_dir) / "cli-runtime",
-        Path(settings.data_dir) / SANDBOX_DIR_NAME / "runtime",
-    ]
-    roots.extend(Path(item).expanduser() for item in settings.cli_roots)
-    return tuple(root.resolve() for root in roots)
-
-
 def _validate_cli_root(root: Path, settings: CliSettings) -> None:
-    """Allowlist: каталог версии OpenCode или ровно элемент `cli_roots`.
+    """Allowlist: только каталог версии OpenCode с проверенной версией.
 
     AR-68: проверяется форма пути, а не список плохих каталогов. Один лишний
     компонент (`/run` → `/run/media`) не должен открывать целый диск, поэтому
@@ -330,7 +321,6 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
                 f"CLI-путь {root} лежит в защищённом каталоге {sensitive}; "
                 "разрешён только каталог версии OpenCode"
             )
-    allowed = _allowed_cli_roots(settings)
     if _is_opencode_runtime_root(root) and root.name not in VERIFIED_OPENCODE_VERSIONS:
         raise CliProviderError(
             f"Версия OpenCode {root.name} не проверена: отключение инструментов "
@@ -341,16 +331,20 @@ def _validate_cli_root(root: Path, settings: CliSettings) -> None:
             f"CLI-путь {root} должен совпадать с "
             "provider-runtimes/opencode/<platform>/<version>"
         )
-    if not _is_opencode_runtime_root(root) and root not in allowed:
+    if not _is_opencode_runtime_root(root) and not internal_runtime:
         raise CliProviderError(
-            f"CLI-путь {root} вне разрешённых каталогов: ожидается версия OpenCode "
-            f"({RUNTIME_MARKER}/opencode/<platform>/<version>) или ровно каталог "
-            "из cli_roots"
+            f"CLI-путь {root} вне разрешённых каталогов: нужен каталог версии "
+            f"({RUNTIME_MARKER}/opencode/<platform>/<version>) с проверенной версией"
         )
 
 
 def validate_settings(settings: CliSettings) -> None:
     """Проверки конфига без создания каталогов: модель, sandbox, CLI-путь."""
+    if settings.cli_roots:
+        raise CliProviderError(
+            "cli_roots отключены: укажите cli_path в "
+            "provider-runtimes/opencode/<platform>/<version>"
+        )
     if not MODEL_PATTERN.match(str(settings.model or "")):
         raise CliProviderError(
             f"Модель CLI '{settings.model}' недопустима: разрешены буквы, цифры, . _ / : - "
@@ -519,6 +513,13 @@ def _cli_mount_root(cli_path: Path, settings: CliSettings) -> Optional[Path]:
     resolved_cli = cli_path.resolve()
     for item in PRE_MOUNTED_ROOTS:
         if _is_under(resolved_cli, item.resolve()):
+            # AR-75: системный opencode без каталога версии не проверен.
+            # Другие бинарники (например, тестовый /bin/echo) не наш CLI.
+            if resolved_cli.name == "opencode":
+                raise CliProviderError(
+                    f"CLI {resolved_cli} лежит в системном каталоге без версии: "
+                    "используйте provider-runtimes/opencode/<platform>/<version>"
+                )
             return None
     parent = cli_path.parent
     root = parent.parent if parent.name in {"bin", "sbin"} else parent
@@ -855,11 +856,17 @@ def _require_plugin_manifest(assets: Path, nonce: str) -> None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         payload = None
+    if not isinstance(payload, dict):
+        payload = None
+    before = payload.get("before") if payload else None
+    after = payload.get("after") if payload else None
     if (
-        not isinstance(payload, dict)
+        payload is None
         or payload.get("nonce") != nonce
-        or payload.get("after") != 0
-        or not isinstance(payload.get("before"), int)
+        or type(before) is not int
+        or before < 1
+        or type(after) is not int
+        or after != 0
     ):
         raise CliProviderError(
             "Плагин CLI не подтвердил отключение инструментов: ответ отклонён. "

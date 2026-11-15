@@ -622,15 +622,15 @@ def test_cli_roots_reject_broad_prefixes_and_require_exact_root(tmp_path: Path):
         ):
             _validate_cli_root(Path(bad), settings)
 
-    entry = Path("/opt/vendor/opencode")
-    allowed = _settings(tmp_path, cli_roots=(str(entry),))
-    _validate_cli_root(entry, allowed)  # ровно элемент cli_roots — можно
-    with pytest.raises(CliProviderError, match="вне разрешённых"):
-        _validate_cli_root(entry / "bin", allowed)  # подкаталог — нет
-
     runtime = tmp_path / "provider-runtimes" / "opencode" / "linux-x64" / "2.3.0"
     runtime.mkdir(parents=True)
     _validate_cli_root(runtime, settings)  # каталог версии OpenCode — можно
+
+    # AR-75: произвольная поставка без каталога версии не принимается.
+    with pytest.raises(CliProviderError, match="вне разрешённых"):
+        _validate_cli_root(Path("/opt/vendor/opencode"), settings)
+    with pytest.raises(CliProviderError, match="нельзя монтировать|вне разрешённых"):
+        _validate_cli_root(runtime / "bin", settings)
 
 
 def test_auth_file_must_stay_inside_sandbox(tmp_path: Path):
@@ -684,8 +684,25 @@ def test_plugin_manifest_nonce_and_tools_are_checked(tmp_path: Path):
     with pytest.raises(CliProviderError, match="не подтвердил"):
         _require_plugin_manifest(assets, "cafe")
 
+    for bad in (
+        {"nonce": "cafe", "before": 0, "after": 0},
+        {"nonce": "cafe", "before": True, "after": 0},
+        {"nonce": "cafe", "before": 11, "after": False},
+        {"nonce": "cafe", "before": 11},
+    ):
+        manifest.write_text(json.dumps(bad), encoding="utf-8")
+        with pytest.raises(CliProviderError, match="не подтвердил"):
+            _require_plugin_manifest(assets, "cafe")
+
     manifest.write_text(json.dumps({"nonce": "cafe", "before": 11, "after": 0}), encoding="utf-8")
     _require_plugin_manifest(assets, "cafe")
+
+
+def test_real_cli_error_is_not_masked_by_plugin_check(tmp_path: Path, monkeypatch):
+    """AR-76: ошибка CLI (нет авторизации, модель) важнее сообщения про плагин."""
+    _patch_popen(monkeypatch, stdout="", stderr="auth missing", returncode=2, markers=False)
+    with pytest.raises(CliProviderError, match="кодом 2"):
+        run_cli_prompt(_settings(tmp_path), "hi")
 
 
 def test_tool_event_fails_closed(tmp_path: Path, monkeypatch):
