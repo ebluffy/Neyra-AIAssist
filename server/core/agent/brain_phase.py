@@ -18,6 +18,27 @@ logger = logging.getLogger("neyra.agent.brain_phase")
 BRAIN_DOWN_USER_MESSAGE = message_text("brain.unavailable")
 
 
+def _brain_tool_loop_enabled(agent: Any, turn_tools: dict[str, Any]) -> bool:
+    """Tool-loop только если у brain-соединения есть поддержка инструментов.
+
+    CLI-провайдер её не имеет: без этой проверки любой подключённый ПК или MCP
+    ронял бы каждый ход в brain_unavailable на bind_tools.
+    """
+    if not turn_tools:
+        return False
+    capabilities = getattr(agent, "llm_brain_capabilities", None)
+    if not isinstance(capabilities, dict):
+        return True
+    if capabilities.get("supports_tool_calls", True):
+        return True
+    logger.warning(
+        "Brain-провайдер не поддерживает инструменты: ход идёт без tool-loop, "
+        "инструменты ПК/MCP (%s) не используются",
+        ", ".join(sorted(turn_tools))[:200],
+    )
+    return False
+
+
 async def run_brain_tool_phase(
     agent: Any,
     *,
@@ -86,7 +107,7 @@ async def run_brain_tool_phase(
         return desktop, ({**agent.tools, **desktop} if server_tools_on else dict(desktop))
 
     desktop_tools, turn_tools = current_tools()
-    use_tool_loop = bool(turn_tools)
+    use_tool_loop = _brain_tool_loop_enabled(agent, turn_tools)
     max_tool_steps = max(1, int(mcp_cfg.get("llm_tool_max_steps", 4)))
     loop_limits = desktop_loop_limits(agent.config) if desktop_tools else None
     if loop_limits:
