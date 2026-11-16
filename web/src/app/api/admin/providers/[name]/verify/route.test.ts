@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { lookup } from 'node:dns/promises';
 import { POST } from './route';
+import { readProviders } from '../../../../../../../lib/admin-providers';
 
 vi.mock('node:dns/promises', () => ({
   lookup: vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]),
@@ -192,20 +193,142 @@ describe('POST /api/admin/providers/[name]/verify', () => {
     expect(json.error).toBe('blocked_target');
   });
 
-  it('does not verify a saved key by sending it from the site (AR-69)', async () => {
+  it('blocks /providers/local/verify when local provider is not saved in core (AR-70)', async () => {
+    vi.mocked(lookup).mockResolvedValueOnce([{ address: '127.0.0.1', family: 4 }] as never);
     const fetchMock = vi.fn();
     global.fetch = fetchMock;
 
+    const req = new Request('http://localhost/api/admin/providers/local/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: 'http://127.0.0.1:8787' }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ name: 'local' }) });
+    const json = await res.json();
+    expect(json.ok).toBe(false);
+    expect(json.error).toBe('blocked_target');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks IPv4-mapped IPv6 address ::ffff:7f00:1 (AR-70)', async () => {
+    vi.mocked(lookup).mockResolvedValueOnce([{ address: '::ffff:7f00:1', family: 6 }] as never);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock;
+
+    const req = new Request('http://localhost/api/admin/providers/custom/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: 'http://[::ffff:7f00:1]:8000/v1' }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ name: 'custom' }) });
+    const json = await res.json();
+    expect(json.ok).toBe(false);
+    expect(json.error).toBe('blocked_target');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks CGNAT / Tailscale 100.64.0.1 (AR-70)', async () => {
+    vi.mocked(lookup).mockResolvedValueOnce([{ address: '100.64.0.1', family: 4 }] as never);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock;
+
+    const req = new Request('http://localhost/api/admin/providers/custom/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: 'http://100.64.0.1:8000/v1' }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ name: 'custom' }) });
+    const json = await res.json();
+    expect(json.ok).toBe(false);
+    expect(json.error).toBe('blocked_target');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks benchmarking network 198.18.0.1 (AR-70)', async () => {
+    vi.mocked(lookup).mockResolvedValueOnce([{ address: '198.18.0.1', family: 4 }] as never);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock;
+
+    const req = new Request('http://localhost/api/admin/providers/custom/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: 'http://198.18.0.1:8000/v1' }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ name: 'custom' }) });
+    const json = await res.json();
+    expect(json.ok).toBe(false);
+    expect(json.error).toBe('blocked_target');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not verify a saved key by sending it from the site even when UI sends base_url (AR-69)', async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock;
+
+    // UI actually sends { base_url: p.base_url, api_key: undefined }
     const req = new Request('http://localhost/api/admin/providers/openrouter/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify({
+        base_url: 'https://openrouter.ai/api/v1',
+      }),
     });
 
     const res = await POST(req, { params: Promise.resolve({ name: 'openrouter' }) });
     const json = await res.json();
     expect(json.ok).toBe(false);
     expect(json.error).toBe('key_in_core');
+    expect(json.source).toBe('core_probe');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns core_probe status when probe is present for saved provider without api_key (AR-69)', async () => {
+    vi.mocked(readProviders).mockResolvedValueOnce({
+      state: 'ok',
+      data: {
+        providers: [
+          {
+            name: 'openrouter',
+            label: 'OpenRouter',
+            base_url: 'https://openrouter.ai/api/v1',
+            kind: 'openai',
+            builtin: true,
+            has_key: true,
+            key_source: 'vault',
+            lanes: ['smart'],
+            probe: {
+              state: 'open',
+              models: 42,
+              message: 'Соединение проверено ядром.',
+            },
+          },
+        ],
+        presets: [],
+        lanes: [],
+      },
+    } as never);
+
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock;
+
+    const req = new Request('http://localhost/api/admin/providers/openrouter/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        base_url: 'https://openrouter.ai/api/v1',
+      }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ name: 'openrouter' }) });
+    const json = await res.json();
+    expect(json.ok).toBe(true);
+    expect(json.source).toBe('core_probe');
+    expect(json.models_count).toBe(42);
+    expect(json.message).toBe('Соединение проверено ядром.');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

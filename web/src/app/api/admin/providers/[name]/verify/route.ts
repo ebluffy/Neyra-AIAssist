@@ -1,4 +1,6 @@
 import { lookup } from 'node:dns/promises';
+import { BlockList, isIP } from 'node:net';
+import { Agent } from 'undici';
 import { requireAdmin } from '../../../../../../../lib/admin-guard';
 import { readProviders, isValidBaseUrl, isValidProviderName, type ProviderRow } from '../../../../../../../lib/admin-providers';
 import { jsonError, readJson } from '../../../../../../../lib/admin-http';
@@ -17,56 +19,103 @@ interface ModelItem {
 }
 
 // AR-70: с сервера сайта нельзя ходить в свою же внутреннюю сеть, даже админом.
-// Локальные провайдеры разрешены только по явному имени: они и так живут рядом с хостом.
+// Локальные провайдеры разрешены только если они уже сохранены в ядре с этим же base_url.
 const LOCAL_PROVIDER_NAMES = new Set(['ollama', 'vllm', 'lmstudio', 'local']);
 
-const PRIVATE_V4 = [
-  /^10\./,
-  /^127\./,
-  /^169\.254\./,
-  /^192\.168\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^0\./,
-];
+const PRIVATE_BLOCKLIST = new BlockList();
+// IPv4 loopback & private & link-local & CGNAT & multicast & reserved
+PRIVATE_BLOCKLIST.addSubnet('127.0.0.0', 8, 'ipv4');
+PRIVATE_BLOCKLIST.addSubnet('10.0.0.0', 8, 'ipv4');
+PRIVATE_BLOCKLIST.addSubnet('172.16.0.0', 12, 'ipv4');
+PRIVATE_BLOCKLIST.addSubnet('192.168.0.0', 16, 'ipv4');
+PRIVATE_BLOCKLIST.addSubnet('169.254.0.0', 16, 'ipv4');
+PRIVATE_BLOCKLIST.addSubnet('0.0.0.0', 8, 'ipv4');
+PRIVATE_BLOCKLIST.addSubnet('100.64.0.0', 10, 'ipv4');
+PRIVATE_BLOCKLIST.addSubnet('198.18.0.0', 15, 'ipv4');
+PRIVATE_BLOCKLIST.addSubnet('224.0.0.0', 4, 'ipv4');
+PRIVATE_BLOCKLIST.addSubnet('240.0.0.0', 4, 'ipv4');
+PRIVATE_BLOCKLIST.addAddress('255.255.255.255', 'ipv4');
 
-function isPrivateAddress(address: string): boolean {
-  const value = address.trim().toLowerCase();
-  if (!value) return true;
-  if (value === '::1' || value === '::' || value === '0.0.0.0') return true;
-  if (value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd')) return true;
-  if (value.startsWith('::ffff:')) return isPrivateAddress(value.slice(7));
-  return PRIVATE_V4.some((re) => re.test(value));
+// IPv6 loopback & unspecified & unique local & link-local & multicast
+PRIVATE_BLOCKLIST.addAddress('::1', 'ipv6');
+PRIVATE_BLOCKLIST.addAddress('::', 'ipv6');
+PRIVATE_BLOCKLIST.addSubnet('fc00::', 7, 'ipv6');
+PRIVATE_BLOCKLIST.addSubnet('fe80::', 10, 'ipv6');
+PRIVATE_BLOCKLIST.addSubnet('ff00::', 8, 'ipv6');
+
+function normalizeIp(address: string): { ip: string; version: 'ipv4' | 'ipv6' } | null {
+  let clean = address.trim().toLowerCase();
+  if (clean.startsWith('[') && clean.endsWith(']')) {
+    clean = clean.slice(1, -1);
+  }
+  if (clean.startsWith('::ffff:')) {
+    const rest = clean.slice(7);
+    if (isIP(rest) === 4) {
+      return { ip: rest, version: 'ipv4' };
+    }
+    const parts = rest.split(':');
+    if (parts.length === 2) {
+      const p1 = parseInt(parts[0], 16);
+      const p2 = parseInt(parts[1], 16);
+      if (!Number.isNaN(p1) && !Number.isNaN(p2) && p1 >= 0 && p1 <= 0xffff && p2 >= 0 && p2 <= 0xffff) {
+        const b1 = (p1 >> 8) & 0xff;
+        const b2 = p1 & 0xff;
+        const b3 = (p2 >> 8) & 0xff;
+        const b4 = p2 & 0xff;
+        return { ip: `${b1}.${b2}.${b3}.${b4}`, version: 'ipv4' };
+      }
+    }
+  }
+  const v = isIP(clean);
+  if (v === 4) return { ip: clean, version: 'ipv4' };
+  if (v === 6) return { ip: clean, version: 'ipv6' };
+  return null;
 }
 
-interface TargetCheck {
+function isBlockedAddress(address: string, allowLocal: boolean): boolean {
+  const norm = normalizeIp(address);
+  if (!norm) return true;
+  if (allowLocal) {
+    // Даже для локального сохранённого провайдера metadata-адреса, link-local и 0.0.0.0 запрещены.
+    if (norm.ip === '0.0.0.0' || norm.ip === '::') return true;
+    if (norm.version === 'ipv4' && (norm.ip.startsWith('169.254.') || norm.ip.startsWith('0.'))) return true;
+    if (norm.version === 'ipv6' && norm.ip.startsWith('fe80:')) return true;
+    return false;
+  }
+  return PRIVATE_BLOCKLIST.check(norm.ip, norm.version);
+}
+
+interface TargetResolution {
   ok: boolean;
   message?: string;
+  pinnedAddresses?: Array<{ address: string; family: number }>;
 }
 
-async function checkTarget(url: URL, allowLocal: boolean): Promise<TargetCheck> {
+async function resolveAndCheckTarget(url: URL, allowLocal: boolean): Promise<TargetResolution> {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return { ok: false, message: 'Проверка поддерживает только http и https.' };
   }
-  let addresses: string[];
+  let resolved: Array<{ address: string; family: number }>;
   try {
-    const resolved = await lookup(url.hostname, { all: true, verbatim: true });
-    addresses = resolved.map((item) => item.address);
+    resolved = await lookup(url.hostname, { all: true, verbatim: true });
   } catch {
     return { ok: false, message: 'Не удалось определить адрес сервера.' };
   }
-  if (addresses.length === 0) return { ok: false, message: 'Не удалось определить адрес сервера.' };
-  const blocked = addresses.filter((address) => {
-    if (allowLocal) {
-      // Даже для локального провайдера metadata-адреса и link-local запрещены.
-      const value = address.toLowerCase();
-      return value.startsWith('169.254.') || value.startsWith('fe80:') || value === '0.0.0.0';
-    }
-    return isPrivateAddress(address);
-  });
-  if (blocked.length > 0) {
-    return { ok: false, message: 'Адрес ведёт во внутреннюю сеть; проверка таких адресов запрещена.' };
+  if (!resolved || resolved.length === 0) {
+    return { ok: false, message: 'Не удалось определить адрес сервера.' };
   }
-  return { ok: true };
+
+  const pinned: Array<{ address: string; family: number }> = [];
+  for (const item of resolved) {
+    if (isBlockedAddress(item.address, allowLocal)) {
+      return { ok: false, message: 'Адрес ведёт во внутреннюю сеть; проверка таких адресов запрещена.' };
+    }
+    const norm = normalizeIp(item.address);
+    if (norm) {
+      pinned.push({ address: norm.ip, family: norm.version === 'ipv4' ? 4 : 6 });
+    }
+  }
+  return { ok: true, pinnedAddresses: pinned.length > 0 ? pinned : resolved };
 }
 
 export async function POST(
@@ -90,18 +139,18 @@ export async function POST(
   let kind = 'openai';
   let savedProvider: ProviderRow | null = null;
 
-  // If base_url was not supplied in the request body, look up the existing provider from core
-  if (!baseUrl) {
-    const listRes = await readProviders();
-    if (listRes.state === 'ok' && listRes.data?.providers) {
-      const match = listRes.data.providers.find(
-        (p: ProviderRow) => p.name.toLowerCase() === cleanName,
-      );
-      if (match) {
-        savedProvider = match;
+  // AR-69: сохранённого провайдера ищем ВСЕГДА, чтобы знать, есть ли ключ в vault ядра
+  const listRes = await readProviders();
+  if (listRes.state === 'ok' && listRes.data?.providers) {
+    const match = listRes.data.providers.find(
+      (p: ProviderRow) => p.name.toLowerCase() === cleanName,
+    );
+    if (match) {
+      savedProvider = match;
+      if (!baseUrl) {
         baseUrl = match.base_url;
-        kind = match.kind || 'openai';
       }
+      kind = match.kind || 'openai';
     }
   }
 
@@ -144,8 +193,27 @@ export async function POST(
     });
   }
 
-  const allowLocal = LOCAL_PROVIDER_NAMES.has(cleanName) || LOCAL_PROVIDER_NAMES.has(kind);
-  const targetCheck = await checkTarget(parsedUrl, allowLocal);
+  // AR-70: allowLocal разрешён ТОЛЬКО если сохранённый в ядре провайдер имеет локальный тип
+  // И его собственный base_url совпадает с проверяемым origin.
+  // Имя в URL или теле запроса не может включить allowLocal для произвольного хоста.
+  let allowLocal = false;
+  if (savedProvider) {
+    const savedKind = (savedProvider.kind || '').toLowerCase();
+    const savedName = savedProvider.name.toLowerCase();
+    const isLocalKind = LOCAL_PROVIDER_NAMES.has(savedKind) || LOCAL_PROVIDER_NAMES.has(savedName);
+    if (isLocalKind && savedProvider.base_url) {
+      try {
+        const savedOrigin = new URL(savedProvider.base_url).origin.toLowerCase();
+        if (parsedUrl.origin.toLowerCase() === savedOrigin) {
+          allowLocal = true;
+        }
+      } catch {
+        // invalid URL
+      }
+    }
+  }
+
+  const targetCheck = await resolveAndCheckTarget(parsedUrl, allowLocal);
   if (!targetCheck.ok) {
     return Response.json({
       ok: false,
@@ -177,6 +245,22 @@ export async function POST(
     }
   }
 
+  // Pinned DNS lookup dispatcher to prevent DNS rebinding attacks
+  const pinnedList = targetCheck.pinnedAddresses ?? [];
+  const dispatcher = new Agent({
+    connect: {
+      lookup: (_hostname, opts, cb) => {
+        if (opts.all) {
+          cb(null, pinnedList as never);
+        } else if (pinnedList.length > 0) {
+          cb(null, pinnedList[0].address as never, pinnedList[0].family as never);
+        } else {
+          cb(new Error('NO_PINNED_ADDRESS') as never);
+        }
+      },
+    },
+  });
+
   const startTime = Date.now();
   try {
     const response = await fetch(targetEndpoint, {
@@ -185,6 +269,8 @@ export async function POST(
       signal: AbortSignal.timeout(8000),
       cache: 'no-store',
       redirect: 'manual',
+      // @ts-expect-error - undici dispatcher is supported by Node.js fetch
+      dispatcher,
     });
 
     const latencyMs = Date.now() - startTime;

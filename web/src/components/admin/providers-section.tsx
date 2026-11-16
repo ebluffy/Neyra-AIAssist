@@ -232,14 +232,17 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
       setVerificationMap((prev) => ({ ...prev, [name]: result }));
 
       if (result.ok) {
+        const detail = result.source === 'core_probe'
+          ? (result.message || `Соединение проверено ядром (${result.models_count ?? 0} моделей)`)
+          : `Соединение успешно (${result.models_count ?? 0} моделей, ${result.latency_ms ?? 0} мс)`;
         emitToast({
-          message: `Соединение успешно (${result.models_count ?? 0} моделей, ${result.latency_ms ?? 0} мс)`,
+          message: detail,
           tone: 'success',
         });
       } else {
         emitToast({
           message: result.message || 'Ошибка проверки провайдера',
-          tone: 'danger',
+          tone: result.error === 'key_in_core' ? 'warning' : 'danger',
         });
       }
       return result;
