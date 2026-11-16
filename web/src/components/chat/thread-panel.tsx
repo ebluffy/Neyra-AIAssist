@@ -22,7 +22,7 @@ import {
   Copy,
 } from 'lucide-react';
 import type { StoredAttachment } from '@neyra/contracts';
-import { Button, IconButton } from '../ui';
+import { Button, IconButton, ExportMenu, VoicePanel } from '../ui';
 import { playButtonClickSound } from '../../lib/ui-sounds';
 
 export type ThreadPanelTab = 'about' | 'pinned' | 'attachments' | 'voice' | 'settings';
@@ -200,15 +200,18 @@ export function ThreadPanel({
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-[14px] font-semibold tracking-tight text-[var(--text)]">Панель треда</span>
           </div>
-          <IconButton
-            type="button"
-            aria-label="Закрыть панель треда"
-            tooltip="Закрыть"
-            icon={<X size={16} />}
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-          />
+          <div className="flex items-center gap-1">
+            <ExportMenu threadTitle={threadTitle} />
+            <IconButton
+              type="button"
+              aria-label="Закрыть панель треда"
+              tooltip="Закрыть"
+              icon={<X size={16} />}
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+            />
+          </div>
         </div>
 
         {/* Tab List */}
@@ -641,6 +644,7 @@ export function ThreadPanel({
                   Контракты аудио-событий заложены в платформу и будут активированы после калибровки голосового шлюза ядра.
                 </div>
               </div>
+              <VoicePanel />
             </div>
           )}
 

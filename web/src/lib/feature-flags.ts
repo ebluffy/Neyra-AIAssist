@@ -18,6 +18,14 @@ export const FLAGS = {
   threadsDb: false, // история из БД
   notes: false, // заметки
   exportData: false, // экспорт данных
+  memory: false, // память: факты, дневник, LTM (P2)
+  chatBranching: false, // ветвление диалогов (P1)
+  chatModelPicker: false, // выбор модели в композере (P1)
+  chatShare: false, // шаринг диалогов (P5)
+  opsModules: false, // управление модулями ядра (P4)
+  opsWebhooks: false, // вебхуки ядра (P4)
+  opsBackups: false, // резервные копии ядра (P4)
+  legacyUi: false, // старый дашборд (P6)
 } as const;
 
 export type Flag = keyof typeof FLAGS;

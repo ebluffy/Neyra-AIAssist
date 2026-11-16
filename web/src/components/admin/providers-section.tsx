@@ -124,6 +124,7 @@ interface VerifyResult {
   error?: string;
   message?: string;
   warning?: string;
+  source?: string;
 }
 
 export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
@@ -242,7 +243,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
       } else {
         emitToast({
           message: result.message || 'Ошибка проверки провайдера',
-          tone: result.error === 'key_in_core' ? 'warning' : 'danger',
+          tone: result.error === 'key_in_core' ? 'info' : 'danger',
         });
       }
       return result;

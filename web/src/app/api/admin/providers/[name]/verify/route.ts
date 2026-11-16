@@ -255,7 +255,7 @@ export async function POST(
         } else if (pinnedList.length > 0) {
           cb(null, pinnedList[0].address as never, pinnedList[0].family as never);
         } else {
-          cb(new Error('NO_PINNED_ADDRESS') as never);
+          cb(new Error('NO_PINNED_ADDRESS') as never, '' as never);
         }
       },
     },

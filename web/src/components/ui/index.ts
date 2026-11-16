@@ -26,3 +26,19 @@ export * from './AmbientBackground';
 export * from './ToastHost';
 export * from './SoonAction';
 export * from './ContextMenu';
+
+// Поверхности P0–P6 (Дизайн-система)
+export * from './ModelPicker';
+export * from './BranchTree';
+export * from './ReasoningPanel';
+export * from './UsageCostBadge';
+export * from './MemoryFactCard';
+export * from './MemorySearch';
+export * from './MemoryEmptyState';
+export * from './ModuleCard';
+export * from './WebhookRow';
+export * from './BackupRow';
+export * from './VoicePanel';
+export * from './ShareDialog';
+export * from './ExportMenu';
+export * from './LegacyNotice';

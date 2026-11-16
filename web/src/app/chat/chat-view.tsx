@@ -31,7 +31,8 @@ import {
   Mic,
 } from 'lucide-react';
 import { SseChatEventSchema, StoredAttachmentSchema, type StoredAttachment } from '@neyra/contracts';
-import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, type ContextUsage } from '../../components/ui';
+import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, ModelPicker, BranchTree, ReasoningPanel, UsageCostBadge, type ContextUsage } from '../../components/ui';
+import { isEnabled } from '../../lib/feature-flags';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
 import { SettingsDialog } from '../../components/settings-dialog';
@@ -1331,11 +1332,10 @@ export function ChatView({
         <footer className="sticky bottom-0 z-20 bg-[var(--bg)]/90 backdrop-blur-md pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] px-4 border-t border-transparent">
           <div className="content-column space-y-2">
             {/* Optional Context Indicator (§5.2) */}
-            {usage && (
-              <div className="flex justify-end pr-1">
-                <ContextIndicator usage={usage} onNewChat={startNewChat} />
-              </div>
-            )}
+            <div className="flex items-center justify-between pb-1.5 px-1">
+              {isEnabled('chatModelPicker') ? <ModelPicker /> : <div />}
+              {usage && <ContextIndicator usage={usage} onNewChat={startNewChat} />}
+            </div>
 
             <form onSubmit={handleSubmit} data-context="composer" className="flex flex-col">
               {/* Hidden file inputs (§3.2) */}
