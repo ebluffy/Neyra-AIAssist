@@ -169,7 +169,7 @@
 | **P1** | Чат и ветвление | `/chat`, `ChatView` | `ModelPicker`, `BranchTree`, `ReasoningPanel`, `UsageCostBadge`, `MarkdownMessage`, `ContextIndicator` | **Внедрено**: Стриминг SSE, ветвление диалогов, выбор модели (Нейра default + честный тултип §15 п. 4), блок размышлений |
 | **P2** | Память ядра | `/memory`, `ThreadPanel` | `MemoryFactCard`, `MemorySearch`, `MemoryEmptyState` | **Внедрено**: Изоляция по `person_id` (§15 п. 7), поиск по категориям (факты, дневник, LTM), честное пустое состояние |
 | **P3** | Администрирование | `AdminDialog` (`/admin/*`) | `ProvidersSection`, `AccessSection`, `OverviewSection`, `SystemSection` | **Внедрено**: Управление пользователями, ролями и инвайтами, карточки провайдеров OpenBot, in-place верификация ключа, защита от SSRF |
-| **P4** | Ops-паритет | `/admin/modules`, `/admin/webhooks`, `/admin/backups` | `ModuleCard`, `WebhookRow`, `BackupRow` | **Внедрено**: Мониторинг подсистем ядра (STT/TTS/Vision/Scheduler), конфигурация вебхуков событий, создание и скачивание срезов бэкапов |
+| **P4** | Ops-паритет | `/admin/modules`, `/admin/webhooks`, `/admin/core-backups` | `ModuleCard`, `WebhookRow`, `BackupRow` | **Внедрено**: Мониторинг подсистем ядра (STT/TTS/Vision/Scheduler), конфигурация вебхуков событий, создание и скачивание срезов бэкапов |
 | **P5** | Голос, шеринг, экспорт | `VoicePanel`, `ShareDialog`, `ExportMenu` | `VoicePanel`, `ShareDialog`, `ExportMenu` | **Внедрено**: Панель аудио-интерфейса (визуализатор, PTT), безопасный шеринг тредов (токен ≥ 32 байт §16), экспорт в MD/JSON/PDF |
 | **P6** | Вывод legacy | `/legacy` | `LegacyNotice` | **Внедрено**: Честное уведомление о миграции с дашборда на собственный веб-клиент v2 с быстрой ссылкой в админку |
 
