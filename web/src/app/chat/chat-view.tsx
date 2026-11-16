@@ -164,6 +164,15 @@ export function ChatView({
   const [phaseLabel, setPhaseLabel] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(() => initialUsage || null);
 
+  // AR-80: проверка флага онбординга для новых пользователей
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined' && !window.localStorage.getItem('neyra:onboarding-complete')) {
+        router.replace('/onboarding');
+      }
+    } catch {}
+  }, [router]);
+
   useEffect(() => {
     try {
       if (typeof window !== 'undefined') {

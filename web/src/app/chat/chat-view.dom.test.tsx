@@ -7,12 +7,14 @@ import { TextField } from '../../components/ui';
 import { resolveTabKey } from '../../../lib/chat-id';
 import { ru } from '../../i18n';
 
+const mockReplace = vi.fn();
+
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => ({ replace: mockReplace, refresh: vi.fn() }),
 }));
 
 beforeAll(() => { Element.prototype.scrollIntoView = vi.fn(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); window.name = ''; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); window.name = ''; mockReplace.mockClear(); });
 
 function sseResponse(tokenText = 'привет'): Response {
   const body = new ReadableStream<Uint8Array>({
@@ -580,6 +582,20 @@ describe('ChatView conversation', () => {
     expect(screen.getAllByText('Ответ с важной информацией').length).toBeGreaterThanOrEqual(2);
 
     unmount();
+  });
+
+  it('redirects to /onboarding when neyra:onboarding-complete is missing (AR-80)', () => {
+    mockReplace.mockClear();
+    window.localStorage.removeItem('neyra:onboarding-complete');
+    render(<ChatView user={{ id: 'u-new', email: 'new@example.com', name: 'NewUser', role: 'user' }} />);
+    expect(mockReplace).toHaveBeenCalledWith('/onboarding');
+  });
+
+  it('does not redirect to /onboarding when neyra:onboarding-complete is present (AR-80)', () => {
+    mockReplace.mockClear();
+    window.localStorage.setItem('neyra:onboarding-complete', '1');
+    render(<ChatView user={{ id: 'u-old', email: 'old@example.com', name: 'OldUser', role: 'user' }} />);
+    expect(mockReplace).not.toHaveBeenCalledWith('/onboarding');
   });
 });
 
