@@ -18,13 +18,13 @@
 | **4. Контраст WCAG 2.2** | `node web/scripts/contrast-audit.mjs` | **PASS** (код 0) | **20 из 20 пар прошли проверку** (границы контролов $\ge 3:1$, обычный текст $\ge 4.5:1$, крупный $\ge 3:1$) |
 | **5. Скриншоты и SHA-256** | `node web/scripts/ui-shots.mjs` | **PASS** (код 0) | **58 уникальных скриншотов** (экраны 01–35, вьюпорты 1440 и 390), 0 дубликатов хэшей |
 
-Манифест снимков экрана со всеми контрольными суммами SHA-256 зафиксирован в файле [`manifest.json`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/docs/ui-shots/bc84b5a7/manifest.json).
+Манифест снимков экрана со всеми контрольными суммами SHA-256 формируется скриптом `web/scripts/ui-shots.mjs` (файлы скриншотов не хранятся в git; снимаются локально командой `node web/scripts/ui-shots.mjs`).
 
 ---
 
 ## 2. Архитектурные решения и реализация идентичности
 
-### 2.1 Контракт идентичности `person_id` ([`web/docs/identity.md`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/docs/identity.md))
+### 2.1 Контракт идентичности `person_id` ([`web/docs/identity.md`](identity.md))
 - В соответствии с заданием, бэкенд-ядро не модифицировалось напрямую. Сформирован исчерпывающий архитектурный контракт для бэкенд-команды.
 - **Единый субъект**: Введён единственный идентификатор человека — `person_id` (формат `u_` + 26 символов ULID).
 - **Привязка площадок**: Таблица `account` связывает `person_id` с площадками (`discord`, `web`, `telegram`). `discord_id` (Snowflake) является исключительно атрибутом привязки и никогда не используется как внешний ключ в памяти, тредах диалогов, правах или заметках.
@@ -34,18 +34,18 @@
   - Сохраняется более старый `person_id` как старший. Младший помечается как `merged_into` с сохранением полной истории в таблице `person_merge_audit` и гарантией отката (undo) в течение 30 дней.
 
 ### 2.2 Аутентификация: Discord-first + Web Fallback
-1. **Экран входа ([`/login`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/app/login/page.tsx))**:
+1. **Экран входа ([`/login`](../src/app/login/page.tsx))**:
    - Главная кнопка: Discord OAuth (`#5865F2`, высота 44px, иконка Discord, понятный текст *«Продолжить с Discord»*).
    - Вторичный вход: Email + Пароль оформлен в виде аккуратного раскрывающегося блока (*«Войти по email»*), сохраняя полную функциональность для локальных/тестовых администраторов.
    - Поддержка параметров ссылки приглашения (`?invite=...`) с предзаполнением.
    - Аккордеон решения типовых проблем со входом.
-2. **Экран ожидания OAuth ([`/login/pending`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/app/login/pending/page.tsx))**:
+2. **Экран ожидания OAuth ([`/login/pending`](../src/app/login/pending/page.tsx))**:
    - Пульсирующий индикатор ожидания ответа от Discord, кнопка повторного открытия и ссылка возврата.
-3. **Экран отказа в доступе ([`/login/denied`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/app/login/denied/page.tsx))**:
+3. **Экран отказа в доступе ([`/login/denied`](../src/app/login/denied/page.tsx))**:
    - Понятное объяснение закрытой регистрации, поле ввода инвайт-кода и переключение аккаунта.
-4. **Экран ошибки ([`/login/error`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/app/login/error/page.tsx))**:
+4. **Экран ошибки ([`/login/error`](../src/app/login/error/page.tsx))**:
    - Человекочитаемая расшифровка кодов ошибок (`access_denied`, `invalid_invite`, `server_error`, `rate_limited`).
-5. **Онбординг ([`/onboarding`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/app/onboarding/page.tsx))**:
+5. **Онбординг ([`/onboarding`](../src/app/onboarding/page.tsx))**:
    - Шаг 1: Настройка отображаемого имени и аватара с монограммой.
    - Шаг 2: Управление приватностью, долговременной памятью и синхронизацией Discord.
 
@@ -53,26 +53,26 @@
 
 ## 3. Честные заглушки и единый реестр действий интерфейса
 
-### 3.1 Реестр действий ([`web/docs/ui-actions.md`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/docs/ui-actions.md))
+### 3.1 Реестр действий ([`web/docs/ui-actions.md`](ui-actions.md))
 Каждый элемент управления в интерфейсе каталогизирован: поверхность, элемент, действие, флаг фичи, статус (работает / заглушка), привязка к контекстному меню.
 
-### 3.2 Флаги возможностей ([`web/src/lib/feature-flags.ts`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/lib/feature-flags.ts))
+### 3.2 Флаги возможностей ([`web/src/lib/feature-flags.ts`](../src/lib/feature-flags.ts))
 - Поддерживает переопределение через URL (`?ff=...`), через `localStorage` и значения по умолчанию.
 - Флаги: `authDiscord`, `authInvite`, `chatAttachments`, `chatVoice`, `mcpAdmin`, `providersCatalog`, `threadsDb`, `notes`, `exportData`.
-- Покрыт тестами со 100% прохождением ([`feature-flags.test.ts`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/lib/feature-flags.test.ts)).
+- Покрыт тестами со 100% прохождением ([`feature-flags.test.ts`](../src/lib/feature-flags.test.ts)).
 
-### 3.3 Компонент честной заглушки ([`SoonAction.tsx`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/components/ui/SoonAction.tsx))
+### 3.3 Компонент честной заглушки ([`SoonAction.tsx`](../src/components/ui/SoonAction.tsx))
 - Никаких «молчащих» кнопок, пустых `onClick={() => {}}` или фиктивных бесконечных спиннеров.
 - Если функция выключена флагом:
   - Элемент получает `aria-disabled="true"` или `disabled`.
   - Оборачивается в доступный тултип с текстом *«Скоро: {featureName}»*.
-  - При попытке нажатия воспроизводится всплывающее уведомление (Toast) через [`ToastHost.tsx`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/components/ui/ToastHost.tsx) с разъяснением статуса готовности функции.
+  - При попытке нажатия воспроизводится всплывающее уведомление (Toast) через [`ToastHost.tsx`](../src/components/ui/ToastHost.tsx) с разъяснением статуса готовности функции.
 
 ---
 
 ## 4. Универсальное контекстное меню продукта
 
-Реализовано в [`web/src/components/ui/ContextMenu.tsx`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/components/ui/ContextMenu.tsx) и [`web/src/lib/context-menu/registry.ts`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/lib/context-menu/registry.ts).
+Реализовано в [`web/src/components/ui/ContextMenu.tsx`](../src/components/ui/ContextMenu.tsx) и [`web/src/lib/context-menu/registry.ts`](../src/lib/context-menu/registry.ts).
 
 1. **Покрытие поверхностей**:
    - `chat-message`: Копировать текст, цитировать, повторить запрос, озвучить (заглушка «Скоро»), удалить.
@@ -96,7 +96,7 @@
 
 ## 5. Аудиосинтез интерфейса (WebAudio)
 
-Реализован в [`web/src/lib/ui-sounds.ts`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/lib/ui-sounds.ts).
+Реализован в [`web/src/lib/ui-sounds.ts`](../src/lib/ui-sounds.ts).
 - **Константа ослабления**: `export const UI_SOUND_GAIN = 0.25` жестко внедрена во все узлы GainNode синтезатора без возможности обхода.
 - **Чистый WebAudio API**: Ноль внешних аудиофайлов, ноль сетевых запросов.
 - **Звуковая карта**:
@@ -112,11 +112,11 @@
 
 ## 6. Управление доступом, инвайтами и слияние профилей
 
-1. **Раздел «Доступ и аккаунты» в Админке ([`admin-dialog.tsx`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/components/admin/admin-dialog.tsx))**:
+1. **Раздел «Доступ и аккаунты» в Админке ([`admin-dialog.tsx`](../src/components/admin/admin-dialog.tsx))**:
    - Таблица пользователей с отображением `person_id`, привязанных площадок, ролей, статуса блокировки и кнопки слияния.
    - Вкладка инвайтов: генератор ссылок с выбором TTL (24ч, 72ч, 7д, 30д, бессрочно), флагом многоразовости, кнопками копирования кода/ссылки, кнопкой *«Скопировать все активные»* и модальным окном отзыва.
    - Модальное окно слияния администратора: поиск второго профиля, предпросмотр данных, требование контрольного слова «объединить», аудит и возможность отката в течение 30 дней.
-2. **Вкладка «Аккаунты» в Настройках пользователя ([`settings-dialog.tsx`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/components/settings-dialog.tsx))**:
+2. **Вкладка «Аккаунты» в Настройках пользователя ([`settings-dialog.tsx`](../src/components/settings-dialog.tsx))**:
    - Отображение подключенного Discord, почты веб-входа и плашки «Скоро» для Telegram.
    - Пользовательское слияние профилей с поиском и предпросмотром данных.
 
@@ -124,7 +124,7 @@
 
 ## 7. Результаты скриншотного аудита (58 снимков)
 
-Все 58 скриншотов записаны в директорию `web/docs/ui-shots/bc84b5a7/`. Ни один хэш не дублируется.
+Все 58 скриншотов генерируются локально командой `node web/scripts/ui-shots.mjs` в директорию `web/docs/ui-shots/bc84b5a7/` (в git не хранятся согласно AR-76, AR-81). Ни один хэш не дублируется.
 
 ```
 01-chat-empty-1440.png            (sha256: 5713d598...) - Пустое состояние чата 1440

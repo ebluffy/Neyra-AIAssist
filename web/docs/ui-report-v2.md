@@ -16,7 +16,7 @@
 | **Модульные тесты** | `NODE_OPTIONS="--localstorage-file=/tmp/ls" npm test` | **253 passed**, 16 skipped (интеграционные тесты живого сервера), 0 failed | 37 тестовых файлов прошли успешно за 8.89s |
 | **Продакшн-сборка** | `npm run build` | **0 errors** (Next.js standalone build) | 4 статических маршрута, 45 динамических эндпоинтов скомпилированы |
 | **Программный контраст** | `node web/scripts/contrast-audit.mjs` | **20/20 PASS (100%)** | `web/docs/contrast.json` сформирован из реального DOM через Playwright |
-| **Скриншотный раннер** | `node web/scripts/ui-shots.mjs` | **36 скриншотов снято** | `web/docs/ui-shots/2b64ea4b/manifest.json` с SHA-256 хешами |
+| **Скриншотный раннер** | `node web/scripts/ui-shots.mjs` | **36 скриншотов снято** | `web/docs/ui-shots/2b64ea4b/manifest.json` (не хранится в git; снимается локально командой `node web/scripts/ui-shots.mjs`) |
 | **Пуш ветки** | `git push -u origin web/ui-v2` | **Запушено в origin** | Ветка синхронизирована с удалённым репозиторием |
 
 ---
@@ -212,7 +212,7 @@
 2b64ea4 fix(surfaces): improve data resilience, word wrap on extreme strings, and update DESIGN.md with real tokens
 ```
 
-Все скриншоты и контрольный манифест размещены в репозитории:
-- Каталог: `web/docs/ui-shots/2b64ea4b/`
-- Манифест: `web/docs/ui-shots/2b64ea4b/manifest.json` (36 снимков с SHA-256 хешами)
+Все скриншоты генерируются локально (в git не хранятся):
+- Каталог: `web/docs/ui-shots/2b64ea4b/` (снимается локально командой `node web/scripts/ui-shots.mjs`)
+- Манифест: `web/docs/ui-shots/2b64ea4b/manifest.json` (36 снимков с SHA-256 хешами при локальном запуске)
 - Программный аудит контраста: `web/docs/contrast.json` (20 проверок, 100% PASS)

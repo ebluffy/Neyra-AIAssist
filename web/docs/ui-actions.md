@@ -1,7 +1,7 @@
 # Реестр интерфейсных действий Neyra Web (UI Actions Registry)
 
 > Документ составлен в рамках Этапа 3 (Идентичность и полный набор интерфейсных действий).  
-> Все флаги соответствуют реестру `FLAGS` в [`web/src/lib/feature-flags.ts`](file:///run/media/ebluffy/Games/!Other/!Dev/AIAssist/web/src/lib/feature-flags.ts).  
+> Все флаги соответствуют реестру `FLAGS` в [`web/src/lib/feature-flags.ts`](../src/lib/feature-flags.ts).  
 > Заглушки («Скоро») имеют статус `заглушка`, содержат атрибуты `aria-disabled="true"`, всплывающую подсказку «Скоро» и вызывают информативное уведомление (Toast) при клике или нажатии Enter.
 
 ---
