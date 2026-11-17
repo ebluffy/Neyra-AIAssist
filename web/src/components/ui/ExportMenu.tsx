@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Download, FileText, FileCode, File, Check } from 'lucide-react';
 import { Tooltip } from './Tooltip';
-import { emitToast } from '../../lib/toast';
+import { emitToast, soonToast } from '../../lib/toast';
 
 export type ExportFormat = 'markdown' | 'json' | 'pdf';
 
@@ -38,10 +38,7 @@ export function ExportMenu({
     if (onExport) {
       onExport(format);
     } else {
-      emitToast({
-        message: `Экспорт в ${format.toUpperCase()} сформирован`,
-        tone: 'success',
-      });
+      soonToast(`Экспорт в ${format.toUpperCase()}`);
     }
   };
 

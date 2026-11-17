@@ -2,89 +2,21 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Cpu, RefreshCw } from 'lucide-react';
+import { notFound } from 'next/navigation';
+import { ArrowLeft, Cpu, RefreshCw, AlertCircle } from 'lucide-react';
 import { ModuleCard, type ModuleInfo } from '../../../components/ui/ModuleCard';
 import { Button } from '../../../components/ui/Button';
-import { emitToast } from '../../../lib/toast';
-
-const INITIAL_MODULES: ModuleInfo[] = [
-  {
-    id: 'llm-gateway',
-    name: 'LLM Gateway',
-    description: 'Маршрутизация обращений к внешним и локальным провайдерам моделей с fallback',
-    status: 'online',
-    enabled: true,
-    latencyMs: 14,
-    version: '2.4.1',
-  },
-  {
-    id: 'memory-engine',
-    name: 'Memory Engine',
-    description: 'Долговременная семантическая память и извлечение фактов пользователя (person_id)',
-    status: 'online',
-    enabled: true,
-    latencyMs: 8,
-    version: '2.1.0',
-  },
-  {
-    id: 'stt-service',
-    name: 'STT (Распознавание речи)',
-    description: 'Серверная транскрибация входящих голосовых сообщений и аудиопотока',
-    status: 'degraded',
-    enabled: true,
-    latencyMs: 120,
-    version: '1.8.3',
-  },
-  {
-    id: 'tts-service',
-    name: 'TTS (Синтез речи)',
-    description: 'Голосовой синтез ответов ассистента с потоковой передачей в клиент',
-    status: 'online',
-    enabled: true,
-    latencyMs: 45,
-    version: '1.9.0',
-  },
-  {
-    id: 'vision-analyzer',
-    name: 'Vision & Multimodal',
-    description: 'Извлечение текста, распознавание изображений и анализ прикреплённых файлов',
-    status: 'online',
-    enabled: true,
-    latencyMs: 32,
-    version: '2.0.2',
-  },
-  {
-    id: 'scheduler',
-    name: 'Task Scheduler',
-    description: 'Фоновые периодические задачи ядра, ротация логов и очистка вложений по TTL',
-    status: 'online',
-    enabled: true,
-    latencyMs: 2,
-    version: '1.2.0',
-  },
-];
+import { SoonAction } from '../../../components/ui/SoonAction';
+import { isEnabled } from '../../../lib/feature-flags';
 
 export default function AdminModulesPage() {
-  const [modules, setModules] = useState<ModuleInfo[]>(INITIAL_MODULES);
-  const [refreshing, setRefreshing] = useState(false);
+  if (!isEnabled('opsModules')) {
+    notFound();
+  }
 
-  const handleToggle = (id: string, enabled: boolean) => {
-    setModules((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, enabled, status: enabled ? 'online' : 'offline' } : m))
-    );
-    emitToast({
-      message: `Модуль ${id} ${enabled ? 'включен' : 'отключен'}`,
-      tone: 'info',
-    });
-  };
-
-  const handleRefresh = () => {
-    setRefreshing(true);
-    setTimeout(() => {
-      setRefreshing(false);
-      emitToast({ message: 'Статусы модулей обновлены', tone: 'success' });
-    }, 400);
-  };
+  // В этапе P4 модули подключаются к ядру neyra-core через /v1/ops/modules.
+  // До реализации ручки ядра данные не симулируются.
+  const [modules] = useState<ModuleInfo[]>([]);
 
   return (
     <div className="space-y-6">
@@ -108,24 +40,34 @@ export default function AdminModulesPage() {
           </div>
         </div>
 
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={handleRefresh}
-          loading={refreshing}
-          disabled={refreshing}
-          className="text-xs gap-1.5"
-        >
-          <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
-          <span>Проверить статус</span>
-        </Button>
+        <SoonAction actionName="Проверить статус модулей">
+          <Button variant="secondary" size="sm" className="text-xs gap-1.5" disabled>
+            <RefreshCw size={13} />
+            <span>Проверить статус</span>
+          </Button>
+        </SoonAction>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {modules.map((m) => (
-          <ModuleCard key={m.id} module={m} onToggle={handleToggle} />
-        ))}
-      </div>
+      {modules.length === 0 ? (
+        <div className="p-8 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] text-center space-y-3 max-w-lg mx-auto">
+          <div className="w-10 h-10 rounded-full bg-[var(--surface-3)] text-[var(--text-subtle)] flex items-center justify-center mx-auto">
+            <Cpu size={20} />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium text-[var(--text)]">Модули ядра не подключены</h3>
+            <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+              Раздел находится в разработке (P4). Мониторинг подсистем (STT, TTS, Vision, Scheduler)
+              будет подключен после стабилизации API ядра.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {modules.map((m) => (
+            <ModuleCard key={m.id} module={m} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,7 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { lookup } from 'node:dns/promises';
-import { POST } from './route';
+import * as undici from 'undici';
+import { POST, executePinnedProbe } from './route';
 import { readProviders } from '../../../../../../../lib/admin-providers';
+
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: vi.fn((...args: Parameters<typeof actual.fetch>) => actual.fetch(...args)),
+  };
+});
 
 vi.mock('node:dns/promises', () => ({
   lookup: vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]),
@@ -53,14 +62,12 @@ vi.mock('../../../../../../../lib/admin-providers', async (importOriginal) => {
 });
 
 describe('POST /api/admin/providers/[name]/verify', () => {
-  const originalFetch = global.fetch;
-
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
   afterEach(() => {
-    global.fetch = originalFetch;
+    vi.restoreAllMocks();
   });
 
   it('rejects invalid provider name with 400', async () => {
@@ -76,9 +83,36 @@ describe('POST /api/admin/providers/[name]/verify', () => {
     expect(json.error).toBe('invalid_provider');
   });
 
+  it('AR-82: executePinnedProbe uses real undici Agent and resolves via pinned address without mocking fetch', async () => {
+    const http = await import('node:http');
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'gpt-4o-real' }] }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    try {
+      // Host pinned.invalid does NOT exist in DNS, but will be resolved to 127.0.0.1 via pinnedList
+      const response = await executePinnedProbe(
+        `http://pinned.invalid:${port}/models`,
+        { Accept: 'application/json' },
+        [{ address: '127.0.0.1', family: 4 }],
+        3000,
+      );
+      expect(response.status).toBe(200);
+      const json = await response.json();
+      expect(json).toEqual({ data: [{ id: 'gpt-4o-real' }] });
+    } finally {
+      server.close();
+    }
+  });
+
   it('returns ok: true with models count and latency on 200 response', async () => {
-    global.fetch = vi.fn(async (url: string | URL | Request) => {
-      const urlStr = typeof url === 'string' ? url : url instanceof Request ? url.url : url.toString();
+    vi.mocked(undici.fetch).mockImplementation(async (url: string | URL | undici.Request) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
       expect(urlStr).toBe('https://api.openai.com/v1/models');
       return new Response(
         JSON.stringify({
@@ -88,7 +122,7 @@ describe('POST /api/admin/providers/[name]/verify', () => {
           ],
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
+      ) as unknown as undici.Response;
     });
 
     const req = new Request('http://localhost/api/admin/providers/openai/verify', {
@@ -113,11 +147,11 @@ describe('POST /api/admin/providers/[name]/verify', () => {
   });
 
   it('returns normalized unauthorized error on 401 status from provider', async () => {
-    global.fetch = vi.fn(async () => {
+    vi.mocked(undici.fetch).mockImplementation(async () => {
       return new Response(
         JSON.stringify({ error: { message: 'Invalid API key provided.' } }),
         { status: 401, headers: { 'Content-Type': 'application/json' } },
-      );
+      ) as unknown as undici.Response;
     });
 
     const req = new Request('http://localhost/api/admin/providers/openai/verify', {
@@ -138,15 +172,15 @@ describe('POST /api/admin/providers/[name]/verify', () => {
   });
 
   it('resolves base_url from core config if not provided in body', async () => {
-    global.fetch = vi.fn(async (url: string | URL | Request) => {
-      const urlStr = typeof url === 'string' ? url : url instanceof Request ? url.url : url.toString();
+    vi.mocked(undici.fetch).mockImplementation(async (url: string | URL | undici.Request) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
       expect(urlStr).toBe('https://openrouter.ai/api/v1/models');
       return new Response(
         JSON.stringify({
           data: [{ id: 'anthropic/claude-3.5-sonnet' }],
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
+      ) as unknown as undici.Response;
     });
 
     const req = new Request('http://localhost/api/admin/providers/openrouter/verify', {
@@ -164,8 +198,7 @@ describe('POST /api/admin/providers/[name]/verify', () => {
 
   it('blocks targets inside the private network (AR-70)', async () => {
     vi.mocked(lookup).mockResolvedValueOnce([{ address: '192.168.1.100', family: 4 }] as never);
-    const fetchMock = vi.fn();
-    global.fetch = fetchMock;
+    const fetchMock = vi.mocked(undici.fetch);
 
     const req = new Request('http://localhost/api/admin/providers/remotehttp/verify', {
       method: 'POST',
@@ -195,8 +228,7 @@ describe('POST /api/admin/providers/[name]/verify', () => {
 
   it('blocks /providers/local/verify when local provider is not saved in core (AR-70)', async () => {
     vi.mocked(lookup).mockResolvedValueOnce([{ address: '127.0.0.1', family: 4 }] as never);
-    const fetchMock = vi.fn();
-    global.fetch = fetchMock;
+    const fetchMock = vi.mocked(undici.fetch);
 
     const req = new Request('http://localhost/api/admin/providers/local/verify', {
       method: 'POST',
@@ -213,8 +245,7 @@ describe('POST /api/admin/providers/[name]/verify', () => {
 
   it('blocks IPv4-mapped IPv6 address ::ffff:7f00:1 (AR-70)', async () => {
     vi.mocked(lookup).mockResolvedValueOnce([{ address: '::ffff:7f00:1', family: 6 }] as never);
-    const fetchMock = vi.fn();
-    global.fetch = fetchMock;
+    const fetchMock = vi.mocked(undici.fetch);
 
     const req = new Request('http://localhost/api/admin/providers/custom/verify', {
       method: 'POST',
@@ -231,8 +262,7 @@ describe('POST /api/admin/providers/[name]/verify', () => {
 
   it('blocks CGNAT / Tailscale 100.64.0.1 (AR-70)', async () => {
     vi.mocked(lookup).mockResolvedValueOnce([{ address: '100.64.0.1', family: 4 }] as never);
-    const fetchMock = vi.fn();
-    global.fetch = fetchMock;
+    const fetchMock = vi.mocked(undici.fetch);
 
     const req = new Request('http://localhost/api/admin/providers/custom/verify', {
       method: 'POST',
@@ -249,8 +279,7 @@ describe('POST /api/admin/providers/[name]/verify', () => {
 
   it('blocks benchmarking network 198.18.0.1 (AR-70)', async () => {
     vi.mocked(lookup).mockResolvedValueOnce([{ address: '198.18.0.1', family: 4 }] as never);
-    const fetchMock = vi.fn();
-    global.fetch = fetchMock;
+    const fetchMock = vi.mocked(undici.fetch);
 
     const req = new Request('http://localhost/api/admin/providers/custom/verify', {
       method: 'POST',
@@ -266,8 +295,7 @@ describe('POST /api/admin/providers/[name]/verify', () => {
   });
 
   it('does not verify a saved key by sending it from the site even when UI sends base_url (AR-69)', async () => {
-    const fetchMock = vi.fn();
-    global.fetch = fetchMock;
+    const fetchMock = vi.mocked(undici.fetch);
 
     // UI actually sends { base_url: p.base_url, api_key: undefined }
     const req = new Request('http://localhost/api/admin/providers/openrouter/verify', {
@@ -312,8 +340,7 @@ describe('POST /api/admin/providers/[name]/verify', () => {
       },
     } as never);
 
-    const fetchMock = vi.fn();
-    global.fetch = fetchMock;
+    const fetchMock = vi.mocked(undici.fetch);
 
     const req = new Request('http://localhost/api/admin/providers/openrouter/verify', {
       method: 'POST',
@@ -333,7 +360,7 @@ describe('POST /api/admin/providers/[name]/verify', () => {
   });
 
   it('handles network error gracefully and does not leak the exception text (AR-70)', async () => {
-    global.fetch = vi.fn(async () => {
+    vi.mocked(undici.fetch).mockImplementation(async () => {
       throw new Error('Connection refused at 127.0.0.1:8787');
     });
 

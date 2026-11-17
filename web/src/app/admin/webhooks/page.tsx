@@ -2,46 +2,20 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
+import { notFound } from 'next/navigation';
 import { ArrowLeft, Webhook, Plus } from 'lucide-react';
 import { WebhookRow, type WebhookConfig } from '../../../components/ui/WebhookRow';
 import { Button } from '../../../components/ui/Button';
-import { emitToast } from '../../../lib/toast';
-
-const INITIAL_WEBHOOKS: WebhookConfig[] = [
-  {
-    id: 'wh-1',
-    url: 'https://api.internal.local/hooks/audit',
-    events: ['user.signup', 'user.ban'],
-    active: true,
-    lastTriggerAt: new Date(Date.now() - 3600000).toISOString(),
-    lastStatus: 200,
-  },
-  {
-    id: 'wh-2',
-    url: 'https://alert.internal.local/v1/core-events',
-    events: ['core.crash', 'provider.error'],
-    active: true,
-    lastTriggerAt: new Date(Date.now() - 86400000).toISOString(),
-    lastStatus: 200,
-  },
-];
+import { SoonAction } from '../../../components/ui/SoonAction';
+import { isEnabled } from '../../../lib/feature-flags';
 
 export default function AdminWebhooksPage() {
-  const [webhooks, setWebhooks] = useState<WebhookConfig[]>(INITIAL_WEBHOOKS);
-  const [testingId, setTestingId] = useState<string | null>(null);
+  if (!isEnabled('opsWebhooks')) {
+    notFound();
+  }
 
-  const handleTest = (id: string) => {
-    setTestingId(id);
-    setTimeout(() => {
-      setTestingId(null);
-      emitToast({ message: 'Тестовый запрос успешно доставлен (HTTP 200)', tone: 'success' });
-    }, 600);
-  };
-
-  const handleDelete = (id: string) => {
-    setWebhooks((prev) => prev.filter((w) => w.id !== id));
-    emitToast({ message: 'Вебхук удалён', tone: 'info' });
-  };
+  // В этапе P4 конфигурация вебхуков будет синхронизироваться с ядром через /v1/ops/webhooks.
+  const [webhooks] = useState<WebhookConfig[]>([]);
 
   return (
     <div className="space-y-6">
@@ -60,39 +34,39 @@ export default function AdminWebhooksPage() {
               <span>Событийные вебхуки (Webhooks)</span>
             </h2>
             <p className="text-xs text-[var(--text-muted)]">
-              Отправка системных уведомлений о событиях ядра на внешние эндпоинты
+              Отправка системных событий ядра во внешние сервисы и системы мониторинга
             </p>
           </div>
         </div>
 
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => emitToast({ message: 'Скоро: форма создания вебхука', tone: 'info' })}
-          className="text-xs gap-1.5"
-        >
-          <Plus size={13} />
-          <span>Добавить вебхук</span>
-        </Button>
+        <SoonAction actionName="Добавить вебхук">
+          <Button variant="primary" size="sm" className="text-xs gap-1.5" disabled>
+            <Plus size={14} />
+            <span>Добавить вебхук</span>
+          </Button>
+        </SoonAction>
       </div>
 
-      <div className="space-y-3">
-        {webhooks.length > 0 ? (
-          webhooks.map((wh) => (
-            <WebhookRow
-              key={wh.id}
-              webhook={wh}
-              onTest={handleTest}
-              onDelete={handleDelete}
-              testing={testingId === wh.id}
-            />
-          ))
-        ) : (
-          <div className="p-8 text-center rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] text-xs text-[var(--text-muted)]">
-            Нет активных вебхуков
+      {webhooks.length === 0 ? (
+        <div className="p-8 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] text-center space-y-3 max-w-lg mx-auto">
+          <div className="w-10 h-10 rounded-full bg-[var(--surface-3)] text-[var(--text-subtle)] flex items-center justify-center mx-auto">
+            <Webhook size={20} />
           </div>
-        )}
-      </div>
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium text-[var(--text)]">Вебхуки ядра не настроены</h3>
+            <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+              Раздел находится в разработке (P4). Регистрация обработчиков событий (user.signup, core.crash)
+              будет доступна после интеграции диспетчера вебхуков.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {webhooks.map((w) => (
+            <WebhookRow key={w.id} webhook={w} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

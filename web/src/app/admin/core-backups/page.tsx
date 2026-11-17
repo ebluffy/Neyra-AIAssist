@@ -2,54 +2,20 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Database, Plus, RefreshCw } from 'lucide-react';
+import { notFound } from 'next/navigation';
+import { ArrowLeft, Database, Plus } from 'lucide-react';
 import { BackupRow, type BackupItem } from '../../../components/ui/BackupRow';
 import { Button } from '../../../components/ui/Button';
-import { emitToast } from '../../../lib/toast';
-
-const INITIAL_BACKUPS: BackupItem[] = [
-  {
-    id: 'bk-1',
-    filename: 'neyra-core-backup-2026-11-15.tar.gz',
-    sizeBytes: 14500000,
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    type: 'auto',
-    scope: 'полный срез (БД + память)',
-  },
-  {
-    id: 'bk-2',
-    filename: 'neyra-core-backup-2026-11-14.tar.gz',
-    sizeBytes: 14100000,
-    createdAt: new Date(Date.now() - 172800000).toISOString(),
-    type: 'auto',
-    scope: 'полный срез (БД + память)',
-  },
-];
+import { SoonAction } from '../../../components/ui/SoonAction';
+import { isEnabled } from '../../../lib/feature-flags';
 
 export default function AdminBackupsPage() {
-  const [backups, setBackups] = useState<BackupItem[]>(INITIAL_BACKUPS);
-  const [restoringId, setRestoringId] = useState<string | null>(null);
+  if (!isEnabled('opsBackups')) {
+    notFound();
+  }
 
-  const handleDownload = (id: string) => {
-    emitToast({ message: `Скачивание архива ${id}...`, tone: 'info' });
-  };
-
-  const handleRestore = (id: string) => {
-    setRestoringId(id);
-    setTimeout(() => {
-      setRestoringId(null);
-      emitToast({ message: 'Резервная копия проверена и готова к восстановлению', tone: 'success' });
-    }, 800);
-  };
-
-  const handleDelete = (id: string) => {
-    setBackups((prev) => prev.filter((b) => b.id !== id));
-    emitToast({ message: 'Бэкап удален', tone: 'info' });
-  };
-
-  const handleCreate = () => {
-    emitToast({ message: 'Запущен процесс создания резервной копии ядра...', tone: 'info' });
-  };
+  // В этапе P4 снимки базы и долговременной памяти будут управляться через /v1/ops/backups.
+  const [backups] = useState<BackupItem[]>([]);
 
   return (
     <div className="space-y-6">
@@ -65,37 +31,42 @@ export default function AdminBackupsPage() {
           <div>
             <h2 className="text-sm font-semibold tracking-tight text-[var(--text)] flex items-center gap-2">
               <Database size={16} className="text-[var(--accent)]" />
-              <span>Резервные копии ядра (Backups)</span>
+              <span>Резервные копии ядра (Core Backups)</span>
             </h2>
             <p className="text-xs text-[var(--text-muted)]">
-              Снимки базы данных, индексов долговременной памяти и конфигурации
+              Создание полных срезов состояния ядра (БД SQLite + долговременная память) и восстановление
             </p>
           </div>
         </div>
 
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={handleCreate}
-          className="text-xs gap-1.5"
-        >
-          <Plus size={13} />
-          <span>Создать бэкап сейчас</span>
-        </Button>
+        <SoonAction actionName="Создать резервную копию">
+          <Button variant="primary" size="sm" className="text-xs gap-1.5" disabled>
+            <Plus size={14} />
+            <span>Создать бэкап</span>
+          </Button>
+        </SoonAction>
       </div>
 
-      <div className="space-y-3">
-        {backups.map((b) => (
-          <BackupRow
-            key={b.id}
-            backup={b}
-            onDownload={handleDownload}
-            onRestore={handleRestore}
-            onDelete={handleDelete}
-            restoring={restoringId === b.id}
-          />
-        ))}
-      </div>
+      {backups.length === 0 ? (
+        <div className="p-8 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] text-center space-y-3 max-w-lg mx-auto">
+          <div className="w-10 h-10 rounded-full bg-[var(--surface-3)] text-[var(--text-subtle)] flex items-center justify-center mx-auto">
+            <Database size={20} />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium text-[var(--text)]">Резервные копии не найдены</h3>
+            <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+              Раздел находится в разработке (P4). Механизм автоматических снимков состояния и восстановления
+              будет подключен к сервису обслуживания БД ядра.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {backups.map((b) => (
+            <BackupRow key={b.id} backup={b} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

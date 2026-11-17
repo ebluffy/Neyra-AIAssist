@@ -16,6 +16,7 @@ import {
   VoicePanel,
   LegacyNotice,
   ExportMenu,
+  ShareDialog,
 } from './index';
 
 describe('Design System P0–P6 Components', () => {
@@ -197,6 +198,13 @@ describe('Design System P0–P6 Components', () => {
       fireEvent.click(stopBtn);
       expect(onStop).toHaveBeenCalled();
     });
+
+    it('AR-84: disables button in unsupported state and does not pretend to be active', () => {
+      render(<VoicePanel state="unsupported" />);
+      const btn = screen.getByRole('button', { name: /Начать разговор/i }) as HTMLButtonElement;
+      expect(btn.disabled).toBe(true);
+      expect(screen.getByText(/Голосовой режим появится после калибровки шлюза/)).toBeTruthy();
+    });
   });
 
   describe('ExportMenu (P5)', () => {
@@ -210,6 +218,51 @@ describe('Design System P0–P6 Components', () => {
       expect(screen.getByRole('menu')).toBeTruthy();
       fireEvent.click(screen.getByRole('menuitem', { name: /Markdown/i }));
       expect(onExport).toHaveBeenCalledWith('markdown');
+    });
+
+    it('AR-84: shows soonToast instead of fake success toast when onExport is absent', async () => {
+      const toastModule = await import('../../lib/toast');
+      const spy = vi.spyOn(toastModule, 'soonToast');
+
+      render(<ExportMenu />);
+      const trigger = screen.getByRole('button', { name: 'Экспорт диалога' });
+      fireEvent.click(trigger);
+
+      fireEvent.click(screen.getByRole('menuitem', { name: /Markdown/i }));
+      expect(spy).toHaveBeenCalledWith('Экспорт в MARKDOWN');
+    });
+  });
+
+  describe('ShareDialog (P5)', () => {
+    it('AR-87: shows honest soon action and disables generation when no server link or handler is present', () => {
+      render(
+        <ShareDialog
+          open={true}
+          onClose={vi.fn()}
+          threadId="thread-1"
+          threadTitle="Тестовый диалог"
+        />
+      );
+
+      expect(screen.getByText('Поделиться диалогом')).toBeTruthy();
+      const btn = screen.getByRole('button', { name: /Сформировать ссылку \(Скоро\)/i }) as HTMLButtonElement;
+      expect(btn.disabled).toBe(true);
+      expect(screen.queryByDisplayValue(/sh_/)).toBeNull();
+    });
+
+    it('AR-87: renders server-provided shareUrl without generating fake tokens', () => {
+      render(
+        <ShareDialog
+          open={true}
+          onClose={vi.fn()}
+          threadId="thread-1"
+          shareUrl="https://neyra.owyx.site/share/token-from-server-crypto-32b"
+        />
+      );
+
+      const input = screen.getByDisplayValue('https://neyra.owyx.site/share/token-from-server-crypto-32b');
+      expect(input).toBeTruthy();
+      expect(screen.getByRole('button', { name: /Копировать/i })).toBeTruthy();
     });
   });
 

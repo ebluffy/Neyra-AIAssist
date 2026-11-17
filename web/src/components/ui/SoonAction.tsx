@@ -7,7 +7,8 @@ import { playButtonClickSound } from '../../lib/ui-sounds';
 
 export interface SoonActionProps {
   flag?: Flag;
-  featureName: string;
+  featureName?: string;
+  actionName?: string;
   description?: string;
   children: React.ReactElement<{
     onClick?: React.MouseEventHandler;
@@ -21,9 +22,11 @@ export interface SoonActionProps {
 export function SoonAction({
   flag,
   featureName,
+  actionName,
   description,
   children,
 }: SoonActionProps) {
+  const name = featureName || actionName || 'Действие';
   const enabled = flag ? isEnabled(flag) : false;
 
   if (enabled) {
@@ -38,7 +41,7 @@ export function SoonAction({
     e.preventDefault();
     e.stopPropagation();
     playButtonClickSound();
-    soonToast(featureName, description);
+    soonToast(name, description);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -46,7 +49,7 @@ export function SoonAction({
       e.preventDefault();
       e.stopPropagation();
       playButtonClickSound();
-      soonToast(featureName, description);
+      soonToast(name, description);
     }
   };
 
@@ -57,7 +60,7 @@ export function SoonAction({
     onClick: handleIntercept,
     onKeyDown: handleKeyDown,
     'aria-disabled': 'true',
-    title: `Скоро: ${featureName}`,
+    title: `Скоро: ${name}`,
     className: `${existingClassName} ${stubClasses}`.trim(),
   });
 }

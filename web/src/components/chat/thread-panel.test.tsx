@@ -241,6 +241,18 @@ describe('ThreadPanel', () => {
     expect(defaultProps.onToggleCompactView).toHaveBeenCalledWith(true);
   });
 
+  it('AR-84: renders SoonAction when exportData is false, and triggers soonToast on click', async () => {
+    const toastModule = await import('../../lib/toast');
+    const spy = vi.spyOn(toastModule, 'soonToast');
+
+    render(<ThreadPanel {...defaultProps} />);
+    const exportBtn = screen.getByRole('button', { name: 'Экспорт диалога' });
+    expect(exportBtn).toBeDefined();
+
+    fireEvent.click(exportBtn);
+    expect(spy).toHaveBeenCalledWith('Экспорт диалога', undefined);
+  });
+
   it('ensures model_trace is never leaked or exposed', () => {
     const rawHtml = render(<ThreadPanel {...defaultProps} />).container.innerHTML;
     expect(rawHtml).not.toContain('model_trace');

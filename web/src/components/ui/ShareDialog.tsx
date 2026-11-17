@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Share2, Copy, Check, Clock, Globe, Lock } from 'lucide-react';
+import { Share2, Copy, Check, Lock } from 'lucide-react';
 import { Dialog } from './Dialog';
 import { Button } from './Button';
 import { Select } from './Select';
+import { SoonAction } from './SoonAction';
 import { emitToast } from '../../lib/toast';
 
 export interface ShareDialogProps {
@@ -12,6 +13,9 @@ export interface ShareDialogProps {
   onClose: () => void;
   threadId: string;
   threadTitle?: string;
+  shareUrl?: string | null;
+  onRequestShare?: (options: { ttl: '24h' | '7d' | '30d' | 'never'; access: 'auth' | 'public' }) => void;
+  loading?: boolean;
 }
 
 export function ShareDialog({
@@ -19,23 +23,13 @@ export function ShareDialog({
   onClose,
   threadId,
   threadTitle = 'Диалог с Нейрой',
+  shareUrl,
+  onRequestShare,
+  loading = false,
 }: ShareDialogProps) {
   const [copied, setCopied] = useState(false);
   const [ttl, setTtl] = useState<'24h' | '7d' | '30d' | 'never'>('7d');
   const [access, setAccess] = useState<'auth' | 'public'>('auth');
-  const [generating, setGenerating] = useState(false);
-  const [shareUrl, setShareUrl] = useState<string | null>(null);
-
-  const handleGenerate = () => {
-    setGenerating(true);
-    // Имитация формирования защищённой ссылки (§16: случайный токен >= 32 байт)
-    setTimeout(() => {
-      const origin = typeof window !== 'undefined' ? window.location.origin : 'https://neyra.owyx.site';
-      const fakeToken = 'sh_' + Array.from({ length: 32 }, () => Math.floor(Math.random() * 36).toString(36)).join('');
-      setShareUrl(`${origin}/share/${fakeToken}`);
-      setGenerating(false);
-    }, 300);
-  };
 
   const handleCopy = async () => {
     if (!shareUrl) return;
@@ -101,25 +95,34 @@ export function ShareDialog({
               Доступ открыт на чтение. Вы можете отозвать ссылку в любое время в настройках диалога.
             </p>
           </div>
-        ) : (
+        ) : onRequestShare ? (
           <div className="pt-2">
             <Button
               variant="primary"
               size="md"
-              onClick={handleGenerate}
-              loading={generating}
-              disabled={generating}
+              onClick={() => onRequestShare({ ttl, access })}
+              loading={loading}
+              disabled={loading}
               className="w-full gap-2"
             >
               <Share2 size={14} />
               <span>Сформировать ссылку</span>
             </Button>
           </div>
+        ) : (
+          <div className="pt-2">
+            <SoonAction actionName="Публичный доступ к диалогам">
+              <Button variant="primary" size="md" disabled className="w-full gap-2">
+                <Share2 size={14} />
+                <span>Сформировать ссылку (Скоро)</span>
+              </Button>
+            </SoonAction>
+          </div>
         )}
 
         <div className="pt-2 border-t border-[var(--border)] text-[11px] text-[var(--text-subtle)] flex items-center gap-1.5">
           <Lock size={12} />
-          <span>Безопасный токен ≥ 32 байт (§16 требований безопасности)</span>
+          <span>Криптографический токен генерируется сервером (≥ 32 байт, §16)</span>
         </div>
       </div>
     </Dialog>

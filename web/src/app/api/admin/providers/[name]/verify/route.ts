@@ -1,6 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
-import { Agent } from 'undici';
+import * as undici from 'undici';
 import { requireAdmin } from '../../../../../../../lib/admin-guard';
 import { readProviders, isValidBaseUrl, isValidProviderName, type ProviderRow } from '../../../../../../../lib/admin-providers';
 import { jsonError, readJson } from '../../../../../../../lib/admin-http';
@@ -116,6 +116,48 @@ async function resolveAndCheckTarget(url: URL, allowLocal: boolean): Promise<Tar
     }
   }
   return { ok: true, pinnedAddresses: pinned.length > 0 ? pinned : resolved };
+}
+
+// AR-82: пиннинг-запрос вынесен в отдельную функцию, использующую undici.fetch и undici.Agent
+// из одного пакета с автоматическим закрытием диспетчера в finally.
+export async function executePinnedProbe(
+  targetEndpoint: string,
+  headers: Record<string, string>,
+  pinnedList: { address: string; family: number }[],
+  timeoutMs = 8000,
+) {
+  const dispatcher = new undici.Agent({
+    connect: {
+      lookup: (_hostname, opts, cb) => {
+        let callback = cb;
+        let options = opts;
+        if (typeof options === 'function') {
+          callback = options;
+          options = {};
+        }
+        if (options && options.all) {
+          callback(null, pinnedList as never);
+        } else if (pinnedList.length > 0) {
+          callback(null, pinnedList[0].address as never, pinnedList[0].family as never);
+        } else {
+          callback(new Error('NO_PINNED_ADDRESS') as never, '' as never);
+        }
+      },
+    },
+  });
+
+  try {
+    return await undici.fetch(targetEndpoint, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+      cache: 'no-store',
+      redirect: 'manual',
+      dispatcher,
+    });
+  } finally {
+    await dispatcher.close().catch(() => {});
+  }
 }
 
 export async function POST(
@@ -247,31 +289,10 @@ export async function POST(
 
   // Pinned DNS lookup dispatcher to prevent DNS rebinding attacks
   const pinnedList = targetCheck.pinnedAddresses ?? [];
-  const dispatcher = new Agent({
-    connect: {
-      lookup: (_hostname, opts, cb) => {
-        if (opts.all) {
-          cb(null, pinnedList as never);
-        } else if (pinnedList.length > 0) {
-          cb(null, pinnedList[0].address as never, pinnedList[0].family as never);
-        } else {
-          cb(new Error('NO_PINNED_ADDRESS') as never, '' as never);
-        }
-      },
-    },
-  });
 
   const startTime = Date.now();
   try {
-    const response = await fetch(targetEndpoint, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(8000),
-      cache: 'no-store',
-      redirect: 'manual',
-      // @ts-expect-error - undici dispatcher is supported by Node.js fetch
-      dispatcher,
-    });
+    const response = await executePinnedProbe(targetEndpoint, headers, pinnedList, 8000);
 
     const latencyMs = Date.now() - startTime;
 
@@ -307,24 +328,26 @@ export async function POST(
       });
     }
 
-    const json = await response.json().catch(() => null);
+    const json = (await response.json().catch(() => null)) as Record<string, unknown> | unknown[] | null;
     const models: ModelItem[] = [];
 
     if (json && typeof json === 'object') {
-      if (Array.isArray(json.data)) {
+      const record = json as Record<string, unknown>;
+      if (Array.isArray(record.data)) {
         // OpenAI standard format: { data: [{ id: "...", ... }] }
-        for (const item of json.data) {
+        for (const item of record.data) {
           if (item && typeof item === 'object' && typeof item.id === 'string') {
             models.push({ id: item.id, name: item.name || item.id });
           }
         }
-      } else if (Array.isArray(json.models)) {
+      } else if (Array.isArray(record.models)) {
         // Ollama / custom format: { models: [{ name: "...", ... }] }
-        for (const item of json.models) {
+        for (const item of record.models) {
           if (item && typeof item === 'object') {
-            const id = item.name || item.id || item.model;
+            const itemObj = item as Record<string, unknown>;
+            const id = (itemObj.name || itemObj.id || itemObj.model) as string | undefined;
             if (typeof id === 'string') {
-              models.push({ id, name: item.name || id });
+              models.push({ id, name: (itemObj.name as string) || id });
             }
           }
         }
@@ -332,8 +355,11 @@ export async function POST(
         for (const item of json) {
           if (typeof item === 'string') {
             models.push({ id: item, name: item });
-          } else if (item && typeof item === 'object' && typeof item.id === 'string') {
-            models.push({ id: item.id, name: item.name || item.id });
+          } else if (item && typeof item === 'object') {
+            const itemObj = item as Record<string, unknown>;
+            if (typeof itemObj.id === 'string') {
+              models.push({ id: itemObj.id, name: (itemObj.name as string) || itemObj.id });
+            }
           }
         }
       }

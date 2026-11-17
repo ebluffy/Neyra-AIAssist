@@ -81,6 +81,10 @@ export function VoicePanel({
             <AlertCircle size={12} />
             <span>{errorMessage}</span>
           </p>
+        ) : state === 'unsupported' ? (
+          <p className="text-xs text-[var(--text-subtle)]">
+            Голосовой режим появится после калибровки шлюза в P5
+          </p>
         ) : (
           <p className="text-xs text-[var(--text-subtle)]">
             {isListening
@@ -96,7 +100,7 @@ export function VoicePanel({
           variant={isListening ? 'primary' : 'secondary'}
           size="md"
           onClick={isListening ? onStopListening : onStartListening}
-          disabled={state === 'unsupported' || state === 'processing'}
+          disabled={state === 'unsupported' || state === 'processing' || (!isListening && !onStartListening)}
           className="gap-2 px-6 h-11"
         >
           {isListening ? (

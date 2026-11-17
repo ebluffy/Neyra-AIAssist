@@ -31,7 +31,7 @@ import {
   Mic,
 } from 'lucide-react';
 import { SseChatEventSchema, StoredAttachmentSchema, type StoredAttachment } from '@neyra/contracts';
-import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, ModelPicker, BranchTree, ReasoningPanel, UsageCostBadge, type ContextUsage } from '../../components/ui';
+import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, ModelPicker, type ContextUsage } from '../../components/ui';
 import { isEnabled } from '../../lib/feature-flags';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
