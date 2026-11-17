@@ -10,10 +10,6 @@ export default async function ChatPage() {
   const session = await getAuth().api.getSession({ headers: await headers() });
   if (!session) redirect('/login');
   const onboarding = await getUserOnboardingCompleted(session.user.id);
-  return (
-    <ChatView
-      user={session.user}
-      needsOnboarding={onboarding.ok ? !onboarding.value : false}
-    />
-  );
+  if (onboarding.ok && !onboarding.value) redirect('/onboarding');
+  return <ChatView user={session.user} />;
 }
