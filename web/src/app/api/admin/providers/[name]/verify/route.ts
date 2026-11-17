@@ -1,9 +1,9 @@
 import { lookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
-import * as undici from 'undici';
 import { requireAdmin } from '../../../../../../../lib/admin-guard';
 import { readProviders, isValidBaseUrl, isValidProviderName, type ProviderRow } from '../../../../../../../lib/admin-providers';
 import { jsonError, readJson } from '../../../../../../../lib/admin-http';
+import { executePinnedProbe } from '../../../../../../../lib/admin-probe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -116,48 +116,6 @@ async function resolveAndCheckTarget(url: URL, allowLocal: boolean): Promise<Tar
     }
   }
   return { ok: true, pinnedAddresses: pinned.length > 0 ? pinned : resolved };
-}
-
-// AR-82: пиннинг-запрос вынесен в отдельную функцию, использующую undici.fetch и undici.Agent
-// из одного пакета с автоматическим закрытием диспетчера в finally.
-export async function executePinnedProbe(
-  targetEndpoint: string,
-  headers: Record<string, string>,
-  pinnedList: { address: string; family: number }[],
-  timeoutMs = 8000,
-) {
-  const dispatcher = new undici.Agent({
-    connect: {
-      lookup: (_hostname, opts, cb) => {
-        let callback = cb;
-        let options = opts;
-        if (typeof options === 'function') {
-          callback = options;
-          options = {};
-        }
-        if (options && options.all) {
-          callback(null, pinnedList as never);
-        } else if (pinnedList.length > 0) {
-          callback(null, pinnedList[0].address as never, pinnedList[0].family as never);
-        } else {
-          callback(new Error('NO_PINNED_ADDRESS') as never, '' as never);
-        }
-      },
-    },
-  });
-
-  try {
-    return await undici.fetch(targetEndpoint, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(timeoutMs),
-      cache: 'no-store',
-      redirect: 'manual',
-      dispatcher,
-    });
-  } finally {
-    await dispatcher.close().catch(() => {});
-  }
 }
 
 export async function POST(

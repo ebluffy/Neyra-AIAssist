@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { lookup } from 'node:dns/promises';
 import * as undici from 'undici';
-import { POST, executePinnedProbe } from './route';
+import { POST } from './route';
+import { executePinnedProbe } from '../../../../../../../lib/admin-probe';
 import { readProviders } from '../../../../../../../lib/admin-providers';
 
 vi.mock('undici', async (importOriginal) => {
