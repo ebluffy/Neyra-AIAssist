@@ -1,8 +1,8 @@
 {
-  "auditedAt": "2026-11-14T17:59:14.783Z",
+  "auditedAt": "2026-11-17T18:59:41.367Z",
   "standards": "WCAG 2.2 AA (SC 1.4.3 >= 4.5:1, SC 1.4.11 >= 3.0:1)",
-  "totalChecked": 20,
-  "passedCount": 20,
+  "totalChecked": 21,
+  "passedCount": 21,
   "failedCount": 0,
   "results": [
     {
@@ -262,6 +262,19 @@
       "blendedFg": "rgb(248, 113, 113)",
       "blendedBg": "rgb(49, 25, 25)",
       "ratio": 5.91,
+      "required": 4.5,
+      "passed": true
+    },
+    {
+      "surface": "--warning-quiet over --surface-2",
+      "element": "Warning Text (--warning #f59e0b)",
+      "role": "SC 1.4.3 Normal Text",
+      "type": "text",
+      "fgColor": "rgba(245, 158, 11, 1)",
+      "bgColor": "rgb(45, 35, 17)",
+      "blendedFg": "rgb(245, 158, 11)",
+      "blendedBg": "rgb(45, 35, 17)",
+      "ratio": 7.19,
       "required": 4.5,
       "passed": true
     }

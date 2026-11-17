@@ -415,6 +415,7 @@ async function main() {
       { surface: '--surface-2 (#121212)', element: 'Control Border (--border-control rgba(255,255,255,0.36))', fg: { r: 255, g: 255, b: 255, a: 0.36 }, bg: { r: 18, g: 18, b: 18, a: 1 }, req: 3.0, role: 'SC 1.4.11 Control Boundary' },
       { surface: '--surface-3 (#1a1a1a)', element: 'Control Border (--border-control rgba(255,255,255,0.36))', fg: { r: 255, g: 255, b: 255, a: 0.36 }, bg: { r: 26, g: 26, b: 26, a: 1 }, req: 3.0, role: 'SC 1.4.11 Control Boundary' },
       { surface: '--danger-quiet over --surface-2', element: 'Danger Text (--danger #f87171)', fg: { r: 248, g: 113, b: 113, a: 1 }, bg: blendRgbaOverRgb({ r: 239, g: 68, b: 68, a: 0.14 }, { r: 18, g: 18, b: 18, a: 1 }), req: 4.5, role: 'SC 1.4.3 Normal Text' },
+      { surface: '--warning-quiet over --surface-2', element: 'Warning Text (--warning #f59e0b)', fg: { r: 245, g: 158, b: 11, a: 1 }, bg: blendRgbaOverRgb({ r: 245, g: 158, b: 11, a: 0.12 }, { r: 18, g: 18, b: 18, a: 1 }), req: 4.5, role: 'SC 1.4.3 Normal Text' },
     ];
 
     for (const t of tokenMatrix) {
