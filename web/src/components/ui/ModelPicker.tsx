@@ -142,7 +142,7 @@ export function ModelPicker({
                   </div>
                   {isSelected && <Check size={12} className="text-[var(--accent)]" />}
                   {isCoreOnly && (
-                    <span className="text-[10px] px-1 py-0.2 rounded border border-[var(--border)] text-[var(--text-subtle)]">
+                    <span className="text-[10px] px-1 py-0.5 rounded border border-[var(--border)] text-[var(--text-subtle)]">
                       Скоро
                     </span>
                   )}

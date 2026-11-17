@@ -5,6 +5,8 @@
   --muted: #888888;
   --border: rgba(255, 255, 255, 0.12);
   --accent: #ffffff;
+  --warning: #f59e0b;
+  --warning-quiet: rgba(245, 158, 11, 0.12);
   --font-sans: system-ui, sans-serif;
   --font-mono: ui-monospace, monospace;
   --radius: 10px;

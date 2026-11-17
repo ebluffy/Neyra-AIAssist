@@ -256,7 +256,7 @@ export function AuthForm({
               disabled={discordPending}
               loading={discordPending}
               onClick={handleDiscordSignIn}
-              className="w-full h-11 min-h-[44px] flex items-center justify-center gap-2.5 bg-[#5865F2] hover:bg-[#4752c4] text-white border-transparent cursor-pointer font-medium text-sm shadow-sm transition-colors"
+              className="w-full h-11 min-h-[44px] flex items-center justify-center gap-2.5 bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-[var(--text)] border border-[var(--border-control)] cursor-pointer font-medium text-sm shadow-sm transition-colors rounded-[var(--radius)]"
             >
               <DiscordIcon size={20} />
               <span>Продолжить с Discord</span>

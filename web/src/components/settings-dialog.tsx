@@ -431,7 +431,7 @@ export function SettingsDialog({
                     {/* Discord Account Item */}
                     <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border-control)] flex items-center justify-between gap-3">
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 rounded-full bg-[#5865F2] flex items-center justify-center text-white shrink-0">
+                        <div className="w-8 h-8 rounded-full bg-[var(--surface-3)] border border-[var(--border)] flex items-center justify-center text-[var(--text)] shrink-0">
                           <Link2 size={16} />
                         </div>
                         <div className="min-w-0">
@@ -440,11 +440,11 @@ export function SettingsDialog({
                               Discord
                             </span>
                             {isDiscordLinked ? (
-                              <span className="px-1.5 py-0.2 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)]">
+                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)]">
                                 {isRealEmail ? 'Подключен' : 'Основной'}
                               </span>
                             ) : (
-                              <span className="px-1.5 py-0.2 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)]">
+                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)]">
                                 Не привязан
                               </span>
                             )}
@@ -843,7 +843,7 @@ export function SettingsDialog({
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-semibold text-[var(--text)]">Этот браузер</span>
-                          <span className="px-1.5 py-0.2 rounded text-[10px] bg-[var(--success)]/20 text-[var(--success)] font-medium">
+                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--success)]/20 text-[var(--success)] font-medium">
                             Активна
                           </span>
                         </div>

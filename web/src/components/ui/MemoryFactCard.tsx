@@ -79,7 +79,7 @@ export function MemoryFactCard({
 
       <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-[var(--border)] text-[11px] text-[var(--text-subtle)]">
         {fact.category && (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-[var(--radius-sm)] bg-[var(--surface-3)] text-[var(--text-muted)] font-medium">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[var(--radius-sm)] bg-[var(--surface-3)] text-[var(--text-muted)] font-medium">
             <Tag size={10} />
             <span>{fact.category}</span>
           </span>

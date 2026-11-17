@@ -14,7 +14,7 @@ export function LegacyNotice({ className = '' }: LegacyNoticeProps) {
       className={`p-6 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-control)] space-y-4 max-w-xl mx-auto text-left ${className}`}
     >
       <div className="flex items-center gap-3">
-        <div className="p-2.5 rounded-[var(--radius-sm)] bg-amber-500/10 text-amber-400 border border-amber-500/20">
+        <div className="p-2.5 rounded-[var(--radius-sm)] bg-[var(--warning-quiet)] text-[var(--warning)] border border-[var(--warning)]/30">
           <AlertTriangle size={20} />
         </div>
         <div>

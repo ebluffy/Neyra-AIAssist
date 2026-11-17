@@ -389,8 +389,8 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
   const renderProviderIcon = (p: ProviderRow) => {
     const n = p.name.toLowerCase();
     if (n.includes('openai')) return <Bot size={18} className="text-[var(--text)]" />;
-    if (n.includes('anthropic')) return <Cpu size={18} className="text-[#D97757]" />;
-    if (n.includes('openrouter')) return <Globe size={18} className="text-[#6366F1]" />;
+    if (n.includes('anthropic')) return <Cpu size={18} className="text-[var(--text-muted)]" />;
+    if (n.includes('openrouter')) return <Globe size={18} className="text-[var(--text-muted)]" />;
     if (n.includes('ollama') || n.includes('local') || n.includes('lmstudio'))
       return <Server size={18} className="text-[var(--text-muted)]" />;
     return <Cpu size={18} className="text-[var(--text-muted)]" />;
@@ -972,7 +972,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
                           {p.label || p.name}
                         </span>
                         {!p.builtin && (
-                          <span className="text-[9px] px-1 py-0.2 rounded border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-subtle)]">
+                          <span className="text-[9px] px-1 py-0.5 rounded border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-subtle)]">
                             свой
                           </span>
                         )}
@@ -1200,7 +1200,7 @@ export function ProvidersSection({ onNavigateTab }: ProvidersSectionProps) {
               <div className="space-y-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-semibold text-[var(--text)]">OpenCode CLI Bridge</span>
-                  <span className="px-1.5 py-0.2 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
                     Локальный
                   </span>
                   <span className="flex items-center gap-1 text-[11px] text-[var(--text-subtle)]">

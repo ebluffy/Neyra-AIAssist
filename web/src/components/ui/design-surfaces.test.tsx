@@ -273,4 +273,51 @@ describe('Design System P0–P6 Components', () => {
       expect(screen.getByRole('button', { name: /Перейти в панель управления/i })).toBeTruthy();
     });
   });
+
+  describe('AR-92 & AR-93 Token and Spacing Compliance', () => {
+    it('AR-92: ModuleCard uses semantic var(--warning) token for degraded status', () => {
+      const { container } = render(
+        <ModuleCard
+          module={{
+            id: 'mod-1',
+            name: 'Voice Gateway',
+            status: 'degraded',
+            enabled: true,
+            description: 'Тестовый модуль',
+          }}
+        />
+      );
+      const dot = container.querySelector('.bg-\\[var\\(--warning\\)\\]');
+      expect(dot).toBeTruthy();
+    });
+
+    it('AR-93: WebhookRow and BackupRow use valid py-0.5 class and do not contain dead py-0.2', () => {
+      const { container: whContainer } = render(
+        <WebhookRow
+          webhook={{
+            id: 'wh-1',
+            url: 'https://example.com/webhook',
+            active: true,
+            events: ['message.created'],
+          }}
+        />
+      );
+      expect(whContainer.innerHTML).toContain('py-0.5');
+      expect(whContainer.innerHTML).not.toContain('py-0.2');
+
+      const { container: bkContainer } = render(
+        <BackupRow
+          backup={{
+            id: 'bk-1',
+            filename: 'core-dump.tar.gz',
+            sizeBytes: 1048576,
+            createdAt: '2026-11-17T12:00:00Z',
+            type: 'auto',
+          }}
+        />
+      );
+      expect(bkContainer.innerHTML).toContain('py-0.5');
+      expect(bkContainer.innerHTML).not.toContain('py-0.2');
+    });
+  });
 });

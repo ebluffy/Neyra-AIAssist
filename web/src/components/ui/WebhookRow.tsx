@@ -42,11 +42,11 @@ export function WebhookRow({
             {webhook.url}
           </span>
           {webhook.active ? (
-            <span className="text-[10px] px-1.5 py-0.2 rounded bg-[var(--surface-3)] text-[var(--success)] border border-[var(--border)]">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--success)] border border-[var(--border)]">
               Активен
             </span>
           ) : (
-            <span className="text-[10px] px-1.5 py-0.2 rounded bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
               Отключен
             </span>
           )}
@@ -60,7 +60,7 @@ export function WebhookRow({
           )}
           {typeof webhook.lastStatus === 'number' && (
             <span className="flex items-center gap-1">
-              · {isHealthy ? <Check size={11} className="text-emerald-400" /> : <AlertCircle size={11} className="text-rose-400" />}
+              · {isHealthy ? <Check size={11} className="text-[var(--success)]" /> : <AlertCircle size={11} className="text-[var(--danger)]" />}
               HTTP {webhook.lastStatus}
             </span>
           )}

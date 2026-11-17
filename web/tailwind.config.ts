@@ -21,6 +21,8 @@ const config: Config = {
         'accent-quiet': 'var(--accent-quiet)',
         danger: 'var(--danger)',
         'danger-quiet': 'var(--danger-quiet)',
+        warning: 'var(--warning)',
+        'warning-quiet': 'var(--warning-quiet)',
         success: 'var(--success)',
       },
       fontFamily: {

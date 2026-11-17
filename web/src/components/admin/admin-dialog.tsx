@@ -1149,7 +1149,7 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
         <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-3">
           <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
             <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
-              <Users size={14} className="text-[#5865F2]" />
+              <Users size={14} className="text-[var(--text-subtle)]" />
               <span>Discord интеграция</span>
             </h4>
             <StatusPill tone={integrations?.discord?.configured ? 'ok' : 'muted'}>
@@ -1630,7 +1630,7 @@ function AccessSection() {
                           <span className="sm:hidden text-[11px] text-[var(--text-muted)] font-medium">Площадки:</span>
                           <div className="flex items-center gap-1 whitespace-nowrap">
                             {u.platform === 'discord' || u.platform === 'both' ? (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#5865F2]/20 text-[#5865F2] font-medium">
+                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text)] border border-[var(--border)] font-medium">
                                 Discord
                               </span>
                             ) : null}

@@ -54,7 +54,7 @@ export function BackupRow({
           <span className="text-xs font-mono text-[var(--text)] truncate max-w-sm font-medium">
             {backup.filename}
           </span>
-          <span className="text-[10px] px-1.5 py-0.2 rounded bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
             {backup.type === 'auto' ? 'Автоматический' : 'Ручной'}
           </span>
         </div>

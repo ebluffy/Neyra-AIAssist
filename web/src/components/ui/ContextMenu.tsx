@@ -465,7 +465,7 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
                 </div>
                 <div className="flex items-center gap-1.5 ml-2 shrink-0">
                   {isStub && (
-                    <span className="text-[10px] uppercase font-mono px-1 py-0.2 rounded bg-[var(--surface-3)] text-[var(--text-subtle)]">
+                    <span className="text-[10px] uppercase font-mono px-1 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-subtle)]">
                       Скоро
                     </span>
                   )}

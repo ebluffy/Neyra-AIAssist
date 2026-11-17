@@ -62,7 +62,7 @@ export function VoicePanel({
                 isListening
                   ? 'bg-[var(--accent)]'
                   : isSpeaking
-                  ? 'bg-emerald-400'
+                  ? 'bg-[var(--success)]'
                   : 'bg-[var(--surface-3)]'
               }`}
             />

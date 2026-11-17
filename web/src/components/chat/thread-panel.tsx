@@ -270,7 +270,7 @@ export function ThreadPanel({
                 <span>{tab.label}</span>
                 {tab.badge !== undefined && (
                   <span
-                    className={`ml-0.5 px-1.5 py-0.2 rounded-full text-[10px] font-semibold ${
+                    className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${
                       isSelected
                         ? 'bg-[var(--surface-3)] text-[var(--text)]'
                         : 'bg-[var(--surface-3)] text-[var(--text-subtle)]'

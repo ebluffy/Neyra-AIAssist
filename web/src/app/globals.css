@@ -29,6 +29,8 @@
   /* Статусы — строгие, только красный для реальной ошибки */
   --danger: #f87171;
   --danger-quiet: rgba(239, 68, 68, 0.14);
+  --warning: #f59e0b;
+  --warning-quiet: rgba(245, 158, 11, 0.12);
   --success: #e4e4e7;
   --brand-discord: #5865f2;
   --brand-discord-hover: #4752c4;
