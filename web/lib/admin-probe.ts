@@ -1,13 +1,20 @@
 import * as undici from 'undici';
 
-// AR-82: пиннинг-запрос вынесен в отдельный модуль, использующий undici.fetch и undici.Agent
-// из одного пакета с автоматическим закрытием диспетчера в finally.
+export interface PinnedProbeResult {
+  status: number;
+  ok: boolean;
+  json: unknown;
+}
+
+// AR-82, AR-89: пиннинг-запрос вынесен в отдельный модуль.
+// Чтение тела ответа выполняется ДО закрытия диспетчера, чтобы избежать зависания
+// backpressure и TimeoutError при больших ответах (каталоги > 64 КБ, например OpenRouter > 1 МБ).
 export async function executePinnedProbe(
   targetEndpoint: string,
   headers: Record<string, string>,
   pinnedList: { address: string; family: number }[],
   timeoutMs = 8000,
-) {
+): Promise<PinnedProbeResult> {
   const dispatcher = new undici.Agent({
     connect: {
       lookup: (_hostname, opts, cb) => {
@@ -29,7 +36,7 @@ export async function executePinnedProbe(
   });
 
   try {
-    return await undici.fetch(targetEndpoint, {
+    const res = await undici.fetch(targetEndpoint, {
       method: 'GET',
       headers,
       signal: AbortSignal.timeout(timeoutMs),
@@ -37,6 +44,23 @@ export async function executePinnedProbe(
       redirect: 'manual',
       dispatcher,
     });
+
+    let json: unknown = null;
+    if (res.status === 200) {
+      try {
+        json = await res.json();
+      } catch {
+        json = null;
+      }
+    } else {
+      await res.body?.cancel().catch(() => {});
+    }
+
+    return {
+      status: res.status,
+      ok: res.ok,
+      json,
+    };
   } finally {
     await dispatcher.close().catch(() => {});
   }

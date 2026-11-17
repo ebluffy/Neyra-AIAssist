@@ -30,9 +30,9 @@ export function ModuleCard({
   className = '',
 }: ModuleCardProps) {
   const statusColors: Record<ModuleStatus, { dot: string; label: string }> = {
-    online: { dot: 'bg-emerald-500', label: 'В сети' },
-    degraded: { dot: 'bg-amber-500', label: 'Деградация' },
-    offline: { dot: 'bg-zinc-600', label: 'Выключен' },
+    online: { dot: 'bg-[var(--success)]', label: 'В сети' },
+    degraded: { dot: 'bg-amber-400', label: 'Деградация' },
+    offline: { dot: 'bg-[var(--text-subtle)]', label: 'Выключен' },
   };
 
   const statusConfig = statusColors[module.status] || statusColors.offline;

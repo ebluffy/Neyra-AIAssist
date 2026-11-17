@@ -84,7 +84,7 @@ describe('POST /api/admin/providers/[name]/verify', () => {
     expect(json.error).toBe('invalid_provider');
   });
 
-  it('AR-82: executePinnedProbe uses real undici Agent and resolves via pinned address without mocking fetch', async () => {
+  it('AR-82, AR-89: executePinnedProbe uses real undici Agent and resolves via pinned address without mocking fetch', async () => {
     const http = await import('node:http');
     const server = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -104,11 +104,76 @@ describe('POST /api/admin/providers/[name]/verify', () => {
         3000,
       );
       expect(response.status).toBe(200);
-      const json = await response.json();
-      expect(json).toEqual({ data: [{ id: 'gpt-4o-real' }] });
+      expect(response.json).toEqual({ data: [{ id: 'gpt-4o-real' }] });
     } finally {
       server.close();
     }
+  });
+
+  it('AR-89: handles large responses (> 1 MB JSON) with models_count and latency < 1000ms without backpressure freeze', async () => {
+    const http = await import('node:http');
+    // Generate > 1 MB payload (~15000 models)
+    const largeModelsList = Array.from({ length: 15000 }, (_, i) => ({
+      id: `model-large-catalog-entry-${i}-abcdefghijklmnopqrstuvwxyz-0123456789`,
+      name: `Model Large Catalog Entry ${i} Abcdefghijklmnopqrstuvwxyz 0123456789`,
+    }));
+    const payload = JSON.stringify({ data: largeModelsList });
+    expect(Buffer.byteLength(payload, 'utf8')).toBeGreaterThan(1024 * 1024); // > 1 MB
+
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload, 'utf8'),
+      });
+      res.end(payload);
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    try {
+      const startTime = Date.now();
+      const result = await executePinnedProbe(
+        `http://pinned.invalid:${port}/models`,
+        { Accept: 'application/json' },
+        [{ address: '127.0.0.1', family: 4 }],
+        5000,
+      );
+      const elapsed = Date.now() - startTime;
+      expect(result.status).toBe(200);
+      expect(result.ok).toBe(true);
+      expect(Array.isArray((result.json as { data: unknown[] })?.data)).toBe(true);
+      expect((result.json as { data: unknown[] }).data.length).toBe(15000);
+      expect(elapsed).toBeLessThan(1000);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('AR-89: returns bad_response when server returns 200 with invalid non-JSON body', async () => {
+    vi.mocked(undici.fetch).mockImplementation(async () => {
+      return new Response('<html><body>502 Bad Gateway from Proxy</body></html>', {
+        status: 200,
+        headers: { 'Content-Type': 'text/html' },
+      }) as unknown as undici.Response;
+    });
+
+    const req = new Request('http://localhost/api/admin/providers/openai/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        base_url: 'https://api.openai.com/v1',
+        api_key: 'sk-test-mock-key',
+      }),
+    });
+
+    const res = await POST(req, { params: Promise.resolve({ name: 'openai' }) });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(false);
+    expect(json.error).toBe('bad_response');
+    expect(json.message).toContain('не является корректным JSON');
   });
 
   it('returns ok: true with models count and latency on 200 response', async () => {

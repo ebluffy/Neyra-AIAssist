@@ -250,43 +250,55 @@ export async function POST(
 
   const startTime = Date.now();
   try {
-    const response = await executePinnedProbe(targetEndpoint, headers, pinnedList, 8000);
+    const probe = await executePinnedProbe(targetEndpoint, headers, pinnedList, 8000);
 
     const latencyMs = Date.now() - startTime;
 
-    if (response.status >= 300 && response.status < 400) {
+    if (probe.status >= 300 && probe.status < 400) {
       return Response.json({
         ok: false,
         error: 'redirect',
         message: 'Сервер ответил перенаправлением; такие ответы не проверяются.',
-        status_code: response.status,
+        status_code: probe.status,
         latency_ms: latencyMs,
       });
     }
 
-    if (response.status === 401 || response.status === 403) {
+    if (probe.status === 401 || probe.status === 403) {
       return Response.json({
         ok: false,
         error: 'unauthorized',
         message: 'Неверный API-ключ или доступ запрещён (401/403).',
-        status_code: response.status,
+        status_code: probe.status,
         latency_ms: latencyMs,
         warning,
       });
     }
 
-    if (!response.ok) {
+    if (!probe.ok) {
       return Response.json({
         ok: false,
         error: 'unreachable',
-        message: `Сервер вернул статус ${response.status}.`,
-        status_code: response.status,
+        message: `Сервер вернул статус ${probe.status}.`,
+        status_code: probe.status,
         latency_ms: latencyMs,
         warning,
       });
     }
 
-    const json = (await response.json().catch(() => null)) as Record<string, unknown> | unknown[] | null;
+    // AR-89: если статус 200, но тело не является корректным JSON, возвращаем bad_response
+    if (probe.status === 200 && probe.json === null) {
+      return Response.json({
+        ok: false,
+        error: 'bad_response',
+        message: 'Сервер вернул статус 200, но ответ не является корректным JSON.',
+        status_code: 200,
+        latency_ms: latencyMs,
+        warning,
+      });
+    }
+
+    const json = probe.json as Record<string, unknown> | unknown[] | null;
     const models: ModelItem[] = [];
 
     if (json && typeof json === 'object') {

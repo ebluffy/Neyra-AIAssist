@@ -42,11 +42,11 @@ export function WebhookRow({
             {webhook.url}
           </span>
           {webhook.active ? (
-            <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950/40 text-emerald-400 border border-emerald-800/40">
+            <span className="text-[10px] px-1.5 py-0.2 rounded bg-[var(--surface-3)] text-[var(--success)] border border-[var(--border)]">
               Активен
             </span>
           ) : (
-            <span className="text-[10px] px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
+            <span className="text-[10px] px-1.5 py-0.2 rounded bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
               Отключен
             </span>
           )}

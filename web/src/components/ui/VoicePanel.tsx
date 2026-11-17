@@ -40,7 +40,7 @@ export function VoicePanel({
           Голосовой интерфейс
         </span>
         <span className="flex items-center gap-1 font-mono text-[11px]">
-          <Radio size={12} className={isListening ? 'text-emerald-400 animate-pulse' : 'text-zinc-500'} />
+          <Radio size={12} className={isListening ? 'text-[var(--success)] animate-pulse' : 'text-[var(--text-subtle)]'} />
           {state === 'idle' && 'Ожидание'}
           {state === 'listening' && 'Слушаю...'}
           {state === 'processing' && 'Обработка...'}

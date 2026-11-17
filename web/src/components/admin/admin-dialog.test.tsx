@@ -473,4 +473,23 @@ describe('AdminDialog', () => {
 
     expect(await screen.findByText('Сохранено')).toBeDefined();
   });
+
+  it('AR-90: does not show invented person_id, discord #1337 usernames, or fake invite creator admin@neyra.local when fields are absent from API', async () => {
+    render(<AdminDialog open={true} onClose={vi.fn()} user={adminUser} initialSection="access" />);
+
+    // In users tab:
+    expect(await screen.findByText('Алексей')).toBeDefined();
+    // No mock #1337 usernames
+    expect(screen.queryByText(/#1337/)).toBeNull();
+    // No mock person_id prefixes
+    expect(screen.queryByText(/u_01HZX/)).toBeNull();
+
+    // Switch to invites tab
+    const invitesTabBtn = screen.getByRole('button', { name: /Приглашения/ });
+    fireEvent.click(invitesTabBtn);
+
+    expect(await screen.findByText('INV-TEST-1')).toBeDefined();
+    // No fake admin@neyra.local creator
+    expect(screen.queryByText('admin@neyra.local')).toBeNull();
+  });
 });

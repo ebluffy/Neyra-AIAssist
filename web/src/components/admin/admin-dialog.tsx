@@ -1319,14 +1319,8 @@ function AccessSection() {
       else if (Array.isArray(uJson?.data?.items)) userList = uJson.data.items;
       else if (Array.isArray(uJson)) userList = uJson;
 
-      // Enhance users with mock person_id and platform links if absent
-      const enhancedUsers = userList.map((u, idx) => ({
-        ...u,
-        person_id: u.person_id || `u_01HZX87K9W72MQ${idx}NPR${u.id.slice(0, 4)}`,
-        platform: u.platform || (idx % 2 === 0 ? 'discord' : 'web'),
-        discordUsername: u.discordUsername || (idx % 2 === 0 ? `${u.name || 'user'}#1337` : null),
-      }));
-      setUsers(enhancedUsers);
+      // AR-90: честные данные пользователей без подстановок mock person_id и выдуманных площадок
+      setUsers(userList);
 
       let inviteList: InviteItem[] = [];
       if (iJson?.items) inviteList = iJson.items;
@@ -1334,17 +1328,17 @@ function AccessSection() {
       else if (Array.isArray(iJson)) inviteList = iJson;
 
       const origin = typeof window !== 'undefined' ? window.location.origin : 'https://neyra.local';
-      const enhancedInvites = inviteList.map((inv) => {
+      const cleanInvites = inviteList.map((inv) => {
         const c = inv.code || inv.token || inv.id;
         return {
           ...inv,
           code: c,
           link: inv.link || `${origin}/login?invite=${c}`,
           status: inv.status || (inv.used ? 'used' : 'active'),
-          createdBy: inv.createdBy || 'admin@neyra.local',
+          createdBy: inv.createdBy || '',
         };
       });
-      setInvites(enhancedInvites);
+      setInvites(cleanInvites);
 
       const mode = sJson?.data?.registration_mode ?? sJson?.registration_mode;
       if (mode === 'invite' || mode === 'open' || mode === 'closed') {
@@ -1645,6 +1639,9 @@ function AccessSection() {
                                 Web
                               </span>
                             ) : null}
+                            {!u.platform && (
+                              <span className="text-[11px] text-[var(--text-subtle)]">—</span>
+                            )}
                           </div>
                         </td>
 
@@ -1878,7 +1875,7 @@ function AccessSection() {
                         </td>
 
                         <td className="sm:py-2.5 sm:px-3 text-[11px] text-[var(--text-subtle)]">
-                          {inv.createdBy || 'admin@neyra.local'}
+                          {inv.createdBy || '—'}
                         </td>
 
                         <td className="sm:py-2.5 sm:px-3 sm:text-right whitespace-nowrap">

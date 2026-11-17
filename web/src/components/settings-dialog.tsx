@@ -277,7 +277,7 @@ export function SettingsDialog({
 
   if (!open) return null;
 
-  const personId = user.person_id || user.id || 'u_01HZX87K9W72MQ492XNPR001';
+  const personId = user.person_id || user.id || '—';
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-6">
