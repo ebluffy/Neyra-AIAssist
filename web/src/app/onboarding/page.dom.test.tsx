@@ -36,7 +36,10 @@ describe('Onboarding (AR-72)', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/me',
-      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ name: 'Боб' }) }),
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ name: 'Боб', onboarding_completed: true }),
+      }),
     );
     await waitFor(() => expect(emitToast).toHaveBeenCalled());
     const toast = vi.mocked(emitToast).mock.calls[0][0];
@@ -44,7 +47,7 @@ describe('Onboarding (AR-72)', () => {
     expect(toast.title).toMatch(/Имя сохранено/);
   });
 
-  it('does not claim success when the server rejects the name', async () => {
+  it('does not claim success or navigate when the server rejects onboarding', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response('{"ok":false}', { status: 500 })),
@@ -58,11 +61,12 @@ describe('Onboarding (AR-72)', () => {
     await waitFor(() => expect(emitToast).toHaveBeenCalled());
     const toast = vi.mocked(emitToast).mock.calls[0][0];
     expect(toast.tone).toBe('danger');
-    expect(toast.title).toMatch(/не сохранено/i);
+    expect(toast.title).toMatch(/Не удалось завершить знакомство/);
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it('keeps privacy switches read-only and does not write privacy flags it cannot apply', async () => {
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
     render(<OnboardingPage />);
@@ -76,8 +80,16 @@ describe('Onboarding (AR-72)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Завершить настройку/ }));
     await waitFor(() => expect(replace).toHaveBeenCalledWith('/chat'));
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/me',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ onboarding_completed: true }),
+      }),
+    );
     expect(window.localStorage.getItem('neyra:remember-context')).toBeNull();
     expect(window.localStorage.getItem('neyra:sync-discord')).toBeNull();
+    expect(window.localStorage.getItem('neyra:onboarding-complete')).toBeNull();
   });
 });

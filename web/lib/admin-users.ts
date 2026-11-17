@@ -131,6 +131,41 @@ export async function setUserName(targetId: string, name: string): Promise<Mutat
   }
 }
 
+// AR-80: онбординг должен быть серверным признаком, а не флагом localStorage.
+// Иначе новый браузер у существующего пользователя снова открывает знакомство.
+export async function getUserOnboardingCompleted(targetId: string): Promise<MutationResult<boolean>> {
+  try {
+    const { db } = getDatabase();
+    const [row] = await db
+      .select({ completedAt: user.onboardingCompletedAt })
+      .from(user)
+      .where(eq(user.id, targetId))
+      .limit(1);
+    if (!row) return { ok: false, error: 'not-found' };
+    return { ok: true, value: row.completedAt !== null };
+  } catch {
+    return { ok: false, error: 'db' };
+  }
+}
+
+export async function setUserOnboardingCompleted(
+  targetId: string,
+  completed: boolean,
+): Promise<MutationResult<{ onboarding_completed: boolean }>> {
+  try {
+    const { db } = getDatabase();
+    const updated = await db
+      .update(user)
+      .set({ onboardingCompletedAt: completed ? new Date() : null, updatedAt: new Date() })
+      .where(eq(user.id, targetId))
+      .returning({ id: user.id });
+    if (updated.length === 0) return { ok: false, error: 'not-found' };
+    return { ok: true, value: { onboarding_completed: completed } };
+  } catch {
+    return { ok: false, error: 'db' };
+  }
+}
+
 export async function setUserRole(actorId: string, targetId: string, nextRole: 'admin' | 'user'): Promise<MutationResult<{ role: string }>> {
   const target = await getUser(targetId);
   if (!target) return { ok: false, error: 'not-found' };

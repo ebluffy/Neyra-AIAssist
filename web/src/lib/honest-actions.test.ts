@@ -124,6 +124,8 @@ describe('Honest Actions & Zero Fake Successes Audit (§5)', () => {
     expect(onboarding).not.toContain("setItem('neyra:remember-context'");
     expect(onboarding).not.toContain("setItem('neyra:sync-discord'");
     expect(onboarding).toContain("fetch('/api/me'");
+    expect(onboarding).toContain('onboarding_completed: true');
+    expect(onboarding).not.toContain("setItem('neyra:onboarding-complete'");
     expect(onboarding).toMatch(/disabled/);
   });
 

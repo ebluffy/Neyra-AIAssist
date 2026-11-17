@@ -57,6 +57,13 @@
       "when": 1794689524848,
       "tag": "0007_clever_lorna_dane",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794940830725,
+      "tag": "0008_big_johnny_blaze",
+      "breakpoints": true
     }
   ]
 }

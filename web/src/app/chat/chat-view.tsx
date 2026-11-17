@@ -100,6 +100,7 @@ function humanizeErrorMessage(rawError?: string | null): { message: string; hint
 
 export interface ChatViewProps {
   user: { id: string; email?: string | null; name?: string | null; role?: string | null };
+  needsOnboarding?: boolean;
   initialMessages?: ChatMessageItem[];
   initialUsage?: ContextUsage | null;
   initialThreadPanelOpen?: boolean;
@@ -109,6 +110,7 @@ export interface ChatViewProps {
 
 export function ChatView({
   user,
+  needsOnboarding = false,
   initialMessages,
   initialUsage,
   initialThreadPanelOpen,
@@ -165,14 +167,10 @@ export function ChatView({
   const [phaseLabel, setPhaseLabel] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(() => initialUsage || null);
 
-  // AR-80: проверка флага онбординга для новых пользователей
+  // AR-80: серверный признак онбординга, а не localStorage браузера.
   useEffect(() => {
-    try {
-      if (typeof window !== 'undefined' && !window.localStorage.getItem('neyra:onboarding-complete')) {
-        router.replace('/onboarding');
-      }
-    } catch {}
-  }, [router]);
+    if (needsOnboarding) router.replace('/onboarding');
+  }, [needsOnboarding, router]);
 
   useEffect(() => {
     try {

@@ -584,16 +584,14 @@ describe('ChatView conversation', () => {
     unmount();
   });
 
-  it('redirects to /onboarding when neyra:onboarding-complete is missing (AR-80)', () => {
+  it('redirects to /onboarding when the server says onboarding is incomplete (AR-80)', () => {
     mockReplace.mockClear();
-    window.localStorage.removeItem('neyra:onboarding-complete');
-    render(<ChatView user={{ id: 'u-new', email: 'new@example.com', name: 'NewUser', role: 'user' }} />);
+    render(<ChatView user={{ id: 'u-new', email: 'new@example.com', name: 'NewUser', role: 'user' }} needsOnboarding />);
     expect(mockReplace).toHaveBeenCalledWith('/onboarding');
   });
 
-  it('does not redirect to /onboarding when neyra:onboarding-complete is present (AR-80)', () => {
+  it('does not redirect to /onboarding for an existing user (AR-80)', () => {
     mockReplace.mockClear();
-    window.localStorage.setItem('neyra:onboarding-complete', '1');
     render(<ChatView user={{ id: 'u-old', email: 'old@example.com', name: 'OldUser', role: 'user' }} />);
     expect(mockReplace).not.toHaveBeenCalledWith('/onboarding');
   });

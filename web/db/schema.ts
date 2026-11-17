@@ -14,6 +14,8 @@ export const user = pgTable('user', {
   banReason: text('ban_reason'),
   // Последний успешный вход (обновляется хуком after на /sign-in/email).
   lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
+  // Завершение онбординга: серверный признак, а не localStorage браузера.
+  onboardingCompletedAt: timestamp('onboarding_completed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
 });

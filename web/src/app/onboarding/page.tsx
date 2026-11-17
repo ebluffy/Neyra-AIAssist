@@ -28,40 +28,39 @@ export default function OnboardingPage() {
   const finishOnboarding = async () => {
     if (saving) return;
     const name = displayName.trim();
-    let saved = false;
     setSaving(true);
-    if (name) {
-      try {
-        // AR-74: имя сохраняется настоящей ручкой профиля, а не в localStorage.
-        const res = await fetch('/api/me', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
-        });
-        saved = res.ok;
-      } catch {
-        saved = false;
-      }
+    let saved = false;
+    try {
+      // AR-80: завершение онбординга — серверный признак, а не localStorage.
+      const payload: { name?: string; onboarding_completed: true } = name
+        ? { name, onboarding_completed: true }
+        : { onboarding_completed: true };
+      const res = await fetch('/api/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      saved = res.ok;
+    } catch {
+      saved = false;
     }
     setSaving(false);
-    try {
-      window.localStorage.setItem('neyra:onboarding-complete', '1');
-    } catch {}
+
+    if (!saved) {
+      emitToast({
+        title: 'Не удалось завершить знакомство',
+        message: 'Сервер не принял настройки. Попробуйте ещё раз.',
+        tone: 'danger',
+      });
+      return;
+    }
 
     if (name) {
-      emitToast(
-        saved
-          ? {
-              title: 'Имя сохранено',
-              message: 'Изменить его можно в настройках профиля.',
-              tone: 'success',
-            }
-          : {
-              title: 'Имя не сохранено',
-              message: 'Сервер не принял имя. Задайте его позже в настройках профиля.',
-              tone: 'danger',
-            },
-      );
+      emitToast({
+        title: 'Имя сохранено',
+        message: 'Изменить его можно в настройках профиля.',
+        tone: 'success',
+      });
     } else {
       emitToast({
         title: 'Добро пожаловать в Neyra!',
