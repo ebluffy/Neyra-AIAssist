@@ -268,7 +268,11 @@ async function main() {
       const page = await context.newPage();
 
       try {
-        await setupFn(page);
+        const proceed = await setupFn(page);
+        if (proceed === false) {
+          console.log(`  -> Skipped shot: ${filename} (state not available)`);
+          return;
+        }
         await page.waitForLoadState('networkidle');
         await page.waitForTimeout(400);
 
@@ -762,7 +766,7 @@ async function main() {
           await page.goto(`${BASE_URL}/onboarding`, { waitUntil: 'domcontentloaded' });
           const nextBtn = await page.waitForSelector('button:has-text("Далее")');
           await nextBtn.click();
-          await page.waitForSelector('h1:has-text("Что помнить?")');
+          await page.waitForSelector('h1:has-text("Память и каналы")');
         },
         desc: 'Онбординг (шаг 2): переключатели памяти и синхронизации внешних каналов',
       });
@@ -845,7 +849,7 @@ async function main() {
         await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
         await openAdminDialog(page, { isMobile: false });
         await clickAdminTab(page, 'Доступ', false);
-        const mergeBtn = await page.waitForSelector('[role="dialog"] button:has-text("Объединить с…")');
+        const mergeBtn = await page.waitForSelector('[role="dialog"] button[aria-label="Объединить с другим аккаунтом"]');
         await mergeBtn.click();
         await page.waitForSelector('h3:has-text("Объединение профиля")');
         await page.waitForSelector('button:has-text("Закрыть")');
@@ -990,7 +994,7 @@ async function main() {
       url: `${BASE_URL}/chat`,
       vp: { name: '1440', width: 1440, height: 900, isMobile: false },
       setupFn: async (page) => {
-        await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+        await page.goto(`${BASE_URL}/chat?ff=providersCatalog`, { waitUntil: 'domcontentloaded' });
         await openAdminDialog(page, { isMobile: false });
         await clickAdminTab(page, 'Провайдеры', false);
         const cliBtn = await page.waitForSelector('button:has-text("Авторизация в терминале"), button:has-text("Инструкция")');
@@ -1012,12 +1016,16 @@ async function main() {
         await page.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
         await openAdminDialog(page, { isMobile: false });
         await clickAdminTab(page, 'Провайдеры', false);
-        const providerCard = await page.waitForSelector('[data-provider-card="openai"], [data-provider-card]');
+        const providerCard = await page.$('[data-provider-card="openai"], [data-provider-card]');
+        if (!providerCard) {
+          await page.waitForSelector('text=Пока нет провайдеров');
+          return false;
+        }
         await providerCard.click();
         await page.waitForSelector('button:has-text("Назад к списку")');
         await page.waitForTimeout(400);
       },
-      desc: 'Провайдеры: выделенный экран провайдера (OpenAI) с разделами подключения, ключа, моделей, лейнов и опасной зоны',
+      desc: 'Провайдеры: выделенный экран провайдера (OpenAI) или честное пустое состояние без подключённого ядра',
     });
 
     // 38. Add Provider Modal (Step 1 Presets)

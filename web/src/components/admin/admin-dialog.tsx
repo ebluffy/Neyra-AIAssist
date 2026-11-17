@@ -18,6 +18,7 @@ import {
   Folder,
   Key,
   LayoutDashboard,
+  LogIn,
   Plug,
   Plus,
   RefreshCw,
@@ -1667,43 +1668,45 @@ function AccessSection() {
                           )}
                         </td>
 
-                        <td className="sm:py-2 sm:px-3 sm:text-right pt-2 sm:pt-0 border-t border-[var(--border)] sm:border-0 whitespace-nowrap">
-                          <div className="flex items-center justify-end gap-1">
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              className="h-7 px-2 text-[11px]"
-                              disabled={actionPendingId === u.id}
+                        <td className="sm:py-2 sm:px-3 sm:text-right pt-2 sm:pt-0 border-t border-[var(--border)] sm:border-0">
+                          <div className="flex flex-wrap items-center justify-end gap-1">
+                            <IconButton
+                              icon={<Shield size={13} />}
                               aria-label={u.role === 'admin' ? 'Снять админа' : 'Сделать админом'}
-                              onClick={() => handleToggleRole(u)}
-                            >
-                              {u.role === 'admin' ? 'Снять админа' : 'Сделать админом'}
-                            </Button>
-
-                            <Button
-                              variant={u.banned ? 'secondary' : 'danger'}
-                              size="sm"
-                              className="h-7 px-2 text-[11px]"
-                              disabled={actionPendingId === u.id}
-                              aria-label={u.banned ? 'Разблокировать' : 'Бан'}
-                              onClick={() => handleToggleBan(u)}
-                            >
-                              {u.banned ? 'Разблокировать' : 'Бан'}
-                            </Button>
-
-                            <Button
+                              tooltip={u.role === 'admin' ? 'Снять админа' : 'Сделать админом'}
                               variant="ghost"
                               size="sm"
-                              className="h-7 px-2 text-[11px] text-[var(--text-muted)]"
+                              disabled={actionPendingId === u.id}
+                              onClick={() => handleToggleRole(u)}
+                            />
+
+                            <IconButton
+                              icon={u.banned ? <UserCheck size={13} /> : <Ban size={13} />}
+                              aria-label={u.banned ? 'Разблокировать' : 'Бан'}
+                              tooltip={u.banned ? 'Разблокировать' : 'Бан'}
+                              variant={u.banned ? 'ghost' : 'danger'}
+                              size="sm"
+                              disabled={actionPendingId === u.id}
+                              onClick={() => handleToggleBan(u)}
+                            />
+
+                            <IconButton
+                              icon={<Workflow size={13} />}
+                              aria-label="Объединить с другим аккаунтом"
+                              tooltip="Объединить с…"
+                              variant="ghost"
+                              size="sm"
                               onClick={() => setMergeModalUser(u)}
-                            >
-                              Объединить с…
-                            </Button>
+                            />
 
                             <SoonAction featureName="Вход под пользователем (Impersonate)">
-                              <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px] text-[var(--text-muted)]">
-                                Войти
-                              </Button>
+                              <IconButton
+                                icon={<LogIn size={13} />}
+                                aria-label="Войти под пользователем"
+                                tooltip="Войти под пользователем"
+                                variant="ghost"
+                                size="sm"
+                              />
                             </SoonAction>
                           </div>
                         </td>

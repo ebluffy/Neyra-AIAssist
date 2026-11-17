@@ -345,7 +345,11 @@ export function AuthForm({
 
         {/* Footnote on registration */}
         <p className="text-[11px] text-[var(--text-subtle)] text-center leading-normal">
-          Регистрация происходит автоматически при первом входе
+          {registrationMode === 'open'
+            ? 'Регистрация открыта: аккаунт создаётся при первом входе'
+            : registrationMode === 'closed'
+              ? 'Регистрация закрыта администратором'
+              : 'Регистрация — только по приглашению'}
         </p>
 
         {/* Troubleshooting Accordion */}
