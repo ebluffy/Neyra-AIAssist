@@ -28,9 +28,11 @@ import {
   X,
   History,
   Activity,
+  Mic,
 } from 'lucide-react';
 import { SseChatEventSchema, StoredAttachmentSchema, type StoredAttachment } from '@neyra/contracts';
-import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, type ContextUsage } from '../../components/ui';
+import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, ModelPicker, type ContextUsage } from '../../components/ui';
+import { isEnabled } from '../../lib/feature-flags';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
 import { SettingsDialog } from '../../components/settings-dialog';
@@ -137,6 +139,7 @@ export function ChatView({
   // Десктоп: сайдбар можно свернуть, чтобы чат занимал всё окно (§ волна 4).
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'profile' | 'accounts' | 'appearance' | 'notifications' | 'privacy' | 'data' | 'danger'>('profile');
 
   // Wave 5 Step 2: Thread Panel states
   const [threadPanelOpen, setThreadPanelOpen] = useState(initialThreadPanelOpen ?? false);
@@ -162,7 +165,20 @@ export function ChatView({
   const [phaseLabel, setPhaseLabel] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(() => initialUsage || null);
 
+  // AR-80: серверный признак онбординга проверяется в chat/page.tsx до рендера чата.
   useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        const settingsParam = params.get('settings');
+        if (settingsParam) {
+          setSettingsOpen(true);
+          if (['profile', 'accounts', 'appearance', 'notifications', 'privacy', 'data', 'danger'].includes(settingsParam)) {
+            setSettingsTab(settingsParam as any);
+          }
+        }
+      }
+    } catch {}
     try {
       setSidebarCollapsed(window.localStorage.getItem('neyra:sidebar-collapsed') === '1');
       if (initialThreadPanelOpen === undefined) {
@@ -986,7 +1002,12 @@ export function ChatView({
       {/* Main Column */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
         {/* Header 56px (§2: No «← На главную», mobile menu on right with «Новый чат») */}
-        <header className="h-14 min-h-[56px] border-b border-[var(--border)] bg-[var(--bg)] px-3 sm:px-4 flex items-center justify-between gap-2 z-20 pt-[env(safe-area-inset-top)]">
+        <header
+          data-context="thread-header"
+          data-id={chatId}
+          data-title={threadTitle}
+          className="h-14 min-h-[56px] border-b border-[var(--border)] bg-[var(--bg)] px-3 sm:px-4 flex items-center justify-between gap-2 z-20 pt-[env(safe-area-inset-top)]"
+        >
           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 mr-2">
             <IconButton
               type="button"
@@ -1040,14 +1061,42 @@ export function ChatView({
           <div className="content-column space-y-6">
             {/* Empty State */}
             {messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center text-center pt-16 md:pt-24 pb-8 select-none">
-                <NeyraLogo size={40} />
-                <h2 className="text-[26px] md:text-[30px] font-semibold tracking-tight text-[var(--text)] mt-4 mb-2">
-                  {ru.emptyChat}
-                </h2>
-                <p className="text-[14px] text-[var(--text-muted)] max-w-[380px]">
-                  Задайте вопрос — или начните с готового сценария под полем ввода.
-                </p>
+              <div className="flex flex-col items-center justify-center text-center pt-12 md:pt-20 pb-6 select-none space-y-6">
+                <div className="flex flex-col items-center">
+                  <NeyraLogo size={42} />
+                  <h2 className="text-[26px] md:text-[30px] font-semibold tracking-tight text-[var(--text)] mt-4 mb-2">
+                    {ru.emptyChat}
+                  </h2>
+                  <p className="text-[14px] text-[var(--text-muted)] max-w-[380px]">
+                    Задайте вопрос или выберите быстрый сценарий.
+                  </p>
+                </div>
+
+                <div className="w-full max-w-[580px] grid grid-cols-1 sm:grid-cols-3 gap-2 px-2 animate-chips">
+                  <Chip
+                    onClick={() => sendMessage('Что нового в памяти?')}
+                    className="w-full min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-2 hover:-translate-y-px hover:!text-[var(--text)]"
+                  >
+                    <Sparkles size={14} className="shrink-0 text-[var(--text-muted)]" />
+                    <span>Что нового в памяти?</span>
+                  </Chip>
+                  <Chip
+                    onClick={() => sendMessage('Суммируй вчерашний диалог')}
+                    className="w-full min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-2 hover:-translate-y-px hover:!text-[var(--text)]"
+                  >
+                    <History size={14} className="shrink-0 text-[var(--text-muted)]" />
+                    <span className="sm:hidden whitespace-nowrap">Суммируй вчера</span>
+                    <span className="hidden sm:inline">Суммируй вчерашний диалог</span>
+                  </Chip>
+                  <Chip
+                    onClick={() => sendMessage('Проверь состояние сервера')}
+                    className="w-full min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-2 hover:-translate-y-px hover:!text-[var(--text)]"
+                  >
+                    <Activity size={14} className="shrink-0 text-[var(--text-muted)]" />
+                    <span className="sm:hidden whitespace-nowrap">Статус сервера</span>
+                    <span className="hidden sm:inline">Проверь состояние сервера</span>
+                  </Chip>
+                </div>
               </div>
             )}
 
@@ -1056,6 +1105,10 @@ export function ChatView({
               <div
                 key={msg.id}
                 id={`message-${msg.id}`}
+                data-context="chat-message"
+                data-id={msg.id}
+                data-text={msg.content}
+                data-role={msg.role}
                 className={`flex flex-col w-full ${msg.role === 'user' ? 'items-end' : 'items-start'} ${
                   highlightedMessageId === msg.id
                     ? 'ring-2 ring-[var(--accent)] bg-[var(--surface-2)]/70 rounded-[var(--radius)] p-2.5 transition-all duration-300'
@@ -1065,7 +1118,7 @@ export function ChatView({
                 {msg.role === 'user' ? (
                   // User Message (§3: surface-2 bubble, right, max 78%)
                   <div className="flex flex-col items-end max-w-[78%] group/usermsg">
-                    <div className="rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] px-3.5 py-2.5 text-[15px] leading-[24px] text-[var(--text)] whitespace-pre-wrap">
+                    <div className="rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] px-3.5 py-2.5 text-[15px] leading-[24px] text-[var(--text)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                       {msg.content}
                       {msg.attachments && msg.attachments.length > 0 && (
                         <div className="mt-2 pt-2 border-t border-[var(--border)] flex flex-wrap gap-1.5">
@@ -1271,13 +1324,12 @@ export function ChatView({
         <footer className="sticky bottom-0 z-20 bg-[var(--bg)]/90 backdrop-blur-md pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] px-4 border-t border-transparent">
           <div className="content-column space-y-2">
             {/* Optional Context Indicator (§5.2) */}
-            {usage && (
-              <div className="flex justify-end pr-1">
-                <ContextIndicator usage={usage} onNewChat={startNewChat} />
-              </div>
-            )}
+            <div className="flex items-center justify-between pb-1.5 px-1">
+              {isEnabled('chatModelPicker') ? <ModelPicker /> : <div />}
+              {usage && <ContextIndicator usage={usage} onNewChat={startNewChat} />}
+            </div>
 
-            <form onSubmit={handleSubmit} className="flex flex-col">
+            <form onSubmit={handleSubmit} data-context="composer" className="flex flex-col">
               {/* Hidden file inputs (§3.2) */}
               <input
                 ref={fileInputRef}
@@ -1315,34 +1367,6 @@ export function ChatView({
                 </div>
               )}
 
-              {/* Быстрые сценарии над полем ввода: только в пустом чате */}
-              {messages.length === 0 && (
-                <div className="mb-2 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-center animate-chips">
-                  <Chip
-                    onClick={() => sendMessage('Что нового в памяти?')}
-                    className="col-span-2 min-h-11 justify-center gap-1.5 py-2.5 sm:col-span-1 sm:min-h-0 sm:py-1.5 !bg-[var(--accent)] !text-[var(--accent-ink)] !border-[var(--accent)] font-medium hover:!bg-[var(--accent-hover)] hover:!border-[var(--accent-hover)]"
-                  >
-                    <Sparkles size={14} className="shrink-0" />
-                    <span>Что нового в памяти?</span>
-                  </Chip>
-                  <Chip
-                    onClick={() => sendMessage('Суммируй вчерашний диалог')}
-                    className="min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
-                  >
-                    <History size={14} className="shrink-0 text-[var(--text-muted)]" />
-                    <span className="sm:hidden whitespace-nowrap">Суммируй вчера</span>
-                    <span className="hidden sm:inline">Суммируй вчерашний диалог</span>
-                  </Chip>
-                  <Chip
-                    onClick={() => sendMessage('Проверь состояние сервера')}
-                    className="min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-1.5 hover:-translate-y-px hover:!text-[var(--text)]"
-                  >
-                    <Activity size={14} className="shrink-0 text-[var(--text-muted)]" />
-                    <span className="sm:hidden whitespace-nowrap">Статус сервера</span>
-                    <span className="hidden sm:inline">Проверь состояние сервера</span>
-                  </Chip>
-                </div>
-              )}
 
               {/* Composer container */}
               <div className="relative rounded-[var(--radius-lg)] bg-[var(--surface-2)] border border-[var(--border)] p-2.5 shadow-panel focus-within:border-[var(--accent)] transition-colors flex flex-col gap-2">
@@ -1421,6 +1445,21 @@ export function ChatView({
                     )}
                   </div>
 
+                  {/* Voice input stub */}
+                  <SoonAction featureName="Голосовой ввод">
+                    <IconButton
+                      type="button"
+                      aria-label="Голосовой ввод"
+                      tooltip="Голосовой ввод"
+                      icon={<Mic size={15} />}
+                      variant="ghost"
+                      size="md"
+                      rounded
+                      disabled={streaming}
+                      className="text-[var(--text-muted)] hover:text-[var(--text)] bg-[var(--surface-3)] shrink-0"
+                    />
+                  </SoonAction>
+
                   {/* Textarea without inner focus ring (§3.1) */}
                   <textarea
                     ref={textareaRef}
@@ -1451,7 +1490,7 @@ export function ChatView({
                       type="submit"
                       aria-label={ru.send}
                       disabled={(!input.trim() && attachments.length === 0) || uploadingCount > 0}
-                      icon={<ArrowUp size={16} />}
+                      icon={<ArrowUp size={20} />}
                       variant={input.trim() || attachments.length > 0 ? 'primary' : 'ghost'}
                       size="md"
                       rounded
@@ -1464,13 +1503,6 @@ export function ChatView({
                   )}
                 </div>
               </div>
-
-              {/* Hint: only visible when chat is empty (§3.4) */}
-              {messages.length === 0 && (
-                <div className="text-[11px] text-[var(--text-subtle)] text-center mt-1.5 select-none">
-                  Enter — отправить, Shift+Enter — новая строка
-                </div>
-              )}
             </form>
           </div>
         </footer>
@@ -1505,6 +1537,7 @@ export function ChatView({
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         user={user}
+        initialTab={settingsTab}
         onSignOut={handleSignOut}
       />
     </div>

@@ -11,6 +11,10 @@ export async function GET(request: Request) {
   if (!auth.ok) return auth.response;
 
   const result = await readProviders();
+  if (result.state === 'unconfigured') {
+    // Без admin-ключа ядро недоступно: подменять каталог нельзя (AR-36).
+    return jsonError(503, 'core_unconfigured', 'Ядро не подключено: не задан admin-ключ сайта.');
+  }
   if (result.state === 'unsupported') {
     // Мягкая деградация: ручки /v1/providers нет в текущем ядре (#75 ещё не смержен).
     // 200 + supported:false вместо 502/404, чтобы браузер не писал ошибку в консоль.
@@ -23,11 +27,8 @@ export async function GET(request: Request) {
     });
   }
   if (result.state !== 'ok' || !result.data) {
-    return jsonError(
-      result.state === 'unconfigured' ? 503 : 502,
-      result.state === 'unconfigured' ? 'core_unconfigured' : 'core_unavailable',
-      result.message ?? 'Ядро не отдало список провайдеров.',
-    );
+    // AR-68: подставной каталог запрещён. Лежащее ядро — это ошибка, а не пустой список.
+    return jsonError(502, 'core_unavailable', 'Ядро недоступно: список провайдеров не получен.');
   }
   return jsonOk(result.data);
 }

@@ -37,7 +37,7 @@ function CodeBlock({ children, className = '' }: { children: ReactNode; classNam
         type="button"
         onClick={handleCopy}
         aria-label={copied ? 'Скопировано' : 'Скопировать код'}
-        className="absolute top-2.5 right-2.5 z-10 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity p-1.5 rounded-[var(--radius-sm)] bg-[var(--surface-3)] text-[var(--text-muted)] hover:text-[var(--text)] border border-[var(--border)] text-xs flex items-center gap-1 cursor-pointer"
+        className="absolute top-2.5 right-2.5 z-10 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 transition-opacity duration-150 p-1.5 rounded-[var(--radius-sm)] bg-[var(--surface-3)] text-[var(--text-muted)] hover:text-[var(--text)] border border-[var(--border)] text-xs flex items-center gap-1 cursor-pointer shadow-sm"
       >
         {copied ? <Check size={13} className="text-[var(--success)]" /> : <Copy size={13} />}
         <span className="text-[11px]">{copied ? 'Скопировано' : 'Копировать'}</span>
@@ -51,7 +51,7 @@ function CodeBlock({ children, className = '' }: { children: ReactNode; classNam
 
 export function MarkdownMessage({ content }: { content: string }) {
   return (
-    <div className="text-[15px] leading-[24px] text-[var(--text)] space-y-3 break-words">
+    <div className="text-[15px] leading-[24px] text-[var(--text)] space-y-3 break-words [overflow-wrap:anywhere]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

@@ -7,12 +7,14 @@ import { TextField } from '../../components/ui';
 import { resolveTabKey } from '../../../lib/chat-id';
 import { ru } from '../../i18n';
 
+const mockReplace = vi.fn();
+
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => ({ replace: mockReplace, refresh: vi.fn() }),
 }));
 
 beforeAll(() => { Element.prototype.scrollIntoView = vi.fn(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); window.name = ''; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); window.name = ''; mockReplace.mockClear(); });
 
 function sseResponse(tokenText = 'привет'): Response {
   const body = new ReadableStream<Uint8Array>({

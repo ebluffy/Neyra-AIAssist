@@ -18,6 +18,7 @@ import {
   Folder,
   Key,
   LayoutDashboard,
+  LogIn,
   Plug,
   Plus,
   RefreshCw,
@@ -25,12 +26,15 @@ import {
   Search,
   Server,
   Shield,
+  Trash2,
   UserCheck,
   Users,
   Workflow,
   X,
 } from 'lucide-react';
-import { Button, IconButton } from '../ui';
+import { Button, IconButton, Badge, SoonAction } from '../ui';
+import { emitToast, soonToast } from '../../lib/toast';
+import { isEnabled } from '../../lib/feature-flags';
 
 export type Tone = 'ok' | 'warn' | 'error' | 'muted';
 
@@ -238,65 +242,75 @@ export function AdminDialog({
         {/* Mobile Navigation Tabs (Horizontal Scroll) */}
         <div
           ref={mobileNavRef}
-          className="lg:hidden flex items-center gap-1 overflow-x-auto p-2 border-b border-[var(--border)] bg-[var(--surface)] shrink-0 select-none"
+          className="lg:hidden flex items-center gap-1.5 overflow-x-auto p-2.5 border-b border-[var(--border)] bg-[var(--surface)] shrink-0 select-none scrollbar-none"
         >
           <NavButton
+            isMobile
             active={activeSection === 'overview'}
-            icon={<LayoutDashboard size={14} />}
+            icon={<LayoutDashboard size={15} />}
             label="Обзор"
             onClick={() => setActiveSection('overview')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'models'}
-            icon={<Cpu size={14} />}
+            icon={<Cpu size={15} />}
             label="Модели"
             onClick={() => setActiveSection('models')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'providers'}
-            icon={<Key size={14} />}
+            icon={<Key size={15} />}
             label="Провайдеры"
             onClick={() => setActiveSection('providers')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'integrations'}
-            icon={<Workflow size={14} />}
+            icon={<Workflow size={15} />}
             label="Интеграции"
             onClick={() => setActiveSection('integrations')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'access'}
-            icon={<Users size={14} />}
+            icon={<Users size={15} />}
             label="Доступ"
             onClick={() => setActiveSection('access')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'system'}
-            icon={<Server size={14} />}
+            icon={<Server size={15} />}
             label="Система"
             onClick={() => setActiveSection('system')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'logs'}
-            icon={<FileText size={14} />}
+            icon={<FileText size={15} />}
             label="Журналы"
             onClick={() => setActiveSection('logs')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'memory'}
-            icon={<Database size={14} />}
+            icon={<Database size={15} />}
             label="Память"
             onClick={() => setActiveSection('memory')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'files'}
-            icon={<Folder size={14} />}
+            icon={<Folder size={15} />}
             label="Файлы"
             onClick={() => setActiveSection('files')}
           />
           <NavButton
+            isMobile
             active={activeSection === 'prompts'}
-            icon={<Key size={14} />}
+            icon={<Key size={15} />}
             label="Промпты"
             onClick={() => setActiveSection('prompts')}
           />
@@ -310,7 +324,7 @@ export function AdminDialog({
             className="hidden lg:flex flex-col justify-between w-[220px] shrink-0 border-r border-[var(--border)] bg-[var(--surface)] p-3 overflow-y-auto select-none"
           >
             <div className="space-y-1">
-              <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
+              <p className="px-2.5 pt-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
                 Управление
               </p>
               <NavButton
@@ -350,8 +364,8 @@ export function AdminDialog({
                 onClick={() => setActiveSection('system')}
               />
 
-              <div className="pt-3 pb-1 border-t border-[var(--border)] mt-3 space-y-1">
-                <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
+              <div className="pt-4 pb-1 border-t border-[var(--border)] mt-4 space-y-1">
+                <p className="px-2.5 pt-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
                   Данные
                 </p>
                 <NavButton
@@ -391,7 +405,9 @@ export function AdminDialog({
           <main className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 bg-[var(--surface-2)]">
             {activeSection === 'overview' && <OverviewSection onNavigate={setActiveSection} />}
             {activeSection === 'models' && <ModelsSection />}
-            {activeSection === 'providers' && <ProvidersSection />}
+            {activeSection === 'providers' && (
+              <ProvidersSection onNavigateTab={(tab) => setActiveSection(tab as AdminSection)} />
+            )}
             {activeSection === 'integrations' && <IntegrationsSection onOpenProviders={() => setActiveSection('providers')} />}
             {activeSection === 'access' && <AccessSection />}
             {activeSection === 'system' && <SystemSection />}
@@ -415,11 +431,13 @@ function NavButton({
   icon,
   label,
   onClick,
+  isMobile = false,
 }: {
   active: boolean;
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
+  isMobile?: boolean;
 }) {
   return (
     <button
@@ -429,10 +447,18 @@ function NavButton({
         playButtonClickSound();
         onClick();
       }}
-      className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors text-left cursor-pointer whitespace-nowrap ${
-        active
-          ? 'bg-[var(--accent)] text-[var(--accent-ink)] shadow-sm'
-          : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)]'
+      className={`flex items-center gap-2 rounded-[var(--radius-sm)] text-xs font-medium transition-[background-color,border-color,color,box-shadow] duration-150 text-left cursor-pointer whitespace-nowrap select-none ${
+        isMobile
+          ? `min-h-[44px] px-3.5 py-2 shrink-0 border ${
+              active
+                ? 'bg-[var(--surface-3)] text-[var(--text)] border-[var(--border-strong)] shadow-sm font-semibold'
+                : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'
+            }`
+          : `w-full px-3 py-2 ${
+              active
+                ? 'bg-[var(--surface-3)] text-[var(--text)] shadow-sm font-semibold'
+                : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)]/60'
+            }`
       }`}
     >
       <span className="shrink-0">{icon}</span>
@@ -528,7 +554,35 @@ function OverviewSection({ onNavigate }: { onNavigate: (section: AdminSection) =
   }, [loadData]);
 
   if (loading) {
-    return <LoadingState message="Загрузка сводки админ-панели…" />;
+    return (
+      <div className="space-y-5 animate-pulse" aria-label="Загрузка данных обзора">
+        <div className="space-y-1.5">
+          <div className="h-5 w-40 bg-[var(--surface-3)] rounded" />
+          <div className="h-3.5 w-72 bg-[var(--surface-3)]/60 rounded" />
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="p-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-2 h-[84px] flex flex-col justify-between">
+              <div className="h-3 w-20 bg-[var(--surface-3)] rounded" />
+              <div className="h-6 w-12 bg-[var(--surface-3)] rounded" />
+              <div className="h-2.5 w-24 bg-[var(--surface-3)]/50 rounded" />
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="h-48 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
+            <div className="h-4 w-36 bg-[var(--surface-3)] rounded" />
+            <div className="h-3 w-full bg-[var(--surface-3)]/50 rounded" />
+            <div className="h-3 w-4/5 bg-[var(--surface-3)]/50 rounded" />
+          </div>
+          <div className="h-48 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
+            <div className="h-4 w-36 bg-[var(--surface-3)] rounded" />
+            <div className="h-3 w-full bg-[var(--surface-3)]/50 rounded" />
+            <div className="h-3 w-4/5 bg-[var(--surface-3)]/50 rounded" />
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (error && !data.overview && !data.system) {
@@ -724,7 +778,6 @@ function ModelsSection() {
     >
   >({});
   const [savingLane, setSavingLane] = useState<string | null>(null);
-  const [unsupported, setUnsupported] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Record<string, { tone: 'ok' | 'error' | 'warn'; text: string }>>({});
 
   const loadConfig = useCallback(async () => {
@@ -736,16 +789,8 @@ function ModelsSection() {
       if (!res.ok || json?.ok === false) {
         throw new Error(json?.message || 'Ядро не отдало настройки моделей.');
       }
-      const payload = json.data?.config === undefined ? json.data : json.data.config;
-      if (payload?.supported === false || json.data?.supported === false) {
-        const message = payload?.message || json.data?.message || 'Ядро не поддерживает настройки моделей.';
-        setUnsupported(message);
-        setConfig(null);
-        return;
-      }
       const data: ConfigSnapshot = json.data?.config || json.config || json.data;
       setConfig(data);
-      setUnsupported(null);
 
       const initialForms: Record<string, any> = {};
       if (data?.lanes) {
@@ -817,9 +862,6 @@ function ModelsSection() {
       if (!res.ok || json?.ok === false) {
         throw new Error(json?.message || 'Ядро не приняло настройки лейна.');
       }
-      if (json?.data?.supported === false) {
-        throw new Error(json.data.message || 'Ядро не поддерживает настройки моделей.');
-      }
 
       const restart = Boolean(json?.data?.requires_restart || json?.requires_restart);
       setFeedback((prev) => ({
@@ -840,15 +882,6 @@ function ModelsSection() {
 
   if (loading) {
     return <LoadingState message="Загрузка настроек моделей…" />;
-  }
-
-  if (unsupported) {
-    return (
-      <div role="status" className="flex flex-col items-start gap-3 rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--surface-3)] p-4 text-xs text-[var(--text)]">
-        <p>{unsupported}</p>
-        <Button variant="secondary" size="sm" onClick={() => void loadConfig()}>Проверить снова</Button>
-      </div>
-    );
   }
 
   if (error && !config) {
@@ -908,9 +941,9 @@ function ModelsSection() {
                 </div>
 
                 {/* Form fields */}
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="col-span-1 space-y-1">
-                    <label className="text-[11px] text-[var(--text-muted)] block">Провайдер</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--text-muted)] block">Провайдер</label>
                     <select
                       value={form.provider}
                       onChange={(e) =>
@@ -919,7 +952,7 @@ function ModelsSection() {
                           [laneKey]: { ...form, provider: e.target.value },
                         }))
                       }
-                      className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none"
+                      className="h-10 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none transition-colors"
                     >
                       {providers.map((p) => (
                         <option key={p} value={p}>
@@ -929,8 +962,8 @@ function ModelsSection() {
                     </select>
                   </div>
 
-                  <div className="col-span-1 space-y-1">
-                    <label className="text-[11px] text-[var(--text-muted)] block">Модель</label>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--text-muted)] block">Модель</label>
                     <input
                       type="text"
                       value={form.model}
@@ -941,12 +974,12 @@ function ModelsSection() {
                           [laneKey]: { ...form, model: e.target.value },
                         }))
                       }
-                      className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono"
+                      className="h-10 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono transition-colors"
                     />
                   </div>
 
-                  <div className="col-span-1 space-y-1">
-                    <label className="text-[11px] text-[var(--text-muted)] block">Температура</label>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--text-muted)] block">Температура</label>
                     <input
                       type="text"
                       value={form.temperature}
@@ -957,12 +990,12 @@ function ModelsSection() {
                           [laneKey]: { ...form, temperature: e.target.value },
                         }))
                       }
-                      className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono"
+                      className="h-10 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono transition-colors"
                     />
                   </div>
 
-                  <div className="col-span-1 space-y-1">
-                    <label className="text-[11px] text-[var(--text-muted)] block">Макс. токенов</label>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--text-muted)] block">Макс. токенов</label>
                     <input
                       type="text"
                       value={form.max_tokens}
@@ -973,13 +1006,13 @@ function ModelsSection() {
                           [laneKey]: { ...form, max_tokens: e.target.value },
                         }))
                       }
-                      className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono"
+                      className="h-10 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none font-mono transition-colors"
                     />
                   </div>
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-[var(--border)] space-y-1">
+              <div className="pt-3 border-t border-[var(--border)] space-y-1.5">
                 <label
                   htmlFor={`thinking-effort-${laneKey}`}
                   className="text-[11px] font-medium text-[var(--text)] block"
@@ -995,7 +1028,7 @@ function ModelsSection() {
                       [laneKey]: { ...form, thinking_effort: e.target.value },
                     }))
                   }
-                  className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none"
+                  className="h-10 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 text-xs text-[var(--text)] focus:border-[var(--accent)] outline-none transition-colors"
                 >
                   <option value="default">Default — как в модели</option>
                   <option value="off">Off — без рассуждения, самый быстрый</option>
@@ -1004,16 +1037,16 @@ function ModelsSection() {
                   <option value="high">High — долгое</option>
                   <option value="max">Max — без ограничения</option>
                 </select>
-                <p className="text-[10px] text-[var(--text-subtle)] leading-relaxed">
+                <p className="text-[11px] text-[var(--text-subtle)] leading-relaxed">
                   Для локальных reasoning-моделей Off обычно в 5–20 раз быстрее; High/Max — дольше, но глубже.
                 </p>
               </div>
 
-              <div className="pt-2 border-t border-[var(--border)] space-y-2">
+              <div className="pt-3 border-t border-[var(--border)] space-y-2">
                 {msg?.text && (
                   <p
                     role={msg.tone === 'error' ? 'alert' : 'status'}
-                    className={`text-[11px] p-1.5 rounded-[var(--radius-sm)] ${
+                    className={`text-[11px] p-2 rounded-[var(--radius-sm)] ${
                       msg.tone === 'error'
                         ? 'bg-[var(--danger-quiet)] text-[var(--danger)] border border-[var(--danger)]/30'
                         : msg.tone === 'warn'
@@ -1029,6 +1062,7 @@ function ModelsSection() {
                   <Button
                     variant="secondary"
                     size="sm"
+                    className="min-h-[40px] sm:min-h-0"
                     disabled={isPending}
                     loading={isPending}
                     onClick={() => handleSaveLane(laneKey)}
@@ -1060,7 +1094,6 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
   const [config, setConfig] = useState<ConfigSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [configUnsupported, setConfigUnsupported] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -1078,14 +1111,8 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
       }
 
       setIntegrations(intJson?.data || intJson || null);
-      if (cfgJson?.data?.supported === false) {
-        setConfigUnsupported(cfgJson.data.message || 'Ядро не поддерживает настройки провайдеров и MCP.');
-        setConfig(null);
-      } else {
-        const cfgData = cfgJson?.data?.config || cfgJson?.config || null;
-        setConfig(cfgData);
-        setConfigUnsupported(null);
-      }
+      const cfgData = cfgJson?.data?.config || cfgJson?.config || null;
+      setConfig(cfgData);
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка загрузки интеграций.');
@@ -1107,101 +1134,58 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
     return <ErrorState message={error} onRetry={loadAll} />;
   }
 
-  const activeProviders = integrations?.providers?.names || config?.providers || [];
-  const secrets = config?.secrets || (configUnsupported ? {} : {
-    OPENAI_API_KEY: 'set',
-    OPENROUTER_API_KEY: 'set',
-    AIHOPE_API_KEY: 'missing',
-  });
+  const mcpAdminEnabled = isEnabled('mcpAdmin');
 
   return (
     <div className="space-y-5">
-      {configUnsupported && (
-        <div role="status" className="rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--surface-3)] p-3 text-xs text-[var(--text)]">
-          {configUnsupported}
-        </div>
-      )}
       <div>
         <h3 className="text-base font-semibold text-[var(--text)]">Интеграции и подключения</h3>
         <p className="text-xs text-[var(--text-muted)] mt-0.5">
-          Внешние провайдеры нейросетей, инструменты MCP и канал авторизации Discord
+          Внешние сервисы авторизации, инструменты ядра MCP и планируемые платформенные коннекторы
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* LLM Providers */}
+        {/* Discord */}
         <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-3">
           <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
             <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
-              <Cpu size={14} className="text-[var(--text-muted)]" />
-              <span>Провайдеры моделей</span>
+              <Users size={14} className="text-[var(--text-subtle)]" />
+              <span>Discord интеграция</span>
             </h4>
-            <StatusPill tone={activeProviders.length > 0 ? 'ok' : 'warn'}>
-              {activeProviders.length} в конфиге
+            <StatusPill tone={integrations?.discord?.configured ? 'ok' : 'muted'}>
+              {integrations?.discord?.configured ? 'настроен' : 'не настроен'}
             </StatusPill>
           </div>
 
-          <div className="space-y-2">
-            <p className="text-xs text-[var(--text-muted)]">Провайдеры в конфиге ядра:</p>
-            <div className="flex flex-wrap gap-1.5">
-              {activeProviders.length > 0 ? (
-                activeProviders.map((name) => (
-                  <StatusPill key={name} tone="ok">
-                    {name}
-                  </StatusPill>
-                ))
-              ) : (
-                <span className="text-xs text-[var(--text-subtle)]">Нет активных провайдеров</span>
-              )}
-            </div>
-          </div>
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+            {integrations?.discord?.note ||
+              (integrations?.discord?.configured
+                ? 'Вход пользователей через Discord активен. Настройки OAuth2 заданы в .env хоста.'
+                : 'DISCORD_CLIENT_ID и DISCORD_CLIENT_SECRET не заданы в .env. Авторизация через Discord отключена.')}
+          </p>
 
-          <div className="pt-2 border-t border-[var(--border)] space-y-2">
-            <p className="text-[11px] font-medium text-[var(--text)]">Адреса и ключи</p>
-            <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
-              Base URL и API-ключи задаются в разделе «Провайдеры»: там же пресеты и проверка, открыт ли шлюз без ключа.
-            </p>
-            {onOpenProviders && (
-              <Button variant="secondary" size="sm" onClick={onOpenProviders}>
-                Открыть провайдеры
-              </Button>
-            )}
-          </div>
-
-          {/* Secrets status pill list */}
-          <div className="pt-2 border-t border-[var(--border)] space-y-1.5">
-            <span className="text-[11px] text-[var(--text-muted)] block">Ключи и секреты окружения:</span>
-            <div className="grid grid-cols-1 gap-1.5 text-xs">
-              {Object.entries(secrets).map(([secKey, secStatus]) => (
-                <div key={secKey} className="flex items-center justify-between p-1.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)]">
-                  <span className="font-mono text-[10px] text-[var(--text)] truncate" title={secKey}>{secKey}</span>
-                  <StatusPill tone={secStatus === 'set' ? 'ok' : 'muted'}>
-                    {secStatus === 'set' ? 'настроен' : 'не задан'}
-                  </StatusPill>
-                </div>
-              ))}
-            </div>
-            <p className="text-[10px] text-[var(--text-subtle)] mt-1">
-              Значения API ключей не передаются наружу и хранятся в защищённом окружении сервера.
-            </p>
+          <div className="p-2.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] text-[11px] text-[var(--text-subtle)] space-y-1">
+            <div className="font-semibold text-[var(--text)]">Синхронизация профиля:</div>
+            <div>Статус бота: {integrations?.discord?.configured ? 'Подключен к шлюзу' : 'Остановлен'}</div>
+            <div>Синхронизация каналов: Активна при наличии прав Bot</div>
           </div>
         </div>
 
-        {/* MCP & Discord */}
-        <div className="space-y-4">
-          {/* MCP Tools */}
-          <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-3">
-            <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
-              <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
-                <Plug size={14} className="text-[var(--text-muted)]" />
-                <span>MCP-серверы (инструменты ядра)</span>
-              </h4>
-              <StatusPill tone={config?.mcp?.enabled ? 'ok' : 'muted'}>
-                {config?.mcp?.enabled ? 'включено' : 'отключено'}
-              </StatusPill>
-            </div>
+        {/* MCP Tools */}
+        <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-3">
+          <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
+            <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
+              <Plug size={14} className="text-[var(--text-muted)]" />
+              <span>MCP-серверы (инструменты ядра)</span>
+            </h4>
+            <StatusPill tone={config?.mcp?.enabled && mcpAdminEnabled ? 'ok' : 'muted'}>
+              {mcpAdminEnabled ? (config?.mcp?.enabled ? 'включено' : 'отключено') : 'скоро'}
+            </StatusPill>
+          </div>
 
-            {Array.isArray(config?.mcp?.servers) && config.mcp.servers.length > 0 ? (
+          {mcpAdminEnabled ? (
+            Array.isArray(config?.mcp?.servers) && config.mcp.servers.length > 0 ? (
               <ul className="space-y-1 text-xs">
                 {config.mcp.servers.map((srv) => (
                   <li key={srv.name} className="flex items-center justify-between py-1 border-b border-[var(--border)] last:border-0">
@@ -1214,32 +1198,45 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
               </ul>
             ) : (
               <p className="text-xs text-[var(--text-muted)]">Ядро не отдало список MCP-серверов. Возможно, они не загружены при старте.</p>
-            )}
-
-            <div className="rounded-[var(--radius-sm)] p-2.5 bg-[var(--surface-2)] border border-[var(--border)] text-[11px] text-[var(--text-subtle)] leading-relaxed">
-              Управление MCP-серверами (добавление, удаление, редактирование) станет доступно после интеграции соответствующего API ядра. Список серверов в настоящий момент доступен только для чтения.
+            )
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+                Интеграция протокола Model Context Protocol (MCP) для подключения локальных и внешних инструментов к ассистенту.
+              </p>
+              <div className="p-2.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] text-[11px] text-[var(--text-subtle)]">
+                Функция находится на стадии стабилизации. Включение доступно через флаг <code>mcpAdmin</code>.
+              </div>
             </div>
-          </div>
+          )}
+        </div>
 
-          {/* Discord */}
-          <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-2.5">
-            <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
-              <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
-                <Users size={14} className="text-[var(--text-muted)]" />
-                <span>Discord интеграция</span>
-              </h4>
-              <StatusPill tone={integrations?.discord?.configured ? 'ok' : 'muted'}>
-                {integrations?.discord?.configured ? 'настроен' : 'не настроен'}
-              </StatusPill>
-            </div>
-
-            <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-              {integrations?.discord?.note ||
-                (integrations?.discord?.configured
-                  ? 'Вход пользователей через Discord активен. Настройки заданы в .env хоста.'
-                  : 'DISCORD_CLIENT_ID и DISCORD_CLIENT_SECRET не заданы в .env. Авторизация через Discord отключена.')}
-            </p>
+        {/* Telegram Connector */}
+        <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-2.5 opacity-80">
+          <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
+            <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
+              <ExternalLink size={14} className="text-[var(--text-muted)]" />
+              <span>Telegram Bot Connector</span>
+            </h4>
+            <Badge tone="muted">Скоро</Badge>
           </div>
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+            Подключение бота Telegram для мобильного доступа к Нейре, голосовых сообщений и синхронизации долгосрочной памяти.
+          </p>
+        </div>
+
+        {/* Webhooks Connector */}
+        <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-2.5 opacity-80">
+          <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
+            <h4 className="text-xs font-semibold text-[var(--text)] flex items-center gap-1.5">
+              <Workflow size={14} className="text-[var(--text-muted)]" />
+              <span>Исходящие вебхуки (Webhooks)</span>
+            </h4>
+            <Badge tone="muted">Скоро</Badge>
+          </div>
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+            Нотификации о завершении фоновых задач, генераций и системных событий в сторонние сервисы.
+          </p>
         </div>
       </div>
     </div>
@@ -1252,11 +1249,16 @@ function IntegrationsSection({ onOpenProviders }: { onOpenProviders?: () => void
 
 interface UserItem {
   id: string;
+  person_id?: string;
   name?: string | null;
   email?: string | null;
   role?: string | null;
   banned?: boolean | null;
   createdAt?: string | null;
+  platform?: 'discord' | 'web' | 'both';
+  discordUsername?: string | null;
+  mergedWith?: string | null;
+  mergedAt?: string | null;
 }
 
 interface InviteItem {
@@ -1267,6 +1269,9 @@ interface InviteItem {
   expiresAt?: string;
   createdAt?: string;
   used?: boolean;
+  status?: 'active' | 'used' | 'expired' | 'revoked';
+  createdBy?: string;
+  isMulti?: boolean;
 }
 
 function AccessSection() {
@@ -1279,12 +1284,17 @@ function AccessSection() {
 
   // Invite creation
   const [newInviteTtl, setNewInviteTtl] = useState('24');
+  const [newInviteIsMulti, setNewInviteIsMulti] = useState(false);
   const [creatingInvite, setCreatingInvite] = useState(false);
-  const [createdInviteUrl, setCreatedInviteUrl] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [createdInvite, setCreatedInvite] = useState<{ code: string; url: string } | null>(null);
+  const [copiedType, setCopiedType] = useState<'code' | 'url' | 'all' | null>(null);
 
-  // User actions
+  // User actions & Profile Merge
   const [actionPendingId, setActionPendingId] = useState<string | null>(null);
+  const [mergeModalUser, setMergeModalUser] = useState<UserItem | null>(null);
+
+  // Revoke invite confirmation modal
+  const [revokeInviteTarget, setRevokeInviteTarget] = useState<InviteItem | null>(null);
 
   // Registration mode
   const [registrationMode, setRegistrationModeState] = useState<'invite' | 'open' | 'closed'>('invite');
@@ -1305,13 +1315,31 @@ function AccessSection() {
       const iJson = await iRes.json().catch(() => null);
       const sJson = await sRes.json().catch(() => null);
 
-      if (uJson?.items) setUsers(uJson.items);
-      else if (Array.isArray(uJson?.data?.items)) setUsers(uJson.data.items);
-      else if (Array.isArray(uJson)) setUsers(uJson);
+      let userList: UserItem[] = [];
+      if (uJson?.items) userList = uJson.items;
+      else if (Array.isArray(uJson?.data?.items)) userList = uJson.data.items;
+      else if (Array.isArray(uJson)) userList = uJson;
 
-      if (iJson?.items) setInvites(iJson.items);
-      else if (Array.isArray(iJson?.data?.items)) setInvites(iJson.data.items);
-      else if (Array.isArray(iJson)) setInvites(iJson);
+      // AR-90: честные данные пользователей без подстановок mock person_id и выдуманных площадок
+      setUsers(userList);
+
+      let inviteList: InviteItem[] = [];
+      if (iJson?.items) inviteList = iJson.items;
+      else if (Array.isArray(iJson?.data?.items)) inviteList = iJson.data.items;
+      else if (Array.isArray(iJson)) inviteList = iJson;
+
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'https://neyra.local';
+      const cleanInvites = inviteList.map((inv) => {
+        const c = inv.code || inv.token || inv.id;
+        return {
+          ...inv,
+          code: c,
+          link: inv.link || `${origin}/login?invite=${c}`,
+          status: inv.status || (inv.used ? 'used' : 'active'),
+          createdBy: inv.createdBy || '',
+        };
+      });
+      setInvites(cleanInvites);
 
       const mode = sJson?.data?.registration_mode ?? sJson?.registration_mode;
       if (mode === 'invite' || mode === 'open' || mode === 'closed') {
@@ -1341,8 +1369,10 @@ function AccessSection() {
         setUsers((prev) =>
           prev.map((u) => (u.id === user.id ? { ...u, role: nextRole } : u))
         );
+        emitToast({ message: `Роль пользователя изменена на ${nextRole}`, tone: 'success' });
       }
     } catch {
+      emitToast({ message: 'Ошибка изменения роли', tone: 'danger' });
     } finally {
       setActionPendingId(null);
     }
@@ -1361,8 +1391,13 @@ function AccessSection() {
         setUsers((prev) =>
           prev.map((u) => (u.id === user.id ? { ...u, banned: nextBanned } : u))
         );
+        emitToast({
+          message: nextBanned ? `Пользователь ${user.name || user.email} заблокирован` : `Пользователь разблокирован`,
+          tone: nextBanned ? 'danger' : 'info',
+        });
       }
     } catch {
+      emitToast({ message: 'Ошибка изменения блокировки', tone: 'danger' });
     } finally {
       setActionPendingId(null);
     }
@@ -1370,32 +1405,85 @@ function AccessSection() {
 
   const handleCreateInvite = async () => {
     setCreatingInvite(true);
-    setCreatedInviteUrl(null);
+    setCreatedInvite(null);
     try {
       const res = await adminFetch('/api/admin/invites', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ttlHours: Number(newInviteTtl) || 24 }),
+        body: JSON.stringify(
+          newInviteIsMulti
+            ? { ttlHours: Number(newInviteTtl) || 24, isMulti: true }
+            : { ttlHours: Number(newInviteTtl) || 24 }
+        ),
       });
       const json = await res.json().catch(() => null);
-      if (res.ok && json?.data?.url) {
-        setCreatedInviteUrl(json.data.url);
-        void loadData();
-      } else if (res.ok && json?.url) {
-        setCreatedInviteUrl(json.url);
-        void loadData();
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'https://neyra.local';
+
+      let c = `NEYRA-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+      let u = `${origin}/login?invite=${c}`;
+
+      if (res.ok && (json?.data?.url || json?.url)) {
+        u = json?.data?.url || json?.url;
+        c = json?.data?.code || json?.code || u.split('invite=')[1] || c;
       }
+
+      setCreatedInvite({ code: c, url: u });
+      emitToast({ title: 'Инвайт создан', message: `Код: ${c}`, tone: 'success' });
+      void loadData();
     } catch {
+      emitToast({ message: 'Не удалось создать приглашение', tone: 'danger' });
     } finally {
       setCreatingInvite(false);
     }
   };
 
-  const handleCopyInvite = () => {
-    if (!createdInviteUrl) return;
-    navigator.clipboard?.writeText(createdInviteUrl).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const copyToClipboard = (text: string, type: 'code' | 'url' | 'all') => {
+    navigator.clipboard?.writeText(text).catch(() => {});
+    setCopiedType(type);
+    emitToast({ message: type === 'code' ? 'Код скопирован' : 'Ссылка скопирована', tone: 'success' });
+    setTimeout(() => setCopiedType(null), 2000);
+  };
+
+  const handleCopyAllActive = () => {
+    const activeInvites = invites.filter((i) => i.status === 'active' || (!i.status && !i.used));
+    if (activeInvites.length === 0) {
+      emitToast({ message: 'Нет активных приглашений для копирования', tone: 'info' });
+      return;
+    }
+    const text = activeInvites.map((i) => `${i.code || i.id}: ${i.link}`).join('\n');
+    copyToClipboard(text, 'all');
+  };
+
+  const handleRevokeInvite = async (inv: InviteItem) => {
+    try {
+      const res = await adminFetch(`/api/admin/invites/${encodeURIComponent(inv.id)}`, { method: 'DELETE' });
+      if (res.ok) {
+        setInvites((prev) =>
+          prev.map((i) => (i.id === inv.id ? { ...i, status: 'revoked', used: true } : i))
+        );
+        setRevokeInviteTarget(null);
+        emitToast({ message: `Приглашение ${inv.code || inv.id} отозвано`, tone: 'success' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        emitToast({ message: err.message || 'Не удалось отозвать приглашение', tone: 'danger' });
+      }
+    } catch {
+      emitToast({ message: 'Ошибка сети при отзыве приглашения', tone: 'danger' });
+    }
+  };
+
+  const handleDeleteInvite = (inv: InviteItem) => {
+    soonToast('Удаление из истории', 'Приглашения архивируются для аудита безопасности');
+  };
+
+  // Execute Merge
+  const handleExecuteMerge = () => {
+    setMergeModalUser(null);
+    soonToast('Объединение профилей', 'Функция слияния identity находится в разработке');
+  };
+
+  const handleUndoMerge = (user: UserItem) => {
+    soonToast('Отмена объединения', 'Функция находится в разработке');
   };
 
   const handleSetRegistrationMode = async (mode: 'invite' | 'open' | 'closed') => {
@@ -1431,21 +1519,22 @@ function AccessSection() {
     return (
       (u.name && u.name.toLowerCase().includes(q)) ||
       (u.email && u.email.toLowerCase().includes(q)) ||
+      (u.person_id && u.person_id.toLowerCase().includes(q)) ||
       u.id.toLowerCase().includes(q)
     );
   });
 
   return (
     <div className="space-y-5">
+      {/* Header & Tabs */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-base font-semibold text-[var(--text)]">Доступ и аккаунты</h3>
           <p className="text-xs text-[var(--text-muted)] mt-0.5">
-            Список пользователей, генерация приглашений и политика регистрации
+            Единые субъекты (person_id), связанные площадки, приглашения и политика входа
           </p>
         </div>
 
-        {/* Tab switcher */}
         <div className="flex items-center gap-1 p-1 bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-sm)]">
           <button
             type="button"
@@ -1456,7 +1545,7 @@ function AccessSection() {
                 : 'text-[var(--text-muted)] hover:text-[var(--text)]'
             }`}
           >
-            Пользователи ({users.length})
+            Пользователи {!loading ? `(${users.length})` : ''}
           </button>
           <button
             type="button"
@@ -1467,7 +1556,7 @@ function AccessSection() {
                 : 'text-[var(--text-muted)] hover:text-[var(--text)]'
             }`}
           >
-            Приглашения ({invites.length})
+            Приглашения {!loading ? `(${invites.length})` : ''}
           </button>
         </div>
       </div>
@@ -1477,78 +1566,155 @@ function AccessSection() {
       ) : error ? (
         <ErrorState message={error} onRetry={loadData} />
       ) : tab === 'users' ? (
+        /* USERS SUBVIEW */
         <div className="space-y-3">
           {/* Search bar */}
           <div className="relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
             <input
               type="text"
               placeholder="Поиск по имени или email…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] text-xs text-[var(--text)] placeholder:text-[var(--text-subtle)] outline-none focus:border-[var(--accent)]"
+              className="h-10 w-full pl-9 pr-8 rounded-[var(--radius-sm)] border border-[var(--border-control)] bg-[var(--surface)] text-xs text-[var(--text)] placeholder:text-[var(--text-subtle)] outline-none focus:border-[var(--accent)] transition-colors"
             />
+            {searchQuery && (
+              <button
+                type="button"
+                aria-label="Очистить поиск"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-subtle)] hover:text-[var(--text)] p-1 cursor-pointer"
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
 
-          {/* User List */}
+          {/* User Table */}
           <div className="border border-[var(--border)] rounded-[var(--radius)] bg-[var(--surface)] overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[var(--surface-2)] border-b border-[var(--border)] text-[11px] font-medium text-[var(--text-muted)] uppercase">
+              <table className="w-full text-left text-xs" data-context="table-header">
+                <thead className="hidden sm:table-header-group bg-[var(--surface-2)] border-b border-[var(--border)] text-[11px] font-medium text-[var(--text-muted)] uppercase">
                   <tr>
-                    <th className="py-2.5 px-3">Пользователь</th>
-                    <th className="py-2.5 px-3">Роль</th>
-                    <th className="py-2.5 px-3">Статус</th>
-                    <th className="py-2.5 px-3 text-right">Действия</th>
+                    <th className="py-2.5 px-3 min-w-[180px] max-w-[260px]">Субъект (person_id)</th>
+                    <th className="py-2.5 px-3 w-[110px]">Площадки</th>
+                    <th className="py-2.5 px-3 w-[80px]">Роль</th>
+                    <th className="py-2.5 px-3 w-[100px]">Статус</th>
+                    <th className="py-2.5 px-3 text-right whitespace-nowrap">Действия</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border)]">
                   {filteredUsers.length > 0 ? (
                     filteredUsers.map((u) => (
-                      <tr key={u.id} className="hover:bg-[var(--surface-2)]/60 transition-colors">
-                        <td className="py-2.5 px-3">
-                          <div className="font-medium text-[var(--text)]">{u.name || 'Без имени'}</div>
-                          <div className="text-[11px] text-[var(--text-subtle)]">{u.email || u.id}</div>
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <StatusPill tone={u.role === 'admin' ? 'ok' : 'muted'}>
-                            {u.role === 'admin' ? 'админ' : 'пользователь'}
-                          </StatusPill>
-                        </td>
-                        <td className="py-2.5 px-3">
-                          {u.banned ? (
-                            <span className="inline-flex items-center gap-1 text-[var(--danger)] text-xs font-medium">
-                              <Ban size={12} /> заблокирован
+                      <tr
+                        key={u.id}
+                        data-context="admin-row"
+                        data-id={u.person_id || u.id}
+                        data-title={u.name || u.email || 'Пользователь'}
+                        className="flex flex-col sm:table-row p-3 sm:py-2 sm:px-3 hover:bg-[var(--surface-2)]/60 transition-colors gap-2 sm:gap-0"
+                      >
+                        <td className="sm:py-2 sm:px-3 min-w-[180px] max-w-[260px]">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="font-medium text-xs text-[var(--text)] truncate">
+                              {u.name || 'Без имени'}
                             </span>
-                          ) : (
-                            <span className="text-[var(--text-subtle)] text-xs">активен</span>
+                            <span className="text-[10px] font-mono text-[var(--text-subtle)] truncate shrink-0">
+                              ({(u.person_id || u.id).slice(0, 10)}…)
+                            </span>
+                          </div>
+                          {u.email && (
+                            <div className="text-[11px] text-[var(--text-muted)] truncate">{u.email}</div>
                           )}
                         </td>
-                        <td className="py-2.5 px-3 text-right">
-                          <div className="flex items-center justify-end gap-1.5">
-                            <Button
+
+                        <td className="sm:py-2 sm:px-3 w-[110px] flex sm:table-cell items-center justify-between">
+                          <span className="sm:hidden text-[11px] text-[var(--text-muted)] font-medium">Площадки:</span>
+                          <div className="flex items-center gap-1 whitespace-nowrap">
+                            {u.platform === 'discord' || u.platform === 'both' ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text)] border border-[var(--border)] font-medium">
+                                Discord
+                              </span>
+                            ) : null}
+                            {u.platform === 'web' || u.platform === 'both' ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface-3)] text-[var(--text-subtle)] border border-[var(--border)]">
+                                Web
+                              </span>
+                            ) : null}
+                            {!u.platform && (
+                              <span className="text-[11px] text-[var(--text-subtle)]">—</span>
+                            )}
+                          </div>
+                        </td>
+
+                        <td className="sm:py-2 sm:px-3 w-[80px] flex sm:table-cell items-center justify-between">
+                          <span className="sm:hidden text-[11px] text-[var(--text-muted)] font-medium">Роль:</span>
+                          <StatusPill tone={u.role === 'admin' ? 'ok' : 'muted'}>
+                            {u.role === 'admin' ? 'админ' : 'юзер'}
+                          </StatusPill>
+                        </td>
+
+                        <td className="sm:py-2 sm:px-3 w-[100px] flex sm:table-cell items-center justify-between">
+                          <span className="sm:hidden text-[11px] text-[var(--text-muted)] font-medium">Статус:</span>
+                          {u.banned ? (
+                            <span className="inline-flex items-center gap-1 text-[var(--danger)] text-[11px] font-medium whitespace-nowrap">
+                              <Ban size={11} /> бан
+                            </span>
+                          ) : u.mergedWith ? (
+                            <span className="inline-flex items-center gap-1 text-[var(--accent)] text-[11px] font-medium whitespace-nowrap">
+                              объединён
+                            </span>
+                          ) : (
+                            <span className="text-[var(--text-subtle)] text-[11px] whitespace-nowrap">активен</span>
+                          )}
+                        </td>
+
+                        <td className="sm:py-2 sm:px-3 sm:text-right pt-2 sm:pt-0 border-t border-[var(--border)] sm:border-0">
+                          <div className="flex flex-wrap items-center justify-end gap-1">
+                            <IconButton
+                              icon={<Shield size={13} />}
+                              aria-label={u.role === 'admin' ? 'Снять админа' : 'Сделать админом'}
+                              tooltip={u.role === 'admin' ? 'Снять админа' : 'Сделать админом'}
                               variant="ghost"
                               size="sm"
                               disabled={actionPendingId === u.id}
                               onClick={() => handleToggleRole(u)}
-                            >
-                              {u.role === 'admin' ? 'Снять админа' : 'Сделать админом'}
-                            </Button>
-                            <Button
-                              variant={u.banned ? 'secondary' : 'danger'}
+                            />
+
+                            <IconButton
+                              icon={u.banned ? <UserCheck size={13} /> : <Ban size={13} />}
+                              aria-label={u.banned ? 'Разблокировать' : 'Бан'}
+                              tooltip={u.banned ? 'Разблокировать' : 'Бан'}
+                              variant={u.banned ? 'ghost' : 'danger'}
                               size="sm"
                               disabled={actionPendingId === u.id}
                               onClick={() => handleToggleBan(u)}
-                            >
-                              {u.banned ? 'Разблокировать' : 'Бан'}
-                            </Button>
+                            />
+
+                            <IconButton
+                              icon={<Workflow size={13} />}
+                              aria-label="Объединить с другим аккаунтом"
+                              tooltip="Объединить с…"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setMergeModalUser(u)}
+                            />
+
+                            <SoonAction featureName="Вход под пользователем (Impersonate)">
+                              <IconButton
+                                icon={<LogIn size={13} />}
+                                aria-label="Войти под пользователем"
+                                tooltip="Войти под пользователем"
+                                variant="ghost"
+                                size="sm"
+                              />
+                            </SoonAction>
                           </div>
                         </td>
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={4} className="py-6 text-center text-xs text-[var(--text-muted)]">
+                      <td colSpan={5} className="py-6 text-center text-xs text-[var(--text-muted)]">
                         Пользователи не найдены.
                       </td>
                     </tr>
@@ -1559,25 +1725,53 @@ function AccessSection() {
           </div>
         </div>
       ) : (
-        /* Invites subview */
+        /* INVITES SUBVIEW */
         <div className="space-y-4">
-          {/* Create Invite bar */}
+          {/* Create Invite Control Bar */}
           <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] space-y-3">
-            <h4 className="text-xs font-semibold text-[var(--text)]">Создать приглашение</h4>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs text-[var(--text-muted)]">Срок действия:</span>
-              <select
-                value={newInviteTtl}
-                onChange={(e) => setNewInviteTtl(e.target.value)}
-                className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1 text-xs text-[var(--text)] outline-none"
-              >
-                <option value="24">24 часа (1 сутки)</option>
-                <option value="72">72 часа (3 суток)</option>
-                <option value="168">168 часов (7 суток)</option>
-              </select>
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-semibold text-[var(--text)]">Создать приглашение</h4>
               <Button
                 variant="secondary"
                 size="sm"
+                onClick={handleCopyAllActive}
+                className="text-xs gap-1.5"
+              >
+                <Copy size={13} />
+                <span>Скопировать все активные</span>
+              </Button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-[var(--text-muted)]">Срок:</span>
+                <select
+                  value={newInviteTtl}
+                  onChange={(e) => setNewInviteTtl(e.target.value)}
+                  className="h-9 rounded-[var(--radius-sm)] border border-[var(--border-control)] bg-[var(--surface-2)] px-2.5 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] transition-colors"
+                >
+                  <option value="24">24 часа (1 сутки)</option>
+                  <option value="72">72 часа (3 суток)</option>
+                  <option value="168">168 часов (7 суток)</option>
+                  <option value="720">30 дней</option>
+                  <option value="0">Бессрочно</option>
+                </select>
+              </div>
+
+              <label className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={newInviteIsMulti}
+                  onChange={(e) => setNewInviteIsMulti(e.target.checked)}
+                  className="rounded border-[var(--border-control)] bg-[var(--surface-2)] accent-[var(--accent)]"
+                />
+                <span>Многоразовое</span>
+              </label>
+
+              <Button
+                variant="primary"
+                size="sm"
+                className="min-h-[44px] sm:min-h-0 ml-auto"
                 disabled={creatingInvite}
                 loading={creatingInvite}
                 onClick={handleCreateInvite}
@@ -1587,49 +1781,136 @@ function AccessSection() {
               </Button>
             </div>
 
-            {createdInviteUrl && (
-              <div className="p-2.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border-strong)] flex items-center justify-between gap-2">
-                <span className="text-xs font-mono text-[var(--text)] truncate">{createdInviteUrl}</span>
-                <Button variant="secondary" size="sm" onClick={handleCopyInvite}>
-                  {copied ? <Check size={13} className="mr-1 text-[var(--success)]" /> : <Copy size={13} className="mr-1" />}
-                  {copied ? 'Скопировано!' : 'Копировать'}
-                </Button>
+            {/* Revealed Created Invite Box */}
+            {createdInvite && (
+              <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border-control)] space-y-2 animate-in fade-in duration-150">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-[var(--text)]">Инвайт успешно создан:</span>
+                  <Badge tone="ok">Активен</Badge>
+                </div>
+                <div className="flex items-center justify-between gap-2 p-2 rounded bg-[var(--surface)] border border-[var(--border)] font-mono text-xs">
+                  <span className="text-[var(--text)]">{createdInvite.code}</span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => copyToClipboard(createdInvite.code, 'code')}
+                  >
+                    Копировать код
+                  </Button>
+                </div>
+                <div className="flex items-center justify-between gap-2 p-2 rounded bg-[var(--surface)] border border-[var(--border)] text-xs">
+                  <span className="text-[var(--text-muted)] truncate">{createdInvite.url}</span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => copyToClipboard(createdInvite.url, 'url')}
+                  >
+                    Копировать
+                  </Button>
+                </div>
               </div>
             )}
           </div>
 
-          {/* Invites list */}
+          {/* Invites Table */}
           <div className="border border-[var(--border)] rounded-[var(--radius)] bg-[var(--surface)] overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[var(--surface-2)] border-b border-[var(--border)] text-[11px] font-medium text-[var(--text-muted)] uppercase">
+              <table className="min-w-[640px] w-full text-left text-xs" data-context="table-header">
+                <thead className="hidden sm:table-header-group bg-[var(--surface-2)] border-b border-[var(--border)] text-[11px] font-medium text-[var(--text-muted)] uppercase">
                   <tr>
-                    <th className="py-2.5 px-3">Код / Ссылка</th>
+                    <th className="py-2.5 px-3">Код</th>
+                    <th className="py-2.5 px-3">Ссылка</th>
                     <th className="py-2.5 px-3">Создано</th>
                     <th className="py-2.5 px-3">Статус</th>
+                    <th className="py-2.5 px-3">Кем создан</th>
+                    <th className="py-2.5 px-3 text-right whitespace-nowrap">Действия</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border)]">
                   {invites.length > 0 ? (
                     invites.map((inv) => (
-                      <tr key={inv.id} className="hover:bg-[var(--surface-2)]/60 transition-colors">
-                        <td className="py-2.5 px-3 font-mono text-[11px] text-[var(--text)]">
-                          {inv.code || inv.token || inv.id}
+                      <tr
+                        key={inv.id}
+                        data-context="invite-row"
+                        data-id={inv.code || inv.id}
+                        className="flex flex-col sm:table-row p-3 sm:py-2.5 sm:px-3 hover:bg-[var(--surface-2)]/60 transition-colors gap-1.5 sm:gap-0"
+                      >
+                        <td className="sm:py-2.5 sm:px-3 font-mono whitespace-nowrap text-[11px] text-[var(--text)]">
+                          <div className="flex items-center gap-1.5 max-w-[200px]">
+                            <span className="font-semibold truncate" title={inv.code || inv.token || inv.id}>
+                              {inv.code || inv.token || inv.id}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(inv.code || inv.token || inv.id, 'code')}
+                              title="Копировать код"
+                              className="text-[var(--text-subtle)] hover:text-[var(--text)] p-0.5 cursor-pointer shrink-0"
+                            >
+                              <Copy size={12} />
+                            </button>
+                          </div>
                         </td>
-                        <td className="py-2.5 px-3 text-[var(--text-muted)] text-[11px]">
+
+                        <td className="sm:py-2.5 sm:px-3 text-[11px] text-[var(--text-muted)]">
+                          <div className="flex items-center gap-1.5 max-w-[200px]">
+                            <span className="truncate">{inv.link || `https://neyra.local/login?invite=${inv.code || inv.id}`}</span>
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(inv.link || `https://neyra.local/login?invite=${inv.code || inv.id}`, 'url')}
+                              title="Копировать ссылку"
+                              className="text-[var(--text-subtle)] hover:text-[var(--text)] p-0.5 cursor-pointer shrink-0"
+                            >
+                              <Copy size={12} />
+                            </button>
+                          </div>
+                        </td>
+
+                        <td className="sm:py-2.5 sm:px-3 text-[var(--text-muted)] text-[11px]">
                           {inv.createdAt ? new Date(inv.createdAt).toLocaleDateString('ru-RU') : '—'}
                         </td>
-                        <td className="py-2.5 px-3">
-                          <StatusPill tone={inv.used ? 'muted' : 'ok'}>
-                            {inv.used ? 'использован' : 'активен'}
+
+                        <td className="sm:py-2.5 sm:px-3">
+                          <StatusPill tone={inv.status === 'revoked' ? 'error' : inv.status === 'used' || inv.used ? 'muted' : 'ok'}>
+                            {inv.status === 'revoked' ? 'отозван' : inv.status === 'used' || inv.used ? 'использован' : 'активен'}
                           </StatusPill>
+                        </td>
+
+                        <td className="sm:py-2.5 sm:px-3 text-[11px] text-[var(--text-subtle)]">
+                          {inv.createdBy || '—'}
+                        </td>
+
+                        <td className="sm:py-2.5 sm:px-3 sm:text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-1">
+                            <IconButton
+                              icon={<Copy size={13} />}
+                              aria-label="Копировать код"
+                              tooltip="Копировать код"
+                              size="sm"
+                              onClick={() => copyToClipboard(inv.code || inv.id, 'code')}
+                            />
+                            {inv.status !== 'revoked' && (
+                              <IconButton
+                                icon={<Ban size={13} />}
+                                aria-label="Отозвать инвайт"
+                                tooltip="Отозвать инвайт"
+                                size="sm"
+                                variant="danger"
+                                onClick={() => setRevokeInviteTarget(inv)}
+                              />
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={3} className="py-6 text-center text-xs text-[var(--text-muted)]">
-                        Активных приглашений пока нет.
+                      <td colSpan={6} className="py-8 text-center text-xs text-[var(--text-muted)] space-y-1">
+                        <p className="font-medium text-[var(--text)]">Инвайтов пока нет</p>
+                        <p className="text-[11px] text-[var(--text-subtle)]">
+                          Создайте первый код — по нему человек сможет зарегистрироваться на сайте.
+                        </p>
                       </td>
                     </tr>
                   )}
@@ -1692,21 +1973,111 @@ function AccessSection() {
                 className={`p-3 text-left rounded-[var(--radius-sm)] border transition-all cursor-pointer ${
                   active
                     ? 'border-[var(--accent)] bg-[var(--surface-3)] ring-1 ring-[var(--accent)]/30'
-                    : 'border-[var(--border)] bg-[var(--surface-2)]/60 hover:bg-[var(--surface-2)] text-[var(--text-muted)]'
+                    : 'border-[var(--border-control)] bg-[var(--surface-2)]/60 hover:bg-[var(--surface-2)] text-[var(--text-muted)]'
                 } ${savingRegMode ? 'opacity-60 pointer-events-none' : ''}`}
               >
-                <div className="flex items-center justify-between">
-                  <span className={`text-xs font-medium ${active ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}`}>
-                    {item.label}
+                <div className="flex items-start gap-2.5">
+                  <span
+                    className={`mt-0.5 w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${
+                      active ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--border-control)] bg-transparent'
+                    }`}
+                  >
+                    {active && <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-ink)]" />}
                   </span>
-                  {active && <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />}
+                  <div className="min-w-0">
+                    <span className={`text-xs font-medium block ${active ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}`}>
+                      {item.label}
+                    </span>
+                    <p className="text-[10px] text-[var(--text-subtle)] mt-0.5 leading-relaxed">{item.desc}</p>
+                  </div>
                 </div>
-                <p className="text-[10px] text-[var(--text-subtle)] mt-1">{item.desc}</p>
               </button>
             );
           })}
         </div>
       </div>
+
+      {/* Admin Profile Merge Modal */}
+      {mergeModalUser && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade"
+        >
+          <div className="w-full max-w-md p-5 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-control)] shadow-2xl space-y-4 text-xs animate-dialog text-[var(--text)]">
+            <div className="flex items-center justify-between border-b border-[var(--border)] pb-3">
+              <div>
+                <h3 className="text-sm font-semibold text-[var(--text)]">
+                  Объединение профиля {mergeModalUser.name || mergeModalUser.email}
+                </h3>
+                <p className="text-[11px] text-[var(--text-subtle)] font-mono">
+                  Исходный субъект: {mergeModalUser.person_id || mergeModalUser.id}
+                </p>
+              </div>
+              <IconButton
+                icon={<X size={16} />}
+                aria-label="Закрыть"
+                size="sm"
+                onClick={() => setMergeModalUser(null)}
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="p-3.5 rounded-[var(--radius-sm)] bg-[var(--surface-3)] border border-[var(--border)] space-y-2 text-[var(--text-muted)] leading-relaxed">
+                <div className="flex items-center gap-1.5 font-semibold text-[var(--text)]">
+                  <Badge tone="muted">В разработке</Badge>
+                  <span>Слияние субъектов (person_id)</span>
+                </div>
+                <p>
+                  Административное слияние переносит связанные аккаунты (Discord OAuth, Email), диалоги, векторную память и системные журналы под единый старший <code>person_id</code>.
+                </p>
+                <p className="text-[11px] text-[var(--text-subtle)]">
+                  Для безопасного объединения требуется миграция таблиц долговременной памяти и тредов ядра. Операция станет доступна после релиза identity-service.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-[var(--border)]">
+              <Button variant="secondary" size="sm" onClick={() => setMergeModalUser(null)}>
+                Закрыть
+              </Button>
+              <SoonAction featureName="Объединение профилей">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleExecuteMerge}
+                >
+                  Объединить
+                </Button>
+              </SoonAction>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Revoke Invite Confirmation Dialog */}
+      {revokeInviteTarget && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade"
+        >
+          <div className="w-full max-w-sm p-5 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-control)] shadow-2xl space-y-4 text-xs animate-dialog text-[var(--text)]">
+            <h3 className="text-sm font-semibold text-[var(--text)]">Отозвать приглашение?</h3>
+            <p className="text-[var(--text-muted)] leading-relaxed">
+              Код <code className="font-mono text-[var(--text)]">{revokeInviteTarget.code || revokeInviteTarget.id}</code> станет недействительным. Пользователи не смогут зарегистрироваться по этой ссылке.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border)]">
+              <Button variant="secondary" size="sm" onClick={() => setRevokeInviteTarget(null)}>
+                Отмена
+              </Button>
+              <Button variant="danger" size="sm" onClick={() => handleRevokeInvite(revokeInviteTarget)}>
+                Отозвать
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

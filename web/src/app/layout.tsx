@@ -11,15 +11,19 @@ const jetbrainsMono = JetBrains_Mono({
   variable: '--font-mono-jetbrains',
   display: 'swap',
 });
+
 export const metadata = {
   title: 'Neyra',
   description: 'Персональный AI-ассистент',
 };
+
+import { AppProviders } from '../components/providers/AppProviders';
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ru" className={`${inter.variable} ${jetbrainsMono.variable}`}>
       <body className="bg-[var(--bg)] text-[var(--text)] font-sans antialiased selection:bg-[var(--accent-quiet)] selection:text-[var(--text)]">
-        {children}
+        <AppProviders>{children}</AppProviders>
       </body>
     </html>
   );

@@ -466,7 +466,7 @@ export function AppSidebar({
                 size="md"
                 onClick={() => {
                   if (onOpenSettings) onOpenSettings();
-                  else router.push('/settings');
+                  else router.push('/chat?settings=1');
                 }}
               />
               {isAdmin && (
@@ -556,7 +556,7 @@ export function AppSidebar({
                     setActiveTab('chats');
                     if (activeSection !== 'chat') router.push('/chat');
                   }}
-                  className={`flex items-center justify-center gap-1.5 py-1 text-xs font-medium rounded-[calc(var(--radius-sm)-2px)] transition-colors cursor-pointer ${
+                  className={`flex items-center justify-center gap-1.5 py-2 sm:py-1 min-h-[40px] sm:min-h-0 text-xs font-medium rounded-[calc(var(--radius-sm)-2px)] transition-colors cursor-pointer ${
                     activeTab === 'chats'
                       ? 'bg-[var(--surface-3)] text-[var(--text)] shadow-sm'
                       : 'text-[var(--text-muted)] hover:text-[var(--text)]'
@@ -569,7 +569,7 @@ export function AppSidebar({
                   type="button"
                   aria-selected={activeTab === 'notes'}
                   onClick={() => setActiveTab('notes')}
-                  className={`flex items-center justify-center gap-1.5 py-1 text-xs font-medium rounded-[calc(var(--radius-sm)-2px)] transition-colors cursor-pointer ${
+                  className={`flex items-center justify-center gap-1.5 py-2 sm:py-1 min-h-[40px] sm:min-h-0 text-xs font-medium rounded-[calc(var(--radius-sm)-2px)] transition-colors cursor-pointer ${
                     activeTab === 'notes'
                       ? 'bg-[var(--surface-3)] text-[var(--text)] shadow-sm'
                       : 'text-[var(--text-muted)] hover:text-[var(--text)]'
@@ -611,7 +611,7 @@ export function AppSidebar({
                     placeholder="Поиск по чатам…"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)] text-xs pl-7 pr-7 py-1.5 text-[var(--text)] placeholder-[var(--text-subtle)] outline-none focus:border-[var(--accent)]"
+                    className="w-full bg-[var(--surface-2)] border border-[var(--border-control)] rounded-[var(--radius-sm)] text-xs pl-7 pr-7 py-1.5 text-[var(--text)] placeholder-[var(--text-subtle)] outline-none focus:border-[var(--accent)]"
                   />
                   {searchQuery && (
                     <button
@@ -640,19 +640,9 @@ export function AppSidebar({
                           ? 'Попробуйте другой запрос'
                           : 'Диалог появится здесь, как только вы напишете первое сообщение'}
                       </p>
-                      {query ? (
+                      {query && (
                         <Button variant="secondary" size="sm" className="mt-3 min-h-11 sm:min-h-0" onClick={() => setSearchQuery('')}>
                           Сбросить поиск
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="mt-3 min-h-11 gap-1.5 sm:min-h-0"
-                          onClick={handleStartNewChat}
-                        >
-                          <Plus size={13} />
-                          <span>Начать диалог</span>
                         </Button>
                       )}
                     </div>
@@ -666,9 +656,12 @@ export function AppSidebar({
                       return (
                         <div
                           key={thread.id}
+                          data-context="chat-item"
+                          data-id={thread.id}
+                          data-title={thread.title}
                           className={`group relative flex items-center justify-between rounded-[var(--radius-sm)] transition-colors ${
                             isActive
-                              ? 'bg-[var(--surface-3)] text-[var(--text)] border-l-2 border-[var(--accent)] font-medium'
+                              ? 'bg-[var(--surface-3)] text-[var(--text)] font-medium'
                               : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'
                           }`}
                         >
@@ -726,7 +719,7 @@ export function AppSidebar({
                       placeholder="Заголовок…"
                       value={noteTitleInput}
                       onChange={(e) => setNoteTitleInput(e.target.value)}
-                      className="w-full bg-[var(--surface-3)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] font-medium outline-none focus:border-[var(--accent)]"
+                      className="w-full bg-[var(--surface-3)] border border-[var(--border-control)] rounded px-2 py-1 text-xs text-[var(--text)] font-medium outline-none focus:border-[var(--accent)]"
                     />
                     <textarea
                       aria-label="Текст заметки"
@@ -734,7 +727,7 @@ export function AppSidebar({
                       rows={3}
                       value={noteContentInput}
                       onChange={(e) => setNoteContentInput(e.target.value)}
-                      className="w-full bg-[var(--surface-3)] border border-[var(--border)] rounded p-2 text-xs text-[var(--text)] resize-none outline-none focus:border-[var(--accent)]"
+                      className="w-full bg-[var(--surface-3)] border border-[var(--border-control)] rounded p-2 text-xs text-[var(--text)] resize-none outline-none focus:border-[var(--accent)]"
                     />
                     <div className="flex justify-end gap-1.5">
                       <Button
@@ -781,6 +774,10 @@ export function AppSidebar({
                     notes.map((note) => (
                       <div
                         key={note.id}
+                        data-context="note-item"
+                        data-id={note.id}
+                        data-title={note.title}
+                        data-text={note.content}
                         className="group relative p-2 rounded-[var(--radius-sm)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] border border-[var(--border)] transition-colors text-left"
                       >
                         <div className="flex items-start justify-between gap-1">
@@ -812,7 +809,7 @@ export function AppSidebar({
                           </div>
                         </div>
                         {note.content && (
-                          <p className="text-[11px] text-[var(--text-muted)] line-clamp-2 mt-1 whitespace-pre-wrap">
+                          <p className="text-[11px] text-[var(--text-muted)] line-clamp-2 mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                             {note.content}
                           </p>
                         )}
@@ -829,11 +826,14 @@ export function AppSidebar({
             <button
               ref={profileTriggerRef}
               type="button"
+              data-context="profile-avatar"
+              data-id={user?.id}
+              data-title={displayName}
               aria-haspopup="menu"
               aria-expanded={profileMenuOpen}
               aria-label="Меню профиля пользователя"
               onClick={() => setProfileMenuOpen((prev) => !prev)}
-              className="w-full flex items-center justify-between gap-2 p-1.5 rounded-[var(--radius-sm)] hover:bg-[var(--surface-2)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+              className="w-full min-h-[44px] flex items-center justify-between gap-2 p-1.5 rounded-[var(--radius-sm)] hover:bg-[var(--surface-2)] transition-colors text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
             >
               <div className="flex items-center gap-2.5 min-w-0">
                 <Avatar name={user?.name} email={user?.email} size={28} />
@@ -860,7 +860,7 @@ export function AppSidebar({
                 </div>
 
                 <Link
-                  href="/settings"
+                  href="/chat?settings=1"
                   role="menuitem"
                   onClick={(event) => {
                     setProfileMenuOpen(false);
@@ -869,7 +869,7 @@ export function AppSidebar({
                       onOpenSettings();
                     }
                   }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left"
+                  className="w-full min-h-[44px] sm:min-h-0 flex items-center gap-2 px-2.5 py-2 sm:py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left"
                 >
                   <Settings size={14} className="shrink-0" />
                   <span>Настройки</span>
@@ -883,7 +883,7 @@ export function AppSidebar({
                       setProfileMenuOpen(false);
                       handleOpenAdmin();
                     }}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
+                    className="w-full min-h-[44px] sm:min-h-0 flex items-center gap-2 px-2.5 py-2 sm:py-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
                   >
                     <Shield size={14} className="shrink-0" />
                     <span>Админ-панель</span>
@@ -898,7 +898,7 @@ export function AppSidebar({
                     await signOut();
                     router.push('/login');
                   }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors text-left cursor-pointer"
+                  className="w-full min-h-[44px] sm:min-h-0 flex items-center gap-2 px-2.5 py-2 sm:py-1.5 rounded-[var(--radius-sm)] text-[var(--danger)] hover:bg-[var(--danger-quiet)] transition-colors text-left cursor-pointer"
                 >
                   <LogOut size={14} className="shrink-0" />
                   <span>{ru.signOut}</span>

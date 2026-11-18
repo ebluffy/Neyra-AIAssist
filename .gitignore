@@ -194,3 +194,6 @@ node_modules/
 web/.env*
 !web/.env.example
 web/data/
+
+# Скриншоты дизайн-прогонов: бинарные артефакты, живут в CI-артефактах, не в git.
+web/docs/ui-shots/
