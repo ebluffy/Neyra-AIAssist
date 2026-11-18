@@ -42,13 +42,28 @@ REST `data.model_trace` и финальный WS `done.model_trace` содерж
 System → события памяти. Admin delete/wipe API сохранены. Activity также
 включает отдельные background reports (`kind`, nullable `parent_turn_id`),
 тайминги и usage при наличии. Хранятся отдельно 200 ходов и 200 jobs; выдача
-activity объединяет их по времени. Подробнее — [PLAN §12: телеметрия](../../PLAN.md#память-проверка-работы-и-улучшения).
+activity объединяет их по времени. Подробнее — [PLAN §8.3: телеметрия](../../PLAN.md#83-память-проверка-работы-и-улучшения).
 
 - Env: `INTERNAL_API_*` → `API_*` (старт падает, если старые имена заданы; dual-read нет).
 - `POST /v1/plugins/{id}/reload|restart` — on_demand: hot re-import; resident: soft-restart ядра (`restart_scheduled`).
 - Health входящего webhook `GET .../health` требует viewer+, если токены настроены.
-- WebSocket-чат — только **admin** (как `POST /v1/chat`).
+- WebSocket-чат — **admin** или отдельный **web**-ключ с валидным `X-Neyra-Identity` (как `POST /v1/chat` для админа).
 - Bind не loopback без токенов → процесс не стартует.
+
+## Каталог Discord, конфиг и логи (admin)
+
+- `GET /v1/config` — снимок для админки: лейны (`provider`, `model`, `resolved_model`, `temperature`, `context_window`, `max_tokens`, `reply_max_tokens`), провайдеры, лимиты памяти, автосжатие, MCP (только имена/флаги), версия, uptime и флаги секретов. Значения секретов не отдаются.
+- `PUT /v1/config` — частичная запись по белому списку (`updates`). Неизвестное поле, чужой провайдер или значение вне диапазона — 400 до записи. Файл слоя пишется атомарно, предыдущий остаётся `.bak`; при сбое пересборки LLM слой восстанавливается из `.bak`, память откатывается, LLM пересобирается на старых значениях. `requires_restart_fields` перечисляет только реально требующие рестарта поля; `memory.session_archive.*` применяется сразу.
+- `POST /v1/config/update` — прежний endpoint с другим белым списком; оставлен для старых клиентов. Новый интерфейс использует `PUT /v1/config`; со временем старый будет удалён.
+- `GET /v1/logs/tail?lines=1..1000` — хвост системного лога для админки. Секреты маскируются до обрезки строки; наружу отдаётся только имя файла.
+- `GET /v1/logs?source=&tail=` — общий просмотр логов (viewer+), источники `system`, `audit`, `chat`, `health`, `lavalink`, `plugin:{id}`. Это не замена `/v1/logs/tail`: tail — только system.log и admin.
+- `GET /v1/admin/discord/guilds` — серверы с числом каналов/участников; `limit`/`offset`.
+- `GET /v1/admin/discord/guilds/{id}` — сервер, каналы и участники (`member_limit`).
+- `GET /v1/admin/discord/members` — участники с фильтрами `guild_id`, `q`, `limit`, `offset`.
+- `GET /v1/admin/discord/messages` — история `chat_log` с `guild_id`, `channel_id`, `person_id`, `from`, `to`, `q`, `cursor`, `limit`. `to` без времени включает весь день; смещения приводятся к UTC. Курсор — `id`, сортировка по `id DESC`, поэтому страницы не теряют строки. При поиске `total` ограничен 10 000 (`total_capped`).
+- `GET /v1/admin/discord/users/{person_id}/stats` — сообщения, ходы, каналы и график по дням.
+
+Для сайта: `GET /v1/web/me`, `POST/GET /v1/attachments*` и `/v1/ws/chat` принимают отдельный `API_WEB_TOKEN` (роль `web`) только вместе с валидным `X-Neyra-Identity`. Этот ключ не даёт админские и viewer-ручки.
 
 ## Core
 - `GET /v1/meta` — api_version, public_url, public_v1, dashboard_url, features
@@ -65,7 +80,7 @@ activity объединяет их по времени. Подробнее — [
 - `POST /v1/config/update`
 - `POST /v1/backup/run`
 - `GET /v1/backup/list` — локальные zip-архивы BackupManager + `last_restore_apply` (`applied`/`failed`)
-- `POST /v1/backup/restore` — `{ archive_name, confirm: "RESTORE" }` (admin); сначала проверка архива, затем `pre_restore` бэкап, затем staging + pending; живая память меняется только при старте ядра (soft-restart обязателен); логи не трогаются
+- `POST /v1/backup/restore` — `{ archive_name, confirm: "<archive_name>" }` (confirm обязан совпадать с именем архива) (admin); сначала проверка архива, затем `pre_restore` бэкап, затем staging + pending; живая память меняется только при старте ядра (soft-restart обязателен); логи не трогаются
 
 ## Plugins
 - `GET /v1/plugins`

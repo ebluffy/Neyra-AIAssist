@@ -11,6 +11,26 @@ llm:
     openrouter:
       base_url: "https://openrouter.ai/api/v1"
 
+    # Experimental CLI backend (#77): ядро вызывает установленный OpenCode через
+    # bwrap. Требует bubblewrap на хосте, experimental: true и путь к версии CLI.
+    # Инструменты в запрос не попадают: read-only конфиг + плагин, HOME — tmpfs.
+    # Ограничения: brain без tools, vision нет, max_tokens не поддерживается.
+    # oc:
+    #   kind: cli
+    #   cli: opencode
+    #   backend: run
+    #   experimental: true
+    #   # Только каталог проверенной версии CLI (provider-runtimes/opencode/...).
+    #   cli_path: "/var/lib/openbot/.config/OpenBot/provider-runtimes/opencode/linux-x64/2.3.0/bin/opencode"
+    #   # Необязателен: по умолчанию <paths.data_dir>/cli-sandbox. Относительный
+    #   # путь считается от data_dir, абсолютный должен быть внутри него.
+    #   # sandbox: "<путь из paths.data_dir>/cli-sandbox"
+    #   # Файл авторизации OpenCode; read-only bind внутрь песочницы.
+    #   # Только внутри cli-sandbox. Относительный путь — от data_dir.
+    #   # auth_file: "<путь из paths.data_dir>/cli-sandbox/data/opencode/auth.json"
+    #   timeout_seconds: 120
+    # Затем: talk_model/brain_model/memory_model: {provider: oc, model: "opencode/<model>"}
+
   # Optional plugin generation role. If omitted, uses brain_model/provider.
   # coder_model:
   #   provider: aihope

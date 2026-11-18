@@ -271,11 +271,15 @@ async def run_console() -> None:
     from core.reflection import ReflectionEngine
     reflection = ReflectionEngine(config, agent)
     reflection.start_scheduler()
+
+    from core.agent.model_trace import recent_provider_rate_limit
+
     health_monitor = HealthMonitor(
         config,
         project_root=_PROJECT_ROOT,
         process_registry=_spawn_registry,
         restart_callback=restart_interface_mode,
+        llm_activity=lambda: recent_provider_rate_limit(agent),
     )
     health_monitor.start()
     await health_monitor.run_once()

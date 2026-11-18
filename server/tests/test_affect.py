@@ -45,7 +45,9 @@ def test_migration_restart_decay_bounds_and_history(hub):
     assert hub.affect.snapshot(pid)["mood"]["valence"] == pytest.approx(-0.2)
     other = SqliteStore(hub.sqlite.path)
     other.migrate()
-    assert other.schema_version() == 7
+    from core.memory.migrations import MIGRATIONS
+
+    assert other.schema_version() == len(MIGRATIONS)
     assert other._conn.execute("SELECT affinity FROM person_relations").fetchone()[0] == -1
     other.close()
 
@@ -200,7 +202,9 @@ def test_migrates_v5_copy_without_touching_existing_memory(tmp_path, monkeypatch
         old.close()
     migrated = SqliteStore(tmp_path / "migration-copy.db")
     migrated.migrate()
-    assert migrated.schema_version() == 7
+    from core.memory.migrations import MIGRATIONS
+
+    assert migrated.schema_version() == len(MIGRATIONS)
     assert migrated.get_person("known")["display_name"] == "Old card"
     assert migrated.list_diary_notes()[0]["text"] == "Old diary"
     migrated.close()

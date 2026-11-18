@@ -13,6 +13,30 @@ permissions:
   contents: read
 
 jobs:
+  offline-control-api-smoke:
+    name: Offline server → Control API → Node client
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Install offline smoke dependencies
+        run: |
+          grep -E '^(fastapi|uvicorn|httpx|pyyaml|python-multipart|PyJWT|cryptography)([<>=!~]|$)' server/requirements.txt |
+            python -m pip install -r /dev/stdin websockets
+          npm ci --prefix client
+      - name: Smoke HTTPS + WSS on loopback (mock agent, no services)
+        run: |
+          python devtools/smoke_control_api.py
+          python -m unittest discover -s devtools -p test_smoke_control_api.py
+
   layout:
     name: Layout & tree
     runs-on: ubuntu-latest
@@ -24,11 +48,17 @@ jobs:
       - name: Install minimal deps
         run: pip install -q pyyaml python-dotenv httpx
       - name: compileall (server + MCP)
-        run: python -m compileall -q server devtools/mcp_server
+        run: python -m compileall -q server devtools/mcp_server devtools/deploy
       - name: Dev MCP offline contracts
         run: |
           pip install -q -r devtools/mcp_server/requirements.txt pytest
           pytest -q devtools/mcp_server/test_server.py
+      - name: Web env sync on copies (identity issuer, idempotency)
+        run: pytest -q devtools/deploy/test_neyra_web_env.py
+      - name: Deploy dump helper (symlink-safe dump, postgres → db)
+        run: pytest -q devtools/deploy/test_openbot_admin.py
+      - name: Core data_dir must stay inside the deploy tree
+        run: pytest -q devtools/deploy/test_data_dir.py
       - name: Check layout / no legacy paths
         run: python server/scripts/verify_stage_1b.py
       - name: Healthcheck smoke (examples, skip HTTP)
@@ -129,7 +159,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install API verify deps
-        run: pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart
+        run: pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart PyJWT==2.15.1 'cryptography>=42.0.0'
       - name: compileall
         run: python -m compileall -q server
       - name: Check layered config regression
@@ -165,13 +195,16 @@ jobs:
       - name: Install deps
         run: |
           pip install -q -r server/requirements-dev.txt
-          pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart
+          pip install -q pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart PyJWT==2.15.1 'cryptography>=42.0.0'
       - name: Run pytest
         run: cd server && pytest -q
+      - name: Performance report offline tests
+        run: python -m unittest discover -s devtools -p 'test_perf_report.py'
 
   dashboard:
     name: Dashboard lint/typecheck/test/build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: server/dashboard
@@ -195,11 +228,20 @@ jobs:
         run: npm run test -- --run
       - name: Build
         run: npm run build
+      - name: Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install Playwright Chromium
+        timeout-minutes: 5
         run: npx playwright install --with-deps chromium
       - name: E2E smoke
         run: |
-          python -m pip install -q -r ../requirements-dev.txt pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart
+          python -m pip install -q -r ../requirements-dev.txt pyyaml python-dotenv httpx fastapi uvicorn pydantic starlette python-multipart PyJWT==2.15.1 'cryptography>=42.0.0'
           npm run test:e2e
 
   secrets:

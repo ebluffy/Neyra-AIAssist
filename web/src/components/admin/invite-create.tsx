@@ -1,0 +1,147 @@
+'use client';
+
+import { adminFetch } from './admin-fetch';
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { Check, Copy } from 'lucide-react';
+import { Button } from '../ui';
+
+const ttlOptions = [
+  { value: '86400', label: '1 день' },
+  { value: '259200', label: '3 дня' },
+  { value: '604800', label: '7 дней' },
+  { value: '2592000', label: '30 дней' },
+  { value: 'never', label: 'бессрочно' },
+];
+
+const usesOptions = [
+  { value: '1', label: '1 (одноразовый)' },
+  { value: '5', label: '5' },
+  { value: '10', label: '10' },
+  { value: 'unlimited', label: 'без лимита' },
+];
+
+const inputClass = 'rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text)] focus-visible:outline-none focus-visible:border-[var(--accent)]';
+
+export function InviteCreate() {
+  const router = useRouter();
+  const [ttl, setTtl] = useState('604800');
+  const [maxUses, setMaxUses] = useState('1');
+  const [email, setEmail] = useState('');
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  const [link, setLink] = useState('');
+  const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [createdUses, setCreatedUses] = useState<number | null>(1);
+  const [createdEmail, setCreatedEmail] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function create() {
+    setPending(true);
+    setError('');
+    setLink('');
+    try {
+      const response = await adminFetch('/api/admin/invites', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ttlHours: ttl === 'never' ? null : Math.max(1, Math.round(Number(ttl) / 3600)),
+          maxUses: maxUses === 'unlimited' ? null : Number(maxUses),
+          email: email.trim() || null,
+        }),
+      });
+      const payload = await response.json().catch(() => null) as {
+        ok?: boolean;
+        message?: string;
+        link?: string;
+        url?: string;
+        expiresAt?: string | null;
+        maxUses?: number | null;
+        email?: string | null;
+        invite?: { expiresAt?: string | null };
+        data?: { url?: string; link?: string; expiresAt?: string | null; maxUses?: number | null; email?: string | null };
+      } | null;
+      const created = payload?.data ?? payload;
+      const inviteLink = created?.url ?? created?.link ?? payload?.url ?? payload?.link;
+      if (!response.ok || !inviteLink) {
+        throw new Error(payload?.message ?? 'Не удалось создать приглашение.');
+      }
+      setLink(inviteLink);
+      setExpiresAt(created?.expiresAt ?? payload?.invite?.expiresAt ?? null);
+      setCreatedUses(created?.maxUses ?? null);
+      setCreatedEmail(created?.email ?? null);
+      router.refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось создать приглашение.');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function copy() {
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError('Не удалось скопировать.');
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="grid gap-1.5 text-xs text-[var(--text-muted)]">
+          Срок действия
+          <select value={ttl} onChange={event => setTtl(event.target.value)} className={inputClass}>
+            {ttlOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label className="grid gap-1.5 text-xs text-[var(--text-muted)]">
+          Использований
+          <select value={maxUses} onChange={event => setMaxUses(event.target.value)} className={inputClass}>
+            {usesOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label className="grid gap-1.5 text-xs text-[var(--text-muted)]">
+          Только для email (необязательно)
+          <input
+            type="email"
+            value={email}
+            onChange={event => setEmail(event.target.value)}
+            placeholder="любой адрес"
+            className={`${inputClass} min-w-[220px]`}
+          />
+        </label>
+        <Button variant="primary" size="md" disabled={pending} loading={pending} onClick={create}>
+          Создать приглашение
+        </Button>
+      </div>
+      {error && <p role="alert" className="text-xs text-[var(--danger)]">{error}</p>}
+      {link && (
+        <div className="rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--surface-2)] p-3.5 space-y-2">
+          <p className="text-xs text-[var(--text)] leading-relaxed">
+            Ссылка создана. Она показывается один раз — скопируйте и передайте приглашённому.
+            {createdUses === null ? ' Можно использовать без ограничения.' : createdUses === 1 ? ' Одноразовая.' : ` До ${createdUses} использований.`}
+            {createdEmail && <> Только для {createdEmail}.</>}
+            {expiresAt
+              ? <> Действует до {new Date(expiresAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК.</>
+              : <> Без срока действия.</>}
+          </p>
+          <div className="mt-2 flex gap-2">
+            <input
+              readOnly
+              value={link}
+              aria-label="Ссылка приглашения"
+              className="w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-3)] px-3 py-2 text-xs font-mono text-[var(--text)] focus-visible:outline-none"
+            />
+            <Button variant="secondary" size="sm" onClick={copy}>
+              {copied ? <><Check size={14} className="mr-1" /> Скопировано</> : <><Copy size={14} className="mr-1" /> Копировать</>}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

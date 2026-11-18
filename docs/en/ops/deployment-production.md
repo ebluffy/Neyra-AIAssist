@@ -1,7 +1,8 @@
 # Production deployment (baseline checklist)
 
 - Run under a process manager (systemd/supervisor/Docker `restart: unless-stopped`).
-- Set `API_TOKEN` (and viewer/maint tokens if using role separation) in `server/.env`.
+- Set `API_TOKEN` (and viewer/maint/web tokens if using role separation) in `server/.env`. For the site use `API_WEB_TOKEN` and identity `NEYRA_IDENTITY_JWT_SECRET`/`_ISSUER`.
+- **Provider vault.** Keep `NEYRA_VAULT_KEY` in `server/.env` (0600) and out of git. `devtools/deploy/update-core.sh` runs `server/scripts/ensure_vault_key.py` before import-smoke: it moves the old `<data_dir>/secrets/vault.key`, re-encrypts v1 → v2 and verifies decryption. The data directory follows the core (`NEYRA_DATA_DIR`, then `paths.data_dir`). A manual rollback must restore both `.env` and `data/secrets` from the backup; otherwise provider secrets cannot be decrypted.
 - Use a reverse proxy with TLS ([api-reverse-proxy](api-reverse-proxy.md), [wss-deployment](wss-deployment.md)).
 - Default bind `127.0.0.1:8787`; do not expose uvicorn directly on the public internet.
 - Restrict inbound access to the API; configure the dashboard access key on first setup.
@@ -12,4 +13,4 @@
 
 Canonical publish path: Neyra on a **home server** (mini PC, spare desktop, laptop, …), **frpc** → VPS **frps** → **Caddy**/nginx for `https://neyra.owyx.site` / `wss://neyra.owyx.site/api/v1/ws/chat`. Runtime data remains on the home server (`server/data/memory/`, `server/.env`, `server/logs/`).
 
-Details: [`docs/PLAN.md`](../../PLAN.md) §3.
+Details: [`docs/PLAN.md`](../../PLAN.md) §9.

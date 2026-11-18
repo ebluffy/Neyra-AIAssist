@@ -14,6 +14,10 @@ from typing import Callable, Optional
 
 logger = logging.getLogger("neyra.health")
 
+# A provider rate limit within this window makes the backend check degraded:
+# /v1/models may still answer 200 while every real turn fails with HTTP 429.
+LLM_DEGRADATION_WINDOW_SECONDS = 600
+
 
 class HealthMonitor:
     def __init__(
@@ -23,6 +27,7 @@ class HealthMonitor:
         project_root: Optional[Path] = None,
         process_registry: Optional[Callable[[], dict]] = None,
         restart_callback: Optional[Callable[[str], tuple[bool, str]]] = None,
+        llm_activity: Optional[Callable[[], Optional[dict]]] = None,
     ):
         self.config = config or {}
         self._project_root = Path(project_root).resolve() if project_root is not None else None
@@ -34,6 +39,8 @@ class HealthMonitor:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.process_registry = process_registry
         self.restart_callback = restart_callback
+        # Probe from the /v1/llm/activity source: latest provider 429 in the window.
+        self.llm_activity = llm_activity
         self._task: Optional[asyncio.Task] = None
         self._last_report: dict = {}
 
@@ -93,9 +100,29 @@ class HealthMonitor:
         import httpx
         from core.llm.profile import iter_unique_provider_connections
 
+        # The /models probe cannot see a provider rate-limit storm: the endpoint may
+        # keep answering 200 while every real turn dies with HTTP 429. Fold the recent
+        # activity signal in so health never reports a green backend for a silent assistant.
+        degraded_reason = None
+        if self.llm_activity is not None:
+            try:
+                degraded_reason = self.llm_activity()
+            except Exception:
+                logger.debug("llm activity probe failed", exc_info=True)
+                degraded_reason = None
+
+        def _apply_degradation(out: dict) -> dict:
+            if degraded_reason:
+                out["degraded"] = True
+                out["degraded_reason"] = degraded_reason
+                out["ok"] = False
+            else:
+                out["degraded"] = False
+            return out
+
         conns = list(iter_unique_provider_connections(self.config))
         if not conns:
-            return {"ok": False, "error": "no_llm_providers", "providers": []}
+            return _apply_degradation({"ok": False, "error": "no_llm_providers", "providers": []})
 
         timeout = httpx.Timeout(self.llm_timeout_seconds, connect=min(8.0, self.llm_timeout_seconds))
 
@@ -150,7 +177,7 @@ class HealthMonitor:
                     bits.append(f"{p.get('provider')}: HTTP {p.get('status_code')}")
             if bits:
                 out["error"] = "; ".join(bits)[:500]
-        return out
+        return _apply_degradation(out)
 
     def _check_storage(self) -> dict:
         try:

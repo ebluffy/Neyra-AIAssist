@@ -1,2 +1,41 @@
 # Fingerprint of intentional fake secret in PR history (640c57e); tip no longer has it.
 640c57e171a3febad0a454dca86dcb689ccfe31b:server/tests/test_errors_and_trace.py:generic-api-key:49
+# Fake desktop fixtures in unrebased commits 0865818 and 1240ad4. Tip source is split.
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/shell.rs:generic-api-key:528
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/files.rs:generic-api-key:453
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:aws-access-token:68
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:aws-access-token:81
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:github-pat:69
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:github-pat:82
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:jwt:78
+086581899cec480c34396573b625e2c3506c1c7a:client/src-tauri/src/redact.rs:private-key:75
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/files.rs:generic-api-key:453
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:aws-access-token:68
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:aws-access-token:81
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:github-pat:69
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:github-pat:82
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:jwt:78
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/redact.rs:private-key:75
+1240ad4357bb7c860bc4148166d7aec4de43ecd7:client/src-tauri/src/shell.rs:generic-api-key:528
+# Intentional mock keyring tokens in commit fdcfd7f; exact historical findings only.
+fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic-api-key:999
+fdcfd7f8b2788ed4c9f03e8a441c1b2e7fafeccc:client/src-tauri/src/storage.rs:generic-api-key:1067
+# Synthetic test token in historical commit 73a7006 (storage.rs:1084); replaced by runtime-built tokens in 861f659.
+73a7006b96f283a202ff00c170a53769d04d754e:client/src-tauri/src/storage.rs:generic-api-key:1084
+# CI-only secret of the throwaway Postgres in db-verify (commit c5d124c); tip marks it gitleaks:allow.
+c5d124cdbd4321506ed1544c6c1ef43e21020883:.github/workflows/web-verify.yml:generic-api-key:38
+# Fake sample string in invite.test.ts of commit ced7aa8 (not a secret); renamed in 0d34265.
+ced7aa840d2850a55042050aeca164adadac3bb5:web/lib/invite.test.ts:generic-api-key:6
+# Fake .env fixtures in test_neyra_web_env.py of commit ab180e3 (not secrets); marked gitleaks:allow in ef6555b.
+ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:generic-api-key:57
+ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:generic-api-key:85
+ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:generic-api-key:111
+ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:generic-api-key:139
+# Fake vault fixtures in commit 97f26b5 before inline gitleaks:allow markers.
+97f26b5df66a9b9215eb2a8006242eff2d0b86aa:server/tests/test_provider_ar_fixes.py:generic-api-key:24
+97f26b5df66a9b9215eb2a8006242eff2d0b86aa:server/tests/test_provider_ar_fixes.py:generic-api-key:201
+# Fake fixtures in historical #76 commit 98fbc06; tip builds them at runtime.
+98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:248
+98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:249
+98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:255
+98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:265

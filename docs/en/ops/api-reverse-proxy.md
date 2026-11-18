@@ -30,7 +30,7 @@ Neyra listens on `127.0.0.1:8787` on the machine that runs the process. Public T
 
 Chain: client → `https://` / `wss://neyra.owyx.site/api/v1/ws/chat` → TLS on VPS → frps → frpc → Control API `127.0.0.1:8787`.
 
-Diagram, `frpc.toml`, and token requirements: [`docs/PLAN.md`](../../PLAN.md) §3.
+Diagram, `frpc.toml`, and token requirements: [`docs/PLAN.md`](../../PLAN.md) §9.
 
 ## DNS (Cloudflare example)
 

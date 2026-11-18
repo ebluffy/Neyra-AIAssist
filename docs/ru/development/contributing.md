@@ -31,4 +31,5 @@
 
 - Проверки синтаксиса / тесты затронутых мест.
 - Скрипт healthcheck.
+- [Offline smoke server → Control API → client](offline-control-api-smoke.md) без стенда и реальных ключей.
 - Обновите документацию (`README.md`, [`docs/PLAN.md`](../../PLAN.md), `server/.env.example`), если поменялось поведение.

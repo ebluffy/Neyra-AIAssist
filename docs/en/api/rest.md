@@ -28,12 +28,12 @@ the journal is shown under System → memory events. Admin delete/wipe routes
 are unchanged. Both activity and model evidence now include independent
 background reports (`kind`, nullable `parent_turn_id`), timings and usage when
 reported. Retention is 200 turns plus 200 jobs; activity returns the newest
-requested items across both. See [PLAN §12: telemetry](../../PLAN.md#память-проверка-работы-и-улучшения).
+requested items across both. See [PLAN §8.3: telemetry](../../PLAN.md#83-память-проверка-работы-и-улучшения).
 
 - Env: `INTERNAL_API_*` → `API_*` (startup fails if old names are set; no dual-read).
 - `POST /v1/plugins/{id}/reload|restart` — on_demand: hot re-import; resident: core soft-restart (`restart_scheduled`).
 - Inbound webhook health `GET .../health` requires viewer+ when tokens are configured.
-- WebSocket chat requires **admin** (aligned with `POST /v1/chat`).
+- WebSocket chat requires **admin**, or the separate **web** key with a valid `X-Neyra-Identity` (admin keeps `POST /v1/chat`).
 - Non-loopback bind without tokens → process refuses to start.
 
 ## Dashboard auth (SPA gate)
@@ -43,6 +43,21 @@ requested items across both. See [PLAN §12: telemetry](../../PLAN.md#памят
 - `POST /v1/dashboard/auth/login` — verify key (public)
 
 See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens.
+
+## Discord catalog, config and logs (admin)
+
+- `GET /v1/config` — admin snapshot: lanes (`provider`, `model`, `resolved_model`, `temperature`, `context_window`, `max_tokens`, `reply_max_tokens`), providers, memory limits, auto-compaction, MCP (names/flags only), version, uptime and secret flags. Secret values are never returned.
+- `PUT /v1/config` — partial write from a strict allowlist (`updates`). Unknown fields, unknown providers and out-of-range values are rejected before writing. The layer file is written atomically; the previous one stays as `.bak`. If the LLM rebind fails, the layer is restored from `.bak`, memory changes are rolled back, LLM is rebuilt on the old values, and the API returns an error. `requires_restart_fields` lists only fields that really need a restart; `memory.session_archive.*` applies immediately.
+- `POST /v1/config/update` — legacy endpoint with a different allowlist, kept for old clients. The new UI uses `PUT /v1/config`; the legacy route will be removed later.
+- `GET /v1/logs/tail?lines=1..1000` — admin tail of the system log. Secrets are masked before truncation; only the file name leaves the core.
+- `GET /v1/logs?source=&tail=` — general log viewer (viewer+), sources `system`, `audit`, `chat`, `health`, `lavalink`, `plugin:{id}`. Not a replacement for `/v1/logs/tail`: tail is admin-only and reads only system.log.
+- `GET /v1/admin/discord/guilds` — guilds with channel/member counts; `limit`/`offset`.
+- `GET /v1/admin/discord/guilds/{id}` — guild, channels and members (`member_limit`).
+- `GET /v1/admin/discord/members` — members filtered by `guild_id`, `q`, `limit`, `offset`.
+- `GET /v1/admin/discord/messages` — `chat_log` history with `guild_id`, `channel_id`, `person_id`, `from`, `to`, `q`, `cursor`, `limit`. A date-only `to` includes the whole day; offsets are normalized to UTC. The cursor is `id` and sorting is `id DESC`, so pages do not lose rows. With `q`, `total` is capped at 10,000 (`total_capped`).
+- `GET /v1/admin/discord/users/{person_id}/stats` — messages, turns, channels and daily buckets.
+
+For the site: `GET /v1/web/me`, `POST/GET /v1/attachments*` and `/v1/ws/chat` accept a separate `API_WEB_TOKEN` (role `web`) only together with a valid `X-Neyra-Identity`. This key does not grant admin or viewer routes.
 
 ## Core
 
@@ -60,7 +75,7 @@ See [web-ui](../architecture/web-ui.md). Separate from Control API Bearer tokens
 - `POST /v1/config/update`
 - `POST /v1/backup/run`
 - `GET /v1/backup/list` — local BackupManager zip archives + `last_restore_apply` (`applied`/`failed`)
-- `POST /v1/backup/restore` — `{ archive_name, confirm: "RESTORE" }` (admin); validates archive, then `pre_restore` backup, then stages a pending swap; live memory is replaced only on core start (soft-restart required); does not touch logs/
+- `POST /v1/backup/restore` — `{ archive_name, confirm: "<archive_name>" }` (confirm must equal archive_name) (admin); validates archive, then `pre_restore` backup, then stages a pending swap; live memory is replaced only on core start (soft-restart required); does not touch logs/
 
 ## Plugins
 - `GET /v1/plugins`

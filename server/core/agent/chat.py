@@ -15,6 +15,7 @@ from core.agent.reply_pipeline import (
     visible_token_budget,
 )
 from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
+from core.agent.chat_log import origin_from_discord_context
 from core.agent.turn_finalize import finalize_successful_turn
 from core.agent.turn_prep import prepare_turn
 
@@ -33,6 +34,7 @@ async def run_chat(
     lyrics_marker: str,
     avatar_url: Optional[str] = None,
     discord_context=None,
+    person_id: Optional[str] = None,
 ) -> dict:
     """Run one non-streaming chat turn; return text/sounds/thoughts/raw."""
     try:
@@ -48,6 +50,8 @@ async def run_chat(
             vision_images=vision_images,
             lyrics_marker=lyrics_marker,
             source="chat",
+            person_id=person_id,
+            origin=origin_from_discord_context(discord_context),
         )
         if fp is not None:
             return fp
@@ -69,6 +73,7 @@ async def run_chat(
         log_lane="chat",
         avatar_url=avatar_url,
         discord_context=discord_context,
+        person_id=person_id,
     )
     try:
         try:
@@ -192,6 +197,7 @@ async def run_chat(
             saved_facts=prep.saved_facts,
             source="chat",
             stm_trimmed=False,
+            origin=origin_from_discord_context(discord_context),
         )
         log_micro_plan_metrics(agent)
         return {

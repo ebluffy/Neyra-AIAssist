@@ -26,6 +26,7 @@ async def finalize_successful_turn(
     source: str = "chat",
     stm_trimmed: bool = False,
     extra_meta: Optional[dict] = None,
+    origin: Optional[dict] = None,
 ) -> dict:
     """Update STM, Hub chat_log, LTM, diaries/jobs, and Event Bus. Returns metadata dict."""
     spoken_user = agent._format_spoken_user_message(user_message, speaker_label)
@@ -61,13 +62,15 @@ async def finalize_successful_turn(
         channel_id=channel_id,
         source=source,
         meta=metadata,
+        origin=origin,
     )
     hub = getattr(agent, "memory_hub", None)
     active = ACTIVE_TRACE.get()
     if hub is not None and active is not None and active.affect_generations is not None:
         try:
             await asyncio.to_thread(hub.apply_affect_turn, turn_id=active.id, discord_id=discord_user_id,
-                                  text=user_message, generations=active.affect_generations)
+                                  text=user_message, generations=active.affect_generations,
+                                  person_id=getattr(active, "person_id", None))
         except Exception:
             logger.exception("Assistant state update failed")
     if hub is None or getattr(hub, "rag_write_mode", "off") != "off":

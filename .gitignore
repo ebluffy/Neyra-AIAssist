@@ -97,7 +97,16 @@ logs/voice_tmp/
 .neyra_pending_restore/
 server/.neyra_pending_restore/
 .tmp_restore/
+.tmp_restore-*/
+**/.tmp_restore-*/
 .tmp_backup_staging/
+.tmp_backup_staging-*/
+**/.tmp_backup_staging-*/
+**/.tmp_archive_staging-*/
+**/.active-staging-*.lock
+**/.neyra-backup-publish.lock
+backups/
+.control-api-smoke-*/
 
 # Ephemeral AR/verify fixture (must never ship as a live resident module)
 server/modules/_ar_fake_resident/
@@ -173,3 +182,18 @@ server/config.yaml.bak*
 # Local agent skills (not part of product)
 .agents/
 skills-lock.json
+
+# Client monorepo
+# Symlinked local deps are files to git; never commit them.
+node_modules
+node_modules/
+.next/
+*.tsbuildinfo
+
+# Web local configuration and PostgreSQL volume
+web/.env*
+!web/.env.example
+web/data/
+
+# Скриншоты дизайн-прогонов: бинарные артефакты, живут в CI-артефактах, не в git.
+web/docs/ui-shots/
