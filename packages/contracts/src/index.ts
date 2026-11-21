@@ -11,12 +11,13 @@ const kernelIdentity = {
   author_display_name: z.string().max(120).optional(),
   platform: z.string().max(40).optional(),
 };
-// WS-кадр ядра не принимает platform (extra=forbid в WsChatMessage): он есть только в REST.
+// WS-кадр ядра принимает platform (WsChatMessage); браузерный кадр — нет.
 const kernelWsIdentity = {
   username: kernelIdentity.username,
   platform_user_id: kernelIdentity.platform_user_id,
   channel_id: kernelIdentity.channel_id,
   author_display_name: kernelIdentity.author_display_name,
+  platform: kernelIdentity.platform,
 };
 
 // Вложение, которое браузер получил от BFF после загрузки. Никаких path/url.
@@ -189,7 +190,9 @@ export const BrowserServerEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('hello'), trace_id: z.string(), protocol: z.literal('neyra.ws.chat.v1'), role: z.string(), ping_interval_seconds: z.number(), idle_timeout_seconds: z.number(), reconnect: z.literal('open_new_socket') }).strict(),
   z.object({ type: z.literal('pong'), ts: z.string(), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string() }).strict(),
-  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('phase'), phase: z.string().min(1).max(40), label: z.string().min(1).max(120).optional() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), usage: ContextUsageSchema.optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('stopped'), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string() }).strict(),
 ]);
 export type BrowserServerEvent = z.infer<typeof BrowserServerEventSchema>;
@@ -199,7 +202,9 @@ export const KernelServerEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('hello'), trace_id: z.string(), protocol: z.literal('neyra.ws.chat.v1'), role: z.string(), ping_interval_seconds: z.number(), idle_timeout_seconds: z.number(), reconnect: z.literal('open_new_socket') }).strict(),
   z.object({ type: z.literal('pong'), ts: z.string(), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string() }).strict(),
-  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), model_trace: z.unknown().optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('phase'), phase: z.string().min(1).max(40), label: z.string().min(1).max(120).optional() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), usage: ContextUsageSchema.optional(), model_trace: z.unknown().optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('stopped'), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string(), model_trace: z.unknown().optional() }).strict(),
 ]);
 export type KernelServerEvent = z.infer<typeof KernelServerEventSchema>;

@@ -5,14 +5,14 @@ Public (example): `wss://neyra.owyx.site/api/v1/ws/chat`
 
 Auth: same Bearer roles as REST. Prefer `Authorization: Bearer <token>` (query `?token=` may appear in access logs — fallback only; **mask `token` / `access_token` in nginx/Caddy access logs**).
 
-**Role:** WebSocket chat requires **admin** (same as `POST /v1/chat`). Viewer/maint receive close `1008` — they must not stream chat (memory writes / LLM spend).
+**Role:** WebSocket chat requires **admin**, or **web** with a valid `X-Neyra-Identity` (same as `POST /v1/chat` for admin). Viewer/maint receive close `1008` — they must not stream chat (memory writes / LLM spend).
 
 Reconnect: open a **new** WebSocket (hello includes `"reconnect":"open_new_socket"`). No server-side resume buffer in Wave 1.
 
 ## Client → server
 - `{"type":"ping"}`
-- `{"type":"chat","text":"...","username":"...","platform_user_id":"...","channel_id":"...","model":"provider/model"}`
-  - `model` is optional; without it `llm.talk_model` is used.
+- `{"type":"chat","text":"...","username":"...","platform_user_id":"...","channel_id":"...","model":"qwen/qwen3.8-27b:free"}`
+  - `model` is optional; it is a model id of the current talk provider (the provider is not switched); without it `llm.talk_model` is used.
 - `{"type":"stop"}` — cancel the current answer without closing the WebSocket.
 
 ## Server → client

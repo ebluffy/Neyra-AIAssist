@@ -5351,6 +5351,12 @@ def build_app(
                 ws_author_disp = str(ws_disp).strip() if ws_disp else None
 
                 ws_identity = websocket.scope.get("state", {}).get("web_identity")
+                from core.agent.llm_setup import model_allowed_for_role
+                if parsed.model and not model_allowed_for_role(config, ws_role, parsed.model):
+                    await websocket.send_json(
+                        {"type": "error", "code": "model_not_allowed", "message": "Модель недоступна для этой роли.", "trace_id": trace_id}
+                    )
+                    continue
                 try:
                     vision_images, attachment_text = await asyncio.to_thread(
                         attachment_store.resolve_for_chat, parsed.attachments, _attachment_owner(websocket), channel_id,
@@ -5402,19 +5408,26 @@ def build_app(
                 active_chat = None
                 break
             except Exception:
-                active_chat.cancel()
-                await asyncio.gather(active_chat, return_exceptions=True)
-                active_chat = None
+                # A malformed frame must not cancel an answer that is already
+                # streaming. Only an explicit stop or disconnect does that.
                 await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
                 continue
 
-            if isinstance(msg, dict) and msg.get("type") == "stop":
+            try:
+                if not isinstance(msg, dict):
+                    raise ValueError("not an object")
+                parsed = WsChatMessage.model_validate(msg)
+            except Exception:
+                await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                continue
+
+            if parsed.type == "stop":
                 active_chat.cancel()
                 await asyncio.gather(active_chat, return_exceptions=True)
                 active_chat = None
                 await websocket.send_json({"type": "stopped", "trace_id": trace_id})
                 continue
-            if isinstance(msg, dict) and msg.get("type") == "ping":
+            if parsed.type == "ping":
                 await websocket.send_json({"type": "pong", "ts": datetime.now().isoformat(), "trace_id": trace_id})
                 continue
             await websocket.send_json(

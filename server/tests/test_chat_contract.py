@@ -131,3 +131,124 @@ def test_talk_model_for_clones_chat_openai_model_name():
     base = ChatOpenAI(model="default", api_key="x", base_url="http://127.0.0.1:9")
     out = talk_model_for(NS(llm_talk=base, llm_talk_model="default"), "override-model")
     assert out.model_name == "override-model"
+
+
+def test_model_allowlist_for_web_role():
+    from core.agent.llm_setup import model_allowed_for_role
+
+    config = {
+        "llm": {
+            "providers": {"p": {"base_url": "http://127.0.0.1:9"}},
+            "talk_model": {"provider": "p", "model": "default-model"},
+            "chat_models_allowed_for_web": ["allowed-model"],
+        }
+    }
+    assert model_allowed_for_role(config, "web", None) is True
+    assert model_allowed_for_role(config, "web", "default-model") is True
+    assert model_allowed_for_role(config, "web", "allowed-model") is True
+    assert model_allowed_for_role(config, "web", "expensive-model") is False
+    assert model_allowed_for_role(config, "admin", "expensive-model") is True
+
+
+def _ws_app(agent, tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from core.api import build_app
+
+    return build_app(
+        agent.config,
+        shared_agent=agent,
+        shared_monitor=MagicMock(run_once=AsyncMock(return_value={"ok": True})),
+        shared_backup_manager=MagicMock(),
+        project_root=tmp_path,
+    )
+
+
+def test_ws_busy_does_not_cancel_active_stream(tmp_path):
+    import asyncio
+
+    from fastapi.testclient import TestClient
+
+    from offline_support import offline_agent
+
+    agent = offline_agent(tmp_path)
+
+    async def fake_stream(*args, **kwargs):
+        yield {"type": "token", "text": "A"}
+        await asyncio.sleep(0.3)
+        yield {"type": "done", "text": "A", "sounds": [], "model_trace": None}
+
+    agent.chat_stream = fake_stream
+    try:
+        with TestClient(_ws_app(agent, tmp_path)) as client:
+            with client.websocket_connect(
+                "/v1/ws/chat", headers={"Authorization": "Bearer offline-admin-token"}
+            ) as ws:
+                assert ws.receive_json()["type"] == "hello"
+                ws.send_json({"type": "chat", "text": "hello"})
+                assert ws.receive_json()["type"] == "token"
+                ws.send_json({"type": "chat", "text": "second"})
+                assert ws.receive_json()["type"] == "error"
+                assert ws.receive_json()["type"] == "done"
+    finally:
+        agent.memory_hub.close()
+
+
+def test_ws_ping_while_streaming_gets_pong(tmp_path):
+    import asyncio
+
+    from fastapi.testclient import TestClient
+
+    from offline_support import offline_agent
+
+    agent = offline_agent(tmp_path)
+
+    async def fake_stream(*args, **kwargs):
+        yield {"type": "token", "text": "A"}
+        await asyncio.sleep(0.3)
+        yield {"type": "done", "text": "A", "sounds": [], "model_trace": None}
+
+    agent.chat_stream = fake_stream
+    try:
+        with TestClient(_ws_app(agent, tmp_path)) as client:
+            with client.websocket_connect(
+                "/v1/ws/chat", headers={"Authorization": "Bearer offline-admin-token"}
+            ) as ws:
+                assert ws.receive_json()["type"] == "hello"
+                ws.send_json({"type": "chat", "text": "hello"})
+                assert ws.receive_json()["type"] == "token"
+                ws.send_json({"type": "ping"})
+                assert ws.receive_json()["type"] == "pong"
+                assert ws.receive_json()["type"] == "done"
+    finally:
+        agent.memory_hub.close()
+
+
+def test_ws_malformed_frame_does_not_cancel_active_stream(tmp_path):
+    import asyncio
+
+    from fastapi.testclient import TestClient
+
+    from offline_support import offline_agent
+
+    agent = offline_agent(tmp_path)
+
+    async def fake_stream(*args, **kwargs):
+        yield {"type": "token", "text": "A"}
+        await asyncio.sleep(0.3)
+        yield {"type": "done", "text": "A", "sounds": [], "model_trace": None}
+
+    agent.chat_stream = fake_stream
+    try:
+        with TestClient(_ws_app(agent, tmp_path)) as client:
+            with client.websocket_connect(
+                "/v1/ws/chat", headers={"Authorization": "Bearer offline-admin-token"}
+            ) as ws:
+                assert ws.receive_json()["type"] == "hello"
+                ws.send_json({"type": "chat", "text": "hello"})
+                assert ws.receive_json()["type"] == "token"
+                ws.send_text("{not-json")
+                assert ws.receive_json()["type"] == "error"
+                assert ws.receive_json()["type"] == "done"
+    finally:
+        agent.memory_hub.close()
