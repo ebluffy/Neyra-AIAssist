@@ -79,6 +79,9 @@ _DEFAULT_CAPABILITIES: dict[str, bool] = {
     "supports_vision": True,
     "supports_tool_calls": False,
     "supports_stream_usage": False,
+    # Opt-out for providers/gateways without /v1/responses. Default true keeps
+    # existing configurations working; set false to force chat/completions.
+    "supports_responses": True,
 }
 
 

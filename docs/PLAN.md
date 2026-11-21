@@ -182,13 +182,15 @@
 | ID | Sev | Что | Почему не здесь |
 | --- | --- | --- | --- |
 | AR-2, AR-1 (#61), AR1 (#62), AR-1 (#63), AR-3 (#64) | P1 | Приёмка на железе: ключ-ринг, PTT/Stop, устройства, обрыв WSS, N→N+1 | Нужны Linux KDE Wayland и Windows-VM владельца |
-| AR-55 (часть 2) | P2 | Fallback talk на `/chat/completions` | Нужно продуктовое решение: по умолчанию talk уже ходит в `/chat/completions`; проблема только при включённой Responses-фиче, а её обход меняет сессии. Варианты — ниже |
+| AR-55 (часть 2) | P2 | Fallback talk на `/chat/completions` | Закрыто вариантом (а) в #82: `capabilities.supports_responses=false` отключает Responses и возвращает talk на chat/completions без смены сессий |
 
 **Решение по AR-55 (часть 2), нужно от владельца:**
 
 - (а) capability-флаг `supports_responses` в конфиге провайдера: без него Responses-фича выключается с предупреждением — минимально инвазивно, успешный путь не меняется;
 - (б) адаптер `/chat/completions` внутри `ResponsesTalk` — задача из Issue #68, меняет работу сессий;
 - (в) оставить как есть и задокументировать требование к провайдеру.
+
+Реализовано (а): `supports_responses` добавлен в capabilities (default true для совместимости). При `false` `responses_talk_model` возвращает обычную talk-модель, warmup не запускается, `/v1/llm/sessions` показывает `configured=true, supported=false, enabled=false, warmup_state=unsupported`.
 
 ### 4.4. Готово, когда (этап 1)
 

@@ -8,6 +8,9 @@ llm:
       # Enable only if the gateway supports stream_options.include_usage.
       capabilities:
         supports_stream_usage: false
+        # Set false if this gateway has no /v1/responses: talk falls back to
+        # /chat/completions instead of failing every turn.
+        # supports_responses: false
     openrouter:
       base_url: "https://openrouter.ai/api/v1"
 

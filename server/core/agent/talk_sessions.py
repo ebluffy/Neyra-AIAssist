@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import hashlib
 import json
 import threading
@@ -13,6 +14,8 @@ from types import SimpleNamespace
 
 from core.runtime.features import FEATURE_DEFAULTS, feature_enabled
 
+logger = logging.getLogger("neyra.talk_sessions")
+
 ENABLED = "llm.talk_model.responses.enabled"
 WARMUP = "llm.talk_model.responses.warmup_on_start"
 MAX_SESSIONS, MAX_TURNS, MAX_CHARS, IDLE_SECONDS = 200, 12, 48000, 1800
@@ -20,6 +23,24 @@ MAX_SESSIONS, MAX_TURNS, MAX_CHARS, IDLE_SECONDS = 200, 12, 48000, 1800
 
 class ConversationReset(RuntimeError):
     pass
+
+
+_RESPONSES_WARNED: set[str] = set()
+
+
+def responses_supported(agent) -> bool:
+    conn = getattr(agent, "_llm_conn_talk", None)
+    capabilities = getattr(conn, "capabilities", None) or {}
+    supported = bool(capabilities.get("supports_responses", True))
+    if not supported:
+        provider = str(getattr(conn, "provider", "") or "talk")
+        if provider not in _RESPONSES_WARNED:
+            _RESPONSES_WARNED.add(provider)
+            logger.warning(
+                "Responses disabled for provider=%s: capabilities.supports_responses=false",
+                provider,
+            )
+    return supported
 
 
 class RetiredResponse(str):
@@ -227,15 +248,21 @@ class TalkSessions:
 
     def status(self):
         with self.lock:
-            enabled = feature_enabled(self.agent.config, ENABLED)
-            return {"enabled": enabled, "warmup_on_start": feature_enabled(self.agent.config, WARMUP),
-                    "warmup_state": self.warmup_state if enabled else "disabled",
+            configured = feature_enabled(self.agent.config, ENABLED)
+            supported = responses_supported(self.agent)
+            enabled = configured and supported
+            state = self.warmup_state if enabled else ("unsupported" if configured else "disabled")
+            return {"enabled": enabled, "configured": configured, "supported": supported,
+                    "warmup_on_start": feature_enabled(self.agent.config, WARMUP),
+                    "warmup_state": state,
                     "warmup_error": self.warmup_error, "warmed_at": self.warmed_at,
                     "active_sessions": len(self.chains), "max_sessions": MAX_SESSIONS,
                     "max_turns": MAX_TURNS, "idle_seconds": IDLE_SECONDS}
 
     def start_warmup(self, *, manual=False):
-        if not feature_enabled(self.agent.config, ENABLED) or (not manual and not feature_enabled(self.agent.config, WARMUP)):
+        if not feature_enabled(self.agent.config, ENABLED) or not responses_supported(self.agent):
+            return False
+        if not manual and not feature_enabled(self.agent.config, WARMUP):
             return False
         with self.lock:
             if self.warming and not self.warming.done():
@@ -353,6 +380,8 @@ def current_transaction():
 
 
 def responses_talk_model(agent, model):
+    if not responses_supported(agent):
+        return model
     tx = current_transaction()
     if tx is None:
         return model
