@@ -392,3 +392,39 @@ def test_prepare_turn_override_uses_vision_caption(tmp_path):
         agent._caption_vision_images.assert_awaited_once()
     finally:
         agent.memory_hub.close()
+
+
+@pytest.mark.timeout(5)
+def test_ws_race_bad_frame_gets_bad_payload(tmp_path, monkeypatch):
+    import asyncio
+
+    from fastapi.testclient import TestClient
+
+    import core.api.app as app_module
+    from offline_support import offline_agent
+
+    agent = offline_agent(tmp_path)
+
+    async def fake_stream(*args, **kwargs):
+        yield {"type": "done", "text": "ok", "sounds": [], "model_trace": None}
+
+    async def both_done(tasks):
+        await asyncio.gather(*tasks)
+        return set(tasks), set()
+
+    agent.chat_stream = fake_stream
+    monkeypatch.setattr(app_module, "_ws_wait", both_done)
+    try:
+        with TestClient(_ws_app(agent, tmp_path)) as client:
+            with client.websocket_connect(
+                "/v1/ws/chat", headers={"Authorization": "Bearer offline-admin-token"}
+            ) as ws:
+                assert ws.receive_json()["type"] == "hello"
+                ws.send_json({"type": "chat", "text": "hello"})
+                ws.send_text("{oops")
+                events = [ws.receive_json(), ws.receive_json()]
+                assert {item["type"] for item in events} == {"done", "error"}
+                error = next(item for item in events if item["type"] == "error")
+                assert error["code"] == "bad_payload"
+    finally:
+        agent.memory_hub.close()
