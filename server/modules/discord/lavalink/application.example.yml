@@ -7,20 +7,22 @@ server:
 
 lavalink:
   # plugins/*.jar в git часто — Git LFS pointer → Lavalink падает с ZipException. Починка: python scripts/fetch_lavalink_plugins.py
-  # youtube-plugin: версию держим в sync с https://github.com/lavalink-devs/youtube-source/releases/latest (на момент правки latest = 1.18.0)
+  # youtube-plugin: версию держим в sync с https://github.com/lavalink-devs/youtube-source/releases/latest (на момент правки latest = 1.18.2)
   pluginsDir: "./plugins"
   plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.0"
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
       snapshot: false
     - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
       snapshot: false
   server:
-    # Must match discord.music.nodes[].password (default youshallnotpass).
-    password: "youshallnotpass"
+    # Must match discord.music.nodes[].password; never ship a public default.
+    password: "CHANGE_ME"
     sources:
       youtube: false
       bandcamp: true
-      soundcloud: true
+      # SoundCloud now serves AAC-HLS; Lavaplayer's built-in source cannot play it.
+      # soundy-plugin handles it instead, so the built-in source must stay off.
+      soundcloud: false
       twitch: true
       vimeo: true
       nico: false
@@ -108,6 +110,10 @@ plugins:
       countryCode: "RU"
       playlistLoadLimit: 6
       albumLoadLimit: 6
+  # soundy: AAC-HLS SoundCloud source. Jar is installed by
+  # scripts/fetch_lavalink_plugins.py; built-in soundcloud source must be false.
+  soundy:
+    enabled: true
 
 metrics:
   prometheus:
@@ -123,10 +129,10 @@ logging:
     path: ./logs/
   level:
     root: INFO
-    lavalink: DEBUG
-    com.sedmelluq.discord.lavaplayer: DEBUG
-    dev.lavalink.youtube: DEBUG
-    com.github.topi314.lavasrc: DEBUG
+    lavalink: INFO
+    com.sedmelluq.discord.lavaplayer: INFO
+    dev.lavalink.youtube: INFO
+    com.github.topi314.lavasrc: INFO
   request:
     enabled: true
     includeClientInfo: true

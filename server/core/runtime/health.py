@@ -19,6 +19,46 @@ logger = logging.getLogger("neyra.health")
 LLM_DEGRADATION_WINDOW_SECONDS = 600
 
 
+def check_lavalink(config: dict) -> dict:
+    """Check the configured local Lavalink node; never return the password."""
+    try:
+        discord = config.get("discord") if isinstance(config, dict) else None
+        music = (discord or {}).get("music") if isinstance(discord, dict) else None
+        nodes = (music or {}).get("nodes") if isinstance(music, dict) else None
+        if not isinstance(nodes, list) or not nodes:
+            return {"checked": False, "ok": True, "reason": "no music nodes"}
+        node = next((n for n in nodes if isinstance(n, dict) and str(n.get("uri") or "").strip()), None)
+        if node is None:
+            return {"checked": False, "ok": True, "reason": "no music nodes"}
+        uri = str(node.get("uri") or "").strip().rstrip("/")
+        password = str(node.get("password") or "").strip()
+        if not uri:
+            return {"checked": False, "ok": True, "reason": "no music nodes"}
+        import httpx
+
+        response = httpx.get(
+            f"{uri}/v4/info",
+            headers={"Authorization": password} if password else {},
+            timeout=2.5,
+        )
+        data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        return {
+            "checked": True,
+            "ok": response.status_code == 200,
+            "url": uri,
+            "status_code": response.status_code,
+            "version": data.get("version") if isinstance(data, dict) else None,
+            "plugins": [
+                str(p.get("name"))
+                for p in (data.get("plugins") or [])
+                if isinstance(p, dict) and p.get("name")
+            ] if isinstance(data, dict) else [],
+        }
+    except Exception as e:
+        logger.warning("lavalink health check failed", exc_info=True)
+        return {"checked": True, "ok": False, "error": type(e).__name__}
+
+
 class HealthMonitor:
     def __init__(
         self,
@@ -53,7 +93,7 @@ class HealthMonitor:
             "timestamp": datetime.now().isoformat(),
             "backend": await self._check_backend(),
             "storage": self._check_storage(),
-            "integrations": self._check_integrations(),
+            "integrations": await asyncio.to_thread(self._check_integrations),
             "self_healing": await self._check_and_heal_modules(),
         }
         report["ok"] = all(
@@ -229,7 +269,7 @@ class HealthMonitor:
             if not isinstance(self.config, dict):
                 return {"ok": True, "issues": []}
             if not self._discord_resident_enabled():
-                return {"ok": True, "issues": []}
+                return {"ok": True, "issues": [], "lavalink": {"checked": False}}
             token = str(
                 (os.environ.get("DISCORD_TOKEN") or "")
                 or (self.config.get("discord") or {}).get("token")
@@ -237,7 +277,13 @@ class HealthMonitor:
             ).strip()
             if not token:
                 issues.append("discord resident enabled in plugin.yaml but DISCORD_TOKEN is missing")
-            return {"ok": len(issues) == 0, "issues": issues}
+            lavalink = check_lavalink(self.config)
+            if lavalink.get("checked") and not lavalink.get("ok"):
+                issues.append(
+                    "lavalink is not ready: "
+                    + str(lavalink.get("error") or lavalink.get("status_code") or "unknown")
+                )
+            return {"ok": len(issues) == 0, "issues": issues, "lavalink": lavalink}
         except Exception as e:
             return {"ok": False, "error": str(e)[:500]}
 
