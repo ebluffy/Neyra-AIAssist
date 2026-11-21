@@ -60,12 +60,34 @@ core_process_running() {
 
 [ -f "$SRC/main.py" ] || die "нет $SRC/main.py — неверный путь исходников"
 command -v rsync >/dev/null || die "нужен rsync"
+command -v python3 >/dev/null || die "нужен python3"
 [ -d "$DEST_RAW" ] || die "нет $DEST_RAW"
 DEST=$(realpath -e "$DEST_RAW" 2>/dev/null) || die "не удалось разрешить путь $DEST_RAW"
 [ -f "$DEST/main.py" ] && [ -f "$DEST/core/api/app.py" ] && [ -x "$DEST/.venv/bin/python" ] \
   || die "$DEST не похож на установленное ядро (main.py, core/api/app.py, .venv)"
 [ "$DEST" != "/" ] || die "DEST не может быть корнем"
 [ "$(realpath "$SRC")" != "$DEST" ] || die "SRC и DEST совпадают"
+
+# Код должен принадлежать пользователю сервиса: при User=openbot каталог
+# root:root 0700 не даёт systemd даже войти в WorkingDirectory.
+OWNER_HELPER="$(cd "$(dirname "$0")" && pwd)/service-owner.py"
+[ -f "$OWNER_HELPER" ] || die "нет service-owner.py рядом с update-core.sh"
+OWNER_INFO=$(python3 "$OWNER_HELPER" "$SERVICE") \
+  || die "не удалось определить владельца юнита $SERVICE"
+SERVICE_USER=$(printf '%s\n' "$OWNER_INFO" | sed -n '1p')
+SERVICE_GROUP=$(printf '%s\n' "$OWNER_INFO" | sed -n '2p')
+SERVICE_HOME=$(printf '%s\n' "$OWNER_INFO" | sed -n '3p')
+[ -n "$SERVICE_USER" ] && [ -n "$SERVICE_GROUP" ] && [ -n "$SERVICE_HOME" ] \
+  || die "service-owner.py вернул неполного владельца"
+echo "владелец кода: $SERVICE_USER:$SERVICE_GROUP"
+run_service() {
+  if [ "$SERVICE_USER" = root ]; then
+    "$@"
+  else
+    command -v runuser >/dev/null || die "нужен runuser для запуска от $SERVICE_USER"
+    runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" "$@"
+  fi
+}
 for name in .venv data config models backups logs .env config.yaml; do
   [ ! -L "$DEST/$name" ] || die "$DEST/$name — символьная ссылка: полный снимок и откат невозможны, замени на обычный путь"
 done
@@ -165,6 +187,7 @@ echo "== 1/7 полный бэкап в $BACKUP"
 cp -a --reflink=auto "$DEST" "$BACKUP" || { rm -rf "$BACKUP"; die "не удалось скопировать $DEST"; }
 [ -f "$BACKUP/main.py" ] && [ -x "$BACKUP/.venv/bin/python" ] || { rm -rf "$BACKUP"; die "бэкап неполный: $BACKUP"; }
 chmod 700 "$BACKUP"
+umask 022
 
 restore() {
   echo "== откат из $BACKUP" >&2
@@ -177,13 +200,19 @@ restore() {
 trap 'rc=$?; rm -rf "$STAGE"; if [ "$rc" -ne 0 ]; then restore; fi; exit "$rc"' EXIT
 
 echo "== 2/7 синхронизация кода (data/config/models/.env не перезаписываются rsync)"
-rsync -a --no-owner --no-group --chown=root:root "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" \
+rsync -a --no-owner --no-group --chown="$SERVICE_USER:$SERVICE_GROUP" "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" \
   || die "rsync кода не удался"
+chown "$SERVICE_USER:$SERVICE_GROUP" "$DEST" \
+  || die "не удалось вернуть $DEST владельцу $SERVICE_USER:$SERVICE_GROUP"
 
 echo "== 3/7 зависимости в $DEST/.venv"
-"$DEST/.venv/bin/python" -m pip install --disable-pip-version-check -r "$DEST/requirements.txt" \
+# .venv исключён из rsync: возвращаем ему владельца сервиса до pip, иначе
+# новые пакеты от root будут недоступны процессу под openbot.
+chown -R "$SERVICE_USER:$SERVICE_GROUP" "$DEST/.venv" \
+  || die "не удалось вернуть $DEST/.venv владельцу $SERVICE_USER:$SERVICE_GROUP"
+run_service "$DEST/.venv/bin/python" -m pip install --disable-pip-version-check -r "$DEST/requirements.txt" \
   || die "pip install не удался"
-"$DEST/.venv/bin/python" -m pip check || die "pip check нашёл сломанные зависимости"
+run_service "$DEST/.venv/bin/python" -m pip check || die "pip check нашёл сломанные зависимости"
 
 echo "== 4/7 vault key"
 if [ -f "$DEST/scripts/ensure_vault_key.py" ]; then
@@ -196,16 +225,22 @@ fi
 
 echo "== 5/7 import-smoke без запуска агента"
 SMOKE_DATA=$(mktemp -d)
+chown "$SERVICE_USER:$SERVICE_GROUP" "$SMOKE_DATA" \
+  || die "не удалось отдать $SMOKE_DATA пользователю $SERVICE_USER"
 trap 'rc=$?; rm -rf "$SMOKE_DATA" "$STAGE"; if [ "$rc" -ne 0 ]; then restore; fi; exit "$rc"' EXIT
-(cd "$DEST" && NEYRA_DATA_DIR="$SMOKE_DATA" PYTHONDONTWRITEBYTECODE=1 \
-  .venv/bin/python -c "import jwt, core.api.app, core.neyra") || die "import-smoke не прошёл"
+(cd "$DEST" && run_service env NEYRA_DATA_DIR="$SMOKE_DATA" PYTHONDONTWRITEBYTECODE=1 \
+  "$DEST/.venv/bin/python" -c "import jwt, core.api.app, core.neyra") || die "import-smoke не прошёл"
 
 echo "== 6/7 compileall"
-(cd "$DEST" && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m compileall -q core main.py) \
+# Старый root-кеш под umask 077 недоступен сервису: пересобираем от его имени.
+find "$DEST/core" "$DEST/__pycache__" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+(cd "$DEST" && run_service "$DEST/.venv/bin/python" -m compileall -q core main.py) \
   || die "compileall не прошёл"
 
 echo "== 7/7 отметка сборки"
 printf '%s\n' "$HEAD" > "$DEST/.deploy-sha"
+chown "$SERVICE_USER:$SERVICE_GROUP" "$DEST/.deploy-sha" \
+  || die "не удалось вернуть $DEST/.deploy-sha владельцу $SERVICE_USER:$SERVICE_GROUP"
 trap - EXIT
 rm -rf "$SMOKE_DATA" "$STAGE"
 

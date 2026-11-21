@@ -141,3 +141,36 @@ def test_unresolvable_data_dir_returns_4_not_traceback(tmp_path: Path) -> None:
     assert result.returncode == 4
     assert "не удалось разрешить data_dir" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_update_core_keeps_service_owner() -> None:
+    text = (HERE / "update-core.sh").read_text(encoding="utf-8")
+    assert 'service-owner.py' in text
+    assert '--chown="$SERVICE_USER:$SERVICE_GROUP"' in text
+    assert '--chown=root:root' not in text
+    sync = text.index("== 2/7 синхронизация кода")
+    owner_reset = text.index('chown "$SERVICE_USER:$SERVICE_GROUP" "$DEST"', sync)
+    deps = text.index("== 3/7 зависимости", sync)
+    assert sync < owner_reset < deps
+
+
+def test_update_core_runs_pip_and_smoke_as_service_user() -> None:
+    text = (HERE / "update-core.sh").read_text(encoding="utf-8")
+    deps = text.index("== 3/7 зависимости")
+    vault = text.index("== 4/7 vault key")
+    smoke = text.index("== 5/7 import-smoke")
+    compileall = text.index("== 6/7 compileall")
+    assert 'chown -R "$SERVICE_USER:$SERVICE_GROUP" "$DEST/.venv"' in text[deps:vault]
+    assert 'run_service "$DEST/.venv/bin/python" -m pip install' in text[deps:vault]
+    assert 'run_service "$DEST/.venv/bin/python" -m pip check' in text[deps:vault]
+    assert "run_service env NEYRA_DATA_DIR=" in text[smoke:compileall]
+    assert "-name __pycache__ -prune -exec rm -rf" in text[compileall:]
+    assert 'run_service "$DEST/.venv/bin/python" -m compileall' in text[compileall:]
+
+
+def test_update_core_does_not_ignore_deploy_sha_chown() -> None:
+    text = (HERE / "update-core.sh").read_text(encoding="utf-8")
+    marker = 'chown "$SERVICE_USER:$SERVICE_GROUP" "$DEST/.deploy-sha"'
+    start = text.index(marker)
+    tail = "\n".join(text[start:].splitlines()[:2])
+    assert "|| die" in tail
