@@ -5311,166 +5311,171 @@ def build_app(
                 except Exception:
                     logger.debug("WS chat stream close failed | trace_id=%s", trace_id, exc_info=True)
 
-        while True:
-            if active_chat is None:
-                if pending_msg is not None:
-                    msg, pending_msg = pending_msg, None
-                else:
+        inbox: asyncio.Queue = asyncio.Queue()
+        _BAD = object()
+        _DISCONNECT = object()
+
+        async def _receiver() -> None:
+            try:
+                while True:
                     try:
-                        msg = await asyncio.wait_for(websocket.receive_json(), timeout=ws_idle_timeout)
+                        item = await websocket.receive_json()
+                    except WebSocketDisconnect:
+                        break
+                    except Exception:
+                        await inbox.put(_BAD)
+                        continue
+                    await inbox.put(item)
+            finally:
+                await inbox.put(_DISCONNECT)
+
+        receiver_task = asyncio.create_task(_receiver())
+        try:
+            while True:
+                if active_chat is None:
+                    try:
+                        item = await asyncio.wait_for(inbox.get(), timeout=ws_idle_timeout)
                     except asyncio.TimeoutError:
                         await websocket.send_json({"type": "error", "code": "idle_timeout", "trace_id": trace_id})
                         await asyncio.sleep(ws_close_grace)
                         await websocket.close(code=1000, reason="idle timeout")
                         break
-                    except WebSocketDisconnect:
+                    if item is _DISCONNECT:
                         break
+                    if item is _BAD:
+                        await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                        continue
+                    msg = item
+                    if not isinstance(msg, dict):
+                        await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                        continue
+                    try:
+                        parsed = WsChatMessage.model_validate(msg)
                     except Exception:
                         await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
                         continue
 
-                if not isinstance(msg, dict):
+                    kind = parsed.type
+                    if kind == "ping":
+                        await websocket.send_json({"type": "pong", "ts": datetime.now().isoformat(), "trace_id": trace_id})
+                        continue
+                    if kind == "stop":
+                        await websocket.send_json({"type": "stopped", "trace_id": trace_id})
+                        continue
+                    if kind != "chat":
+                        await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                        continue
+
+                    text = (parsed.text or "").strip()
+                    if not text:
+                        await websocket.send_json({"type": "error", "code": "empty_text", "trace_id": trace_id})
+                        continue
+                    username = (parsed.username or "ws_user").strip() or "ws_user"
+                    platform_user_id = (parsed.platform_user_id or "").strip()
+                    channel_id = (parsed.channel_id or "ws").strip() or "ws"
+                    ws_disp = parsed.author_display_name or parsed.display_name
+                    ws_author_disp = str(ws_disp).strip() if ws_disp else None
+
+                    ws_identity = websocket.scope.get("state", {}).get("web_identity")
+                    from core.agent.llm_setup import model_allowed_for_role
+                    if parsed.model and not model_allowed_for_role(config, ws_role, parsed.model):
+                        await websocket.send_json(
+                            {"type": "error", "code": "model_not_allowed", "message": "Модель недоступна для этой роли.", "trace_id": trace_id}
+                        )
+                        continue
+                    try:
+                        vision_images, attachment_text = await asyncio.to_thread(
+                            attachment_store.resolve_for_chat, parsed.attachments, _attachment_owner(websocket), channel_id,
+                        ) if parsed.attachments else (None, '')
+                    except (AttachmentError, ApiError) as error:
+                        await websocket.send_json({"type": "error", "code": error.code, "message": error.message, "trace_id": trace_id})
+                        continue
+
+                    active_chat = asyncio.create_task(
+                        _stream_chat(
+                            parsed, text, vision_images, attachment_text,
+                            username, platform_user_id, channel_id, ws_author_disp,
+                        )
+                    )
+                    continue
+
+                get_task = asyncio.create_task(inbox.get())
+                done, _pending = await asyncio.wait(
+                    {active_chat, get_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                item = None
+                if get_task in done:
+                    item = get_task.result()
+                else:
+                    get_task.cancel()
+                    await asyncio.gather(get_task, return_exceptions=True)
+
+                if active_chat in done:
+                    if active_chat.cancelled():
+                        active_chat = None
+                    else:
+                        exc = active_chat.exception()
+                        active_chat = None
+                        if exc is not None:
+                            if isinstance(exc, WebSocketDisconnect):
+                                break
+                            logger.exception("WS chat task failed | trace_id=%s", trace_id, exc_info=exc)
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "code": "internal_chat_error",
+                                    "message": f"Внутренняя ошибка сервера. Код для поддержки: {trace_id}",
+                                    "trace_id": trace_id,
+                                }
+                            )
+                    if item is _DISCONNECT:
+                        break
+                    if item is _BAD:
+                        await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                        continue
+                    if item is not None:
+                        pending_msg = item
+                    continue
+
+                if item is _DISCONNECT:
+                    active_chat.cancel()
+                    await asyncio.gather(active_chat, return_exceptions=True)
+                    active_chat = None
+                    break
+                if item is _BAD:
                     await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
                     continue
                 try:
-                    parsed = WsChatMessage.model_validate(msg)
+                    if not isinstance(item, dict):
+                        raise ValueError("not an object")
+                    parsed = WsChatMessage.model_validate(item)
                 except Exception:
                     await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
                     continue
-
-                kind = parsed.type
-                if kind == "ping":
-                    await websocket.send_json({"type": "pong", "ts": datetime.now().isoformat(), "trace_id": trace_id})
-                    continue
-                if kind == "stop":
+                if parsed.type == "stop":
+                    active_chat.cancel()
+                    await asyncio.gather(active_chat, return_exceptions=True)
+                    active_chat = None
                     await websocket.send_json({"type": "stopped", "trace_id": trace_id})
                     continue
-                if kind != "chat":
-                    await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                if parsed.type == "ping":
+                    await websocket.send_json({"type": "pong", "ts": datetime.now().isoformat(), "trace_id": trace_id})
                     continue
-
-                text = (parsed.text or "").strip()
-                if not text:
-                    await websocket.send_json({"type": "error", "code": "empty_text", "trace_id": trace_id})
-                    continue
-                username = (parsed.username or "ws_user").strip() or "ws_user"
-                platform_user_id = (parsed.platform_user_id or "").strip()
-                channel_id = (parsed.channel_id or "ws").strip() or "ws"
-                ws_disp = parsed.author_display_name or parsed.display_name
-                ws_author_disp = str(ws_disp).strip() if ws_disp else None
-
-                ws_identity = websocket.scope.get("state", {}).get("web_identity")
-                from core.agent.llm_setup import model_allowed_for_role
-                if parsed.model and not model_allowed_for_role(config, ws_role, parsed.model):
-                    await websocket.send_json(
-                        {"type": "error", "code": "model_not_allowed", "message": "Модель недоступна для этой роли.", "trace_id": trace_id}
-                    )
-                    continue
-                try:
-                    vision_images, attachment_text = await asyncio.to_thread(
-                        attachment_store.resolve_for_chat, parsed.attachments, _attachment_owner(websocket), channel_id,
-                    ) if parsed.attachments else (None, '')
-                except (AttachmentError, ApiError) as error:
-                    await websocket.send_json({"type": "error", "code": error.code, "message": error.message, "trace_id": trace_id})
-                    continue
-
-                active_chat = asyncio.create_task(
-                    _stream_chat(
-                        parsed, text, vision_images, attachment_text,
-                        username, platform_user_id, channel_id, ws_author_disp,
-                    )
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "busy",
+                        "message": "Дождитесь завершения текущего ответа или отправьте stop.",
+                        "trace_id": trace_id,
+                    }
                 )
-                continue
-
-            recv_task = asyncio.create_task(websocket.receive_json())
-            done, _pending = await asyncio.wait(
-                {active_chat, recv_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if active_chat in done:
-                recv_msg = None
-                recv_disconnected = False
-                recv_bad = False
-                if recv_task in done:
-                    try:
-                        recv_msg = recv_task.result()
-                    except WebSocketDisconnect:
-                        recv_disconnected = True
-                    except Exception:
-                        recv_bad = True
-                else:
-                    recv_task.cancel()
-                    await asyncio.gather(recv_task, return_exceptions=True)
-
-                if active_chat.cancelled():
-                    active_chat = None
-                    if recv_disconnected:
-                        break
-                    if recv_bad:
-                        await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
-                    if recv_msg is not None:
-                        pending_msg = recv_msg
-                    continue
-                exc = active_chat.exception()
-                active_chat = None
-                if exc is not None:
-                    if isinstance(exc, WebSocketDisconnect):
-                        break
-                    logger.exception("WS chat task failed | trace_id=%s", trace_id, exc_info=exc)
-                    await websocket.send_json(
-                        {
-                            "type": "error",
-                            "code": "internal_chat_error",
-                            "message": f"Внутренняя ошибка сервера. Код для поддержки: {trace_id}",
-                            "trace_id": trace_id,
-                        }
-                    )
-                if recv_disconnected:
-                    break
-                if recv_bad:
-                    await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
-                if recv_msg is not None:
-                    pending_msg = recv_msg
-                continue
-
-            try:
-                msg = recv_task.result()
-            except WebSocketDisconnect:
+        finally:
+            receiver_task.cancel()
+            await asyncio.gather(receiver_task, return_exceptions=True)
+            if active_chat is not None and not active_chat.done():
                 active_chat.cancel()
                 await asyncio.gather(active_chat, return_exceptions=True)
-                active_chat = None
-                break
-            except Exception:
-                # A malformed frame must not cancel an answer that is already
-                # streaming. Only an explicit stop or disconnect does that.
-                await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
-                continue
-
-            try:
-                if not isinstance(msg, dict):
-                    raise ValueError("not an object")
-                parsed = WsChatMessage.model_validate(msg)
-            except Exception:
-                await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
-                continue
-
-            if parsed.type == "stop":
-                active_chat.cancel()
-                await asyncio.gather(active_chat, return_exceptions=True)
-                active_chat = None
-                await websocket.send_json({"type": "stopped", "trace_id": trace_id})
-                continue
-            if parsed.type == "ping":
-                await websocket.send_json({"type": "pong", "ts": datetime.now().isoformat(), "trace_id": trace_id})
-                continue
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "busy",
-                    "message": "Дождитесь завершения текущего ответа или отправьте stop.",
-                    "trace_id": trace_id,
-                }
-            )
 
     @app.websocket("/v1/ws/audio")
     async def ws_audio(

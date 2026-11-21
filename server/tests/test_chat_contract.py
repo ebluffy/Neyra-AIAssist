@@ -322,3 +322,33 @@ def test_plan_talk_vision_uses_caption_for_model_override():
     )
     assert plan.need_talk_caption is True
     assert plan.talk_vm is None
+
+
+def test_ws_race_both_done_keeps_client_frame(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from offline_support import offline_agent
+
+    agent = offline_agent(tmp_path)
+    seen = []
+
+    async def fake_stream(*args, **kwargs):
+        seen.append(kwargs.get("text") if "text" in kwargs else (args[0] if args else ""))
+        yield {"type": "done", "text": "ok", "sounds": [], "model_trace": None}
+
+    agent.chat_stream = fake_stream
+    try:
+        with TestClient(_ws_app(agent, tmp_path)) as client:
+            with client.websocket_connect(
+                "/v1/ws/chat", headers={"Authorization": "Bearer offline-admin-token"}
+            ) as ws:
+                assert ws.receive_json()["type"] == "hello"
+                ws.send_json({"type": "chat", "text": "first"})
+                ws.send_json({"type": "chat", "text": "second"})
+                first = ws.receive_json()
+                second = ws.receive_json()
+                assert first["type"] == "done"
+                assert second["type"] == "done"
+                assert len(seen) == 2
+    finally:
+        agent.memory_hub.close()
