@@ -260,7 +260,9 @@ def test_ws_malformed_frame_does_not_cancel_active_stream(tmp_path):
                 ws.send_json({"type": "chat", "text": "hello"})
                 assert ws.receive_json()["type"] == "token"
                 ws.send_text("{not-json")
-                assert ws.receive_json()["type"] == "error"
+                error = ws.receive_json()
+                assert error["type"] == "error"
+                assert error["code"] == "bad_payload"
                 assert ws.receive_json()["type"] == "done"
     finally:
         agent.memory_hub.close()
@@ -294,8 +296,6 @@ def test_responses_talk_uses_bound_model_name():
 
 
 def test_web_role_cannot_select_unlisted_model(real_api):
-    from test_web_role import _identity_headers
-
     http, agent = real_api
     async def fake_stream(*args, **kwargs):
         yield {"type": "done", "text": "must-not-run", "sounds": [], "model_trace": None}
@@ -306,3 +306,19 @@ def test_web_role_cannot_select_unlisted_model(real_api):
         event = ws.receive_json()
         assert event["type"] == "error"
         assert event["code"] == "model_not_allowed"
+
+
+def test_plan_talk_vision_uses_caption_for_model_override():
+    from core.agent.turn_prep import plan_talk_vision
+
+    plan = plan_talk_vision(
+        [("image/png", "base64")],
+        brain_native_vis=False,
+        talk_model="override-model",
+        brain_model="brain-model",
+        has_vision_llm=True,
+        talk_is_vision_client=False,
+        vision_is_brain_client=False,
+    )
+    assert plan.need_talk_caption is True
+    assert plan.talk_vm is None

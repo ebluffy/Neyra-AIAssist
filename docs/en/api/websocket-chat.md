@@ -12,7 +12,7 @@ Reconnect: open a **new** WebSocket (hello includes `"reconnect":"open_new_socke
 ## Client → server
 - `{"type":"ping"}`
 - `{"type":"chat","text":"...","username":"...","platform_user_id":"...","channel_id":"...","model":"qwen/qwen3.8-27b:free"}`
-  - `model` is optional; it is a model id of the current talk provider (the provider is not switched); without it `llm.talk_model` is used.
+  - `model` is optional; it is a model id of the current talk provider (the provider is not switched); without it `llm.talk_model` is used. The `web` role may use only the default and ids in `llm.chat_models_allowed_for_web`.
 - `{"type":"stop"}` — cancel the current answer without closing the WebSocket.
 
 ## Server → client
@@ -22,4 +22,4 @@ Reconnect: open a **new** WebSocket (hello includes `"reconnect":"open_new_socke
 - `phase` (retrieval/plan/answer)
 - `done` (final + sounds + usage)
 - `stopped` — acknowledgement for `stop`
-- `error` (including `busy` when a new `chat` arrives while an answer is streaming)
+- `error` (including `busy` when a new `chat` arrives while an answer is streaming, and `model_not_allowed` for a forbidden override)

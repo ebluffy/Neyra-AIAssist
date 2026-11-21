@@ -179,9 +179,10 @@ async def prepare_turn(
         brain_native_vis=brain_native_vis,
         talk_model=requested_model or default_talk_model,
         brain_model=str(getattr(agent, "llm_brain_model", "") or ""),
-        # An arbitrary override is not assumed to be a vision client; use the
-        # configured vision/caption path instead of sending pixels blindly.
-        has_vision_llm=agent.llm_vision is not None and model_is_default,
+        # Keep the configured vision gate; an arbitrary override is not
+        # assumed to be the vision client, so talk gets a caption instead of
+        # raw pixels.
+        has_vision_llm=agent.llm_vision is not None,
         talk_is_vision_client=agent.llm_talk is agent.llm_vision and model_is_default,
         vision_is_brain_client=agent.llm_vision is agent.llm_brain,
     )

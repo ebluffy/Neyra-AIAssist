@@ -5390,13 +5390,14 @@ def build_app(
             if active_chat in done:
                 recv_msg = None
                 recv_disconnected = False
+                recv_bad = False
                 if recv_task in done:
                     try:
                         recv_msg = recv_task.result()
                     except WebSocketDisconnect:
                         recv_disconnected = True
                     except Exception:
-                        recv_msg = None
+                        recv_bad = True
                 else:
                     recv_task.cancel()
                     await asyncio.gather(recv_task, return_exceptions=True)
@@ -5405,6 +5406,8 @@ def build_app(
                     active_chat = None
                     if recv_disconnected:
                         break
+                    if recv_bad:
+                        await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
                     if recv_msg is not None:
                         pending_msg = recv_msg
                     continue
@@ -5424,6 +5427,8 @@ def build_app(
                     )
                 if recv_disconnected:
                     break
+                if recv_bad:
+                    await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
                 if recv_msg is not None:
                     pending_msg = recv_msg
                 continue

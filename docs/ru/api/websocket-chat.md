@@ -12,7 +12,7 @@ Reconnect: открыть **новый** WebSocket (в hello есть `"reconnec
 ## Клиент → сервер
 - `{"type":"ping"}`
 - `{"type":"chat","text":"...","username":"...","platform_user_id":"...","channel_id":"...","model":"qwen/qwen3.8-27b:free"}`
-  - `model` необязателен; это id модели текущего talk-провайдера, провайдер не меняется; без него используется `llm.talk_model`.
+  - `model` необязателен; это id модели текущего talk-провайдера, провайдер не меняется; без него используется `llm.talk_model`. Для роли `web` доступны только default и id из `llm.chat_models_allowed_for_web`.
 - `{"type":"stop"}` — отменить текущий ответ, не закрывая WebSocket.
 
 ## Сервер → клиент
@@ -22,4 +22,4 @@ Reconnect: открыть **новый** WebSocket (в hello есть `"reconnec
 - `phase` (этап retrieval/plan/answer)
 - `done` (финал + sounds + usage)
 - `stopped` — подтверждение `stop`
-- `error` (включая `busy`, если пришёл новый `chat` во время ответа)
+- `error` (включая `busy`, если пришёл новый `chat` во время ответа, и `model_not_allowed` для запрещённого override)
