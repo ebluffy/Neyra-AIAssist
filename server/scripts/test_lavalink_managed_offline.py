@@ -58,7 +58,9 @@ def main() -> int:
             # Stale yml (CHANGE_ME / 0.0.0.0) must be repaired in place
             yml.write_text(
                 'server:\n  address: 0.0.0.0\nlavalink:\n  server:\n    password: "CHANGE_ME"\n'
-                "    sources:\n      youtube: true\n      http: true\n      local: true\n",
+                "    sources:\n      youtube: true\n      soundcloud: true\n      http: true\n      local: true\n"
+                "plugins:\n  soundy:\n    enabled: false\n"
+                "logging:\n  level:\n    dev.lavalink.youtube: DEBUG\n",
                 encoding="utf-8",
             )
             _ensure_application_yml(lava, password="youshallnotpass")
@@ -76,6 +78,14 @@ def main() -> int:
                 errs.append("stale yml missing http: false")
             if "local: false" not in fixed:
                 errs.append("stale yml missing local: false")
+            if "soundcloud: false" not in fixed:
+                errs.append("stale yml missing soundcloud: false")
+            if "soundy:\n    enabled: true" not in fixed:
+                errs.append("stale yml soundy plugin not enabled")
+            if "dev.lavalink.youtube: DEBUG" in fixed:
+                errs.append("stale yml still logs youtube at DEBUG")
+            if "dev.lavalink.youtube: INFO" not in fixed:
+                errs.append("stale yml missing youtube INFO log level")
 
         msg = stop_managed_lavalink(plugin)
         if "nothing" not in msg and "stopped" not in msg:

@@ -37,7 +37,7 @@ Pillow>=10.0.0  # сжатие картинок для vision (до 1024×768 и
 
 # ── Discord Text Bot (+ voice for music / Lavalink) ─────────────────────────
 discord.py[voice]>=2.5.0,<3
-wavelink>=3.4.1
+wavelink==3.5.2  # Lavalink 4.2 loadtracks uses data/tracks shape; tested with soundy-plugin
 # PyNaCl + davey come from discord.py[voice] (DAVE E2EE required since discord.py 2.7)
 
 

@@ -485,6 +485,13 @@ class LavalinkPoolAdapter:
             )
         return self.ranked_nodes
 
+    def reset_preflight(self) -> None:
+        """Force a fresh probe after a managed Lavalink restart."""
+        self._tested = False
+        self.ranked_nodes = []
+        self.connected = False
+        self.last_error = ""
+
     async def connect(self, client: Any | None = None) -> int:
         async with self._connect_lock:
             if self._wavelink is not None:
@@ -892,6 +899,25 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
         return {"ok": False, "status": "failed", "error": "discord client is unavailable"}
     if not service.adapter.connected:
         connected = await service.adapter.connect(client=bot)
+        if connected <= 0:
+            # The managed JVM can die while the Python core stays alive. Try to
+            # bring it back before failing the user's music command.
+            try:
+                from modules.discord.lavalink_process import ensure_managed_lavalink
+
+                ok, detail = await asyncio.to_thread(
+                    ensure_managed_lavalink,
+                    ctx.config or {},
+                    Path(__file__).resolve().parent,
+                )
+                if ok:
+                    logger.info("discord.music recovered managed Lavalink: %s", detail)
+                    service.adapter.reset_preflight()
+                    connected = await service.adapter.connect(client=bot)
+                else:
+                    logger.error("discord.music managed Lavalink restart failed: %s", detail)
+            except Exception:
+                logger.exception("discord.music managed Lavalink recovery failed")
         if connected <= 0:
             return {
                 "ok": False,
