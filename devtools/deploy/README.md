@@ -65,9 +65,14 @@ Compose вызывается явно: `docker compose -p web --env-file /opt/ne
 
 ## Обновление ядра и data_dir
 
-`update-core.sh` берёт владельца кода из юнита (`systemctl show -p User/Group`)
-и выкладывает файлы с этим владельцем. Иначе `User=openbot` не сможет войти в
-`WorkingDirectory` после `rsync` от root.
+`service-owner.py` определяет `User`, `Group` и `Home` юнита и передаёт их
+`update-core.sh`. Скрипт падает, если юнит не загружен, включён `DynamicUser=yes`
+или пользователь/группа не найдены, вместо тихого перехода на `root`. Код,
+корень `DEST`, `.venv` и `.deploy-sha` получают владельца сервиса; шаги pip,
+pip check, import-smoke и compileall идут от него через `runuser` (util-linux),
+поэтому сервис под `openbot` может читать пакеты и `WorkingDirectory` после
+`rsync` от root. Без `python3`, `runuser` и загруженного юнита выкладка
+останавливается до изменения боевых файлов.
 
 `update-core.sh` до шага vault резолвит `data_dir` ядра (`NEYRA_DATA_DIR` →
 `paths.data_dir` → `./data`) через `check-data-dir.py`. Если каталог лежит вне

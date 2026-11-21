@@ -13,14 +13,24 @@ SCRIPT = HERE / "service-owner.py"
 
 
 def run_owner(tmp_path: Path, *, load: str = "loaded", user: str = "",
-              group: str = "", dynamic: str = "no") -> subprocess.CompletedProcess:
+              group: str = "", dynamic: str = "no",
+              omit: str = "") -> subprocess.CompletedProcess:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     systemctl = bin_dir / "systemctl"
     systemctl.write_text(
-        "#!/bin/sh\n"
-        'printf "%s\\n" "${FAKE_LOAD:-loaded}" "${FAKE_USER:-}" '
-        '"${FAKE_GROUP:-}" "${FAKE_DYNAMIC:-no}"\n',
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "props = {\n"
+        "    'DynamicUser': os.environ.get('FAKE_DYNAMIC', 'no'),\n"
+        "    'User': os.environ.get('FAKE_USER', ''),\n"
+        "    'LoadState': os.environ.get('FAKE_LOAD', 'loaded'),\n"
+        "    'Group': os.environ.get('FAKE_GROUP', ''),\n"
+        "}\n"
+        "omit = set(filter(None, os.environ.get('FAKE_OMIT', '').split(',')))\n"
+        "for key in ('DynamicUser', 'User', 'LoadState', 'Group'):\n"
+        "    if key not in omit:\n"
+        "        print(f'{key}={props[key]}')\n",
         encoding="utf-8",
     )
     systemctl.chmod(0o755)
@@ -31,6 +41,7 @@ def run_owner(tmp_path: Path, *, load: str = "loaded", user: str = "",
         "FAKE_USER": user,
         "FAKE_GROUP": group,
         "FAKE_DYNAMIC": dynamic,
+        "FAKE_OMIT": omit,
     }
     return subprocess.run(
         [sys.executable, str(SCRIPT), "neyra.service"],
@@ -54,6 +65,12 @@ def test_empty_user_is_root(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     root = pwd.getpwnam("root")
     assert result.stdout.splitlines() == ["root", grp.getgrgid(root.pw_gid).gr_name, root.pw_dir]
+
+
+def test_missing_property_fails(tmp_path: Path) -> None:
+    result = run_owner(tmp_path, omit="Group")
+    assert result.returncode == 2
+    assert "нет свойств" in result.stderr
 
 
 def test_missing_unit_fails(tmp_path: Path) -> None:

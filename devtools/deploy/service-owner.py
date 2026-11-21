@@ -49,10 +49,18 @@ def main(argv: list[str]) -> int:
             f"{result.stderr.strip()}",
             2,
         )
-    lines = result.stdout.splitlines()
-    if len(lines) < 4:
-        return fail(f"systemctl show {service} вернул неполный ответ", 2)
-    load, raw_user, raw_group, dynamic = (item.strip() for item in lines[:4])
+    props: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            props[key.strip()] = value.strip()
+    missing = {"LoadState", "User", "Group", "DynamicUser"} - props.keys()
+    if missing:
+        return fail(f"systemctl show {service}: нет свойств {sorted(missing)}", 2)
+    load = props["LoadState"]
+    raw_user = props["User"]
+    raw_group = props["Group"]
+    dynamic = props["DynamicUser"]
     if load != "loaded":
         return fail(f"юнит {service} не загружен: LoadState={load or 'empty'}", 2)
     if dynamic.lower() in {"yes", "true", "1"}:
