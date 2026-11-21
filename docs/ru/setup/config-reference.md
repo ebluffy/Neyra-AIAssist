@@ -52,7 +52,8 @@ CLI-провайдер OpenCode включается блоком `kind: cli`, `
 `experimental: true` и путём `cli_path` к проверенной версии. Ядро запускает
 его в `bwrap`, инструменты вырезаются из запроса, а картинки vision-лейна
 передаются через `opencode run -f`. Уровень рассуждения задаётся в роли:
-`llm.<role>_model.thinking_effort: off|low|medium|high|max`. OpenCode принимает
+`llm.<role>_model.thinking_effort: "off"|low|medium|high|max`; `off`/`on` в YAML
+1.1 — булевы значения, поэтому `off` пишите в кавычках. OpenCode принимает
 variant в модели (`provider/model#variant`); для DeepSeek доступны low/high/max,
 поэтому `medium` по умолчанию ведёт в `high`, а `off`/`default` не добавляют
 variant. Переопределение — `llm.providers.<name>.variants`. Brain на CLI не

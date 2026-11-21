@@ -70,6 +70,14 @@ _IMAGE_EXTENSIONS = {
     "image/gif": "gif",
 }
 
+
+def _clamp_limit(value: Any, hard: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return hard
+    return max(1, min(number, hard))
+
 # Широкие корни, которые нельзя монтировать в песочницу целиком (AR-68).
 _WIDE_ROOTS = {
     "/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64", "/media",
@@ -103,12 +111,21 @@ EFFORT_VARIANTS: dict[str, str] = {
 }
 
 
+def _variant_key(value: Any) -> str:
+    if isinstance(value, bool):
+        return "default" if value else "off"
+    return str(value or "").strip().lower()
+
+
 def cli_variant(block: dict[str, Any], effort: str) -> str:
     """Variant for a lane effort, with a provider-level override map."""
     custom = block.get("variants") if isinstance(block, dict) else None
-    if isinstance(custom, dict) and effort in custom:
-        return str(custom.get(effort) or "").strip()
-    return EFFORT_VARIANTS.get(str(effort or "").strip().lower(), "")
+    key = _variant_key(effort)
+    if isinstance(custom, dict):
+        normalized = {_variant_key(k): v for k, v in custom.items()}
+        if key in normalized:
+            return str(normalized.get(key) or "").strip()
+    return EFFORT_VARIANTS.get(key, "")
 
 
 def _effective_model(settings: "CliSettings") -> str:
@@ -226,6 +243,8 @@ class CliSettings:
     auth_file: str = ""
     timeout: float = DEFAULT_TIMEOUT_SECONDS
     variant: str = ""
+    max_images: int = MAX_IMAGES
+    max_image_bytes: int = MAX_IMAGE_BYTES
     extra_args: tuple[str, ...] = ()
     experimental: bool = False
 
@@ -238,6 +257,8 @@ class CliSettings:
         data_dir: str = "",
         default_sandbox: str = "",
         variant: str = "",
+        max_images: int = MAX_IMAGES,
+        max_image_bytes: int = MAX_IMAGE_BYTES,
     ) -> "CliSettings":
         cli = str(block.get("cli") or "opencode").strip().lower()
         if cli not in CLI_KINDS:
@@ -293,6 +314,8 @@ class CliSettings:
             auth_file=str(block.get("auth_file") or "").strip(),
             timeout=timeout,
             variant=str(variant or "").strip(),
+            max_images=_clamp_limit(max_images, MAX_IMAGES),
+            max_image_bytes=_clamp_limit(max_image_bytes, MAX_IMAGE_BYTES),
             experimental=True,
         )
         validate_settings(settings)
@@ -607,8 +630,15 @@ def _content_to_text(content: Any, *, skip_images: bool = False) -> str:
     return "\n".join(item for item in parts if item)
 
 
-def _extract_images(messages: Sequence[BaseMessage]) -> list[tuple[str, bytes]]:
+def _extract_images(
+    messages: Sequence[BaseMessage],
+    *,
+    max_images: int = MAX_IMAGES,
+    max_image_bytes: int = MAX_IMAGE_BYTES,
+) -> list[tuple[str, bytes]]:
     """Decode data-URI images from multimodal messages for `opencode run -f`."""
+    max_images = _clamp_limit(max_images, MAX_IMAGES)
+    max_image_bytes = _clamp_limit(max_image_bytes, MAX_IMAGE_BYTES)
     images: list[tuple[str, bytes]] = []
     for message in messages:
         content = message.content
@@ -626,6 +656,12 @@ def _extract_images(messages: Sequence[BaseMessage]) -> list[tuple[str, bytes]]:
             raw_url = part.get("image_url")
             if isinstance(raw_url, dict):
                 raw_url = raw_url.get("url")
+            if len(images) >= max_images:
+                logger.warning(
+                    "CLI принимает не больше %s картинок за вызов: лишние пропущены",
+                    max_images,
+                )
+                return images
             url = str(raw_url or "").strip()
             if not url.startswith("data:") or "," not in url:
                 raise CliProviderError("CLI-провайдеру нужна картинка в data-URI")
@@ -634,19 +670,22 @@ def _extract_images(messages: Sequence[BaseMessage]) -> list[tuple[str, bytes]]:
             extension = _IMAGE_EXTENSIONS.get(mime)
             if extension is None:
                 raise CliProviderError(f"Формат картинки не поддерживается CLI: {mime or 'unknown'}")
+            estimated = (len(payload) * 3) // 4
+            if estimated > max_image_bytes + 2:
+                raise CliProviderError(
+                    f"Картинка для CLI больше {max_image_bytes // (1024 * 1024)} МБ"
+                )
             try:
                 data = base64.b64decode(payload, validate=True)
             except (binascii.Error, ValueError) as error:
                 raise CliProviderError("Картинка для CLI не декодируется из base64") from error
             if not data:
                 raise CliProviderError("Картинка для CLI пустая")
-            if len(data) > MAX_IMAGE_BYTES:
+            if len(data) > max_image_bytes:
                 raise CliProviderError(
-                    f"Картинка для CLI больше {MAX_IMAGE_BYTES // (1024 * 1024)} МБ"
+                    f"Картинка для CLI больше {max_image_bytes // (1024 * 1024)} МБ"
                 )
             images.append((extension, data))
-            if len(images) > MAX_IMAGES:
-                raise CliProviderError(f"CLI принимает не больше {MAX_IMAGES} картинок за вызов")
     return images
 
 
@@ -654,13 +693,16 @@ def _write_images(assets: Path, images: Sequence[tuple[str, bytes]]) -> list[Pat
     """Write decoded images into the per-call assets dir for a read-only bind."""
     if not images:
         return []
-    target = assets / "images"
-    target.mkdir()
-    paths: list[Path] = []
-    for index, (extension, data) in enumerate(images, start=1):
-        path = target / f"image-{index}.{extension}"
-        path.write_bytes(data)
-        paths.append(path)
+    try:
+        target = assets / "images"
+        target.mkdir()
+        paths: list[Path] = []
+        for index, (extension, data) in enumerate(images, start=1):
+            path = target / f"image-{index}.{extension}"
+            path.write_bytes(data)
+            paths.append(path)
+    except OSError as error:
+        raise CliProviderError("Не удалось записать картинку для CLI") from error
     return paths
 
 
@@ -1212,7 +1254,11 @@ class CliChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        images = _extract_images(messages)
+        images = _extract_images(
+            messages,
+            max_images=self.settings.max_images,
+            max_image_bytes=self.settings.max_image_bytes,
+        )
         prompt = _messages_to_prompt(messages, skip_images=bool(images))
         text = run_cli_prompt(self.settings, prompt, images)
         text = _truncate_answer(self.settings, text, _bound_limit(self, kwargs))
@@ -1226,7 +1272,11 @@ class CliChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        images = _extract_images(messages)
+        images = _extract_images(
+            messages,
+            max_images=self.settings.max_images,
+            max_image_bytes=self.settings.max_image_bytes,
+        )
         prompt = _messages_to_prompt(messages, skip_images=bool(images))
         text = await run_cli_prompt_async(self.settings, prompt, images)
         text = _truncate_answer(self.settings, text, _bound_limit(self, kwargs))

@@ -430,6 +430,19 @@ def test_images_become_placeholder_not_base64():
     assert "base64" not in prompt and "QUJDREVG" not in prompt
 
 
+def test_unquoted_yaml_off_means_off():
+    import yaml
+
+    from core.agent.llm_setup import _lane_thinking_effort
+    from core.llm.cli_provider import cli_variant
+
+    role = yaml.safe_load("thinking_effort: off")
+    assert role["thinking_effort"] is False
+    agent = SimpleNamespace(config={"llm": {"talk_model": role}})
+    assert _lane_thinking_effort(agent, "talk") == "off"
+    assert cli_variant({"variants": {False: "low"}}, "off") == "low"
+
+
 def test_cli_variant_is_encoded_in_model(tmp_path: Path, monkeypatch):
     from core.llm.cli_provider import cli_variant
 
@@ -476,23 +489,101 @@ def test_cli_vision_attaches_images(tmp_path: Path, monkeypatch):
     assert "изображение не передано" not in holder["proc"].stdin.getvalue()
 
 
+def _image_message(mime: str = "image/png", payload: str = "QUJDREVG", count: int = 1):
+    from langchain_core.messages import HumanMessage
+
+    return HumanMessage(
+        content=[
+            {"type": "text", "text": "что на фото?"},
+            *[
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{payload}"},
+                }
+                for _ in range(count)
+            ],
+        ]
+    )
+
+
 def test_cli_vision_rejects_unknown_format():
+    from core.llm.cli_provider import _extract_images
+
+    with pytest.raises(CliProviderError, match="Формат"):
+        _extract_images([_image_message("image/bmp")])
+
+
+def test_cli_vision_rejects_non_data_uri_and_bad_base64():
     from langchain_core.messages import HumanMessage
 
     from core.llm.cli_provider import _extract_images
 
-    with pytest.raises(CliProviderError, match="Формат"):
-        _extract_images(
-            [
-                HumanMessage(
-                    content=[
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": "data:image/bmp;base64,QUJD"},
-                        }
-                    ]
-                )
-            ]
+    plain_url = HumanMessage(
+        content=[
+            {
+                "type": "image_url",
+                "image_url": {"url": "http://example.test/a.png"},
+            }
+        ]
+    )
+    with pytest.raises(CliProviderError, match="data-URI"):
+        _extract_images([plain_url])
+    with pytest.raises(CliProviderError, match="base64"):
+        _extract_images([_image_message(payload="!!!")])
+
+
+def test_cli_vision_limits_images_and_bytes(caplog):
+    from core.llm.cli_provider import MAX_IMAGE_BYTES, _extract_images
+
+    images = _extract_images([_image_message(count=6)], max_images=4)
+    assert len(images) == 4
+    assert any("не больше 4" in record.getMessage() for record in caplog.records)
+
+    too_big = "A" * (4 * ((MAX_IMAGE_BYTES // 3) + 2))
+    with pytest.raises(CliProviderError, match="больше"):
+        _extract_images([_image_message(payload=too_big)])
+
+
+def test_cli_vision_cleans_assets_on_failure(tmp_path: Path, monkeypatch):
+    from core.llm.cli_provider import run_cli_prompt
+
+    _patch_popen(monkeypatch, stdout="", stderr="boom", returncode=1)
+    with pytest.raises(CliProviderError):
+        run_cli_prompt(_settings(tmp_path), "hi", [("png", b"ABCDEF")])
+    sandbox = tmp_path / "data" / "cli-sandbox"
+    assert not list(sandbox.glob(".opencode-*"))
+
+
+def test_cli_async_generate_passes_images(tmp_path: Path, monkeypatch):
+    from core.llm.cli_provider import _extract_images
+
+    async def fake_async(settings, prompt, images=()):
+        assert images == [("png", b"ABCDEF")]
+        return "ответ"
+
+    import core.llm.cli_provider as provider
+
+    monkeypatch.setattr(provider, "run_cli_prompt_async", fake_async)
+    model = CliChatModel(settings=_settings(tmp_path), provider_name="oc")
+    result = asyncio.run(model.ainvoke([_image_message()]))
+    assert result.content == "ответ"
+    assert _extract_images([_image_message()]) == [("png", b"ABCDEF")]
+
+
+def test_cli_variant_rejects_unsafe_value(tmp_path: Path):
+    from core.llm.cli_provider import CliSettings
+
+    with pytest.raises(CliProviderError, match="Вариант"):
+        CliSettings.from_config(
+            {
+                "cli": "opencode",
+                "cli_path": str(_runtime_bin(tmp_path)),
+                "experimental": True,
+            },
+            model="m",
+            data_dir=str(tmp_path / "data"),
+            default_sandbox=str(tmp_path / "data" / "cli-sandbox"),
+            variant="--x",
         )
 
 
@@ -670,6 +761,26 @@ def test_cli_lanes_are_staged_with_vision(tmp_path: Path):
         agent.llm_brain.bind_tools([])
 
 
+def test_cli_vision_limits_follow_config_and_hard_cap(tmp_path: Path):
+    from core.agent.llm_setup import setup_llm_connection
+
+    agent = _cli_agent(tmp_path)
+    agent.config["llm"]["vision_model"].update(
+        {"max_images_per_message": 2, "max_image_bytes": 1024}
+    )
+    setup_llm_connection(agent)
+    assert agent._cli_lane_specs["vision"].max_images == 2
+    assert agent._cli_lane_specs["vision"].max_image_bytes == 1024
+
+    agent = _cli_agent(tmp_path)
+    agent.config["llm"]["vision_model"].update(
+        {"max_images_per_message": 99, "max_image_bytes": 99 * 1024 * 1024}
+    )
+    setup_llm_connection(agent)
+    assert agent._cli_lane_specs["vision"].max_images == 4
+    assert agent._cli_lane_specs["vision"].max_image_bytes == 8 * 1024 * 1024
+
+
 def test_cli_lane_thinking_effort_reaches_settings(tmp_path: Path):
     from core.agent.llm_setup import setup_llm_connection
 
@@ -707,7 +818,7 @@ def test_brain_tool_loop_is_skipped_without_tool_support():
     assert _brain_tool_loop_enabled(SimpleNamespace(), {}) is False
 
 
-def test_unified_brain_vision_is_disabled_for_cli_brain(tmp_path: Path):
+def test_unified_brain_vision_uses_cli_brain(tmp_path: Path):
     from core.agent.llm_setup import setup_llm_connection
 
     agent = _cli_agent(tmp_path)
@@ -720,7 +831,28 @@ def test_unified_brain_vision_is_disabled_for_cli_brain(tmp_path: Path):
         "model": "some-vl",
     }
     setup_llm_connection(agent)
-    assert agent.llm_vision is None
+    assert agent.llm_vision is agent.llm_brain
+
+
+def test_cli_vision_provider_used_when_brain_flag_is_false(tmp_path: Path):
+    from core.agent.llm_setup import setup_llm_connection
+    from core.agent.turn_prep import plan_talk_vision
+
+    agent = _cli_agent(tmp_path)
+    setup_llm_connection(agent)
+    assert agent.llm_vision is not agent.llm_brain
+    assert isinstance(agent.llm_vision, CliChatModel)
+    plan = plan_talk_vision(
+        [("image/png", "x")],
+        brain_native_vis=False,
+        talk_model="opencode/x",
+        brain_model="opencode/x",
+        has_vision_llm=True,
+        talk_is_vision_client=False,
+        vision_is_brain_client=False,
+    )
+    assert plan.need_talk_caption is True
+    assert plan.talk_vm is None
 
 
 def test_provider_put_does_not_rewrite_cli_kind(real_api, auth_headers):

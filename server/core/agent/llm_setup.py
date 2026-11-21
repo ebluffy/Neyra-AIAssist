@@ -50,6 +50,9 @@ def _lane_thinking_effort(agent: Any, lane: str) -> str:
     role = llm.get(f"{lane}_model") if isinstance(llm, dict) else None
     if isinstance(role, dict):
         raw = role.get("thinking_effort")
+        # YAML 1.1 parses unquoted off/on as booleans.
+        if isinstance(raw, bool):
+            return "default" if raw else "off"
         if isinstance(raw, str) and raw.strip().lower() in THINKING_EFFORTS:
             return raw.strip().lower()
         legacy = role.get("thinking")
@@ -88,8 +91,14 @@ def _lane_provider_block(agent: Any, lane: str) -> tuple[str, dict[str, Any]]:
 
 def _cli_settings(agent: Any, lane: str):
     """CliSettings для лейна, если провайдер помечен kind: cli."""
-    from core.llm.cli_provider import CliProviderError, CliSettings
+    from core.llm.cli_provider import (
+        MAX_IMAGE_BYTES,
+        MAX_IMAGES,
+        CliProviderError,
+        CliSettings,
+    )
     from core.llm.profile import (
+        merged_vision_pipeline,
         resolved_brain_model,
         resolved_memory_model,
         resolved_talk_model,
@@ -118,12 +127,19 @@ def _cli_settings(agent: Any, lane: str):
     data_dir = resolve_data_dir(server_root, agent.config)
     from core.llm.cli_provider import cli_variant
 
+    max_images, max_image_bytes = MAX_IMAGES, MAX_IMAGE_BYTES
+    if lane == "vision":
+        vis = merged_vision_pipeline(agent.config)
+        max_images = vis.get("max_images_per_message", MAX_IMAGES)
+        max_image_bytes = vis.get("max_image_bytes", MAX_IMAGE_BYTES)
     return CliSettings.from_config(
         block,
         model=model,
         data_dir=str(data_dir),
         default_sandbox=str(data_dir / "cli-sandbox"),
         variant=cli_variant(block, _lane_thinking_effort(agent, lane)),
+        max_images=max_images,
+        max_image_bytes=max_image_bytes,
     )
 
 
@@ -494,8 +510,22 @@ def setup_openai_compatible_llm(agent: Any) -> None:
 
     vis = merged_vision_pipeline(agent.config)
     agent.llm_vision = None
-    if "vision" in _cli:
-        if vis.get("enabled"):
+    if vis.get("enabled"):
+        if vis.get("use_brain_model_for_vision"):
+            # Рантайм (_uses_brain_native_vision) отдаёт пиксели brain, поэтому
+            # vision-клиент обязан быть тем же brain, включая CLI с -f.
+            agent.llm_vision = brain_client
+            logger.info(
+                "Зрение: unified brain — нативный мультимодальный ввод (%s@%s).",
+                brain_model,
+                conn_brain.provider,
+            )
+            if "vision" in _cli:
+                logger.warning(
+                    "Отдельный CLI vision-провайдер не используется: "
+                    "use_brain_model_for_vision=true"
+                )
+        elif "vision" in _cli:
             agent.llm_vision = CliChatModel(
                 settings=_cli["vision"],
                 provider_name=conn_vision.provider,
@@ -505,20 +535,6 @@ def setup_openai_compatible_llm(agent: Any) -> None:
                 conn_vision.provider,
                 vision_model_id,
             )
-    elif vis.get("enabled"):
-        if vis.get("use_brain_model_for_vision"):
-            if "brain" in _cli:
-                logger.warning(
-                    "Зрение отключено: brain на CLI не принимает картинки; "
-                    "укажите отдельный vision-провайдер"
-                )
-            else:
-                agent.llm_vision = brain_client
-                logger.info(
-                    "Зрение: unified brain — нативный мультимодальный ввод (%s@%s).",
-                    brain_model,
-                    conn_brain.provider,
-                )
         else:
             vmodel = str(vision_model_id).strip()
             hdr_vision = dict(conn_vision.default_headers)
