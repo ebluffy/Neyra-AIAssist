@@ -65,6 +65,10 @@ Compose вызывается явно: `docker compose -p web --env-file /opt/ne
 
 ## Обновление ядра и data_dir
 
+`update-core.sh` берёт владельца кода из юнита (`systemctl show -p User/Group`)
+и выкладывает файлы с этим владельцем. Иначе `User=openbot` не сможет войти в
+`WorkingDirectory` после `rsync` от root.
+
 `update-core.sh` до шага vault резолвит `data_dir` ядра (`NEYRA_DATA_DIR` →
 `paths.data_dir` → `./data`) через `check-data-dir.py`. Если каталог лежит вне
 выкладываемого `/opt/neyra/server`, скрипт останавливается: полный бэкап и

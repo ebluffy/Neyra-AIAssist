@@ -141,3 +141,15 @@ def test_unresolvable_data_dir_returns_4_not_traceback(tmp_path: Path) -> None:
     assert result.returncode == 4
     assert "не удалось разрешить data_dir" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_update_core_keeps_service_owner() -> None:
+    text = (HERE / "update-core.sh").read_text(encoding="utf-8")
+    assert 'systemctl show -p User --value "$SERVICE"' in text
+    assert 'systemctl show -p Group --value "$SERVICE"' in text
+    assert '--chown="$SERVICE_USER:$SERVICE_GROUP"' in text
+    assert '--chown=root:root' not in text
+    sync = text.index("== 2/7 синхронизация кода")
+    owner_reset = text.index('chown "$SERVICE_USER:$SERVICE_GROUP" "$DEST"', sync)
+    deps = text.index("== 3/7 зависимости", sync)
+    assert sync < owner_reset < deps

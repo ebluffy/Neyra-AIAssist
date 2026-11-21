@@ -21,6 +21,13 @@ SERVICE=${SERVICE:-neyra.service}
 DRY=${DRY:-0}
 TS=$(date +%Y%m%d-%H%M%S)
 
+# Код должен принадлежать пользователю сервиса: при User=openbot каталог
+# root:root 0700 не даёт systemd даже войти в WorkingDirectory.
+SERVICE_USER=$(systemctl show -p User --value "$SERVICE" 2>/dev/null || true)
+SERVICE_GROUP=$(systemctl show -p Group --value "$SERVICE" 2>/dev/null || true)
+SERVICE_USER=${SERVICE_USER:-root}
+SERVICE_GROUP=${SERVICE_GROUP:-$SERVICE_USER}
+
 EXCLUDES=(
   --exclude '.venv'
   --exclude 'data'
@@ -177,8 +184,10 @@ restore() {
 trap 'rc=$?; rm -rf "$STAGE"; if [ "$rc" -ne 0 ]; then restore; fi; exit "$rc"' EXIT
 
 echo "== 2/7 синхронизация кода (data/config/models/.env не перезаписываются rsync)"
-rsync -a --no-owner --no-group --chown=root:root "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" \
+rsync -a --no-owner --no-group --chown="$SERVICE_USER:$SERVICE_GROUP" "${EXCLUDES[@]}" "$SYNC_SRC/" "$DEST/" \
   || die "rsync кода не удался"
+chown "$SERVICE_USER:$SERVICE_GROUP" "$DEST" \
+  || die "не удалось вернуть $DEST владельцу $SERVICE_USER:$SERVICE_GROUP"
 
 echo "== 3/7 зависимости в $DEST/.venv"
 "$DEST/.venv/bin/python" -m pip install --disable-pip-version-check -r "$DEST/requirements.txt" \
@@ -206,6 +215,7 @@ echo "== 6/7 compileall"
 
 echo "== 7/7 отметка сборки"
 printf '%s\n' "$HEAD" > "$DEST/.deploy-sha"
+chown "$SERVICE_USER:$SERVICE_GROUP" "$DEST/.deploy-sha" 2>/dev/null || true
 trap - EXIT
 rm -rf "$SMOKE_DATA" "$STAGE"
 
