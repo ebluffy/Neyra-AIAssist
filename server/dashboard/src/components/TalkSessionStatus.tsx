@@ -5,16 +5,19 @@ import { InlineFeedback } from './ui/inline-feedback'
 
 type SessionStatus = {
   enabled: boolean
-  warmup_state: 'idle' | 'warming' | 'ready' | 'failed' | 'disabled'
+  configured?: boolean
+  supported?: boolean
+  warmup_state: 'idle' | 'warming' | 'ready' | 'failed' | 'disabled' | 'unsupported'
   active_sessions: number
   warmed_at: string | null
 }
-const LABELS = {
+const LABELS: Record<SessionStatus['warmup_state'], string> = {
   idle: 'Persona ещё не прогрета. Первый диалог отправит её сам.',
   warming: 'Прогрев persona выполняется…',
   ready: 'Заготовка persona готова. Лички и общие каналы используют свои цепочки.',
   failed: 'Прогрев не удался. Первый диалог попробует создать свою цепочку.',
   disabled: 'Responses выключены. Используется обычный чат.',
+  unsupported: 'Провайдер не поддерживает Responses (capabilities.supports_responses=false). Используется обычный чат.',
 }
 
 export function TalkSessionStatus({ settingsDirty }: { settingsDirty: boolean }) {

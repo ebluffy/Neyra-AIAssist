@@ -1806,10 +1806,16 @@ def build_app(
 
     @app.post("/v1/llm/sessions/warmup")
     async def v1_llm_sessions_warmup(request: Request, api_role: str = Depends(dep_admin)):
-        from core.agent.talk_sessions import ENABLED, sessions_for
+        from core.agent.talk_sessions import ENABLED, responses_supported, sessions_for
         from core.runtime.features import feature_enabled
         if not feature_enabled(config, ENABLED):
             raise ApiError("responses_disabled", "Сначала сохраните включение Responses", 409)
+        if not responses_supported(agent):
+            raise ApiError(
+                "responses_unsupported",
+                "Провайдер речи не поддерживает Responses",
+                409,
+            )
         manager = sessions_for(agent)
         accepted = manager.start_warmup(manual=True)
         _audit("persona_warmup", _trace_id(request), api_role, {"accepted": accepted})

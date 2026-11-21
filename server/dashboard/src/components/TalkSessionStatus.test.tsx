@@ -21,6 +21,13 @@ describe('talk session controls', () => {
     await screen.findByText(/Активных диалогов: 2/)
     expect(screen.queryByRole('alert')).toBeNull()
   })
+  it('explains an unsupported provider and disables paid warmup', async () => {
+    vi.mocked(apiGet).mockResolvedValue({ data: { ...ready, enabled: false, configured: true, supported: false, warmup_state: 'unsupported' } })
+    render(<TalkSessionStatus settingsDirty={false} />)
+    await screen.findByText(/не поддерживает Responses/)
+    expect((screen.getByRole('button', { name: 'Прогреть persona' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(apiPost).not.toHaveBeenCalled()
+  })
   it('keeps paid action disabled for unsaved settings and disabled mode', async () => {
     vi.mocked(apiGet).mockResolvedValue({ data: { ...ready, enabled: false, warmup_state: 'disabled' } })
     const view = render(<TalkSessionStatus settingsDirty={false} />)

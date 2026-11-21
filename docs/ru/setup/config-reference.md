@@ -40,6 +40,14 @@ Legacy `assistant.persona_in_brain` и `persona_brain_max_chars` игнорир�
 persona принадлежит talk. Streaming usage включается только для поддерживающего
 шлюза: `llm.providers.<name>.capabilities.supports_stream_usage: true`.
 
+Если шлюз не поддерживает `/v1/responses`, задайте
+`llm.providers.<name>.capabilities.supports_responses: false`. Тогда talk идёт
+через `/chat/completions`, прогрев persona не запускается, а
+`GET /v1/llm/sessions` показывает `warmup_state: unsupported`. Ручной прогрев в
+этом случае отвечает 409 `responses_unsupported`. Значение по умолчанию —
+`true`. Строки `"false"`/`"no"`/`0` тоже понимаются как false, нераспознанное
+значение игнорируется с warning.
+
 ## Переключение режима общения
 
 Файл `server/config/agent.yaml`:

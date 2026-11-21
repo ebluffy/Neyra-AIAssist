@@ -79,7 +79,34 @@ _DEFAULT_CAPABILITIES: dict[str, bool] = {
     "supports_vision": True,
     "supports_tool_calls": False,
     "supports_stream_usage": False,
+    # Opt-out for providers/gateways without /v1/responses. Default true keeps
+    # existing configurations working; set false to force chat/completions.
+    "supports_responses": True,
 }
+
+_BOOL_TRUE = frozenset({"true", "1", "yes", "on"})
+_BOOL_FALSE = frozenset({"false", "0", "no", "off"})
+
+
+def _as_bool(value: Any, *, key: str, provider: str) -> bool | None:
+    """Strict capability parser; None means "keep the default"."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _BOOL_TRUE:
+            return True
+        if text in _BOOL_FALSE:
+            return False
+    logger.warning(
+        "Провайдер '%s': capabilities.%s=%r не распознан как bool, оставляю default",
+        provider,
+        key,
+        value,
+    )
+    return None
 
 
 @dataclass(frozen=True)
@@ -514,11 +541,15 @@ def resolve_openai_compatible_connection(
     if isinstance(raw_caps, dict):
         for k, v in raw_caps.items():
             if k in _DEFAULT_CAPABILITIES:
-                caps[k] = bool(v)
+                parsed = _as_bool(v, key=k, provider=provider)
+                if parsed is not None:
+                    caps[k] = parsed
     if isinstance(prov_over.get("capabilities"), dict):
         for k, v in prov_over["capabilities"].items():
             if k in _DEFAULT_CAPABILITIES:
-                caps[k] = bool(v)
+                parsed = _as_bool(v, key=k, provider=provider)
+                if parsed is not None:
+                    caps[k] = parsed
 
     headers: dict[str, str] = {}
     if isinstance(llm.get("default_headers"), dict):

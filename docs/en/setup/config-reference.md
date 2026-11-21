@@ -39,6 +39,13 @@ persona_brain_max_chars are ignored: persona belongs to talk. Gateways that
 support streamed usage can opt in with
 `llm.providers.<name>.capabilities.supports_stream_usage: true`.
 
+If the gateway has no `/v1/responses`, set
+`llm.providers.<name>.capabilities.supports_responses: false`. Talk then uses
+`/chat/completions`, persona warmup does not start, and `GET /v1/llm/sessions`
+reports `warmup_state: unsupported`. A manual warmup answers 409
+`responses_unsupported`. The default is `true`. The strings `"false"`/`"no"`/`0`
+also mean false; unrecognized values are ignored with a warning.
+
 ## Changing the conversation mode
 
 Set `agent.conversation_mode` in `server/config/agent.yaml` and restart, or apply it without restarting using an admin Bearer/dashboard session and `POST /v1/config/update`:
