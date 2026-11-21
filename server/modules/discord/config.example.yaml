@@ -56,4 +56,4 @@ music:
   nodes:
     - identifier: "local-lavalink"
       uri: "http://127.0.0.1:2333"
-      password: "youshallnotpass"
+      password: "CHANGE_ME"  # generate: python -c "import secrets; print(secrets.token_urlsafe(32))"

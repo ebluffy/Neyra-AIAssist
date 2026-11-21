@@ -24,7 +24,7 @@ logger = logging.getLogger("neyra.discord.lavalink")
 
 _LOCK = threading.Lock()
 _OWNED_PROC: Optional[subprocess.Popen] = None
-_DEFAULT_PASSWORD = "youshallnotpass"
+_INSECURE_PASSWORDS = {"", "youshallnotpass", "CHANGE_ME"}
 
 
 def _music_cfg(config: dict[str, Any]) -> dict[str, Any]:
@@ -53,8 +53,7 @@ def _local_node(music: dict[str, Any]) -> Optional[dict[str, Any]]:
 
 
 def _node_password(node: dict[str, Any]) -> str:
-    pwd = str(node.get("password") or "").strip()
-    return pwd or _DEFAULT_PASSWORD
+    return str(node.get("password") or "").strip()
 
 
 def _port_open(host: str, port: int, timeout: float = 0.4) -> bool:
@@ -324,7 +323,12 @@ def _spawn_jar(
         raise
 
 
-def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[bool, str]:
+def ensure_managed_lavalink(
+    config: dict[str, Any],
+    plugin_dir: Path,
+    *,
+    max_wait_s: float | None = None,
+) -> tuple[bool, str]:
     """Ensure local Lavalink is up when Discord music expects a loopback node."""
     global _OWNED_PROC
 
@@ -341,7 +345,15 @@ def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[b
     host = parsed.hostname or "127.0.0.1"
     port = int(parsed.port or 2333)
     password = _node_password(node)
+    if password in _INSECURE_PASSWORDS:
+        return (
+            False,
+            "discord.music.nodes[].password is empty or the public default; "
+            "set a random password before starting managed Lavalink",
+        )
     wait_s = float(music.get("managed_lavalink_ready_seconds") or 90)
+    if max_wait_s is not None:
+        wait_s = min(wait_s, max(1.0, float(max_wait_s)))
 
     if _port_open(host, port):
         return True, f"already listening on {host}:{port}"

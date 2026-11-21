@@ -15,8 +15,8 @@ lavalink:
     - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
       snapshot: false
   server:
-    # Must match discord.music.nodes[].password (default youshallnotpass).
-    password: "youshallnotpass"
+    # Must match discord.music.nodes[].password; never ship a public default.
+    password: "CHANGE_ME"
     sources:
       youtube: false
       bandcamp: true
@@ -132,7 +132,7 @@ logging:
     lavalink: INFO
     com.sedmelluq.discord.lavaplayer: INFO
     dev.lavalink.youtube: INFO
-    com.github.topi314.lavasrc: DEBUG
+    com.github.topi314.lavasrc: INFO
   request:
     enabled: true
     includeClientInfo: true

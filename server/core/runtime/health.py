@@ -55,7 +55,8 @@ def check_lavalink(config: dict) -> dict:
             ] if isinstance(data, dict) else [],
         }
     except Exception as e:
-        return {"checked": True, "ok": False, "error": str(e)[:300]}
+        logger.warning("lavalink health check failed", exc_info=True)
+        return {"checked": True, "ok": False, "error": type(e).__name__}
 
 
 class HealthMonitor:
@@ -92,7 +93,7 @@ class HealthMonitor:
             "timestamp": datetime.now().isoformat(),
             "backend": await self._check_backend(),
             "storage": self._check_storage(),
-            "integrations": self._check_integrations(),
+            "integrations": await asyncio.to_thread(self._check_integrations),
             "self_healing": await self._check_and_heal_modules(),
         }
         report["ok"] = all(

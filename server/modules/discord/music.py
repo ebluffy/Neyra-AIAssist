@@ -31,7 +31,7 @@ from core.runtime.event_bus import (
 logger = logging.getLogger("neyra.discord.music")
 
 DEFAULT_NODES = [
-    {"identifier": "local-lavalink", "uri": "http://127.0.0.1:2333", "password": "youshallnotpass"},
+    {"identifier": "local-lavalink", "uri": "http://127.0.0.1:2333", "password": "CHANGE_ME"},
 ]
 
 
@@ -887,6 +887,31 @@ def _attach_track_end_listener(ctx) -> None:
     logger.info("discord.music attached on_wavelink_track_end + track_exception listeners")
 
 
+async def _connect_music_service(ctx, service: MusicService, bot: Any) -> int:
+    """Connect the adapter; if managed Lavalink died, try one bounded restart."""
+    connected = await service.adapter.connect(client=bot)
+    if connected > 0:
+        return connected
+    try:
+        from modules.discord.lavalink_process import ensure_managed_lavalink
+
+        ok, detail = await asyncio.to_thread(
+            ensure_managed_lavalink,
+            getattr(ctx, "config", None) or {},
+            Path(__file__).resolve().parent,
+            max_wait_s=25.0,
+        )
+        if ok:
+            logger.info("discord.music recovered managed Lavalink: %s", detail)
+            service.adapter.reset_preflight()
+            connected = await service.adapter.connect(client=bot)
+        else:
+            logger.error("discord.music managed Lavalink restart failed: %s", detail)
+    except Exception:
+        logger.exception("discord.music managed Lavalink recovery failed")
+    return connected
+
+
 async def _handle_action_async(ctx, service: MusicService, action: str, payload: dict[str, Any]) -> dict[str, Any]:
     query = ""
     if action == MUSIC_PLAY and not payload.get("join_only"):
@@ -898,26 +923,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
     if bot is None:
         return {"ok": False, "status": "failed", "error": "discord client is unavailable"}
     if not service.adapter.connected:
-        connected = await service.adapter.connect(client=bot)
-        if connected <= 0:
-            # The managed JVM can die while the Python core stays alive. Try to
-            # bring it back before failing the user's music command.
-            try:
-                from modules.discord.lavalink_process import ensure_managed_lavalink
-
-                ok, detail = await asyncio.to_thread(
-                    ensure_managed_lavalink,
-                    ctx.config or {},
-                    Path(__file__).resolve().parent,
-                )
-                if ok:
-                    logger.info("discord.music recovered managed Lavalink: %s", detail)
-                    service.adapter.reset_preflight()
-                    connected = await service.adapter.connect(client=bot)
-                else:
-                    logger.error("discord.music managed Lavalink restart failed: %s", detail)
-            except Exception:
-                logger.exception("discord.music managed Lavalink recovery failed")
+        connected = await _connect_music_service(ctx, service, bot)
         if connected <= 0:
             return {
                 "ok": False,

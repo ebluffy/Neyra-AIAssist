@@ -38,7 +38,13 @@ def main() -> int:
         lava = plugin / "lavalink"
         lava.mkdir()
         ok, detail = ensure_managed_lavalink(
-            {"discord": {"music": {"nodes": [{"uri": "http://127.0.0.1:2333"}]}}},
+            {"discord": {"music": {"nodes": [{"uri": "http://127.0.0.1:65533", "password": "youshallnotpass"}]}}},
+            plugin,
+        )
+        if ok or "password" not in detail.lower():
+            errs.append(f"default password must be refused, got {ok!r} {detail!r}")
+        ok, detail = ensure_managed_lavalink(
+            {"discord": {"music": {"nodes": [{"uri": "http://127.0.0.1:2333", "password": "test-secure-password"}]}}},
             plugin,
         )
         if ok or "Lavalink.jar" not in detail:
