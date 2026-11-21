@@ -79,3 +79,26 @@ pip check, import-smoke и compileall идут от него через `runuser
 выкладываемого `/opt/neyra/server`, скрипт останавливается: полный бэкап и
 автооткат копируют только каталог выкладки, и внешние данные в них не попадут.
 
+## CLI-провайдер OpenCode
+
+CLI-лейн требует `bwrap`. На Ubuntu 24.04+ AppArmor запрещает unprivileged
+user namespaces даже при `kernel.unprivileged_userns_clone=1`, и `bwrap`
+падает с `setting up uid map: Permission denied`. Не отключайте глобальный
+`kernel.apparmor_restrict_unprivileged_userns`; разрешите userns только для
+`bwrap` профилем `/etc/apparmor.d/bwrap-userns`:
+
+```apparmor
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+```
+
+Примените `apparmor_parser -r /etc/apparmor.d/bwrap-userns` и проверьте
+`aa-status | grep bwrap`. Профиль загружается при старте AppArmor; после этого
+OpenCode 2.3.0 работает под `openbot`. Сам CLI и `auth.json` с API-ключом
+кладутся в `data/cli-sandbox`; auth-файл не коммитится и не печатается.
+
