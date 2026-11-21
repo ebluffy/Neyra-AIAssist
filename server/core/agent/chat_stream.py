@@ -94,6 +94,7 @@ async def iter_chat_stream(
         avatar_url=avatar_url,
         discord_context=discord_context,
         person_id=person_id,
+        model=model,
     )
     try:
         try:
@@ -161,7 +162,7 @@ async def iter_chat_stream(
                 "Зрение: %s, изображений=%s | talk_model=%s",
                 mode,
                 len(vision_images),
-                getattr(agent, "llm_talk_model", agent.llm_model),
+                model or getattr(agent, "llm_talk_model", agent.llm_model),
             )
 
         messages = build_talk_messages(

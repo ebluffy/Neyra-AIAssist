@@ -97,8 +97,8 @@ describe('browser → BFF: WebSocket frame', () => {
     expect(KernelWsChatMessageSchema.safeParse(frame).success).toBe(true);
     expect(KernelWsChatMessageSchema.safeParse({ ...frame, extra: true }).success).toBe(false);
     expect(KernelWsChatMessageSchema.safeParse({ ...frame, attachments: [{ upload_id: uploadId }] }).success).toBe(false);
-    // Platform is a kernel-side field (BFF), not a browser field.
-    expect(KernelWsChatMessageSchema.safeParse({ ...frame, platform: 'web' }).success).toBe(true);
+    // Core WsChatMessage не принимает platform (extra=forbid) — этого поля нет и здесь.
+    expect(KernelWsChatMessageSchema.safeParse({ ...frame, platform: 'web' }).success).toBe(false);
   });
 });
 

@@ -75,6 +75,7 @@ async def run_chat(
         avatar_url=avatar_url,
         discord_context=discord_context,
         person_id=person_id,
+        model=model,
     )
     try:
         try:

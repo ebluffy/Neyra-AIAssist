@@ -699,7 +699,6 @@ class WsChatMessage(_ApiBody):
     text: str = Field(default="", max_length=6000)
     username: Optional[str] = Field(default=None, max_length=120)
     platform_user_id: Optional[str] = Field(default=None, max_length=120)
-    platform: Optional[str] = Field(default=None, max_length=40)
     channel_id: Optional[str] = Field(default=None, max_length=120)
     author_display_name: Optional[str] = Field(default=None, max_length=120)
     display_name: Optional[str] = Field(default=None, max_length=120)
@@ -5226,6 +5225,7 @@ def build_app(
             }
         )
         active_chat: Optional[asyncio.Task] = None
+        pending_msg: Any = None
 
         async def _stream_chat(
             parsed: WsChatMessage,
@@ -5238,18 +5238,19 @@ def build_app(
             ws_author_disp,
         ) -> None:
             phases = set()
+            stream = agent.chat_stream(
+                text + attachment_text,
+                vision_images=vision_images, progress=True,
+                username=ws_identity.person_id if ws_identity is not None else username,
+                discord_user_id=None if ws_identity is not None else platform_user_id,
+                channel_id=channel_id,
+                author_display_name=ws_identity.name if ws_identity is not None else ws_author_disp,
+                person_id=getattr(ws_identity, "person_id", None),
+                model=parsed.model,
+                **({"discord_context": parsed.discord_context} if ws_identity is None and parsed.discord_context is not None else {}),
+            )
             try:
-                async for chunk in agent.chat_stream(
-                    text + attachment_text,
-                    vision_images=vision_images, progress=True,
-                    username=ws_identity.person_id if ws_identity is not None else username,
-                    discord_user_id=None if ws_identity is not None else platform_user_id,
-                    channel_id=channel_id,
-                    author_display_name=ws_identity.name if ws_identity is not None else ws_author_disp,
-                    person_id=getattr(ws_identity, "person_id", None),
-                    model=parsed.model,
-                    **({"discord_context": parsed.discord_context} if ws_identity is None and parsed.discord_context is not None else {}),
-                ):
+                async for chunk in stream:
                     if chunk.get("type") == "phase":
                         from core.agent.chat_progress import PHASES
                         phase = chunk.get("phase")
@@ -5304,21 +5305,29 @@ def build_app(
                         "trace_id": trace_id,
                     }
                 )
+            finally:
+                try:
+                    await stream.aclose()
+                except Exception:
+                    logger.debug("WS chat stream close failed | trace_id=%s", trace_id, exc_info=True)
 
         while True:
             if active_chat is None:
-                try:
-                    msg = await asyncio.wait_for(websocket.receive_json(), timeout=ws_idle_timeout)
-                except asyncio.TimeoutError:
-                    await websocket.send_json({"type": "error", "code": "idle_timeout", "trace_id": trace_id})
-                    await asyncio.sleep(ws_close_grace)
-                    await websocket.close(code=1000, reason="idle timeout")
-                    break
-                except WebSocketDisconnect:
-                    break
-                except Exception:
-                    await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
-                    continue
+                if pending_msg is not None:
+                    msg, pending_msg = pending_msg, None
+                else:
+                    try:
+                        msg = await asyncio.wait_for(websocket.receive_json(), timeout=ws_idle_timeout)
+                    except asyncio.TimeoutError:
+                        await websocket.send_json({"type": "error", "code": "idle_timeout", "trace_id": trace_id})
+                        await asyncio.sleep(ws_close_grace)
+                        await websocket.close(code=1000, reason="idle timeout")
+                        break
+                    except WebSocketDisconnect:
+                        break
+                    except Exception:
+                        await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                        continue
 
                 if not isinstance(msg, dict):
                     await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
@@ -5379,10 +5388,25 @@ def build_app(
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if active_chat in done:
-                recv_task.cancel()
-                await asyncio.gather(recv_task, return_exceptions=True)
+                recv_msg = None
+                recv_disconnected = False
+                if recv_task in done:
+                    try:
+                        recv_msg = recv_task.result()
+                    except WebSocketDisconnect:
+                        recv_disconnected = True
+                    except Exception:
+                        recv_msg = None
+                else:
+                    recv_task.cancel()
+                    await asyncio.gather(recv_task, return_exceptions=True)
+
                 if active_chat.cancelled():
                     active_chat = None
+                    if recv_disconnected:
+                        break
+                    if recv_msg is not None:
+                        pending_msg = recv_msg
                     continue
                 exc = active_chat.exception()
                 active_chat = None
@@ -5398,6 +5422,10 @@ def build_app(
                             "trace_id": trace_id,
                         }
                     )
+                if recv_disconnected:
+                    break
+                if recv_msg is not None:
+                    pending_msg = recv_msg
                 continue
 
             try:

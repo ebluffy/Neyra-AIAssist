@@ -11,13 +11,12 @@ const kernelIdentity = {
   author_display_name: z.string().max(120).optional(),
   platform: z.string().max(40).optional(),
 };
-// WS-кадр ядра принимает platform (WsChatMessage); браузерный кадр — нет.
+// WS-кадр ядра не принимает platform (extra=forbid в WsChatMessage): он есть только в REST.
 const kernelWsIdentity = {
   username: kernelIdentity.username,
   platform_user_id: kernelIdentity.platform_user_id,
   channel_id: kernelIdentity.channel_id,
   author_display_name: kernelIdentity.author_display_name,
-  platform: kernelIdentity.platform,
 };
 
 // Вложение, которое браузер получил от BFF после загрузки. Никаких path/url.

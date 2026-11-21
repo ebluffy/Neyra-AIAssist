@@ -62,10 +62,14 @@ def test_ws_stop_cancels_active_stream(tmp_path):
     from offline_support import offline_agent
 
     agent = offline_agent(tmp_path)
+    calls = 0
 
     async def fake_stream(*args, **kwargs):
+        nonlocal calls
+        calls += 1
         yield {"type": "token", "text": "A"}
-        await asyncio.sleep(30)
+        if calls == 1:
+            await asyncio.sleep(30)
         yield {"type": "done", "text": "A", "sounds": [], "model_trace": None}
 
     agent.chat_stream = fake_stream
@@ -90,6 +94,11 @@ def test_ws_stop_cancels_active_stream(tmp_path):
                 while "stopped" not in seen:
                     seen.append(ws.receive_json()["type"])
                 assert "stopped" in seen
+                ws.send_json({"type": "ping"})
+                assert ws.receive_json()["type"] == "pong"
+                ws.send_json({"type": "chat", "text": "again"})
+                assert ws.receive_json()["type"] == "token"
+                assert ws.receive_json()["type"] == "done"
     finally:
         agent.memory_hub.close()
 
@@ -125,7 +134,6 @@ def test_rest_chat_passes_model_override(tmp_path):
 
 
 def test_talk_model_for_clones_chat_openai_model_name():
-    pytest.importorskip("langchain_openai")
     from langchain_openai import ChatOpenAI
 
     base = ChatOpenAI(model="default", api_key="x", base_url="http://127.0.0.1:9")
@@ -252,3 +260,30 @@ def test_ws_malformed_frame_does_not_cancel_active_stream(tmp_path):
                 assert ws.receive_json()["type"] == "done"
     finally:
         agent.memory_hub.close()
+
+
+def test_talk_model_for_clones_cli_without_mutating_source():
+    from core.llm.cli_provider import CliChatModel, CliSettings
+
+    settings = CliSettings(
+        cli="opencode",
+        backend="run",
+        model="default-model",
+        sandbox="/tmp/sandbox",
+        cli_path="/usr/bin/opencode",
+    )
+    base = CliChatModel(settings=settings, provider_name="oc")
+    out = talk_model_for(NS(llm_talk=base, llm_talk_model="default-model"), "override-model")
+    assert out is not base
+    assert out.settings.model == "override-model"
+    assert base.settings.model == "default-model"
+
+
+def test_responses_talk_uses_bound_model_name():
+    from core.agent.responses_talk import ResponsesTalk
+
+    model = NS(model_name="clone-model")
+    tx = NS(connection=object())
+    agent = NS(config={}, llm_talk_model="default-model")
+    talk = ResponsesTalk(agent, model, tx)
+    assert talk.model_name == "clone-model"
