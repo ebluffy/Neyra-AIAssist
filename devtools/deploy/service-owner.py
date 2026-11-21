@@ -34,7 +34,6 @@ def main(argv: list[str]) -> int:
                 "Group",
                 "-p",
                 "DynamicUser",
-                "--value",
                 service,
             ],
             capture_output=True,

@@ -4,23 +4,31 @@ from __future__ import annotations
 import grp
 import os
 import pwd
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE / "service-owner.py"
 
 
 def run_owner(tmp_path: Path, *, load: str = "loaded", user: str = "",
-              group: str = "", dynamic: str = "no",
-              omit: str = "") -> subprocess.CompletedProcess:
+              group: str = "", dynamic: str = "no", omit: str = "",
+              argv_log: Path | None = None) -> subprocess.CompletedProcess:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     systemctl = bin_dir / "systemctl"
     systemctl.write_text(
         "#!/usr/bin/env python3\n"
-        "import os\n"
+        "import os, sys\n"
+        "argv = sys.argv[1:]\n"
+        "log = os.environ.get('FAKE_ARGV_LOG')\n"
+        "if log:\n"
+        "    open(log, 'w').write('\\n'.join(argv))\n"
+        "requested = [argv[i + 1] for i, item in enumerate(argv) if item == '-p' and i + 1 < len(argv)]\n"
         "props = {\n"
         "    'DynamicUser': os.environ.get('FAKE_DYNAMIC', 'no'),\n"
         "    'User': os.environ.get('FAKE_USER', ''),\n"
@@ -29,8 +37,8 @@ def run_owner(tmp_path: Path, *, load: str = "loaded", user: str = "",
         "}\n"
         "omit = set(filter(None, os.environ.get('FAKE_OMIT', '').split(',')))\n"
         "for key in ('DynamicUser', 'User', 'LoadState', 'Group'):\n"
-        "    if key not in omit:\n"
-        "        print(f'{key}={props[key]}')\n",
+        "    if key in requested and key not in omit:\n"
+        "        print(props[key] if '--value' in argv else f'{key}={props[key]}')\n",
         encoding="utf-8",
     )
     systemctl.chmod(0o755)
@@ -42,6 +50,7 @@ def run_owner(tmp_path: Path, *, load: str = "loaded", user: str = "",
         "FAKE_GROUP": group,
         "FAKE_DYNAMIC": dynamic,
         "FAKE_OMIT": omit,
+        "FAKE_ARGV_LOG": str(argv_log or ""),
     }
     return subprocess.run(
         [sys.executable, str(SCRIPT), "neyra.service"],
@@ -55,9 +64,34 @@ def run_owner(tmp_path: Path, *, load: str = "loaded", user: str = "",
 def test_user_without_group_uses_primary_group(tmp_path: Path) -> None:
     me = pwd.getpwuid(os.getuid())
     primary = grp.getgrgid(me.pw_gid).gr_name
-    result = run_owner(tmp_path, user=me.pw_name)
+    argv_log = tmp_path / "argv"
+    result = run_owner(tmp_path, user=me.pw_name, argv_log=argv_log)
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == [me.pw_name, primary, me.pw_dir]
+    argv = argv_log.read_text(encoding="utf-8").splitlines()
+    assert "--value" not in argv
+    assert argv.count("-p") == 4
+    assert {"LoadState", "User", "Group", "DynamicUser"} <= set(argv)
+
+
+@pytest.mark.skipif(not shutil.which("systemctl"), reason="systemd недоступен")
+def test_real_systemd_unit() -> None:
+    probe = subprocess.run(
+        ["systemctl", "show", "-p", "LoadState", "--value", "systemd-journald.service"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if probe.returncode != 0 or probe.stdout.strip() != "loaded":
+        pytest.skip("systemd-journald.service не загружен")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "systemd-journald.service"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert len(result.stdout.splitlines()) == 3
 
 
 def test_empty_user_is_root(tmp_path: Path) -> None:
