@@ -479,6 +479,11 @@ class ChatRequest(_ApiBody):
     author_display_name: Optional[str] = Field(default=None, max_length=120)
     avatar_url: Optional[str] = Field(default=None, max_length=500)
     platform: Optional[str] = Field(default=None, max_length=40)
+    model: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$",
+    )
     discord_context: DiscordContext | None = None
 
 
@@ -690,13 +695,19 @@ class StoredAttachment(_ApiBody):
 
 
 class WsChatMessage(_ApiBody):
-    type: Literal["ping", "chat"]
+    type: Literal["ping", "chat", "stop"]
     text: str = Field(default="", max_length=6000)
     username: Optional[str] = Field(default=None, max_length=120)
     platform_user_id: Optional[str] = Field(default=None, max_length=120)
+    platform: Optional[str] = Field(default=None, max_length=40)
     channel_id: Optional[str] = Field(default=None, max_length=120)
     author_display_name: Optional[str] = Field(default=None, max_length=120)
     display_name: Optional[str] = Field(default=None, max_length=120)
+    model: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$",
+    )
     discord_context: DiscordContext | None = None
     attachments: list[StoredAttachment] = Field(default_factory=list, max_length=4)
 
@@ -1775,6 +1786,7 @@ def build_app(
             author_display_name=web_identity.name if web_identity is not None else body.author_display_name,
             avatar_url=None if web_identity is not None else body.avatar_url,
             person_id=web_identity.person_id if web_identity is not None else None,
+            model=body.model,
             **({"discord_context": body.discord_context} if web_identity is None and body.discord_context is not None else {}),
         )
         return {"ok": True, "trace_id": trace_id, "data": out}
@@ -5213,52 +5225,18 @@ def build_app(
                 "reconnect": "open_new_socket",
             }
         )
-        while True:
-            try:
-                msg = await asyncio.wait_for(websocket.receive_json(), timeout=ws_idle_timeout)
-            except asyncio.TimeoutError:
-                await websocket.send_json({"type": "error", "code": "idle_timeout", "trace_id": trace_id})
-                await asyncio.sleep(ws_close_grace)
-                await websocket.close(code=1000, reason="idle timeout")
-                break
-            except WebSocketDisconnect:
-                break
-            except Exception:
-                await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
-                continue
+        active_chat: Optional[asyncio.Task] = None
 
-            if not isinstance(msg, dict):
-                await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
-                continue
-            try:
-                parsed = WsChatMessage.model_validate(msg)
-            except Exception:
-                await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
-                continue
-
-            kind = parsed.type
-            if kind == "ping":
-                await websocket.send_json({"type": "pong", "ts": datetime.now().isoformat(), "trace_id": trace_id})
-                continue
-
-            text = (parsed.text or "").strip()
-            if not text:
-                await websocket.send_json({"type": "error", "code": "empty_text", "trace_id": trace_id})
-                continue
-            username = (parsed.username or "ws_user").strip() or "ws_user"
-            platform_user_id = (parsed.platform_user_id or "").strip()
-            channel_id = (parsed.channel_id or "ws").strip() or "ws"
-            ws_disp = parsed.author_display_name or parsed.display_name
-            ws_author_disp = str(ws_disp).strip() if ws_disp else None
-
-            ws_identity = websocket.scope.get("state", {}).get("web_identity")
-            try:
-                vision_images, attachment_text = await asyncio.to_thread(
-                    attachment_store.resolve_for_chat, parsed.attachments, _attachment_owner(websocket), channel_id,
-                ) if parsed.attachments else (None, '')
-            except (AttachmentError, ApiError) as error:
-                await websocket.send_json({"type": "error", "code": error.code, "message": error.message, "trace_id": trace_id})
-                continue
+        async def _stream_chat(
+            parsed: WsChatMessage,
+            text: str,
+            vision_images,
+            attachment_text: str,
+            username: str,
+            platform_user_id: str,
+            channel_id: str,
+            ws_author_disp,
+        ) -> None:
             phases = set()
             try:
                 async for chunk in agent.chat_stream(
@@ -5269,6 +5247,7 @@ def build_app(
                     channel_id=channel_id,
                     author_display_name=ws_identity.name if ws_identity is not None else ws_author_disp,
                     person_id=getattr(ws_identity, "person_id", None),
+                    model=parsed.model,
                     **({"discord_context": parsed.discord_context} if ws_identity is None and parsed.discord_context is not None else {}),
                 ):
                     if chunk.get("type") == "phase":
@@ -5314,9 +5293,9 @@ def build_app(
                             {"type": "error", "code": code, "message": message, "trace_id": trace_id}
                         )
             except WebSocketDisconnect:
-                break
+                raise
             except Exception:
-                logger.exception("WS chat error | trace_id=%s", trace_id)
+                logger.exception("WS chat stream error | trace_id=%s", trace_id)
                 await websocket.send_json(
                     {
                         "type": "error",
@@ -5325,6 +5304,127 @@ def build_app(
                         "trace_id": trace_id,
                     }
                 )
+
+        while True:
+            if active_chat is None:
+                try:
+                    msg = await asyncio.wait_for(websocket.receive_json(), timeout=ws_idle_timeout)
+                except asyncio.TimeoutError:
+                    await websocket.send_json({"type": "error", "code": "idle_timeout", "trace_id": trace_id})
+                    await asyncio.sleep(ws_close_grace)
+                    await websocket.close(code=1000, reason="idle timeout")
+                    break
+                except WebSocketDisconnect:
+                    break
+                except Exception:
+                    await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                    continue
+
+                if not isinstance(msg, dict):
+                    await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                    continue
+                try:
+                    parsed = WsChatMessage.model_validate(msg)
+                except Exception:
+                    await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                    continue
+
+                kind = parsed.type
+                if kind == "ping":
+                    await websocket.send_json({"type": "pong", "ts": datetime.now().isoformat(), "trace_id": trace_id})
+                    continue
+                if kind == "stop":
+                    await websocket.send_json({"type": "stopped", "trace_id": trace_id})
+                    continue
+                if kind != "chat":
+                    await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                    continue
+
+                text = (parsed.text or "").strip()
+                if not text:
+                    await websocket.send_json({"type": "error", "code": "empty_text", "trace_id": trace_id})
+                    continue
+                username = (parsed.username or "ws_user").strip() or "ws_user"
+                platform_user_id = (parsed.platform_user_id or "").strip()
+                channel_id = (parsed.channel_id or "ws").strip() or "ws"
+                ws_disp = parsed.author_display_name or parsed.display_name
+                ws_author_disp = str(ws_disp).strip() if ws_disp else None
+
+                ws_identity = websocket.scope.get("state", {}).get("web_identity")
+                try:
+                    vision_images, attachment_text = await asyncio.to_thread(
+                        attachment_store.resolve_for_chat, parsed.attachments, _attachment_owner(websocket), channel_id,
+                    ) if parsed.attachments else (None, '')
+                except (AttachmentError, ApiError) as error:
+                    await websocket.send_json({"type": "error", "code": error.code, "message": error.message, "trace_id": trace_id})
+                    continue
+
+                active_chat = asyncio.create_task(
+                    _stream_chat(
+                        parsed, text, vision_images, attachment_text,
+                        username, platform_user_id, channel_id, ws_author_disp,
+                    )
+                )
+                continue
+
+            recv_task = asyncio.create_task(websocket.receive_json())
+            done, _pending = await asyncio.wait(
+                {active_chat, recv_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if active_chat in done:
+                recv_task.cancel()
+                await asyncio.gather(recv_task, return_exceptions=True)
+                if active_chat.cancelled():
+                    active_chat = None
+                    continue
+                exc = active_chat.exception()
+                active_chat = None
+                if exc is not None:
+                    if isinstance(exc, WebSocketDisconnect):
+                        break
+                    logger.exception("WS chat task failed | trace_id=%s", trace_id, exc_info=exc)
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "code": "internal_chat_error",
+                            "message": f"Внутренняя ошибка сервера. Код для поддержки: {trace_id}",
+                            "trace_id": trace_id,
+                        }
+                    )
+                continue
+
+            try:
+                msg = recv_task.result()
+            except WebSocketDisconnect:
+                active_chat.cancel()
+                await asyncio.gather(active_chat, return_exceptions=True)
+                active_chat = None
+                break
+            except Exception:
+                active_chat.cancel()
+                await asyncio.gather(active_chat, return_exceptions=True)
+                active_chat = None
+                await websocket.send_json({"type": "error", "code": "bad_payload", "trace_id": trace_id})
+                continue
+
+            if isinstance(msg, dict) and msg.get("type") == "stop":
+                active_chat.cancel()
+                await asyncio.gather(active_chat, return_exceptions=True)
+                active_chat = None
+                await websocket.send_json({"type": "stopped", "trace_id": trace_id})
+                continue
+            if isinstance(msg, dict) and msg.get("type") == "ping":
+                await websocket.send_json({"type": "pong", "ts": datetime.now().isoformat(), "trace_id": trace_id})
+                continue
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "busy",
+                    "message": "Дождитесь завершения текущего ответа или отправьте stop.",
+                    "trace_id": trace_id,
+                }
+            )
 
     @app.websocket("/v1/ws/audio")
     async def ws_audio(

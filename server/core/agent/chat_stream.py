@@ -39,6 +39,7 @@ async def iter_chat_stream(
     discord_context=None,
     person_id: Optional[str] = None,
     progress: bool = False,
+    model: Optional[str] = None,
 ) -> AsyncIterator[dict]:
     """Yield token/error/done chunks for streaming chat."""
     try:
@@ -146,9 +147,10 @@ async def iter_chat_stream(
         if progress:
             yield {"type": "phase", "phase": "answer"}
         system_prompt = build_talk_system_prompt(agent, prep, brain_context=brain_context)
-        stream_llm = agent.llm_talk
+        from core.agent.llm_setup import talk_model_for
+        stream_llm = talk_model_for(agent, model)
         if prep.lyrics_mode:
-            stream_llm = agent.llm_talk.bind(
+            stream_llm = stream_llm.bind(
                 max_tokens=max(agent.reply_max_tokens, agent.lyrics_reply_max_tokens)
             )
         from core.agent.talk_sessions import responses_talk_model

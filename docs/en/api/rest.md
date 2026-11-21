@@ -8,7 +8,9 @@ tools, not per-user authorization for these administrative endpoints.
 
 ## Discord context and model evidence (3a)
 
-`POST /v1/chat` and WS `/v1/ws/chat` chat messages accept optional `discord_context`. Legacy requests remain compatible. The object contains `source: "discord"`, `current_user` (id/handle/display_name), `channel` (id/name/type), nullable `guild` (id/name), `message` (id/content/mentions/reference), `addressed_to_bot`, and `response_target` (channel_id/message_id). See the complete JSON example in the [Russian reference](../../ru/api/rest.md).
+`POST /v1/chat` and WS `/v1/ws/chat` chat messages accept optional `discord_context`. Legacy requests remain compatible.
+
+`POST /v1/chat` and WS `chat` messages also accept an optional `model` provider/model id. Without it the configured `llm.talk_model` is used; invalid ids are rejected by request validation. The object contains `source: "discord"`, `current_user` (id/handle/display_name), `channel` (id/name/type), nullable `guild` (id/name), `message` (id/content/mentions/reference), `addressed_to_bot`, and `response_target` (channel_id/message_id). See the complete JSON example in the [Russian reference](../../ru/api/rest.md).
 
 The Discord adapter captures metadata before removing the bot mention. DM guilds and unresolved reference authors are null. Context author/channel IDs override legacy request identity fields. Names and content are untrusted data, not system instructions. Response targets must match the current message/channel; unknown fields and invalid or oversized data are rejected.
 

@@ -35,6 +35,7 @@ async def run_chat(
     avatar_url: Optional[str] = None,
     discord_context=None,
     person_id: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> dict:
     """Run one non-streaming chat turn; return text/sounds/thoughts/raw."""
     try:
@@ -128,12 +129,14 @@ async def run_chat(
         final_messages_used = messages
 
         try:
+            from core.agent.llm_setup import talk_model_for
+            base_talk = talk_model_for(agent, model)
             cap_llm = (
-                agent.llm_talk.bind(
+                base_talk.bind(
                     max_tokens=max(agent.reply_max_tokens, agent.lyrics_reply_max_tokens)
                 )
                 if prep.lyrics_mode
-                else agent.llm_talk
+                else base_talk
             )
             from core.agent.talk_sessions import responses_talk_model
             cap_llm = responses_talk_model(agent, cap_llm)

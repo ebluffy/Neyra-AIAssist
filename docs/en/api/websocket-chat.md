@@ -11,11 +11,15 @@ Reconnect: open a **new** WebSocket (hello includes `"reconnect":"open_new_socke
 
 ## Client → server
 - `{"type":"ping"}`
-- `{"type":"chat","text":"...","username":"...","platform_user_id":"...","channel_id":"..."}`
+- `{"type":"chat","text":"...","username":"...","platform_user_id":"...","channel_id":"...","model":"provider/model"}`
+  - `model` is optional; without it `llm.talk_model` is used.
+- `{"type":"stop"}` — cancel the current answer without closing the WebSocket.
 
 ## Server → client
 - `hello` (protocol `neyra.ws.chat.v1`, role, idle/ping timeouts)
 - `pong`
 - `token` (stream chunk)
-- `done` (final + sounds)
-- `error`
+- `phase` (retrieval/plan/answer)
+- `done` (final + sounds + usage)
+- `stopped` — acknowledgement for `stop`
+- `error` (including `busy` when a new `chat` arrives while an answer is streaming)

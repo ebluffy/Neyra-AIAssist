@@ -515,3 +515,30 @@ def setup_openai_compatible_llm(agent: Any) -> None:
                 **_force_chat_completions(conn_vision.provider),
             )
             logger.info("Зрение: VL-модель (%s) — %s", conn_vision.provider, vmodel)
+
+
+def talk_model_for(agent: Any, model_id: str | None):
+    """Return talk model bound to a per-request model override.
+
+    The configured default is returned unchanged when ``model_id`` is empty.
+    CLI providers are cloned with a replaced CliSettings.model; HTTP providers
+    use LangChain ``bind(model=...)`` so the request payload overrides the model.
+    """
+    base = agent.llm_talk
+    requested = str(model_id or "").strip()
+    if not requested or requested == getattr(agent, "llm_talk_model", None):
+        return base
+    from core.llm.cli_provider import CliChatModel
+
+    if isinstance(base, CliChatModel):
+        from dataclasses import replace
+
+        return CliChatModel(settings=replace(base.settings, model=requested), provider_name=base.provider_name)
+    # ChatOpenAI keeps the model in ``model_name``. ``bind(model=...)`` is not
+    # enough: bind kwargs do not reach _default_params, so the request would
+    # still use the configured model. Clone the Pydantic client instead.
+    if hasattr(base, "model_copy"):
+        return base.model_copy(update={"model_name": requested})
+    if hasattr(base, "bind"):
+        return base.bind(model=requested)
+    return base
