@@ -177,20 +177,23 @@
 | NEW-4 | P3 | У каждого захвата есть номер: `voice.clip` несёт `request_id` и номер закрываемой записи, `recording` публикуется под локом записи, клиент коррелирует клип только с текущим номером. `turn_busy` и запоздалые события прошлого захвата больше не подменяют причину. Номер несут `recording`, `voice.clip` и исход остановки (`transcribing` / `capture.failed` со `stage=stop`); событие с меньшим номером клиент отбрасывает. `capture.failed` со `stage=start` и серверный `transcribing` к закрытию захвата не относятся и номера не имеют. Сборка одна (Rust и фронт ставятся вместе), без номера корреляция выключается в безопасную сторону |
 | AR-55 (часть 1) | P2 | `/v1/health/ready` видит свежий 429 провайдера: check `llm_provider` + `backend.degraded`/`degraded_reason` из `/v1/llm/activity`. 9 новых серверных тестов |
 
+**Закрыто 21.11.2026 (#82):**
+
+| ID | Sev | Чем закрыто |
+| --- | --- | --- |
+| AR-55 (часть 2) | P2 | Fallback talk на `/chat/completions` через `capabilities.supports_responses=false`: Responses выключаются, warmup не стартует, дашборд показывает причину, ручной warmup отвечает 409 `responses_unsupported`. Default `true` сохраняет прежнее поведение |
+
 **Остаётся до merge:**
 
 | ID | Sev | Что | Почему не здесь |
 | --- | --- | --- | --- |
 | AR-2, AR-1 (#61), AR1 (#62), AR-1 (#63), AR-3 (#64) | P1 | Приёмка на железе: ключ-ринг, PTT/Stop, устройства, обрыв WSS, N→N+1 | Нужны Linux KDE Wayland и Windows-VM владельца |
-| AR-55 (часть 2) | P2 | Fallback talk на `/chat/completions` | Закрыто вариантом (а) в #82: `capabilities.supports_responses=false` отключает Responses и возвращает talk на chat/completions без смены сессий |
 
-**Решение по AR-55 (часть 2), нужно от владельца:**
+**Решение по AR-55 (часть 2): выбран вариант (а).**
 
-- (а) capability-флаг `supports_responses` в конфиге провайдера: без него Responses-фича выключается с предупреждением — минимально инвазивно, успешный путь не меняется;
-- (б) адаптер `/chat/completions` внутри `ResponsesTalk` — задача из Issue #68, меняет работу сессий;
-- (в) оставить как есть и задокументировать требование к провайдеру.
-
-Реализовано (а): `supports_responses` добавлен в capabilities (default true для совместимости). При `false` `responses_talk_model` возвращает обычную talk-модель, warmup не запускается, `/v1/llm/sessions` показывает `configured=true, supported=false, enabled=false, warmup_state=unsupported`.
+- (а) capability-флаг `supports_responses` в конфиге провайдера: без него Responses-фича выключается с предупреждением — минимально инвазивно, успешный путь не меняется. **Реализовано в #82.** При `false` `responses_talk_model` возвращает обычную talk-модель (chat/completions), warmup не запускается, `/v1/llm/sessions` показывает `configured=true, supported=false, enabled=false, warmup_state=unsupported`.
+- (б) адаптер `/chat/completions` внутри `ResponsesTalk` — не выбран, остаётся задачей Issue #68.
+- (в) оставить как есть и задокументировать требование к провайдеру — не выбран: тихая деградация каждого хода хуже явного флага.
 
 ### 4.4. Готово, когда (этап 1)
 
