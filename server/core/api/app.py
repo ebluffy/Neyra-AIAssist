@@ -5333,13 +5333,16 @@ def build_app(
         try:
             while True:
                 if active_chat is None:
-                    try:
-                        item = await asyncio.wait_for(inbox.get(), timeout=ws_idle_timeout)
-                    except asyncio.TimeoutError:
-                        await websocket.send_json({"type": "error", "code": "idle_timeout", "trace_id": trace_id})
-                        await asyncio.sleep(ws_close_grace)
-                        await websocket.close(code=1000, reason="idle timeout")
-                        break
+                    if pending_msg is not None:
+                        item, pending_msg = pending_msg, None
+                    else:
+                        try:
+                            item = await asyncio.wait_for(inbox.get(), timeout=ws_idle_timeout)
+                        except asyncio.TimeoutError:
+                            await websocket.send_json({"type": "error", "code": "idle_timeout", "trace_id": trace_id})
+                            await asyncio.sleep(ws_close_grace)
+                            await websocket.close(code=1000, reason="idle timeout")
+                            break
                     if item is _DISCONNECT:
                         break
                     if item is _BAD:

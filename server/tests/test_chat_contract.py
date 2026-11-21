@@ -352,3 +352,34 @@ def test_ws_race_both_done_keeps_client_frame(tmp_path):
                 assert len(seen) == 2
     finally:
         agent.memory_hub.close()
+
+
+def test_prepare_turn_override_uses_vision_caption(tmp_path):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from core.agent.turn_prep import prepare_turn
+    from offline_support import offline_agent
+
+    agent = offline_agent(tmp_path)
+    agent.llm_vision = object()
+    agent._caption_vision_images = AsyncMock(return_value="caption")
+    try:
+        prep = asyncio.run(
+            prepare_turn(
+                agent,
+                user_message="что на картинке?",
+                username="u1",
+                discord_user_id=None,
+                vision_images=[("image/png", "x")],
+                channel_id="c1",
+                author_display_name="U",
+                lyrics_marker="",
+                model="override-model",
+            )
+        )
+        assert prep.talk_vm is None
+        assert prep.attached_caption == "caption"
+        agent._caption_vision_images.assert_awaited_once()
+    finally:
+        agent.memory_hub.close()
