@@ -780,6 +780,20 @@ def test_cli_vision_limits_follow_config_and_hard_cap(tmp_path: Path):
     assert agent._cli_lane_specs["vision"].max_images == 4
     assert agent._cli_lane_specs["vision"].max_image_bytes == 8 * 1024 * 1024
 
+    agent = _cli_agent(tmp_path)
+    agent.config["llm"]["vision_model"].update(
+        {
+            "use_brain_model_for_vision": True,
+            "max_images_per_message": 1,
+            "max_image_bytes": 1024,
+        }
+    )
+    setup_llm_connection(agent)
+    assert agent.llm_vision is agent.llm_brain
+    assert agent._cli_lane_specs["brain"].max_images == 1
+    assert agent._cli_lane_specs["brain"].max_image_bytes == 1024
+    assert agent.llm_brain_capabilities["supports_vision"] is True
+
 
 def test_cli_lane_thinking_effort_reaches_settings(tmp_path: Path):
     from core.agent.llm_setup import setup_llm_connection

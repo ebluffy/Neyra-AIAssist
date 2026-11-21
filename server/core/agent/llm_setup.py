@@ -128,8 +128,10 @@ def _cli_settings(agent: Any, lane: str):
     from core.llm.cli_provider import cli_variant
 
     max_images, max_image_bytes = MAX_IMAGES, MAX_IMAGE_BYTES
-    if lane == "vision":
-        vis = merged_vision_pipeline(agent.config)
+    vis = merged_vision_pipeline(agent.config)
+    if lane == "vision" or (
+        lane == "brain" and vis.get("enabled") and vis.get("use_brain_model_for_vision")
+    ):
         max_images = vis.get("max_images_per_message", MAX_IMAGES)
         max_image_bytes = vis.get("max_image_bytes", MAX_IMAGE_BYTES)
     return CliSettings.from_config(
@@ -169,8 +171,12 @@ def _cli_connection(name: str, *, supports_vision: bool = False):
 
 def _setup_llm_connection(agent: Any) -> None:
     """Resolve default + per-role provider connections and build ChatOpenAI clients."""
-    from core.llm.profile import resolve_openai_compatible_connection
+    from core.llm.profile import merged_vision_pipeline, resolve_openai_compatible_connection
 
+    vision_cfg = merged_vision_pipeline(agent.config)
+    brain_vision = bool(vision_cfg.get("enabled")) and bool(
+        vision_cfg.get("use_brain_model_for_vision")
+    )
     cli_specs: dict[str, Any] = {}
     for lane in ("talk", "memory", "brain", "vision"):
         spec = _cli_settings(agent, lane)
@@ -207,7 +213,10 @@ def _setup_llm_connection(agent: Any) -> None:
         else resolve_openai_compatible_connection(agent.config, role="talk_model")
     )
     agent._llm_conn_brain = (
-        _cli_connection(_lane_provider_block(agent, "brain")[0])
+        _cli_connection(
+            _lane_provider_block(agent, "brain")[0],
+            supports_vision=brain_vision,
+        )
         if "brain" in cli_specs
         else resolve_openai_compatible_connection(agent.config, role="brain_model")
     )
