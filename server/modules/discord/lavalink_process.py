@@ -25,6 +25,7 @@ logger = logging.getLogger("neyra.discord.lavalink")
 _LOCK = threading.Lock()
 _OWNED_PROC: Optional[subprocess.Popen] = None
 _INSECURE_PASSWORDS = {"", "youshallnotpass", "CHANGE_ME"}
+_SAFE_PASSWORD_RE = re.compile(r"^[A-Za-z0-9_.~-]{16,}$")
 
 
 def _music_cfg(config: dict[str, Any]) -> dict[str, Any]:
@@ -234,7 +235,7 @@ def _ensure_application_yml(lava_dir: Path, *, password: str) -> Path:
 
     text2, n_pwd = re.subn(
         r'(?m)^(\s*password:\s*")[^"]*(")',
-        rf'\1{password}\2',
+        lambda m: m.group(1) + password + m.group(2),
         text,
         count=1,
     )
@@ -345,11 +346,11 @@ def ensure_managed_lavalink(
     host = parsed.hostname or "127.0.0.1"
     port = int(parsed.port or 2333)
     password = _node_password(node)
-    if password in _INSECURE_PASSWORDS:
+    if password in _INSECURE_PASSWORDS or not _SAFE_PASSWORD_RE.fullmatch(password):
         return (
             False,
-            "discord.music.nodes[].password is empty or the public default; "
-            "set a random password before starting managed Lavalink",
+            "discord.music.nodes[].password must be a random URL-safe value "
+            "(16+ chars: A-Z, a-z, 0-9, _, ., ~, -); generate one with secrets.token_urlsafe(32)",
         )
     wait_s = float(music.get("managed_lavalink_ready_seconds") or 90)
     if max_wait_s is not None:

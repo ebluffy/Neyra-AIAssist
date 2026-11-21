@@ -2,13 +2,21 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
+import tempfile
+from pathlib import Path as FilePath
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from core.runtime.health import HealthMonitor, check_lavalink
-from modules.discord.lavalink_process import _ensure_soundy_yaml, _force_safe_lavalink_log_levels
+from modules.discord.lavalink_process import (
+    _ensure_application_yml,
+    _ensure_soundy_yaml,
+    _force_safe_lavalink_log_levels,
+    ensure_managed_lavalink,
+)
 from modules.discord.music import _connect_music_service, _normalize_play_query
 
 
@@ -172,3 +180,29 @@ def test_health_run_once_does_not_block_event_loop(tmp_path, monkeypatch):
         return ticks
 
     assert asyncio.run(scenario()) >= 5
+
+
+@pytest.mark.parametrize("bad", ["a\\qb", "x\\1y", 'p"q', "short"])
+def test_unsafe_lavalink_password_is_refused_without_echo(bad):
+    with tempfile.TemporaryDirectory() as td:
+        ok, detail = ensure_managed_lavalink(
+            {"discord": {"music": {"nodes": [{"uri": "http://127.0.0.1:65534", "password": bad}]}}},
+            FilePath(td),
+        )
+    assert ok is False
+    assert "password" in detail.lower()
+    assert bad not in detail
+
+
+def test_urlsafe_password_is_written_to_yaml_verbatim():
+    import yaml
+
+    with tempfile.TemporaryDirectory() as td:
+        root = FilePath(td)
+        (root / "application.example.yml").write_text(
+            'lavalink:\n  server:\n    password: "CHANGE_ME"\n', encoding="utf-8"
+        )
+        password = secrets.token_urlsafe(32)
+        path = _ensure_application_yml(root, password=password)
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert parsed["lavalink"]["server"]["password"] == password
