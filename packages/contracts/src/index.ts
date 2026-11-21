@@ -189,7 +189,9 @@ export const BrowserServerEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('hello'), trace_id: z.string(), protocol: z.literal('neyra.ws.chat.v1'), role: z.string(), ping_interval_seconds: z.number(), idle_timeout_seconds: z.number(), reconnect: z.literal('open_new_socket') }).strict(),
   z.object({ type: z.literal('pong'), ts: z.string(), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string() }).strict(),
-  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('phase'), phase: z.string().min(1).max(40), label: z.string().min(1).max(120).optional() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), usage: ContextUsageSchema.optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('stopped'), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string() }).strict(),
 ]);
 export type BrowserServerEvent = z.infer<typeof BrowserServerEventSchema>;
@@ -199,7 +201,9 @@ export const KernelServerEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('hello'), trace_id: z.string(), protocol: z.literal('neyra.ws.chat.v1'), role: z.string(), ping_interval_seconds: z.number(), idle_timeout_seconds: z.number(), reconnect: z.literal('open_new_socket') }).strict(),
   z.object({ type: z.literal('pong'), ts: z.string(), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string() }).strict(),
-  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), model_trace: z.unknown().optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('phase'), phase: z.string().min(1).max(40), label: z.string().min(1).max(120).optional() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), usage: ContextUsageSchema.optional(), model_trace: z.unknown().optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('stopped'), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string(), model_trace: z.unknown().optional() }).strict(),
 ]);
 export type KernelServerEvent = z.infer<typeof KernelServerEventSchema>;

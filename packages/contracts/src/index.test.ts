@@ -102,6 +102,15 @@ describe('browser → BFF: WebSocket frame', () => {
   });
 });
 
+describe('core → BFF: server events', () => {
+  it('accepts phase, usage in done and stopped', () => {
+    expect(KernelServerEventSchema.safeParse({ type: 'phase', phase: 'answer', label: 'Формулирую ответ…' }).success).toBe(true);
+    expect(KernelServerEventSchema.safeParse({ type: 'done', text: 'ok', trace_id: 't', usage: { total: { used: 1, limit: 10 } } }).success).toBe(true);
+    expect(KernelServerEventSchema.safeParse({ type: 'stopped', trace_id: 't' }).success).toBe(true);
+    expect(BrowserServerEventSchema.safeParse({ type: 'stopped', trace_id: 't' }).success).toBe(true);
+  });
+});
+
 describe('browser → BFF: memory requests', () => {
   it('strips user_id from search and recall', () => {
     expect(MemorySearchRequestSchema.parse({ query: 'x' }).top_k).toBe(3);

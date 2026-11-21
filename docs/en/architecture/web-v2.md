@@ -41,17 +41,18 @@ proxy denies the rest at the edge (see [api-reverse-proxy](../ops/api-reverse-pr
 ## Known blockers before web P1
 
 §15 of the Russian document lists the core changes. Items 1, 2, 5 and 7 (identity, `/v1/web/me`,
-attachments and scoped memory) are implemented in the web identity PR; items 3, 4, 6 and 8
-(`platform`, per-request `model`, `stop`, HTTP voice) remain P1 work:
+attachments and scoped memory) are implemented in the web identity PR; items 4 and 6
+(per-request `model`, `stop`) are implemented in #80; item 3 (`platform`) and item 8 (HTTP voice)
+remain P1 work:
 
 | # | Change | Priority |
 | --- | --- | --- |
 | 1 | Verify `X-Neyra-Identity` on `/v1/chat`, `/v1/ws/chat`, `/v1/memory/*`, `/v1/desktop/*` | done (#73) |
 | 2 | `GET /v1/web/me`: `person_id`, role, limits from the JWT | done (#73) |
 | 3 | `platform` field in `WsChatMessage` | P1 |
-| 4 | `model` field in `ChatRequest` / `WsChatMessage` plus a model override in `agent.chat` | P1 |
+| 4 | `model` field in `ChatRequest` / `WsChatMessage` plus a model override in `agent.chat` | done (#80) |
 | 5 | Attachment contract: `attachments[]` (`kind`, `path`/`url`, `mime`, `text?`) routed to vision/STT/text extraction | done (#73) |
-| 6 | `stop` message type in WS | P1 |
+| 6 | `stop` message type in WS | done (#80) |
 | 7 | Scope in `/v1/memory/*`: a user sees only their own `person_id` | done (#73) |
 | 8 | HTTP wrapper for STT/TTS in the web (`/v1/web/voice` or `/v1/desktop/voice`) | P1 |
 

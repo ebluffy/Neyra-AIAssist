@@ -96,6 +96,7 @@ async def prepare_turn(
     avatar_url: Optional[str] = None,
     discord_context=None,
     person_id: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> TurnPrep:
     """Gather RAG/people/tools/vision inputs and build brain system prompt."""
     internal_uid = agent._resolve_internal_user_id(discord_user_id, username, person_id)
@@ -170,13 +171,19 @@ async def prepare_turn(
 
     brain_native_vis = bool(vision_images) and agent._uses_brain_native_vision()
     attached_caption = ""
+    requested_model = str(model or "").strip()
+    default_talk_model = str(getattr(agent, "llm_talk_model", "") or "")
+    model_is_default = not requested_model or requested_model == default_talk_model
     vplan = plan_talk_vision(
         vision_images,
         brain_native_vis=brain_native_vis,
-        talk_model=str(getattr(agent, "llm_talk_model", "") or ""),
+        talk_model=requested_model or default_talk_model,
         brain_model=str(getattr(agent, "llm_brain_model", "") or ""),
+        # Keep the configured vision gate; an arbitrary override is not
+        # assumed to be the vision client, so talk gets a caption instead of
+        # raw pixels.
         has_vision_llm=agent.llm_vision is not None,
-        talk_is_vision_client=agent.llm_talk is agent.llm_vision,
+        talk_is_vision_client=agent.llm_talk is agent.llm_vision and model_is_default,
         vision_is_brain_client=agent.llm_vision is agent.llm_brain,
     )
     if vplan.need_talk_caption:

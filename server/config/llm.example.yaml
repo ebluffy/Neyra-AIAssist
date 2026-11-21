@@ -36,6 +36,10 @@ llm:
   #   provider: aihope
   #   model: "your-coder-model"
 
+  # Model ids (of the current talk provider) allowed for the web role.
+  # The configured default talk model is always allowed. Empty = default only.
+  chat_models_allowed_for_web: []
+
   talk_model:
     responses:
       enabled: false

@@ -515,3 +515,61 @@ def setup_openai_compatible_llm(agent: Any) -> None:
                 **_force_chat_completions(conn_vision.provider),
             )
             logger.info("Зрение: VL-модель (%s) — %s", conn_vision.provider, vmodel)
+
+
+def talk_model_for(agent: Any, model_id: str | None):
+    """Return talk model bound to a per-request model override.
+
+    The configured default is returned unchanged when ``model_id`` is empty.
+    CLI providers are cloned with a replaced CliSettings.model; ChatOpenAI is
+    cloned through ``model_copy(model_name=...)`` because ``bind(model=...)``
+    does not reach the request payload. ``bind`` remains a fallback for other
+    Runnable models.
+    """
+    base = agent.llm_talk
+    requested = str(model_id or "").strip()
+    if not requested or requested == getattr(agent, "llm_talk_model", None):
+        return base
+    from core.llm.cli_provider import CliChatModel
+
+    if isinstance(base, CliChatModel):
+        from dataclasses import replace
+
+        return CliChatModel(settings=replace(base.settings, model=requested), provider_name=base.provider_name)
+    # ChatOpenAI keeps the model in ``model_name``. ``bind(model=...)`` is not
+    # enough: bind kwargs do not reach _default_params, so the request would
+    # still use the configured model. Clone the Pydantic client instead.
+    if hasattr(base, "model_copy"):
+        return base.model_copy(update={"model_name": requested})
+    if hasattr(base, "bind"):
+        return base.bind(model=requested)
+    return base
+
+
+def model_allowed_for_role(config: dict, role: str, model_id: str | None) -> bool:
+    """Whether ``role`` may override the talk model with ``model_id``.
+
+    Admin/maint are trusted. Web users may use the configured default talk
+    model or ids explicitly listed in ``llm.chat_models_allowed_for_web``.
+    """
+    requested = str(model_id or "").strip()
+    if not requested:
+        return True
+    if str(role or "").lower() in {"admin", "maint"}:
+        return True
+    if str(role or "").lower() != "web":
+        return False
+    from core.llm.profile import resolve_role_provider, resolved_talk_model
+
+    try:
+        provider = resolve_role_provider(config, "talk_model")
+        default_model = resolved_talk_model(config, provider)
+    except Exception:
+        default_model = ""
+    if requested == default_model:
+        return True
+    llm = config.get("llm") if isinstance(config, dict) else None
+    allowed = (llm or {}).get("chat_models_allowed_for_web") if isinstance(llm, dict) else None
+    if isinstance(allowed, list):
+        return requested in {str(item).strip() for item in allowed if str(item).strip()}
+    return False

@@ -351,6 +351,9 @@ def begin_call(agent, lane, purpose, attempt=None, images=False, model=None, ret
         actual_model = bound
     requested_name = getattr(actual_model, "model_name", None)
     if not isinstance(requested_name, str):
+        settings = getattr(actual_model, "settings", None)
+        requested_name = getattr(settings, "model", None) if settings is not None else None
+    if not isinstance(requested_name, str):
         requested_name = role.get("model")
     effective_lane = lane
     if agent is not None and lane == "vision" and model is getattr(agent, "llm_brain", None):
