@@ -125,6 +125,7 @@ def test_rest_chat_passes_model_override(tmp_path):
 
 
 def test_talk_model_for_clones_chat_openai_model_name():
+    pytest.importorskip("langchain_openai")
     from langchain_openai import ChatOpenAI
 
     base = ChatOpenAI(model="default", api_key="x", base_url="http://127.0.0.1:9")
