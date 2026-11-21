@@ -17,7 +17,13 @@ llm:
     # Experimental CLI backend (#77): ядро вызывает установленный OpenCode через
     # bwrap. Требует bubblewrap на хосте, experimental: true и путь к версии CLI.
     # Инструменты в запрос не попадают: read-only конфиг + плагин, HOME — tmpfs.
-    # Ограничения: brain без tools, vision нет, max_tokens не поддерживается.
+    # Картинки vision-лейна передаются через `opencode run -f`.
+    # Рассуждение задаётся в роли: thinking_effort: "off"|low|medium|high|max.
+    # off/on в YAML 1.1 — булевы значения, поэтому off пишите в кавычках.
+    # OpenCode принимает variant; для DeepSeek доступны low/high/max, поэтому
+    # medium по умолчанию ведёт в high, off/default — без variant. Переопределить
+    # можно через llm.providers.<name>.variants: {"off": "", "medium": high}.
+    # Ограничения: brain без tools, max_tokens не поддерживается.
     # oc:
     #   kind: cli
     #   cli: opencode
@@ -44,6 +50,8 @@ llm:
   chat_models_allowed_for_web: []
 
   talk_model:
+    # off|low|medium|high|max; CLI maps it to OpenCode variant.
+    # thinking_effort: "off"
     responses:
       enabled: false
       warmup_on_start: false
@@ -67,6 +75,7 @@ llm:
     primary_first_token_timeout_seconds: 20.0
 
   brain_model:
+    # thinking_effort: "off"
     provider: aihope
     model: "gpt-6-luna"
     model_deep: "gpt-6-luna"
@@ -76,6 +85,7 @@ llm:
     max_retries: 1
 
   memory_model:
+    # thinking_effort: "medium"
     provider: aihope
     model: "gpt-6-luna"
     temperature: 0.6
@@ -83,8 +93,11 @@ llm:
     max_retries: 1
 
   vision_model:
+    # thinking_effort: "off"
     enabled: true
-    use_brain_model_for_vision: true
+    # true отдаёт картинки brain; false использует отдельный vision_model
+    # (включая CLI, где картинки идут через opencode run -f).
+    use_brain_model_for_vision: false
     provider: aihope
     model: "gpt-6-luna"
     max_tokens: 800
