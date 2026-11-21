@@ -214,6 +214,11 @@ class ApiError(Exception):
         super().__init__(message)
 
 
+async def _ws_wait(tasks):
+    """Test seam for the WS active-chat race; production uses FIRST_COMPLETED."""
+    return await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+
 def _trace_id(request: Request) -> str:
     tid = getattr(request.state, "trace_id", "")
     if not tid:
@@ -5403,10 +5408,7 @@ def build_app(
                     continue
 
                 get_task = asyncio.create_task(inbox.get())
-                done, _pending = await asyncio.wait(
-                    {active_chat, get_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
+                done, _pending = await _ws_wait({active_chat, get_task})
                 item = None
                 if get_task in done:
                     item = get_task.result()

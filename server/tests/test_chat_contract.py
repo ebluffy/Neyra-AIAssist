@@ -324,9 +324,13 @@ def test_plan_talk_vision_uses_caption_for_model_override():
     assert plan.talk_vm is None
 
 
-def test_ws_race_both_done_keeps_client_frame(tmp_path):
+@pytest.mark.timeout(5)
+def test_ws_race_both_done_keeps_client_frame(tmp_path, monkeypatch):
+    import asyncio
+
     from fastapi.testclient import TestClient
 
+    import core.api.app as app_module
     from offline_support import offline_agent
 
     agent = offline_agent(tmp_path)
@@ -336,7 +340,14 @@ def test_ws_race_both_done_keeps_client_frame(tmp_path):
         seen.append(kwargs.get("text") if "text" in kwargs else (args[0] if args else ""))
         yield {"type": "done", "text": "ok", "sounds": [], "model_trace": None}
 
+    async def both_done(tasks):
+        # Force the exact AR-114 race: active task and the next frame finish
+        # in the same wait() call.
+        await asyncio.gather(*tasks)
+        return set(tasks), set()
+
     agent.chat_stream = fake_stream
+    monkeypatch.setattr(app_module, "_ws_wait", both_done)
     try:
         with TestClient(_ws_app(agent, tmp_path)) as client:
             with client.websocket_connect(
@@ -345,10 +356,8 @@ def test_ws_race_both_done_keeps_client_frame(tmp_path):
                 assert ws.receive_json()["type"] == "hello"
                 ws.send_json({"type": "chat", "text": "first"})
                 ws.send_json({"type": "chat", "text": "second"})
-                first = ws.receive_json()
-                second = ws.receive_json()
-                assert first["type"] == "done"
-                assert second["type"] == "done"
+                assert ws.receive_json()["type"] == "done"
+                assert ws.receive_json()["type"] == "done"
                 assert len(seen) == 2
     finally:
         agent.memory_hub.close()
