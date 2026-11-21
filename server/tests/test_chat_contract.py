@@ -8,6 +8,8 @@ from pydantic import ValidationError
 
 from core.agent.llm_setup import talk_model_for
 from core.api.app import ChatRequest, WsChatMessage
+from test_web_identity_review import real_api  # noqa: F401
+from test_web_role import _identity_headers, identity_env  # noqa: F401
 
 
 class FakeTalk:
@@ -196,7 +198,9 @@ def test_ws_busy_does_not_cancel_active_stream(tmp_path):
                 ws.send_json({"type": "chat", "text": "hello"})
                 assert ws.receive_json()["type"] == "token"
                 ws.send_json({"type": "chat", "text": "second"})
-                assert ws.receive_json()["type"] == "error"
+                busy = ws.receive_json()
+                assert busy["type"] == "error"
+                assert busy["code"] == "busy"
                 assert ws.receive_json()["type"] == "done"
     finally:
         agent.memory_hub.close()
@@ -287,3 +291,18 @@ def test_responses_talk_uses_bound_model_name():
     agent = NS(config={}, llm_talk_model="default-model")
     talk = ResponsesTalk(agent, model, tx)
     assert talk.model_name == "clone-model"
+
+
+def test_web_role_cannot_select_unlisted_model(real_api):
+    from test_web_role import _identity_headers
+
+    http, agent = real_api
+    async def fake_stream(*args, **kwargs):
+        yield {"type": "done", "text": "must-not-run", "sounds": [], "model_trace": None}
+    agent.chat_stream = fake_stream
+    with http.websocket_connect("/v1/ws/chat", headers=_identity_headers()) as ws:
+        assert ws.receive_json()["type"] == "hello"
+        ws.send_json({"type": "chat", "text": "hi", "model": "expensive-model"})
+        event = ws.receive_json()
+        assert event["type"] == "error"
+        assert event["code"] == "model_not_allowed"
