@@ -59,6 +59,8 @@ jobs:
         run: pytest -q devtools/deploy/test_openbot_admin.py
       - name: Core data_dir must stay inside the deploy tree
         run: pytest -q devtools/deploy/test_data_dir.py
+      - name: Core deploy service owner
+        run: pytest -q devtools/deploy/test_service_owner.py
       - name: Check layout / no legacy paths
         run: python server/scripts/verify_stage_1b.py
       - name: Healthcheck smoke (examples, skip HTTP)
