@@ -46,6 +46,17 @@ reports `warmup_state: unsupported`. A manual warmup answers 409
 `responses_unsupported`. The default is `true`. The strings `"false"`/`"no"`/`0`
 also mean false; unrecognized values are ignored with a warning.
 
+The OpenCode CLI provider is enabled with `kind: cli`, `cli: opencode`,
+`experimental: true`, and `cli_path` to a verified version. The core runs it in
+`bwrap`, strips tools from the request, and passes vision-lane images through
+`opencode run -f`. Reasoning is set per role with
+`llm.<role>_model.thinking_effort: off|low|medium|high|max`. OpenCode takes the
+variant in the model id (`provider/model#variant`); DeepSeek exposes low/high/max,
+so `medium` defaults to `high` and `off`/`default` add no variant. Override with
+`llm.providers.<name>.variants`. Brain on CLI has no tools: with
+`mcp_client.llm_tool_calls` or `desktop_agent.enabled` the core refuses to start
+until brain uses another provider.
+
 ## Changing the conversation mode
 
 Set `agent.conversation_mode` in `server/config/agent.yaml` and restart, or apply it without restarting using an admin Bearer/dashboard session and `POST /v1/config/update`:

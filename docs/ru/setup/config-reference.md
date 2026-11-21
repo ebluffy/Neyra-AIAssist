@@ -48,6 +48,17 @@ persona принадлежит talk. Streaming usage включается тол
 `true`. Строки `"false"`/`"no"`/`0` тоже понимаются как false, нераспознанное
 значение игнорируется с warning.
 
+CLI-провайдер OpenCode включается блоком `kind: cli`, `cli: opencode`,
+`experimental: true` и путём `cli_path` к проверенной версии. Ядро запускает
+его в `bwrap`, инструменты вырезаются из запроса, а картинки vision-лейна
+передаются через `opencode run -f`. Уровень рассуждения задаётся в роли:
+`llm.<role>_model.thinking_effort: off|low|medium|high|max`. OpenCode принимает
+variant в модели (`provider/model#variant`); для DeepSeek доступны low/high/max,
+поэтому `medium` по умолчанию ведёт в `high`, а `off`/`default` не добавляют
+variant. Переопределение — `llm.providers.<name>.variants`. Brain на CLI не
+умеет инструменты: при `mcp_client.llm_tool_calls` или `desktop_agent.enabled`
+ядро откажется стартовать, пока brain не переведут на другой провайдер.
+
 ## Переключение режима общения
 
 Файл `server/config/agent.yaml`:

@@ -18,13 +18,16 @@ Discord/Deepgram-токены не передаются. Промпт идёт �
 
 Ограничения: нет нативного стриминга (ответ одним куском); brain на CLI не
 умеет tools (`bind_tools` бросает понятную ошибку, конфиг с tools отклоняется
-на старте); vision на CLI не поддерживается — картинки заменяются
-плейсхолдером; `max_tokens` CLI не принимает, ответ обрезается с warning.
+на старте); vision передаёт картинки через `opencode run -f`, если модель
+поддерживает attachment; `max_tokens` CLI не принимает, ответ обрезается с
+warning. Рассуждение задаётся variant в id модели (`model#variant`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -55,7 +58,17 @@ SANDBOX_AUTH_DIR = f"{SANDBOX_HOME}/data/opencode"
 SANDBOX_AUTH_PATH = f"{SANDBOX_AUTH_DIR}/auth.json"
 SANDBOX_PLUGIN_DIR = f"{SANDBOX_HOME}/plugin"
 SANDBOX_STATE_DIR = f"{SANDBOX_HOME}/state"
+SANDBOX_IMAGES_DIR = f"{SANDBOX_HOME}/images"
 SANDBOX_DIR_NAME = "cli-sandbox"
+MAX_IMAGES = 4
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_IMAGE_EXTENSIONS = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+}
 
 # Широкие корни, которые нельзя монтировать в песочницу целиком (AR-68).
 _WIDE_ROOTS = {
@@ -74,6 +87,32 @@ VERIFIED_OPENCODE_VERSIONS: frozenset[str] = frozenset({"2.3.0"})
 # Модель приходит из конфига и меняется через API: только безопасный набор
 # символов, без ведущего дефиса (иначе это флаг OpenCode, а не модель).
 MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$")
+VARIANT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+# OpenCode принимает вариант рассуждения как `model#variant`. У DeepSeek
+# доступны low/high/max; medium ведём в high, off/default оставляют вариант
+# провайдера по умолчанию. Провайдер может переопределить это через
+# llm.providers.<name>.variants.
+EFFORT_VARIANTS: dict[str, str] = {
+    "off": "",
+    "default": "",
+    "low": "low",
+    "medium": "high",
+    "high": "high",
+    "max": "max",
+}
+
+
+def cli_variant(block: dict[str, Any], effort: str) -> str:
+    """Variant for a lane effort, with a provider-level override map."""
+    custom = block.get("variants") if isinstance(block, dict) else None
+    if isinstance(custom, dict) and effort in custom:
+        return str(custom.get(effort) or "").strip()
+    return EFFORT_VARIANTS.get(str(effort or "").strip().lower(), "")
+
+
+def _effective_model(settings: "CliSettings") -> str:
+    return f"{settings.model}#{settings.variant}" if settings.variant else settings.model
 
 # AR-71: у CLI-лейна нет инструментов, и модель не должна их изображать.
 CLI_GUARD = (
@@ -186,6 +225,7 @@ class CliSettings:
     data_dir: str = ""
     auth_file: str = ""
     timeout: float = DEFAULT_TIMEOUT_SECONDS
+    variant: str = ""
     extra_args: tuple[str, ...] = ()
     experimental: bool = False
 
@@ -197,6 +237,7 @@ class CliSettings:
         model: str,
         data_dir: str = "",
         default_sandbox: str = "",
+        variant: str = "",
     ) -> "CliSettings":
         cli = str(block.get("cli") or "opencode").strip().lower()
         if cli not in CLI_KINDS:
@@ -251,6 +292,7 @@ class CliSettings:
             data_dir=str(data_root),
             auth_file=str(block.get("auth_file") or "").strip(),
             timeout=timeout,
+            variant=str(variant or "").strip(),
             experimental=True,
         )
         validate_settings(settings)
@@ -315,6 +357,11 @@ def validate_settings(settings: CliSettings) -> None:
         raise CliProviderError(
             f"Модель CLI '{settings.model}' недопустима: разрешены буквы, цифры, . _ / : - "
             "без ведущего дефиса"
+        )
+    if settings.variant and not VARIANT_PATTERN.match(settings.variant):
+        raise CliProviderError(
+            f"Вариант рассуждения CLI '{settings.variant}' недопустим: "
+            "разрешены буквы, цифры, _ и -"
         )
     if settings.extra_args:
         raise CliProviderError(
@@ -516,13 +563,13 @@ def _cli_mount_root(cli_path: Path, settings: CliSettings) -> Path:
     return root
 
 
-def _messages_to_prompt(messages: Sequence[BaseMessage]) -> str:
+def _messages_to_prompt(messages: Sequence[BaseMessage], *, skip_images: bool = False) -> str:
     """CLI принимает один текст: system-части сверху, дальше реплики диалога."""
     system_parts: list[str] = []
     dialog: list[str] = []
     for message in messages:
         role = getattr(message, "type", "")
-        text = _content_to_text(message.content)
+        text = _content_to_text(message.content, skip_images=skip_images)
         if role in {"system", "developer"}:
             system_parts.append(text)
         elif role == "human":
@@ -538,7 +585,7 @@ def _messages_to_prompt(messages: Sequence[BaseMessage]) -> str:
     return f"{head}\n\n{body}".strip() if head else body
 
 
-def _content_to_text(content: Any) -> str:
+def _content_to_text(content: Any, *, skip_images: bool = False) -> str:
     """Текст из content: картинки и прочие блоки не сериализуются в base64."""
     if isinstance(content, str):
         return content
@@ -551,12 +598,70 @@ def _content_to_text(content: Any) -> str:
             continue
         kind = str(part.get("type") or "").strip().lower()
         if kind in {"image", "image_url", "input_image"}:
-            parts.append(IMAGE_PLACEHOLDER)
+            if not skip_images:
+                parts.append(IMAGE_PLACEHOLDER)
         elif kind in {"text", "input_text"}:
             parts.append(str(part.get("text") or ""))
         else:
             parts.append(f"[{kind or 'часть'} не передаётся CLI-провайдеру]")
     return "\n".join(item for item in parts if item)
+
+
+def _extract_images(messages: Sequence[BaseMessage]) -> list[tuple[str, bytes]]:
+    """Decode data-URI images from multimodal messages for `opencode run -f`."""
+    images: list[tuple[str, bytes]] = []
+    for message in messages:
+        content = message.content
+        if not isinstance(content, (list, tuple)):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if str(part.get("type") or "").strip().lower() not in {
+                "image",
+                "image_url",
+                "input_image",
+            }:
+                continue
+            raw_url = part.get("image_url")
+            if isinstance(raw_url, dict):
+                raw_url = raw_url.get("url")
+            url = str(raw_url or "").strip()
+            if not url.startswith("data:") or "," not in url:
+                raise CliProviderError("CLI-провайдеру нужна картинка в data-URI")
+            header, payload = url.split(",", 1)
+            mime = header[5:].split(";", 1)[0].strip().lower()
+            extension = _IMAGE_EXTENSIONS.get(mime)
+            if extension is None:
+                raise CliProviderError(f"Формат картинки не поддерживается CLI: {mime or 'unknown'}")
+            try:
+                data = base64.b64decode(payload, validate=True)
+            except (binascii.Error, ValueError) as error:
+                raise CliProviderError("Картинка для CLI не декодируется из base64") from error
+            if not data:
+                raise CliProviderError("Картинка для CLI пустая")
+            if len(data) > MAX_IMAGE_BYTES:
+                raise CliProviderError(
+                    f"Картинка для CLI больше {MAX_IMAGE_BYTES // (1024 * 1024)} МБ"
+                )
+            images.append((extension, data))
+            if len(images) > MAX_IMAGES:
+                raise CliProviderError(f"CLI принимает не больше {MAX_IMAGES} картинок за вызов")
+    return images
+
+
+def _write_images(assets: Path, images: Sequence[tuple[str, bytes]]) -> list[Path]:
+    """Write decoded images into the per-call assets dir for a read-only bind."""
+    if not images:
+        return []
+    target = assets / "images"
+    target.mkdir()
+    paths: list[Path] = []
+    for index, (extension, data) in enumerate(images, start=1):
+        path = target / f"image-{index}.{extension}"
+        path.write_bytes(data)
+        paths.append(path)
+    return paths
 
 
 def _parse_json_events(stdout: str) -> str:
@@ -624,6 +729,7 @@ def _bwrap_argv(
     *,
     assets: Path,
     auth_file: Optional[Path],
+    images: Sequence[Path] = (),
 ) -> list[str]:
     argv = [
         _bwrap_path(),
@@ -680,6 +786,14 @@ def _bwrap_argv(
     ]
     if auth_file is not None:
         argv += ["--dir", SANDBOX_AUTH_DIR, "--ro-bind", str(auth_file), SANDBOX_AUTH_PATH]
+    if images:
+        argv += [
+            "--dir",
+            SANDBOX_IMAGES_DIR,
+            "--ro-bind",
+            str(assets / "images"),
+            SANDBOX_IMAGES_DIR,
+        ]
     argv += [
         "--tmpfs",
         "/tmp",
@@ -704,12 +818,16 @@ def _bwrap_argv(
         "--format",
         "json",
         "--model",
-        settings.model,
+        _effective_model(settings),
     ]
+    for image in images:
+        argv += ["-f", f"{SANDBOX_IMAGES_DIR}/{image.name}"]
     return argv
 
 
-def _prepare(settings: CliSettings) -> tuple[list[str], dict[str, str], Path, str]:
+def _prepare(
+    settings: CliSettings, images: Sequence[tuple[str, bytes]] = ()
+) -> tuple[list[str], dict[str, str], Path, str]:
     """Проверить конфиг, подготовить sandbox/конфиг/авторизацию и argv bwrap."""
     if not settings.experimental:
         raise CliProviderError(
@@ -719,11 +837,18 @@ def _prepare(settings: CliSettings) -> tuple[list[str], dict[str, str], Path, st
     sandbox = _ensure_sandbox(settings)
     assets = _write_opencode_assets(sandbox)
     try:
+        image_paths = _write_images(assets, images)
         auth_file = _resolve_auth_file(settings, sandbox)
         cli_path = Path(settings.cli_path).expanduser().resolve()
         if not cli_path.is_file():
             raise CliProviderError(f"CLI не найден: {cli_path}")
-        argv = _bwrap_argv(settings, cli_path, assets=assets, auth_file=auth_file)
+        argv = _bwrap_argv(
+            settings,
+            cli_path,
+            assets=assets,
+            auth_file=auth_file,
+            images=image_paths,
+        )
     except BaseException:
         _remove_quietly(assets)
         raise
@@ -818,9 +943,13 @@ def _run_sync(
     return stdout, "".join(stderr_tail), returncode
 
 
-def run_cli_prompt(settings: CliSettings, prompt: str) -> str:
+def run_cli_prompt(
+    settings: CliSettings,
+    prompt: str,
+    images: Sequence[tuple[str, bytes]] = (),
+) -> str:
     """Синхронный вызов OpenCode через bwrap. Возвращает текст ответа."""
-    argv, env, assets, nonce = _prepare(settings)
+    argv, env, assets, nonce = _prepare(settings, images)
     try:
         stdout, stderr, returncode = _run_sync(settings, argv, env, prompt)
         # AR-76: сначала настоящая ошибка CLI/ответ, потом проверка плагина.
@@ -947,9 +1076,13 @@ async def _read_capped(stream: Any, limit: int) -> bytes:
     return b"".join(chunks)
 
 
-async def run_cli_prompt_async(settings: CliSettings, prompt: str) -> str:
+async def run_cli_prompt_async(
+    settings: CliSettings,
+    prompt: str,
+    images: Sequence[tuple[str, bytes]] = (),
+) -> str:
     """Async-вызов OpenCode: CancelledError/таймаут убивают bwrap и всё дерево."""
-    argv, env, assets, nonce = _prepare(settings)
+    argv, env, assets, nonce = _prepare(settings, images)
     try:
         async with _semaphore():
             proc = await asyncio.create_subprocess_exec(
@@ -1079,8 +1212,9 @@ class CliChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        prompt = _messages_to_prompt(messages)
-        text = run_cli_prompt(self.settings, prompt)
+        images = _extract_images(messages)
+        prompt = _messages_to_prompt(messages, skip_images=bool(images))
+        text = run_cli_prompt(self.settings, prompt, images)
         text = _truncate_answer(self.settings, text, _bound_limit(self, kwargs))
         text = _apply_stop(text, stop)
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
@@ -1092,8 +1226,9 @@ class CliChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        prompt = _messages_to_prompt(messages)
-        text = await run_cli_prompt_async(self.settings, prompt)
+        images = _extract_images(messages)
+        prompt = _messages_to_prompt(messages, skip_images=bool(images))
+        text = await run_cli_prompt_async(self.settings, prompt, images)
         text = _truncate_answer(self.settings, text, _bound_limit(self, kwargs))
         text = _apply_stop(text, stop)
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])

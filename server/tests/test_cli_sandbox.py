@@ -430,6 +430,72 @@ def test_images_become_placeholder_not_base64():
     assert "base64" not in prompt and "QUJDREVG" not in prompt
 
 
+def test_cli_variant_is_encoded_in_model(tmp_path: Path, monkeypatch):
+    from core.llm.cli_provider import cli_variant
+
+    assert cli_variant({}, "off") == ""
+    assert cli_variant({}, "medium") == "high"
+    assert cli_variant({"variants": {"medium": "low"}}, "medium") == "low"
+    holder = _patch_popen(monkeypatch)
+    assert run_cli_prompt(_settings(tmp_path, variant="high"), "hi") == "ответ"
+    argv = holder["proc"].argv
+    assert argv[argv.index("--model") + 1] == "opencode/x-free#high"
+
+
+def test_cli_vision_attaches_images(tmp_path: Path, monkeypatch):
+    from langchain_core.messages import HumanMessage
+
+    from core.llm.cli_provider import (
+        _extract_images,
+        _messages_to_prompt,
+        _write_images,
+    )
+
+    message = HumanMessage(
+        content=[
+            {"type": "text", "text": "что на фото?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJDREVG"}},
+        ]
+    )
+    images = _extract_images([message])
+    assert images == [("png", b"ABCDEF")]
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    paths = _write_images(assets, images)
+    assert paths[0].read_bytes() == b"ABCDEF"
+    prompt = _messages_to_prompt([message], skip_images=True)
+    assert "что на фото?" in prompt
+    assert "изображение не передано" not in prompt
+
+    holder = _patch_popen(monkeypatch)
+    model = CliChatModel(settings=_settings(tmp_path), provider_name="oc")
+    assert model.invoke([message]).content == "ответ"
+    argv = holder["proc"].argv
+    assert "/home/sandbox/images" in _flat(argv)
+    assert argv[argv.index("-f") + 1] == "/home/sandbox/images/image-1.png"
+    assert "изображение не передано" not in holder["proc"].stdin.getvalue()
+
+
+def test_cli_vision_rejects_unknown_format():
+    from langchain_core.messages import HumanMessage
+
+    from core.llm.cli_provider import _extract_images
+
+    with pytest.raises(CliProviderError, match="Формат"):
+        _extract_images(
+            [
+                HumanMessage(
+                    content=[
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/bmp;base64,QUJD"},
+                        }
+                    ]
+                )
+            ]
+        )
+
+
 def test_max_tokens_truncates_answer(tmp_path: Path, monkeypatch):
     long_text = "я" * 500
     _patch_popen(
@@ -590,7 +656,7 @@ def _cli_agent(tmp_path: Path, **extra) -> SimpleNamespace:
     return SimpleNamespace(config=config)
 
 
-def test_cli_lanes_are_staged_and_vision_cli_does_not_crash(tmp_path: Path):
+def test_cli_lanes_are_staged_with_vision(tmp_path: Path):
     from core.agent.llm_setup import setup_llm_connection
 
     agent = _cli_agent(tmp_path)
@@ -598,10 +664,27 @@ def test_cli_lanes_are_staged_and_vision_cli_does_not_crash(tmp_path: Path):
     assert isinstance(agent.llm_talk, CliChatModel)
     assert isinstance(agent.llm_brain, CliChatModel)
     assert isinstance(agent.llm_memory, CliChatModel)
-    assert agent.llm_vision is None
+    assert isinstance(agent.llm_vision, CliChatModel)
     assert agent._cli_vision is True
     with pytest.raises(CliProviderError):
         agent.llm_brain.bind_tools([])
+
+
+def test_cli_lane_thinking_effort_reaches_settings(tmp_path: Path):
+    from core.agent.llm_setup import setup_llm_connection
+
+    agent = _cli_agent(tmp_path)
+    llm = agent.config["llm"]
+    llm["talk_model"]["thinking_effort"] = "off"
+    llm["brain_model"]["thinking_effort"] = "off"
+    llm["memory_model"]["thinking_effort"] = "medium"
+    llm["vision_model"]["thinking_effort"] = "off"
+    setup_llm_connection(agent)
+    specs = agent._cli_lane_specs
+    assert specs["talk"].variant == ""
+    assert specs["brain"].variant == ""
+    assert specs["memory"].variant == "high"
+    assert specs["vision"].variant == ""
 
 
 def test_brain_cli_with_tools_is_refused_at_setup(tmp_path: Path):
