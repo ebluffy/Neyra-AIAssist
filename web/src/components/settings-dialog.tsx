@@ -41,6 +41,7 @@ import {
 } from '../lib/ui-sounds';
 import { emitToast, soonToast } from '../lib/toast';
 import { authClient } from '../../lib/auth-client';
+import { discordLinkErrorMessage } from '../../lib/discord-link-errors';
 
 type SectionId =
   | 'profile'
@@ -195,11 +196,15 @@ export function SettingsDialog({
     if (discordLinkPending) return;
     setDiscordLinkPending(true);
     try {
-      const result = await authClient.linkSocial({ provider: 'discord', callbackURL: '/chat' });
+      const result = await authClient.linkSocial({
+        provider: 'discord',
+        callbackURL: '/chat?settings=accounts',
+        errorCallbackURL: '/chat?settings=accounts&link_error=1',
+      });
       if (result?.error) {
         emitToast({
           title: 'Discord',
-          message: result.error.message || 'Не удалось привязать Discord.',
+          message: discordLinkErrorMessage(result.error.code),
           tone: 'danger',
         });
         setDiscordLinkPending(false);
@@ -439,7 +444,7 @@ export function SettingsDialog({
                 user.platform === 'both' ||
                 (user.email && user.email.endsWith('@discord.placeholder.invalid'))
               );
-              const discordTag = user.discord_username || (isDiscordLinked ? 'Подключен' : null);
+              const discordTag = user.discord_username || null;
               const isRealEmail = Boolean(user.email && !user.email.endsWith('@discord.placeholder.invalid'));
 
               return (

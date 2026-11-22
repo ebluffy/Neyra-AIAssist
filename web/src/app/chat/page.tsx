@@ -11,5 +11,12 @@ export default async function ChatPage() {
   if (!session) redirect('/login');
   const onboarding = await getUserOnboardingCompleted(session.user.id);
   if (onboarding.ok && !onboarding.value) redirect('/onboarding');
-  return <ChatView user={session.user} />;
+  let discordId: string | null = null;
+  try {
+    const accounts = await getAuth().api.listUserAccounts({ headers: await headers() });
+    discordId = accounts.find((account) => account.providerId === 'discord')?.accountId ?? null;
+  } catch {
+    discordId = null;
+  }
+  return <ChatView user={{ ...session.user, discord_id: discordId }} />;
 }

@@ -36,6 +36,8 @@ import { isEnabled } from '../../lib/feature-flags';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
 import { SettingsDialog } from '../../components/settings-dialog';
+import { emitToast } from '../../lib/toast';
+import { discordLinkErrorMessage } from '../../lib/discord-link-errors';
 import { ChannelsNav } from '../../components/channels/channels-nav';
 import { AppSidebar } from '../../components/layout/app-sidebar';
 import { ThreadPanel, type ThreadPanelTab } from '../../components/chat/thread-panel';
@@ -116,7 +118,7 @@ function humanizeErrorMessage(rawError?: string | null): { message: string; hint
 }
 
 export interface ChatViewProps {
-  user: { id: string; email?: string | null; name?: string | null; role?: string | null };
+  user: { id: string; email?: string | null; name?: string | null; role?: string | null; discord_id?: string | null };
   initialMessages?: ChatMessageItem[];
   initialUsage?: ContextUsage | null;
   initialThreadPanelOpen?: boolean;
@@ -156,6 +158,30 @@ export function ChatView({
   // Десктоп: сайдбар можно свернуть, чтобы чат занимал всё окно (§ волна 4).
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const error = params.get('error') || (params.get('link_error') ? 'link_error' : '');
+    const openAccounts = params.get('settings') === 'accounts';
+    if (openAccounts) {
+      setSettingsOpen(true);
+      setSettingsTab('accounts');
+    }
+    if (error) {
+      emitToast({
+        title: 'Discord',
+        message: discordLinkErrorMessage(error === 'link_error' ? '' : error),
+        tone: 'danger',
+      });
+    }
+    if (error || openAccounts) {
+      params.delete('error');
+      params.delete('link_error');
+      params.delete('settings');
+      const qs = params.toString();
+      window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''));
+    }
+  }, []);
+
   const [settingsTab, setSettingsTab] = useState<'profile' | 'accounts' | 'appearance' | 'notifications' | 'privacy' | 'data' | 'danger'>('profile');
 
   // Wave 5 Step 2: Thread Panel states
