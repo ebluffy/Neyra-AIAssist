@@ -39,7 +39,7 @@ DNS is **not** inside Neyra yaml — only at your DNS provider.
 1. Open Cloudflare DNS for the zone (e.g. `owyx.site`).
 2. Add **A** (or **AAAA**): Name `neyra` → public IP of the **VPS**.
 3. Set `api.public_base_url` in `server/config/server.yaml` to that HTTPS origin.
-4. On the VPS: firewall **80/443** public; run **frps + Caddy/nginx**. Do **not** expose home-server `:8787` on the internet.
+4. On the VPS: allow **80/443 only from Cloudflare ranges** (https://www.cloudflare.com/ips/) behind orange-cloud; without Cloudflare allow all but do not trust `CF-Connecting-IP`. Run **frps + Caddy/nginx**. Do **not** expose home-server `:8787` on the internet.
 5. Tokens stay in `server/.env` on the home server (`API_TOKEN` / `API_KEY`); public URL stays in yaml.
 
 ### frpc: two HTTP vhosts
@@ -66,7 +66,7 @@ customDomains = ["neyra-web-internal.owyx.site"]
 
 ## Caddy (frp — upstream = frps vhost)
 
-CORE_UPSTREAM/WEB_UPSTREAM are the frps HTTP vhost addresses on the VPS; the home localPorts are 8787/3000. `/api/v1` targets the core and strips the public `/api` prefix; `/api/auth` must stay on the site.
+CORE_UPSTREAM/WEB_UPSTREAM are the frps HTTP vhost addresses on the VPS; the home localPorts are 8787/3000. `/api/v1` targets the core and strips the public `/api` prefix; `/api/auth` must stay on the site. **Ports 80/443 must be restricted to Cloudflare ranges**, otherwise a direct request to the VPS IP can spoof `CF-Connecting-IP`.
 
 ```caddy
 neyra.owyx.site {
@@ -99,7 +99,7 @@ neyra.owyx.site {
 }
 ```
 
-WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If using `?token=`, mask `token` in access logs. Without Cloudflare (and with a firewall that drops non-Cloudflare IPs), use `X-Real-IP {remote_host}` and add `header_up -CF-Connecting-IP` so clients cannot inject an address.
+WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If using `?token=`, mask `token` in access logs. Without Cloudflare, use `X-Real-IP {remote_host}` and add `header_up -CF-Connecting-IP` so clients cannot inject an address.
 
 ## nginx (frp — upstream = frps vhost)
 
@@ -170,6 +170,15 @@ server {
 
 Trailing slash on `proxy_pass` under `/api/v1/` strips `/api`; `/api/auth` and `/api/` keep the prefix.
 
+## Public client-IP smoke
+
+```bash
+curl -sk --resolve neyra.owyx.site:443:<VPS IP> https://neyra.owyx.site/api/v1/health/live \
+  -H 'CF-Connecting-IP: 203.0.113.7'
+```
+
+Expect the firewall to reject the connection, or the core log to show the real IP, never `203.0.113.7`.
+
 ## Alternative: Neyra process on the VPS (no frp)
 
 If both processes run on the VPS, use upstream `127.0.0.1:8787` for `/api/v1/*` and `127.0.0.1:3000` for everything else. That layout is a fallback stand (demo / CI), not the Stage 3 personal-assistant canon — see [`docs/PLAN.md`](../../PLAN.md) §3 and Stage 4 ops.
@@ -178,7 +187,7 @@ If both processes run on the VPS, use upstream `127.0.0.1:8787` for `/api/v1/*` 
 
 - `API_TOKEN` or `API_KEY` in home-server `server/.env` (required for non-loopback / public access).
 - TLS on the VPS edge.
-- Firewall: 80/443 public on VPS; home-server `:8787` only via frpc (or localhost-only if process is on the VPS).
+- TLS on the VPS edge; 80/443 only from Cloudflare ranges behind orange-cloud (otherwise all), or do not trust `CF-Connecting-IP`; home-server `:8787` only via frpc.
 - `api.public_base_url` matches DNS (empty in examples by default).
 - Uvicorn: `proxy_headers=False` (peer = TCP; client IP only via CF/X-Real in `resolve_client_ip`).
 - Dashboard access key configured before exposing the SPA (see [web-ui](../architecture/web-ui.md)).

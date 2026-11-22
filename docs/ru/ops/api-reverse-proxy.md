@@ -39,7 +39,7 @@ DNS **не** в yaml Нейры — у провайдера.
 1. Cloudflare DNS зоны (например `owyx.site`).
 2. Запись **A**: Name `neyra` → IP **VPS**.
 3. Прописать `api.public_base_url` в `server/config/server.yaml`.
-4. На VPS: снаружи **80/443**; поднять **frps + Caddy/nginx**. Порт `:8787` домашнего сервера в интернет **не** открывать.
+4. На VPS: **80/443 только для диапазонов Cloudflare** (https://www.cloudflare.com/ips/), если домен за orange-cloud; без Cloudflare — для всех. Поднять **frps + Caddy/nginx**. Порт `:8787` домашнего сервера в интернет **не** открывать.
 5. Токены — в `server/.env` на домашнем сервере (`API_TOKEN` / `API_KEY`); публичный URL — в yaml.
 
 ### frpc: два HTTP-vhost
@@ -66,7 +66,7 @@ customDomains = ["neyra-web-internal.owyx.site"]
 
 ## Caddy (frp — upstream = vhost frps)
 
-Подставьте upstreams ядра и сайта. Публичный префикс `/api` снимается только для `/api/v1/*`; `/api/auth/*` и BFF сайта сохраняют его.
+Подставьте upstreams ядра и сайта. Публичный префикс `/api` снимается только для `/api/v1/*`; `/api/auth/*` и BFF сайта сохраняют его. **80/443 должны быть закрыты диапазонами Cloudflare**, иначе `CF-Connecting-IP` можно подделать прямым запросом на IP VPS.
 
 ```caddy
 neyra.owyx.site {
@@ -103,7 +103,7 @@ neyra.owyx.site {
 }
 ```
 
-WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?token=` — маскируйте в access-логах. Без Cloudflare (и с firewall, не пускающим чужие IP) замените `X-Real-IP` на `{remote_host}` и добавьте `header_up -CF-Connecting-IP`, чтобы клиент не подставил чужой адрес.
+WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?token=` — маскируйте в access-логах. Без Cloudflare замените `X-Real-IP` на `{remote_host}` и добавьте `header_up -CF-Connecting-IP`, чтобы клиент не подставил чужой адрес.
 
 ## nginx (frp — upstream = vhost frps)
 
@@ -193,7 +193,14 @@ Trailing slash у `proxy_pass` под `/api/v1/` снимает префикс `
 
 `dashboard login failed ip=<реальный клиент>`
 
-не `127.0.0.1`. На `neyra.owyx.site` smoke (2026-10-01) подтвердил реальный IP за Cloudflare/frp. Проверка подделки: запрос на IP VPS напрямую с `CF-Connecting-IP: 203.0.113.7` не должен попасть в лог как `203.0.113.7`.
+не `127.0.0.1`. На `neyra.owyx.site` smoke (2026-10-01) подтвердил реальный IP за Cloudflare/frp. Проверка подделки:
+
+```bash
+curl -sk --resolve neyra.owyx.site:443:<IP VPS> https://neyra.owyx.site/api/v1/health/live \
+  -H 'CF-Connecting-IP: 203.0.113.7'
+```
+
+Ожидание: firewall отклоняет соединение, либо в логах ядра реальный IP, но не `203.0.113.7`.
 
 ## Альтернатива: процесс Neyra на VPS (без frp)
 
@@ -202,7 +209,7 @@ Trailing slash у `proxy_pass` под `/api/v1/` снимает префикс `
 ## Перед выходом в интернет
 
 - `API_TOKEN` или `API_KEY` в `server/.env` на домашнем сервере.
-- TLS на edge VPS; firewall 80/443; `:8787` дома только через frpc (или localhost, если процесс на VPS).
+- TLS на edge VPS; 80/443 — только Cloudflare ranges при orange-cloud (иначе все), иначе не доверять `CF-Connecting-IP`; `:8787` дома только через frpc.
 - `api.public_base_url` совпадает с DNS (в examples по умолчанию пусто).
 - Uvicorn: `proxy_headers=False` (peer = TCP; клиентский IP только через CF/X-Real в `resolve_client_ip`).
 - Ключ доступа дашборда задан до публикации SPA (см. [web-ui](../architecture/web-ui.md)).
