@@ -42,6 +42,28 @@ DNS **не** в yaml Нейры — у провайдера.
 4. На VPS: снаружи **80/443**; поднять **frps + Caddy/nginx**. Порт `:8787` домашнего сервера в интернет **не** открывать.
 5. Токены — в `server/.env` на домашнем сервере (`API_TOKEN` / `API_KEY`); публичный URL — в yaml.
 
+### frpc: два HTTP-vhost
+
+На домашнем сервере публикуются два proxy: ядро `8787` и сайт `3000`. На VPS edge различает их по `Host`:
+
+```toml
+[[proxies]]
+name = "neyra-core"
+type = "http"
+localIP = "127.0.0.1"
+localPort = 8787
+customDomains = ["neyra-core-internal.owyx.site"]
+
+[[proxies]]
+name = "neyra-web"
+type = "http"
+localIP = "127.0.0.1"
+localPort = 3000
+customDomains = ["neyra-web-internal.owyx.site"]
+```
+
+`CORE_UPSTREAM`/`WEB_UPSTREAM` — адрес frps HTTP vhost на VPS (обычно `127.0.0.1:8080`), `CORE_HOST`/`WEB_HOST` — соответствующие `customDomains`. Если оба процесса на VPS, используйте `127.0.0.1:8787` и `127.0.0.1:3000`, а `Host` оставьте `$host`.
+
 ## Caddy (frp — upstream = vhost frps)
 
 Подставьте upstreams ядра и сайта. Публичный префикс `/api` снимается только для `/api/v1/*`; `/api/auth/*` и BFF сайта сохраняют его.
@@ -53,18 +75,30 @@ neyra.owyx.site {
   # /api/v1 — ядро; /api снимает публичный префикс.
   handle /api/v1/* {
     uri strip_prefix /api
-    reverse_proxy CORE_UPSTREAM
+    reverse_proxy http://CORE_UPSTREAM {
+      header_up Host CORE_HOST
+      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+    }
   }
   # Better Auth callback должен остаться на сайте, без срезания /api.
   handle /api/auth/* {
-    reverse_proxy WEB_UPSTREAM
+    reverse_proxy http://WEB_UPSTREAM {
+      header_up Host WEB_HOST
+      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+    }
   }
   # BFF чата/вложений и UI сайта.
   handle /api/* {
-    reverse_proxy WEB_UPSTREAM
+    reverse_proxy http://WEB_UPSTREAM {
+      header_up Host WEB_HOST
+      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+    }
   }
   handle {
-    reverse_proxy WEB_UPSTREAM
+    reverse_proxy http://WEB_UPSTREAM {
+      header_up Host WEB_HOST
+      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+    }
   }
 }
 ```
@@ -103,7 +137,7 @@ server {
   # Ядро: срезаем /api, WebSocket Upgrade проходит дальше.
   location /api/v1/ {
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host CORE_HOST;
     proxy_set_header CF-Connecting-IP $neyra_client_ip;
     proxy_set_header X-Real-IP $neyra_client_ip;
     proxy_set_header X-Forwarded-For $neyra_client_ip;
@@ -116,7 +150,10 @@ server {
   # Better Auth callback — на сайт, префикс /api не срезается.
   location /api/auth/ {
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host WEB_HOST;
+    proxy_set_header CF-Connecting-IP $neyra_client_ip;
+    proxy_set_header X-Real-IP $neyra_client_ip;
+    proxy_set_header X-Forwarded-For $neyra_client_ip;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_pass http://WEB_UPSTREAM;
   }
@@ -124,7 +161,7 @@ server {
   # BFF чата/вложений и остальные /api сайта.
   location /api/ {
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host WEB_HOST;
     proxy_set_header CF-Connecting-IP $neyra_client_ip;
     proxy_set_header X-Real-IP $neyra_client_ip;
     proxy_set_header X-Forwarded-For $neyra_client_ip;
@@ -136,7 +173,7 @@ server {
 
   location / {
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host WEB_HOST;
     proxy_set_header CF-Connecting-IP $neyra_client_ip;
     proxy_set_header X-Real-IP $neyra_client_ip;
     proxy_set_header X-Forwarded-For $neyra_client_ip;
@@ -145,6 +182,7 @@ server {
     proxy_set_header Connection "upgrade";
     proxy_pass http://WEB_UPSTREAM;
   }
+}
 ```
 
 Trailing slash у `proxy_pass` под `/api/v1/` снимает префикс `/api`; `/api/auth` и `/api/` сохраняют префикс.
@@ -172,8 +210,9 @@ Trailing slash у `proxy_pass` под `/api/v1/` снимает префикс `
 
 ## Текущая схема web v2 (2026-11-22)
 
-- `/` и `/api/*` (кроме `/api/v1/*`) → сайт Next.js `127.0.0.1:3000`.
+- На домашнем сервере: ядро `127.0.0.1:8787`, сайт `127.0.0.1:3000`; на VPS — только frps/Caddy/nginx.
+- `/` и `/api/*` (кроме `/api/v1/*`) → сайт Next.js.
 - `/api/auth/*` → сайт без срезания `/api`; redirect URI Discord: `https://neyra.owyx.site/api/auth/callback/discord`.
-- `/api/v1/*` → ядро `127.0.0.1:8787` со срезанием `/api`.
+- `/api/v1/*` → ядро на домашнем сервере со срезанием `/api`; edge отправляет `Host` внутреннего vhost ядра.
 - WSS приложения: `wss://neyra.owyx.site/api/v1/ws/chat`, проверено 2026-11-22.
 - `/legacy` остаётся на сайте до отдельного решения владельца.

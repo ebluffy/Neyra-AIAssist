@@ -42,6 +42,28 @@ DNS is **not** inside Neyra yaml — only at your DNS provider.
 4. On the VPS: firewall **80/443** public; run **frps + Caddy/nginx**. Do **not** expose home-server `:8787` on the internet.
 5. Tokens stay in `server/.env` on the home server (`API_TOKEN` / `API_KEY`); public URL stays in yaml.
 
+### frpc: two HTTP vhosts
+
+The home server publishes two proxies: core `8787` and site `3000`. The VPS edge selects them by `Host`:
+
+```toml
+[[proxies]]
+name = "neyra-core"
+type = "http"
+localIP = "127.0.0.1"
+localPort = 8787
+customDomains = ["neyra-core-internal.owyx.site"]
+
+[[proxies]]
+name = "neyra-web"
+type = "http"
+localIP = "127.0.0.1"
+localPort = 3000
+customDomains = ["neyra-web-internal.owyx.site"]
+```
+
+`CORE_UPSTREAM`/`WEB_UPSTREAM` are the frps HTTP vhost addresses on the VPS (usually `127.0.0.1:8080`); `CORE_HOST`/`WEB_HOST` are the matching `customDomains`. If both processes run on the VPS, use `127.0.0.1:8787` and `127.0.0.1:3000`, and keep `Host` as `$host`.
+
 ## Caddy (frp — upstream = frps vhost)
 
 CORE_UPSTREAM is the core frps HTTP vhost (8787), WEB_UPSTREAM the site (3000). `/api/v1` targets the core and strips the public `/api` prefix; `/api/auth` must stay on the site.
@@ -51,16 +73,28 @@ neyra.owyx.site {
   encode gzip
   handle /api/v1/* {
     uri strip_prefix /api
-    reverse_proxy CORE_UPSTREAM
+    reverse_proxy http://CORE_UPSTREAM {
+      header_up Host CORE_HOST
+      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+    }
   }
   handle /api/auth/* {
-    reverse_proxy WEB_UPSTREAM
+    reverse_proxy http://WEB_UPSTREAM {
+      header_up Host WEB_HOST
+      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+    }
   }
   handle /api/* {
-    reverse_proxy WEB_UPSTREAM
+    reverse_proxy http://WEB_UPSTREAM {
+      header_up Host WEB_HOST
+      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+    }
   }
   handle {
-    reverse_proxy WEB_UPSTREAM
+    reverse_proxy http://WEB_UPSTREAM {
+      header_up Host WEB_HOST
+      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+    }
   }
 }
 ```
@@ -68,6 +102,15 @@ neyra.owyx.site {
 WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If using `?token=`, mask `token` in access logs.
 
 ## nginx (frp — upstream = frps vhost)
+
+Behind Cloudflare, derive the real client IP once:
+
+```nginx
+map $http_cf_connecting_ip $neyra_client_ip {
+    ""      $remote_addr;
+    default $http_cf_connecting_ip;
+}
+```
 
 ```nginx
 server {
@@ -77,9 +120,10 @@ server {
   # Core: strip /api; WebSocket Upgrade passes through.
   location /api/v1/ {
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Host CORE_HOST;
+    proxy_set_header CF-Connecting-IP $neyra_client_ip;
+    proxy_set_header X-Real-IP $neyra_client_ip;
+    proxy_set_header X-Forwarded-For $neyra_client_ip;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -89,7 +133,10 @@ server {
   # Better Auth callback stays on the site; do not strip /api.
   location /api/auth/ {
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host WEB_HOST;
+    proxy_set_header CF-Connecting-IP $neyra_client_ip;
+    proxy_set_header X-Real-IP $neyra_client_ip;
+    proxy_set_header X-Forwarded-For $neyra_client_ip;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_pass http://WEB_UPSTREAM;
   }
@@ -97,9 +144,10 @@ server {
   # Chat/attachment BFF and the rest of the site API.
   location /api/ {
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Host WEB_HOST;
+    proxy_set_header CF-Connecting-IP $neyra_client_ip;
+    proxy_set_header X-Real-IP $neyra_client_ip;
+    proxy_set_header X-Forwarded-For $neyra_client_ip;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -108,13 +156,16 @@ server {
 
   location / {
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Host WEB_HOST;
+    proxy_set_header CF-Connecting-IP $neyra_client_ip;
+    proxy_set_header X-Real-IP $neyra_client_ip;
+    proxy_set_header X-Forwarded-For $neyra_client_ip;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_pass http://WEB_UPSTREAM;
   }
+}
 ```
 
 Trailing slash on `proxy_pass` under `/api/v1/` strips `/api`; `/api/auth` and `/api/` keep the prefix.
@@ -135,8 +186,9 @@ If uvicorn runs on the same VPS as Caddy/nginx, point reverse_proxy / `proxy_pas
 
 ## Current web v2 routing (2026-11-22)
 
-- `/` and `/api/*` except `/api/v1/*` go to the Next.js site at `127.0.0.1:3000`.
+- Home server: core `127.0.0.1:8787`, site `127.0.0.1:3000`; the VPS runs only frps/Caddy/nginx.
+- `/` and `/api/*` except `/api/v1/*` go to the Next.js site.
 - `/api/auth/*` goes to the site without stripping `/api`; Discord redirect URI is `https://neyra.owyx.site/api/auth/callback/discord`.
-- `/api/v1/*` goes to the core at `127.0.0.1:8787` with `/api` stripped.
+- `/api/v1/*` goes to the home-server core with `/api` stripped; the edge sends the core vhost `Host`.
 - App WSS: `wss://neyra.owyx.site/api/v1/ws/chat`, verified 2026-11-22.
 - `/legacy` stays on the site until the owner decides otherwise.
