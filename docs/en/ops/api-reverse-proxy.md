@@ -62,7 +62,7 @@ localPort = 3000
 customDomains = ["neyra-web-internal.owyx.site"]
 ```
 
-`CORE_UPSTREAM`/`WEB_UPSTREAM` are the frps HTTP vhost addresses on the VPS (usually `127.0.0.1:8080`); `CORE_HOST`/`WEB_HOST` are the matching `customDomains`. If both processes run on the VPS, use `127.0.0.1:8787` and `127.0.0.1:3000`, and keep `Host` as `$host`.
+`CORE_UPSTREAM`/`WEB_UPSTREAM` are the frps HTTP vhost addresses on the VPS (usually `127.0.0.1:8080`); `CORE_HOST`/`WEB_HOST` are the matching `customDomains`. If both processes run on the VPS: nginx — `proxy_set_header Host $host;`, Caddy — remove the `header_up Host …` lines (Caddy forwards the original Host by default). The core listens on `127.0.0.1:8787`, the site on `127.0.0.1:3000`.
 
 ## Caddy (frp — upstream = frps vhost)
 
@@ -99,11 +99,11 @@ neyra.owyx.site {
 }
 ```
 
-WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If using `?token=`, mask `token` in access logs. Without Cloudflare, replace `{http.request.header.CF-Connecting-IP}` with `{remote_host}` in Caddy.
+WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If using `?token=`, mask `token` in access logs. Without Cloudflare (and with a firewall that drops non-Cloudflare IPs), use `X-Real-IP {remote_host}` and add `header_up -CF-Connecting-IP` so clients cannot inject an address.
 
 ## nginx (frp — upstream = frps vhost)
 
-Behind Cloudflare, derive the real client IP once:
+Behind Cloudflare, derive the real client IP once. **Restrict VPS ports 80/443 to Cloudflare ranges** (https://www.cloudflare.com/ips/); otherwise a direct request to the VPS IP can spoof `CF-Connecting-IP`.
 
 ```nginx
 map $http_cf_connecting_ip $neyra_client_ip {
@@ -172,7 +172,7 @@ Trailing slash on `proxy_pass` under `/api/v1/` strips `/api`; `/api/auth` and `
 
 ## Alternative: Neyra process on the VPS (no frp)
 
-If uvicorn runs on the same VPS as Caddy/nginx, point reverse_proxy / `proxy_pass` at `127.0.0.1:8787` instead of the frps port. That layout is a fallback stand (demo / CI), not the Stage 3 personal-assistant canon — see [`docs/PLAN.md`](../../PLAN.md) §3 and Stage 4 ops.
+If both processes run on the VPS, use upstream `127.0.0.1:8787` for `/api/v1/*` and `127.0.0.1:3000` for everything else. That layout is a fallback stand (demo / CI), not the Stage 3 personal-assistant canon — see [`docs/PLAN.md`](../../PLAN.md) §3 and Stage 4 ops.
 
 ## Checklist before opening to the internet
 

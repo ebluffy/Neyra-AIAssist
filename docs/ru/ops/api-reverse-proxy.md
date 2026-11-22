@@ -62,7 +62,7 @@ localPort = 3000
 customDomains = ["neyra-web-internal.owyx.site"]
 ```
 
-`CORE_UPSTREAM`/`WEB_UPSTREAM` — адрес frps HTTP vhost на VPS (обычно `127.0.0.1:8080`), `CORE_HOST`/`WEB_HOST` — соответствующие `customDomains`. Если оба процесса на VPS, используйте `127.0.0.1:8787` и `127.0.0.1:3000`, а `Host` оставьте `$host`.
+`CORE_UPSTREAM`/`WEB_UPSTREAM` — адрес frps HTTP vhost на VPS (обычно `127.0.0.1:8080`), `CORE_HOST`/`WEB_HOST` — соответствующие `customDomains`. Если оба процесса на VPS: nginx — `proxy_set_header Host $host;`, Caddy — уберите строки `header_up Host …` (Caddy по умолчанию передаёт исходный Host). Ядро слушает `127.0.0.1:8787`, сайт — `127.0.0.1:3000`.
 
 ## Caddy (frp — upstream = vhost frps)
 
@@ -103,11 +103,11 @@ neyra.owyx.site {
 }
 ```
 
-WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?token=` — маскируйте в access-логах. Без Cloudflare замените `{http.request.header.CF-Connecting-IP}` на `{remote_host}` в Caddy.
+WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?token=` — маскируйте в access-логах. Без Cloudflare (и с firewall, не пускающим чужие IP) замените `X-Real-IP` на `{remote_host}` и добавьте `header_up -CF-Connecting-IP`, чтобы клиент не подставил чужой адрес.
 
 ## nginx (frp — upstream = vhost frps)
 
-За Cloudflare (orange-cloud) edge должен **перезаписывать** клиентский IP и прокидывать его в frp:
+За Cloudflare (orange-cloud) edge должен **перезаписывать** клиентский IP и прокидывать его в frp. **Обязательно** закрыть 80/443 на VPS диапазонами Cloudflare; иначе заголовок `CF-Connecting-IP` можно подделать, придя на IP VPS напрямую. Список: https://www.cloudflare.com/ips/.
 
 ```nginx
 map $http_cf_connecting_ip $neyra_client_ip {
@@ -193,11 +193,11 @@ Trailing slash у `proxy_pass` под `/api/v1/` снимает префикс `
 
 `dashboard login failed ip=<реальный клиент>`
 
-не `127.0.0.1`. На `neyra.owyx.site` smoke (2026-10-01) подтвердил реальный IP за Cloudflare/frp.
+не `127.0.0.1`. На `neyra.owyx.site` smoke (2026-10-01) подтвердил реальный IP за Cloudflare/frp. Проверка подделки: запрос на IP VPS напрямую с `CF-Connecting-IP: 203.0.113.7` не должен попасть в лог как `203.0.113.7`.
 
 ## Альтернатива: процесс Neyra на VPS (без frp)
 
-Если uvicorn на том же VPS, что и Caddy/nginx, укажите upstream `127.0.0.1:8787` вместо порта frps. Это запасной стенд (демо / CI), не канон Этапа 3 для персонального ассистента — см. [`docs/PLAN.md`](../../PLAN.md) §3 и Этап 4.
+Если оба процесса на VPS, укажите для `/api/v1/*` upstream `127.0.0.1:8787`, для остального — `127.0.0.1:3000`. Это запасной стенд (демо / CI), не канон Этапа 3 для персонального ассистента — см. [`docs/PLAN.md`](../../PLAN.md) §3 и Этап 4.
 
 ## Перед выходом в интернет
 
