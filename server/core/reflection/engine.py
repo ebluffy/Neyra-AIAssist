@@ -463,7 +463,7 @@ class ReflectionEngine:
                 return note
             return ""
         except Exception as e:
-            logger.error("Ошибка small_reflection: %s", e)
+            logger.error("small_reflection failed | error_class=%s", type(e).__name__)
             return ""
 
     def _parse_iso_ts(self, raw: str) -> Optional[datetime]:
@@ -671,7 +671,7 @@ class ReflectionEngine:
                 "behavior_rules": list(data.get("behavior_rules") or [])[:2],
             }
         except Exception as e:
-            logger.error("Ошибка LLM-анализа рефлексии: %s", e)
+            logger.error("nightly_reflection failed | error_class=%s", type(e).__name__)
             return {"people_updates": [], "global_lore": [], "behavior_rules": []}
 
     @staticmethod
@@ -722,7 +722,7 @@ class ReflectionEngine:
                 return note
             return ""
         except Exception as e:
-            logger.error("Ошибка hourly_diary_note: %s", e)
+            logger.error("hourly_diary_note failed | error_class=%s", type(e).__name__)
             return ""
 
     def _ltm_scheduled_prune_job(self) -> None:
