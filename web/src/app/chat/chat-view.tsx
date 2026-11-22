@@ -37,7 +37,7 @@ import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
 import { SettingsDialog } from '../../components/settings-dialog';
 import { emitToast } from '../../lib/toast';
-import { discordLinkErrorMessage } from '../../lib/discord-link-errors';
+import { discordLinkErrorMessage } from '../../../lib/discord-link-errors';
 import { ChannelsNav } from '../../components/channels/channels-nav';
 import { AppSidebar } from '../../components/layout/app-sidebar';
 import { ThreadPanel, type ThreadPanelTab } from '../../components/chat/thread-panel';

@@ -25,7 +25,10 @@ const session = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getAuth).mockReturnValue({
-    api: { getSession: vi.fn().mockResolvedValue(session) },
+    api: {
+      getSession: vi.fn().mockResolvedValue(session),
+      listUserAccounts: vi.fn().mockResolvedValue([]),
+    },
   } as unknown as ReturnType<typeof getAuth>);
   vi.mocked(getUserOnboardingCompleted).mockResolvedValue({ ok: true, value: true });
 });
@@ -40,13 +43,26 @@ describe('ChatPage onboarding gate (AR-80, AR-95)', () => {
   it('renders chat for a user who completed onboarding', async () => {
     const result = (await ChatPage()) as React.ReactElement<{ user: typeof session.user }>;
     expect(result).toBeTruthy();
-    expect(result.props.user).toEqual(session.user);
+    expect(result.props.user).toEqual({ ...session.user, discord_id: null });
   });
 
   it('keeps chat available when the onboarding read fails', async () => {
     vi.mocked(getUserOnboardingCompleted).mockResolvedValue({ ok: false, error: 'db' });
     const result = (await ChatPage()) as React.ReactElement<{ user: typeof session.user }>;
-    expect(result.props.user).toEqual(session.user);
+    expect(result.props.user).toEqual({ ...session.user, discord_id: null });
+  });
+
+  it('passes the linked Discord account id to the settings dialog', async () => {
+    vi.mocked(getAuth).mockReturnValue({
+      api: {
+        getSession: vi.fn().mockResolvedValue(session),
+        listUserAccounts: vi.fn().mockResolvedValue([
+          { providerId: 'discord', accountId: '328884003958423552' },
+        ]),
+      },
+    } as unknown as ReturnType<typeof getAuth>);
+    const result = (await ChatPage()) as React.ReactElement<{ user: typeof session.user & { discord_id?: string | null } }>;
+    expect(result.props.user.discord_id).toBe('328884003958423552');
   });
 
   it('redirects to login without a session', async () => {
