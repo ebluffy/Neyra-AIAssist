@@ -431,6 +431,49 @@ def test_fast_fallback_failure_advances_queue_once(monkeypatch):
     assert player.stopped == 0
 
 
+def test_finished_race_advances_queue_once(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='NoMeta', identifier='nometa-fin')
+    player = _Player()
+    player.current = failed
+    player.queue.append(NS(title='B', identifier='b-fin'))
+    player.queue.append(NS(title='C', identifier='c-fin'))
+
+    async def empty_search(wavelink_mod, query, node):
+        return []
+
+    monkeypatch.setattr(music_module, '_search_tracks', empty_search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    _race_exception_end(bot, player, failed, reason='finished')
+    assert [t.identifier for t in player.played] == ['b-fin']
+    assert [t.identifier for t in player.queue] == ['c-fin']
+    assert player.stopped == 0
+
+
+def test_finished_race_with_soundcloud_keeps_queue(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='X', identifier='x-fin')
+    service.fallback_meta_by_track['x-fin'] = {'query': 'x', 'leftovers': [], 'sc_attempted': False}
+    player = _Player()
+    player.current = failed
+    player.queue.append(NS(title='B', identifier='b-fin2'))
+
+    async def slow_sc(wavelink_mod, query, node):
+        await asyncio.sleep(0.05)
+        return [NS(title='SC', identifier='sc-fin')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', slow_sc)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    _race_exception_end(bot, player, failed, reason='finished')
+    assert [t.identifier for t in player.played] == ['sc-fin']
+    assert [t.identifier for t in player.queue] == ['b-fin2']
+    assert player.stopped == 0
+
+
 def test_two_copies_race_each_get_soundcloud_retry(monkeypatch):
     service = music_module.MusicService(NS())
     first = NS(title='X', identifier='x-race')

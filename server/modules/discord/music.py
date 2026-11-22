@@ -999,17 +999,18 @@ def _attach_track_end_listener(ctx) -> None:
                         service.fallback_meta_by_track.pop(ended_key, None)
                     service.fallback_handled_tracks.discard(ended_key)
                 return
+            # After TrackException the exception handler owns this track: both
+            # loadFailed and finished must only clean up, never advance the queue.
+            if service is not None and ended_key and (
+                ended_key in service.fallback_inflight
+                or ended_key in service.fallback_handled_tracks
+            ):
+                service.fallback_handled_tracks.discard(ended_key)
+                if not _key_still_queued(player, ended_key):
+                    service.fallback_meta_by_track.pop(ended_key, None)
+                return
             # loadfailed after instant rejection — the exception handler may still be working.
             if reason in ("loadfailed", "load_failed"):
-                if service is not None and ended_key and (
-                    ended_key in service.fallback_inflight
-                    or ended_key in service.fallback_handled_tracks
-                ):
-                    # The exception handler owns this track (queue and fallback).
-                    service.fallback_handled_tracks.discard(ended_key)
-                    if not _key_still_queued(player, ended_key):
-                        service.fallback_meta_by_track.pop(ended_key, None)
-                    return
                 if service is not None and guild_id and ended_key:
                     service.fallback_handled_tracks.add(ended_key)
                     started = await _play_next_youtube_fallback(service, player, guild_id, ended_track)
