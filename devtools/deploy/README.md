@@ -99,6 +99,8 @@ profile bwrap /usr/bin/bwrap flags=(unconfined) {
 
 Примените `apparmor_parser -r /etc/apparmor.d/bwrap-userns` и проверьте
 `aa-status | grep bwrap`. Профиль загружается при старте AppArmor; после этого
-OpenCode 2.3.0 работает под `openbot`. Сам CLI и `auth.json` с API-ключом
-кладутся в `data/cli-sandbox`; auth-файл не коммитится и не печатается.
+OpenCode 2.3.0 работает под `openbot`. Сам CLI храните в
+`data/cli-runtime/provider-runtimes/opencode/<platform>/<version>`: OpenBot
+чистит свой `provider-runtimes` и может удалить бинарь. `auth.json` с API-ключом
+лежит в `data/cli-sandbox`; он не коммитится и не печатается.
 
