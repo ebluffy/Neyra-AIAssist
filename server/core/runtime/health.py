@@ -10,7 +10,6 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -41,19 +40,23 @@ def discord_resident_enabled(project_root: Optional[Path]) -> bool:
 _LAVALINK_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lavalink-health")
 
 
-def _fetch_lavalink_info(uri: str, password: str, deadline: float) -> tuple[int, dict]:
+def _fetch_lavalink_info(
+    uri: str,
+    password: str,
+    deadline: float,
+    *,
+    transport: Any | None = None,
+) -> tuple[int, dict]:
     """Streaming GET bounded by the absolute deadline; never waits for a full body."""
     import httpx
 
     remaining = max(0.1, deadline - time.monotonic())
     phase = max(0.1, min(1.0, remaining / 2.0))
     timeout = httpx.Timeout(connect=phase, read=phase, write=phase, pool=phase)
-    with httpx.stream(
-        "GET",
-        f"{uri}/v4/info",
-        headers={"Authorization": password} if password else {},
-        timeout=timeout,
-    ) as response:
+    url = f"{uri}/v4/info"
+    headers = {"Authorization": password} if password else {}
+
+    def _read(response) -> tuple[int, dict]:
         if response.status_code != 200:
             return response.status_code, {}
         if not response.headers.get("content-type", "").startswith("application/json"):
@@ -67,10 +70,15 @@ def _fetch_lavalink_info(uri: str, password: str, deadline: float) -> tuple[int,
             total += len(chunk)
             if total > 1_048_576:
                 raise ValueError("lavalink response too large")
-        import json
-
         payload = json.loads(b"".join(chunks))
         return response.status_code, payload if isinstance(payload, dict) else {}
+
+    if transport is not None:
+        with httpx.Client(transport=transport) as client:
+            with client.stream("GET", url, headers=headers, timeout=timeout) as response:
+                return _read(response)
+    with httpx.stream("GET", url, headers=headers, timeout=timeout) as response:
+        return _read(response)
 
 
 def check_lavalink(config: dict) -> dict:
@@ -117,11 +125,8 @@ def check_lavalink(config: dict) -> dict:
                     for item in (payload.get("plugins") or [])
                     if isinstance(item, dict) and item.get("name")
                 ]
-            except FutureTimeout:
-                if first_failure is None:
-                    first_failure = ("timeout", None)
-                break
             except TimeoutError:
+                future.cancel()
                 if first_failure is None:
                     first_failure = ("timeout", None)
                 break

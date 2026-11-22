@@ -410,3 +410,82 @@ def test_check_lavalink_stops_at_total_deadline(monkeypatch):
     assert result["ok"] is False
     assert result["error"] == "timeout"
     assert calls == ["http://one:2333"]
+
+
+def test_fetch_lavalink_info_honours_deadline():
+    import time as clock
+
+    import httpx
+    import pytest
+
+    from core.runtime.health import _fetch_lavalink_info
+
+    class SlowStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b'{"version":'
+            clock.sleep(0.2)
+            yield b'"4.2.2"}'
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            stream=SlowStream(),
+        )
+    )
+    with pytest.raises(TimeoutError):
+        _fetch_lavalink_info(
+            "http://lavalink:2333",
+            "secret",
+            clock.monotonic() + 0.05,
+            transport=transport,
+        )
+
+
+def test_fetch_lavalink_info_caps_body_and_keeps_auth():
+    import httpx
+    import pytest
+
+    from core.runtime.health import _fetch_lavalink_info
+
+    captured = {}
+
+    def handler(request):
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b"x" * 1_048_577,
+        )
+
+    with pytest.raises(ValueError):
+        _fetch_lavalink_info(
+            "http://lavalink:2333",
+            "secret",
+            __import__("time").monotonic() + 2.0,
+            transport=httpx.MockTransport(handler),
+        )
+    assert captured["auth"] == "secret"
+
+
+def test_fetch_lavalink_info_ignores_non_json():
+    import time as clock
+
+    import httpx
+
+    from core.runtime.health import _fetch_lavalink_info
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<html>no</html>",
+        )
+    )
+    status, payload = _fetch_lavalink_info(
+        "http://lavalink:2333",
+        "",
+        clock.monotonic() + 2.0,
+        transport=transport,
+    )
+    assert (status, payload) == (200, {})
