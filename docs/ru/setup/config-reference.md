@@ -49,8 +49,11 @@ persona принадлежит talk. Streaming usage включается тол
 значение игнорируется с warning.
 
 CLI-провайдер OpenCode включается блоком `kind: cli`, `cli: opencode`,
-`experimental: true` и путём `cli_path` к проверенной версии. Ядро запускает
-его в `bwrap`, инструменты вырезаются из запроса, а картинки vision-лейна
+`experimental: true` и путём `cli_path` к проверенной версии. Бинарь держите
+в `<paths.data_dir>/cli-runtime/provider-runtimes/opencode/<platform>/<version>`:
+OpenBot управляет своим `provider-runtimes` и может удалить копию при
+обновлении. Ядро запускает его в `bwrap`, инструменты вырезаются из запроса,
+а картинки vision-лейна
 передаются через `opencode run -f`. Уровень рассуждения задаётся в роли:
 `llm.<role>_model.thinking_effort: "off"|low|medium|high|max`; `off`/`on` в YAML
 1.1 — булевы значения, поэтому `off` пишите в кавычках. OpenCode принимает

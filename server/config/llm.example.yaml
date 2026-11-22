@@ -30,7 +30,9 @@ llm:
     #   backend: run
     #   experimental: true
     #   # Только каталог проверенной версии CLI (provider-runtimes/opencode/...).
-    #   cli_path: "/var/lib/openbot/.config/OpenBot/provider-runtimes/opencode/linux-x64/2.3.0/bin/opencode"
+    #   # Держите копию внутри paths.data_dir: OpenBot чистит свой
+    #   # provider-runtimes и может удалить бинарь во время обновления.
+    #   cli_path: "<paths.data_dir>/cli-runtime/provider-runtimes/opencode/linux-x64/2.3.0/bin/opencode"
     #   # Необязателен: по умолчанию <paths.data_dir>/cli-sandbox. Относительный
     #   # путь считается от data_dir, абсолютный должен быть внутри него.
     #   # sandbox: "<путь из paths.data_dir>/cli-sandbox"

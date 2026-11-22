@@ -47,8 +47,10 @@ reports `warmup_state: unsupported`. A manual warmup answers 409
 also mean false; unrecognized values are ignored with a warning.
 
 The OpenCode CLI provider is enabled with `kind: cli`, `cli: opencode`,
-`experimental: true`, and `cli_path` to a verified version. The core runs it in
-`bwrap`, strips tools from the request, and passes vision-lane images through
+`experimental: true`, and `cli_path` to a verified version. Keep the binary in
+`<paths.data_dir>/cli-runtime/provider-runtimes/opencode/<platform>/<version>`:
+OpenBot manages its own `provider-runtimes` and may remove that copy on update.
+The core runs it in `bwrap`, strips tools from the request, and passes vision-lane images through
 `opencode run -f`. Reasoning is set per role with
 `llm.<role>_model.thinking_effort: "off"|low|medium|high|max`; `off`/`on` are
 YAML 1.1 booleans, so quote `off`. OpenCode takes the variant in the model id
