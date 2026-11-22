@@ -69,31 +69,38 @@ customDomains = ["neyra-web-internal.owyx.site"]
 CORE_UPSTREAM/WEB_UPSTREAM are the frps HTTP vhost addresses on the VPS; the home localPorts are 8787/3000. `/api/v1` targets the core and strips the public `/api` prefix; `/api/auth` must stay on the site. **Ports 80/443 must be restricted to Cloudflare ranges**, otherwise a direct request to the VPS IP can spoof `CF-Connecting-IP`.
 
 ```caddy
+{
+  # Trust only Cloudflare; otherwise {client_ip} is the direct peer.
+  servers {
+    trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+  }
+}
+
 neyra.owyx.site {
   encode gzip
   handle /api/v1/* {
     uri strip_prefix /api
     reverse_proxy http://CORE_UPSTREAM {
       header_up Host CORE_HOST
-      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+      header_up X-Real-IP {client_ip}
     }
   }
   handle /api/auth/* {
     reverse_proxy http://WEB_UPSTREAM {
       header_up Host WEB_HOST
-      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+      header_up X-Real-IP {client_ip}
     }
   }
   handle /api/* {
     reverse_proxy http://WEB_UPSTREAM {
       header_up Host WEB_HOST
-      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+      header_up X-Real-IP {client_ip}
     }
   }
   handle {
     reverse_proxy http://WEB_UPSTREAM {
       header_up Host WEB_HOST
-      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+      header_up X-Real-IP {client_ip}
     }
   }
 }
@@ -103,13 +110,33 @@ WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If usi
 
 ## nginx (frp — upstream = frps vhost)
 
-Behind Cloudflare, derive the real client IP once. **Restrict VPS ports 80/443 to Cloudflare ranges** (https://www.cloudflare.com/ips/); otherwise a direct request to the VPS IP can spoof `CF-Connecting-IP`.
+Behind Cloudflare, accept `CF-Connecting-IP` **only from a trusted edge**; otherwise anyone hitting the VPS IP directly can spoof it. Use `realip`: it replaces `$remote_addr` only when the peer is in the Cloudflare ranges (list: https://www.cloudflare.com/ips/).
 
 ```nginx
-map $http_cf_connecting_ip $neyra_client_ip {
-    ""      $remote_addr;
-    default $http_cf_connecting_ip;
-}
+# /etc/nginx/conf.d/cloudflare-realip.conf — http context
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
+set_real_ip_from 2400:cb00::/32;
+set_real_ip_from 2606:4700::/32;
+set_real_ip_from 2803:f800::/32;
+set_real_ip_from 2405:b500::/32;
+set_real_ip_from 2405:8100::/32;
+set_real_ip_from 2a06:98c0::/29;
+set_real_ip_from 2c0f:f248::/32;
+real_ip_header CF-Connecting-IP;
 ```
 
 ```nginx
@@ -121,9 +148,9 @@ server {
   location /api/v1/ {
     proxy_http_version 1.1;
     proxy_set_header Host CORE_HOST;
-    proxy_set_header CF-Connecting-IP $neyra_client_ip;
-    proxy_set_header X-Real-IP $neyra_client_ip;
-    proxy_set_header X-Forwarded-For $neyra_client_ip;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -134,9 +161,9 @@ server {
   location /api/auth/ {
     proxy_http_version 1.1;
     proxy_set_header Host WEB_HOST;
-    proxy_set_header CF-Connecting-IP $neyra_client_ip;
-    proxy_set_header X-Real-IP $neyra_client_ip;
-    proxy_set_header X-Forwarded-For $neyra_client_ip;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_pass http://WEB_UPSTREAM;
   }
@@ -145,9 +172,9 @@ server {
   location /api/ {
     proxy_http_version 1.1;
     proxy_set_header Host WEB_HOST;
-    proxy_set_header CF-Connecting-IP $neyra_client_ip;
-    proxy_set_header X-Real-IP $neyra_client_ip;
-    proxy_set_header X-Forwarded-For $neyra_client_ip;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -157,9 +184,9 @@ server {
   location / {
     proxy_http_version 1.1;
     proxy_set_header Host WEB_HOST;
-    proxy_set_header CF-Connecting-IP $neyra_client_ip;
-    proxy_set_header X-Real-IP $neyra_client_ip;
-    proxy_set_header X-Forwarded-For $neyra_client_ip;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -200,7 +227,7 @@ If both processes run on the VPS, use upstream `127.0.0.1:8787` for `/api/v1/*` 
 ## Checklist before opening to the internet
 
 - `API_TOKEN` or `API_KEY` in home-server `server/.env` (required for non-loopback / public access).
-- TLS on the VPS edge. Behind Cloudflare, allow 80/443 only from Cloudflare ranges; without Cloudflare, allow all and make Caddy/nginx use `{remote_host}`/`$remote_addr` and strip `CF-Connecting-IP`. Home `:8787`/`:3000` only via frpc (or `127.0.0.1` when both run on the VPS).
+- TLS on the VPS edge. Derive the client IP with `realip`/`trusted_proxies` (Cloudflare only), never from a raw client header. Behind Cloudflare also restrict 80/443 to CF ranges; home `:8787`/`:3000` only via frpc (or `127.0.0.1` when both run on the VPS), and frps `:8080` must not be public.
 - `api.public_base_url` matches DNS (empty in examples by default).
 - Uvicorn: `proxy_headers=False` (peer = TCP; client IP only via CF/X-Real in `resolve_client_ip`).
 - Dashboard access key configured before exposing the SPA (see [web-ui](../architecture/web-ui.md)).

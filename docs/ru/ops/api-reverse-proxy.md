@@ -69,6 +69,13 @@ customDomains = ["neyra-web-internal.owyx.site"]
 Подставьте upstreams ядра и сайта. Публичный префикс `/api` снимается только для `/api/v1/*`; `/api/auth/*` и BFF сайта сохраняют его. **80/443 должны быть закрыты диапазонами Cloudflare**, иначе `CF-Connecting-IP` можно подделать прямым запросом на IP VPS.
 
 ```caddy
+{
+  # Доверяем только Cloudflare: {client_ip} иначе = адрес прямого клиента.
+  servers {
+    trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+  }
+}
+
 neyra.owyx.site {
   encode gzip
   # CORE_UPSTREAM/WEB_UPSTREAM — адреса frps HTTP-vhost на VPS; дома localPort 8787/3000.
@@ -77,27 +84,27 @@ neyra.owyx.site {
     uri strip_prefix /api
     reverse_proxy http://CORE_UPSTREAM {
       header_up Host CORE_HOST
-      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+      header_up X-Real-IP {client_ip}
     }
   }
   # Better Auth callback должен остаться на сайте, без срезания /api.
   handle /api/auth/* {
     reverse_proxy http://WEB_UPSTREAM {
       header_up Host WEB_HOST
-      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+      header_up X-Real-IP {client_ip}
     }
   }
   # BFF чата/вложений и UI сайта.
   handle /api/* {
     reverse_proxy http://WEB_UPSTREAM {
       header_up Host WEB_HOST
-      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+      header_up X-Real-IP {client_ip}
     }
   }
   handle {
     reverse_proxy http://WEB_UPSTREAM {
       header_up Host WEB_HOST
-      header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+      header_up X-Real-IP {client_ip}
     }
   }
 }
@@ -107,22 +114,44 @@ WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?tok
 
 ## nginx (frp — upstream = vhost frps)
 
-За Cloudflare (orange-cloud) edge должен **перезаписывать** клиентский IP и прокидывать его в frp. **Обязательно** закрыть 80/443 на VPS диапазонами Cloudflare; иначе заголовок `CF-Connecting-IP` можно подделать, придя на IP VPS напрямую. Список: https://www.cloudflare.com/ips/.
+За Cloudflare (orange-cloud) `CF-Connecting-IP` принимается **только от доверенного edge**, иначе его подделает любой, кто придёт на IP VPS напрямую. Используйте `realip`: он подменяет `$remote_addr` лишь когда peer входит в диапазоны Cloudflare (список: https://www.cloudflare.com/ips/).
 
 ```nginx
-map $http_cf_connecting_ip $neyra_client_ip {
-    ""      $remote_addr;
-    default $http_cf_connecting_ip;
-}
+# /etc/nginx/conf.d/cloudflare-realip.conf — http-контекст
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
+set_real_ip_from 2400:cb00::/32;
+set_real_ip_from 2606:4700::/32;
+set_real_ip_from 2803:f800::/32;
+set_real_ip_from 2405:b500::/32;
+set_real_ip_from 2405:8100::/32;
+set_real_ip_from 2a06:98c0::/29;
+set_real_ip_from 2c0f:f248::/32;
+real_ip_header CF-Connecting-IP;
 ```
 
 В `location` (и `/api/`, и `/`):
 
 ```nginx
-proxy_set_header CF-Connecting-IP $neyra_client_ip;
-proxy_set_header X-Real-IP $neyra_client_ip;
-proxy_set_header X-Forwarded-For $neyra_client_ip;
+proxy_set_header CF-Connecting-IP $remote_addr;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
 ```
+
+Прямой запрос на IP VPS сохраняет реальный peer в `$remote_addr`, а присланный клиентом `CF-Connecting-IP` игнорируется. Firewall 80/443 по диапазонам Cloudflare остаётся вторым слоем (и обязателен, если вместо `realip` оставляете `map $http_cf_connecting_ip`).
 
 API доверяет `CF-Connecting-IP` / `X-Real-IP` **только** когда socket peer = loopback (типичный frpc→uvicorn), и **игнорирует** edge-значение, если оно само loopback (`127.0.0.1` / `::1`). Сырой `X-Forwarded-For` от клиента **не** читается: uvicorn `proxy_headers=False`, HTTP RPM и login rate-limit используют тот же `resolve_client_ip`. `POST /v1/dashboard/auth/setup` без Bearer разрешён только с **консольного** loopback (peer local **и** нет CF/X-Real) — подмена `CF-Connecting-IP: 127.0.0.1` не открывает setup. Smoke: неверный login с интернета → в логе ядра `dashboard login failed ip=<реальный клиент>`, не `127.0.0.1` и не подставной XFF.
 
@@ -138,9 +167,9 @@ server {
   location /api/v1/ {
     proxy_http_version 1.1;
     proxy_set_header Host CORE_HOST;
-    proxy_set_header CF-Connecting-IP $neyra_client_ip;
-    proxy_set_header X-Real-IP $neyra_client_ip;
-    proxy_set_header X-Forwarded-For $neyra_client_ip;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -151,9 +180,9 @@ server {
   location /api/auth/ {
     proxy_http_version 1.1;
     proxy_set_header Host WEB_HOST;
-    proxy_set_header CF-Connecting-IP $neyra_client_ip;
-    proxy_set_header X-Real-IP $neyra_client_ip;
-    proxy_set_header X-Forwarded-For $neyra_client_ip;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_pass http://WEB_UPSTREAM;
   }
@@ -162,9 +191,9 @@ server {
   location /api/ {
     proxy_http_version 1.1;
     proxy_set_header Host WEB_HOST;
-    proxy_set_header CF-Connecting-IP $neyra_client_ip;
-    proxy_set_header X-Real-IP $neyra_client_ip;
-    proxy_set_header X-Forwarded-For $neyra_client_ip;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -174,9 +203,9 @@ server {
   location / {
     proxy_http_version 1.1;
     proxy_set_header Host WEB_HOST;
-    proxy_set_header CF-Connecting-IP $neyra_client_ip;
-    proxy_set_header X-Real-IP $neyra_client_ip;
-    proxy_set_header X-Forwarded-For $neyra_client_ip;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -221,7 +250,7 @@ curl -sk -X POST https://neyra.owyx.site/api/v1/dashboard/auth/login \
 ## Перед выходом в интернет
 
 - `API_TOKEN` или `API_KEY` в `server/.env` на домашнем сервере.
-- TLS на edge VPS. За Cloudflare — 80/443 только с диапазонов Cloudflare; без Cloudflare — 80/443 всем, а Caddy/nginx берут `{remote_host}`/`$remote_addr` и вырезают `CF-Connecting-IP`. `:8787`/`:3000` дома только через frpc (или `127.0.0.1`, если оба процесса на VPS).
+- TLS на edge VPS. Клиентский IP — через `realip`/`trusted_proxies` (только Cloudflare), а не через сырой заголовок клиента. За Cloudflare 80/443 дополнительно закрыты диапазонами CF; `:8787`/`:3000` дома только через frpc (или `127.0.0.1`, если оба процесса на VPS), `:8080` frps — не в интернет.
 - `api.public_base_url` совпадает с DNS (в examples по умолчанию пусто).
 - Uvicorn: `proxy_headers=False` (peer = TCP; клиентский IP только через CF/X-Real в `resolve_client_ip`).
 - Ключ доступа дашборда задан до публикации SPA (см. [web-ui](../architecture/web-ui.md)).

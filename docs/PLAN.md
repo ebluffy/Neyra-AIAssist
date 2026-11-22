@@ -678,6 +678,7 @@ MVP описан в §2.2 и уже работает; здесь — что ос
 - [x] DNS/Cloudflare; публичный dashboard доступен на `https://neyra.owyx.site`.
 - [x] Dashboard gate (session Bearer), public setup-guard, RPM через `resolve_client_ip`.
 - [x] WSS-smoke 2026-11-22: `wss://neyra.owyx.site/api/v1/ws/chat` — `hello`/`pong`, чат `done` с `turn_stats`, Cloudflare TLS.
+- [x] Проверка подмены IP 2026-11-22: прямой запрос на IP VPS с `CF-Connecting-IP: 198.51.100.42` попал в лог ядра как подставной адрес, а порт `8080` (frps vhost) был открыт в интернет в обход nginx. Исправлено на edge: nginx `realip` с диапазонами Cloudflare (`set_real_ip_from`), `$remote_addr` вместо клиентского заголовка, `8080` закрыт в ufw. Повторный smoke: в логе реальный IP, `8080` не соединяется, публичный сайт и WS-путь живы.
 
 ### 9.3. Готово, когда (эксплуатация)
 
