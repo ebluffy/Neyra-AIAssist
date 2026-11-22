@@ -629,6 +629,9 @@ class MusicService:
         self.last_random_pick_by_guild: dict[str, str] = {}
         # YouTube often rejects first hit ("requires login") — keep sibling search results.
         self.play_fallbacks_by_guild: dict[str, list[Any]] = {}
+        # When every YouTube client fails, retry the same query on SoundCloud once.
+        self.fallback_query_by_guild: dict[str, str] = {}
+        self.fallback_sc_attempted: dict[str, bool] = {}
 
     def _is_duplicate(self, key: str) -> bool:
         now = time.time()
@@ -796,6 +799,36 @@ def _track_key(track: Any) -> str:
     return str(getattr(track, "identifier", "") or getattr(track, "title", "") or id(track))
 
 
+async def _play_soundcloud_fallback(service: MusicService, player: Any, guild_id: str) -> bool:
+    """One SoundCloud retry for the original text query when YouTube playback fails."""
+    query = str(service.fallback_query_by_guild.get(guild_id) or "").strip()
+    if not query or service.fallback_sc_attempted.get(guild_id):
+        return False
+    service.fallback_sc_attempted[guild_id] = True
+    try:
+        import wavelink
+
+        node = getattr(player, "node", None)
+        tracks = await _search_tracks(wavelink, f"scsearch:{query}", node)
+    except Exception as ex:
+        logger.warning("discord.music soundcloud fallback search failed | guild=%s error=%s", guild_id, ex)
+        return False
+    if not tracks:
+        logger.info("discord.music soundcloud fallback empty | guild=%s", guild_id)
+        return False
+    try:
+        await player.play(tracks[0], replace=True)
+        logger.info(
+            "discord.music soundcloud fallback started | guild=%s track=%r",
+            guild_id,
+            str(getattr(tracks[0], "title", "") or ""),
+        )
+        return True
+    except Exception as ex:
+        logger.warning("discord.music soundcloud fallback play failed | guild=%s error=%s", guild_id, ex)
+        return False
+
+
 async def _play_next_youtube_fallback(service: MusicService, player: Any, guild_id: str) -> bool:
     """Try next search hit after login/bot/load failure. Returns True if a play was started."""
     leftovers = list(service.play_fallbacks_by_guild.get(guild_id) or [])
@@ -815,6 +848,8 @@ async def _play_next_youtube_fallback(service: MusicService, player: Any, guild_
                 ex,
             )
     service.play_fallbacks_by_guild.pop(guild_id, None)
+    if await _play_soundcloud_fallback(service, player, guild_id):
+        return True
     return False
 
 
@@ -862,6 +897,8 @@ def _attach_track_end_listener(ctx) -> None:
                 return
             if service is not None and guild_id and reason in ("finished", "stopped", "replaced"):
                 service.play_fallbacks_by_guild.pop(guild_id, None)
+                service.fallback_query_by_guild.pop(guild_id, None)
+                service.fallback_sc_attempted.pop(guild_id, None)
             try:
                 if len(player.queue) > 0:
                     nxt = player.queue.get()
@@ -1088,6 +1125,8 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
             else:
                 track = tracks[0]
             # Keep other top hits so track_exception can skip "requires login" videos.
+            service.fallback_query_by_guild[str(guild_id)] = query
+            service.fallback_sc_attempted[str(guild_id)] = False
             chosen_key = _track_key(track)
             service.play_fallbacks_by_guild[str(guild_id)] = [
                 t for t in pool if _track_key(t) != chosen_key

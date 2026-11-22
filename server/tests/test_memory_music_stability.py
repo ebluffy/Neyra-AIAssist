@@ -16,6 +16,7 @@ from core.memory.hub import MemoryHub
 from core.reflection.engine import ReflectionEngine
 from core.runtime.identity import UnifiedIdentityMapper
 from core.tools import builtins
+from modules.discord import music as music_module
 from modules.discord.music_intent import finalize_music_route, plan_music_route, resolve_music_route
 from offline_support import offline_agent
 from test_stage3a import discord_message
@@ -204,6 +205,34 @@ def test_music_commands_survive_media_guard(text):
     plan = plan_music_route(text, has_media=True)
     route, use, _ = finalize_music_route(plan)
     assert route == 'PLAY_MUSIC' and use
+
+
+def test_youtube_failure_falls_back_to_soundcloud_once(monkeypatch):
+    class Player:
+        def __init__(self):
+            self.played = []
+            self.queue = []
+        async def play(self, track, replace=False):
+            self.played.append(track)
+
+    service = music_module.MusicService(NS())
+    service.play_fallbacks_by_guild['g'] = []
+    service.fallback_query_by_guild['g'] = 'там ревели горы'
+    service.fallback_sc_attempted['g'] = False
+    player = Player()
+    calls = []
+
+    async def fake_search(wavelink_mod, query, node):
+        calls.append(query)
+        return [NS(title='Там ревели горы', identifier='sc-1')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', fake_search)
+    assert asyncio.run(music_module._play_next_youtube_fallback(service, player, 'g')) is True
+    assert calls == ['scsearch:там ревели горы']
+    assert len(player.played) == 1
+    assert service.fallback_sc_attempted['g'] is True
+    assert asyncio.run(music_module._play_next_youtube_fallback(service, player, 'g')) is False
+    assert len(player.played) == 1
 
 
 def test_unsupported_media_is_rejected_before_voice_or_lavalink(monkeypatch):
