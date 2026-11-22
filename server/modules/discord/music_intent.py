@@ -34,23 +34,32 @@ PLAY_VERB_RE = re.compile(
     r"\b(" + "|".join(_PLAY_VERBS) + r")\b",
     re.IGNORECASE,
 )
-PLAY_VERB_STRIP_RE = re.compile(
-    r"^(" + "|".join(_PLAY_VERBS) + r"|music|музыка)\s+",
-    re.IGNORECASE,
-)
 _URL_RE = re.compile(r"(?:[a-z][a-z0-9+.-]*:)?//[^\s<>\"']+", re.IGNORECASE)
 
 
 _LEAD_WORDS = (
-    r"эй|ну|а|слушай|нейра|давай|можешь|можно|пожалуйста|плиз|please|can\s+you|could\s+you"
+    r"эй|ну|а\s+может|а|слушай|нейра|neyra|ты|вы|давай|может|можешь|можно|"
+    r"пожалуйста|плиз|please|can\s+you|could\s+you"
 )
 _LEAD_RE = re.compile(r"^(?:(?:" + _LEAD_WORDS + r")[\s,:;-]*){0,3}", re.IGNORECASE)
 _IMPERATIVE_VERBS_RE = re.compile(
-    r"^(?:включи|включите|включай|вруби|врубай|врубите|поставь|заиграй|play)\b",
+    r"^(?:включи|включите|включай|включишь|вруби|врубай|врубите|врубишь|"
+    r"поставь|поставьте|поставишь|заиграй|заиграйте|play)\b",
     re.IGNORECASE,
 )
 _INFINITIVE_RE = re.compile(r"^(?:включить)\b", re.IGNORECASE)
-_MODAL_RE = re.compile(r"(?:можешь|можно|can\s+you|could\s+you)", re.IGNORECASE)
+_MODAL_RE = re.compile(r"(?:можешь|может|можно|can\s+you|could\s+you)", re.IGNORECASE)
+_VOICE_JOIN_RE = re.compile(
+    r"^(?:(?:" + _LEAD_WORDS + r")[\s,:;-]*){0,3}"
+    r"(?:зайди|зайдите|зайти|join)\s+(?:в\s+)?(?:войс|голос\w*|voice|vc)\b",
+    re.IGNORECASE,
+)
+_COMPLAINT_RE = re.compile(
+    r"[?]|\b(?:почему|зачем|где|куда|опять|замолч\w*|пропал\w*|выключ\w*|играет|нет)\b|\bне\s",
+    re.IGNORECASE,
+)
+_ADDRESS_RE = re.compile(r"^[,\s]*(?:(?:нейра|neyra)[\s,:;-]*)+", re.IGNORECASE)
+_POLITE_RE = re.compile(r"^[,\s]*(?:-ка\b|(?:пожалуйста|плиз|там)\b)[\s,.:;-]*", re.IGNORECASE)
 _MUSIC_VERB_STEM_RE = re.compile(
     r"\b(?:включ\w*|постав\w*|вруб\w*|заигр\w*|просил\w*|прошу|просим)\b",
     re.IGNORECASE,
@@ -142,17 +151,22 @@ def imperative_play(text: str) -> bool:
     return imperative_play_end(text) > 0
 
 
+def imperative_voice_join(text: str) -> bool:
+    """Only a leading join command counts; mentions of being in voice do not."""
+    return bool(_VOICE_JOIN_RE.match((text or "").strip()))
+
+
 def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
-    """Classifier-only PLAY needs short command line or explicit play verb."""
+    """Classifier-only PLAY: imperative, or a short noun phrase without complaint/negation."""
     content = text or ""
     soft = soft_music_hint(content) if soft_music is None else bool(soft_music)
     if not soft:
         return False
     if imperative_play(content):
         return True
-    if _MUSIC_VERB_STEM_RE.search(content):
+    if _MUSIC_VERB_STEM_RE.search(content) or _COMPLAINT_RE.search(content):
         return False
-    return len(re.findall(r"\w+", content, flags=re.UNICODE)) <= 8
+    return len(re.findall(r"\w+", content, flags=re.UNICODE)) <= 6
 
 
 def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
@@ -189,19 +203,21 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
             "join_only": "1",
         }
 
-    wants_voice_play = bool(
-        re.search(
-            r"(в\s+войс|в\s+голос(овой)?|зайди\s+в\s+войс|зайти\s+в\s+войс|"
-            r"join\s+voice|play\s+in\s+vc)",
-            lowered,
-        )
-    )
+    wants_voice_play = imperative_voice_join(raw)
     end = imperative_play_end(raw)
     if not end and not _supported_music_link(raw) and not wants_voice_play:
         return None
-    q = raw[end:] if end else raw
+    if wants_voice_play and not end:
+        q = _VOICE_JOIN_RE.sub("", raw, count=1)
+    else:
+        q = raw[end:] if end else raw
+    for _ in range(2):
+        q = _ADDRESS_RE.sub("", q)
+        q = _POLITE_RE.sub("", q)
     q = re.sub(r"^[\s,.!?;:-]+", "", q)
-    q = re.sub(r"^(?:-?ка|пожалуйста|плиз|там)[\s,.:;-]*", "", q, flags=re.IGNORECASE)
+    if wants_voice_play:
+        q = re.sub(r"^(?:и\s+)?(?:включи|включите|включай|вруби|поставь|заиграй|play)\b[\s,]*", "", q, flags=re.IGNORECASE)
+        q = re.sub(r"^[\s,.!?;:-]+", "", q)
     q = re.sub(
         r"^(трек|track|песн[юяуи]|музык[ауеи]|плейлист|playlist)\s+",
         "",

@@ -207,6 +207,16 @@ def test_gif_urls_and_negations_cannot_reenter_classifier_music_path(text):
     'почему музыку не включила?',
     'включить музыку не могу, ноут тормозит',
     'я просил включить музыку, а ты молчишь',
+    'почему музыка замолчала?',
+    'где музыка?',
+    'музыка не играет',
+    'музыка пропала',
+    'ты выключила музыку',
+    'не надо музыку',
+    'я просил зайти в войс и включить музыку',
+    'почему тебя нет в войсе, я хотел музыку',
+    'ты не зашла в войс',
+    'ты почему не в войсе',
 ])
 def test_music_complaints_do_not_start_playback(text):
     plan = plan_music_route(text)
@@ -223,6 +233,12 @@ def test_music_complaints_do_not_start_playback(text):
     'ну давай вруби что-нибудь',
     'can you play lofi',
     'could you play lofi',
+    'Нейра, ты можешь включить музыку?',
+    'ты можешь включить музыку?',
+    'поставьте музыку',
+    'а может включишь музыку',
+    'Neyra, play lofi',
+    'зайди в войс и включи музыку',
 ])
 def test_imperative_prefixes_stay_hard_path(text):
     plan = plan_music_route(text)
@@ -237,6 +253,12 @@ def test_imperative_prefixes_stay_hard_path(text):
     ('давай включи ревели горы', 'ревели горы'),
     ('Включи, пожалуйста, ревели горы', 'ревели горы'),
     ('включи-ка музыку', 'upbeat happy music'),
+    ('включи, нейра, lofi', 'lofi'),
+    ('включи, пожалуйста, нейра, lofi', 'lofi'),
+    ('включи Каста', 'Каста'),
+    ('поставь Тамару', 'Тамару'),
+    ('включи-ка Каста', 'Каста'),
+    ('зайди в войс и включи музыку', 'upbeat happy music'),
 ])
 def test_music_query_is_clean(text, query):
     candidate = candidate_music_intent(text)
