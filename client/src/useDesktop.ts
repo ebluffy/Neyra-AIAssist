@@ -6,6 +6,7 @@ import { type DraftEvent, type RunEvent, describeRun } from './commands';
 import { type SheetId, themeId } from './theme';
 import { createTokenBatch } from './streaming';
 import { acceptLiveRun, conversionNotice, defaultVoice, emptyAudioDevices, formatError, meterLevel, settleLiveStart, unwrapApi, type AudioDevices, type Device, type Entry, type HostCall, type LiveState, type Plugin, type Profile, type Recovery, type ServerEvent, type Settings, type VoiceSettings, type VoiceStatus, validServerUrl } from './types';
+import { normalizeTurnStats } from './chat';
 
 const authError = 'Токен отклонён сервером. Проверьте токен профиля и подключитесь снова.';
 const revokedError = 'Сеанс отключён с сервера. Нажмите «Подключить», чтобы войти снова.';
@@ -198,6 +199,16 @@ export function useDesktop() {
           stored = Array.isArray(rows?.threads) ? rows.threads : [];
           if (rows?.recovery) setRecoveries(list => [...list, rows.recovery as Recovery]);
         }
+        stored = stored.map(thread => ({
+          ...thread,
+          messages: thread.messages.map(message => {
+            const stats = normalizeTurnStats(message.stats);
+            if (stats) return { ...message, stats };
+            const rest = { ...message };
+            delete rest.stats;
+            return rest;
+          }),
+        }));
         chatsReady.current = true;
       } catch (reason) { setError(formatError(reason)); }
       const selected = selectedProfile(data.settings.profiles, data.settings.active_profile);
@@ -280,11 +291,12 @@ export function useDesktop() {
             if (!chatTurn.current.ipcPending) chatTurn.current = null;
           }
           setLastTrace(event.model_trace);
+          const turnStats = normalizeTurnStats(event.turn_stats);
           setMessages(list => {
             const requestId = event.source === 'bridge' ? event.request_id : undefined;
             const index = requestId ? list.findIndex(row => row.role === 'assistant' && row.requestId === requestId) : -1;
-            if (index >= 0) return list.map((row, i) => i === index ? { ...row, content: event.text ?? '' } : row);
-            return [...list.slice(-99), { id: nextId(), role: 'assistant', content: event.text ?? '', kind: 'text', requestId }];
+            if (index >= 0) return list.map((row, i) => i === index ? { ...row, content: event.text ?? '', ...(turnStats ? { stats: turnStats } : {}) } : row);
+            return [...list.slice(-99), { id: nextId(), role: 'assistant', content: event.text ?? '', kind: 'text', requestId, ...(turnStats ? { stats: turnStats } : {}) }];
           });
           if (affectsText) { tokenBatch.reset(); setThinking(event.source === 'voice'); }
           postNotice(event.source === 'voice' ? 'Готовлю озвучку…' : 'Ответ готов');

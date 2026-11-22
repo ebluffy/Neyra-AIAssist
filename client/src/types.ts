@@ -1,3 +1,5 @@
+import type { TurnStats } from './chat';
+
 export interface Profile { id: string; name: string; url: string; session_id: string }
 export interface Permissions { enabled: boolean; apps: string[]; allow_web: boolean; web_domains: string[]; system: boolean; shell: boolean; files: boolean; fs_roots: string[]; screen: boolean; screen_auto: boolean; input: boolean }
 export interface VoiceSettings { mode: 'ptt' | 'wake' | 'always'; vad_sensitivity: number; end_silence_ms: number; wake_threshold: number; barge_in: 'off' | 'headphones'; input_device?: string; output_device?: string }
@@ -39,7 +41,7 @@ export const emptyAudioDevices: AudioDevices = {
 };
 // Native global-shortcut capture failure (ordinary player/server errors stay `error`).
 export interface CaptureFailedEvent { type: 'capture.failed'; code: string; stage: 'start' | 'stop' }
-export interface ServerEvent { type: string; request_id?: string; seq?: number; scope?: string; stage?: CaptureFailedEvent['stage']; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number; run?: number }
+export interface ServerEvent { type: string; request_id?: string; seq?: number; scope?: string; stage?: CaptureFailedEvent['stage']; available?: boolean; source?: string; text?: string; code?: string; messages?: Entry[]; devices?: Device[]; model_trace?: unknown; turn_stats?: TurnStats; state?: string; status?: string; db?: number; mode?: string; reason?: string; audio?: string; duration_ms?: number; run?: number }
 /** Server routes wrap the payload as `{ok, trace_id, data}`. Rust returns that JSON unchanged. */
 export function unwrapApi<T>(body: unknown): T {
   if (body !== null && typeof body === 'object' && 'data' in body) {

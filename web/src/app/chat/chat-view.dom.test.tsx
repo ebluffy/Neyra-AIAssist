@@ -4,7 +4,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ChatView } from './chat-view';
 import { TextField } from '../../components/ui';
-import { resolveTabKey } from '../../../lib/chat-id';
+import { resolveChatId, resolveTabKey } from '../../../lib/chat-id';
 import { ru } from '../../i18n';
 
 const mockReplace = vi.fn();
@@ -21,6 +21,27 @@ function sseResponse(tokenText = 'привет'): Response {
     start(controller) {
       controller.enqueue(new TextEncoder().encode(`data: {"type":"token","text":"${tokenText}"}\n\n`));
       controller.enqueue(new TextEncoder().encode(`data: {"type":"done","text":"${tokenText}"}\n\n`));
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+function sseStatsResponse(): Response {
+  const stats = {
+    duration_ms: 8400,
+    llm_ms: 7200,
+    output_tokens: 240,
+    tokens_per_second: 33.3,
+    lanes: {
+      brain: { calls: 1, duration_ms: 3100, model: 'opencode-go/deepseek-v4.1-flash' },
+      talk: { calls: 1, duration_ms: 2600, model: 'opencode/qwen3.8-27b', output_tokens: 240 },
+    },
+  };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"type":"token","text":"готово"}\n\n'));
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: 'done', text: 'готово', turn_stats: stats })}\n\n`));
       controller.close();
     },
   });
@@ -56,6 +77,40 @@ describe('ChatView conversation', () => {
     expect(bodies[0].chat_id).toBeTruthy();
     expect(bodies[1].chat_id).toBe(bodies[0].chat_id);
     expect(sessionStorage.getItem(`neyra.chat_id:u1:${resolveTabKey(window)}`)).toBe(bodies[0].chat_id);
+  });
+
+  it('shows per-turn timing and expands the lane breakdown after done', async () => {
+    const fetchMock = vi.fn(async () => sseStatsResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
+
+    const input = screen.getByPlaceholderText(ru.placeholder);
+    fireEvent.change(input, { target: { value: 'покажи статистику' } });
+    fireEvent.submit(input.closest('form')!);
+    expect(await screen.findByText('8,4 с')).toBeTruthy();
+    expect(screen.getByText('33,3 ток/с')).toBeTruthy();
+    fireEvent.click(screen.getByText('Использовано'));
+    expect(screen.getByText('Deepseek V4.1 Flash')).toBeTruthy();
+    expect(screen.getByText('Qwen3.8 27b')).toBeTruthy();
+    expect(screen.getByText('Мозг')).toBeTruthy();
+    expect(screen.getByText('Разговор')).toBeTruthy();
+  });
+
+  it('drops corrupt stats from localStorage instead of crashing the chat', async () => {
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), 'u1');
+    const key = `neyra:thread-messages:u1:${chatId}`;
+    localStorage.setItem(key, JSON.stringify([
+      { id: 'old', role: 'assistant', content: 'старый ответ', stats: { lanes: null } },
+    ]));
+    const fetchMock = vi.fn(async () => sseResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
+      expect(await screen.findByText('старый ответ')).toBeTruthy();
+      expect(screen.queryByText('Использовано')).toBeNull();
+    } finally {
+      localStorage.removeItem(key);
+    }
   });
 
   it('opens a new thread in a tab that inherited sessionStorage (AR-11)', async () => {

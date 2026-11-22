@@ -145,6 +145,18 @@ button.icon.plus:hover:enabled, button.icon.history-toggle:hover:enabled { backg
 .wave { display: flex; align-items: center; justify-content: space-between; height: 32px; flex: 1; min-width: 0 }
 .wave span { width: 2px; flex: none; border-radius: 2px; background: var(--accent); animation: none }
 .timer { min-width: 44px }
+.turn-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin-top: 4px; color: var(--muted); font-size: var(--text-xs); line-height: var(--leading-ui) }
+.turn-lane-name { display: flex; min-width: 0; align-items: baseline; gap: 6px }
+.turn-lane-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); opacity: 0.9 }
+.turn-stats details { position: relative }
+.turn-stats summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 3px; padding: 0 3px; margin-left: -3px; border-radius: 6px }
+.turn-stats summary::-webkit-details-marker { display: none }
+.turn-stats summary:hover { color: var(--text); background: var(--hover) }
+.turn-stats summary svg { transition: transform 160ms var(--ease) }
+.turn-stats details[open] summary svg { transform: rotate(180deg) }
+.turn-lanes { position: absolute; left: 0; z-index: 8; margin-top: 4px; min-width: 280px; padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 32px var(--shadow) }
+.turn-lanes > div { display: flex; justify-content: space-between; gap: 14px; padding: 1px 0 }
+.turn-lanes > div > span:last-child { color: var(--muted); font-variant-numeric: tabular-nums }
 .chat-debug { flex: none; color: var(--muted); font-family: var(--mono); font-size: var(--text-xs); line-height: var(--leading-code) }
 .chat-debug summary { width: fit-content; max-width: 100%; padding: var(--s1) 0; overflow-wrap: anywhere }
 .chat-debug summary:hover { color: var(--text) }

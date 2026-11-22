@@ -801,6 +801,45 @@ const CHAT_VERSION: u32 = 1;
 const MAX_CHAT_BYTES: u64 = 1024 * 1024;
 const MAX_CHAT_THREADS: usize = 30;
 const MAX_CHAT_MESSAGES: usize = 100;
+const MAX_TURN_MS: f64 = 86_400_000.0;
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct SavedTurnLaneStats {
+    pub calls: u32,
+    pub duration_ms: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct SavedTurnStatsLanes {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub talk: Option<SavedTurnLaneStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brain: Option<SavedTurnLaneStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<SavedTurnLaneStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<SavedTurnLaneStats>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct SavedTurnStats {
+    pub duration_ms: f64,
+    pub llm_ms: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_per_second: Option<f64>,
+    pub lanes: SavedTurnStatsLanes,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -817,6 +856,8 @@ pub struct SavedMessage {
     pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<SavedTurnStats>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -974,6 +1015,48 @@ fn validate_chats(threads: &[SavedChat]) -> Result<(), String> {
             {
                 return Err("История чатов повреждена".into());
             }
+            if let Some(stats) = &message.stats {
+                validate_turn_stats(stats)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_turn_stats(stats: &SavedTurnStats) -> Result<(), String> {
+    let duration_ok = |value: f64| value.is_finite() && (0.0..=MAX_TURN_MS).contains(&value);
+    let bad = || "История чатов повреждена".to_string();
+    if !duration_ok(stats.duration_ms) || !duration_ok(stats.llm_ms) {
+        return Err(bad());
+    }
+    if stats
+        .output_tokens
+        .is_some_and(|value| value > 1_000_000_000)
+        || stats
+            .tokens_per_second
+            .is_some_and(|value| !value.is_finite() || value < 0.0 || value > 1_000_000.0)
+    {
+        return Err(bad());
+    }
+    for lane in [
+        &stats.lanes.talk,
+        &stats.lanes.brain,
+        &stats.lanes.memory,
+        &stats.lanes.vision,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if lane.calls > 1000
+            || !duration_ok(lane.duration_ms)
+            || lane
+                .model
+                .as_ref()
+                .is_some_and(|model| model.is_empty() || model.chars().count() > 200)
+            || lane.input_tokens.is_some_and(|value| value > 100_000_000)
+            || lane.output_tokens.is_some_and(|value| value > 100_000_000)
+        {
+            return Err(bad());
         }
     }
     Ok(())
@@ -1230,12 +1313,28 @@ mod tests {
                 server_id: Some("101".into()),
                 turn_id: Some("test-turn".into()),
                 request_id: Some("11111111-1111-4111-8111-111111111111".into()),
+                stats: Some(
+                    serde_json::from_value(serde_json::json!({
+                        "duration_ms": 8400,
+                        "llm_ms": 7200,
+                        "lanes": {"brain": {"calls": 1, "duration_ms": 3100, "model": "m"}}
+                    }))
+                    .unwrap(),
+                ),
             }],
         };
         save_chats(&root, &[thread]).unwrap();
         let loaded = load_chats(&root).unwrap();
         assert!(loaded.recovery.is_none());
         assert_eq!(loaded.threads[0].messages[0].content, "секрет");
+        assert_eq!(
+            loaded.threads[0].messages[0]
+                .stats
+                .as_ref()
+                .unwrap()
+                .duration_ms,
+            8400.0
+        );
         assert_eq!(
             loaded.threads[0].messages[0].server_id.as_deref(),
             Some("101")
@@ -1270,6 +1369,16 @@ mod tests {
         .unwrap();
         assert!(load_chats(&root).unwrap().recovery.is_some());
         assert!(!root.join("chats/threads.json").exists());
+        let session = Uuid::new_v4().to_string();
+        fs::write(
+            root.join("chats/threads.json"),
+            format!(
+                r#"{{"schema_version":1,"threads":[{{"id":"x","title":"t","sessionId":"{session}","updated":1,"messages":[{{"id":"m","role":"assistant","content":"ok","kind":"text","stats":{{"duration_ms":1,"llm_ms":1,"lanes":null}}}}]}}]}}"#
+            ),
+        )
+        .unwrap();
+        assert!(load_chats(&root).unwrap().recovery.is_some());
+        assert!(!root.join("chats/threads.json").exists());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -1289,6 +1398,7 @@ mod tests {
                     server_id: None,
                     turn_id: None,
                     request_id: None,
+                    stats: None,
                 })
                 .collect();
             threads.push(SavedChat {

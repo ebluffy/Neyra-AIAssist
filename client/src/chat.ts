@@ -1,3 +1,63 @@
+export interface TurnLaneStats {
+  calls: number;
+  duration_ms: number;
+  model?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
+export interface TurnStats {
+  duration_ms: number;
+  llm_ms: number;
+  output_tokens?: number;
+  tokens_per_second?: number;
+  lanes: Partial<Record<'talk' | 'brain' | 'memory' | 'vision', TurnLaneStats>>;
+}
+
+const TURN_LANES = ['talk', 'brain', 'memory', 'vision'] as const;
+
+function boundedNumber(value: unknown, max: number): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > max) return undefined;
+  return value;
+}
+
+function boundedCount(value: unknown, max: number): number | undefined {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > max) return undefined;
+  return value;
+}
+
+/** Runtime guard for WS events and threads.json; invalid telemetry must never break the chat. */
+export function normalizeTurnStats(raw: unknown): TurnStats | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const item = raw as Record<string, unknown>;
+  const duration = boundedNumber(item.duration_ms, 86_400_000);
+  const llm = boundedNumber(item.llm_ms, 86_400_000);
+  if (duration === undefined || llm === undefined) return undefined;
+  const rawLanes = item.lanes;
+  if (!rawLanes || typeof rawLanes !== 'object') return undefined;
+  const stats: TurnStats = { duration_ms: duration, llm_ms: llm, lanes: {} };
+  const output = boundedCount(item.output_tokens, 1_000_000_000);
+  const speed = boundedNumber(item.tokens_per_second, 1_000_000);
+  if (output !== undefined) stats.output_tokens = output;
+  if (speed !== undefined) stats.tokens_per_second = speed;
+  for (const key of TURN_LANES) {
+    const rawLane = (rawLanes as Record<string, unknown>)[key];
+    if (!rawLane || typeof rawLane !== 'object') continue;
+    const lane = rawLane as Record<string, unknown>;
+    const calls = boundedCount(lane.calls, 1000);
+    const laneDuration = boundedNumber(lane.duration_ms, 86_400_000);
+    if (calls === undefined || laneDuration === undefined) continue;
+    const normal: TurnLaneStats = { calls, duration_ms: laneDuration };
+    if (typeof lane.model === 'string' && lane.model.trim() && lane.model.length <= 200) normal.model = lane.model;
+    const input = boundedCount(lane.input_tokens, 100_000_000);
+    const laneOutput = boundedCount(lane.output_tokens, 100_000_000);
+    if (input !== undefined) normal.input_tokens = input;
+    if (laneOutput !== undefined) normal.output_tokens = laneOutput;
+    stats.lanes[key] = normal;
+  }
+  return Object.keys(stats.lanes).length ? stats : undefined;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -9,6 +69,7 @@ export interface ChatMessage {
   audioUrl?: string;
   durationMs?: number;
   pending?: boolean;
+  stats?: TurnStats;
 }
 
 export interface ChatThread {
@@ -102,6 +163,39 @@ export function clock(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+export function turnDuration(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return '—';
+  const ms = Math.max(0, value);
+  if (ms < 999.5) return `${Math.round(ms)} мс`;
+  const seconds = Math.round(ms / 100) / 10;
+  if (seconds < 60) return `${seconds.toFixed(1).replace('.', ',')} с`;
+  const whole = Math.round(ms / 1000);
+  return `${Math.floor(whole / 60)} мин ${whole % 60} с`;
+}
+
+export function pluralCalls(value: number): string {
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'вызов';
+  if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) return 'вызова';
+  return 'вызовов';
+}
+
+export function callsLabel(value: number): string {
+  return `${value} ${pluralCalls(value)}`;
+}
+
+export function modelLabel(model?: string): string {
+  if (!model) return '';
+  const id = model.split('/').pop() || model;
+  return id.replace(/[-_]/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
+}
+
+export function tokenSpeed(value?: number): string {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return '';
+  return `${value.toFixed(1).replace('.', ',')} ток/с`;
+}
+
 export function stripAudio(message: ChatMessage): ChatMessage {
   const copy = { ...message };
   delete copy.audioUrl;
@@ -138,6 +232,7 @@ export function storedThreads(threads: ChatThread[]) {
       ...(message.turnId ? { turnId: message.turnId } : {}),
       ...(message.requestId ? { requestId: message.requestId } : {}),
       ...(message.durationMs !== undefined ? { durationMs: message.durationMs } : {}),
+      ...(message.stats ? { stats: message.stats } : {}),
     })),
   }));
 }

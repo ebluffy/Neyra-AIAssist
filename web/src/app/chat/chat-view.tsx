@@ -30,7 +30,7 @@ import {
   Activity,
   Mic,
 } from 'lucide-react';
-import { SseChatEventSchema, StoredAttachmentSchema, type StoredAttachment } from '@neyra/contracts';
+import { SseChatEventSchema, StoredAttachmentSchema, TurnStatsSchema, type StoredAttachment, type TurnStats } from '@neyra/contracts';
 import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, ModelPicker, type ContextUsage } from '../../components/ui';
 import { isEnabled } from '../../lib/feature-flags';
 import { signOut } from '../../../lib/auth-client';
@@ -39,6 +39,7 @@ import { SettingsDialog } from '../../components/settings-dialog';
 import { ChannelsNav } from '../../components/channels/channels-nav';
 import { AppSidebar } from '../../components/layout/app-sidebar';
 import { ThreadPanel, type ThreadPanelTab } from '../../components/chat/thread-panel';
+import { TurnStatsFooter } from '../../components/chat/turn-stats';
 import {
   playModalOpenSound,
   playModalCloseSound,
@@ -58,6 +59,22 @@ export interface ChatMessageItem {
   error?: string | null;
   isRetrying?: boolean;
   attachments?: ChatMessageAttachment[];
+  stats?: TurnStats;
+}
+
+function normaliseStoredMessages(raw: unknown): ChatMessageItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item): ChatMessageItem[] => {
+    if (!item || typeof item !== 'object') return [];
+    const message = item as ChatMessageItem;
+    if ((message.role !== 'user' && message.role !== 'assistant') || typeof message.content !== 'string') return [];
+    if (!message.stats) return [message];
+    const stats = TurnStatsSchema.safeParse(message.stats);
+    if (stats.success) return [{ ...message, stats: stats.data }];
+    const rest = { ...message };
+    delete rest.stats;
+    return [rest];
+  });
 }
 
 
@@ -123,7 +140,7 @@ export function ChatView({
       const currentTabChatId = resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
       const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${currentTabChatId}`);
       if (raw) {
-        return JSON.parse(raw);
+        return normaliseStoredMessages(JSON.parse(raw));
       }
     } catch {}
     return [];
@@ -804,12 +821,19 @@ export function ChatView({
             } else if (event.type === 'done') {
               setThinking(false);
               setPhaseLabel(null);
-              if (event.text) {
-                assistantText = event.text;
+              if (event.text || event.turn_stats) {
+                if (event.text) assistantText = event.text;
                 setMessages(prev =>
                   prev.map(m =>
                     m.id === targetAssistantMsgId
-                      ? { ...m, content: event.text, pending: false, error: null, isRetrying: false }
+                      ? {
+                          ...m,
+                          ...(event.text ? { content: event.text } : {}),
+                          ...(event.turn_stats ? { stats: event.turn_stats } : {}),
+                          pending: false,
+                          error: null,
+                          isRetrying: false,
+                        }
                       : m
                   )
                 );
@@ -1298,6 +1322,9 @@ export function ChatView({
                         </div>
                       ) : null}
                     </div>
+                    {msg.role === 'assistant' && msg.stats && !msg.pending && (
+                      <TurnStatsFooter stats={msg.stats} />
+                    )}
                   </div>
                 )}
               </div>

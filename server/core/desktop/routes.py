@@ -10,6 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core.agent.chat_log import DESKTOP_CHAT_REQUEST
+from core.agent.model_trace import turn_stats
 from core.desktop.bridge import ACTIVE_DESKTOP, SCREENSHOT_LIMIT, BridgeRegistry, Manifest
 from core.voice.desktop import DesktopVoice
 from core.voice.live import LIVE_PLAYBACK_WINDOW, LIVE_SLOW_SECONDS, LiveSpeech, announce_conversion
@@ -123,7 +124,13 @@ def router_for(agent, config, authenticate):
                         if chunk.get('type') == 'token':
                             await turn_send(dict(type='token', text=chunk.get('text', '')))
                         elif chunk.get('type') == 'done':
-                            await turn_send(dict(type='done', text=chunk.get('text', ''), model_trace=chunk.get('model_trace')))
+                            stats = turn_stats(chunk.get('model_trace'))
+                            await turn_send(dict(
+                                type='done',
+                                text=chunk.get('text', ''),
+                                model_trace=chunk.get('model_trace'),
+                                **({'turn_stats': stats} if stats else {}),
+                            ))
                         elif chunk.get('type') == 'error':
                             await turn_send(dict(type='error', code='chat_failed'))
                 except asyncio.CancelledError:
@@ -312,7 +319,13 @@ def router_for(agent, config, authenticate):
                                     await speech.feed(chunk.get('text', ''))
                             if chunk.get('type') == 'done':
                                 response = chunk.get('text', '')
-                                await turn_send(dict(type='done', text=response, model_trace=chunk.get('model_trace')))
+                                stats = turn_stats(chunk.get('model_trace'))
+                                await turn_send(dict(
+                                    type='done',
+                                    text=response,
+                                    model_trace=chunk.get('model_trace'),
+                                    **({'turn_stats': stats} if stats else {}),
+                                ))
                             if chunk.get('type') == 'error':
                                 await turn_send(dict(type='error', code='chat_failed'))
                                 return

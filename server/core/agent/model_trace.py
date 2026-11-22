@@ -243,6 +243,66 @@ def _public_call(call):
     return {key: value for key, value in call.items() if not str(key).startswith("_")}
 
 
+TURN_STATS_LANES: tuple[str, ...] = ("brain", "talk", "memory", "vision")
+
+
+def _nonnegative_number(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return round(number, 1) if number >= 0 else None
+
+
+def turn_stats(report) -> dict | None:
+    """Safe per-turn timing/usage summary for clients; never includes raw trace."""
+    if not isinstance(report, dict):
+        return None
+    lanes: dict[str, dict] = {}
+    llm_ms = 0.0
+    timed_ms = 0.0
+    output_tokens = 0
+    for call in report.get("calls") or []:
+        if not isinstance(call, dict):
+            continue
+        lane = str(call.get("lane") or "")
+        if lane not in TURN_STATS_LANES:
+            continue
+        duration = _nonnegative_number(call.get("duration_ms"))
+        if duration is None:
+            continue
+        entry = lanes.setdefault(lane, {"calls": 0, "duration_ms": 0.0})
+        entry["calls"] += 1
+        entry["duration_ms"] = round(entry["duration_ms"] + duration, 1)
+        model = str(call.get("reported_model") or call.get("configured_model") or "").strip()
+        if model:
+            entry["model"] = model[:200]
+        usage = call.get("usage") if isinstance(call.get("usage"), dict) else {}
+        call_output = 0
+        for key in ("input_tokens", "output_tokens"):
+            value = usage.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                entry[key] = int(entry.get(key, 0)) + value
+                if key == "output_tokens":
+                    call_output += value
+                    output_tokens += value
+        if call_output > 0:
+            timed_ms = round(timed_ms + duration, 1)
+        llm_ms = round(llm_ms + duration, 1)
+    if not lanes:
+        return None
+    duration = _nonnegative_number(report.get("duration_ms"))
+    stats = {
+        "duration_ms": duration if duration is not None else llm_ms,
+        "llm_ms": llm_ms,
+        "lanes": lanes,
+    }
+    if output_tokens:
+        stats["output_tokens"] = output_tokens
+        if timed_ms > 0:
+            stats["tokens_per_second"] = round(output_tokens / (timed_ms / 1000.0), 1)
+    return stats
+
+
 def running_call():
     trace = ACTIVE_TRACE.get()
     if trace is None or trace.closed:

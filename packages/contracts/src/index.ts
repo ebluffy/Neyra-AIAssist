@@ -52,12 +52,35 @@ export const ContextUsageSchema = z.object({
 }).strict();
 export type ContextUsage = z.infer<typeof ContextUsageSchema>;
 
+export const TurnLaneStatsSchema = z.object({
+  calls: z.number().int().nonnegative().max(1000),
+  duration_ms: z.number().nonnegative().max(86_400_000),
+  model: z.string().min(1).max(200).optional(),
+  input_tokens: z.number().int().nonnegative().max(100_000_000).optional(),
+  output_tokens: z.number().int().nonnegative().max(100_000_000).optional(),
+}).strict();
+
+export const TurnStatsSchema = z.object({
+  duration_ms: z.number().nonnegative().max(86_400_000),
+  llm_ms: z.number().nonnegative().max(86_400_000),
+  output_tokens: z.number().int().nonnegative().max(1_000_000_000).optional(),
+  tokens_per_second: z.number().nonnegative().max(1_000_000).optional(),
+  lanes: z.object({
+    talk: TurnLaneStatsSchema.optional(),
+    brain: TurnLaneStatsSchema.optional(),
+    memory: TurnLaneStatsSchema.optional(),
+    vision: TurnLaneStatsSchema.optional(),
+  }).strict(),
+}).strict();
+export type TurnLaneStats = z.infer<typeof TurnLaneStatsSchema>;
+export type TurnStats = z.infer<typeof TurnStatsSchema>;
+
 // SSE-кадры BFF → браузер: без model_trace, usage только из ядра.
 export const SseChatEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('token'), text: z.string() }).strict(),
   z.object({ type: z.literal('thinking'), text: z.string().optional() }).strict(),
   z.object({ type: z.literal('phase'), phase: z.string().min(1).max(40), label: z.string().min(1).max(120).optional() }).strict(),
-  z.object({ type: z.literal('done'), text: z.string(), usage: ContextUsageSchema.optional() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string(), usage: ContextUsageSchema.optional(), turn_stats: TurnStatsSchema.optional() }).strict(),
   z.object({ type: z.literal('error'), code: z.string(), message: z.string() }).strict(),
 ]);
 export type SseChatEvent = z.infer<typeof SseChatEventSchema>;
@@ -190,7 +213,7 @@ export const BrowserServerEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('pong'), ts: z.string(), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('phase'), phase: z.string().min(1).max(40), label: z.string().min(1).max(120).optional() }).strict(),
-  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), usage: ContextUsageSchema.optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), usage: ContextUsageSchema.optional(), turn_stats: TurnStatsSchema.optional(), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('stopped'), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string() }).strict(),
 ]);
@@ -202,7 +225,7 @@ export const KernelServerEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('pong'), ts: z.string(), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('token'), text: z.string(), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('phase'), phase: z.string().min(1).max(40), label: z.string().min(1).max(120).optional() }).strict(),
-  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), usage: ContextUsageSchema.optional(), model_trace: z.unknown().optional(), trace_id: z.string() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string(), sounds: z.array(z.unknown()).optional(), usage: ContextUsageSchema.optional(), turn_stats: TurnStatsSchema.optional(), model_trace: z.unknown().optional(), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('stopped'), trace_id: z.string() }).strict(),
   z.object({ type: z.literal('error'), code: z.string(), message: z.string().optional(), trace_id: z.string(), model_trace: z.unknown().optional() }).strict(),
 ]);

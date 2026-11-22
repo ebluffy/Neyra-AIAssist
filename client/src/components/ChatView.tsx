@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Copy, RotateCcw, Volume2 } from 'lucide-react';
 import { clock, type ChatMessage } from '../chat';
 import { Markdown } from '../markdown';
+import { TurnStatsView } from './TurnStats';
 import { VoiceOrb } from './VoiceOrb';
 
 interface Props {
@@ -67,6 +68,7 @@ export function ChatView({ messages, partial, thinking, onCopy, onSpeak, onRepea
           {message.role === 'user' && message.kind === 'voice' && message.audioUrl && <audio controls preload="none" src={message.audioUrl} aria-label="Голосовое сообщение" />}
           {message.role === 'user' && message.kind === 'voice' && message.durationMs !== undefined && <span className="timer">{clock(message.durationMs)}</span>}
           {message.role === 'user' && message.pending && !message.content ? <p className="hint">Распознаю речь…</p> : message.role === 'user' ? <p className="plain">{message.content}</p> : <Markdown text={message.content} onCopy={onCopy} />}
+          {message.role === 'assistant' && message.stats && <TurnStatsView stats={message.stats} />}
           {message.role === 'assistant' && message.content && <div className="msg-actions">
             <button type="button" aria-label="Копировать" data-tip="Копировать" onClick={() => onCopy(message.content)}><Copy size={16} strokeWidth={1.75} aria-hidden="true" /></button>
             <button type="button" aria-label="Озвучить" data-tip="Озвучить" disabled={voiceBusy} onClick={() => onSpeak(message.content)}><Volume2 size={16} strokeWidth={1.75} aria-hidden="true" /></button>

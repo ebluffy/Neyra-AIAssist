@@ -20,6 +20,6 @@ Reconnect: open a **new** WebSocket (hello includes `"reconnect":"open_new_socke
 - `pong`
 - `token` (stream chunk)
 - `phase` (retrieval/plan/answer)
-- `done` (final + sounds + usage)
+- `done` (final + sounds + usage + `turn_stats`: per-lane timing, tokens/s, model)
 - `stopped` — acknowledgement for `stop`
 - `error` (including `busy` when a new `chat` arrives while an answer is streaming, and `model_not_allowed` for a forbidden override)

@@ -5,7 +5,7 @@ if (!process.env.WS_NO_BUFFER_UTIL) process.env.WS_NO_BUFFER_UTIL = '1';
 if (!process.env.WS_NO_UTF_8_VALIDATE) process.env.WS_NO_UTF_8_VALIDATE = '1';
 
 import WebSocket from 'ws';
-import { ChatRequestSchema, ContextUsageSchema, SseChatEventSchema, type SseChatEvent } from '@neyra/contracts';
+import { ChatRequestSchema, ContextUsageSchema, SseChatEventSchema, TurnStatsSchema, type SseChatEvent } from '@neyra/contracts';
 import { getAuth } from '../../../../lib/auth';
 import { readChatEnv } from '../../../../lib/env';
 import { createIdentityToken } from '../../../../lib/identity';
@@ -324,10 +324,12 @@ export async function POST(request: Request) {
         emitSanitized(sanitized);
       } else if (event.type === 'done') {
         const usage = ContextUsageSchema.safeParse(event.usage);
+        const turnStats = TurnStatsSchema.safeParse(event.turn_stats);
         const sanitized = SseChatEventSchema.parse({
           type: 'done',
           text: String(event.text),
           ...(usage.success ? { usage: usage.data } : {}),
+          ...(turnStats.success ? { turn_stats: turnStats.data } : {}),
         });
         emitSanitized(sanitized);
         finish();
