@@ -455,10 +455,10 @@ def test_fetch_lavalink_info_caps_body_and_keeps_auth():
         return httpx.Response(
             200,
             headers={"content-type": "application/json"},
-            content=b"x" * 1_048_577,
+            content=b'{"v":"' + b"x" * 1_048_576 + b'"}',
         )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="too large"):
         _fetch_lavalink_info(
             "http://lavalink:2333",
             "secret",
