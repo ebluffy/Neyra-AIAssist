@@ -492,6 +492,126 @@ def test_music_commands_survive_media_guard(text):
     assert route == 'PLAY_MUSIC' and use
 
 
+def test_all_clients_failed_goes_straight_to_soundcloud(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='A', author='Artist', identifier='a-skip')
+    service.fallback_meta_by_track['a-skip'] = {
+        'query': 'track a',
+        'leftovers': [NS(title='hit', identifier='hit-1')],
+        'sc_attempted': False,
+    }
+    player = _Player()
+    player.current = failed
+    calls = []
+
+    async def search(wavelink_mod, query, node):
+        calls.append(query)
+        return [NS(title='SC', author='A', identifier='sc-skip', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    asyncio.run(
+        bot.on_wavelink_track_exception(
+            NS(player=player, track=failed, exception={'message': 'All clients failed to load'})
+        )
+    )
+    assert calls == ['scsearch:track a']
+    assert [t.identifier for t in player.played] == ['sc-skip']
+
+
+@pytest.mark.parametrize(('err', 'expected'), [
+    ('All clients failed', True),
+    ({'message': 'All clients failed', 'cause': 'login'}, True),
+    ('Something else', False),
+    (None, False),
+    (RuntimeError('allclientsfailed'), True),
+])
+def test_is_all_clients_failed(err, expected):
+    assert music_module._is_all_clients_failed(err) is expected
+
+
+def test_soundcloud_track_failure_does_not_loop(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='SC', identifier='sc-loop', source='soundcloud')
+    player = _Player()
+    player.current = failed
+    calls = []
+
+    async def search(wavelink_mod, query, node):
+        calls.append(query)
+        return [NS(title='SC2', identifier='sc-loop-2', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_next_youtube_fallback(service, player, 'g', failed)) is False
+    assert calls == []
+    assert player.played == []
+
+
+def test_soundcloud_replacement_is_marked_attempted(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='YT', author='A', identifier='yt-mark')
+    service.fallback_meta_by_track['yt-mark'] = {
+        'query': 'track mark',
+        'leftovers': [],
+        'sc_attempted': False,
+    }
+    player = _Player()
+    player.current = failed
+    calls = []
+
+    async def search(wavelink_mod, query, node):
+        calls.append(query)
+        return [NS(title='SC', author='A', identifier='sc-mark', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    sc_track = player.current
+    assert service.fallback_meta_by_track['sc-mark']['sc_attempted'] is True
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', sc_track)) is False
+    assert calls == ['scsearch:track mark']
+
+
+def test_soundcloud_without_meta_uses_failed_track_query(monkeypatch):
+    service = music_module.MusicService(NS())
+    service.fallback_query_by_guild['g'] = ('other-track', 'last query')
+    failed = NS(title='Track A', author='Artist A', identifier='a-new')
+    player = _Player()
+    player.current = failed
+    calls = []
+
+    async def search(wavelink_mod, query, node):
+        calls.append(query)
+        return [NS(title='SC', author='Artist A', identifier='sc-new', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    assert calls == ['scsearch:Artist A - Track A']
+
+
+def test_soundcloud_uses_guild_query_for_same_track(monkeypatch):
+    service = music_module.MusicService(NS())
+    service.fallback_query_by_guild['g'] = ('a-same', 'last query')
+    failed = NS(title='Track A', author='Artist A', identifier='a-same')
+    player = _Player()
+    player.current = failed
+
+    async def search(wavelink_mod, query, node):
+        return [NS(title='SC', author='A', identifier='sc-same', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    assert service.fallback_meta_by_track['sc-same']['query'] == 'last query'
+
+
+def test_stop_resets_guild_fallback_state():
+    service = music_module.MusicService(NS())
+    service.fallback_query_by_guild['g'] = ('k', 'q')
+    service.handle('music.stop', {'guild_id': 'g'})
+    assert 'g' not in service.fallback_query_by_guild
+
+
 @pytest.mark.parametrize(('source', 'label'), [
     ('youtube', 'YouTube'),
     ('yt', 'YouTube'),
