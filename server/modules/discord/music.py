@@ -632,6 +632,8 @@ class MusicService:
         self.fallback_meta_by_track: dict[str, dict[str, Any]] = {}
         # One fallback reaction per failed track: TrackException + TrackEnd both arrive.
         self.fallback_handled_tracks: set[str] = set()
+        # TrackEnd(loadFailed) must not touch the queue while the exception handler works.
+        self.fallback_inflight: set[str] = set()
 
     def _is_duplicate(self, key: str) -> bool:
         now = time.time()
@@ -916,6 +918,25 @@ async def _play_next_youtube_fallback(
     return False
 
 
+async def _advance_queue(player: Any) -> bool:
+    """Play the next queued track, or stop an empty player. Returns True if played."""
+    try:
+        if len(player.queue) > 0:
+            nxt = player.queue.get()
+            if nxt is not None:
+                await player.play(nxt)
+                logger.info("discord.music track_end -> next queued track started")
+                return True
+    except Exception as ex:
+        logger.warning("discord.music track_end queue advance failed: %s", ex)
+    try:
+        await player.stop(force=True)
+    except Exception:
+        pass
+    logger.info("discord.music track_end -> queue empty, playback stopped")
+    return False
+
+
 def _attach_track_end_listener(ctx) -> None:
     bot = _resolve_bot(ctx)
     if bot is None:
@@ -946,7 +967,19 @@ def _attach_track_end_listener(ctx) -> None:
                 return
             if key:
                 service.fallback_handled_tracks.add(key)
-            await _play_next_youtube_fallback(service, player, guild_id, failed_track)
+                service.fallback_inflight.add(key)
+            started = False
+            try:
+                started = await _play_next_youtube_fallback(service, player, guild_id, failed_track)
+            finally:
+                if key:
+                    service.fallback_inflight.discard(key)
+            if not started:
+                if key and not _key_still_queued(player, key):
+                    service.fallback_meta_by_track.pop(key, None)
+                if key:
+                    service.fallback_handled_tracks.discard(key)
+                await _advance_queue(player)
         except Exception as ex:  # pragma: no cover
             logger.warning("discord.music track_exception handler failed: %s", ex)
 
@@ -968,8 +1001,10 @@ def _attach_track_end_listener(ctx) -> None:
                         service.fallback_meta_by_track.pop(ended_key, None)
                     service.fallback_handled_tracks.discard(ended_key)
                 return
-            # loadfailed after instant rejection — the exception handler may have run first.
+            # loadfailed after instant rejection — the exception handler may still be working.
             if reason in ("loadfailed", "load_failed"):
+                if service is not None and ended_key in service.fallback_inflight:
+                    return
                 if service is not None and guild_id and ended_key:
                     if ended_key not in service.fallback_handled_tracks:
                         service.fallback_handled_tracks.add(ended_key)
@@ -983,20 +1018,7 @@ def _attach_track_end_listener(ctx) -> None:
                 if not _key_still_queued(player, ended_key):
                     service.fallback_meta_by_track.pop(ended_key, None)
                 service.fallback_handled_tracks.discard(ended_key)
-            try:
-                if len(player.queue) > 0:
-                    nxt = player.queue.get()
-                    if nxt is not None:
-                        await player.play(nxt)
-                        logger.info("discord.music track_end -> next queued track started")
-                        return
-            except Exception as ex:
-                logger.warning("discord.music track_end queue advance failed: %s", ex)
-            try:
-                await player.stop(force=True)
-            except Exception:
-                pass
-            logger.info("discord.music track_end -> queue empty, playback stopped")
+            await _advance_queue(player)
         except Exception as ex:  # pragma: no cover
             logger.warning("discord.music track_end listener failed: %s", ex)
 
