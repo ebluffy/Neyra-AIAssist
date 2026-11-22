@@ -217,6 +217,10 @@ def test_gif_urls_and_negations_cannot_reenter_classifier_music_path(text):
     'почему тебя нет в войсе, я хотел музыку',
     'ты не зашла в войс',
     'ты почему не в войсе',
+    'ты включишь музыку или нет?',
+    'ты включишь музыку завтра?',
+    'включи мозги, почему опять не то',
+    'можно включить погромче?',
 ])
 def test_music_complaints_do_not_start_playback(text):
     plan = plan_music_route(text)
@@ -244,6 +248,14 @@ def test_imperative_prefixes_stay_hard_path(text):
     plan = plan_music_route(text)
     assert plan.needs_classifier is False
     route, use, _ = finalize_music_route(plan)
+    assert route == 'PLAY_MUSIC' and use
+
+
+def test_future_request_needs_classifier():
+    text = 'а может включишь музыку'
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    route, use, _ = finalize_music_route(plan, classifier_route='PLAY_MUSIC')
     assert route == 'PLAY_MUSIC' and use
 
 

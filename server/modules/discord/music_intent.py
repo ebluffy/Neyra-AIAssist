@@ -43,8 +43,13 @@ _LEAD_WORDS = (
 )
 _LEAD_RE = re.compile(r"^(?:(?:" + _LEAD_WORDS + r")[\s,:;-]*){0,3}", re.IGNORECASE)
 _IMPERATIVE_VERBS_RE = re.compile(
-    r"^(?:включи|включите|включай|включишь|вруби|врубай|врубите|врубишь|"
-    r"поставь|поставьте|поставишь|заиграй|заиграйте|play)\b",
+    r"^(?:включи|включите|включай|вруби|врубай|врубите|"
+    r"поставь|поставьте|заиграй|заиграйте|play)\b",
+    re.IGNORECASE,
+)
+_FUTURE_REQUEST_RE = re.compile(r"^(?:включишь|врубишь|поставишь)\b", re.IGNORECASE)
+_FUTURE_LEAD_RE = re.compile(
+    r"(?:а\s+может|может|можешь|можно|давай|пожалуйста|плиз|can\s+you|could\s+you)",
     re.IGNORECASE,
 )
 _INFINITIVE_RE = re.compile(r"^(?:включить)\b", re.IGNORECASE)
@@ -132,7 +137,7 @@ def has_play_verb(text: str) -> bool:
     return bool(PLAY_VERB_RE.search(_routing_text(text)))
 
 
-def imperative_play_end(text: str) -> int:
+def imperative_play_end(text: str, *, soft: bool = False) -> int:
     """End index of a leading play command, or 0 when the text is not a command."""
     t = (text or "").strip()
     lead = _LEAD_RE.match(t)
@@ -141,6 +146,8 @@ def imperative_play_end(text: str) -> int:
     verb = _IMPERATIVE_VERBS_RE.match(rest)
     if verb is None and modal:
         verb = _INFINITIVE_RE.match(rest)
+    if verb is None and soft and _FUTURE_LEAD_RE.search(lead.group(0)):
+        verb = _FUTURE_REQUEST_RE.match(rest)
     if verb is None:
         return 0
     return lead.end() + verb.end()
@@ -162,7 +169,7 @@ def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
     soft = soft_music_hint(content) if soft_music is None else bool(soft_music)
     if not soft:
         return False
-    if imperative_play(content):
+    if imperative_play_end(content, soft=True):
         return True
     if _MUSIC_VERB_STEM_RE.search(content) or _COMPLAINT_RE.search(content):
         return False
@@ -233,6 +240,8 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         flags=re.IGNORECASE,
     )
     q = re.sub(r"\s+", " ", q).strip(" .,!?;:-")
+    if _COMPLAINT_RE.search(q) or q.casefold() in {"погромче", "потише", "громче", "тише"}:
+        return None
     if not q or q.lower() in {
         "музыку",
         "музыка",
