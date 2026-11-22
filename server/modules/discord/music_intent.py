@@ -73,15 +73,23 @@ _ADDRESS_RE = re.compile(r"^[,\s]*(?:(?:нейра|neyra)[\s,:;-]*)+", re.IGNORE
 _POLITE_RE = re.compile(r"^[,\s]*(?:-ка\b|(?:пожалуйста|плиз|там)\b)[\s,.:;-]*", re.IGNORECASE)
 
 
+def _strip_all_polite_tail(text: str) -> str:
+    return re.sub(
+        r"(?:[\s,]+(?:пожалуйста|плиз|please))+[\s.!]*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).rstrip(" ,.!")
+
+
 def _strip_polite_tail(text: str) -> str:
-    match = re.search(r"[\s,]+(?:пожалуйста|плиз|please)[\s.!]*$", text, re.IGNORECASE)
-    if not match:
+    if re.fullmatch(
+        r"(?:[\s,]*(?:пожалуйста|плиз|please)[\s.!]*)+",
+        text,
+        re.IGNORECASE,
+    ):
         return text
-    word = match.group(0).strip(" ,.!").casefold()
-    before = text[: match.start()].rstrip(" ,")
-    if before.casefold().endswith(word):
-        return text
-    return before
+    return _strip_all_polite_tail(text)
 _MUSIC_VERB_STEM_RE = re.compile(
     r"\b(?:включ\w*|постав\w*|вруб\w*|заигр\w*|просил\w*|прошу|просим)\b",
     re.IGNORECASE,
@@ -184,7 +192,7 @@ def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
     """Classifier-only PLAY: imperative, or a short noun phrase without complaint/negation."""
     content = text or ""
     end = imperative_play_end(content, soft=True)
-    rest = _strip_polite_tail(content[end:].strip() if end else content.strip())
+    rest = _strip_all_polite_tail(content[end:].strip() if end else content.strip())
     if _VOLUME_ONLY_RE.fullmatch(rest):
         return False
     if end:
@@ -262,14 +270,10 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         flags=re.IGNORECASE,
     )
     q = re.sub(r"\s+", " ", q).strip(" .,!?;:-…—")
-    original_q = q
     q = _strip_polite_tail(q).strip(" .,!?;:-…—")
-    polite_removed = q != original_q
     if _VOLUME_ONLY_RE.fullmatch(q):
         return None
     stripped_q = re.sub(r"(?:,\s*|(?<=\s)по)(?:громче|тише)\s*$", "", q, flags=re.IGNORECASE).strip()
-    if polite_removed and stripped_q == q:
-        stripped_q = re.sub(r"(?<!—)\sпо(?:громче|тише)\s*$", "", q, flags=re.IGNORECASE).strip()
     volume_deferred = bool(stripped_q == q and _VOLUME_RE.search(q))
     q = stripped_q.strip(" .,!?;:-…—")
     plain_q = _URL_RE.sub(" ", q)
