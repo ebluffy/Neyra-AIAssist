@@ -68,35 +68,92 @@ _VOLUME_ONLY_RE = re.compile(
     r"(?:по)?(?:громче|тише)(?:[\s,.!?;:…—-]+музык\w*)?[\s,.!?;:…—-]*",
     re.IGNORECASE,
 )
+_VOLUME_NOUN = r"(?:музык\w*|песн\w*|трек\w*|music|song|track)"
+
+
+def _is_volume_only(text: str) -> bool:
+    text = text or ""
+    if _LEADING_POLITE_RUN_RE.match(text + " "):
+        return False
+    probe = re.sub(r"^\s*-?\s*ка\b", " ", text, flags=re.IGNORECASE)
+    probe = re.sub(r"\b(?:пожалуйста|плиз|please)\b", " ", probe, flags=re.IGNORECASE)
+    if not _VOLUME_RE.search(probe):
+        return False
+    probe = _VOLUME_RE.sub(" ", probe)
+    probe = re.sub(r"\b" + _VOLUME_NOUN + r"\b", " ", probe, flags=re.IGNORECASE)
+    return not re.sub(r"[\s,.!?;:…—-]+", "", probe)
+
+
 _PLAY_ANY_RE = re.compile(r"\b(?:" + _VERBS_PATTERN + r")\b", re.IGNORECASE)
+_EMOTICON_REV_TOKEN = r"(?:[dд]+[xх]+(?!\w)|[dpр3]+-?[:;=]|[)(]+-?[:;=]|\^_\^|3<)"
+_EMOTICON_REV_RE = re.compile(
+    rf"\s*{_EMOTICON_REV_TOKEN}(?:\s*{_EMOTICON_REV_TOKEN})*",
+    re.IGNORECASE,
+)
+
+
+def _cut_emoticon_tail(text: str) -> str:
+    match = _EMOTICON_REV_RE.match(text[::-1])
+    return text[: len(text) - match.end()] if match else text
+
+
+_DATIVE_RE = re.compile(r"^[,\s]*(?:мне|нам(?:\s+всем)?)\b[\s,]*")
+
+
+def _strip_emoticons(text: str) -> str:
+    value = _cut_emoticon_tail((text or "").rstrip()).rstrip()
+    opens = value.count("(")
+    closes = value.count(")")
+    while True:
+        trimmed = value.rstrip("(").rstrip()
+        if trimmed != value:
+            opens -= value.count("(") - trimmed.count("(")
+            value = trimmed
+            continue
+        if value.endswith(")") and closes > opens:
+            value = value[:-1].rstrip()
+            closes -= 1
+            continue
+        break
+    return value
 _ADDRESS_RE = re.compile(r"^[,\s]*(?:(?:нейра|neyra)[\s,:;-]*)+", re.IGNORECASE)
 _POLITE_RE = re.compile(r"^[,\s]*(?:-ка\b|(?:пожалуйста|плиз|там)\b)[\s,.:;-]*", re.IGNORECASE)
 
 
-def _strip_all_polite_tail(text: str) -> str:
-    return re.sub(
-        r"(?:(?:^|[\s,—-]+)(?:пожалуйста|плиз|please))+[\s.!]*$",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    ).rstrip(" ,.!")
+_POLITE_WORD = r"(?:пожалуйста|плиз|please)"
+_POLITE_TAIL_RE = re.compile(
+    rf"(?:^|(?<![\s,—-])[\s,—-]+){_POLITE_WORD}(?:[\s,—-]+{_POLITE_WORD})*[\s,.!]*$",
+    re.IGNORECASE,
+)
+_EM_DASH_POLITE_RE = re.compile(
+    rf"—\s*{_POLITE_WORD}(?:[\s,]+{_POLITE_WORD})*[\s,.!]*$",
+    re.IGNORECASE,
+)
+_HYPHEN_CAP_POLITE_RE = re.compile(
+    rf"-\s*(?:Пожалуйста|Плиз|Please)(?:[\s,]+{_POLITE_WORD})*[\s,.!]*$"
+)
+_LEADING_POLITE_RUN_RE = re.compile(
+    rf"(?P<w>{_POLITE_WORD})(?:(?:\s*,\s*|\s+)(?P=w)\b)+[\s,.]*",
+    re.IGNORECASE,
+)
+
+
+def _ambiguous_dash_polite(text: str) -> bool:
+    return bool(_EM_DASH_POLITE_RE.search(text) or _HYPHEN_CAP_POLITE_RE.search(text))
 
 
 def _strip_polite_tail(text: str) -> str:
-    if re.search(r"[—-]\s*(?:Пожалуйста|Плиз|Please)[\s.!]*$", text):
+    if _ambiguous_dash_polite(text):
         return text
     probe = text + " "
-    prefix = re.match(
-        r"((?:пожалуйста|плиз|please)[\s,]+)(?:\1)+",
-        probe,
-        re.IGNORECASE,
-    )
-    if prefix:
-        end = min(prefix.end(), len(text))
-        rest = _strip_all_polite_tail(text[end:])
-        head = text[:end].rstrip(" ,")
-        return f"{head} {rest}".strip() if rest else head
-    return _strip_all_polite_tail(text)
+    run = _LEADING_POLITE_RUN_RE.match(probe)
+    if run:
+        end = min(run.end(), len(text))
+        head = text[:end].rstrip(" ,.")
+        sep = text[len(head):end] or " "
+        rest = _strip_polite_tail(text[end:])
+        return f"{head}{sep}{rest}".strip() if rest else head
+    return _POLITE_TAIL_RE.sub("", text).rstrip(" ,.!")
 _MUSIC_VERB_STEM_RE = re.compile(
     r"\b(?:включ\w*|постав\w*|вруб\w*|заигр\w*|просил\w*|прошу|просим)\b",
     re.IGNORECASE,
@@ -199,11 +256,15 @@ def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
     """Classifier-only PLAY: imperative, or a short noun phrase without complaint/negation."""
     content = text or ""
     end = imperative_play_end(content, soft=True)
-    rest = _strip_all_polite_tail(content[end:].strip() if end else content.strip())
-    if _VOLUME_ONLY_RE.fullmatch(rest):
+    rest = content[end:].strip() if end else content.strip()
+    if _is_volume_only(rest):
         return False
     if end:
-        return True
+        if content.rstrip().endswith("?") and not imperative_play_end(content):
+            return False
+        obj = _POLITE_TAIL_RE.sub("", rest)
+        obj = _strip_emoticons(obj)
+        return bool(re.search(r"\w", obj))
     soft = soft_music_hint(content) if soft_music is None else bool(soft_music)
     if not soft:
         return False
@@ -248,6 +309,14 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
 
     wants_voice_play = imperative_voice_join(raw)
     end = imperative_play_end(raw)
+    soft_request = False
+    if not end:
+        soft_end = imperative_play_end(raw, soft=True)
+        if soft_end:
+            end = soft_end
+            soft_request = True
+    if soft_request and raw.rstrip().endswith("?"):
+        return None
     link = _supported_music_link(raw)
     if not end and not link and not wants_voice_play:
         return None
@@ -255,9 +324,11 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         q = _VOICE_JOIN_RE.sub("", raw, count=1)
     else:
         q = raw[end:] if end else raw
+    q = _strip_emoticons(q)
     for _ in range(2):
         q = _ADDRESS_RE.sub("", q)
         q = _POLITE_RE.sub("", q)
+        q = _DATIVE_RE.sub("", q)
     q = re.sub(r"^[\s,.!?;:-]+", "", q)
     if wants_voice_play:
         q = re.sub(r"^(?:и\s+)?" + _PLAY_ANY_RE.pattern + r"[\s,]*", "", q, flags=re.IGNORECASE)
@@ -277,17 +348,20 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         flags=re.IGNORECASE,
     )
     q = re.sub(r"\s+", " ", q).strip(" .,!?;:-…—")
-    volume_probe = _strip_all_polite_tail(q).strip(" .,!?;:-…—")
-    if _VOLUME_ONLY_RE.fullmatch(volume_probe):
+    volume_probe = _POLITE_TAIL_RE.sub("", q).strip(" .,!?;:-…—")
+    if _is_volume_only(volume_probe):
         return None
     q = _strip_polite_tail(q).strip(" .,!?;:-…—")
     if _VOLUME_ONLY_RE.fullmatch(q):
         return None
     stripped_q = re.sub(r"(?:,\s*|(?<=\s)по)(?:громче|тише)\s*$", "", q, flags=re.IGNORECASE).strip()
     volume_deferred = bool(stripped_q == q and _VOLUME_RE.search(q))
-    q = stripped_q.strip(" .,!?;:-…—")
+    q = _strip_emoticons(_strip_polite_tail(stripped_q)).strip(" .,!?;:-…—")
+    if _is_volume_only(q):
+        return None
+    dash_title = _ambiguous_dash_polite(q)
     plain_q = _URL_RE.sub(" ", q)
-    deferred = volume_deferred or bool(_COMPLAINT_RE.search(plain_q))
+    deferred = volume_deferred or dash_title or bool(_COMPLAINT_RE.search(plain_q))
     if end:
         complaint_zone = raw[:end]
     elif wants_voice_play:
@@ -301,6 +375,11 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         re.search(r"\bне\s+(?:надо|нужно|включай|ставь|играй)\b", complaint_zone, re.IGNORECASE)
         or re.search(r"\b(?:почему|зачем)\b", complaint_zone, re.IGNORECASE)
     )
+    q = _strip_emoticons(q).strip(" .,!?;:-…—")
+    if not re.search(r"\w", q):
+        q = ""
+    if soft_request and not q:
+        return None
     if not q or q.lower() in {
         "музыку",
         "музыка",
@@ -313,7 +392,7 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
     }:
         q = "upbeat happy music"
     candidate = {"intent": "music_control", "action": MUSIC_PLAY, "query": q}
-    if deferred:
+    if deferred or soft_request:
         candidate["defer"] = "1"
     if negated:
         candidate["block"] = "1"
