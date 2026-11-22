@@ -179,7 +179,17 @@ curl -sk --resolve neyra.owyx.site:443:<VPS IP> -X POST \
   -d '{"key":"smoke-wrong-key"}'
 ```
 
-Expect `401 unauthorized` and `dashboard login failed ip=<real IP>` in the core log, never `203.0.113.7`. The dashboard key must already be configured (otherwise `400 setup_required`); repeating the smoke without a pause can return `429 rate_limited` — both mean the check did not run. Behind Cloudflare a direct `/api/v1/health/live` on the VPS IP must not connect (200 = firewall is not configured); without Cloudflare the connection is expected, so inspect only the logged IP.
+**Behind Cloudflare:** the `--resolve` request must **not connect** (timeout/connection refused) — that is success. Any HTTP response from the VPS IP means the firewall is not configured. Check spoofing separately through Cloudflare, without `--resolve`:
+
+```bash
+curl -sk -X POST https://neyra.owyx.site/api/v1/dashboard/auth/login \
+  -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 203.0.113.7' \
+  -d '{"key":"smoke-wrong-key"}'
+```
+
+Expect `401 unauthorized` and `dashboard login failed ip=<real IP>`, never `203.0.113.7`.
+
+**Without Cloudflare:** omit `--resolve`; the same POST must return `401` and log your real IP, never `203.0.113.7`. In both modes the dashboard key must already be configured (otherwise `400 setup_required`); repeating the smoke without a pause can return `429 rate_limited` — that means the check did not run.
 
 ## Alternative: Neyra process on the VPS (no frp)
 

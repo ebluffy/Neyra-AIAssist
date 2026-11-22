@@ -202,7 +202,17 @@ curl -sk --resolve neyra.owyx.site:443:<IP VPS> -X POST \
   -d '{"key":"smoke-wrong-key"}'
 ```
 
-Ожидание: `401 unauthorized` и в логе ядра `dashboard login failed ip=<твой реальный IP>`, но не `203.0.113.7`. Ключ дашборда должен быть задан (иначе `400 setup_required`), а повторный smoke без паузы может дать `429 rate_limited` — оба ответа означают, что проверка не состоялась. За Cloudflare прямой запрос к `/api/v1/health/live` на IP VPS должен не соединяться (200 = firewall не настроен); без Cloudflare соединение нормально, смотри только IP в логе.
+**За Cloudflare:** запрос с `--resolve` должен **не соединиться** (timeout/connection refused) — это успех. Любой HTTP-ответ на прямой IP VPS означает, что firewall не настроен. Подмену проверяйте отдельно через Cloudflare, без `--resolve`:
+
+```bash
+curl -sk -X POST https://neyra.owyx.site/api/v1/dashboard/auth/login \
+  -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 203.0.113.7' \
+  -d '{"key":"smoke-wrong-key"}'
+```
+
+Ожидание: `401 unauthorized` и в логе `dashboard login failed ip=<твой реальный IP>`, не `203.0.113.7`.
+
+**Без Cloudflare:** `--resolve` не нужен; тот же POST должен дать `401`, а в логе — твой IP, не `203.0.113.7`. В обоих режимах ключ дашборда должен быть задан (иначе `400 setup_required`), а повторный smoke без паузы может дать `429 rate_limited` — это значит, что проверка не состоялась.
 
 ## Альтернатива: процесс Neyra на VPS (без frp)
 
