@@ -799,6 +799,13 @@ def _track_key(track: Any) -> str:
     return str(getattr(track, "identifier", "") or getattr(track, "title", "") or id(track))
 
 
+def _key_still_queued(player: Any, key: str) -> bool:
+    try:
+        return any(_track_key(track) == key for track in list(getattr(player, "queue", []) or []))
+    except Exception:
+        return False
+
+
 def _fallback_meta(service: MusicService, track: Any) -> dict[str, Any]:
     if track is None:
         return {}
@@ -952,7 +959,8 @@ def _attach_track_end_listener(ctx) -> None:
             if ended_key and current is not None and _track_key(current) != ended_key:
                 # A replacement (next hit/SoundCloud) is already playing; do not stop it.
                 if service is not None:
-                    service.fallback_meta_by_track.pop(ended_key, None)
+                    if not _key_still_queued(player, ended_key):
+                        service.fallback_meta_by_track.pop(ended_key, None)
                     service.fallback_handled_tracks.discard(ended_key)
                 return
             # loadfailed after instant rejection — the exception handler may have run first.
@@ -967,7 +975,8 @@ def _attach_track_end_listener(ctx) -> None:
             elif reason and reason not in ("finished", "stopped", "replaced", "cleanup"):
                 return
             if service is not None and ended_key:
-                service.fallback_meta_by_track.pop(ended_key, None)
+                if not _key_still_queued(player, ended_key):
+                    service.fallback_meta_by_track.pop(ended_key, None)
                 service.fallback_handled_tracks.discard(ended_key)
             try:
                 if len(player.queue) > 0:

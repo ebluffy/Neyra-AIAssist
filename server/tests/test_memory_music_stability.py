@@ -275,6 +275,27 @@ def test_fallback_uses_leftovers_of_the_failed_track(monkeypatch):
     assert service.fallback_meta_by_track['a-hit']['query'] == 'track a'
 
 
+def test_duplicate_queued_track_keeps_fallback_meta(monkeypatch):
+    service = music_module.MusicService(NS())
+    track = NS(title='X', identifier='x-1')
+    service.fallback_meta_by_track['x-1'] = {'query': 'x', 'leftovers': [], 'sc_attempted': False}
+    player = _Player()
+    player.current = track
+    player.queue.append(NS(title='X', identifier='x-1'))
+
+    async def empty_search(wavelink_mod, query, node):
+        return []
+
+    monkeypatch.setattr(music_module, '_search_tracks', empty_search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=track, reason='finished')))
+    assert 'x-1' in service.fallback_meta_by_track
+    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=track, reason='finished')))
+    assert 'x-1' not in service.fallback_meta_by_track
+
+
 class _Queue(list):
     def get(self):
         return self.pop(0) if self else None
