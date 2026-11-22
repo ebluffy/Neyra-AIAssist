@@ -173,7 +173,7 @@ def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
     content = text or ""
     end = imperative_play_end(content, soft=True)
     rest = content[end:].strip() if end else content.strip()
-    if re.fullmatch(r"(?:по)?(?:громче|тише)(?:\s+музык\w*)?", rest, re.IGNORECASE):
+    if re.fullmatch(r"(?:по)?(?:громче|тише)(?:\s+музык\w*)?[\s,.!?;:-]*", rest, re.IGNORECASE):
         return False
     if end:
         return True
@@ -250,12 +250,13 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         flags=re.IGNORECASE,
     )
     q = re.sub(r"\s+", " ", q).strip(" .,!?;:-")
-    if re.fullmatch(r"(?:по)?(?:громче|тише)(?:\s+музык\w*)?", q, re.IGNORECASE):
+    if re.fullmatch(r"(?:по)?(?:громче|тише)(?:\s+музык\w*)?[\s,.!?;:-]*", q, re.IGNORECASE):
         return None
-    q = re.sub(r"(?:,\s*|(?<=\s)по)(?:громче|тише)\s*$", "", q, flags=re.IGNORECASE).strip()
-    q = q.strip(" .,!?;:-—")
+    stripped_q = re.sub(r"(?:,\s*|(?<=\s)по)(?:громче|тише)\s*$", "", q, flags=re.IGNORECASE).strip()
+    volume_deferred = bool(stripped_q == q and _VOLUME_RE.search(q))
+    q = stripped_q.strip(" .,!?;:-—")
     plain_q = _URL_RE.sub(" ", q)
-    deferred = bool(_COMPLAINT_RE.search(plain_q))
+    deferred = volume_deferred or bool(_COMPLAINT_RE.search(plain_q))
     if end:
         complaint_zone = raw[:end]
     elif wants_voice_play:
