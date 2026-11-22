@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -627,8 +628,12 @@ class MusicService:
         self.paused_by_guild: dict[str, bool] = {}
         self.recent_requests: dict[str, float] = {}
         self.last_random_pick_by_guild: dict[str, str] = {}
-        # YouTube often rejects first hit ("requires login") — keep sibling search results.
-        self.play_fallbacks_by_guild: dict[str, list[Any]] = {}
+        # Per-track source query: a queued track keeps its own SoundCloud retry.
+        self.fallback_meta_by_track: dict[str, dict[str, Any]] = {}
+        # One fallback reaction per failed track: TrackException + TrackEnd both arrive.
+        self.fallback_handled_tracks: set[str] = set()
+        # TrackEnd(loadFailed) must not touch the queue while the exception handler works.
+        self.fallback_inflight: set[str] = set()
 
     def _is_duplicate(self, key: str) -> bool:
         now = time.time()
@@ -796,15 +801,109 @@ def _track_key(track: Any) -> str:
     return str(getattr(track, "identifier", "") or getattr(track, "title", "") or id(track))
 
 
-async def _play_next_youtube_fallback(service: MusicService, player: Any, guild_id: str) -> bool:
+def _key_still_queued(player: Any, key: str) -> bool:
+    try:
+        return any(_track_key(track) == key for track in list(getattr(player, "queue", []) or []))
+    except Exception:
+        return False
+
+
+def _fallback_meta(service: MusicService, track: Any) -> dict[str, Any]:
+    if track is None:
+        return {}
+    return service.fallback_meta_by_track.get(_track_key(track)) or {}
+
+
+def _register_fallback_meta(
+    service: MusicService,
+    track: Any,
+    query: str,
+    leftovers: Optional[list[Any]] = None,
+) -> None:
+    query = str(query or "").strip()
+    if not query:
+        return
+    key = _track_key(track)
+    service.fallback_meta_by_track[key] = {
+        "query": query,
+        "leftovers": list(leftovers or []),
+        "sc_attempted": False,
+    }
+    service.fallback_handled_tracks.discard(key)
+    if len(service.fallback_meta_by_track) > 100:
+        oldest = next(iter(service.fallback_meta_by_track))
+        if oldest != key:
+            service.fallback_meta_by_track.pop(oldest, None)
+
+
+def _clean_soundcloud_query(raw: str) -> str:
+    q = str(raw or "").strip()
+    for prefix in ("ytsearch:", "ytmsearch:", "scsearch:"):
+        if q.lower().startswith(prefix):
+            q = q[len(prefix):].strip()
+            break
+    if not q or "://" in q or q.lower().startswith(("icy:", "//")):
+        return ""
+    return q
+
+
+async def _play_soundcloud_fallback(
+    service: MusicService,
+    player: Any,
+    guild_id: str,
+    failed_track: Any = None,
+    meta: Optional[dict[str, Any]] = None,
+) -> bool:
+    """One SoundCloud retry for the failed track's own query."""
+    if meta is None:
+        meta = _fallback_meta(service, failed_track)
+    query = _clean_soundcloud_query(str(meta.get("query") or ""))
+    if not query or meta.get("sc_attempted"):
+        return False
+    meta["sc_attempted"] = True
+    try:
+        node = getattr(player, "node", None)
+        tracks = await _search_tracks(sys.modules.get("wavelink"), f"scsearch:{query}", node)
+    except Exception as ex:
+        logger.warning("discord.music soundcloud fallback search failed | guild=%s error=%s", guild_id, ex)
+        return False
+    if not tracks:
+        logger.info("discord.music soundcloud fallback empty | guild=%s", guild_id)
+        return False
+    try:
+        await player.play(tracks[0], replace=True)
+        logger.info(
+            "discord.music soundcloud fallback started | guild=%s track=%r",
+            guild_id,
+            str(getattr(tracks[0], "title", "") or ""),
+        )
+        return True
+    except Exception as ex:
+        logger.warning("discord.music soundcloud fallback play failed | guild=%s error=%s", guild_id, ex)
+        return False
+
+
+async def _play_next_youtube_fallback(
+    service: MusicService,
+    player: Any,
+    guild_id: str,
+    failed_track: Any = None,
+) -> bool:
     """Try next search hit after login/bot/load failure. Returns True if a play was started."""
-    leftovers = list(service.play_fallbacks_by_guild.get(guild_id) or [])
+    meta = _fallback_meta(service, failed_track)
+    if failed_track is not None and _key_still_queued(player, _track_key(failed_track)):
+        # A queued copy keeps the shared meta; this attempt mutates only its own copy.
+        meta = {**meta, "leftovers": list(meta.get("leftovers") or [])}
+    query = str(meta.get("query") or "")
+    leftovers = list(meta.get("leftovers") or [])
     while leftovers:
         nxt = leftovers.pop(0)
-        service.play_fallbacks_by_guild[guild_id] = leftovers
+        meta["leftovers"] = leftovers
         title = str(getattr(nxt, "title", "") or _track_key(nxt))
         try:
             await player.play(nxt, replace=True)
+            if query:
+                _register_fallback_meta(service, nxt, query, leftovers)
             logger.info("discord.music youtube fallback started | guild=%s track=%r", guild_id, title)
             return True
         except Exception as ex:
@@ -814,7 +913,27 @@ async def _play_next_youtube_fallback(service: MusicService, player: Any, guild_
                 title,
                 ex,
             )
-    service.play_fallbacks_by_guild.pop(guild_id, None)
+    if await _play_soundcloud_fallback(service, player, guild_id, failed_track, meta):
+        return True
+    return False
+
+
+async def _advance_queue(player: Any) -> bool:
+    """Play the next queued track, or stop an empty player. Returns True if played."""
+    try:
+        if len(player.queue) > 0:
+            nxt = player.queue.get()
+            if nxt is not None:
+                await player.play(nxt)
+                logger.info("discord.music track_end -> next queued track started")
+                return True
+    except Exception as ex:
+        logger.warning("discord.music track_end queue advance failed: %s", ex)
+    try:
+        await player.stop(force=True)
+    except Exception:
+        pass
+    logger.info("discord.music track_end -> queue empty, playback stopped")
     return False
 
 
@@ -842,7 +961,23 @@ def _attach_track_end_listener(ctx) -> None:
             )
             if service is None or not guild_id:
                 return
-            await _play_next_youtube_fallback(service, player, guild_id)
+            failed_track = getattr(payload, "track", None)
+            key = _track_key(failed_track) if failed_track is not None else ""
+            if key and key in service.fallback_handled_tracks:
+                return
+            if key:
+                service.fallback_handled_tracks.add(key)
+                service.fallback_inflight.add(key)
+            started = False
+            try:
+                started = await _play_next_youtube_fallback(service, player, guild_id, failed_track)
+            finally:
+                if key:
+                    service.fallback_inflight.discard(key)
+            if key and not _key_still_queued(player, key):
+                service.fallback_meta_by_track.pop(key, None)
+            if not started:
+                await _advance_queue(player)
         except Exception as ex:  # pragma: no cover
             logger.warning("discord.music track_exception handler failed: %s", ex)
 
@@ -854,28 +989,44 @@ def _attach_track_end_listener(ctx) -> None:
             reason = str(getattr(payload, "reason", "") or "").lower()
             guild = getattr(player, "guild", None)
             guild_id = str(getattr(guild, "id", "") or "")
-            # loadfailed after instant rejection — try sibling search hits first
-            if service is not None and guild_id and reason in ("loadfailed", "load_failed"):
-                if await _play_next_youtube_fallback(service, player, guild_id):
-                    return
-            if reason and reason not in ("finished", "stopped", "replaced", "loadfailed", "load_failed", "cleanup"):
+            ended_track = getattr(payload, "track", None)
+            ended_key = _track_key(ended_track) if ended_track is not None else ""
+            current = getattr(player, "current", None)
+            if ended_key and current is not None and _track_key(current) != ended_key:
+                # A replacement (next hit/SoundCloud) is already playing; do not stop it.
+                if service is not None:
+                    if not _key_still_queued(player, ended_key):
+                        service.fallback_meta_by_track.pop(ended_key, None)
+                    service.fallback_handled_tracks.discard(ended_key)
                 return
-            if service is not None and guild_id and reason in ("finished", "stopped", "replaced"):
-                service.play_fallbacks_by_guild.pop(guild_id, None)
-            try:
-                if len(player.queue) > 0:
-                    nxt = player.queue.get()
-                    if nxt is not None:
-                        await player.play(nxt)
-                        logger.info("discord.music track_end -> next queued track started")
+            # After TrackException the exception handler owns this track: both
+            # loadFailed and finished must only clean up, never advance the queue.
+            if service is not None and ended_key and (
+                ended_key in service.fallback_inflight
+                or ended_key in service.fallback_handled_tracks
+            ):
+                service.fallback_handled_tracks.discard(ended_key)
+                if not _key_still_queued(player, ended_key):
+                    service.fallback_meta_by_track.pop(ended_key, None)
+                return
+            # loadfailed after instant rejection — the exception handler may still be working.
+            if reason in ("loadfailed", "load_failed"):
+                if service is not None and guild_id and ended_key:
+                    service.fallback_handled_tracks.add(ended_key)
+                    started = await _play_next_youtube_fallback(service, player, guild_id, ended_track)
+                    service.fallback_handled_tracks.discard(ended_key)
+                    if started:
+                        if not _key_still_queued(player, ended_key):
+                            service.fallback_meta_by_track.pop(ended_key, None)
                         return
-            except Exception as ex:
-                logger.warning("discord.music track_end queue advance failed: %s", ex)
-            try:
-                await player.stop(force=True)
-            except Exception:
-                pass
-            logger.info("discord.music track_end -> queue empty, playback stopped")
+                # Fall through: if no replacement started, advance the queue/stop.
+            elif reason and reason not in ("finished", "stopped", "replaced", "cleanup"):
+                return
+            if service is not None and ended_key:
+                if not _key_still_queued(player, ended_key):
+                    service.fallback_meta_by_track.pop(ended_key, None)
+                service.fallback_handled_tracks.discard(ended_key)
+            await _advance_queue(player)
         except Exception as ex:  # pragma: no cover
             logger.warning("discord.music track_end listener failed: %s", ex)
 
@@ -1089,9 +1240,8 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                 track = tracks[0]
             # Keep other top hits so track_exception can skip "requires login" videos.
             chosen_key = _track_key(track)
-            service.play_fallbacks_by_guild[str(guild_id)] = [
-                t for t in pool if _track_key(t) != chosen_key
-            ]
+            leftovers = [t for t in pool if _track_key(t) != chosen_key]
+            _register_fallback_meta(service, track, query, leftovers)
             candidates = [
                 f"{str(getattr(t, 'author', '') or 'Unknown')} - {str(getattr(t, 'title', '') or '')}".strip()
                 for t in pool
