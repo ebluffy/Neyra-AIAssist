@@ -689,7 +689,7 @@ MVP описан в §2.2 и уже работает; здесь — что ос
 - [ ] Discord OAuth: `DISCORD_CLIENT_ID`/`DISCORD_CLIENT_SECRET` уже в `web/.env`, authorize URL генерируется; в Discord Developer Portal добавить redirect `https://neyra.owyx.site/api/auth/callback/discord`. Вход только для существующих email-аккаунтов (`disableImplicitSignUp`); новый пользователь сначала регистрируется по инвайту/email. Бот-токен — отдельно в `server/.env` (`DISCORD_TOKEN`), не OAuth secret.
 - [x] Документированы установка и восстановление после backup: `docs/{en,ru}/setup/quickstart.md`, `docs/{en,ru}/ops/deployment-local.md`, `docs/{en,ru}/ops/deployment-production.md`, `docs/{en,ru}/ops/backup-restore.md`.
 - [x] WSS-smoke по публичному URL зелёный (2026-11-22, hello/pong/chat/turn_stats).
-- [x] GitHub history scan 2026-11-22: Google OAuth/API, GitHub, OpenRouter и Discord bot token patterns не найдены; в удалённом vendored `Vocard/application.yml` был только дефолтный `youshallnotpass`. Репозиторий публичный, но реальных ключей в истории нет.
+- [x] GitHub history scan 2026-11-22: по всем 900 коммитам `git grep -l -I -E` искал `ya29.`/Google refresh `1//`, `AIza`, `ghp_`/`github_pat_`, `sk-or-v1-`, Discord bot token; реальных значений нет (единственное совпадение `ghp_` — redaction-тест). В удалённом vendored `Vocard/application.yml` был только дефолтный `youshallnotpass`. Репозиторий публичный, но ключей в истории нет.
 - [x] Преддеплойная правка 2026-10-19: исторический wipe PR #22 отделён от обычного обновления. Данные, конфиги и persona сохраняются; перед обновлением обязательны backup и проба миграций на копии.
 - [x] `scripts/db_migrations.py --status` проверяет настроенную БД read-only через runtime loader; exit codes 0/1/2, offline-регрессии есть.
 
