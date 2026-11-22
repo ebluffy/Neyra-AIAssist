@@ -35,19 +35,6 @@ def discord_resident_enabled(project_root: Optional[Path]) -> bool:
     return False
 
 
-def _public_node_url(uri: str) -> str:
-    from urllib.parse import urlsplit, urlunsplit
-
-    parts = urlsplit(uri)
-    host = parts.hostname or ""
-    if not host:
-        return ""
-    netloc = f"[{host}]" if ":" in host and not host.startswith("[") else host
-    if parts.port:
-        netloc += f":{parts.port}"
-    return urlunsplit((parts.scheme, netloc, parts.path.rstrip("/"), "", ""))
-
-
 def check_lavalink(config: dict) -> dict:
     """Check configured Lavalink nodes; passwords and userinfo never leave this function."""
     try:
