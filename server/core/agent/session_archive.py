@@ -300,7 +300,10 @@ async def archive_session(
                         if not ok:
                             logger.warning("session_archive: LTM digest not stored: %s", info)
                 except Exception as e:
-                    logger.warning("session_archive: LTM digest failed: %s", e)
+                    logger.warning(
+                        "session_archive: LTM digest failed | error_class=%s",
+                        type(e).__name__,
+                    )
 
         if apply_stm_policy and reason in ("overflow", "stm_threshold") and bool(
             cfg.get("clear_stm_after")

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.agent.session_archive import archive_session
 from core.memory import ltm_maintenance
 
 SENTINEL = "provider-body-private-sentinel"
@@ -83,3 +84,35 @@ def test_legacy_summarize_sanitizes_provider_error(tmp_path):
         )
     assert SENTINEL not in str(excinfo.value)
     assert excinfo.value.error_class == "RuntimeError"
+
+
+def test_session_archive_does_not_log_provider_body(caplog):
+    async def summarize(*args, **kwargs):
+        raise RuntimeError(SENTINEL)
+
+    hub = SimpleNamespace(
+        list_chat=lambda **kwargs: [{"role": "user", "text": "hello from the user"}],
+        add_diary_note=lambda *a, **k: None,
+    )
+    agent = SimpleNamespace(
+        config={
+            "memory": {
+                "session_archive": {
+                    "enabled": True,
+                    "on_manual_reset": True,
+                    "write_diary": False,
+                    "write_ltm_digest": True,
+                }
+            }
+        },
+        short_memory=SimpleNamespace(get_history=lambda: [], clear=lambda: None),
+        memory_hub=hub,
+        summarize_ltm_corpus=summarize,
+    )
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(
+            archive_session(agent, reason="manual_reset", user_id="owner")
+        )
+    assert result["ran"] is True
+    assert SENTINEL not in caplog.text
+    assert "error_class=RuntimeError" in caplog.text
