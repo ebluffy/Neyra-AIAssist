@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bindProfileSession, clock, composerSlot, daypart, ensureSessionId, firstServerSession, historyGroups, modelLabel, profileSessionRepair, selectedProfile, sessionOrNew, storedThreads, switchThread, threadTitle, tokenSpeed, turnDuration, type ChatThread } from './chat';
+import { bindProfileSession, callsLabel, clock, composerSlot, daypart, ensureSessionId, firstServerSession, historyGroups, modelLabel, normalizeTurnStats, profileSessionRepair, selectedProfile, sessionOrNew, storedThreads, switchThread, threadTitle, tokenSpeed, turnDuration, type ChatThread } from './chat';
 import { themeId } from './theme';
 
 describe('chat composer', () => {
@@ -27,9 +27,46 @@ describe('chat composer', () => {
   it('formats per-turn timing, model and speed', () => {
     expect(turnDuration(8400)).toBe('8,4 с');
     expect(turnDuration(62000)).toBe('1 мин 2 с');
+    expect(turnDuration(999.6)).toBe('1,0 с');
+    expect(turnDuration(59_999)).toBe('1 мин 0 с');
+    expect(turnDuration(119_600)).toBe('2 мин 0 с');
+    expect(callsLabel(1)).toBe('1 вызов');
+    expect(callsLabel(2)).toBe('2 вызова');
+    expect(callsLabel(5)).toBe('5 вызовов');
+    expect(callsLabel(11)).toBe('11 вызовов');
+    expect(callsLabel(21)).toBe('21 вызов');
+    expect(callsLabel(22)).toBe('22 вызова');
     expect(modelLabel('opencode-go/deepseek-v4.1-flash')).toBe('Deepseek V4.1 Flash');
     expect(tokenSpeed(33.3)).toBe('33,3 ток/с');
   });
+  it('normalizes turn stats and drops corrupt telemetry', () => {
+    const good = {
+      duration_ms: 8400,
+      llm_ms: 7200,
+      output_tokens: 240,
+      tokens_per_second: 33.3,
+      lanes: {
+        talk: { calls: 1, duration_ms: 2600, model: 'm', output_tokens: 240 },
+        brain: { calls: 2, duration_ms: 3100 },
+        extra: { calls: 1, duration_ms: 1 },
+      },
+    };
+    expect(normalizeTurnStats(good)).toEqual({
+      duration_ms: 8400,
+      llm_ms: 7200,
+      output_tokens: 240,
+      tokens_per_second: 33.3,
+      lanes: {
+        talk: { calls: 1, duration_ms: 2600, model: 'm', output_tokens: 240 },
+        brain: { calls: 2, duration_ms: 3100 },
+      },
+    });
+    expect(normalizeTurnStats(null)).toBeUndefined();
+    expect(normalizeTurnStats({ ...good, lanes: null })).toBeUndefined();
+    expect(normalizeTurnStats({ ...good, lanes: { talk: { calls: '1', duration_ms: 2 } } })).toBeUndefined();
+    expect(normalizeTurnStats({ ...good, duration_ms: -1 })).toBeUndefined();
+  });
+
   it('persists turn stats with the thread', () => {
     const stats = { duration_ms: 8400, llm_ms: 7200, lanes: { talk: { calls: 1, duration_ms: 2600 } } };
     const stored = storedThreads([{

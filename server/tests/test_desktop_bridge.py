@@ -66,11 +66,12 @@ class Agent:
     def __init__(self, reply='Привет'):
         self.turns = []
         self.reply = reply
+        self.trace = {'calls': []}
     async def chat_stream(self, text, **kwargs):
         self.turns.append((text, kwargs, ACTIVE_DESKTOP.get()))
         if self.reply:
             yield {'type': 'token', 'text': self.reply}
-        yield {'type': 'done', 'text': self.reply, 'model_trace': {'calls': []}}
+        yield {'type': 'done', 'text': self.reply, 'model_trace': self.trace}
 
 
 def make_client(agent=None, config=None):
@@ -93,6 +94,28 @@ def test_desktop_auth_rejects_anonymous_and_viewer(path, headers):
     with client, pytest.raises(WebSocketDisconnect):
         with client.websocket_connect(path, headers=headers):
             pass
+
+
+def test_bridge_done_includes_safe_turn_stats():
+    agent = Agent()
+    agent.trace = {
+        'duration_ms': 8400,
+        'calls': [
+            {'lane': 'brain', 'duration_ms': 3100, 'configured_model': 'm'},
+            {'lane': 'talk', 'duration_ms': 2600, 'configured_model': 'm', 'usage': {'output_tokens': 240}},
+        ],
+    }
+    client, _ = make_client(agent)
+    m = manifest()
+    with client, client.websocket_connect('/v1/desktop/bridge', headers={'Authorization': 'Bearer owner-a'}) as ws:
+        ws.send_json(m.model_dump(mode='json'))
+        assert ws.receive_json()['type'] == 'hello'
+        ws.send_json({'type': 'chat', 'text': 'hello'})
+        assert ws.receive_json()['type'] == 'token'
+        done = ws.receive_json()
+        assert done['type'] == 'done'
+        assert done['turn_stats']['lanes']['talk']['duration_ms'] == 2600
+        assert done['turn_stats']['lanes']['brain']['model'] == 'm'
 
 
 def test_chat_runs_in_private_authenticated_scope_and_tools_not_global():

@@ -726,30 +726,39 @@ def _parse_json_events(stdout: str) -> str:
     return "".join(chunks).strip()
 
 
+def _token_count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
 def _parse_json_usage(stdout: str) -> dict[str, Any] | None:
     """Token usage from `step_finish` events (for the per-turn telemetry)."""
-    input_tokens = output_tokens = reasoning_tokens = 0
-    cache_read = cache_write = 0
-    found = False
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if event.get("type") != "step_finish":
-            continue
-        part = event.get("part") if isinstance(event.get("part"), dict) else {}
-        tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
-        found = True
-        input_tokens += int(tokens.get("input") or 0)
-        output_tokens += int(tokens.get("output") or 0)
-        reasoning_tokens += int(tokens.get("reasoning") or 0)
-        cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
-        cache_read += int(cache.get("read") or 0)
-        cache_write += int(cache.get("write") or 0)
+    try:
+        input_tokens = output_tokens = reasoning_tokens = 0
+        cache_read = cache_write = 0
+        found = False
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict) or event.get("type") != "step_finish":
+                continue
+            part = event.get("part") if isinstance(event.get("part"), dict) else {}
+            tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
+            found = True
+            input_tokens += _token_count(tokens.get("input"))
+            output_tokens += _token_count(tokens.get("output"))
+            reasoning_tokens += _token_count(tokens.get("reasoning"))
+            cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+            cache_read += _token_count(cache.get("read"))
+            cache_write += _token_count(cache.get("write"))
+    except (TypeError, ValueError, AttributeError):
+        return None
     if not found or not (input_tokens or output_tokens or reasoning_tokens):
         return None
     usage = {
@@ -1374,4 +1383,10 @@ class CliChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
         result = await self._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
-        yield ChatGenerationChunk(message=AIMessageChunk(content=result.generations[0].message.content))
+        message = result.generations[0].message
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(
+                content=message.content,
+                usage_metadata=message.usage_metadata,
+            )
+        )

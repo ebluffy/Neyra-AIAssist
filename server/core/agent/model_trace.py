@@ -259,6 +259,7 @@ def turn_stats(report) -> dict | None:
         return None
     lanes: dict[str, dict] = {}
     llm_ms = 0.0
+    timed_ms = 0.0
     output_tokens = 0
     for call in report.get("calls") or []:
         if not isinstance(call, dict):
@@ -276,12 +277,16 @@ def turn_stats(report) -> dict | None:
         if model:
             entry["model"] = model[:200]
         usage = call.get("usage") if isinstance(call.get("usage"), dict) else {}
+        call_output = 0
         for key in ("input_tokens", "output_tokens"):
             value = usage.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 entry[key] = int(entry.get(key, 0)) + value
                 if key == "output_tokens":
+                    call_output += value
                     output_tokens += value
+        if call_output > 0:
+            timed_ms = round(timed_ms + duration, 1)
         llm_ms = round(llm_ms + duration, 1)
     if not lanes:
         return None
@@ -293,8 +298,8 @@ def turn_stats(report) -> dict | None:
     }
     if output_tokens:
         stats["output_tokens"] = output_tokens
-        if llm_ms > 0:
-            stats["tokens_per_second"] = round(output_tokens / (llm_ms / 1000.0), 1)
+        if timed_ms > 0:
+            stats["tokens_per_second"] = round(output_tokens / (timed_ms / 1000.0), 1)
     return stats
 
 

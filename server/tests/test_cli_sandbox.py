@@ -506,6 +506,24 @@ def _image_message(mime: str = "image/png", payload: str = "QUJDREVG", count: in
     )
 
 
+def test_cli_usage_garbage_never_breaks_answer(tmp_path: Path, monkeypatch):
+    from core.llm.cli_provider import _parse_json_usage
+
+    garbage = [
+        json.dumps({"type": "text", "part": {"text": "ok"}}),
+        json.dumps({"type": "step_finish", "part": {"tokens": {"input": "abc", "output": [1]}}}),
+        json.dumps({"type": "step_finish", "part": {"tokens": {"input": -5, "output": -1}}}),
+        json.dumps({"type": "step_finish", "part": {"tokens": None}}),
+    ]
+    raw = "\n".join(garbage)
+    assert _parse_json_usage(raw) is None
+    _patch_popen(monkeypatch, stdout=raw)
+    model = CliChatModel(settings=_settings(tmp_path), provider_name="oc")
+    message = model.invoke("hi")
+    assert message.content == "ok"
+    assert message.usage_metadata is None
+
+
 def test_cli_vision_rejects_unknown_format():
     from core.llm.cli_provider import _extract_images
 
@@ -604,6 +622,19 @@ def test_cli_usage_is_attached_to_message(tmp_path: Path, monkeypatch):
     assert message.content == "ok"
     assert message.usage_metadata["output_tokens"] == 30
     assert holder["proc"].argv[holder["proc"].argv.index("--model") + 1] == "opencode/x-free"
+
+    async def fake_async(settings, prompt, images=()):
+        return "ok", {"input_tokens": 5, "output_tokens": 30, "total_tokens": 35}
+
+    import core.llm.cli_provider as provider
+
+    monkeypatch.setattr(provider, "run_cli_prompt_async_usage", fake_async)
+
+    async def collect():
+        return [chunk async for chunk in model.astream("hi")]
+
+    chunks = asyncio.run(collect())
+    assert chunks[0].usage_metadata["output_tokens"] == 30
 
 
 def test_cli_variant_rejects_unsafe_value(tmp_path: Path):

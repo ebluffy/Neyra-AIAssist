@@ -30,7 +30,7 @@ import {
   Activity,
   Mic,
 } from 'lucide-react';
-import { SseChatEventSchema, StoredAttachmentSchema, type StoredAttachment, type TurnStats } from '@neyra/contracts';
+import { SseChatEventSchema, StoredAttachmentSchema, TurnStatsSchema, type StoredAttachment, type TurnStats } from '@neyra/contracts';
 import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, ModelPicker, type ContextUsage } from '../../components/ui';
 import { isEnabled } from '../../lib/feature-flags';
 import { signOut } from '../../../lib/auth-client';
@@ -60,6 +60,20 @@ export interface ChatMessageItem {
   isRetrying?: boolean;
   attachments?: ChatMessageAttachment[];
   stats?: TurnStats;
+}
+
+function normaliseStoredMessages(raw: unknown): ChatMessageItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item): ChatMessageItem[] => {
+    if (!item || typeof item !== 'object') return [];
+    const message = item as ChatMessageItem;
+    if ((message.role !== 'user' && message.role !== 'assistant') || typeof message.content !== 'string') return [];
+    if (!message.stats) return [message];
+    const stats = TurnStatsSchema.safeParse(message.stats);
+    if (stats.success) return [{ ...message, stats: stats.data }];
+    const { stats: _invalid, ...rest } = message;
+    return [rest];
+  });
 }
 
 
@@ -125,7 +139,7 @@ export function ChatView({
       const currentTabChatId = resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
       const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${currentTabChatId}`);
       if (raw) {
-        return JSON.parse(raw);
+        return normaliseStoredMessages(JSON.parse(raw));
       }
     } catch {}
     return [];

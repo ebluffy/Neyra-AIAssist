@@ -4,7 +4,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ChatView } from './chat-view';
 import { TextField } from '../../components/ui';
-import { resolveTabKey } from '../../../lib/chat-id';
+import { resolveChatId, resolveTabKey } from '../../../lib/chat-id';
 import { ru } from '../../i18n';
 
 const mockReplace = vi.fn();
@@ -94,6 +94,23 @@ describe('ChatView conversation', () => {
     expect(screen.getByText('Qwen3.8 27b')).toBeTruthy();
     expect(screen.getByText('Мозг')).toBeTruthy();
     expect(screen.getByText('Разговор')).toBeTruthy();
+  });
+
+  it('drops corrupt stats from localStorage instead of crashing the chat', async () => {
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), 'u1');
+    const key = `neyra:thread-messages:u1:${chatId}`;
+    localStorage.setItem(key, JSON.stringify([
+      { id: 'old', role: 'assistant', content: 'старый ответ', stats: { lanes: null } },
+    ]));
+    const fetchMock = vi.fn(async () => sseResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
+      expect(await screen.findByText('старый ответ')).toBeTruthy();
+      expect(screen.queryByText('Использовано')).toBeNull();
+    } finally {
+      localStorage.removeItem(key);
+    }
   });
 
   it('opens a new thread in a tab that inherited sessionStorage (AR-11)', async () => {

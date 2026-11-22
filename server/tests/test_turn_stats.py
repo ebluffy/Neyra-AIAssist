@@ -29,7 +29,7 @@ def test_turn_stats_aggregates_lanes_and_usage():
     assert stats["lanes"]["talk"]["model"] == "talk-model"
     assert stats["lanes"]["memory"] == {"calls": 1, "duration_ms": 500.0, "model": "memory-model"}
     assert stats["output_tokens"] == 110
-    assert stats["tokens_per_second"] == 15.7
+    assert stats["tokens_per_second"] == 16.9
     assert "model" not in stats
 
 

@@ -11,11 +11,24 @@ const LANES: { key: keyof TurnStats['lanes']; label: string }[] = [
 
 export function formatDurationMs(value: number): string {
   if (!Number.isFinite(value) || value < 0) return '—';
-  if (value < 1000) return `${Math.round(value)} мс`;
-  const seconds = value / 1000;
-  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0).replace('.', ',')} с`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes} мин ${Math.round(seconds % 60)} с`;
+  const ms = Math.max(0, value);
+  if (ms < 999.5) return `${Math.round(ms)} мс`;
+  const seconds = Math.round(ms / 100) / 10;
+  if (seconds < 60) return `${seconds.toFixed(1).replace('.', ',')} с`;
+  const whole = Math.round(ms / 1000);
+  return `${Math.floor(whole / 60)} мин ${whole % 60} с`;
+}
+
+export function pluralCalls(value: number): string {
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'вызов';
+  if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) return 'вызова';
+  return 'вызовов';
+}
+
+export function callsLabel(value: number): string {
+  return `${value} ${pluralCalls(value)}`;
 }
 
 export function formatModelName(model?: string): string {
@@ -30,6 +43,7 @@ export function formatTokensPerSecond(value?: number): string {
 }
 
 export function TurnStatsFooter({ stats }: { stats: TurnStats }) {
+  if (!stats || typeof stats.duration_ms !== 'number' || !stats.lanes || typeof stats.lanes !== 'object') return null;
   const lanes = LANES.filter((lane) => stats.lanes[lane.key]);
   if (!lanes.length) return null;
   const total = formatDurationMs(stats.duration_ms);
@@ -59,7 +73,7 @@ export function TurnStatsFooter({ stats }: { stats: TurnStats }) {
                 </span>
                 <span className="shrink-0 tabular-nums text-[var(--text-muted)]">
                   {formatDurationMs(item.duration_ms)}
-                  {item.calls > 1 ? ` · ${item.calls} вызова` : ''}
+                  {item.calls > 1 ? ` · ${callsLabel(item.calls)}` : ''}
                 </span>
               </div>
             );

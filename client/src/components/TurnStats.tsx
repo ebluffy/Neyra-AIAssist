@@ -1,5 +1,5 @@
 import { ChevronDown } from 'lucide-react';
-import { modelLabel, tokenSpeed, turnDuration, type TurnStats } from '../chat';
+import { callsLabel, modelLabel, tokenSpeed, turnDuration, type TurnStats } from '../chat';
 
 const LANES: { key: keyof TurnStats['lanes']; label: string }[] = [
   { key: 'brain', label: 'Мозг' },
@@ -9,6 +9,7 @@ const LANES: { key: keyof TurnStats['lanes']; label: string }[] = [
 ];
 
 export function TurnStatsView({ stats }: { stats: TurnStats }) {
+  if (!stats || typeof stats.duration_ms !== 'number' || !stats.lanes || typeof stats.lanes !== 'object') return null;
   const lanes = LANES.filter((lane) => stats.lanes[lane.key]);
   if (!lanes.length) return null;
   const speed = tokenSpeed(stats.tokens_per_second);
@@ -33,7 +34,7 @@ export function TurnStatsView({ stats }: { stats: TurnStats }) {
                 </span>
                 <span>
                   {turnDuration(item.duration_ms)}
-                  {item.calls > 1 ? ` · ${item.calls} вызова` : ''}
+                  {item.calls > 1 ? ` · ${callsLabel(item.calls)}` : ''}
                 </span>
               </div>
             );

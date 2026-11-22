@@ -114,7 +114,18 @@ def test_rest_chat_passes_model_override(tmp_path):
     from offline_support import offline_agent
 
     agent = offline_agent(tmp_path)
-    agent.chat = AsyncMock(return_value={"text": "ok", "sounds": [], "thoughts": "", "raw": "ok", "model_trace": {}})
+    agent.chat = AsyncMock(return_value={
+        "text": "ok",
+        "sounds": [],
+        "thoughts": "",
+        "raw": "ok",
+        "model_trace": {
+            "duration_ms": 8400,
+            "calls": [
+                {"lane": "talk", "duration_ms": 2600, "configured_model": "m", "usage": {"output_tokens": 240}},
+            ],
+        },
+    })
     app = build_app(
         agent.config,
         shared_agent=agent,
@@ -131,6 +142,10 @@ def test_rest_chat_passes_model_override(tmp_path):
             )
         assert response.status_code == 200
         assert agent.chat.await_args.kwargs["model"] == "openai/gpt-4.1-mini"
+        data = response.json()["data"]
+        assert data["model_trace"]["calls"][0]["lane"] == "talk"
+        assert data["turn_stats"]["lanes"]["talk"]["duration_ms"] == 2600
+        assert data["turn_stats"]["tokens_per_second"] == 92.3
     finally:
         agent.memory_hub.close()
 
@@ -204,7 +219,7 @@ def test_ws_done_has_safe_turn_stats_without_raw_trace(tmp_path):
                 assert event["turn_stats"]["duration_ms"] == 8400
                 assert event["turn_stats"]["lanes"]["brain"]["duration_ms"] == 3100
                 assert event["turn_stats"]["lanes"]["talk"]["output_tokens"] == 240
-                assert event["turn_stats"]["tokens_per_second"] == 42.1
+                assert event["turn_stats"]["tokens_per_second"] == 92.3
                 assert "model_trace" not in event
                 assert "secret" not in str(event)
     finally:
