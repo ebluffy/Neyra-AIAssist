@@ -301,17 +301,13 @@ def test_check_lavalink_accepts_any_live_node(monkeypatch):
     }
     calls = {"n": 0}
 
-    def fake_get(url, **kwargs):
+    def fake_fetch(uri, password, deadline):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("down")
-        return SimpleNamespace(
-            status_code=200,
-            headers={"content-type": "application/json"},
-            json=lambda: {"version": "4.2.2", "plugins": [{"name": "soundy"}]},
-        )
+        return 200, {"version": "4.2.2", "plugins": [{"name": "soundy"}]}
 
-    monkeypatch.setattr("httpx.get", fake_get)
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", fake_fetch)
     result = check_lavalink(config)
     assert result["ok"] is True
     assert result["checked"] is True
@@ -328,16 +324,13 @@ def test_check_lavalink_status_code_matches_live_node(monkeypatch):
     config = {"discord": {"music": {"nodes": [{"uri": "http://one:2333"}, {"uri": "http://two:2333"}]}}}
     calls = {"n": 0}
 
-    def fake_get(url, **kwargs):
+    def fake_fetch(uri, password, deadline):
         calls["n"] += 1
-        code = 200 if calls["n"] == 1 else 500
-        return SimpleNamespace(
-            status_code=code,
-            headers={"content-type": "application/json"},
-            json=lambda: {"version": "4.2.2"} if code == 200 else {},
-        )
+        if calls["n"] == 1:
+            return 200, {"version": "4.2.2"}
+        return 500, {}
 
-    monkeypatch.setattr("httpx.get", fake_get)
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", fake_fetch)
     result = check_lavalink(config)
     assert result["ok"] is True
     assert result["status_code"] == 200
@@ -351,13 +344,13 @@ def test_check_lavalink_failure_fields_describe_same_node(monkeypatch):
     config = {"discord": {"music": {"nodes": [{"uri": "http://one:2333"}, {"uri": "http://two:2333"}]}}}
     calls = {"n": 0}
 
-    def fake_get(url, **kwargs):
+    def fake_fetch(uri, password, deadline):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("down")
-        return SimpleNamespace(status_code=500, headers={}, json=lambda: {})
+        return 500, {}
 
-    monkeypatch.setattr("httpx.get", fake_get)
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", fake_fetch)
     result = check_lavalink(config)
     assert result["ok"] is False
     assert result["error"] == "RuntimeError"
@@ -389,3 +382,31 @@ def test_ready_single_flight_for_parallel_probes(client, auth_headers, monkeypat
         )
     assert statuses == [200, 200]
     assert calls["probe"] == 1
+
+
+def test_check_lavalink_stops_at_total_deadline(monkeypatch):
+    import threading
+    import time as clock
+
+    from core.runtime.health import check_lavalink
+
+    release = threading.Event()
+    calls: list[str] = []
+
+    def slow_fetch(uri, password, deadline):
+        calls.append(uri)
+        release.wait(5)
+        return 200, {}
+
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", slow_fetch)
+    config = {"discord": {"music": {"nodes": [{"uri": "http://one:2333"}, {"uri": "http://two:2333"}]}}}
+    started = clock.monotonic()
+    try:
+        result = check_lavalink(config)
+    finally:
+        release.set()
+    elapsed = clock.monotonic() - started
+    assert elapsed < 2.5
+    assert result["ok"] is False
+    assert result["error"] == "timeout"
+    assert calls == ["http://one:2333"]

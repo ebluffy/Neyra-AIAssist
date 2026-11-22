@@ -38,6 +38,41 @@ def discord_resident_enabled(project_root: Optional[Path]) -> bool:
     return False
 
 
+_LAVALINK_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lavalink-health")
+
+
+def _fetch_lavalink_info(uri: str, password: str, deadline: float) -> tuple[int, dict]:
+    """Streaming GET bounded by the absolute deadline; never waits for a full body."""
+    import httpx
+
+    remaining = max(0.1, deadline - time.monotonic())
+    phase = max(0.1, min(1.0, remaining / 2.0))
+    timeout = httpx.Timeout(connect=phase, read=phase, write=phase, pool=phase)
+    with httpx.stream(
+        "GET",
+        f"{uri}/v4/info",
+        headers={"Authorization": password} if password else {},
+        timeout=timeout,
+    ) as response:
+        if response.status_code != 200:
+            return response.status_code, {}
+        if not response.headers.get("content-type", "").startswith("application/json"):
+            return response.status_code, {}
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes():
+            if time.monotonic() > deadline:
+                raise TimeoutError("lavalink deadline")
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > 1_048_576:
+                raise ValueError("lavalink response too large")
+        import json
+
+        payload = json.loads(b"".join(chunks))
+        return response.status_code, payload if isinstance(payload, dict) else {}
+
+
 def check_lavalink(config: dict) -> dict:
     """Check configured Lavalink nodes with a 2s total deadline; secrets never leave."""
     try:
@@ -53,64 +88,46 @@ def check_lavalink(config: dict) -> dict:
         ]
         if not nodes:
             return {"checked": False, "ok": True, "reason": "no music nodes"}
-        import httpx
-
         deadline = time.monotonic() + 2.0
         first_failure: tuple[str, int | None] | None = None
         live_status = None
         version = None
         plugins: list[str] = []
         ok_count = 0
-        executor = ThreadPoolExecutor(max_workers=1)
-        try:
-            for node in nodes:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+        for node in nodes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if first_failure is None:
+                    first_failure = ("timeout", None)
+                break
+            uri = str(node.get("uri") or "").strip().rstrip("/")
+            password = str(node.get("password") or "").strip()
+            try:
+                future = _LAVALINK_EXECUTOR.submit(_fetch_lavalink_info, uri, password, deadline)
+                response_status, payload = future.result(timeout=remaining)
+                if response_status != 200:
                     if first_failure is None:
-                        first_failure = ("timeout", None)
-                    break
-                uri = str(node.get("uri") or "").strip().rstrip("/")
-                password = str(node.get("password") or "").strip()
-                phase_timeout = httpx.Timeout(
-                    max(0.1, min(2.0, remaining)),
-                    connect=max(0.1, min(1.0, remaining)),
-                )
-                try:
-                    future = executor.submit(
-                        httpx.get,
-                        f"{uri}/v4/info",
-                        headers={"Authorization": password} if password else {},
-                        timeout=phase_timeout,
-                    )
-                    response = future.result(timeout=remaining)
-                    if response.status_code != 200:
-                        if first_failure is None:
-                            first_failure = (f"http {response.status_code}", response.status_code)
-                        continue
-                    payload = (
-                        response.json()
-                        if response.headers.get("content-type", "").startswith("application/json")
-                        else {}
-                    )
-                    if not isinstance(payload, dict):
-                        payload = {}
-                    ok_count += 1
-                    live_status = response.status_code
-                    version = payload.get("version") or version
-                    plugins = plugins or [
-                        str(item.get("name"))
-                        for item in (payload.get("plugins") or [])
-                        if isinstance(item, dict) and item.get("name")
-                    ]
-                except FutureTimeout:
-                    if first_failure is None:
-                        first_failure = ("timeout", None)
-                    break
-                except Exception as error:
-                    if first_failure is None:
-                        first_failure = (type(error).__name__, None)
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+                        first_failure = (f"http {response_status}", response_status)
+                    continue
+                ok_count += 1
+                live_status = response_status
+                version = payload.get("version") or version
+                plugins = plugins or [
+                    str(item.get("name"))
+                    for item in (payload.get("plugins") or [])
+                    if isinstance(item, dict) and item.get("name")
+                ]
+            except FutureTimeout:
+                if first_failure is None:
+                    first_failure = ("timeout", None)
+                break
+            except TimeoutError:
+                if first_failure is None:
+                    first_failure = ("timeout", None)
+                break
+            except Exception as error:
+                if first_failure is None:
+                    first_failure = (type(error).__name__, None)
         result = {
             "checked": True,
             "ok": ok_count > 0,
