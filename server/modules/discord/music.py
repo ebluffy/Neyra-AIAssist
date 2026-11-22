@@ -630,6 +630,8 @@ class MusicService:
         self.last_random_pick_by_guild: dict[str, str] = {}
         # Per-track source query: a queued track keeps its own SoundCloud retry.
         self.fallback_meta_by_track: dict[str, dict[str, Any]] = {}
+        # (track_key, query): the guild's latest request, used only for that exact track.
+        self.fallback_query_by_guild: dict[str, tuple[str, str]] = {}
         # One fallback reaction per failed track: TrackException + TrackEnd both arrive.
         self.fallback_handled_tracks: set[str] = set()
         # TrackEnd(loadFailed) must not touch the queue while the exception handler works.
@@ -649,6 +651,10 @@ class MusicService:
         if not q:
             return None
         return q.pop(0)
+
+    def reset_fallback_state(self, guild_id: str) -> None:
+        """Forget the guild's last play query after stop."""
+        self.fallback_query_by_guild.pop(str(guild_id), None)
 
     def handle(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         guild_id = str(payload.get("guild_id") or "")
@@ -687,6 +693,7 @@ class MusicService:
             self.current_by_guild[guild_id] = None
             self.queue_by_guild[guild_id] = []
             self.paused_by_guild[guild_id] = False
+            self.reset_fallback_state(guild_id)
             return {"ok": True, "status": "stopped", "request_id": request_id}
         if action == MUSIC_CLEAR:
             self.queue_by_guild[guild_id] = []
@@ -876,6 +883,45 @@ def _register_fallback_meta(
             service.fallback_meta_by_track.pop(oldest, None)
 
 
+def _is_all_clients_failed(err: Any) -> bool:
+    """Lavalink reports this when every YouTube client rejected the track."""
+    if err is None:
+        return False
+    parts: list[str] = []
+    if isinstance(err, dict):
+        parts.extend(str(v) for v in err.values())
+    else:
+        parts.append(str(err))
+        for attr in ("message", "cause"):
+            value = getattr(err, attr, None)
+            if value:
+                parts.append(str(value))
+    text = " ".join(parts).lower()
+    return "all clients failed" in text or "allclientsfailed" in text
+
+
+def _query_for_failed_track(
+    service: MusicService,
+    guild_id: str,
+    failed_track: Any,
+    meta: dict[str, Any],
+) -> str:
+    """Query of the failed track itself; the guild's last query only for that same track."""
+    query = str(meta.get("query") or "").strip()
+    if query:
+        return query
+    key = _track_key(failed_track) if failed_track is not None else ""
+    last = service.fallback_query_by_guild.get(guild_id)
+    if last and key and last[0] == key:
+        return last[1]
+    if failed_track is not None:
+        author = str(getattr(failed_track, "author", "") or "").strip()
+        title = str(getattr(failed_track, "title", "") or "").strip()
+        if author or title:
+            return f"{author} - {title}".strip(" -")
+    return last[1] if last and not key else ""
+
+
 def _clean_soundcloud_query(raw: str) -> str:
     q = str(raw or "").strip()
     for prefix in ("ytsearch:", "ytmsearch:", "scsearch:"):
@@ -897,8 +943,17 @@ async def _play_soundcloud_fallback(
     """One SoundCloud retry for the failed track's own query."""
     if meta is None:
         meta = _fallback_meta(service, failed_track)
-    query = _clean_soundcloud_query(str(meta.get("query") or ""))
+    source = str(getattr(failed_track, "source", "") or "").lower()
+    if "soundcloud" in source or source == "sc":
+        logger.info("discord.music soundcloud fallback skipped | guild=%s already soundcloud", guild_id)
+        return False
+    raw_query = _query_for_failed_track(service, guild_id, failed_track, meta)
+    query = _clean_soundcloud_query(raw_query)
     if not query or meta.get("sc_attempted"):
+        logger.info(
+            "discord.music soundcloud fallback skipped | guild=%s query=%r attempted=%s",
+            guild_id, raw_query, bool(meta.get("sc_attempted")),
+        )
         return False
     meta["sc_attempted"] = True
     try:
@@ -917,6 +972,17 @@ async def _play_soundcloud_fallback(
             guild_id,
             str(getattr(tracks[0], "title", "") or ""),
         )
+        # Mark the SoundCloud replacement: if it fails too, retry must stop here.
+        _register_fallback_meta(
+            service,
+            tracks[0],
+            query,
+            [],
+            text_channel_id=meta.get("text_channel_id"),
+        )
+        sc_meta = service.fallback_meta_by_track.get(_track_key(tracks[0]))
+        if sc_meta is not None:
+            sc_meta["sc_attempted"] = True
         await _notify_track_source(player, tracks[0], meta.get("text_channel_id"))
         return True
     except Exception as ex:
@@ -929,14 +995,16 @@ async def _play_next_youtube_fallback(
     player: Any,
     guild_id: str,
     failed_track: Any = None,
+    *,
+    skip_youtube: bool = False,
 ) -> bool:
     """Try next search hit after login/bot/load failure. Returns True if a play was started."""
     meta = _fallback_meta(service, failed_track)
     if failed_track is not None and _key_still_queued(player, _track_key(failed_track)):
         # A queued copy keeps the shared meta; this attempt mutates only its own copy.
         meta = {**meta, "leftovers": list(meta.get("leftovers") or [])}
-    query = str(meta.get("query") or "")
-    leftovers = list(meta.get("leftovers") or [])
+    query = _query_for_failed_track(service, guild_id, failed_track, meta)
+    leftovers = [] if skip_youtube else list(meta.get("leftovers") or [])
     while leftovers:
         nxt = leftovers.pop(0)
         meta["leftovers"] = leftovers
@@ -1015,9 +1083,12 @@ def _attach_track_end_listener(ctx) -> None:
             if key:
                 service.fallback_handled_tracks.add(key)
                 service.fallback_inflight.add(key)
+            skip_youtube = _is_all_clients_failed(err)
             started = False
             try:
-                started = await _play_next_youtube_fallback(service, player, guild_id, failed_track)
+                started = await _play_next_youtube_fallback(
+                    service, player, guild_id, failed_track, skip_youtube=skip_youtube
+                )
             finally:
                 if key:
                     service.fallback_inflight.discard(key)
@@ -1205,6 +1276,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                 return {"ok": True, "status": "resumed", "request_id": str(payload.get("request_id") or "")}
             if action == MUSIC_STOP:
                 await player.stop(force=True)
+                service.reset_fallback_state(str(guild_id))
                 return {"ok": True, "status": "stopped", "request_id": str(payload.get("request_id") or "")}
             if action == MUSIC_SKIP:
                 await player.skip(force=True)
@@ -1288,6 +1360,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
             # Keep other top hits so track_exception can skip "requires login" videos.
             chosen_key = _track_key(track)
             leftovers = [t for t in pool if _track_key(t) != chosen_key]
+            service.fallback_query_by_guild[str(guild_id)] = (chosen_key, query)
             _register_fallback_meta(
                 service,
                 track,
