@@ -200,6 +200,16 @@ def test_gif_urls_and_negations_cannot_reenter_classifier_music_path(text):
     assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('CHAT', False)
 
 
+@pytest.mark.parametrize('text', [
+    'че я тебя попросил включить музыку, а ты замолчала',
+    'я просил включить музыку, а ты молчишь',
+    'почему ты не поставила трек, я же просил',
+])
+def test_music_complaints_do_not_start_playback(text):
+    plan = plan_music_route(text)
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('CHAT', False)
+
+
 @pytest.mark.parametrize('text', ['play song test', 'включи трек test', 'https://youtu.be/abc123XYZ', 'пауза', 'join voice'])
 def test_music_commands_survive_media_guard(text):
     plan = plan_music_route(text, has_media=True)

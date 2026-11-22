@@ -38,6 +38,17 @@ PLAY_VERB_STRIP_RE = re.compile(
     r"^(" + "|".join(_PLAY_VERBS) + r"|music|музыка)\s+",
     re.IGNORECASE,
 )
+_IMPERATIVE_PLAY_RE = re.compile(
+    r"^(?:(?:эй[,\s]+)?нейра[,\s:-]*)?"
+    r"(?:(?:можешь|можно|давай|плиз|пожалуйста|please)[,\s]+)?"
+    r"(?:" + "|".join(_PLAY_VERBS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def imperative_play(text: str) -> bool:
+    """Play verb must lead the command; a complaint may mention it mid-sentence."""
+    return bool(_IMPERATIVE_PLAY_RE.match((text or "").strip()))
 _URL_RE = re.compile(r"(?:[a-z][a-z0-9+.-]*:)?//[^\s<>\"']+", re.IGNORECASE)
 
 
@@ -113,9 +124,9 @@ def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
     soft = soft_music_hint(content) if soft_music is None else bool(soft_music)
     if not soft:
         return False
-    if has_play_verb(content):
+    if imperative_play(content):
         return True
-    return len(re.findall(r"\w+", content, flags=re.UNICODE)) <= 8
+    return len(re.findall(r"\w+", content, flags=re.UNICODE)) <= 6
 
 
 def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
@@ -159,7 +170,7 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
             lowered,
         )
     )
-    if not has_play_verb(raw) and not _supported_music_link(raw) and not wants_voice_play:
+    if not imperative_play(raw) and not _supported_music_link(raw) and not wants_voice_play:
         return None
     q = re.sub(r"^(эй\s+нейра|нейра|please|пожалуйста)[,:\s-]*", "", raw, flags=re.IGNORECASE).strip()
     q = PLAY_VERB_STRIP_RE.sub("", q).strip()
