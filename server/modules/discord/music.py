@@ -974,11 +974,9 @@ def _attach_track_end_listener(ctx) -> None:
             finally:
                 if key:
                     service.fallback_inflight.discard(key)
+            if key and not _key_still_queued(player, key):
+                service.fallback_meta_by_track.pop(key, None)
             if not started:
-                if key and not _key_still_queued(player, key):
-                    service.fallback_meta_by_track.pop(key, None)
-                if key:
-                    service.fallback_handled_tracks.discard(key)
                 await _advance_queue(player)
         except Exception as ex:  # pragma: no cover
             logger.warning("discord.music track_exception handler failed: %s", ex)
@@ -1003,14 +1001,23 @@ def _attach_track_end_listener(ctx) -> None:
                 return
             # loadfailed after instant rejection — the exception handler may still be working.
             if reason in ("loadfailed", "load_failed"):
-                if service is not None and ended_key in service.fallback_inflight:
+                if service is not None and ended_key and (
+                    ended_key in service.fallback_inflight
+                    or ended_key in service.fallback_handled_tracks
+                ):
+                    # The exception handler owns this track (queue and fallback).
+                    service.fallback_handled_tracks.discard(ended_key)
+                    if not _key_still_queued(player, ended_key):
+                        service.fallback_meta_by_track.pop(ended_key, None)
                     return
                 if service is not None and guild_id and ended_key:
-                    if ended_key not in service.fallback_handled_tracks:
-                        service.fallback_handled_tracks.add(ended_key)
-                        if await _play_next_youtube_fallback(service, player, guild_id, ended_track):
-                            return
+                    service.fallback_handled_tracks.add(ended_key)
+                    started = await _play_next_youtube_fallback(service, player, guild_id, ended_track)
                     service.fallback_handled_tracks.discard(ended_key)
+                    if started:
+                        if not _key_still_queued(player, ended_key):
+                            service.fallback_meta_by_track.pop(ended_key, None)
+                        return
                 # Fall through: if no replacement started, advance the queue/stop.
             elif reason and reason not in ("finished", "stopped", "replaced", "cleanup"):
                 return

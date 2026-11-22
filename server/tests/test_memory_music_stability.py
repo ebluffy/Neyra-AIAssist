@@ -243,7 +243,7 @@ def test_failed_track_advances_queue_when_fallback_is_empty(monkeypatch):
     ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
     music_module._attach_track_end_listener(ctx)
     asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=failed)))
-    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=failed, reason='loadFailed')))
+    _emit_track_end(bot, player, failed, 'loadFailed')
     assert [t.identifier for t in player.played] == ['next-1']
     assert player.stopped == 0
 
@@ -355,9 +355,9 @@ def test_duplicate_queued_track_keeps_fallback_meta(monkeypatch):
     bot = NS()
     ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
     music_module._attach_track_end_listener(ctx)
-    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=track, reason='finished')))
+    _emit_track_end(bot, player, track, 'finished')
     assert 'x-1' in service.fallback_meta_by_track
-    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=track, reason='finished')))
+    _emit_track_end(bot, player, track, 'finished')
     assert 'x-1' not in service.fallback_meta_by_track
 
 
@@ -382,20 +382,83 @@ def test_two_copies_each_get_their_own_soundcloud_retry(monkeypatch):
     music_module._attach_track_end_listener(ctx)
 
     asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=first)))
-    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=first, reason='loadFailed')))
+    _emit_track_end(bot, player, first, 'loadFailed')
     assert calls == ['scsearch:x song']
     assert player.current.identifier == 'sc-1'
     assert service.fallback_meta_by_track['x-1']['sc_attempted'] is False
 
-    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=player.current, reason='finished')))
+    _emit_track_end(bot, player, player.current, 'finished')
     assert player.current.identifier == 'x-1'
     asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=second)))
-    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=second, reason='loadFailed')))
+    _emit_track_end(bot, player, second, 'loadFailed')
     assert calls == ['scsearch:x song', 'scsearch:x song']
     assert player.current.identifier == 'sc-2'
     assert player.stopped == 0
 
 
+def _race_exception_end(bot, player, track, reason='loadFailed'):
+    async def scenario():
+        exc = asyncio.create_task(bot.on_wavelink_track_exception(NS(player=player, track=track)))
+        await asyncio.sleep(0.01)
+        player.current = None
+        end = asyncio.create_task(
+            bot.on_wavelink_track_end(NS(player=player, track=track, reason=reason))
+        )
+        await asyncio.gather(exc, end)
+
+    asyncio.run(scenario())
+
+
+def test_fast_fallback_failure_advances_queue_once(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='NoMeta', identifier='nometa-1')
+    player = _Player()
+    player.current = failed
+    player.queue.append(NS(title='B', identifier='b-1'))
+    player.queue.append(NS(title='C', identifier='c-1'))
+
+    async def empty_search(wavelink_mod, query, node):
+        return []
+
+    monkeypatch.setattr(music_module, '_search_tracks', empty_search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    _race_exception_end(bot, player, failed)
+    assert [t.identifier for t in player.played] == ['b-1']
+    assert [t.identifier for t in player.queue] == ['c-1']
+    assert player.stopped == 0
+
+
+def test_two_copies_race_each_get_soundcloud_retry(monkeypatch):
+    service = music_module.MusicService(NS())
+    first = NS(title='X', identifier='x-race')
+    second = NS(title='X', identifier='x-race')
+    service.fallback_meta_by_track['x-race'] = {'query': 'x', 'leftovers': [], 'sc_attempted': False}
+    player = _Player()
+    player.current = first
+    player.queue.append(second)
+    calls = []
+    sc = [NS(title='SC1', identifier='sc-r1'), NS(title='SC2', identifier='sc-r2')]
+
+    async def slow_sc(wavelink_mod, query, node):
+        await asyncio.sleep(0.05)
+        calls.append(query)
+        return [sc[len(calls) - 1]]
+
+    monkeypatch.setattr(music_module, '_search_tracks', slow_sc)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    _race_exception_end(bot, player, first)
+    assert player.current.identifier == 'sc-r1'
+    _emit_track_end(bot, player, player.current, 'finished')
+    assert player.current.identifier == 'x-race'
+    _race_exception_end(bot, player, second)
+    assert calls == ['scsearch:x', 'scsearch:x']
+    assert player.current.identifier == 'sc-r2'
+    assert player.stopped == 0
+    assert 'x-race' not in service.fallback_handled_tracks
 class _Queue(list):
     def get(self):
         return self.pop(0) if self else None
@@ -411,12 +474,18 @@ class _Player:
         self.node = None
 
     async def play(self, track, replace=False):
+        await asyncio.sleep(0)
         self.played.append(track)
         self.current = track
 
     async def stop(self, force=False):
         self.stopped += 1
         self.current = None
+
+
+def _emit_track_end(bot, player, track, reason):
+    player.current = None
+    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=track, reason=reason)))
 
 
 def test_youtube_failure_falls_back_to_soundcloud_once_through_listeners(monkeypatch):
@@ -436,13 +505,13 @@ def test_youtube_failure_falls_back_to_soundcloud_once_through_listeners(monkeyp
     ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
     music_module._attach_track_end_listener(ctx)
     asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=failed)))
-    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=failed, reason='loadFailed')))
+    _emit_track_end(bot, player, failed, 'loadFailed')
     assert calls == ['scsearch:там ревели горы']
     assert [t.identifier for t in player.played] == ['sc-1']
     assert player.stopped == 0
 
     sc = player.current
-    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=sc, reason='finished')))
+    _emit_track_end(bot, player, sc, 'finished')
     assert player.stopped == 1
     assert 'yt-1' not in service.fallback_meta_by_track
     assert 'yt-1' not in service.fallback_handled_tracks
