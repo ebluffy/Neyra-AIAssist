@@ -18,18 +18,22 @@ from core.runtime.event_bus import (
 )
 
 # Explicit forms only — ``вкл\\w*`` falsely matches «вклад»/«вкладка»/«включил».
-_PLAY_VERBS = (
+_IMPERATIVE_VERBS = (
     "включи",
     "включите",
-    "включить",
     "включай",
     "вруби",
     "врубай",
     "врубите",
     "поставь",
+    "поставьте",
     "заиграй",
+    "заиграйте",
     "play",
 )
+_INFINITIVE_VERBS = ("включить",)
+_PLAY_VERBS = _IMPERATIVE_VERBS + _INFINITIVE_VERBS
+_VERBS_PATTERN = "|".join(_IMPERATIVE_VERBS)
 PLAY_VERB_RE = re.compile(
     r"\b(" + "|".join(_PLAY_VERBS) + r")\b",
     re.IGNORECASE,
@@ -42,11 +46,7 @@ _LEAD_WORDS = (
     r"пожалуйста|плиз|please|can\s+you|could\s+you"
 )
 _LEAD_RE = re.compile(r"^(?:(?:" + _LEAD_WORDS + r")[\s,:;-]*){0,3}", re.IGNORECASE)
-_IMPERATIVE_VERBS_RE = re.compile(
-    r"^(?:включи|включите|включай|вруби|врубай|врубите|"
-    r"поставь|поставьте|заиграй|заиграйте|play)\b",
-    re.IGNORECASE,
-)
+_IMPERATIVE_VERBS_RE = re.compile(r"^(?:" + _VERBS_PATTERN + r")\b", re.IGNORECASE)
 _FUTURE_REQUEST_RE = re.compile(r"^(?:включишь|врубишь|поставишь)\b", re.IGNORECASE)
 _FUTURE_LEAD_RE = re.compile(
     r"(?:а\s+может|может|можешь|можно|давай|пожалуйста|плиз|can\s+you|could\s+you)",
@@ -64,10 +64,11 @@ _COMPLAINT_RE = re.compile(
     re.IGNORECASE,
 )
 _VOLUME_RE = re.compile(r"\b(?:по)?(?:громче|тише)\b", re.IGNORECASE)
-_PLAY_ANY_RE = re.compile(
-    r"\b(?:включи|включите|включай|вруби|врубай|врубите|поставь|поставьте|заиграй|заиграйте|play)\b",
+_VOLUME_ONLY_RE = re.compile(
+    r"(?:по)?(?:громче|тише)(?:[\s,.!?;:…—-]+музык\w*)?[\s,.!?;:…—-]*",
     re.IGNORECASE,
 )
+_PLAY_ANY_RE = re.compile(r"\b(?:" + _VERBS_PATTERN + r")\b", re.IGNORECASE)
 _ADDRESS_RE = re.compile(r"^[,\s]*(?:(?:нейра|neyra)[\s,:;-]*)+", re.IGNORECASE)
 _POLITE_RE = re.compile(r"^[,\s]*(?:-ка\b|(?:пожалуйста|плиз|там)\b)[\s,.:;-]*", re.IGNORECASE)
 _MUSIC_VERB_STEM_RE = re.compile(
@@ -173,7 +174,7 @@ def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
     content = text or ""
     end = imperative_play_end(content, soft=True)
     rest = content[end:].strip() if end else content.strip()
-    if re.fullmatch(r"(?:по)?(?:громче|тише)(?:\s+музык\w*)?[\s,.!?;:-]*", rest, re.IGNORECASE):
+    if _VOLUME_ONLY_RE.fullmatch(rest):
         return False
     if end:
         return True
@@ -233,7 +234,7 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         q = _POLITE_RE.sub("", q)
     q = re.sub(r"^[\s,.!?;:-]+", "", q)
     if wants_voice_play:
-        q = re.sub(r"^(?:и\s+)?(?:включи|включите|включай|вруби|поставь|заиграй|play)\b[\s,]*", "", q, flags=re.IGNORECASE)
+        q = re.sub(r"^(?:и\s+)?" + _PLAY_ANY_RE.pattern + r"[\s,]*", "", q, flags=re.IGNORECASE)
         q = re.sub(r"^[\s,.!?;:-]+", "", q)
     q = re.sub(
         r"^(трек|track|песн[юяуи]|музык[ауеи]|плейлист|playlist)\s+",
@@ -249,12 +250,16 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         q,
         flags=re.IGNORECASE,
     )
-    q = re.sub(r"\s+", " ", q).strip(" .,!?;:-")
-    if re.fullmatch(r"(?:по)?(?:громче|тише)(?:\s+музык\w*)?[\s,.!?;:-]*", q, re.IGNORECASE):
+    q = re.sub(r"\s+", " ", q).strip(" .,!?;:-…—")
+    polite_tail = bool(re.search(r"[\s,]+(?:пожалуйста|плиз|please)[\s.!]*$", q, re.IGNORECASE))
+    q = re.sub(r"[\s,]+(?:пожалуйста|плиз|please)[\s.!]*$", "", q, flags=re.IGNORECASE).strip()
+    if _VOLUME_ONLY_RE.fullmatch(q):
         return None
     stripped_q = re.sub(r"(?:,\s*|(?<=\s)по)(?:громче|тише)\s*$", "", q, flags=re.IGNORECASE).strip()
+    if polite_tail and stripped_q == q:
+        stripped_q = re.sub(r"[\s,]+(?:по)?(?:громче|тише)\s*$", "", q, flags=re.IGNORECASE).strip()
     volume_deferred = bool(stripped_q == q and _VOLUME_RE.search(q))
-    q = stripped_q.strip(" .,!?;:-—")
+    q = stripped_q.strip(" .,!?;:-…—")
     plain_q = _URL_RE.sub(" ", q)
     deferred = volume_deferred or bool(_COMPLAINT_RE.search(plain_q))
     if end:

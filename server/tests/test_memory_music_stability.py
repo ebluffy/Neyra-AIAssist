@@ -218,6 +218,10 @@ def test_gif_urls_and_negations_cannot_reenter_classifier_music_path(text):
     'ты не зашла в войс',
     'ты почему не в войсе',
     'зайди в войс, почему молчишь',
+    'включи громче…',
+    'включи погромче!',
+    'включи громче музыку!',
+    'включи громче — музыку',
     'ты включишь музыку или нет?',
     'ты включишь музыку завтра?',
     'можно включить погромче?',
@@ -310,6 +314,16 @@ def test_future_request_needs_classifier():
     assert route == 'PLAY_MUSIC' and use
 
 
+def test_volume_inside_query_defers_with_original_text():
+    text = 'включи lofi тише'
+    candidate = candidate_music_intent(text)
+    assert candidate and candidate['query'] == 'lofi тише'
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
+
+
 @pytest.mark.parametrize(('text', 'query'), [
     ('эй, нейра, вруби ревели горы', 'ревели горы'),
     ('можешь включить lofi', 'lofi'),
@@ -323,6 +337,11 @@ def test_future_request_needs_classifier():
     ('включи-ка Каста', 'Каста'),
     ('включи lofi потише', 'lofi'),
     ('включи lofi, тише', 'lofi'),
+    ('включи lofi пожалуйста', 'lofi'),
+    ('включи lofi погромче пожалуйста', 'lofi'),
+    ('зайди в войс и врубай Каста', 'Каста'),
+    ('зайди в войс и поставьте Сплин', 'Сплин'),
+    ('зайди в войс и заиграйте Каста', 'Каста'),
     ('зайди в войс и включи музыку', 'upbeat happy music'),
 ])
 def test_music_query_is_clean(text, query):
