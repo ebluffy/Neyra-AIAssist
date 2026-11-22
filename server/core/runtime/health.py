@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -36,7 +37,7 @@ def discord_resident_enabled(project_root: Optional[Path]) -> bool:
 
 
 def check_lavalink(config: dict) -> dict:
-    """Check configured Lavalink nodes; passwords and userinfo never leave this function."""
+    """Check configured Lavalink nodes with a 2s total deadline; secrets never leave."""
     try:
         discord = config.get("discord") if isinstance(config, dict) else None
         music = (discord or {}).get("music") if isinstance(discord, dict) else None
@@ -52,22 +53,32 @@ def check_lavalink(config: dict) -> dict:
             return {"checked": False, "ok": True, "reason": "no music nodes"}
         import httpx
 
-        timeout = httpx.Timeout(2.0, connect=1.0)
+        deadline = time.monotonic() + 2.0
         errors: list[str] = []
-        status_code = None
+        live_status = None
+        first_status = None
         version = None
         plugins: list[str] = []
         ok_count = 0
         for node in nodes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                errors.append("timeout")
+                break
             uri = str(node.get("uri") or "").strip().rstrip("/")
             password = str(node.get("password") or "").strip()
+            phase_timeout = httpx.Timeout(
+                max(0.1, min(2.0, remaining)),
+                connect=max(0.1, min(1.0, remaining)),
+            )
             try:
                 response = httpx.get(
                     f"{uri}/v4/info",
                     headers={"Authorization": password} if password else {},
-                    timeout=timeout,
+                    timeout=phase_timeout,
                 )
-                status_code = response.status_code
+                if first_status is None:
+                    first_status = response.status_code
                 if response.status_code != 200:
                     errors.append(f"http {response.status_code}")
                     continue
@@ -79,6 +90,7 @@ def check_lavalink(config: dict) -> dict:
                 if not isinstance(payload, dict):
                     payload = {}
                 ok_count += 1
+                live_status = response.status_code
                 version = payload.get("version") or version
                 plugins = plugins or [
                     str(item.get("name"))
@@ -93,6 +105,7 @@ def check_lavalink(config: dict) -> dict:
             "nodes_total": len(nodes),
             "nodes_ok": ok_count,
         }
+        status_code = live_status if ok_count > 0 else first_status
         if status_code is not None:
             result["status_code"] = status_code
         if version is not None:

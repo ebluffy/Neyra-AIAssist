@@ -266,20 +266,24 @@ class TestHealthReadyEndpoint:
         assert checks["lavalink"] == {"name": "lavalink", "checked": True, "ok": True, "status_code": 200}
 
     def test_ready_caches_lavalink_probe(self, client, auth_headers, monkeypatch):
-        calls = {"n": 0}
+        calls = {"enabled": 0, "probe": 0}
         monkeypatch.setattr(
             "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
         )
-        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+
+        def enabled(root):
+            calls["enabled"] += 1
+            return True
 
         def probe(config):
-            calls["n"] += 1
+            calls["probe"] += 1
             return {"checked": True, "ok": True}
 
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", enabled)
         monkeypatch.setattr("core.runtime.health.check_lavalink", probe)
         assert client.get("/v1/health/ready", headers=auth_headers["viewer"]).status_code == 200
         assert client.get("/v1/health/ready", headers=auth_headers["viewer"]).status_code == 200
-        assert calls["n"] == 1
+        assert calls == {"enabled": 1, "probe": 1}
 
 
 def test_check_lavalink_accepts_any_live_node(monkeypatch):
@@ -316,3 +320,26 @@ def test_check_lavalink_accepts_any_live_node(monkeypatch):
     assert result["version"] == "4.2.2"
     assert "url" not in result
     assert "pass" not in str(result)
+
+
+def test_check_lavalink_status_code_matches_live_node(monkeypatch):
+    from core.runtime.health import check_lavalink
+
+    config = {"discord": {"music": {"nodes": [{"uri": "http://one:2333"}, {"uri": "http://two:2333"}]}}}
+    calls = {"n": 0}
+
+    def fake_get(url, **kwargs):
+        calls["n"] += 1
+        code = 200 if calls["n"] == 1 else 500
+        return SimpleNamespace(
+            status_code=code,
+            headers={"content-type": "application/json"},
+            json=lambda: {"version": "4.2.2"} if code == 200 else {},
+        )
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    result = check_lavalink(config)
+    assert result["ok"] is True
+    assert result["status_code"] == 200
+    assert result["nodes_ok"] == 1
+    assert result["nodes_total"] == 2

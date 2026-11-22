@@ -2371,17 +2371,19 @@ def build_app(
         try:
             from core.runtime.health import check_lavalink, discord_resident_enabled
 
-            if not discord_resident_enabled(root):
-                lavalink = {"checked": False, "ok": True, "reason": "discord disabled"}
+            now = time.monotonic()
+            cached = lavalink_ready_cache["value"]
+            if cached is not None and now - float(lavalink_ready_cache["at"] or 0) < 10.0:
+                lavalink = cached
             else:
-                now = time.monotonic()
-                cached = lavalink_ready_cache["value"]
-                if cached is not None and now - float(lavalink_ready_cache["at"] or 0) < 10.0:
-                    lavalink = cached
-                else:
-                    lavalink = await asyncio.to_thread(check_lavalink, config)
-                    lavalink_ready_cache["value"] = lavalink
-                    lavalink_ready_cache["at"] = now
+                def _probe() -> dict[str, Any]:
+                    if not discord_resident_enabled(root):
+                        return {"checked": False, "ok": True, "reason": "discord disabled"}
+                    return check_lavalink(config)
+
+                lavalink = await asyncio.to_thread(_probe)
+                lavalink_ready_cache["value"] = lavalink
+                lavalink_ready_cache["at"] = now
             public = {
                 key: lavalink[key]
                 for key in ("checked", "ok", "status_code", "error", "reason")
