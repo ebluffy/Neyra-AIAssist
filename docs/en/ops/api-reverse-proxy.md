@@ -172,6 +172,8 @@ Trailing slash on `proxy_pass` under `/api/v1/` strips `/api`; `/api/auth` and `
 
 ## Public client-IP smoke
 
+Direct request to the VPS (behind Cloudflare this checks the firewall; without Cloudflare see below):
+
 ```bash
 curl -sk --resolve neyra.owyx.site:443:<VPS IP> -X POST \
   https://neyra.owyx.site/api/v1/dashboard/auth/login \

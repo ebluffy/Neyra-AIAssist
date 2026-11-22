@@ -193,7 +193,7 @@ Trailing slash у `proxy_pass` под `/api/v1/` снимает префикс `
 
 `dashboard login failed ip=<реальный клиент>`
 
-не `127.0.0.1`. На `neyra.owyx.site` smoke (2026-10-01) подтвердил реальный IP за Cloudflare/frp. Проверка подделки:
+не `127.0.0.1`. На `neyra.owyx.site` smoke (2026-10-01) подтвердил реальный IP за Cloudflare/frp. Прямой запрос на VPS (за Cloudflare — проверка firewall, без Cloudflare — см. ниже):
 
 ```bash
 curl -sk --resolve neyra.owyx.site:443:<IP VPS> -X POST \
