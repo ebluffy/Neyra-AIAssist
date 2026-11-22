@@ -1596,24 +1596,10 @@ def build_app(
 
         @staticmethod
         def _provision(agent_, identity):
-            """Read account ownership first (including admin merges); write only on first contact."""
-            from dataclasses import replace
+            """Resolve web person from account ownership; first bind may merge into linked Discord."""
+            from core.api.web_identity import provision_web_identity
 
-            hub = getattr(agent_, "memory_hub", None)
-            if hub is None:
-                return identity
-            account = hub.sqlite.get_account("web", identity.user_id)
-            if account is not None:
-                person_id = account.get("person_id")
-            else:
-                row = hub.ensure_person_for_account(
-                    platform="web", platform_user_id=identity.user_id,
-                    display_name=(identity.name or "").strip() or None,
-                )
-                person_id = row.get("id")
-            if not isinstance(person_id, str) or not person_id.strip():
-                raise RuntimeError("Invalid web account owner")
-            return replace(identity, person_id=person_id)
+            return provision_web_identity(getattr(agent_, "memory_hub", None), identity)
 
         @staticmethod
         async def _deny(scope, receive, send, status, code, message):

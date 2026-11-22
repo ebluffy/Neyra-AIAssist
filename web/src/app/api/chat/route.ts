@@ -9,6 +9,7 @@ import { ChatRequestSchema, ContextUsageSchema, SseChatEventSchema, TurnStatsSch
 import { getAuth } from '../../../../lib/auth';
 import { readChatEnv } from '../../../../lib/env';
 import { createIdentityToken } from '../../../../lib/identity';
+import { getLinkedDiscordId } from '../../../../lib/discord-account';
 import {
   beginChatStream,
   checkChatRateLimit,
@@ -120,12 +121,15 @@ export async function POST(request: Request) {
 
   let identityJwt: string;
   try {
+    const discordId = await getLinkedDiscordId(request.headers);
+
     identityJwt = await createIdentityToken(
       {
         id: session.user.id,
         role: session.user.role,
         name: session.user.name,
         email: session.user.email,
+        discord_id: discordId,
       },
       jwtSecret,
       { chat_id: channelId, task: 'chat', issuer: jwtIssuer }

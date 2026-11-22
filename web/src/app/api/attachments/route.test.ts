@@ -209,6 +209,26 @@ describe('POST /api/attachments', () => {
       message: 'Этот тип файла не поддерживается.',
     });
   });
+
+  it('passes the linked Discord account id into the identity JWT (AR-4)', async () => {
+    vi.mocked(getAuth).mockReturnValue({ api: {
+      getSession: vi.fn().mockResolvedValue(session()),
+      listUserAccounts: vi.fn().mockResolvedValue([{ providerId: 'discord', accountId: 'discord-user-1' }]),
+    } } as unknown as ReturnType<typeof getAuth>);
+    let seenHeaders: Headers | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      seenHeaders = new Headers(init?.headers);
+      return new Response(JSON.stringify({ ok: true, data: { attachments: [attachment] } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }));
+    const response = await POST(await formRequest([new File(['hello'], 'cat.png', { type: 'image/png' })]));
+    expect(response.status).toBe(200);
+    const token = seenHeaders!.get('x-neyra-identity');
+    const verified = await verifyIdentityToken(token!, jwtSecret, { issuer: 'neyra-web' });
+    expect(verified.payload.discord_id).toBe('discord-user-1');
+  });
 });
 
 

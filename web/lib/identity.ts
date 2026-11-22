@@ -5,6 +5,7 @@ export interface IdentityUser {
   role?: string | null;
   name?: string | null;
   email?: string | null;
+  discord_id?: string | null;
 }
 
 export interface IdentityOptions {
@@ -55,6 +56,7 @@ export function buildIdentityClaims(
     task: options.task ?? 'chat',
     iat: now,
     exp: now + 60,
+    ...(user.discord_id ? { discord_id: user.discord_id } : {}),
   };
 }
 

@@ -6,6 +6,7 @@ import json
 import logging
 import uuid
 import threading
+import time
 from functools import wraps
 from datetime import datetime
 from pathlib import Path
@@ -712,20 +713,98 @@ class MemoryHub:
             reason=reason or "merge",
             proposal_id=proposal_id,
         )
+        self._migrate_semantic_merge(source, survivor, stats.get("merge_log_id"))
         return stats
+
+    def _migrate_semantic_merge(self, source: str, survivor: str, merge_id: Any) -> list[str]:
+        chroma_ids: list[str] = []
+        try:
+            chroma_ids = list(self.mutate_semantic(self.semantic.migrate_user_id, source, survivor) or [])
+            if merge_id:
+                self.sqlite.update_merge_chroma_ids(int(merge_id), chroma_ids)
+        except Exception as e:
+            logger.warning("semantic owner migration failed: %s", type(e).__name__)
+            if chroma_ids:
+                try:
+                    self.mutate_semantic(self.semantic.migrate_user_id, survivor, source, chroma_ids)
+                except Exception:
+                    logger.warning("semantic migration rollback failed")
+            if merge_id:
+                try:
+                    self.sqlite.undo_merge_atomic(int(merge_id))
+                    self.sqlite.delete_merge_log(int(merge_id))
+                except Exception as undo_err:
+                    logger.warning("merge rollback after semantic failure failed: %s", type(undo_err).__name__)
+            raise
+        return chroma_ids
 
     def apply_merge_proposal(self, proposal_id: int) -> dict[str, Any]:
         """Apply pending proposal under one SQLite transaction (race-safe)."""
+        proposal = self.sqlite.get_merge_proposal(int(proposal_id))
+        if not proposal:
+            raise ValueError("proposal_not_found")
+        survivor = str(proposal.get("person_a") or "").strip()
+        source = str(proposal.get("person_b") or "").strip()
         _log_id, stats = self.sqlite.merge_people_atomic(
-            survivor_id="",  # overridden from proposal inside txn
-            source_id="",
+            survivor_id=survivor,
+            source_id=source,
             reason=f"proposal:{int(proposal_id)}",
             proposal_id=int(proposal_id),
         )
+        self._migrate_semantic_merge(source, survivor, stats.get("merge_log_id"))
         return stats
 
     def undo_merge(self, merge_log_id: int) -> dict[str, Any]:
-        return self.sqlite.undo_merge_atomic(int(merge_log_id))
+        stats = self.sqlite.undo_merge_atomic(int(merge_log_id))
+        chroma_ids = list(stats.get("chroma_ids") or [])
+        if chroma_ids:
+            try:
+                self.mutate_semantic(
+                    self.semantic.migrate_user_id,
+                    str(stats.get("survivor_id") or ""),
+                    str(stats.get("restored_id") or ""),
+                    chroma_ids,
+                )
+            except Exception as e:
+                self.sqlite.queue_semantic_restore(
+                    int(merge_log_id),
+                    str(stats.get("survivor_id") or ""),
+                    str(stats.get("restored_id") or ""),
+                    chroma_ids,
+                )
+                stats["semantic_restore_pending"] = True
+                logger.warning("semantic owner restore pending: %s", type(e).__name__)
+        return stats
+
+    def retry_semantic_restores(self) -> int:
+        now = time.monotonic()
+        if now - float(getattr(self, "_semantic_retry_at", 0.0) or 0.0) < 60.0:
+            return 0
+        self._semantic_retry_at = now
+        done = 0
+        for item in self.sqlite.pending_semantic_restores():
+            ids = list(item.get("chroma_ids") or [])
+            if not ids:
+                self.sqlite.clear_semantic_restore(int(item["merge_log_id"]))
+                continue
+            try:
+                moved = list(self.mutate_semantic(
+                    self.semantic.migrate_user_id,
+                    str(item.get("survivor_id") or ""),
+                    str(item.get("source_id") or ""),
+                    ids,
+                ) or [])
+            except Exception as e:
+                logger.warning("semantic restore retry failed: %s", type(e).__name__)
+                continue
+            if set(ids) - set(moved):
+                attempts = self.sqlite.bump_semantic_restore_attempts(int(item["merge_log_id"]))
+                if attempts >= 3:
+                    self.sqlite.clear_semantic_restore(int(item["merge_log_id"]))
+                continue
+            self.sqlite.clear_semantic_restore(int(item["merge_log_id"]))
+            done += 1
+        return done
 
     @serialized_wipe
     def wipe(self, scopes: list[str], *, backup_dir: Optional[Path] = None) -> dict[str, Any]:
@@ -775,7 +854,7 @@ class MemoryHub:
         if "people" in wanted:
             if "relations" not in out:
                 out["relations"] = self.affect.reset("relations")
-            out["people"] = self.sqlite.clear_table("people")
+            # Clear dependents first: people removal hides its own child deletes.
             try:
                 out["merge_log"] = self.sqlite.clear_table("merge_log")
             except Exception:
@@ -784,6 +863,11 @@ class MemoryHub:
                 out["merge_proposals"] = self.sqlite.clear_table("merge_proposals")
             except Exception:
                 out["merge_proposals"] = 0
+            out["people"] = self.sqlite.clear_table("people")
+            try:
+                out["semantic_restore"] = self.sqlite.clear_table("semantic_restore_queue")
+            except Exception:
+                out["semantic_restore"] = 0
         if "diary" in wanted:
             out["diary"] = self.sqlite.clear_table("diary_notes")
         if "journal" in wanted:

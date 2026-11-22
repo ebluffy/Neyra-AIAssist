@@ -168,6 +168,19 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     expect(JSON.parse(socket.send.mock.calls[0][0]).channel_id).toBe(`web:other-user:${validUuid}`);
   });
 
+  it('passes the linked Discord account id into the identity JWT (AR-4)', async () => {
+    vi.mocked(getAuth).mockReturnValue({ api: {
+      getSession: vi.fn().mockResolvedValue({
+        user: { id: 'usr-42', name: 'Алиса', email: 'alice@example.test', role: 'admin' },
+      }),
+      listUserAccounts: vi.fn().mockResolvedValue([{ providerId: 'discord', accountId: 'discord-user-1' }]),
+    } } as unknown as ReturnType<typeof getAuth>);
+    await hello();
+    const [, options] = factory.create.mock.calls[0];
+    const { payload } = await verifyIdentityToken(options.headers['X-Neyra-Identity'], jwtSecret);
+    expect(payload.discord_id).toBe('discord-user-1');
+  });
+
   it('converts hello → token → thinking → done to SSE, sends scoped channel_id and signed headers, strips leaks (AR-1, AR-2, AR-6)', async () => {
     const response = await hello();
     const [url, options] = factory.create.mock.calls[0];
