@@ -212,7 +212,8 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
 
     wants_voice_play = imperative_voice_join(raw)
     end = imperative_play_end(raw)
-    if not end and not _supported_music_link(raw) and not wants_voice_play:
+    link = _supported_music_link(raw)
+    if not end and not link and not wants_voice_play:
         return None
     if wants_voice_play and not end:
         q = _VOICE_JOIN_RE.sub("", raw, count=1)
@@ -240,7 +241,7 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         flags=re.IGNORECASE,
     )
     q = re.sub(r"\s+", " ", q).strip(" .,!?;:-")
-    if _COMPLAINT_RE.search(q) or q.casefold() in {"погромче", "потише", "громче", "тише"}:
+    if not link and (_COMPLAINT_RE.search(q) or q.casefold() in {"погромче", "потише", "громче", "тише"}):
         return None
     if not q or q.lower() in {
         "музыку",
