@@ -36,6 +36,8 @@ import { isEnabled } from '../../lib/feature-flags';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
 import { SettingsDialog } from '../../components/settings-dialog';
+import { emitToast } from '../../lib/toast';
+import { discordLinkErrorMessage } from '../../../lib/discord-link-errors';
 import { ChannelsNav } from '../../components/channels/channels-nav';
 import { AppSidebar } from '../../components/layout/app-sidebar';
 import { ThreadPanel, type ThreadPanelTab } from '../../components/chat/thread-panel';
@@ -116,7 +118,7 @@ function humanizeErrorMessage(rawError?: string | null): { message: string; hint
 }
 
 export interface ChatViewProps {
-  user: { id: string; email?: string | null; name?: string | null; role?: string | null };
+  user: { id: string; email?: string | null; name?: string | null; role?: string | null; discord_id?: string | null };
   initialMessages?: ChatMessageItem[];
   initialUsage?: ContextUsage | null;
   initialThreadPanelOpen?: boolean;
@@ -156,6 +158,33 @@ export function ChatView({
   // Десктоп: сайдбар можно свернуть, чтобы чат занимал всё окно (§ волна 4).
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const settingsParam = params.get('settings');
+    const openAccounts = settingsParam === 'accounts';
+    const linkFailed = params.get('link_error') === '1';
+    if (settingsParam) {
+      setSettingsOpen(true);
+      if (['profile', 'accounts', 'appearance', 'notifications', 'privacy', 'data', 'danger'].includes(settingsParam)) {
+        setSettingsTab(settingsParam as typeof settingsTab);
+      }
+    }
+    if (linkFailed) {
+      emitToast({
+        title: 'Discord',
+        message: discordLinkErrorMessage(params.get('error')),
+        tone: 'danger',
+      });
+    }
+    if (settingsParam || linkFailed) {
+      params.delete('error');
+      params.delete('link_error');
+      params.delete('settings');
+      const qs = params.toString();
+      window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''));
+    }
+  }, []);
+
   const [settingsTab, setSettingsTab] = useState<'profile' | 'accounts' | 'appearance' | 'notifications' | 'privacy' | 'data' | 'danger'>('profile');
 
   // Wave 5 Step 2: Thread Panel states
@@ -184,18 +213,6 @@ export function ChatView({
 
   // AR-80: серверный признак онбординга проверяется в chat/page.tsx до рендера чата.
   useEffect(() => {
-    try {
-      if (typeof window !== 'undefined') {
-        const params = new URLSearchParams(window.location.search);
-        const settingsParam = params.get('settings');
-        if (settingsParam) {
-          setSettingsOpen(true);
-          if (['profile', 'accounts', 'appearance', 'notifications', 'privacy', 'data', 'danger'].includes(settingsParam)) {
-            setSettingsTab(settingsParam as any);
-          }
-        }
-      }
-    } catch {}
     try {
       setSidebarCollapsed(window.localStorage.getItem('neyra:sidebar-collapsed') === '1');
       if (initialThreadPanelOpen === undefined) {

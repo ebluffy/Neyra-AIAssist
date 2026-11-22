@@ -40,6 +40,8 @@ import {
   playButtonClickSound,
 } from '../lib/ui-sounds';
 import { emitToast, soonToast } from '../lib/toast';
+import { authClient } from '../../lib/auth-client';
+import { discordLinkErrorMessage } from '../../lib/discord-link-errors';
 
 type SectionId =
   | 'profile'
@@ -185,9 +187,37 @@ export function SettingsDialog({
   // Profile Edit
   const [editName, setEditName] = useState(user.name || '');
   const [savingName, setSavingName] = useState(false);
+  const [discordLinkPending, setDiscordLinkPending] = useState(false);
   const [onlyMentions, setOnlyMentions] = useState(true);
 
   const hasNameChanged = editName.trim() !== (user.name || '').trim() && editName.trim().length > 0;
+
+  const handleLinkDiscord = async () => {
+    if (discordLinkPending) return;
+    setDiscordLinkPending(true);
+    try {
+      const result = await authClient.linkSocial({
+        provider: 'discord',
+        callbackURL: '/chat?settings=accounts',
+        errorCallbackURL: '/chat?settings=accounts&link_error=1',
+      });
+      if (result?.error) {
+        emitToast({
+          title: 'Discord',
+          message: discordLinkErrorMessage(result.error.code),
+          tone: 'danger',
+        });
+        setDiscordLinkPending(false);
+      }
+    } catch {
+      emitToast({
+        title: 'Discord',
+        message: 'Не удалось привязать Discord. Попробуйте ещё раз.',
+        tone: 'danger',
+      });
+      setDiscordLinkPending(false);
+    }
+  };
 
   const handleSaveProfile = async () => {
     if (!hasNameChanged || savingName) return;
@@ -414,7 +444,7 @@ export function SettingsDialog({
                 user.platform === 'both' ||
                 (user.email && user.email.endsWith('@discord.placeholder.invalid'))
               );
-              const discordTag = user.discord_username || (isDiscordLinked ? 'Подключен' : null);
+              const discordTag = user.discord_username || null;
               const isRealEmail = Boolean(user.email && !user.email.endsWith('@discord.placeholder.invalid'));
 
               return (
@@ -470,16 +500,16 @@ export function SettingsDialog({
                           </Button>
                         </SoonAction>
                       ) : (
-                        <SoonAction featureName="Привязка Discord" description="Привязка Discord к аккаунту">
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => soonToast('Привязка Discord')}
-                          >
-                            Привязать
-                          </Button>
-                        </SoonAction>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={handleLinkDiscord}
+                          disabled={discordLinkPending}
+                          title="Привязать Discord"
+                        >
+                          {discordLinkPending ? 'Привязываем…' : 'Привязать'}
+                        </Button>
                       )}
                     </div>
 
