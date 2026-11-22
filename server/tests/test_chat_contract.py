@@ -174,6 +174,43 @@ def _ws_app(agent, tmp_path):
     )
 
 
+def test_ws_done_has_safe_turn_stats_without_raw_trace(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from offline_support import offline_agent
+
+    agent = offline_agent(tmp_path)
+    trace = {
+        "duration_ms": 8400,
+        "calls": [
+            {"lane": "brain", "duration_ms": 3100, "private": "secret"},
+            {"lane": "talk", "duration_ms": 2600, "configured_model": "m", "usage": {"output_tokens": 240}},
+        ],
+    }
+
+    async def fake_stream(*args, **kwargs):
+        yield {"type": "done", "text": "ok", "sounds": [], "model_trace": trace}
+
+    agent.chat_stream = fake_stream
+    try:
+        with TestClient(_ws_app(agent, tmp_path)) as client:
+            with client.websocket_connect(
+                "/v1/ws/chat", headers={"Authorization": "Bearer offline-admin-token"}
+            ) as ws:
+                assert ws.receive_json()["type"] == "hello"
+                ws.send_json({"type": "chat", "text": "hello"})
+                event = ws.receive_json()
+                assert event["type"] == "done"
+                assert event["turn_stats"]["duration_ms"] == 8400
+                assert event["turn_stats"]["lanes"]["brain"]["duration_ms"] == 3100
+                assert event["turn_stats"]["lanes"]["talk"]["output_tokens"] == 240
+                assert event["turn_stats"]["tokens_per_second"] == 42.1
+                assert "model_trace" not in event
+                assert "secret" not in str(event)
+    finally:
+        agent.memory_hub.close()
+
+
 def test_ws_busy_does_not_cancel_active_stream(tmp_path):
     import asyncio
 

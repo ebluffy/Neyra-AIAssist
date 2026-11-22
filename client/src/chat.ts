@@ -1,3 +1,19 @@
+export interface TurnLaneStats {
+  calls: number;
+  duration_ms: number;
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
+export interface TurnStats {
+  duration_ms: number;
+  llm_ms: number;
+  output_tokens?: number;
+  tokens_per_second?: number;
+  model?: string;
+  lanes: Partial<Record<'talk' | 'brain' | 'memory' | 'vision', TurnLaneStats>>;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -9,6 +25,7 @@ export interface ChatMessage {
   audioUrl?: string;
   durationMs?: number;
   pending?: boolean;
+  stats?: TurnStats;
 }
 
 export interface ChatThread {
@@ -102,6 +119,25 @@ export function clock(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+export function turnDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)} мс`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0).replace('.', ',')} с`;
+  return `${Math.floor(seconds / 60)} мин ${Math.round(seconds % 60)} с`;
+}
+
+export function modelLabel(model?: string): string {
+  if (!model) return '';
+  const id = model.split('/').pop() || model;
+  return id.replace(/[-_]/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
+}
+
+export function tokenSpeed(value?: number): string {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return '';
+  return `${value.toFixed(1).replace('.', ',')} ток/с`;
+}
+
 export function stripAudio(message: ChatMessage): ChatMessage {
   const copy = { ...message };
   delete copy.audioUrl;
@@ -138,6 +174,7 @@ export function storedThreads(threads: ChatThread[]) {
       ...(message.turnId ? { turnId: message.turnId } : {}),
       ...(message.requestId ? { requestId: message.requestId } : {}),
       ...(message.durationMs !== undefined ? { durationMs: message.durationMs } : {}),
+      ...(message.stats ? { stats: message.stats } : {}),
     })),
   }));
 }

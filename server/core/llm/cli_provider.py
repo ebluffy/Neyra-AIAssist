@@ -726,6 +726,47 @@ def _parse_json_events(stdout: str) -> str:
     return "".join(chunks).strip()
 
 
+def _parse_json_usage(stdout: str) -> dict[str, Any] | None:
+    """Token usage from `step_finish` events (for the per-turn telemetry)."""
+    input_tokens = output_tokens = reasoning_tokens = 0
+    cache_read = cache_write = 0
+    found = False
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") != "step_finish":
+            continue
+        part = event.get("part") if isinstance(event.get("part"), dict) else {}
+        tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
+        found = True
+        input_tokens += int(tokens.get("input") or 0)
+        output_tokens += int(tokens.get("output") or 0)
+        reasoning_tokens += int(tokens.get("reasoning") or 0)
+        cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+        cache_read += int(cache.get("read") or 0)
+        cache_write += int(cache.get("write") or 0)
+    if not found or not (input_tokens or output_tokens or reasoning_tokens):
+        return None
+    usage = {
+        "input_tokens": max(input_tokens, 0),
+        "output_tokens": max(output_tokens, 0),
+        "total_tokens": max(input_tokens + output_tokens + reasoning_tokens, 0),
+    }
+    if reasoning_tokens:
+        usage["output_token_details"] = {"reasoning": reasoning_tokens}
+    if cache_read or cache_write:
+        usage["input_token_details"] = {
+            **({"cache_read": cache_read} if cache_read else {}),
+            **({"cache_creation": cache_write} if cache_write else {}),
+        }
+    return usage
+
+
 def _child_env(nonce: str) -> dict[str, str]:
     """Минимальное окружение потомка: без секретов ядра и токенов сервисов."""
     allowed = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM")
@@ -985,21 +1026,30 @@ def _run_sync(
     return stdout, "".join(stderr_tail), returncode
 
 
-def run_cli_prompt(
+def run_cli_prompt_usage(
     settings: CliSettings,
     prompt: str,
     images: Sequence[tuple[str, bytes]] = (),
-) -> str:
-    """Синхронный вызов OpenCode через bwrap. Возвращает текст ответа."""
+) -> tuple[str, dict[str, Any] | None]:
+    """Синхронный вызов OpenCode: текст ответа и token usage из step_finish."""
     argv, env, assets, nonce = _prepare(settings, images)
     try:
         stdout, stderr, returncode = _run_sync(settings, argv, env, prompt)
         # AR-76: сначала настоящая ошибка CLI/ответ, потом проверка плагина.
         text = _answer_from_output(settings, stdout, stderr, returncode=returncode)
         _require_plugin_manifest(assets, nonce)
+        return text, _parse_json_usage(stdout)
     finally:
         _remove_quietly(assets)
-    return text
+
+
+def run_cli_prompt(
+    settings: CliSettings,
+    prompt: str,
+    images: Sequence[tuple[str, bytes]] = (),
+) -> str:
+    """Синхронный вызов OpenCode через bwrap. Возвращает текст ответа."""
+    return run_cli_prompt_usage(settings, prompt, images)[0]
 
 
 def _require_plugin_manifest(assets: Path, nonce: str) -> None:
@@ -1118,12 +1168,12 @@ async def _read_capped(stream: Any, limit: int) -> bytes:
     return b"".join(chunks)
 
 
-async def run_cli_prompt_async(
+async def run_cli_prompt_async_usage(
     settings: CliSettings,
     prompt: str,
     images: Sequence[tuple[str, bytes]] = (),
-) -> str:
-    """Async-вызов OpenCode: CancelledError/таймаут убивают bwrap и всё дерево."""
+) -> tuple[str, dict[str, Any] | None]:
+    """Async-вызов OpenCode: текст ответа и token usage."""
     argv, env, assets, nonce = _prepare(settings, images)
     try:
         async with _semaphore():
@@ -1150,16 +1200,26 @@ async def run_cli_prompt_async(
                 await _reap(proc)
                 raise
         # AR-76: сначала настоящая ошибка CLI/ответ, потом проверка плагина.
+        raw_stdout = (stdout or b"").decode("utf-8", "replace")
         text = _answer_from_output(
             settings,
-            (stdout or b"").decode("utf-8", "replace"),
+            raw_stdout,
             (stderr or b"").decode("utf-8", "replace"),
             returncode=proc.returncode or 0,
         )
         _require_plugin_manifest(assets, nonce)
+        return text, _parse_json_usage(raw_stdout)
     finally:
         _remove_quietly(assets)
-    return text
+
+
+async def run_cli_prompt_async(
+    settings: CliSettings,
+    prompt: str,
+    images: Sequence[tuple[str, bytes]] = (),
+) -> str:
+    """Async-вызов OpenCode: CancelledError/таймаут убивают bwrap и всё дерево."""
+    return (await run_cli_prompt_async_usage(settings, prompt, images))[0]
 
 
 async def _communicate(proc: Any, prompt: str) -> tuple[bytes, bytes]:
@@ -1260,10 +1320,16 @@ class CliChatModel(BaseChatModel):
             max_image_bytes=self.settings.max_image_bytes,
         )
         prompt = _messages_to_prompt(messages, skip_images=bool(images))
-        text = run_cli_prompt(self.settings, prompt, images)
+        text, usage = run_cli_prompt_usage(self.settings, prompt, images)
         text = _truncate_answer(self.settings, text, _bound_limit(self, kwargs))
         text = _apply_stop(text, stop)
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
+        return ChatResult(
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(content=text, usage_metadata=usage) if usage else AIMessage(content=text)
+                )
+            ]
+        )
 
     async def _agenerate(
         self,
@@ -1278,10 +1344,16 @@ class CliChatModel(BaseChatModel):
             max_image_bytes=self.settings.max_image_bytes,
         )
         prompt = _messages_to_prompt(messages, skip_images=bool(images))
-        text = await run_cli_prompt_async(self.settings, prompt, images)
+        text, usage = await run_cli_prompt_async_usage(self.settings, prompt, images)
         text = _truncate_answer(self.settings, text, _bound_limit(self, kwargs))
         text = _apply_stop(text, stop)
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
+        return ChatResult(
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(content=text, usage_metadata=usage) if usage else AIMessage(content=text)
+                )
+            ]
+        )
 
     def _stream(
         self,

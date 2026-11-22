@@ -105,10 +105,32 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
       type: 'done',
       text: 'ответ',
       usage: { total: { used: 10, limit: 100 }, lanes: { talk: { used: 10, limit: 100 }, brain: {} } },
+      turn_stats: {
+        duration_ms: 3200,
+        llm_ms: 2800,
+        output_tokens: 40,
+        tokens_per_second: 14.3,
+        model: 'opencode-go/deepseek-v4.1-flash',
+        lanes: { brain: { calls: 1, duration_ms: 1200 }, talk: { calls: 1, duration_ms: 1600, output_tokens: 40 } },
+      },
     });
     const text = await response.text();
     expect(text).toContain('data: {"type":"phase","phase":"retrieval","label":"Собираю контекст…"}\n\n');
     expect(text).toContain('"usage":{"total":{"used":10,"limit":100},"lanes":{"talk":{"used":10,"limit":100},"brain":{}}}');
+    const doneLine = text.split('\n').find((line) => line.includes('"type":"done"'));
+    expect(doneLine).toBeTruthy();
+    const done = JSON.parse(doneLine!.slice(5).trim());
+    expect(done.turn_stats).toEqual({
+      duration_ms: 3200,
+      llm_ms: 2800,
+      output_tokens: 40,
+      tokens_per_second: 14.3,
+      model: 'opencode-go/deepseek-v4.1-flash',
+      lanes: {
+        talk: { calls: 1, duration_ms: 1600, output_tokens: 40 },
+        brain: { calls: 1, duration_ms: 1200 },
+      },
+    });
   });
 
   it('limits chat requests per user to a minute window (AR-17)', async () => {

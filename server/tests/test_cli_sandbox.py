@@ -559,15 +559,51 @@ def test_cli_async_generate_passes_images(tmp_path: Path, monkeypatch):
 
     async def fake_async(settings, prompt, images=()):
         assert images == [("png", b"ABCDEF")]
-        return "ответ"
+        return "ответ", None
 
     import core.llm.cli_provider as provider
 
-    monkeypatch.setattr(provider, "run_cli_prompt_async", fake_async)
+    monkeypatch.setattr(provider, "run_cli_prompt_async_usage", fake_async)
     model = CliChatModel(settings=_settings(tmp_path), provider_name="oc")
     result = asyncio.run(model.ainvoke([_image_message()]))
     assert result.content == "ответ"
     assert _extract_images([_image_message()]) == [("png", b"ABCDEF")]
+
+
+def test_cli_usage_is_attached_to_message(tmp_path: Path, monkeypatch):
+    from core.llm.cli_provider import _parse_json_usage
+
+    raw = "\n".join(
+        [
+            json.dumps({"type": "text", "part": {"text": "ok"}}),
+            json.dumps(
+                {
+                    "type": "step_finish",
+                    "part": {
+                        "tokens": {
+                            "input": 120,
+                            "output": 30,
+                            "reasoning": 5,
+                            "cache": {"read": 40, "write": 2},
+                        }
+                    },
+                }
+            ),
+        ]
+    )
+    assert _parse_json_usage(raw) == {
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "total_tokens": 155,
+        "output_token_details": {"reasoning": 5},
+        "input_token_details": {"cache_read": 40, "cache_creation": 2},
+    }
+    holder = _patch_popen(monkeypatch, stdout=raw)
+    model = CliChatModel(settings=_settings(tmp_path), provider_name="oc")
+    message = model.invoke("hi")
+    assert message.content == "ok"
+    assert message.usage_metadata["output_tokens"] == 30
+    assert holder["proc"].argv[holder["proc"].argv.index("--model") + 1] == "opencode/x-free"
 
 
 def test_cli_variant_rejects_unsafe_value(tmp_path: Path):

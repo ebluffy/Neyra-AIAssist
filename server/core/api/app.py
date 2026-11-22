@@ -1793,6 +1793,12 @@ def build_app(
             model=body.model,
             **({"discord_context": body.discord_context} if web_identity is None and body.discord_context is not None else {}),
         )
+        if isinstance(out, dict):
+            from core.agent.model_trace import turn_stats
+
+            stats = turn_stats(out.get("model_trace"))
+            if stats:
+                out = {**out, "turn_stats": stats}
         return {"ok": True, "trace_id": trace_id, "data": out}
 
     @app.get("/v1/llm/activity")
@@ -5274,6 +5280,7 @@ def build_app(
                         )
                     elif chunk.get("type") == "done":
                         from core.agent.chat_progress import context_usage, lane_inputs
+                        from core.agent.model_trace import turn_stats
                         inputs = lane_inputs(chunk.get("model_trace"))
                         key = (_attachment_owner(websocket), channel_id)
                         context_readings[key] = inputs
@@ -5281,12 +5288,14 @@ def build_app(
                         if len(context_readings) > 256:
                             context_readings.popitem(last=False)
                         usage = context_usage(agent.config, inputs)
+                        stats = turn_stats(chunk.get("model_trace"))
                         await websocket.send_json(
                             {
                                 "type": "done",
                                 "text": chunk.get("text", ""),
                                 "sounds": chunk.get("sounds", []),
                                 "usage": usage,
+                                **({"turn_stats": stats} if stats else {}),
                                 "trace_id": trace_id,
                             }
                         )

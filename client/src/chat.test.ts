@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bindProfileSession, clock, composerSlot, daypart, ensureSessionId, firstServerSession, historyGroups, profileSessionRepair, selectedProfile, sessionOrNew, switchThread, threadTitle, type ChatThread } from './chat';
+import { bindProfileSession, clock, composerSlot, daypart, ensureSessionId, firstServerSession, historyGroups, modelLabel, profileSessionRepair, selectedProfile, sessionOrNew, storedThreads, switchThread, threadTitle, tokenSpeed, turnDuration, type ChatThread } from './chat';
 import { themeId } from './theme';
 
 describe('chat composer', () => {
@@ -23,6 +23,20 @@ describe('chat composer', () => {
   it('formats a recording clock', () => {
     expect(clock(0)).toBe('0:00');
     expect(clock(9500)).toBe('0:10');
+  });
+  it('formats per-turn timing, model and speed', () => {
+    expect(turnDuration(8400)).toBe('8,4 с');
+    expect(turnDuration(62000)).toBe('1 мин 2 с');
+    expect(modelLabel('opencode-go/deepseek-v4.1-flash')).toBe('Deepseek V4.1 Flash');
+    expect(tokenSpeed(33.3)).toBe('33,3 ток/с');
+  });
+  it('persists turn stats with the thread', () => {
+    const stats = { duration_ms: 8400, llm_ms: 7200, lanes: { talk: { calls: 1, duration_ms: 2600 } } };
+    const stored = storedThreads([{
+      id: 't', title: 'T', sessionId: '11111111-1111-4111-8111-111111111111', updated: 1,
+      messages: [{ id: 'm', role: 'assistant', content: 'ok', kind: 'text', stats }],
+    }]);
+    expect(stored[0].messages[0].stats).toEqual(stats);
   });
 });
 

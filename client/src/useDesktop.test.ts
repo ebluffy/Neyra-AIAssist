@@ -102,6 +102,20 @@ describe('desktop streaming and history persistence', () => {
     expect(saves()[0][1].threads[0].messages.map((message: { content: string }) => message.content)).toEqual(['окончательный ответ']);
   });
 
+  it('keeps turn stats on the completed answer', async () => {
+    const stats = {
+      duration_ms: 8400,
+      llm_ms: 7200,
+      output_tokens: 240,
+      tokens_per_second: 33.3,
+      model: 'opencode-go/deepseek-v4.1-flash',
+      lanes: { brain: { calls: 1, duration_ms: 3100 }, talk: { calls: 1, duration_ms: 2600 } },
+    };
+    event({ type: 'done', text: 'ok', turn_stats: stats });
+    await settle();
+    expect(desktop.messages.at(-1)?.stats).toEqual(stats);
+  });
+
   it.each(['done', 'cancelled', 'error', 'disconnected', 'listening'])('drops queued tokens on %s', async type => {
     event({ type: 'token', text: 'stale' });
     event({ type, text: type === 'done' ? 'final' : undefined });

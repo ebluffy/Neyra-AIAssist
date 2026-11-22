@@ -20,6 +20,6 @@ Reconnect: открыть **новый** WebSocket (в hello есть `"reconnec
 - `pong`
 - `token` (stream chunk)
 - `phase` (этап retrieval/plan/answer)
-- `done` (финал + sounds + usage)
+- `done` (финал + sounds + usage + `turn_stats`: время по лейнам, токены/с, модель)
 - `stopped` — подтверждение `stop`
 - `error` (включая `busy`, если пришёл новый `chat` во время ответа, и `model_not_allowed` для запрещённого override)

@@ -18,6 +18,8 @@ import {
   CaptureEventSchema,
   BrowserServerEventSchema,
   KernelServerEventSchema,
+  SseChatEventSchema,
+  TurnStatsSchema,
   WsChatEventSchema,
   WsChatMessageSchema,
 } from './index';
@@ -103,6 +105,26 @@ describe('browser → BFF: WebSocket frame', () => {
 });
 
 describe('core → BFF: server events', () => {
+  it('accepts bounded turn_stats in done without raw model_trace', () => {
+    const stats = {
+      duration_ms: 8400,
+      llm_ms: 7200,
+      output_tokens: 240,
+      tokens_per_second: 33.3,
+      model: 'opencode-go/deepseek-v4.1-flash',
+      lanes: {
+        brain: { calls: 1, duration_ms: 3100, input_tokens: 100, output_tokens: 20 },
+        talk: { calls: 1, duration_ms: 2600, output_tokens: 200 },
+        memory: { calls: 2, duration_ms: 1500 },
+      },
+    };
+    expect(TurnStatsSchema.safeParse(stats).success).toBe(true);
+    expect(TurnStatsSchema.safeParse({ ...stats, raw: 'secret' }).success).toBe(false);
+    expect(BrowserServerEventSchema.safeParse({ type: 'done', text: 'ok', trace_id: 't', turn_stats: stats }).success).toBe(true);
+    expect(KernelServerEventSchema.safeParse({ type: 'done', text: 'ok', trace_id: 't', turn_stats: stats }).success).toBe(true);
+    expect(SseChatEventSchema.safeParse({ type: 'done', text: 'ok', turn_stats: stats }).success).toBe(true);
+  });
+
   it('accepts phase, usage in done and stopped', () => {
     expect(KernelServerEventSchema.safeParse({ type: 'phase', phase: 'answer', label: 'Формулирую ответ…' }).success).toBe(true);
     expect(KernelServerEventSchema.safeParse({ type: 'done', text: 'ok', trace_id: 't', usage: { total: { used: 1, limit: 10 } } }).success).toBe(true);

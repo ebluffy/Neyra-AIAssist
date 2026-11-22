@@ -283,8 +283,8 @@ export function useDesktop() {
           setMessages(list => {
             const requestId = event.source === 'bridge' ? event.request_id : undefined;
             const index = requestId ? list.findIndex(row => row.role === 'assistant' && row.requestId === requestId) : -1;
-            if (index >= 0) return list.map((row, i) => i === index ? { ...row, content: event.text ?? '' } : row);
-            return [...list.slice(-99), { id: nextId(), role: 'assistant', content: event.text ?? '', kind: 'text', requestId }];
+            if (index >= 0) return list.map((row, i) => i === index ? { ...row, content: event.text ?? '', ...(event.turn_stats ? { stats: event.turn_stats } : {}) } : row);
+            return [...list.slice(-99), { id: nextId(), role: 'assistant', content: event.text ?? '', kind: 'text', requestId, ...(event.turn_stats ? { stats: event.turn_stats } : {}) }];
           });
           if (affectsText) { tokenBatch.reset(); setThinking(event.source === 'voice'); }
           postNotice(event.source === 'voice' ? 'Готовлю озвучку…' : 'Ответ готов');

@@ -27,6 +27,25 @@ function sseResponse(tokenText = 'привет'): Response {
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
 
+function sseStatsResponse(): Response {
+  const stats = {
+    duration_ms: 8400,
+    llm_ms: 7200,
+    output_tokens: 240,
+    tokens_per_second: 33.3,
+    model: 'opencode-go/deepseek-v4.1-flash',
+    lanes: { brain: { calls: 1, duration_ms: 3100 }, talk: { calls: 1, duration_ms: 2600, output_tokens: 240 } },
+  };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"type":"token","text":"готово"}\n\n'));
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: 'done', text: 'готово', turn_stats: stats })}\n\n`));
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
 function sseErrorResponse(message = 'Ошибка обработки'): Response {
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -56,6 +75,22 @@ describe('ChatView conversation', () => {
     expect(bodies[0].chat_id).toBeTruthy();
     expect(bodies[1].chat_id).toBe(bodies[0].chat_id);
     expect(sessionStorage.getItem(`neyra.chat_id:u1:${resolveTabKey(window)}`)).toBe(bodies[0].chat_id);
+  });
+
+  it('shows per-turn timing and expands the lane breakdown after done', async () => {
+    const fetchMock = vi.fn(async () => sseStatsResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
+
+    const input = screen.getByPlaceholderText(ru.placeholder);
+    fireEvent.change(input, { target: { value: 'покажи статистику' } });
+    fireEvent.submit(input.closest('form')!);
+    expect(await screen.findByText('Deepseek V4.1 Flash')).toBeTruthy();
+    expect(screen.getByText('8,4 с')).toBeTruthy();
+    expect(screen.getByText('33,3 ток/с')).toBeTruthy();
+    fireEvent.click(screen.getByText('Использовано'));
+    expect(screen.getByText('Мозг')).toBeTruthy();
+    expect(screen.getByText('Разговор')).toBeTruthy();
   });
 
   it('opens a new thread in a tab that inherited sessionStorage (AR-11)', async () => {
