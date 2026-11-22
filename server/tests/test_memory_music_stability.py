@@ -384,15 +384,16 @@ def test_two_copies_each_get_their_own_soundcloud_retry(monkeypatch):
     asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=first)))
     _emit_track_end(bot, player, first, 'loadFailed')
     assert calls == ['scsearch:x song']
-    assert player.current.identifier == 'sc-1'
+    assert [t.identifier for t in player.played] == ['sc-1']
     assert service.fallback_meta_by_track['x-1']['sc_attempted'] is False
 
+    player.current = player.played[-1]
     _emit_track_end(bot, player, player.current, 'finished')
     assert player.current.identifier == 'x-1'
     asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=second)))
     _emit_track_end(bot, player, second, 'loadFailed')
     assert calls == ['scsearch:x song', 'scsearch:x song']
-    assert player.current.identifier == 'sc-2'
+    assert [t.identifier for t in player.played] == ['sc-1', 'x-1', 'sc-2']
     assert player.stopped == 0
 
 
