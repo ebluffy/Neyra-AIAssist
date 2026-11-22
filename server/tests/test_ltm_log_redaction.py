@@ -4,6 +4,8 @@ import asyncio
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 from core.memory import ltm_maintenance
 
 SENTINEL = "provider-body-private-sentinel"
@@ -61,3 +63,23 @@ def test_scheduled_summarize_does_not_return_or_log_provider_body(tmp_path, capl
     assert SENTINEL not in caplog.text
     assert SENTINEL not in str(result)
     assert result["error"] == "RuntimeError"
+
+
+def test_legacy_summarize_sanitizes_provider_error(tmp_path):
+    rows = [("id-1", {"user_id": "owner"}, "fact one about the user")]
+    with pytest.raises(ltm_maintenance.LtmSummarizeError) as excinfo:
+        asyncio.run(
+            ltm_maintenance._legacy_execute_ltm_summarize(
+                _agent(),
+                {"memory": {}},
+                tmp_path,
+                rows=rows,
+                older_than_days=60,
+                types=None,
+                max_entries=10,
+                compress_with_llm=True,
+                digest_source="test",
+            )
+        )
+    assert SENTINEL not in str(excinfo.value)
+    assert excinfo.value.error_class == "RuntimeError"
