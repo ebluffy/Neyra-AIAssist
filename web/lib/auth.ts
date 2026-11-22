@@ -57,14 +57,16 @@ function discordProvider() {
   };
 }
 
-// Привязка OAuth-аккаунта — только при подтверждённом email провайдера и локального
-// аккаунта. Discord не входит в trustedProviders: неподтверждённый адрес из Discord
-// не должен привязываться к чужому существующему профилю с тем же email.
+// Явная привязка (linkSocial) — только из живой сессии того же пользователя;
+// уже привязанный к другому пользователю аккаунт отклоняется.
+// Discord не в trustedProviders: и linkSocial, и неявная привязка на входе
+// требуют, чтобы email подтвердил сам Discord (emailVerified).
+// requireLocalEmailVerified — отдельная проверка только для implicit linking
+// на входе: локальный email должен быть подтверждён; в linkSocial она не действует.
+// allowDifferentEmails разрешает именно явную привязку с другим email.
 export const ACCOUNT_LINKING = {
   enabled: true,
   requireLocalEmailVerified: true,
-  // Single-operator: Discord почти всегда с другим email, чем вход по почте.
-  // Привязка идёт только из активной сессии (linkSocial), не при входе.
   allowDifferentEmails: true,
 } as const;
 
