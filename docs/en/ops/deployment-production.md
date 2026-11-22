@@ -14,3 +14,10 @@
 Canonical publish path: Neyra on a **home server** (mini PC, spare desktop, laptop, …), **frpc** → VPS **frps** → **Caddy**/nginx for `https://neyra.owyx.site` / `wss://neyra.owyx.site/api/v1/ws/chat`. Runtime data remains on the home server (`server/data/memory/`, `server/.env`, `server/logs/`).
 
 Details: [`docs/PLAN.md`](../../PLAN.md) §9.
+
+## Discord OAuth and bot
+
+- `web/.env`: `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` for the site OAuth app; `AUTH_MODE=both` (or `discord`).
+- Redirect URI in the Discord Developer Portal: `https://neyra.owyx.site/api/auth/callback/discord`.
+- `server/.env`: `DISCORD_TOKEN` is the bot token for text/music. It is not the OAuth secret and is never passed to the site.
+- Pre-login check: `POST /api/auth/sign-in/social` with `{"provider":"discord","callbackURL":"/"}` must return a `discord.com` URL with that redirect_uri.

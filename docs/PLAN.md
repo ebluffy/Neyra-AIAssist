@@ -677,7 +677,7 @@ MVP описан в §2.2 и уже работает; здесь — что ос
 - [x] frpc → frps (VPS сайта) → nginx `neyra.owyx.site` + LE; strip `/api`.
 - [x] DNS/Cloudflare; публичный dashboard доступен на `https://neyra.owyx.site`.
 - [x] Dashboard gate (session Bearer), public setup-guard, RPM через `resolve_client_ip`.
-- [ ] WSS-smoke: `wss://neyra.owyx.site/api/v1/ws/chat`.
+- [x] WSS-smoke 2026-11-22: `wss://neyra.owyx.site/api/v1/ws/chat` — `hello`/`pong`, чат `done` с `turn_stats`, Cloudflare TLS.
 
 ### 9.3. Готово, когда (эксплуатация)
 
@@ -686,8 +686,9 @@ MVP описан в §2.2 и уже работает; здесь — что ос
 - [ ] Runtime data / secrets / модели не попадают в исходный пакет случайно.
 - [x] Локальный example enable/disable проверен через настоящий тестовый backend в desktop/mobile E2E. Клик «Вызвать» без проверки ответа не считается подтверждённым invoke; серверный `/v1/health` не подтверждает health отдельного модуля.
 - [ ] Подтвердить результат invoke и health хотя бы одного модуля. Текущий E2E проверяет только enable/disable; настоящий resident Discord остаётся в live-приёмке.
+- [ ] Discord OAuth: `DISCORD_CLIENT_ID`/`DISCORD_CLIENT_SECRET` уже в `web/.env`, authorize URL генерируется; в Discord Developer Portal добавить redirect `https://neyra.owyx.site/api/auth/callback/discord`. Бот-токен — отдельно в `server/.env` (`DISCORD_TOKEN`), не OAuth secret.
 - [x] Документированы установка и восстановление после backup: `docs/{en,ru}/setup/quickstart.md`, `docs/{en,ru}/ops/deployment-local.md`, `docs/{en,ru}/ops/deployment-production.md`, `docs/{en,ru}/ops/backup-restore.md`.
-- [ ] WSS-smoke по публичному URL зелёный.
+- [x] WSS-smoke по публичному URL зелёный (2026-11-22, hello/pong/chat/turn_stats).
 - [x] Преддеплойная правка 2026-10-19: исторический wipe PR #22 отделён от обычного обновления. Данные, конфиги и persona сохраняются; перед обновлением обязательны backup и проба миграций на копии.
 - [x] `scripts/db_migrations.py --status` проверяет настроенную БД read-only через runtime loader; exit codes 0/1/2, offline-регрессии есть.
 
