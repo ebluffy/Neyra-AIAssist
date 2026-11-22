@@ -170,3 +170,322 @@ class TestHealthReadyEndpoint:
         assert r.status_code == 200
         checks = {c["name"]: c for c in r.json()["data"]["checks"]}
         assert checks["llm_provider"]["ok"] is True
+
+    def test_ready_503_when_configured_lavalink_is_down(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: {"checked": True, "ok": False, "error": "ConnectError"},
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 503
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"]["checked"] is True
+        assert checks["lavalink"]["ok"] is False
+
+    def test_ready_200_when_lavalink_is_not_configured(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: {"checked": False, "ok": True, "reason": "no music nodes"},
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 200
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"] == {
+            "name": "lavalink",
+            "checked": False,
+            "ok": True,
+            "reason": "no music nodes",
+        }
+
+
+    def test_ready_200_when_discord_is_disabled(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: False)
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: (_ for _ in ()).throw(AssertionError("must not probe")),
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 200
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"] == {
+            "name": "lavalink",
+            "checked": False,
+            "ok": True,
+            "reason": "discord disabled",
+        }
+
+    def test_ready_503_when_lavalink_probe_raises(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 503
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"] == {"name": "lavalink", "checked": True, "ok": False}
+
+    def test_ready_hides_lavalink_infrastructure(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: {
+                "checked": True,
+                "ok": True,
+                "url": "http://user:pass@internal:2333",
+                "version": "4.2.2",
+                "plugins": ["soundy"],
+                "status_code": 200,
+            },
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 200
+        raw = r.text
+        assert "internal:2333" not in raw
+        assert "user:pass" not in raw
+        assert "4.2.2" not in raw
+        assert "soundy" not in raw
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"] == {"name": "lavalink", "checked": True, "ok": True, "status_code": 200}
+
+    def test_ready_caches_lavalink_probe(self, client, auth_headers, monkeypatch):
+        calls = {"enabled": 0, "probe": 0}
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+
+        def enabled(root):
+            calls["enabled"] += 1
+            return True
+
+        def probe(config):
+            calls["probe"] += 1
+            return {"checked": True, "ok": True}
+
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", enabled)
+        monkeypatch.setattr("core.runtime.health.check_lavalink", probe)
+        assert client.get("/v1/health/ready", headers=auth_headers["viewer"]).status_code == 200
+        assert client.get("/v1/health/ready", headers=auth_headers["viewer"]).status_code == 200
+        assert calls == {"enabled": 1, "probe": 1}
+
+
+def test_check_lavalink_accepts_any_live_node(monkeypatch):
+    from core.runtime.health import check_lavalink
+
+    config = {
+        "discord": {
+            "music": {
+                "nodes": [
+                    {"uri": "http://user:pass@down.invalid:2333"},
+                    {"uri": "http://up.invalid:2333"},
+                ]
+            }
+        }
+    }
+    calls = {"n": 0}
+
+    def fake_fetch(uri, password, deadline):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("down")
+        return 200, {"version": "4.2.2", "plugins": [{"name": "soundy"}]}
+
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", fake_fetch)
+    result = check_lavalink(config)
+    assert result["ok"] is True
+    assert result["checked"] is True
+    assert result["nodes_total"] == 2
+    assert result["nodes_ok"] == 1
+    assert result["version"] == "4.2.2"
+    assert "url" not in result
+    assert "pass" not in str(result)
+
+
+def test_check_lavalink_status_code_matches_live_node(monkeypatch):
+    from core.runtime.health import check_lavalink
+
+    config = {"discord": {"music": {"nodes": [{"uri": "http://one:2333"}, {"uri": "http://two:2333"}]}}}
+    calls = {"n": 0}
+
+    def fake_fetch(uri, password, deadline):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return 200, {"version": "4.2.2"}
+        return 500, {}
+
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", fake_fetch)
+    result = check_lavalink(config)
+    assert result["ok"] is True
+    assert result["status_code"] == 200
+    assert result["nodes_ok"] == 1
+    assert result["nodes_total"] == 2
+
+
+def test_check_lavalink_failure_fields_describe_same_node(monkeypatch):
+    from core.runtime.health import check_lavalink
+
+    config = {"discord": {"music": {"nodes": [{"uri": "http://one:2333"}, {"uri": "http://two:2333"}]}}}
+    calls = {"n": 0}
+
+    def fake_fetch(uri, password, deadline):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("down")
+        return 500, {}
+
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", fake_fetch)
+    result = check_lavalink(config)
+    assert result["ok"] is False
+    assert result["error"] == "RuntimeError"
+    assert "status_code" not in result
+
+
+def test_ready_single_flight_for_parallel_probes(client, auth_headers, monkeypatch):
+    import time as clock
+    from concurrent.futures import ThreadPoolExecutor
+
+    calls = {"probe": 0}
+    monkeypatch.setattr(
+        "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+    )
+    monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+
+    def probe(config):
+        calls["probe"] += 1
+        clock.sleep(0.1)
+        return {"checked": True, "ok": True}
+
+    monkeypatch.setattr("core.runtime.health.check_lavalink", probe)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(
+            pool.map(
+                lambda _: client.get("/v1/health/ready", headers=auth_headers["viewer"]).status_code,
+                range(2),
+            )
+        )
+    assert statuses == [200, 200]
+    assert calls["probe"] == 1
+
+
+def test_check_lavalink_stops_at_total_deadline(monkeypatch):
+    import threading
+    import time as clock
+
+    from core.runtime.health import check_lavalink
+
+    release = threading.Event()
+    calls: list[str] = []
+
+    def slow_fetch(uri, password, deadline):
+        calls.append(uri)
+        release.wait(5)
+        return 200, {}
+
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", slow_fetch)
+    config = {"discord": {"music": {"nodes": [{"uri": "http://one:2333"}, {"uri": "http://two:2333"}]}}}
+    started = clock.monotonic()
+    try:
+        result = check_lavalink(config)
+    finally:
+        release.set()
+    elapsed = clock.monotonic() - started
+    assert elapsed < 2.5
+    assert result["ok"] is False
+    assert result["error"] == "timeout"
+    assert calls == ["http://one:2333"]
+
+
+def test_fetch_lavalink_info_honours_deadline():
+    import time as clock
+
+    import httpx
+    import pytest
+
+    from core.runtime.health import _fetch_lavalink_info
+
+    class SlowStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b'{"version":'
+            clock.sleep(0.2)
+            yield b'"4.2.2"}'
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            stream=SlowStream(),
+        )
+    )
+    with pytest.raises(TimeoutError):
+        _fetch_lavalink_info(
+            "http://lavalink:2333",
+            "secret",
+            clock.monotonic() + 0.05,
+            transport=transport,
+        )
+
+
+def test_fetch_lavalink_info_caps_body_and_keeps_auth():
+    import httpx
+    import pytest
+
+    from core.runtime.health import _fetch_lavalink_info
+
+    captured = {}
+
+    def handler(request):
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b'{"v":"' + b"x" * 1_048_576 + b'"}',
+        )
+
+    with pytest.raises(ValueError, match="too large"):
+        _fetch_lavalink_info(
+            "http://lavalink:2333",
+            "secret",
+            __import__("time").monotonic() + 2.0,
+            transport=httpx.MockTransport(handler),
+        )
+    assert captured["auth"] == "secret"
+
+
+def test_fetch_lavalink_info_ignores_non_json():
+    import time as clock
+
+    import httpx
+
+    from core.runtime.health import _fetch_lavalink_info
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<html>no</html>",
+        )
+    )
+    status, payload = _fetch_lavalink_info(
+        "http://lavalink:2333",
+        "",
+        clock.monotonic() + 2.0,
+        transport=transport,
+    )
+    assert (status, payload) == (200, {})

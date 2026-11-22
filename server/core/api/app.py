@@ -2316,6 +2316,9 @@ def build_app(
         """Liveness probe — no auth, no details (systemd / frp / monitors)."""
         return {"ok": True}
 
+    lavalink_ready_cache: dict[str, Any] = {"at": 0.0, "value": None}
+    lavalink_ready_lock = asyncio.Lock()
+
     @app.get("/v1/health/ready")
     async def v1_health_ready(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
@@ -2364,6 +2367,42 @@ def build_app(
             checks.append({"name": "llm_provider", "ok": False, "reason": rate_limit})
         else:
             checks.append({"name": "llm_provider", "ok": True})
+        # Lavalink is optional unless the resident Discord module is enabled.
+        # Ready exposes only a boolean probe, never node URLs or credentials.
+        try:
+            from core.runtime.health import check_lavalink, discord_resident_enabled
+
+            now = time.monotonic()
+            cached = lavalink_ready_cache["value"]
+            if cached is not None and now - float(lavalink_ready_cache["at"] or 0) < 10.0:
+                lavalink = cached
+            else:
+                async with lavalink_ready_lock:
+                    now = time.monotonic()
+                    cached = lavalink_ready_cache["value"]
+                    if cached is not None and now - float(lavalink_ready_cache["at"] or 0) < 10.0:
+                        lavalink = cached
+                    else:
+                        def _probe() -> dict[str, Any]:
+                            if not discord_resident_enabled(root):
+                                return {"checked": False, "ok": True, "reason": "discord disabled"}
+                            return check_lavalink(config)
+
+                        lavalink = await asyncio.to_thread(_probe)
+                        lavalink_ready_cache["value"] = lavalink
+                        lavalink_ready_cache["at"] = now
+            public = {
+                key: lavalink[key]
+                for key in ("checked", "ok", "status_code", "error", "reason")
+                if key in lavalink
+            }
+            checks.append({"name": "lavalink", **public})
+            if lavalink.get("checked") and not lavalink.get("ok"):
+                ready = False
+        except Exception:
+            logger.debug("health ready lavalink probe failed", exc_info=True)
+            checks.append({"name": "lavalink", "checked": True, "ok": False})
+            ready = False
         status = 200 if ready else 503
         return JSONResponse(
             status_code=status,

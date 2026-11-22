@@ -69,12 +69,10 @@ def test_application_example_has_no_debug_or_trace_loggers():
 
 
 def test_check_lavalink_exception_returns_type_not_raw_text(monkeypatch):
-    import httpx
-
-    def fake_get(url, **kwargs):
+    def fake_fetch(uri, password, deadline):
         raise RuntimeError("secret internal address 127.0.0.1:9999")
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", fake_fetch)
     result = check_lavalink(
         {"discord": {"music": {"nodes": [{"uri": "http://127.0.0.1:2333", "password": "secret"}]}}}
     )
@@ -86,23 +84,14 @@ def test_check_lavalink_exception_returns_type_not_raw_text(monkeypatch):
 
 
 def test_check_lavalink_reports_version_without_password(monkeypatch):
-    class Response:
-        status_code = 200
-        headers = {"content-type": "application/json"}
-
-        def json(self):
-            return {"version": {"semver": "4.2.2"}, "plugins": [{"name": "soundy", "version": "1.1.1"}]}
-
     captured = {}
 
-    def fake_get(url, **kwargs):
-        captured["url"] = url
-        captured["headers"] = kwargs.get("headers", {})
-        return Response()
+    def fake_fetch(uri, password, deadline):
+        captured["uri"] = uri
+        captured["password"] = password
+        return 200, {"version": {"semver": "4.2.2"}, "plugins": [{"name": "soundy"}]}
 
-    import httpx
-
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", fake_fetch)
     result = check_lavalink(
         {"discord": {"music": {"nodes": [{"uri": "http://127.0.0.1:2333", "password": "secret"}]}}}
     )
@@ -110,7 +99,8 @@ def test_check_lavalink_reports_version_without_password(monkeypatch):
     assert result["ok"] is True
     assert result["version"] == {"semver": "4.2.2"}
     assert "secret" not in str(result)
-    assert captured["url"] == "http://127.0.0.1:2333/v4/info"
+    assert captured["uri"] == "http://127.0.0.1:2333"
+    assert captured["password"] == "secret"
 
 
 def test_music_recovery_restarts_dead_lavalink(monkeypatch):
