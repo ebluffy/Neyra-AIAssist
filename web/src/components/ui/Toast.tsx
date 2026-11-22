@@ -33,7 +33,7 @@ export function Toast({
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 right-4 z-50 flex items-start gap-3 p-3.5 max-w-sm rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-control)] shadow-[var(--shadow-panel)] text-[var(--text)] animate-in fade-in slide-in-from-bottom-2 duration-150"
+      className="fixed bottom-4 right-4 z-[90] flex items-start gap-3 p-3.5 max-w-sm rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-control)] shadow-[var(--shadow-panel)] text-[var(--text)] animate-in fade-in slide-in-from-bottom-2 duration-150"
     >
       <div className="mt-0.5">{icons}</div>
       <div className="flex-1 min-w-0">
