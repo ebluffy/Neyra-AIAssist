@@ -65,6 +65,17 @@ describe('ChatPage onboarding gate (AR-80, AR-95)', () => {
     expect(result.props.user.discord_id).toBe('328884003958423552');
   });
 
+  it('renders chat with null discord id when account lookup fails', async () => {
+    vi.mocked(getAuth).mockReturnValue({
+      api: {
+        getSession: vi.fn().mockResolvedValue(session),
+        listUserAccounts: vi.fn().mockRejectedValue(new Error('boom')),
+      },
+    } as unknown as ReturnType<typeof getAuth>);
+    const result = (await ChatPage()) as React.ReactElement<{ user: typeof session.user & { discord_id?: string | null } }>;
+    expect(result.props.user.discord_id).toBeNull();
+  });
+
   it('redirects to login without a session', async () => {
     vi.mocked(getAuth).mockReturnValue({
       api: { getSession: vi.fn().mockResolvedValue(null) },

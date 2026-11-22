@@ -160,20 +160,23 @@ export function ChatView({
   const [settingsOpen, setSettingsOpen] = useState(false);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const error = params.get('error') || (params.get('link_error') ? 'link_error' : '');
-    const openAccounts = params.get('settings') === 'accounts';
-    if (openAccounts) {
+    const settingsParam = params.get('settings');
+    const openAccounts = settingsParam === 'accounts';
+    const linkFailed = params.get('link_error') === '1';
+    if (settingsParam) {
       setSettingsOpen(true);
-      setSettingsTab('accounts');
+      if (['profile', 'accounts', 'appearance', 'notifications', 'privacy', 'data', 'danger'].includes(settingsParam)) {
+        setSettingsTab(settingsParam as typeof settingsTab);
+      }
     }
-    if (error) {
+    if (linkFailed) {
       emitToast({
         title: 'Discord',
-        message: discordLinkErrorMessage(error === 'link_error' ? '' : error),
+        message: discordLinkErrorMessage(params.get('error')),
         tone: 'danger',
       });
     }
-    if (error || openAccounts) {
+    if (settingsParam || linkFailed) {
       params.delete('error');
       params.delete('link_error');
       params.delete('settings');
@@ -210,18 +213,6 @@ export function ChatView({
 
   // AR-80: серверный признак онбординга проверяется в chat/page.tsx до рендера чата.
   useEffect(() => {
-    try {
-      if (typeof window !== 'undefined') {
-        const params = new URLSearchParams(window.location.search);
-        const settingsParam = params.get('settings');
-        if (settingsParam) {
-          setSettingsOpen(true);
-          if (['profile', 'accounts', 'appearance', 'notifications', 'privacy', 'data', 'danger'].includes(settingsParam)) {
-            setSettingsTab(settingsParam as any);
-          }
-        }
-      }
-    } catch {}
     try {
       setSidebarCollapsed(window.localStorage.getItem('neyra:sidebar-collapsed') === '1');
       if (initialThreadPanelOpen === undefined) {
