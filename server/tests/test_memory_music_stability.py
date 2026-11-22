@@ -207,19 +207,55 @@ def test_music_commands_survive_media_guard(text):
     assert route == 'PLAY_MUSIC' and use
 
 
-def test_youtube_failure_falls_back_to_soundcloud_once(monkeypatch):
-    class Player:
-        def __init__(self):
-            self.played = []
-            self.queue = []
-        async def play(self, track, replace=False):
-            self.played.append(track)
+def test_fallback_meta_is_per_track():
+    service = music_module.MusicService(NS())
+    first, second = NS(identifier='a'), NS(identifier='b')
+    music_module._register_fallback_meta(service, first, 'first query')
+    music_module._register_fallback_meta(service, second, 'second query')
+    assert music_module._fallback_meta(service, first)['query'] == 'first query'
+    assert music_module._fallback_meta(service, second)['query'] == 'second query'
 
+
+@pytest.mark.parametrize(('raw', 'expected'), [
+    ('ytsearch:ревели горы', 'ревели горы'),
+    ('scsearch:lofi', 'lofi'),
+    ('https://youtu.be/abc123XYZ', ''),
+    ('', ''),
+])
+def test_clean_soundcloud_query(raw, expected):
+    assert music_module._clean_soundcloud_query(raw) == expected
+
+
+class _Queue(list):
+    async def get(self):
+        return self.pop(0) if self else None
+
+
+class _Player:
+    def __init__(self, guild_id='g'):
+        self.guild = NS(id=guild_id)
+        self.current = None
+        self.queue = _Queue()
+        self.played = []
+        self.stopped = 0
+        self.node = None
+
+    async def play(self, track, replace=False):
+        self.played.append(track)
+        self.current = track
+
+    async def stop(self, force=False):
+        self.stopped += 1
+        self.current = None
+
+
+def test_youtube_failure_falls_back_to_soundcloud_once_through_listeners(monkeypatch):
     service = music_module.MusicService(NS())
     service.play_fallbacks_by_guild['g'] = []
-    service.fallback_query_by_guild['g'] = 'там ревели горы'
-    service.fallback_sc_attempted['g'] = False
-    player = Player()
+    failed = NS(title='YT', identifier='yt-1')
+    service.fallback_meta_by_track['yt-1'] = {'query': 'там ревели горы', 'sc_attempted': False}
+    player = _Player()
+    player.current = failed
     calls = []
 
     async def fake_search(wavelink_mod, query, node):
@@ -227,12 +263,19 @@ def test_youtube_failure_falls_back_to_soundcloud_once(monkeypatch):
         return [NS(title='Там ревели горы', identifier='sc-1')]
 
     monkeypatch.setattr(music_module, '_search_tracks', fake_search)
-    assert asyncio.run(music_module._play_next_youtube_fallback(service, player, 'g')) is True
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=failed)))
+    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=failed, reason='loadFailed')))
     assert calls == ['scsearch:там ревели горы']
-    assert len(player.played) == 1
-    assert service.fallback_sc_attempted['g'] is True
-    assert asyncio.run(music_module._play_next_youtube_fallback(service, player, 'g')) is False
-    assert len(player.played) == 1
+    assert [t.identifier for t in player.played] == ['sc-1']
+    assert player.stopped == 0
+
+    sc = player.current
+    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=sc, reason='finished')))
+    assert player.stopped == 1
+    assert 'sc-1' not in service.fallback_meta_by_track
 
 
 def test_unsupported_media_is_rejected_before_voice_or_lavalink(monkeypatch):
