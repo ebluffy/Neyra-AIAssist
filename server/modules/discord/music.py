@@ -797,6 +797,44 @@ def _resolve_bot(ctx):
     return getattr(agent, "discord_client", None)
 
 
+_SOURCE_LABELS = {
+    "youtube": "YouTube",
+    "yt": "YouTube",
+    "soundcloud": "SoundCloud",
+    "sc": "SoundCloud",
+    "bandcamp": "Bandcamp",
+    "vimeo": "Vimeo",
+    "twitch": "Twitch",
+}
+
+
+def _source_label(source: Any) -> str:
+    value = str(source or "").strip().lower()
+    return _SOURCE_LABELS.get(value, value.title() if value else "неизвестно")
+
+
+async def _notify_track_source(player: Any, track: Any, text_channel_id: Any = None) -> None:
+    channel = None
+    if text_channel_id:
+        guild = getattr(player, "guild", None)
+        getter = getattr(guild, "get_channel_or_thread", None) or getattr(guild, "get_channel", None)
+        if callable(getter):
+            try:
+                channel = getter(int(text_channel_id))
+            except (TypeError, ValueError):
+                channel = None
+    channel = channel or getattr(player, "home", None) or getattr(player, "channel", None)
+    if channel is None:
+        return
+    author = str(getattr(track, "author", "") or "").strip()
+    title = str(getattr(track, "title", "") or "").strip()
+    body = f"**{author}** — **{title}**" if author and title else f"**{title or 'трек'}**"
+    try:
+        await channel.send(f"🎵 Источник: **{_source_label(getattr(track, 'source', ''))}** — {body}")
+    except Exception as ex:
+        logger.debug("discord.music source notify failed: %s", ex)
+
+
 def _track_key(track: Any) -> str:
     return str(getattr(track, "identifier", "") or getattr(track, "title", "") or id(track))
 
@@ -819,6 +857,7 @@ def _register_fallback_meta(
     track: Any,
     query: str,
     leftovers: Optional[list[Any]] = None,
+    text_channel_id: Any = None,
 ) -> None:
     query = str(query or "").strip()
     if not query:
@@ -828,6 +867,7 @@ def _register_fallback_meta(
         "query": query,
         "leftovers": list(leftovers or []),
         "sc_attempted": False,
+        "text_channel_id": str(text_channel_id or ""),
     }
     service.fallback_handled_tracks.discard(key)
     if len(service.fallback_meta_by_track) > 100:
@@ -877,6 +917,7 @@ async def _play_soundcloud_fallback(
             guild_id,
             str(getattr(tracks[0], "title", "") or ""),
         )
+        await _notify_track_source(player, tracks[0], meta.get("text_channel_id"))
         return True
     except Exception as ex:
         logger.warning("discord.music soundcloud fallback play failed | guild=%s error=%s", guild_id, ex)
@@ -903,7 +944,13 @@ async def _play_next_youtube_fallback(
         try:
             await player.play(nxt, replace=True)
             if query:
-                _register_fallback_meta(service, nxt, query, leftovers)
+                _register_fallback_meta(
+                    service,
+                    nxt,
+                    query,
+                    leftovers,
+                    text_channel_id=meta.get("text_channel_id"),
+                )
             logger.info("discord.music youtube fallback started | guild=%s track=%r", guild_id, title)
             return True
         except Exception as ex:
@@ -1241,7 +1288,13 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
             # Keep other top hits so track_exception can skip "requires login" videos.
             chosen_key = _track_key(track)
             leftovers = [t for t in pool if _track_key(t) != chosen_key]
-            _register_fallback_meta(service, track, query, leftovers)
+            _register_fallback_meta(
+                service,
+                track,
+                query,
+                leftovers,
+                text_channel_id=str(payload.get("text_channel_id") or ""),
+            )
             candidates = [
                 f"{str(getattr(t, 'author', '') or 'Unknown')} - {str(getattr(t, 'title', '') or '')}".strip()
                 for t in pool

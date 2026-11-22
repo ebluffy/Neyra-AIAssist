@@ -1196,6 +1196,10 @@ class NeyraDiscordBot(discord.Client):
                         title = "Музыка"
                         desc = base or "Готово."
                         col = COL_BRAND
+                    source = str(res_inner.get("source") or "").strip()
+                    if status in ("started", "queued") and source:
+                        from modules.discord.music import _source_label
+                        desc += f"\n\n**Источник:** {_source_label(source)}"
                     if candidates:
                         found = "\n".join([f"・ {_clip_field(str(x), 120)}" for x in candidates[:5]])
                         desc += f"\n\n**Варианты поиска:**\n{found}"
