@@ -75,7 +75,7 @@ _POLITE_RE = re.compile(r"^[,\s]*(?:-ка\b|(?:пожалуйста|плиз|т�
 
 def _strip_all_polite_tail(text: str) -> str:
     return re.sub(
-        r"(?:(?:^|[\s,]+)(?:пожалуйста|плиз|please))+[\s.!]*$",
+        r"(?:(?:^|[\s,—-]+)(?:пожалуйста|плиз|please))+[\s.!]*$",
         "",
         text,
         flags=re.IGNORECASE,
@@ -83,7 +83,7 @@ def _strip_all_polite_tail(text: str) -> str:
 
 
 def _strip_polite_tail(text: str) -> str:
-    if re.search(r"[—-]\s*(?:пожалуйста|плиз|please)[\s.!]*$", text, re.IGNORECASE):
+    if re.search(r"[—-]\s*(?:Пожалуйста|Плиз|Please)[\s.!]*$", text):
         return text
     probe = text + " "
     prefix = re.match(
@@ -277,6 +277,9 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         flags=re.IGNORECASE,
     )
     q = re.sub(r"\s+", " ", q).strip(" .,!?;:-…—")
+    volume_probe = _strip_all_polite_tail(q).strip(" .,!?;:-…—")
+    if _VOLUME_ONLY_RE.fullmatch(volume_probe):
+        return None
     q = _strip_polite_tail(q).strip(" .,!?;:-…—")
     if _VOLUME_ONLY_RE.fullmatch(q):
         return None
