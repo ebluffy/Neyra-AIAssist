@@ -817,6 +817,8 @@ pub struct SavedMessage {
     pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1230,12 +1232,21 @@ mod tests {
                 server_id: Some("101".into()),
                 turn_id: Some("test-turn".into()),
                 request_id: Some("11111111-1111-4111-8111-111111111111".into()),
+                stats: Some(serde_json::json!({
+                    "duration_ms": 8400,
+                    "llm_ms": 7200,
+                    "lanes": {"brain": {"calls": 1, "duration_ms": 3100, "model": "m"}}
+                })),
             }],
         };
         save_chats(&root, &[thread]).unwrap();
         let loaded = load_chats(&root).unwrap();
         assert!(loaded.recovery.is_none());
         assert_eq!(loaded.threads[0].messages[0].content, "секрет");
+        assert_eq!(
+            loaded.threads[0].messages[0].stats.as_ref().unwrap()["duration_ms"],
+            8400
+        );
         assert_eq!(
             loaded.threads[0].messages[0].server_id.as_deref(),
             Some("101")
@@ -1289,6 +1300,7 @@ mod tests {
                     server_id: None,
                     turn_id: None,
                     request_id: None,
+                    stats: None,
                 })
                 .collect();
             threads.push(SavedChat {
