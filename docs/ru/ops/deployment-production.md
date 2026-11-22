@@ -8,3 +8,11 @@
 - Ограничить входящий доступ: порт 8787 не открывать наружу напрямую.
 - Настроить регулярный backup (`server/data/memory/`, конфиги) и наблюдение по health/status log (`server/logs/`).
 - Фиксировать версии зависимостей и проверять smoke после обновлений.
+
+## Discord OAuth и бот
+
+- `web/.env`: `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` — OAuth-приложение сайта; `AUTH_MODE=both` (или `discord`).
+- Redirect URI в Discord Developer Portal: `https://neyra.owyx.site/api/auth/callback/discord`.
+- `server/.env`: `DISCORD_TOKEN` — токен бота для текста/музыки. Это не OAuth secret и на сайт не передаётся.
+- Проверка без входа: `POST /api/auth/sign-in/social` с `{"provider":"discord","callbackURL":"/"}` должен вернуть URL на `discord.com` с этим redirect_uri.
+- Вход через Discord — только для уже существующих email-аккаунтов (`disableImplicitSignUp`); новый пользователь сначала регистрируется по email/инвайту.

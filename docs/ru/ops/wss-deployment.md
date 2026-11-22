@@ -35,3 +35,5 @@
 ## Дашборд и дорожная карта
 
 Веб-дашборд (`server/dashboard/`) в основном использует REST `/v1`. Двусторонний WebSocket-мост дашборда и Event Bus — backlog в [`docs/PLAN.md`](../../PLAN.md). Эндпоинты `/v1/ws/chat` и `/v1/ws/audio` предназначены для программных клиентов (в т.ч. будущий `client/`).
+
+**Проверено 2026-11-22:** `wss://neyra.owyx.site/api/v1/ws/chat` проходит через Cloudflare/frp; с admin Bearer получены `hello`, `pong` и `done` с `turn_stats`.

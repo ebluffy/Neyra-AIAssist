@@ -677,7 +677,8 @@ MVP описан в §2.2 и уже работает; здесь — что ос
 - [x] frpc → frps (VPS сайта) → nginx `neyra.owyx.site` + LE; strip `/api`.
 - [x] DNS/Cloudflare; публичный dashboard доступен на `https://neyra.owyx.site`.
 - [x] Dashboard gate (session Bearer), public setup-guard, RPM через `resolve_client_ip`.
-- [ ] WSS-smoke: `wss://neyra.owyx.site/api/v1/ws/chat`.
+- [x] WSS-smoke 2026-11-22: `wss://neyra.owyx.site/api/v1/ws/chat` — `hello`/`pong`, чат `done` с `turn_stats`, Cloudflare TLS.
+- [x] Проверка подмены IP 2026-11-22: прямой запрос на IP VPS с `CF-Connecting-IP: 198.51.100.42` попал в лог ядра как подставной адрес, а порт `8080` (frps vhost) был открыт в интернет в обход nginx. Исправлено на edge: nginx `realip` с диапазонами Cloudflare (`set_real_ip_from`), `$remote_addr` вместо клиентского заголовка, `8080` закрыт в ufw. Повторный smoke: в логе реальный IP, `8080` не соединяется, публичный сайт и WS-путь живы.
 
 ### 9.3. Готово, когда (эксплуатация)
 
@@ -686,8 +687,10 @@ MVP описан в §2.2 и уже работает; здесь — что ос
 - [ ] Runtime data / secrets / модели не попадают в исходный пакет случайно.
 - [x] Локальный example enable/disable проверен через настоящий тестовый backend в desktop/mobile E2E. Клик «Вызвать» без проверки ответа не считается подтверждённым invoke; серверный `/v1/health` не подтверждает health отдельного модуля.
 - [ ] Подтвердить результат invoke и health хотя бы одного модуля. Текущий E2E проверяет только enable/disable; настоящий resident Discord остаётся в live-приёмке.
+- [ ] Discord OAuth: `DISCORD_CLIENT_ID`/`DISCORD_CLIENT_SECRET` уже в `web/.env`, authorize URL генерируется; в Discord Developer Portal добавить redirect `https://neyra.owyx.site/api/auth/callback/discord`. Вход только для существующих email-аккаунтов (`disableImplicitSignUp`); новый пользователь сначала регистрируется по инвайту/email. Бот-токен — отдельно в `server/.env` (`DISCORD_TOKEN`), не OAuth secret.
 - [x] Документированы установка и восстановление после backup: `docs/{en,ru}/setup/quickstart.md`, `docs/{en,ru}/ops/deployment-local.md`, `docs/{en,ru}/ops/deployment-production.md`, `docs/{en,ru}/ops/backup-restore.md`.
-- [ ] WSS-smoke по публичному URL зелёный.
+- [x] WSS-smoke по публичному URL зелёный (2026-11-22, hello/pong/chat/turn_stats).
+- [x] GitHub history scan 2026-11-22: по всем 900 коммитам `git grep -l -I -E` искал `ya29.`/Google refresh `1//`, `AIza`, `ghp_`/`github_pat_`, `sk-or-v1-`, Discord bot token; реальных значений нет (единственное совпадение `ghp_` — redaction-тест). В удалённом vendored `Vocard/application.yml` был только дефолтный `youshallnotpass`. Репозиторий публичный, но ключей в истории нет.
 - [x] Преддеплойная правка 2026-10-19: исторический wipe PR #22 отделён от обычного обновления. Данные, конфиги и persona сохраняются; перед обновлением обязательны backup и проба миграций на копии.
 - [x] `scripts/db_migrations.py --status` проверяет настроенную БД read-only через runtime loader; exit codes 0/1/2, offline-регрессии есть.
 

@@ -39,46 +39,129 @@ DNS **не** в yaml Нейры — у провайдера.
 1. Cloudflare DNS зоны (например `owyx.site`).
 2. Запись **A**: Name `neyra` → IP **VPS**.
 3. Прописать `api.public_base_url` в `server/config/server.yaml`.
-4. На VPS: снаружи **80/443**; поднять **frps + Caddy/nginx**. Порт `:8787` домашнего сервера в интернет **не** открывать.
+4. На VPS: **80/443 только для диапазонов Cloudflare** (https://www.cloudflare.com/ips/), если домен за orange-cloud; без Cloudflare — для всех. Поднять **frps + Caddy/nginx**. Порт `:8787` домашнего сервера в интернет **не** открывать.
 5. Токены — в `server/.env` на домашнем сервере (`API_TOKEN` / `API_KEY`); публичный URL — в yaml.
+
+### frpc: два HTTP-vhost
+
+На домашнем сервере публикуются два proxy: ядро `8787` и сайт `3000`. На VPS edge различает их по `Host`:
+
+```toml
+[[proxies]]
+name = "neyra-core"
+type = "http"
+localIP = "127.0.0.1"
+localPort = 8787
+customDomains = ["neyra-core-internal.owyx.site"]
+
+[[proxies]]
+name = "neyra-web"
+type = "http"
+localIP = "127.0.0.1"
+localPort = 3000
+customDomains = ["neyra-web-internal.owyx.site"]
+```
+
+`CORE_UPSTREAM`/`WEB_UPSTREAM` — адрес frps HTTP vhost на VPS (обычно `127.0.0.1:8080`), `CORE_HOST`/`WEB_HOST` — соответствующие `customDomains`. Если оба процесса на VPS: nginx — `proxy_set_header Host $host;`, Caddy — уберите строки `header_up Host …` (Caddy по умолчанию передаёт исходный Host). Ядро слушает `127.0.0.1:8787`, сайт — `127.0.0.1:3000`.
 
 ## Caddy (frp — upstream = vhost frps)
 
-Подставьте свой порт HTTP vhost frps вместо `8080`. `handle_path /api/*` снимает публичный префикс `/api`, чтобы приложение видело `/v1/...`.
+Подставьте upstreams ядра и сайта. Публичный префикс `/api` снимается только для `/api/v1/*`; `/api/auth/*` и BFF сайта сохраняют его. **За Cloudflare** закройте 80/443 диапазонами Cloudflare: это второй слой и защита от обхода Cloudflare напрямую на IP VPS. Саму подмену `CF-Connecting-IP` закрывают `trusted_proxies` + `header_up` ниже; без Cloudflare порты открыты, но заголовок всё равно перезаписывается.
+
+```caddy
+{
+  # Доверяем только Cloudflare: {client_ip} иначе = адрес прямого клиента.
+  servers {
+    trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+    client_ip_headers CF-Connecting-IP
+    trusted_proxies_strict
+  }
+}
+```
+
+`client_ip_headers`/`trusted_proxies_strict` — Caddy ≥ 2.8.
 
 ```caddy
 neyra.owyx.site {
   encode gzip
-  # Upstream = HTTP vhost frps на этом VPS (НЕ локальный uvicorn :8787)
-  handle_path /api/* {
-    reverse_proxy 127.0.0.1:8080
+  # CORE_UPSTREAM/WEB_UPSTREAM — адреса frps HTTP-vhost на VPS; дома localPort 8787/3000.
+  # /api/v1 — ядро; /api снимает публичный префикс.
+  handle /api/v1/* {
+    uri strip_prefix /api
+    reverse_proxy http://CORE_UPSTREAM {
+      header_up Host CORE_HOST
+      header_up X-Real-IP {client_ip}
+      header_up CF-Connecting-IP {client_ip}
+    }
+  }
+  # Better Auth callback должен остаться на сайте, без срезания /api.
+  handle /api/auth/* {
+    reverse_proxy http://WEB_UPSTREAM {
+      header_up Host WEB_HOST
+      header_up X-Real-IP {client_ip}
+      header_up CF-Connecting-IP {client_ip}
+    }
+  }
+  # BFF чата/вложений и UI сайта.
+  handle /api/* {
+    reverse_proxy http://WEB_UPSTREAM {
+      header_up Host WEB_HOST
+      header_up X-Real-IP {client_ip}
+      header_up CF-Connecting-IP {client_ip}
+    }
   }
   handle {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy http://WEB_UPSTREAM {
+      header_up Host WEB_HOST
+      header_up X-Real-IP {client_ip}
+      header_up CF-Connecting-IP {client_ip}
+    }
   }
 }
 ```
 
-WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?token=` — маскируйте в access-логах.
+WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?token=` — маскируйте в access-логах. Без Cloudflare блок `trusted_proxies` не срабатывает: `{client_ip}` = прямой peer, а `header_up CF-Connecting-IP {client_ip}` перезаписывает присланный клиентом заголовок, поэтому ядро не примет подделку.
 
 ## nginx (frp — upstream = vhost frps)
 
-За Cloudflare (orange-cloud) edge должен **перезаписывать** клиентский IP и прокидывать его в frp:
+За Cloudflare (orange-cloud) `CF-Connecting-IP` принимается **только от доверенного edge**, иначе его подделает любой, кто придёт на IP VPS напрямую. Используйте `realip`: он подменяет `$remote_addr` лишь когда peer входит в диапазоны Cloudflare (список: https://www.cloudflare.com/ips/).
 
 ```nginx
-map $http_cf_connecting_ip $neyra_client_ip {
-    ""      $remote_addr;
-    default $http_cf_connecting_ip;
-}
+# /etc/nginx/conf.d/cloudflare-realip.conf — http-контекст
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
+set_real_ip_from 2400:cb00::/32;
+set_real_ip_from 2606:4700::/32;
+set_real_ip_from 2803:f800::/32;
+set_real_ip_from 2405:b500::/32;
+set_real_ip_from 2405:8100::/32;
+set_real_ip_from 2a06:98c0::/29;
+set_real_ip_from 2c0f:f248::/32;
+real_ip_header CF-Connecting-IP;
 ```
 
-В `location` (и `/api/`, и `/`):
+Во всех `location` (`/api/v1/`, `/api/auth/`, `/api/`, `/`):
 
 ```nginx
-proxy_set_header CF-Connecting-IP $neyra_client_ip;
-proxy_set_header X-Real-IP $neyra_client_ip;
-proxy_set_header X-Forwarded-For $neyra_client_ip;
+proxy_set_header CF-Connecting-IP $remote_addr;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
 ```
+
+Прямой запрос на IP VPS сохраняет реальный peer в `$remote_addr`, а присланный клиентом `CF-Connecting-IP` игнорируется. Firewall 80/443 по диапазонам Cloudflare остаётся вторым слоем (и обязателен, если вместо `realip` оставляете `map $http_cf_connecting_ip`). Закрыть vhost от прямых запросов можно и на уровне nginx, не трогая 80 (ACME): `geo $realip_remote_addr $neyra_edge { default 0; <те же диапазоны> 1; }` и в `server` — `if ($neyra_edge = 0) { return 403; }`.
 
 API доверяет `CF-Connecting-IP` / `X-Real-IP` **только** когда socket peer = loopback (типичный frpc→uvicorn), и **игнорирует** edge-значение, если оно само loopback (`127.0.0.1` / `::1`). Сырой `X-Forwarded-For` от клиента **не** читается: uvicorn `proxy_headers=False`, HTTP RPM и login rate-limit используют тот же `resolve_client_ip`. `POST /v1/dashboard/auth/setup` без Bearer разрешён только с **консольного** loopback (peer local **и** нет CF/X-Real) — подмена `CF-Connecting-IP: 127.0.0.1` не открывает setup. Smoke: неверный login с интернета → в логе ядра `dashboard login failed ip=<реальный клиент>`, не `127.0.0.1` и не подставной XFF.
 
@@ -87,56 +170,107 @@ server {
   listen 443 ssl http2;
   server_name neyra.owyx.site;
 
-  # Upstream = HTTP vhost frps (пример :8080), не uvicorn :8787
-  location /api/ {
+  # Заголовки клиента — один include, чтобы не дублировать в каждом location.
+  # include snippets/neyra-proxy-headers.conf;
+
+  # Ядро: срезаем /api, WebSocket Upgrade проходит дальше.
+  location /api/v1/ {
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header CF-Connecting-IP $neyra_client_ip;
-    proxy_set_header X-Real-IP $neyra_client_ip;
-    proxy_set_header X-Forwarded-For $neyra_client_ip;
+    proxy_set_header Host CORE_HOST;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
-    proxy_pass http://127.0.0.1:8080/;
+    proxy_pass http://CORE_UPSTREAM/;
+  }
+
+  # Better Auth callback — на сайт, префикс /api не срезается.
+  location /api/auth/ {
+    proxy_http_version 1.1;
+    proxy_set_header Host WEB_HOST;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_pass http://WEB_UPSTREAM;
+  }
+
+  # BFF чата/вложений и остальные /api сайта.
+  location /api/ {
+    proxy_http_version 1.1;
+    proxy_set_header Host WEB_HOST;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_pass http://WEB_UPSTREAM;
   }
 
   location / {
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header CF-Connecting-IP $neyra_client_ip;
-    proxy_set_header X-Real-IP $neyra_client_ip;
-    proxy_set_header X-Forwarded-For $neyra_client_ip;
+    proxy_set_header Host WEB_HOST;
+    proxy_set_header CF-Connecting-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
-    proxy_pass http://127.0.0.1:8080;
+    proxy_pass http://WEB_UPSTREAM;
   }
 }
 ```
 
-Trailing slash у `proxy_pass` под `/api/` снимает префикс `/api`.
+Trailing slash у `proxy_pass` под `/api/v1/` снимает префикс `/api`; `/api/auth` и `/api/` сохраняют префикс.
 
 ### Smoke rate-limit / client IP (публичный хост)
 
-После map: `POST /v1/dashboard/auth/login` с заведомо неверным ключом → **401**. В логе ядра на домашнем сервере должно быть:
+После настройки `realip`/`trusted_proxies`: `POST /v1/dashboard/auth/login` с заведомо неверным ключом → **401**. В логе ядра на домашнем сервере должно быть:
 
 `dashboard login failed ip=<реальный клиент>`
 
-не `127.0.0.1`. На `neyra.owyx.site` smoke (2026-10-01) подтвердил реальный IP за Cloudflare/frp.
+не `127.0.0.1`. На `neyra.owyx.site` smoke (2026-10-01) подтвердил реальный IP за Cloudflare/frp. Прямой запрос на VPS (за Cloudflare — проверка firewall, без Cloudflare — см. ниже):
+
+```bash
+curl -sk --resolve neyra.owyx.site:443:<IP VPS> -X POST \
+  https://neyra.owyx.site/api/v1/dashboard/auth/login \
+  -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 203.0.113.7' \
+  -d '{"key":"smoke-wrong-key"}'
+```
+
+**За Cloudflare:** запрос с `--resolve` должен **не соединиться** (timeout/connection refused) — это успех. Любой HTTP-ответ на прямой IP VPS означает, что firewall не настроен. Подмену проверяйте отдельно через Cloudflare, без `--resolve`:
+
+```bash
+curl -sk -X POST https://neyra.owyx.site/api/v1/dashboard/auth/login \
+  -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 203.0.113.7' \
+  -d '{"key":"smoke-wrong-key"}'
+```
+
+Ожидание: `401 unauthorized` и в логе `dashboard login failed ip=<твой реальный IP>`, не `203.0.113.7`. Повторите с `-H 'X-Forwarded-For: 203.0.113.7'` — IP в логе не должен измениться (Caddy: `client_ip_headers CF-Connecting-IP`; nginx: сырой XFF не читается).
+
+**Без Cloudflare:** `--resolve` не нужен; тот же POST должен дать `401`, а в логе — твой IP, не `203.0.113.7`. В обоих режимах ключ дашборда должен быть задан (иначе `400 setup_required`), а повторный smoke без паузы может дать `429 rate_limited` — это значит, что проверка не состоялась.
 
 ## Альтернатива: процесс Neyra на VPS (без frp)
 
-Если uvicorn на том же VPS, что и Caddy/nginx, укажите upstream `127.0.0.1:8787` вместо порта frps. Это запасной стенд (демо / CI), не канон Этапа 3 для персонального ассистента — см. [`docs/PLAN.md`](../../PLAN.md) §3 и Этап 4.
+Если оба процесса на VPS, укажите для `/api/v1/*` upstream `127.0.0.1:8787`, для остального — `127.0.0.1:3000`. Это запасной стенд (демо / CI), не канон Этапа 3 для персонального ассистента — см. [`docs/PLAN.md`](../../PLAN.md) §3 и Этап 4.
 
 ## Перед выходом в интернет
 
 - `API_TOKEN` или `API_KEY` в `server/.env` на домашнем сервере.
-- TLS на edge VPS; firewall 80/443; `:8787` дома только через frpc (или localhost, если процесс на VPS).
+- TLS на edge VPS. Клиентский IP — через `realip`/`trusted_proxies` (только Cloudflare), а не через сырой заголовок клиента. За Cloudflare 80/443 дополнительно закрыты диапазонами CF; `:8787`/`:3000` дома только через frpc (или `127.0.0.1`, если оба процесса на VPS), `:8080` frps — не в интернет.
 - `api.public_base_url` совпадает с DNS (в examples по умолчанию пусто).
 - Uvicorn: `proxy_headers=False` (peer = TCP; клиентский IP только через CF/X-Real в `resolve_client_ip`).
 - Ключ доступа дашборда задан до публикации SPA (см. [web-ui](../architecture/web-ui.md)).
 - Smoke WebSocket: `wss://neyra.owyx.site/api/v1/ws/chat` доходит до Control API.
 
-## После P6 (веб v2) схема меняется
+## Текущая схема web v2 (2026-11-22)
 
-Документ выше описывает текущую схему, где `/` — старый dashboard. В этапе P6 ([`docs/ru/architecture/web-v2.md`](../architecture/web-v2.md) §13, D14) маршруты на краю становятся такими: `/` → web-клиент, `/v1/desktop/*` → ядро, `/legacy/*` → старый dashboard до паритета, а `/v1/chat`, `/v1/ws/chat` и `/v1/memory/*` закрыты `deny` снаружи. Откат — вернуть `/` на старый dashboard, оставив web запущенным для диагностики.
+- На домашнем сервере: ядро `127.0.0.1:8787`, сайт `127.0.0.1:3000`; на VPS — только frps/Caddy/nginx.
+- `/` и `/api/*` (кроме `/api/v1/*`) → сайт Next.js.
+- `/api/auth/*` → сайт без срезания `/api`; redirect URI Discord: `https://neyra.owyx.site/api/auth/callback/discord`.
+- `/api/v1/*` → ядро на домашнем сервере со срезанием `/api`; edge отправляет `Host` внутреннего vhost ядра.
+- WSS приложения: `wss://neyra.owyx.site/api/v1/ws/chat`, проверено 2026-11-22.
+- `/legacy` остаётся на сайте до отдельного решения владельца.

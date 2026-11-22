@@ -26,3 +26,5 @@ Full Event Bus ↔ dashboard WebSocket bridge is backlog; until then the React S
 
 - WebSocket chat requires **admin** (same as `POST /v1/chat`): `Authorization: Bearer` or `?token=` (prefer header).
 - With public exposure, tokens in `server/.env` are mandatory; loopback-only anonymous access does not apply.
+
+**Verified 2026-11-22:** `wss://neyra.owyx.site/api/v1/ws/chat` works through Cloudflare/frp; with admin Bearer it returns `hello`, `pong`, and `done` with `turn_stats`.
