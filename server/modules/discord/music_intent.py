@@ -64,6 +64,10 @@ _COMPLAINT_RE = re.compile(
     re.IGNORECASE,
 )
 _VOLUME_RE = re.compile(r"\b(?:по)?(?:громче|тише)\b", re.IGNORECASE)
+_PLAY_ANY_RE = re.compile(
+    r"\b(?:включи|включите|включай|вруби|врубай|врубите|поставь|поставьте|заиграй|заиграйте|play)\b",
+    re.IGNORECASE,
+)
 _ADDRESS_RE = re.compile(r"^[,\s]*(?:(?:нейра|neyra)[\s,:;-]*)+", re.IGNORECASE)
 _POLITE_RE = re.compile(r"^[,\s]*(?:-ка\b|(?:пожалуйста|плиз|там)\b)[\s,.:;-]*", re.IGNORECASE)
 _MUSIC_VERB_STEM_RE = re.compile(
@@ -169,7 +173,7 @@ def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
     content = text or ""
     end = imperative_play_end(content, soft=True)
     rest = content[end:].strip() if end else content.strip()
-    if re.match(r"(?:по)?(?:громче|тише)\b", rest, re.IGNORECASE):
+    if re.fullmatch(r"(?:по)?(?:громче|тише)(?:\s+музык\w*)?", rest, re.IGNORECASE):
         return False
     if end:
         return True
@@ -246,12 +250,21 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         flags=re.IGNORECASE,
     )
     q = re.sub(r"\s+", " ", q).strip(" .,!?;:-")
-    if re.match(r"(?:по)?(?:громче|тише)\b", q, re.IGNORECASE):
+    if re.fullmatch(r"(?:по)?(?:громче|тише)(?:\s+музык\w*)?", q, re.IGNORECASE):
         return None
-    q = re.sub(r"\s+(?:по)?(?:громче|тише)\b.*$", "", q, flags=re.IGNORECASE).strip()
+    q = re.sub(r"(?:,\s*|(?<=\s)по)(?:громче|тише)\s*$", "", q, flags=re.IGNORECASE).strip()
+    q = q.strip(" .,!?;:-—")
     plain_q = _URL_RE.sub(" ", q)
     deferred = bool(_COMPLAINT_RE.search(plain_q))
-    complaint_zone = raw[:end] if end else plain_q
+    if end:
+        complaint_zone = raw[:end]
+    elif wants_voice_play:
+        voice = _VOICE_JOIN_RE.match(raw)
+        after_voice = voice.end() if voice else 0
+        play_verb = _PLAY_ANY_RE.search(raw, after_voice)
+        complaint_zone = raw[: play_verb.start()] if play_verb else raw
+    else:
+        complaint_zone = plain_q
     negated = bool(
         re.search(r"\bне\s+(?:надо|нужно|включай|ставь|играй)\b", complaint_zone, re.IGNORECASE)
         or re.search(r"\b(?:почему|зачем)\b", complaint_zone, re.IGNORECASE)

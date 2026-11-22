@@ -217,6 +217,7 @@ def test_gif_urls_and_negations_cannot_reenter_classifier_music_path(text):
     'почему тебя нет в войсе, я хотел музыку',
     'ты не зашла в войс',
     'ты почему не в войсе',
+    'зайди в войс, почему молчишь',
     'ты включишь музыку или нет?',
     'ты включишь музыку завтра?',
     'можно включить погромче?',
@@ -253,6 +254,9 @@ def test_imperative_prefixes_stay_hard_path(text):
     ('включи Сплин — Выхода нет', 'Сплин — Выхода нет'),
     ('включи Земфира — Почему', 'Земфира — Почему'),
     ('включи песню Не надо', 'Не надо'),
+    ('включи Ленинград — Тише', 'Ленинград — Тише'),
+    ('включи Тише воды ниже травы', 'Тише воды ниже травы'),
+    ('зайди в войс и включи Земфира — Почему', 'Земфира — Почему'),
 ])
 def test_complaint_inside_song_title_defers_to_classifier(text, query):
     candidate = candidate_music_intent(text)
@@ -318,6 +322,7 @@ def test_future_request_needs_classifier():
     ('поставь Тамару', 'Тамару'),
     ('включи-ка Каста', 'Каста'),
     ('включи lofi потише', 'lofi'),
+    ('включи lofi, тише', 'lofi'),
     ('зайди в войс и включи музыку', 'upbeat happy music'),
 ])
 def test_music_query_is_clean(text, query):
