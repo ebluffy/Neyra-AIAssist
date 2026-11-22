@@ -196,11 +196,12 @@ Trailing slash у `proxy_pass` под `/api/v1/` снимает префикс `
 не `127.0.0.1`. На `neyra.owyx.site` smoke (2026-10-01) подтвердил реальный IP за Cloudflare/frp. Проверка подделки:
 
 ```bash
-curl -sk --resolve neyra.owyx.site:443:<IP VPS> https://neyra.owyx.site/api/v1/health/live \
-  -H 'CF-Connecting-IP: 203.0.113.7'
+curl -sk --resolve neyra.owyx.site:443:<IP VPS> -X POST \
+  https://neyra.owyx.site/api/v1/dashboard/auth/login \
+  -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 203.0.113.7' -d '{}'
 ```
 
-Ожидание: firewall отклоняет соединение, либо в логах ядра реальный IP, но не `203.0.113.7`.
+Ожидание: firewall отклоняет соединение, **или** в логе ядра `dashboard login failed ip=<твой реальный IP>`, но не `203.0.113.7`. Если прямой запрос к `/api/v1/health/live` на IP VPS вернул 200 — firewall не настроен.
 
 ## Альтернатива: процесс Neyra на VPS (без frp)
 
@@ -209,7 +210,7 @@ curl -sk --resolve neyra.owyx.site:443:<IP VPS> https://neyra.owyx.site/api/v1/h
 ## Перед выходом в интернет
 
 - `API_TOKEN` или `API_KEY` в `server/.env` на домашнем сервере.
-- TLS на edge VPS; 80/443 — только Cloudflare ranges при orange-cloud (иначе все), иначе не доверять `CF-Connecting-IP`; `:8787` дома только через frpc.
+- TLS на edge VPS. За Cloudflare — 80/443 только с диапазонов Cloudflare; без Cloudflare — 80/443 всем, а Caddy/nginx берут `{remote_host}`/`$remote_addr` и вырезают `CF-Connecting-IP`. `:8787`/`:3000` дома только через frpc (или `127.0.0.1`, если оба процесса на VPS).
 - `api.public_base_url` совпадает с DNS (в examples по умолчанию пусто).
 - Uvicorn: `proxy_headers=False` (peer = TCP; клиентский IP только через CF/X-Real в `resolve_client_ip`).
 - Ключ доступа дашборда задан до публикации SPA (см. [web-ui](../architecture/web-ui.md)).

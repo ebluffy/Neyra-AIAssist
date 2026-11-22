@@ -173,11 +173,12 @@ Trailing slash on `proxy_pass` under `/api/v1/` strips `/api`; `/api/auth` and `
 ## Public client-IP smoke
 
 ```bash
-curl -sk --resolve neyra.owyx.site:443:<VPS IP> https://neyra.owyx.site/api/v1/health/live \
-  -H 'CF-Connecting-IP: 203.0.113.7'
+curl -sk --resolve neyra.owyx.site:443:<VPS IP> -X POST \
+  https://neyra.owyx.site/api/v1/dashboard/auth/login \
+  -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 203.0.113.7' -d '{}'
 ```
 
-Expect the firewall to reject the connection, or the core log to show the real IP, never `203.0.113.7`.
+Expect the firewall to reject the connection, **or** the core log to show `dashboard login failed ip=<real IP>`, never `203.0.113.7`. If a direct request to `/api/v1/health/live` on the VPS IP returns 200, the firewall is not configured.
 
 ## Alternative: Neyra process on the VPS (no frp)
 
@@ -186,8 +187,7 @@ If both processes run on the VPS, use upstream `127.0.0.1:8787` for `/api/v1/*` 
 ## Checklist before opening to the internet
 
 - `API_TOKEN` or `API_KEY` in home-server `server/.env` (required for non-loopback / public access).
-- TLS on the VPS edge.
-- TLS on the VPS edge; 80/443 only from Cloudflare ranges behind orange-cloud (otherwise all), or do not trust `CF-Connecting-IP`; home-server `:8787` only via frpc.
+- TLS on the VPS edge. Behind Cloudflare, allow 80/443 only from Cloudflare ranges; without Cloudflare, allow all and make Caddy/nginx use `{remote_host}`/`$remote_addr` and strip `CF-Connecting-IP`. Home `:8787`/`:3000` only via frpc (or `127.0.0.1` when both run on the VPS).
 - `api.public_base_url` matches DNS (empty in examples by default).
 - Uvicorn: `proxy_headers=False` (peer = TCP; client IP only via CF/X-Real in `resolve_client_ip`).
 - Dashboard access key configured before exposing the SPA (see [web-ui](../architecture/web-ui.md)).
