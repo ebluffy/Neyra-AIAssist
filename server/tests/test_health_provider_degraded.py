@@ -343,3 +343,22 @@ def test_check_lavalink_status_code_matches_live_node(monkeypatch):
     assert result["status_code"] == 200
     assert result["nodes_ok"] == 1
     assert result["nodes_total"] == 2
+
+
+def test_check_lavalink_failure_fields_describe_same_node(monkeypatch):
+    from core.runtime.health import check_lavalink
+
+    config = {"discord": {"music": {"nodes": [{"uri": "http://one:2333"}, {"uri": "http://two:2333"}]}}}
+    calls = {"n": 0}
+
+    def fake_get(url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("down")
+        return SimpleNamespace(status_code=500, headers={}, json=lambda: {})
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    result = check_lavalink(config)
+    assert result["ok"] is False
+    assert result["error"] == "RuntimeError"
+    assert "status_code" not in result

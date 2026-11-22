@@ -54,16 +54,16 @@ def check_lavalink(config: dict) -> dict:
         import httpx
 
         deadline = time.monotonic() + 2.0
-        errors: list[str] = []
+        first_failure: tuple[str, int | None] | None = None
         live_status = None
-        first_status = None
         version = None
         plugins: list[str] = []
         ok_count = 0
         for node in nodes:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                errors.append("timeout")
+                if first_failure is None:
+                    first_failure = ("timeout", None)
                 break
             uri = str(node.get("uri") or "").strip().rstrip("/")
             password = str(node.get("password") or "").strip()
@@ -77,10 +77,9 @@ def check_lavalink(config: dict) -> dict:
                     headers={"Authorization": password} if password else {},
                     timeout=phase_timeout,
                 )
-                if first_status is None:
-                    first_status = response.status_code
                 if response.status_code != 200:
-                    errors.append(f"http {response.status_code}")
+                    if first_failure is None:
+                        first_failure = (f"http {response.status_code}", response.status_code)
                     continue
                 payload = (
                     response.json()
@@ -98,22 +97,27 @@ def check_lavalink(config: dict) -> dict:
                     if isinstance(item, dict) and item.get("name")
                 ]
             except Exception as error:
-                errors.append(type(error).__name__)
+                if first_failure is None:
+                    first_failure = (type(error).__name__, None)
         result = {
             "checked": True,
             "ok": ok_count > 0,
             "nodes_total": len(nodes),
             "nodes_ok": ok_count,
         }
-        status_code = live_status if ok_count > 0 else first_status
-        if status_code is not None:
-            result["status_code"] = status_code
+        if ok_count > 0:
+            if live_status is not None:
+                result["status_code"] = live_status
+        elif first_failure is not None:
+            result["error"], status_code = first_failure
+            if status_code is not None:
+                result["status_code"] = status_code
+        else:
+            result["error"] = "unavailable"
         if version is not None:
             result["version"] = version
         if plugins:
             result["plugins"] = plugins
-        if ok_count == 0:
-            result["error"] = errors[0] if errors else "unavailable"
         return result
     except Exception as e:
         logger.warning("lavalink health check failed", exc_info=True)
