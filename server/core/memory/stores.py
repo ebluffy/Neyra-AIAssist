@@ -536,6 +536,39 @@ class LongTermMemory:
             logger.error("ChromaDB get failed: %s", e)
             return []
 
+    def migrate_user_metadata(
+        self, old_user_id: str, new_user_id: str, ids: Optional[list[str]] = None
+    ) -> list[str]:
+        """Rewrite Chroma metadata owner without re-embedding; returns migrated ids."""
+        old = str(old_user_id or "").strip()
+        new = str(new_user_id or "").strip()
+        if not old or not new or old == new:
+            return []
+        self._init()
+        if self._collection is None:
+            if getattr(self, "rag_enabled", True):
+                raise RuntimeError("semantic_collection_unavailable")
+            return []
+        if ids is not None and not ids:
+            return []
+        wanted = {str(x) for x in ids} if ids is not None else None
+        batch = self._collection.get(where={"user_id": old}, include=["metadatas"])
+        got_ids = batch.get("ids") or []
+        metas = batch.get("metadatas") or []
+        changed_ids: list[str] = []
+        changed_metas: list[dict[str, Any]] = []
+        for i, doc_id in enumerate(got_ids):
+            if wanted is not None and doc_id not in wanted:
+                continue
+            meta = dict(metas[i] or {}) if i < len(metas) else {}
+            if str(meta.get("user_id") or "") == old:
+                meta["user_id"] = new
+                changed_ids.append(doc_id)
+                changed_metas.append(meta)
+        if changed_ids:
+            self._collection.update(ids=changed_ids, metadatas=changed_metas)
+        return changed_ids
+
     def select_older_than(
         self,
         older_than_days: float,

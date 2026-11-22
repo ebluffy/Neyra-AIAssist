@@ -4,6 +4,7 @@ import { getAuth } from '../../../../lib/auth';
 import { readWebCoreEnv } from '../../../../lib/core-admin';
 import { readChatEnv } from '../../../../lib/env';
 import { createIdentityToken } from '../../../../lib/identity';
+import { getLinkedDiscordId } from '../../../../lib/discord-account';
 import { readBodyWithLimit } from '../../../../lib/request-body';
 import {
   beginUpload,
@@ -157,6 +158,7 @@ export async function POST(request: Request) {
     // Канал тот же, что у чата: web:<user.id>:<chat_id>. Клиент не может подставить чужой.
     const channelId = `web:${session.user.id}:${chatId}`;
     let identityJwt: string;
+    const discordId = await getLinkedDiscordId(request.headers);
     try {
       identityJwt = await createIdentityToken(
         {
@@ -164,6 +166,7 @@ export async function POST(request: Request) {
           role: session.user.role,
           name: session.user.name,
           email: session.user.email,
+          discord_id: discordId,
         },
         env.chat.jwtSecret,
         { chat_id: channelId, task: 'attachment', issuer: env.chat.jwtIssuer },

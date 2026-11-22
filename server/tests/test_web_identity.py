@@ -38,6 +38,17 @@ def headers(auth_headers, signed=None, role='maint'):
     return {**auth_headers[role], 'X-Neyra-Identity': token() if signed is None else signed}
 
 
+def test_discord_id_claim_is_optional_and_validated():
+    from core.api.web_identity import InvalidWebIdentity, verify_web_identity
+
+    identity = verify_web_identity(token(claims(discord_id="discord-user-1")))
+    assert identity.discord_id == "discord-user-1"
+    assert verify_web_identity(token(claims())).discord_id is None
+    for bad in (123, "", "   ", "x" * 65):
+        with pytest.raises(InvalidWebIdentity):
+            verify_web_identity(token(claims(discord_id=bad)))
+
+
 def test_me_uses_production_mapper(client, auth_headers):
     response = client.get('/v1/web/me', headers=headers(auth_headers))
     assert response.status_code == 200

@@ -24,6 +24,13 @@ describe('web/lib/identity', () => {
     vi.unstubAllEnvs();
   });
 
+  it('includes discord_id only when the account is linked', () => {
+    const linked = buildIdentityClaims({ ...dummyUser, discord_id: '123456789' }, { now: 1700000000 });
+    expect(linked.discord_id).toBe('123456789');
+    const unlinked = buildIdentityClaims({ ...dummyUser, discord_id: null }, { now: 1700000000 });
+    expect(unlinked.discord_id).toBeUndefined();
+  });
+
   it('builds identity claims with 60s TTL, iss, and correct fields (§8)', () => {
     const fixedNow = 1700000000;
     const claims = buildIdentityClaims(dummyUser, {
