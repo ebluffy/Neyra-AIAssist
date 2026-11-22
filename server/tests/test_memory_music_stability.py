@@ -226,8 +226,57 @@ def test_clean_soundcloud_query(raw, expected):
     assert music_module._clean_soundcloud_query(raw) == expected
 
 
+def test_failed_track_advances_queue_when_fallback_is_empty(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='YT', identifier='yt-2')
+    service.fallback_meta_by_track['yt-2'] = {'query': 'nothing', 'leftovers': [], 'sc_attempted': False}
+    queued = NS(title='Next', identifier='next-1')
+    player = _Player()
+    player.current = failed
+    player.queue.append(queued)
+
+    async def empty_search(wavelink_mod, query, node):
+        return []
+
+    monkeypatch.setattr(music_module, '_search_tracks', empty_search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=failed)))
+    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=failed, reason='loadFailed')))
+    assert [t.identifier for t in player.played] == ['next-1']
+    assert player.stopped == 0
+
+
+def test_fallback_uses_leftovers_of_the_failed_track(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='A', identifier='a-1')
+    other_hit = NS(title='B hit', identifier='b-hit')
+    own_hit = NS(title='A hit', identifier='a-hit')
+    service.fallback_meta_by_track['a-1'] = {
+        'query': 'track a',
+        'leftovers': [own_hit],
+        'sc_attempted': False,
+    }
+    service.fallback_meta_by_track['b-1'] = {
+        'query': 'track b',
+        'leftovers': [other_hit],
+        'sc_attempted': False,
+    }
+    player = _Player()
+    player.current = failed
+
+    async def no_search(wavelink_mod, query, node):
+        raise AssertionError('soundcloud must not be needed')
+
+    monkeypatch.setattr(music_module, '_search_tracks', no_search)
+    assert asyncio.run(music_module._play_next_youtube_fallback(service, player, 'g', failed)) is True
+    assert [t.identifier for t in player.played] == ['a-hit']
+    assert service.fallback_meta_by_track['a-hit']['query'] == 'track a'
+
+
 class _Queue(list):
-    async def get(self):
+    def get(self):
         return self.pop(0) if self else None
 
 
@@ -251,7 +300,6 @@ class _Player:
 
 def test_youtube_failure_falls_back_to_soundcloud_once_through_listeners(monkeypatch):
     service = music_module.MusicService(NS())
-    service.play_fallbacks_by_guild['g'] = []
     failed = NS(title='YT', identifier='yt-1')
     service.fallback_meta_by_track['yt-1'] = {'query': 'там ревели горы', 'sc_attempted': False}
     player = _Player()
@@ -275,7 +323,8 @@ def test_youtube_failure_falls_back_to_soundcloud_once_through_listeners(monkeyp
     sc = player.current
     asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=sc, reason='finished')))
     assert player.stopped == 1
-    assert 'sc-1' not in service.fallback_meta_by_track
+    assert 'yt-1' not in service.fallback_meta_by_track
+    assert 'yt-1' not in service.fallback_handled_tracks
 
 
 def test_unsupported_media_is_rejected_before_voice_or_lavalink(monkeypatch):

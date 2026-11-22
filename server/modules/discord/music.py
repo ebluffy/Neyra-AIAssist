@@ -628,8 +628,6 @@ class MusicService:
         self.paused_by_guild: dict[str, bool] = {}
         self.recent_requests: dict[str, float] = {}
         self.last_random_pick_by_guild: dict[str, str] = {}
-        # YouTube often rejects first hit ("requires login") — keep sibling search results.
-        self.play_fallbacks_by_guild: dict[str, list[Any]] = {}
         # Per-track source query: a queued track keeps its own SoundCloud retry.
         self.fallback_meta_by_track: dict[str, dict[str, Any]] = {}
         # One fallback reaction per failed track: TrackException + TrackEnd both arrive.
@@ -807,12 +805,21 @@ def _fallback_meta(service: MusicService, track: Any) -> dict[str, Any]:
     return service.fallback_meta_by_track.get(_track_key(track)) or {}
 
 
-def _register_fallback_meta(service: MusicService, track: Any, query: str) -> None:
+def _register_fallback_meta(
+    service: MusicService,
+    track: Any,
+    query: str,
+    leftovers: Optional[list[Any]] = None,
+) -> None:
     query = str(query or "").strip()
     if not query:
         return
     key = _track_key(track)
-    service.fallback_meta_by_track[key] = {"query": query, "sc_attempted": False}
+    service.fallback_meta_by_track[key] = {
+        "query": query,
+        "leftovers": list(leftovers or []),
+        "sc_attempted": False,
+    }
     service.fallback_handled_tracks.discard(key)
     if len(service.fallback_meta_by_track) > 100:
         oldest = next(iter(service.fallback_meta_by_track))
@@ -872,16 +879,17 @@ async def _play_next_youtube_fallback(
     failed_track: Any = None,
 ) -> bool:
     """Try next search hit after login/bot/load failure. Returns True if a play was started."""
-    query = str(_fallback_meta(service, failed_track).get("query") or "")
-    leftovers = list(service.play_fallbacks_by_guild.get(guild_id) or [])
+    meta = _fallback_meta(service, failed_track)
+    query = str(meta.get("query") or "")
+    leftovers = list(meta.get("leftovers") or [])
     while leftovers:
         nxt = leftovers.pop(0)
-        service.play_fallbacks_by_guild[guild_id] = leftovers
+        meta["leftovers"] = leftovers
         title = str(getattr(nxt, "title", "") or _track_key(nxt))
         try:
             await player.play(nxt, replace=True)
             if query:
-                _register_fallback_meta(service, nxt, query)
+                _register_fallback_meta(service, nxt, query, leftovers)
             logger.info("discord.music youtube fallback started | guild=%s track=%r", guild_id, title)
             return True
         except Exception as ex:
@@ -891,7 +899,6 @@ async def _play_next_youtube_fallback(
                 title,
                 ex,
             )
-    service.play_fallbacks_by_guild.pop(guild_id, None)
     if await _play_soundcloud_fallback(service, player, guild_id, failed_track):
         return True
     return False
@@ -946,26 +953,22 @@ def _attach_track_end_listener(ctx) -> None:
                 # A replacement (next hit/SoundCloud) is already playing; do not stop it.
                 if service is not None:
                     service.fallback_meta_by_track.pop(ended_key, None)
+                    service.fallback_handled_tracks.discard(ended_key)
                 return
             # loadfailed after instant rejection — the exception handler may have run first.
             if reason in ("loadfailed", "load_failed"):
-                if service is None or not guild_id or not ended_key:
-                    return
-                if ended_key in service.fallback_handled_tracks:
-                    service.fallback_meta_by_track.pop(ended_key, None)
-                    return
-                service.fallback_handled_tracks.add(ended_key)
-                await _play_next_youtube_fallback(service, player, guild_id, ended_track)
+                if service is not None and guild_id and ended_key:
+                    if ended_key not in service.fallback_handled_tracks:
+                        service.fallback_handled_tracks.add(ended_key)
+                        if await _play_next_youtube_fallback(service, player, guild_id, ended_track):
+                            return
+                    service.fallback_handled_tracks.discard(ended_key)
+                # Fall through: if no replacement started, advance the queue/stop.
+            elif reason and reason not in ("finished", "stopped", "replaced", "cleanup"):
                 return
-            if reason and reason not in ("finished", "stopped", "replaced", "cleanup"):
-                return
-            if service is not None and guild_id and reason in ("finished", "stopped"):
-                service.play_fallbacks_by_guild.pop(guild_id, None)
             if service is not None and ended_key:
                 service.fallback_meta_by_track.pop(ended_key, None)
                 service.fallback_handled_tracks.discard(ended_key)
-                if len(service.fallback_handled_tracks) > 200:
-                    service.fallback_handled_tracks.clear()
             try:
                 if len(player.queue) > 0:
                     nxt = player.queue.get()
@@ -1193,16 +1196,13 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                 track = tracks[0]
             # Keep other top hits so track_exception can skip "requires login" videos.
             chosen_key = _track_key(track)
-            service.play_fallbacks_by_guild[str(guild_id)] = [
-                t for t in pool if _track_key(t) != chosen_key
-            ]
-            _register_fallback_meta(service, track, query)
+            leftovers = [t for t in pool if _track_key(t) != chosen_key]
+            _register_fallback_meta(service, track, query, leftovers)
             candidates = [
                 f"{str(getattr(t, 'author', '') or 'Unknown')} - {str(getattr(t, 'title', '') or '')}".strip()
                 for t in pool
             ]
             if bool(getattr(player, "playing", False)):
-                _register_fallback_meta(service, track, query)
                 await player.queue.put_wait(track)
                 return {
                     "ok": True,
