@@ -131,6 +131,7 @@ def _reflection_engine(tmp_path, caplog):
         diary=SimpleNamespace(add_entry=lambda **kwargs: True),
         llm_memory=object(),
         memory_hub=None,
+        event_bus=SimpleNamespace(publish=lambda *a, **k: None),
     )
     config = {"logging": {"chat_log": str(tmp_path / "chat.log")}, "memory": {}}
     engine = ReflectionEngine(config, agent)
