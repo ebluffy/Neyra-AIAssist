@@ -71,7 +71,8 @@ function normaliseStoredMessages(raw: unknown): ChatMessageItem[] {
     if (!message.stats) return [message];
     const stats = TurnStatsSchema.safeParse(message.stats);
     if (stats.success) return [{ ...message, stats: stats.data }];
-    const { stats: _invalid, ...rest } = message;
+    const rest = { ...message };
+    delete rest.stats;
     return [rest];
   });
 }

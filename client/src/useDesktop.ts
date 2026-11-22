@@ -204,7 +204,8 @@ export function useDesktop() {
           messages: thread.messages.map(message => {
             const stats = normalizeTurnStats(message.stats);
             if (stats) return { ...message, stats };
-            const { stats: _invalid, ...rest } = message;
+            const rest = { ...message };
+            delete rest.stats;
             return rest;
           }),
         }));
