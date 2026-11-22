@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
@@ -318,6 +319,32 @@ def test_working_memory_provider_failure_keeps_snapshot_and_next_refresh_recover
     monkeypatch.setattr(retry, 'ainvoke_with_rate_limit_backoff', success)
     asyncio.run(refresh_working_memory_async(agent, agent.config, **params))
     assert 'Updated verified' in agent.memory_hub.sqlite.latest_wm_snapshot(user_id='owner')['content']
+    agent.memory_hub.close()
+
+
+def test_emotion_ltm_sync_does_not_log_provider_body(tmp_path, monkeypatch, caplog):
+    from core.memory.emotional_layer import compact_emotion_for_ltm
+    from core.llm import retry
+    agent = offline_agent(tmp_path)
+    agent.config['memory']['emotional_layer'] = {'enabled': True, 'ltm_emotion_sync': True}
+
+    async def failure(*args, **kwargs):
+        raise RuntimeError('provider-body-private-sentinel')
+
+    monkeypatch.setattr(retry, 'ainvoke_with_rate_limit_backoff', failure)
+    with caplog.at_level(logging.WARNING):
+        out = asyncio.run(
+            compact_emotion_for_ltm(
+                agent,
+                agent.config,
+                user_message='test',
+                assistant_text='reply',
+                speaker_label='Test',
+            )
+        )
+    assert out == ''
+    assert 'provider-body-private-sentinel' not in caplog.text
+    assert 'RuntimeError' in caplog.text
     agent.memory_hub.close()
 
 
