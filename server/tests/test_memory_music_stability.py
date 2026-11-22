@@ -249,10 +249,15 @@ def test_imperative_prefixes_stay_hard_path(text):
     assert route == 'PLAY_MUSIC' and use
 
 
-def test_complaint_inside_song_title_defers_to_classifier():
-    text = 'включи Сплин — Выхода нет'
+@pytest.mark.parametrize(('text', 'query'), [
+    ('включи Сплин — Выхода нет', 'Сплин — Выхода нет'),
+    ('включи Земфира — Почему', 'Земфира — Почему'),
+    ('включи песню Не надо', 'Не надо'),
+])
+def test_complaint_inside_song_title_defers_to_classifier(text, query):
     candidate = candidate_music_intent(text)
-    assert candidate and candidate['query'] == 'Сплин — Выхода нет'
+    assert candidate and candidate['query'] == query
+    assert candidate.get('block') is None
     plan = plan_music_route(text)
     assert plan.needs_classifier is True
     assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
@@ -312,6 +317,7 @@ def test_future_request_needs_classifier():
     ('включи Каста', 'Каста'),
     ('поставь Тамару', 'Тамару'),
     ('включи-ка Каста', 'Каста'),
+    ('включи lofi потише', 'lofi'),
     ('зайди в войс и включи музыку', 'upbeat happy music'),
 ])
 def test_music_query_is_clean(text, query):

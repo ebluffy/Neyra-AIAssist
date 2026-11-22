@@ -167,9 +167,11 @@ def imperative_voice_join(text: str) -> bool:
 def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
     """Classifier-only PLAY: imperative, or a short noun phrase without complaint/negation."""
     content = text or ""
-    if _VOLUME_RE.search(content):
+    end = imperative_play_end(content, soft=True)
+    rest = content[end:].strip() if end else content.strip()
+    if re.match(r"(?:по)?(?:громче|тише)\b", rest, re.IGNORECASE):
         return False
-    if imperative_play_end(content, soft=True):
+    if end:
         return True
     soft = soft_music_hint(content) if soft_music is None else bool(soft_music)
     if not soft:
@@ -244,13 +246,15 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         flags=re.IGNORECASE,
     )
     q = re.sub(r"\s+", " ", q).strip(" .,!?;:-")
-    if _VOLUME_RE.search(q):
+    if re.match(r"(?:по)?(?:громче|тише)\b", q, re.IGNORECASE):
         return None
+    q = re.sub(r"\s+(?:по)?(?:громче|тише)\b.*$", "", q, flags=re.IGNORECASE).strip()
     plain_q = _URL_RE.sub(" ", q)
     deferred = bool(_COMPLAINT_RE.search(plain_q))
+    complaint_zone = raw[:end] if end else plain_q
     negated = bool(
-        re.search(r"\bне\s+(?:надо|нужно|включай|ставь|играй)\b", plain_q, re.IGNORECASE)
-        or re.search(r"\b(?:почему|зачем)\b", plain_q, re.IGNORECASE)
+        re.search(r"\bне\s+(?:надо|нужно|включай|ставь|играй)\b", complaint_zone, re.IGNORECASE)
+        or re.search(r"\b(?:почему|зачем)\b", complaint_zone, re.IGNORECASE)
     )
     if not q or q.lower() in {
         "музыку",
