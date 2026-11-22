@@ -289,7 +289,12 @@ async def _clustered_execute_ltm_summarize(
             try:
                 digest_text = await agent.summarize_ltm_corpus(combined, consolidation=True)
             except Exception as e:
-                logger.exception("LTM cluster %s bin %s: LLM ошибка: %s", ci, bi, e)
+                logger.warning(
+                    "LTM cluster %s bin %s: LLM failed | error_class=%s",
+                    ci,
+                    bi,
+                    type(e).__name__,
+                )
                 cluster_ok = False
                 break
 
@@ -540,5 +545,5 @@ async def run_scheduled_summarize(agent: Any, config: dict, root: Optional[Path]
         logger.info("LTM scheduled summarize | keys=%s", list(out.keys()))
         return {"skipped": False, **out}
     except Exception as e:
-        logger.exception("LTM scheduled summarize failed: %s", e)
-        return {"skipped": False, "error": str(e)[:500]}
+        logger.warning("LTM scheduled summarize failed | error_class=%s", type(e).__name__)
+        return {"skipped": False, "error": type(e).__name__}
