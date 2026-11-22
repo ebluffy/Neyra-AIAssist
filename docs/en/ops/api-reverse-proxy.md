@@ -66,7 +66,7 @@ customDomains = ["neyra-web-internal.owyx.site"]
 
 ## Caddy (frp — upstream = frps vhost)
 
-CORE_UPSTREAM/WEB_UPSTREAM are the frps HTTP vhost addresses on the VPS; the home localPorts are 8787/3000. `/api/v1` targets the core and strips the public `/api` prefix; `/api/auth` must stay on the site. **Ports 80/443 must be restricted to Cloudflare ranges**, otherwise a direct request to the VPS IP can spoof `CF-Connecting-IP`.
+CORE_UPSTREAM/WEB_UPSTREAM are the frps HTTP vhost addresses on the VPS; the home localPorts are 8787/3000. `/api/v1` targets the core and strips the public `/api` prefix; `/api/auth` must stay on the site. **Behind Cloudflare** restrict 80/443 to Cloudflare ranges: that is a second layer and prevents bypassing Cloudflare via the VPS IP directly. The header spoof itself is closed by `trusted_proxies` + `header_up` below; without Cloudflare the ports stay open, yet the header is still overwritten.
 
 ```caddy
 {

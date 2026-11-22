@@ -66,7 +66,7 @@ customDomains = ["neyra-web-internal.owyx.site"]
 
 ## Caddy (frp — upstream = vhost frps)
 
-Подставьте upstreams ядра и сайта. Публичный префикс `/api` снимается только для `/api/v1/*`; `/api/auth/*` и BFF сайта сохраняют его. **80/443 должны быть закрыты диапазонами Cloudflare**, иначе `CF-Connecting-IP` можно подделать прямым запросом на IP VPS.
+Подставьте upstreams ядра и сайта. Публичный префикс `/api` снимается только для `/api/v1/*`; `/api/auth/*` и BFF сайта сохраняют его. **За Cloudflare** закройте 80/443 диапазонами Cloudflare: это второй слой и защита от обхода Cloudflare напрямую на IP VPS. Саму подмену `CF-Connecting-IP` закрывают `trusted_proxies` + `header_up` ниже; без Cloudflare порты открыты, но заголовок всё равно перезаписывается.
 
 ```caddy
 {
