@@ -75,7 +75,7 @@ _POLITE_RE = re.compile(r"^[,\s]*(?:-ка\b|(?:пожалуйста|плиз|т�
 
 def _strip_all_polite_tail(text: str) -> str:
     return re.sub(
-        r"(?:[\s,]+(?:пожалуйста|плиз|please))+[\s.!]*$",
+        r"(?:(?:^|[\s,]+)(?:пожалуйста|плиз|please))+[\s.!]*$",
         "",
         text,
         flags=re.IGNORECASE,
@@ -83,12 +83,19 @@ def _strip_all_polite_tail(text: str) -> str:
 
 
 def _strip_polite_tail(text: str) -> str:
-    if re.fullmatch(
-        r"(?:[\s,]*(?:пожалуйста|плиз|please)[\s.!]*)+",
-        text,
-        re.IGNORECASE,
-    ):
+    if re.search(r"[—-]\s*(?:пожалуйста|плиз|please)[\s.!]*$", text, re.IGNORECASE):
         return text
+    probe = text + " "
+    prefix = re.match(
+        r"((?:пожалуйста|плиз|please)[\s,]+)(?:\1)+",
+        probe,
+        re.IGNORECASE,
+    )
+    if prefix:
+        end = min(prefix.end(), len(text))
+        rest = _strip_all_polite_tail(text[end:])
+        head = text[:end].rstrip(" ,")
+        return f"{head} {rest}".strip() if rest else head
     return _strip_all_polite_tail(text)
 _MUSIC_VERB_STEM_RE = re.compile(
     r"\b(?:включ\w*|постав\w*|вруб\w*|заигр\w*|просил\w*|прошу|просим)\b",
