@@ -362,3 +362,30 @@ def test_check_lavalink_failure_fields_describe_same_node(monkeypatch):
     assert result["ok"] is False
     assert result["error"] == "RuntimeError"
     assert "status_code" not in result
+
+
+def test_ready_single_flight_for_parallel_probes(client, auth_headers, monkeypatch):
+    import time as clock
+    from concurrent.futures import ThreadPoolExecutor
+
+    calls = {"probe": 0}
+    monkeypatch.setattr(
+        "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+    )
+    monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+
+    def probe(config):
+        calls["probe"] += 1
+        clock.sleep(0.1)
+        return {"checked": True, "ok": True}
+
+    monkeypatch.setattr("core.runtime.health.check_lavalink", probe)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(
+            pool.map(
+                lambda _: client.get("/v1/health/ready", headers=auth_headers["viewer"]).status_code,
+                range(2),
+            )
+        )
+    assert statuses == [200, 200]
+    assert calls["probe"] == 1

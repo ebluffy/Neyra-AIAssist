@@ -2317,6 +2317,7 @@ def build_app(
         return {"ok": True}
 
     lavalink_ready_cache: dict[str, Any] = {"at": 0.0, "value": None}
+    lavalink_ready_lock = asyncio.Lock()
 
     @app.get("/v1/health/ready")
     async def v1_health_ready(request: Request, _: None = Depends(dep_viewer)):
@@ -2376,14 +2377,20 @@ def build_app(
             if cached is not None and now - float(lavalink_ready_cache["at"] or 0) < 10.0:
                 lavalink = cached
             else:
-                def _probe() -> dict[str, Any]:
-                    if not discord_resident_enabled(root):
-                        return {"checked": False, "ok": True, "reason": "discord disabled"}
-                    return check_lavalink(config)
+                async with lavalink_ready_lock:
+                    now = time.monotonic()
+                    cached = lavalink_ready_cache["value"]
+                    if cached is not None and now - float(lavalink_ready_cache["at"] or 0) < 10.0:
+                        lavalink = cached
+                    else:
+                        def _probe() -> dict[str, Any]:
+                            if not discord_resident_enabled(root):
+                                return {"checked": False, "ok": True, "reason": "discord disabled"}
+                            return check_lavalink(config)
 
-                lavalink = await asyncio.to_thread(_probe)
-                lavalink_ready_cache["value"] = lavalink
-                lavalink_ready_cache["at"] = now
+                        lavalink = await asyncio.to_thread(_probe)
+                        lavalink_ready_cache["value"] = lavalink
+                        lavalink_ready_cache["at"] = now
             public = {
                 key: lavalink[key]
                 for key in ("checked", "ok", "status_code", "error", "reason")

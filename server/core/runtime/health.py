@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -59,46 +61,56 @@ def check_lavalink(config: dict) -> dict:
         version = None
         plugins: list[str] = []
         ok_count = 0
-        for node in nodes:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                if first_failure is None:
-                    first_failure = ("timeout", None)
-                break
-            uri = str(node.get("uri") or "").strip().rstrip("/")
-            password = str(node.get("password") or "").strip()
-            phase_timeout = httpx.Timeout(
-                max(0.1, min(2.0, remaining)),
-                connect=max(0.1, min(1.0, remaining)),
-            )
-            try:
-                response = httpx.get(
-                    f"{uri}/v4/info",
-                    headers={"Authorization": password} if password else {},
-                    timeout=phase_timeout,
-                )
-                if response.status_code != 200:
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            for node in nodes:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     if first_failure is None:
-                        first_failure = (f"http {response.status_code}", response.status_code)
-                    continue
-                payload = (
-                    response.json()
-                    if response.headers.get("content-type", "").startswith("application/json")
-                    else {}
+                        first_failure = ("timeout", None)
+                    break
+                uri = str(node.get("uri") or "").strip().rstrip("/")
+                password = str(node.get("password") or "").strip()
+                phase_timeout = httpx.Timeout(
+                    max(0.1, min(2.0, remaining)),
+                    connect=max(0.1, min(1.0, remaining)),
                 )
-                if not isinstance(payload, dict):
-                    payload = {}
-                ok_count += 1
-                live_status = response.status_code
-                version = payload.get("version") or version
-                plugins = plugins or [
-                    str(item.get("name"))
-                    for item in (payload.get("plugins") or [])
-                    if isinstance(item, dict) and item.get("name")
-                ]
-            except Exception as error:
-                if first_failure is None:
-                    first_failure = (type(error).__name__, None)
+                try:
+                    future = executor.submit(
+                        httpx.get,
+                        f"{uri}/v4/info",
+                        headers={"Authorization": password} if password else {},
+                        timeout=phase_timeout,
+                    )
+                    response = future.result(timeout=remaining)
+                    if response.status_code != 200:
+                        if first_failure is None:
+                            first_failure = (f"http {response.status_code}", response.status_code)
+                        continue
+                    payload = (
+                        response.json()
+                        if response.headers.get("content-type", "").startswith("application/json")
+                        else {}
+                    )
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    ok_count += 1
+                    live_status = response.status_code
+                    version = payload.get("version") or version
+                    plugins = plugins or [
+                        str(item.get("name"))
+                        for item in (payload.get("plugins") or [])
+                        if isinstance(item, dict) and item.get("name")
+                    ]
+                except FutureTimeout:
+                    if first_failure is None:
+                        first_failure = ("timeout", None)
+                    break
+                except Exception as error:
+                    if first_failure is None:
+                        first_failure = (type(error).__name__, None)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
         result = {
             "checked": True,
             "ok": ok_count > 0,
