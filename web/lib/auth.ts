@@ -63,6 +63,9 @@ function discordProvider() {
 export const ACCOUNT_LINKING = {
   enabled: true,
   requireLocalEmailVerified: true,
+  // Single-operator: Discord почти всегда с другим email, чем вход по почте.
+  // Привязка идёт только из активной сессии (linkSocial), не при входе.
+  allowDifferentEmails: true,
 } as const;
 
 function createAuth() {
