@@ -44,17 +44,23 @@ DNS is **not** inside Neyra yaml — only at your DNS provider.
 
 ## Caddy (frp — upstream = frps vhost)
 
-Replace `8080` with your frps HTTP vhost port. `handle_path /api/*` strips the public `/api` prefix so the app sees `/v1/...`.
+CORE_UPSTREAM is the core frps HTTP vhost (8787), WEB_UPSTREAM the site (3000). `/api/v1` targets the core and strips the public `/api` prefix; `/api/auth` must stay on the site.
 
 ```caddy
 neyra.owyx.site {
   encode gzip
-  # Upstream = frps HTTP vhost on this VPS (NOT local uvicorn :8787)
-  handle_path /api/* {
-    reverse_proxy 127.0.0.1:8080
+  handle /api/v1/* {
+    uri strip_prefix /api
+    reverse_proxy CORE_UPSTREAM
+  }
+  handle /api/auth/* {
+    reverse_proxy WEB_UPSTREAM
+  }
+  handle /api/* {
+    reverse_proxy WEB_UPSTREAM
   }
   handle {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy WEB_UPSTREAM
   }
 }
 ```
@@ -68,7 +74,27 @@ server {
   listen 443 ssl http2;
   server_name neyra.owyx.site;
 
-  # Upstream = frps HTTP vhost (example :8080), not uvicorn :8787
+  # Core: strip /api; WebSocket Upgrade passes through.
+  location /api/v1/ {
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_pass http://CORE_UPSTREAM/;
+  }
+
+  # Better Auth callback stays on the site; do not strip /api.
+  location /api/auth/ {
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_pass http://WEB_UPSTREAM;
+  }
+
+  # Chat/attachment BFF and the rest of the site API.
   location /api/ {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
@@ -77,7 +103,7 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
-    proxy_pass http://127.0.0.1:8080/;
+    proxy_pass http://WEB_UPSTREAM;
   }
 
   location / {
@@ -87,12 +113,11 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
-    proxy_pass http://127.0.0.1:8080;
+    proxy_pass http://WEB_UPSTREAM;
   }
-}
 ```
 
-Trailing slash on `proxy_pass` under `/api/` strips `/api`.
+Trailing slash on `proxy_pass` under `/api/v1/` strips `/api`; `/api/auth` and `/api/` keep the prefix.
 
 ## Alternative: Neyra process on the VPS (no frp)
 
@@ -107,3 +132,11 @@ If uvicorn runs on the same VPS as Caddy/nginx, point reverse_proxy / `proxy_pas
 - Uvicorn: `proxy_headers=False` (peer = TCP; client IP only via CF/X-Real in `resolve_client_ip`).
 - Dashboard access key configured before exposing the SPA (see [web-ui](../architecture/web-ui.md)).
 - WebSocket smoke: `wss://neyra.owyx.site/api/v1/ws/chat` reaches Control API.
+
+## Current web v2 routing (2026-11-22)
+
+- `/` and `/api/*` except `/api/v1/*` go to the Next.js site at `127.0.0.1:3000`.
+- `/api/auth/*` goes to the site without stripping `/api`; Discord redirect URI is `https://neyra.owyx.site/api/auth/callback/discord`.
+- `/api/v1/*` goes to the core at `127.0.0.1:8787` with `/api` stripped.
+- App WSS: `wss://neyra.owyx.site/api/v1/ws/chat`, verified 2026-11-22.
+- `/legacy` stays on the site until the owner decides otherwise.

@@ -44,17 +44,27 @@ DNS **не** в yaml Нейры — у провайдера.
 
 ## Caddy (frp — upstream = vhost frps)
 
-Подставьте свой порт HTTP vhost frps вместо `8080`. `handle_path /api/*` снимает публичный префикс `/api`, чтобы приложение видело `/v1/...`.
+Подставьте upstreams ядра и сайта. Публичный префикс `/api` снимается только для `/api/v1/*`; `/api/auth/*` и BFF сайта сохраняют его.
 
 ```caddy
 neyra.owyx.site {
   encode gzip
-  # Upstream = HTTP vhost frps на этом VPS (НЕ локальный uvicorn :8787)
-  handle_path /api/* {
-    reverse_proxy 127.0.0.1:8080
+  # CORE_UPSTREAM — frps HTTP vhost ядра (8787), WEB_UPSTREAM — сайта (3000).
+  # /api/v1 — ядро; /api снимает публичный префикс.
+  handle /api/v1/* {
+    uri strip_prefix /api
+    reverse_proxy CORE_UPSTREAM
+  }
+  # Better Auth callback должен остаться на сайте, без срезания /api.
+  handle /api/auth/* {
+    reverse_proxy WEB_UPSTREAM
+  }
+  # BFF чата/вложений и UI сайта.
+  handle /api/* {
+    reverse_proxy WEB_UPSTREAM
   }
   handle {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy WEB_UPSTREAM
   }
 }
 ```
@@ -87,7 +97,31 @@ server {
   listen 443 ssl http2;
   server_name neyra.owyx.site;
 
-  # Upstream = HTTP vhost frps (пример :8080), не uvicorn :8787
+  # Заголовки клиента — один include, чтобы не дублировать в каждом location.
+  # include snippets/neyra-proxy-headers.conf;
+
+  # Ядро: срезаем /api, WebSocket Upgrade проходит дальше.
+  location /api/v1/ {
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header CF-Connecting-IP $neyra_client_ip;
+    proxy_set_header X-Real-IP $neyra_client_ip;
+    proxy_set_header X-Forwarded-For $neyra_client_ip;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_pass http://CORE_UPSTREAM/;
+  }
+
+  # Better Auth callback — на сайт, префикс /api не срезается.
+  location /api/auth/ {
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_pass http://WEB_UPSTREAM;
+  }
+
+  # BFF чата/вложений и остальные /api сайта.
   location /api/ {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
@@ -97,7 +131,7 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
-    proxy_pass http://127.0.0.1:8080/;
+    proxy_pass http://WEB_UPSTREAM;
   }
 
   location / {
@@ -109,12 +143,11 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
-    proxy_pass http://127.0.0.1:8080;
+    proxy_pass http://WEB_UPSTREAM;
   }
-}
 ```
 
-Trailing slash у `proxy_pass` под `/api/` снимает префикс `/api`.
+Trailing slash у `proxy_pass` под `/api/v1/` снимает префикс `/api`; `/api/auth` и `/api/` сохраняют префикс.
 
 ### Smoke rate-limit / client IP (публичный хост)
 
@@ -137,6 +170,10 @@ Trailing slash у `proxy_pass` под `/api/` снимает префикс `/ap
 - Ключ доступа дашборда задан до публикации SPA (см. [web-ui](../architecture/web-ui.md)).
 - Smoke WebSocket: `wss://neyra.owyx.site/api/v1/ws/chat` доходит до Control API.
 
-## После P6 (веб v2) схема меняется
+## Текущая схема web v2 (2026-11-22)
 
-Документ выше описывает текущую схему, где `/` — старый dashboard. В этапе P6 ([`docs/ru/architecture/web-v2.md`](../architecture/web-v2.md) §13, D14) маршруты на краю становятся такими: `/` → web-клиент, `/v1/desktop/*` → ядро, `/legacy/*` → старый dashboard до паритета, а `/v1/chat`, `/v1/ws/chat` и `/v1/memory/*` закрыты `deny` снаружи. Откат — вернуть `/` на старый dashboard, оставив web запущенным для диагностики.
+- `/` и `/api/*` (кроме `/api/v1/*`) → сайт Next.js `127.0.0.1:3000`.
+- `/api/auth/*` → сайт без срезания `/api`; redirect URI Discord: `https://neyra.owyx.site/api/auth/callback/discord`.
+- `/api/v1/*` → ядро `127.0.0.1:8787` со срезанием `/api`.
+- WSS приложения: `wss://neyra.owyx.site/api/v1/ws/chat`, проверено 2026-11-22.
+- `/legacy` остаётся на сайте до отдельного решения владельца.

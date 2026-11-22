@@ -15,3 +15,4 @@
 - Redirect URI в Discord Developer Portal: `https://neyra.owyx.site/api/auth/callback/discord`.
 - `server/.env`: `DISCORD_TOKEN` — токен бота для текста/музыки. Это не OAuth secret и на сайт не передаётся.
 - Проверка без входа: `POST /api/auth/sign-in/social` с `{"provider":"discord","callbackURL":"/"}` должен вернуть URL на `discord.com` с этим redirect_uri.
+- Вход через Discord — только для уже существующих email-аккаунтов (`disableImplicitSignUp`); новый пользователь сначала регистрируется по email/инвайту.

@@ -74,7 +74,7 @@ CREATE TABLE person_merge_audit (
 
 | Сценарий | Последовательность действий | Результат |
 | :--- | :--- | :--- |
-| **1. Новый пользователь (Discord)** | Нажатие «Продолжить с Discord» → OAuth2 на стороне Discord → callback | Создаётся `person` (имя и аватар из Discord) + `account(discord)`. Роль `user`. Переход в `/onboarding`. |
+| **1. Новый пользователь (Discord)** | Не поддерживается: `disableImplicitSignUp` не даёт OAuth создать аккаунт. Сначала регистрация по email/инвайту, затем вход или привязка Discord. | Существующий `person`; новый `person` не создаётся. |
 | **2. Новый пользователь (Web email)** | Заполнение формы email + пароль (или инвайт) на `/login` | Создаётся `person` + `account(web)`. Роль `user`. Переход в `/onboarding`. |
 | **3. Веб-пользователь подключает Discord** | Авторизован в веб-профиле → `Настройки → Аккаунты → Привязать Discord` | Если этот Discord ещё никем не занят: добавляется `account(discord)` к текущему `person_id`. Память и история остаются общими. |
 | **4. Discord-пользователь заходит в веб** | Нажимает «Продолжить с Discord» в браузере | Входит в существующий `person_id`. Веб-сессия связывается с его профилем. |
@@ -148,11 +148,13 @@ flowchart TD
 
 ---
 
-## 6. Требования к реализации на стороне ядра (`server/`)
+## 6. Текущая реализация OAuth (web v2)
+
+Discord OAuth обрабатывает **Better Auth** в сайте: `POST /api/auth/sign-in/social` и `GET /api/auth/callback/discord` с redirect URI `https://neyra.owyx.site/api/auth/callback/discord`. Ключи — `DISCORD_CLIENT_ID`/`DISCORD_CLIENT_SECRET` в `web/.env`; бот-токен — отдельно `DISCORD_TOKEN` в `server/.env`. Discord-вход только для существующих email-аккаунтов; раздел ниже — исторический дизайн ядра, не текущие маршруты.
 
 1. Добавить эндпоинты:
-   - `POST /api/auth/discord/start` — генерация OAuth2 URL с защитой от CSRF (`state`).
-   - `GET /api/auth/discord/callback` — обмен кода на Discord access token, получение данных пользователя Discord, поиск/создание `person` и сессионного токена.
+   - `POST /api/auth/sign-in/social` (Better Auth) — генерация OAuth2 URL с `state`.
+   - `GET /api/auth/callback/discord` (Better Auth) — обмен кода; новый `person` не создаётся, только вход существующего.
    - `POST /api/account/link/discord` — привязка Discord к авторизованному `person_id`.
    - `DELETE /api/account/link/:account_id` — отвязка площадки (валидация: нельзя отвязать единственный способ входа).
    - `POST /api/account/merge/preview` — предпросмотр объединения двух профилей.

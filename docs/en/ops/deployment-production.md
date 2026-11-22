@@ -21,3 +21,4 @@ Details: [`docs/PLAN.md`](../../PLAN.md) §9.
 - Redirect URI in the Discord Developer Portal: `https://neyra.owyx.site/api/auth/callback/discord`.
 - `server/.env`: `DISCORD_TOKEN` is the bot token for text/music. It is not the OAuth secret and is never passed to the site.
 - Pre-login check: `POST /api/auth/sign-in/social` with `{"provider":"discord","callbackURL":"/"}` must return a `discord.com` URL with that redirect_uri.
+- Discord login works only for existing email accounts (`disableImplicitSignUp`); new users register by email/invite first.
