@@ -219,7 +219,6 @@ def test_gif_urls_and_negations_cannot_reenter_classifier_music_path(text):
     'ты почему не в войсе',
     'ты включишь музыку или нет?',
     'ты включишь музыку завтра?',
-    'включи мозги, почему опять не то',
     'можно включить погромче?',
 ])
 def test_music_complaints_do_not_start_playback(text):
@@ -248,6 +247,50 @@ def test_imperative_prefixes_stay_hard_path(text):
     assert plan.needs_classifier is False
     route, use, _ = finalize_music_route(plan)
     assert route == 'PLAY_MUSIC' and use
+
+
+def test_complaint_inside_song_title_defers_to_classifier():
+    text = 'включи Сплин — Выхода нет'
+    candidate = candidate_music_intent(text)
+    assert candidate and candidate['query'] == 'Сплин — Выхода нет'
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+
+
+def test_generic_complaint_after_verb_goes_to_classifier():
+    plan = plan_music_route('включи мозги, почему опять не то')
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+
+
+@pytest.mark.parametrize('text', [
+    'не надо https://youtu.be/abc123XYZ',
+    'почему не играет https://youtu.be/abc123XYZ?',
+])
+def test_link_with_complaint_needs_classifier(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[0] == 'CHAT'
+
+
+@pytest.mark.parametrize('text', [
+    'https://youtu.be/abc123XYZ',
+    'включи https://youtu.be/abc123XYZ',
+])
+def test_bare_or_imperative_link_stays_hard_path(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is False
+    assert finalize_music_route(plan)[:2] == ('PLAY_MUSIC', True)
+
+
+@pytest.mark.parametrize('text', ['а может включишь lofi', 'пожалуйста включишь lofi'])
+def test_future_request_without_music_noun_uses_classifier(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
 
 
 def test_future_request_needs_classifier():

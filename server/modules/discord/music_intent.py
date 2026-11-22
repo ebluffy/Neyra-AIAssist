@@ -63,6 +63,7 @@ _COMPLAINT_RE = re.compile(
     r"[?]|\b(?:почему|зачем|где|куда|опять|замолч\w*|пропал\w*|выключ\w*|играет|нет)\b|\bне\s",
     re.IGNORECASE,
 )
+_VOLUME_RE = re.compile(r"\b(?:по)?(?:громче|тише)\b", re.IGNORECASE)
 _ADDRESS_RE = re.compile(r"^[,\s]*(?:(?:нейра|neyra)[\s,:;-]*)+", re.IGNORECASE)
 _POLITE_RE = re.compile(r"^[,\s]*(?:-ка\b|(?:пожалуйста|плиз|там)\b)[\s,.:;-]*", re.IGNORECASE)
 _MUSIC_VERB_STEM_RE = re.compile(
@@ -166,11 +167,13 @@ def imperative_voice_join(text: str) -> bool:
 def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
     """Classifier-only PLAY: imperative, or a short noun phrase without complaint/negation."""
     content = text or ""
-    soft = soft_music_hint(content) if soft_music is None else bool(soft_music)
-    if not soft:
+    if _VOLUME_RE.search(content):
         return False
     if imperative_play_end(content, soft=True):
         return True
+    soft = soft_music_hint(content) if soft_music is None else bool(soft_music)
+    if not soft:
+        return False
     if _MUSIC_VERB_STEM_RE.search(content) or _COMPLAINT_RE.search(content):
         return False
     return len(re.findall(r"\w+", content, flags=re.UNICODE)) <= 6
@@ -241,8 +244,14 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         flags=re.IGNORECASE,
     )
     q = re.sub(r"\s+", " ", q).strip(" .,!?;:-")
-    if not link and (_COMPLAINT_RE.search(q) or q.casefold() in {"погромче", "потише", "громче", "тише"}):
+    if _VOLUME_RE.search(q):
         return None
+    plain_q = _URL_RE.sub(" ", q)
+    deferred = bool(_COMPLAINT_RE.search(plain_q))
+    negated = bool(
+        re.search(r"\bне\s+(?:надо|нужно|включай|ставь|играй)\b", plain_q, re.IGNORECASE)
+        or re.search(r"\b(?:почему|зачем)\b", plain_q, re.IGNORECASE)
+    )
     if not q or q.lower() in {
         "музыку",
         "музыка",
@@ -254,7 +263,12 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
         "какой-нибудь",
     }:
         q = "upbeat happy music"
-    return {"intent": "music_control", "action": MUSIC_PLAY, "query": q}
+    candidate = {"intent": "music_control", "action": MUSIC_PLAY, "query": q}
+    if deferred:
+        candidate["defer"] = "1"
+    if negated:
+        candidate["block"] = "1"
+    return candidate
 
 
 @dataclass
@@ -280,6 +294,16 @@ def plan_music_route(content: str, *, has_media: bool = False) -> MusicRoutePlan
     soft_music = soft_music_hint(content)
     play_verb = has_play_verb(content)
 
+    if music_candidate and music_candidate.get("defer"):
+        return MusicRoutePlan(
+            content=content,
+            music_candidate=music_candidate,
+            lyrics_hint=lyrics_hint,
+            soft_music=soft_music,
+            play_verb=play_verb,
+            needs_classifier=True,
+            tentative_route="CHAT",
+        )
     if lyrics_hint and not play_verb:
         return MusicRoutePlan(
             content=content,
@@ -310,7 +334,7 @@ def plan_music_route(content: str, *, has_media: bool = False) -> MusicRoutePlan
             needs_classifier=False,
             tentative_route="PLAY_MUSIC",
         )
-    if music_candidate or lyrics_hint or soft_music:
+    if music_candidate or lyrics_hint or soft_music or imperative_play_end(content, soft=True):
         return MusicRoutePlan(
             content=content,
             music_candidate=music_candidate,
@@ -340,6 +364,8 @@ def finalize_music_route(
     if plan.blocked:
         return "CHAT", False, None
     music_candidate = plan.music_candidate
+    if music_candidate and music_candidate.get("block"):
+        return "CHAT", False, music_candidate
     lyrics_hint = plan.lyrics_hint
     play_verb = plan.play_verb
 
@@ -347,7 +373,7 @@ def finalize_music_route(
         route = plan.tentative_route
     else:
         route = (classifier_route or "CHAT").strip().upper() or "CHAT"
-        if route == "CHAT" and music_candidate and not lyrics_hint:
+        if route == "CHAT" and music_candidate and not lyrics_hint and not music_candidate.get("defer"):
             route = "PLAY_MUSIC"
         if lyrics_hint and route == "PLAY_MUSIC" and not play_verb:
             route = "GET_LYRICS"
