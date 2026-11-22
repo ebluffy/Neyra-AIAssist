@@ -19,41 +19,102 @@ logger = logging.getLogger("neyra.health")
 LLM_DEGRADATION_WINDOW_SECONDS = 600
 
 
+def discord_resident_enabled(project_root: Optional[Path]) -> bool:
+    """Whether the resident discord plugin is enabled in plugin.yaml."""
+    root = Path(project_root) if project_root is not None else None
+    if root is None:
+        return False
+    try:
+        from core.plugins.loader import PluginLoader
+
+        for manifest in PluginLoader(root).discover_manifests():
+            if manifest.id == "discord" and manifest.enabled and manifest.lifecycle == "resident":
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _public_node_url(uri: str) -> str:
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(uri)
+    host = parts.hostname or ""
+    if not host:
+        return ""
+    netloc = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    if parts.port:
+        netloc += f":{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path.rstrip("/"), "", ""))
+
+
 def check_lavalink(config: dict) -> dict:
-    """Check the configured local Lavalink node; never return the password."""
+    """Check configured Lavalink nodes; passwords and userinfo never leave this function."""
     try:
         discord = config.get("discord") if isinstance(config, dict) else None
         music = (discord or {}).get("music") if isinstance(discord, dict) else None
-        nodes = (music or {}).get("nodes") if isinstance(music, dict) else None
-        if not isinstance(nodes, list) or not nodes:
+        raw_nodes = (music or {}).get("nodes") if isinstance(music, dict) else None
+        if not isinstance(raw_nodes, list):
             return {"checked": False, "ok": True, "reason": "no music nodes"}
-        node = next((n for n in nodes if isinstance(n, dict) and str(n.get("uri") or "").strip()), None)
-        if node is None:
-            return {"checked": False, "ok": True, "reason": "no music nodes"}
-        uri = str(node.get("uri") or "").strip().rstrip("/")
-        password = str(node.get("password") or "").strip()
-        if not uri:
+        nodes = [
+            node
+            for node in raw_nodes
+            if isinstance(node, dict) and str(node.get("uri") or "").strip()
+        ]
+        if not nodes:
             return {"checked": False, "ok": True, "reason": "no music nodes"}
         import httpx
 
-        response = httpx.get(
-            f"{uri}/v4/info",
-            headers={"Authorization": password} if password else {},
-            timeout=2.5,
-        )
-        data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-        return {
+        timeout = httpx.Timeout(2.0, connect=1.0)
+        errors: list[str] = []
+        status_code = None
+        version = None
+        plugins: list[str] = []
+        ok_count = 0
+        for node in nodes:
+            uri = str(node.get("uri") or "").strip().rstrip("/")
+            password = str(node.get("password") or "").strip()
+            try:
+                response = httpx.get(
+                    f"{uri}/v4/info",
+                    headers={"Authorization": password} if password else {},
+                    timeout=timeout,
+                )
+                status_code = response.status_code
+                if response.status_code != 200:
+                    errors.append(f"http {response.status_code}")
+                    continue
+                payload = (
+                    response.json()
+                    if response.headers.get("content-type", "").startswith("application/json")
+                    else {}
+                )
+                if not isinstance(payload, dict):
+                    payload = {}
+                ok_count += 1
+                version = payload.get("version") or version
+                plugins = plugins or [
+                    str(item.get("name"))
+                    for item in (payload.get("plugins") or [])
+                    if isinstance(item, dict) and item.get("name")
+                ]
+            except Exception as error:
+                errors.append(type(error).__name__)
+        result = {
             "checked": True,
-            "ok": response.status_code == 200,
-            "url": uri,
-            "status_code": response.status_code,
-            "version": data.get("version") if isinstance(data, dict) else None,
-            "plugins": [
-                str(p.get("name"))
-                for p in (data.get("plugins") or [])
-                if isinstance(p, dict) and p.get("name")
-            ] if isinstance(data, dict) else [],
+            "ok": ok_count > 0,
+            "nodes_total": len(nodes),
+            "nodes_ok": ok_count,
         }
+        if status_code is not None:
+            result["status_code"] = status_code
+        if version is not None:
+            result["version"] = version
+        if plugins:
+            result["plugins"] = plugins
+        if ok_count == 0:
+            result["error"] = errors[0] if errors else "unavailable"
+        return result
     except Exception as e:
         logger.warning("lavalink health check failed", exc_info=True)
         return {"checked": True, "ok": False, "error": type(e).__name__}
@@ -288,19 +349,7 @@ class HealthMonitor:
             return {"ok": False, "error": str(e)[:500]}
 
     def _discord_resident_enabled(self) -> bool:
-        """Включён ли resident-плагин discord в plugin.yaml (без дублирования в config.yaml плагина)."""
-        root = self._project_root
-        if root is None:
-            return False
-        try:
-            from core.plugins.loader import PluginLoader
-
-            for m in PluginLoader(root).discover_manifests():
-                if m.id == "discord" and m.enabled and m.lifecycle == "resident":
-                    return True
-        except Exception:
-            return False
-        return False
+        return discord_resident_enabled(self._project_root)
 
     async def _check_and_heal_modules(self) -> dict:
         if not self.process_registry:

@@ -2316,6 +2316,8 @@ def build_app(
         """Liveness probe — no auth, no details (systemd / frp / monitors)."""
         return {"ok": True}
 
+    lavalink_ready_cache: dict[str, Any] = {"at": 0.0, "value": None}
+
     @app.get("/v1/health/ready")
     async def v1_health_ready(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
@@ -2364,13 +2366,28 @@ def build_app(
             checks.append({"name": "llm_provider", "ok": False, "reason": rate_limit})
         else:
             checks.append({"name": "llm_provider", "ok": True})
-        # Lavalink is optional unless music nodes are configured. If they are,
-        # readiness must not stay green while the music module cannot start.
+        # Lavalink is optional unless the resident Discord module is enabled.
+        # Ready exposes only a boolean probe, never node URLs or credentials.
         try:
-            from core.runtime.health import check_lavalink
+            from core.runtime.health import check_lavalink, discord_resident_enabled
 
-            lavalink = await asyncio.to_thread(check_lavalink, config)
-            checks.append({"name": "lavalink", **lavalink})
+            if not discord_resident_enabled(root):
+                lavalink = {"checked": False, "ok": True, "reason": "discord disabled"}
+            else:
+                now = time.monotonic()
+                cached = lavalink_ready_cache["value"]
+                if cached is not None and now - float(lavalink_ready_cache["at"] or 0) < 10.0:
+                    lavalink = cached
+                else:
+                    lavalink = await asyncio.to_thread(check_lavalink, config)
+                    lavalink_ready_cache["value"] = lavalink
+                    lavalink_ready_cache["at"] = now
+            public = {
+                key: lavalink[key]
+                for key in ("checked", "ok", "status_code", "error", "reason")
+                if key in lavalink
+            }
+            checks.append({"name": "lavalink", **public})
             if lavalink.get("checked") and not lavalink.get("ok"):
                 ready = False
         except Exception:
