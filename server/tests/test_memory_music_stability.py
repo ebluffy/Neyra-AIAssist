@@ -492,6 +492,17 @@ def test_music_commands_survive_media_guard(text):
     assert route == 'PLAY_MUSIC' and use
 
 
+@pytest.mark.parametrize(('source', 'label'), [
+    ('youtube', 'YouTube'),
+    ('yt', 'YouTube'),
+    ('soundcloud', 'SoundCloud'),
+    ('sc', 'SoundCloud'),
+    ('', 'неизвестно'),
+])
+def test_music_source_label(source, label):
+    assert music_module._source_label(source) == label
+
+
 def test_fallback_meta_is_per_track():
     service = music_module.MusicService(NS())
     first, second = NS(identifier='a'), NS(identifier='b')
@@ -829,6 +840,79 @@ def test_emoticon_stripping_is_linear_on_long_input(text):
     start = time.perf_counter()
     plan_music_route(text)
     assert time.perf_counter() - start < 1.0
+
+
+def test_soundcloud_fallback_notifies_text_channel(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='YT', identifier='yt-channel')
+    service.fallback_meta_by_track['yt-channel'] = {
+        'query': 'track',
+        'leftovers': [],
+        'sc_attempted': False,
+        'text_channel_id': '555',
+    }
+    text_channel = NS(send=AsyncMock())
+    guild = NS(get_channel=lambda cid: text_channel if cid == 555 else None)
+    player = _Player()
+    player.guild = guild
+    player.channel = NS(send=AsyncMock())
+    player.current = failed
+
+    async def search(wavelink_mod, query, node):
+        return [NS(title='SC track', author='Artist', identifier='sc-channel', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    text_channel.send.assert_awaited_once()
+    assert 'SoundCloud' in text_channel.send.await_args.args[0]
+    player.channel.send.assert_not_awaited()
+
+
+def test_soundcloud_fallback_notifies_thread(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='YT', identifier='yt-thread')
+    service.fallback_meta_by_track['yt-thread'] = {
+        'query': 'track',
+        'leftovers': [],
+        'sc_attempted': False,
+        'text_channel_id': '557',
+    }
+    thread = NS(send=AsyncMock())
+    guild = NS(
+        get_channel=lambda cid: None,
+        get_channel_or_thread=lambda cid: thread if cid == 557 else None,
+    )
+    player = _Player()
+    player.guild = guild
+
+    async def search(wavelink_mod, query, node):
+        return [NS(title='SC', author='A', identifier='sc-thread', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    thread.send.assert_awaited_once()
+
+
+def test_soundcloud_notify_failure_does_not_break_fallback(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='YT', identifier='yt-channel2')
+    service.fallback_meta_by_track['yt-channel2'] = {
+        'query': 'track',
+        'leftovers': [],
+        'sc_attempted': False,
+        'text_channel_id': '556',
+    }
+    text_channel = NS(send=AsyncMock(side_effect=RuntimeError('no perms')))
+    guild = NS(get_channel=lambda cid: text_channel if cid == 556 else None)
+    player = _Player()
+    player.guild = guild
+
+    async def search(wavelink_mod, query, node):
+        return [NS(title='SC track', author='Artist', identifier='sc-channel2', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    text_channel.send.assert_awaited_once()
 
 
 def test_youtube_failure_falls_back_to_soundcloud_once_through_listeners(monkeypatch):
