@@ -175,10 +175,11 @@ Trailing slash on `proxy_pass` under `/api/v1/` strips `/api`; `/api/auth` and `
 ```bash
 curl -sk --resolve neyra.owyx.site:443:<VPS IP> -X POST \
   https://neyra.owyx.site/api/v1/dashboard/auth/login \
-  -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 203.0.113.7' -d '{}'
+  -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 203.0.113.7' \
+  -d '{"key":"smoke-wrong-key"}'
 ```
 
-Expect the firewall to reject the connection, **or** the core log to show `dashboard login failed ip=<real IP>`, never `203.0.113.7`. If a direct request to `/api/v1/health/live` on the VPS IP returns 200, the firewall is not configured.
+Expect `401 unauthorized` and `dashboard login failed ip=<real IP>` in the core log, never `203.0.113.7`. The dashboard key must already be configured (otherwise `400 setup_required`); repeating the smoke without a pause can return `429 rate_limited` — both mean the check did not run. Behind Cloudflare a direct `/api/v1/health/live` on the VPS IP must not connect (200 = firewall is not configured); without Cloudflare the connection is expected, so inspect only the logged IP.
 
 ## Alternative: Neyra process on the VPS (no frp)
 

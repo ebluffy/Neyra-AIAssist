@@ -198,10 +198,11 @@ Trailing slash у `proxy_pass` под `/api/v1/` снимает префикс `
 ```bash
 curl -sk --resolve neyra.owyx.site:443:<IP VPS> -X POST \
   https://neyra.owyx.site/api/v1/dashboard/auth/login \
-  -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 203.0.113.7' -d '{}'
+  -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 203.0.113.7' \
+  -d '{"key":"smoke-wrong-key"}'
 ```
 
-Ожидание: firewall отклоняет соединение, **или** в логе ядра `dashboard login failed ip=<твой реальный IP>`, но не `203.0.113.7`. Если прямой запрос к `/api/v1/health/live` на IP VPS вернул 200 — firewall не настроен.
+Ожидание: `401 unauthorized` и в логе ядра `dashboard login failed ip=<твой реальный IP>`, но не `203.0.113.7`. Ключ дашборда должен быть задан (иначе `400 setup_required`), а повторный smoke без паузы может дать `429 rate_limited` — оба ответа означают, что проверка не состоялась. За Cloudflare прямой запрос к `/api/v1/health/live` на IP VPS должен не соединяться (200 = firewall не настроен); без Cloudflare соединение нормально, смотри только IP в логе.
 
 ## Альтернатива: процесс Neyra на VPS (без frp)
 
