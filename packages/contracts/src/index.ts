@@ -55,6 +55,7 @@ export type ContextUsage = z.infer<typeof ContextUsageSchema>;
 export const TurnLaneStatsSchema = z.object({
   calls: z.number().int().nonnegative().max(1000),
   duration_ms: z.number().nonnegative().max(86_400_000),
+  model: z.string().min(1).max(200).optional(),
   input_tokens: z.number().int().nonnegative().max(100_000_000).optional(),
   output_tokens: z.number().int().nonnegative().max(100_000_000).optional(),
 }).strict();
@@ -64,7 +65,6 @@ export const TurnStatsSchema = z.object({
   llm_ms: z.number().nonnegative().max(86_400_000),
   output_tokens: z.number().int().nonnegative().max(1_000_000_000).optional(),
   tokens_per_second: z.number().nonnegative().max(1_000_000).optional(),
-  model: z.string().min(1).max(200).optional(),
   lanes: z.object({
     talk: TurnLaneStatsSchema.optional(),
     brain: TurnLaneStatsSchema.optional(),

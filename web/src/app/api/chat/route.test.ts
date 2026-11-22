@@ -110,8 +110,10 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
         llm_ms: 2800,
         output_tokens: 40,
         tokens_per_second: 14.3,
-        model: 'opencode-go/deepseek-v4.1-flash',
-        lanes: { brain: { calls: 1, duration_ms: 1200 }, talk: { calls: 1, duration_ms: 1600, output_tokens: 40 } },
+        lanes: {
+          brain: { calls: 1, duration_ms: 1200, model: 'opencode-go/deepseek-v4.1-flash' },
+          talk: { calls: 1, duration_ms: 1600, model: 'opencode/qwen3.8-27b', output_tokens: 40 },
+        },
       },
     });
     const text = await response.text();
@@ -125,10 +127,9 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
       llm_ms: 2800,
       output_tokens: 40,
       tokens_per_second: 14.3,
-      model: 'opencode-go/deepseek-v4.1-flash',
       lanes: {
-        talk: { calls: 1, duration_ms: 1600, output_tokens: 40 },
-        brain: { calls: 1, duration_ms: 1200 },
+        talk: { calls: 1, duration_ms: 1600, model: 'opencode/qwen3.8-27b', output_tokens: 40 },
+        brain: { calls: 1, duration_ms: 1200, model: 'opencode-go/deepseek-v4.1-flash' },
       },
     });
   });

@@ -32,13 +32,10 @@ export function formatTokensPerSecond(value?: number): string {
 export function TurnStatsFooter({ stats }: { stats: TurnStats }) {
   const lanes = LANES.filter((lane) => stats.lanes[lane.key]);
   if (!lanes.length) return null;
-  const model = formatModelName(stats.model);
   const total = formatDurationMs(stats.duration_ms);
   const speed = formatTokensPerSecond(stats.tokens_per_second);
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-4 text-[var(--text-subtle)]">
-      {model && <span className="truncate max-w-[220px]" title={stats.model}>{model}</span>}
-      {model && <span aria-hidden="true">·</span>}
       <span>{total}</span>
       {speed && <span aria-hidden="true">·</span>}
       {speed && <span>{speed}</span>}
@@ -47,13 +44,20 @@ export function TurnStatsFooter({ stats }: { stats: TurnStats }) {
           Использовано
           <ChevronDown size={11} aria-hidden="true" className="transition-transform group-open:rotate-180" />
         </summary>
-        <div className="absolute left-0 z-20 mt-1 min-w-[190px] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-2)] p-2 shadow-lg">
+        <div className="absolute left-0 z-20 mt-1 min-w-[280px] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-2)] p-2 shadow-lg">
           {lanes.map((lane) => {
             const item = stats.lanes[lane.key]!;
             return (
-              <div key={lane.key} className="flex items-center justify-between gap-4 py-0.5">
-                <span>{lane.label}</span>
-                <span className="tabular-nums text-[var(--text-muted)]">
+              <div key={lane.key} className="flex items-center justify-between gap-3 py-0.5">
+                <span className="flex min-w-0 items-baseline gap-1.5">
+                  <span className="shrink-0">{lane.label}</span>
+                  {item.model && (
+                    <span className="truncate text-[var(--text-subtle)]" title={item.model}>
+                      {formatModelName(item.model)}
+                    </span>
+                  )}
+                </span>
+                <span className="shrink-0 tabular-nums text-[var(--text-muted)]">
                   {formatDurationMs(item.duration_ms)}
                   {item.calls > 1 ? ` · ${item.calls} вызова` : ''}
                 </span>

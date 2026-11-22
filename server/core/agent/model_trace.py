@@ -260,8 +260,6 @@ def turn_stats(report) -> dict | None:
     lanes: dict[str, dict] = {}
     llm_ms = 0.0
     output_tokens = 0
-    last_call = None
-    last_talk_call = None
     for call in report.get("calls") or []:
         if not isinstance(call, dict):
             continue
@@ -271,12 +269,12 @@ def turn_stats(report) -> dict | None:
         duration = _nonnegative_number(call.get("duration_ms"))
         if duration is None:
             continue
-        last_call = call
-        if lane == "talk":
-            last_talk_call = call
         entry = lanes.setdefault(lane, {"calls": 0, "duration_ms": 0.0})
         entry["calls"] += 1
         entry["duration_ms"] = round(entry["duration_ms"] + duration, 1)
+        model = str(call.get("reported_model") or call.get("configured_model") or "").strip()
+        if model:
+            entry["model"] = model[:200]
         usage = call.get("usage") if isinstance(call.get("usage"), dict) else {}
         for key in ("input_tokens", "output_tokens"):
             value = usage.get(key)
@@ -297,11 +295,6 @@ def turn_stats(report) -> dict | None:
         stats["output_tokens"] = output_tokens
         if llm_ms > 0:
             stats["tokens_per_second"] = round(output_tokens / (llm_ms / 1000.0), 1)
-    model_call = last_talk_call or last_call
-    if model_call is not None:
-        model = str(model_call.get("reported_model") or model_call.get("configured_model") or "").strip()
-        if model:
-            stats["model"] = model[:200]
     return stats
 
 

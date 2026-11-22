@@ -1,6 +1,7 @@
 export interface TurnLaneStats {
   calls: number;
   duration_ms: number;
+  model?: string;
   input_tokens?: number;
   output_tokens?: number;
 }
@@ -10,7 +11,6 @@ export interface TurnStats {
   llm_ms: number;
   output_tokens?: number;
   tokens_per_second?: number;
-  model?: string;
   lanes: Partial<Record<'talk' | 'brain' | 'memory' | 'vision', TurnLaneStats>>;
 }
 

@@ -11,12 +11,9 @@ const LANES: { key: keyof TurnStats['lanes']; label: string }[] = [
 export function TurnStatsView({ stats }: { stats: TurnStats }) {
   const lanes = LANES.filter((lane) => stats.lanes[lane.key]);
   if (!lanes.length) return null;
-  const model = modelLabel(stats.model);
   const speed = tokenSpeed(stats.tokens_per_second);
   return (
     <div className="turn-stats">
-      {model && <span className="turn-model" title={stats.model}>{model}</span>}
-      {model && <span aria-hidden="true">·</span>}
       <span>{turnDuration(stats.duration_ms)}</span>
       {speed && <span aria-hidden="true">·</span>}
       {speed && <span>{speed}</span>}
@@ -30,7 +27,10 @@ export function TurnStatsView({ stats }: { stats: TurnStats }) {
             const item = stats.lanes[lane.key]!;
             return (
               <div key={lane.key}>
-                <span>{lane.label}</span>
+                <span className="turn-lane-name">
+                  <span>{lane.label}</span>
+                  {item.model && <span className="turn-lane-model" title={item.model}>{modelLabel(item.model)}</span>}
+                </span>
                 <span>
                   {turnDuration(item.duration_ms)}
                   {item.calls > 1 ? ` · ${item.calls} вызова` : ''}

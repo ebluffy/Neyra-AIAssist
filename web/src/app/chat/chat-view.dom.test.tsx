@@ -33,8 +33,10 @@ function sseStatsResponse(): Response {
     llm_ms: 7200,
     output_tokens: 240,
     tokens_per_second: 33.3,
-    model: 'opencode-go/deepseek-v4.1-flash',
-    lanes: { brain: { calls: 1, duration_ms: 3100 }, talk: { calls: 1, duration_ms: 2600, output_tokens: 240 } },
+    lanes: {
+      brain: { calls: 1, duration_ms: 3100, model: 'opencode-go/deepseek-v4.1-flash' },
+      talk: { calls: 1, duration_ms: 2600, model: 'opencode/qwen3.8-27b', output_tokens: 240 },
+    },
   };
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -85,10 +87,11 @@ describe('ChatView conversation', () => {
     const input = screen.getByPlaceholderText(ru.placeholder);
     fireEvent.change(input, { target: { value: 'покажи статистику' } });
     fireEvent.submit(input.closest('form')!);
-    expect(await screen.findByText('Deepseek V4.1 Flash')).toBeTruthy();
-    expect(screen.getByText('8,4 с')).toBeTruthy();
+    expect(await screen.findByText('8,4 с')).toBeTruthy();
     expect(screen.getByText('33,3 ток/с')).toBeTruthy();
     fireEvent.click(screen.getByText('Использовано'));
+    expect(screen.getByText('Deepseek V4.1 Flash')).toBeTruthy();
+    expect(screen.getByText('Qwen3.8 27b')).toBeTruthy();
     expect(screen.getByText('Мозг')).toBeTruthy();
     expect(screen.getByText('Разговор')).toBeTruthy();
   });

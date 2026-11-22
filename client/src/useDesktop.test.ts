@@ -108,8 +108,10 @@ describe('desktop streaming and history persistence', () => {
       llm_ms: 7200,
       output_tokens: 240,
       tokens_per_second: 33.3,
-      model: 'opencode-go/deepseek-v4.1-flash',
-      lanes: { brain: { calls: 1, duration_ms: 3100 }, talk: { calls: 1, duration_ms: 2600 } },
+      lanes: {
+        brain: { calls: 1, duration_ms: 3100, model: 'opencode-go/deepseek-v4.1-flash' },
+        talk: { calls: 1, duration_ms: 2600, model: 'opencode/qwen3.8-27b' },
+      },
     };
     event({ type: 'done', text: 'ok', turn_stats: stats });
     await settle();

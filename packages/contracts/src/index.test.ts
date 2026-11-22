@@ -111,11 +111,10 @@ describe('core → BFF: server events', () => {
       llm_ms: 7200,
       output_tokens: 240,
       tokens_per_second: 33.3,
-      model: 'opencode-go/deepseek-v4.1-flash',
       lanes: {
-        brain: { calls: 1, duration_ms: 3100, input_tokens: 100, output_tokens: 20 },
-        talk: { calls: 1, duration_ms: 2600, output_tokens: 200 },
-        memory: { calls: 2, duration_ms: 1500 },
+        brain: { calls: 1, duration_ms: 3100, model: 'brain-model', input_tokens: 100, output_tokens: 20 },
+        talk: { calls: 1, duration_ms: 2600, model: 'talk-model', output_tokens: 200 },
+        memory: { calls: 2, duration_ms: 1500, model: 'memory-model' },
       },
     };
     expect(TurnStatsSchema.safeParse(stats).success).toBe(true);

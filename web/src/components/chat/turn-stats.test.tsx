@@ -16,11 +16,10 @@ const stats = {
   llm_ms: 7200,
   output_tokens: 240,
   tokens_per_second: 33.3,
-  model: 'opencode-go/deepseek-v4.1-flash',
   lanes: {
-    brain: { calls: 1, duration_ms: 3100 },
-    talk: { calls: 1, duration_ms: 2600, output_tokens: 240 },
-    memory: { calls: 2, duration_ms: 1500 },
+    brain: { calls: 1, duration_ms: 3100, model: 'opencode-go/deepseek-v4.1-flash' },
+    talk: { calls: 1, duration_ms: 2600, model: 'opencode/qwen3.8-27b', output_tokens: 240 },
+    memory: { calls: 2, duration_ms: 1500, model: 'opencode-go/deepseek-v4.1-flash' },
   },
 };
 
@@ -35,13 +34,14 @@ describe('turn stats footer', () => {
 
   it('shows the subtitle and expands per-lane timings', () => {
     const { container } = render(<TurnStatsFooter stats={stats} />);
-    expect(screen.getByText('Deepseek V4.1 Flash')).toBeTruthy();
     expect(screen.getByText('8,4 с')).toBeTruthy();
     expect(screen.getByText('33,3 ток/с')).toBeTruthy();
     const details = container.querySelector('details');
     expect(details?.open).toBe(false);
     fireEvent.click(screen.getByText('Использовано'));
     expect(details?.open).toBe(true);
+    expect(screen.getAllByText('Deepseek V4.1 Flash')).toHaveLength(2);
+    expect(screen.getByText('Qwen3.8 27b')).toBeTruthy();
     expect(screen.getByText('Мозг')).toBeTruthy();
     expect(screen.getByText('Разговор')).toBeTruthy();
     expect(screen.getByText('Память')).toBeTruthy();
