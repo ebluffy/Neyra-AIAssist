@@ -106,7 +106,7 @@ neyra.owyx.site {
 }
 ```
 
-WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If using `?token=`, mask `token` in access logs. Without Cloudflare, use `X-Real-IP {remote_host}` and add `header_up -CF-Connecting-IP` so clients cannot inject an address.
+WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If using `?token=`, mask `token` in access logs. Without Cloudflare the same `trusted_proxies` block simply never matches, so `{client_ip}` is the direct peer and a client-supplied header cannot change it.
 
 ## nginx (frp — upstream = frps vhost)
 
@@ -138,6 +138,8 @@ set_real_ip_from 2a06:98c0::/29;
 set_real_ip_from 2c0f:f248::/32;
 real_ip_header CF-Connecting-IP;
 ```
+
+A direct request to the VPS IP keeps the real peer in `$remote_addr`, and any client-supplied `CF-Connecting-IP` is ignored. Firewall 80/443 by Cloudflare ranges stays a second layer (and is required if you keep `map $http_cf_connecting_ip` instead of `realip`). You can also reject direct vhost hits in nginx without touching port 80 (ACME): `geo $realip_remote_addr $neyra_edge { default 0; <same ranges> 1; }` plus `if ($neyra_edge = 0) { return 403; }` in the `server`.
 
 ```nginx
 server {

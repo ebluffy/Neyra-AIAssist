@@ -110,7 +110,7 @@ neyra.owyx.site {
 }
 ```
 
-WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?token=` — маскируйте в access-логах. Без Cloudflare замените `X-Real-IP` на `{remote_host}` и добавьте `header_up -CF-Connecting-IP`, чтобы клиент не подставил чужой адрес.
+WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?token=` — маскируйте в access-логах. Без Cloudflare блок `trusted_proxies` просто не срабатывает: `{client_ip}` = прямой peer, и клиентский заголовок его не меняет.
 
 ## nginx (frp — upstream = vhost frps)
 
@@ -151,7 +151,7 @@ proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $remote_addr;
 ```
 
-Прямой запрос на IP VPS сохраняет реальный peer в `$remote_addr`, а присланный клиентом `CF-Connecting-IP` игнорируется. Firewall 80/443 по диапазонам Cloudflare остаётся вторым слоем (и обязателен, если вместо `realip` оставляете `map $http_cf_connecting_ip`).
+Прямой запрос на IP VPS сохраняет реальный peer в `$remote_addr`, а присланный клиентом `CF-Connecting-IP` игнорируется. Firewall 80/443 по диапазонам Cloudflare остаётся вторым слоем (и обязателен, если вместо `realip` оставляете `map $http_cf_connecting_ip`). Закрыть vhost от прямых запросов можно и на уровне nginx, не трогая 80 (ACME): `geo $realip_remote_addr $neyra_edge { default 0; <те же диапазоны> 1; }` и в `server` — `if ($neyra_edge = 0) { return 403; }`.
 
 API доверяет `CF-Connecting-IP` / `X-Real-IP` **только** когда socket peer = loopback (типичный frpc→uvicorn), и **игнорирует** edge-значение, если оно само loopback (`127.0.0.1` / `::1`). Сырой `X-Forwarded-For` от клиента **не** читается: uvicorn `proxy_headers=False`, HTTP RPM и login rate-limit используют тот же `resolve_client_ip`. `POST /v1/dashboard/auth/setup` без Bearer разрешён только с **консольного** loopback (peer local **и** нет CF/X-Real) — подмена `CF-Connecting-IP: 127.0.0.1` не открывает setup. Smoke: неверный login с интернета → в логе ядра `dashboard login failed ip=<реальный клиент>`, не `127.0.0.1` и не подставной XFF.
 
