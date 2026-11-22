@@ -66,7 +66,7 @@ customDomains = ["neyra-web-internal.owyx.site"]
 
 ## Caddy (frp — upstream = frps vhost)
 
-CORE_UPSTREAM is the core frps HTTP vhost (8787), WEB_UPSTREAM the site (3000). `/api/v1` targets the core and strips the public `/api` prefix; `/api/auth` must stay on the site.
+CORE_UPSTREAM/WEB_UPSTREAM are the frps HTTP vhost addresses on the VPS; the home localPorts are 8787/3000. `/api/v1` targets the core and strips the public `/api` prefix; `/api/auth` must stay on the site.
 
 ```caddy
 neyra.owyx.site {
@@ -99,7 +99,7 @@ neyra.owyx.site {
 }
 ```
 
-WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If using `?token=`, mask `token` in access logs.
+WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If using `?token=`, mask `token` in access logs. Without Cloudflare, replace `{http.request.header.CF-Connecting-IP}` with `{remote_host}` in Caddy.
 
 ## nginx (frp — upstream = frps vhost)
 

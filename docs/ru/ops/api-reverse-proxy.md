@@ -71,7 +71,7 @@ customDomains = ["neyra-web-internal.owyx.site"]
 ```caddy
 neyra.owyx.site {
   encode gzip
-  # CORE_UPSTREAM — frps HTTP vhost ядра (8787), WEB_UPSTREAM — сайта (3000).
+  # CORE_UPSTREAM/WEB_UPSTREAM — адреса frps HTTP-vhost на VPS; дома localPort 8787/3000.
   # /api/v1 — ядро; /api снимает публичный префикс.
   handle /api/v1/* {
     uri strip_prefix /api
@@ -103,7 +103,7 @@ neyra.owyx.site {
 }
 ```
 
-WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?token=` — маскируйте в access-логах.
+WebSocket для `/api/v1/ws/chat`. Предпочтительно Bearer; `?token=` — маскируйте в access-логах. Без Cloudflare замените `{http.request.header.CF-Connecting-IP}` на `{remote_host}` в Caddy.
 
 ## nginx (frp — upstream = vhost frps)
 
