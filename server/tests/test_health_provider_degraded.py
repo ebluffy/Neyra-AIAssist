@@ -170,3 +170,35 @@ class TestHealthReadyEndpoint:
         assert r.status_code == 200
         checks = {c["name"]: c for c in r.json()["data"]["checks"]}
         assert checks["llm_provider"]["ok"] is True
+
+    def test_ready_503_when_configured_lavalink_is_down(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: {"checked": True, "ok": False, "error": "ConnectError"},
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 503
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"]["checked"] is True
+        assert checks["lavalink"]["ok"] is False
+
+    def test_ready_200_when_lavalink_is_not_configured(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: {"checked": False, "ok": True, "reason": "no music nodes"},
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 200
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"] == {
+            "name": "lavalink",
+            "checked": False,
+            "ok": True,
+            "reason": "no music nodes",
+        }

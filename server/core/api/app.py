@@ -2364,6 +2364,19 @@ def build_app(
             checks.append({"name": "llm_provider", "ok": False, "reason": rate_limit})
         else:
             checks.append({"name": "llm_provider", "ok": True})
+        # Lavalink is optional unless music nodes are configured. If they are,
+        # readiness must not stay green while the music module cannot start.
+        try:
+            from core.runtime.health import check_lavalink
+
+            lavalink = await asyncio.to_thread(check_lavalink, config)
+            checks.append({"name": "lavalink", **lavalink})
+            if lavalink.get("checked") and not lavalink.get("ok"):
+                ready = False
+        except Exception:
+            logger.debug("health ready lavalink probe failed", exc_info=True)
+            checks.append({"name": "lavalink", "checked": True, "ok": False})
+            ready = False
         status = 200 if ready else 503
         return JSONResponse(
             status_code=status,
