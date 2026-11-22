@@ -73,9 +73,15 @@ CORE_UPSTREAM/WEB_UPSTREAM are the frps HTTP vhost addresses on the VPS; the hom
   # Trust only Cloudflare; otherwise {client_ip} is the direct peer.
   servers {
     trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+    client_ip_headers CF-Connecting-IP
+    trusted_proxies_strict
   }
 }
+```
 
+`client_ip_headers`/`trusted_proxies_strict` require Caddy ≥ 2.8.
+
+```caddy
 neyra.owyx.site {
   encode gzip
   handle /api/v1/* {
@@ -83,30 +89,34 @@ neyra.owyx.site {
     reverse_proxy http://CORE_UPSTREAM {
       header_up Host CORE_HOST
       header_up X-Real-IP {client_ip}
+      header_up CF-Connecting-IP {client_ip}
     }
   }
   handle /api/auth/* {
     reverse_proxy http://WEB_UPSTREAM {
       header_up Host WEB_HOST
       header_up X-Real-IP {client_ip}
+      header_up CF-Connecting-IP {client_ip}
     }
   }
   handle /api/* {
     reverse_proxy http://WEB_UPSTREAM {
       header_up Host WEB_HOST
       header_up X-Real-IP {client_ip}
+      header_up CF-Connecting-IP {client_ip}
     }
   }
   handle {
     reverse_proxy http://WEB_UPSTREAM {
       header_up Host WEB_HOST
       header_up X-Real-IP {client_ip}
+      header_up CF-Connecting-IP {client_ip}
     }
   }
 }
 ```
 
-WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If using `?token=`, mask `token` in access logs. Without Cloudflare the same `trusted_proxies` block simply never matches, so `{client_ip}` is the direct peer and a client-supplied header cannot change it.
+WebSocket upgrades for `/api/v1/ws/chat`. Prefer `Authorization: Bearer`. If using `?token=`, mask `token` in access logs. Without Cloudflare the `trusted_proxies` block never matches: `{client_ip}` is the direct peer, and `header_up CF-Connecting-IP {client_ip}` overwrites the client-supplied header, so the core cannot be fooled.
 
 ## nginx (frp — upstream = frps vhost)
 
@@ -218,7 +228,7 @@ curl -sk -X POST https://neyra.owyx.site/api/v1/dashboard/auth/login \
   -d '{"key":"smoke-wrong-key"}'
 ```
 
-Expect `401 unauthorized` and `dashboard login failed ip=<real IP>`, never `203.0.113.7`.
+Expect `401 unauthorized` and `dashboard login failed ip=<real IP>`, never `203.0.113.7`. Repeat with `-H 'X-Forwarded-For: 203.0.113.7'` — the logged IP must not change (Caddy: `client_ip_headers CF-Connecting-IP`; nginx ignores raw XFF).
 
 **Without Cloudflare:** omit `--resolve`; the same POST must return `401` and log your real IP, never `203.0.113.7`. In both modes the dashboard key must already be configured (otherwise `400 setup_required`); repeating the smoke without a pause can return `429 rate_limited` — that means the check did not run.
 
