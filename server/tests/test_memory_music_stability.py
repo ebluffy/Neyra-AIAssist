@@ -17,7 +17,7 @@ from core.reflection.engine import ReflectionEngine
 from core.runtime.identity import UnifiedIdentityMapper
 from core.tools import builtins
 from modules.discord import music as music_module
-from modules.discord.music_intent import finalize_music_route, plan_music_route, resolve_music_route
+from modules.discord.music_intent import candidate_music_intent, finalize_music_route, plan_music_route, resolve_music_route
 from offline_support import offline_agent
 from test_stage3a import discord_message
 
@@ -198,6 +198,291 @@ def test_chat_pipeline_binds_shared_scope_from_metadata(tmp_path, guild):
 def test_gif_urls_and_negations_cannot_reenter_classifier_music_path(text):
     plan = plan_music_route(text)
     assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('CHAT', False)
+
+
+@pytest.mark.parametrize('text', [
+    'че я тебя попросил включить музыку, а ты замолчала',
+    'я просил включить музыку',
+    'ты не включила музыку',
+    'почему музыку не включила?',
+    'включить музыку не могу, ноут тормозит',
+    'я просил включить музыку, а ты молчишь',
+    'почему музыка замолчала?',
+    'где музыка?',
+    'музыка не играет',
+    'музыка пропала',
+    'ты выключила музыку',
+    'не надо музыку',
+    'я просил зайти в войс и включить музыку',
+    'почему тебя нет в войсе, я хотел музыку',
+    'ты не зашла в войс',
+    'ты почему не в войсе',
+    'зайди в войс, почему молчишь',
+    'включи громче…',
+    'включи погромче!',
+    'включи громче музыку!',
+    'включи громче — музыку',
+    'включи громче — пожалуйста',
+    'включи погромче - плиз',
+    'включи тише — please',
+    'включи тише, пожалуйста, тише',
+    'включи тише плиз тише',
+    'включи тише пожалуйста тише',
+    'включи громче please громче',
+    'включи-ка громче',
+    'включи -ка громче',
+    'включи-ка потише',
+    'включи-ка громче музыку',
+    'включи громче песню',
+    'включи потише трек',
+    'включи громче пожалуйста погромче',
+    'включи громче — пожалуйста пожалуйста',
+    'включи тише — Please, please',
+    'включи громче пожалуйста',
+    'включи погромче, пожалуйста!',
+    'включи громче плиз плиз',
+    'включи погромче, пожалуйста, пожалуйста',
+    'ты включишь музыку или нет?',
+    'ты включишь музыку завтра?',
+    'можно включить погромче?',
+])
+def test_music_complaints_do_not_start_playback(text):
+    plan = plan_music_route(text)
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('CHAT', False)
+
+
+@pytest.mark.parametrize('text', [
+    'ну включи музыку',
+    'а включи трек',
+    'слушай, включи музыку',
+    'Нейра, можешь пожалуйста включить музыку',
+    'можешь, пожалуйста, включить трек',
+    'пожалуйста нейра включи lofi',
+    'ну давай вруби что-нибудь',
+    'can you play lofi',
+    'could you play lofi',
+    'Нейра, ты можешь включить музыку?',
+    'ты можешь включить музыку?',
+    'поставьте музыку',
+    'Neyra, play lofi',
+    'зайди в войс и включи музыку',
+])
+def test_imperative_prefixes_stay_hard_path(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is False
+    route, use, _ = finalize_music_route(plan)
+    assert route == 'PLAY_MUSIC' and use
+
+
+@pytest.mark.parametrize(('text', 'query'), [
+    ('включи Сплин — Выхода нет', 'Сплин — Выхода нет'),
+    ('включи Земфира — Почему', 'Земфира — Почему'),
+    ('включи песню Не надо', 'Не надо'),
+    ('включи Ленинград — Тише', 'Ленинград — Тише'),
+    ('включи Тише воды ниже травы', 'Тише воды ниже травы'),
+    ('зайди в войс и включи Земфира — Почему', 'Земфира — Почему'),
+])
+def test_complaint_inside_song_title_defers_to_classifier(text, query):
+    candidate = candidate_music_intent(text)
+    assert candidate and candidate['query'] == query
+    assert candidate.get('block') is None
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+
+
+def test_generic_complaint_after_verb_goes_to_classifier():
+    plan = plan_music_route('включи мозги, почему опять не то')
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+
+
+@pytest.mark.parametrize('text', [
+    'не надо https://youtu.be/abc123XYZ',
+    'почему не играет https://youtu.be/abc123XYZ?',
+])
+def test_link_with_complaint_needs_classifier(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[0] == 'CHAT'
+
+
+@pytest.mark.parametrize('text', [
+    'https://youtu.be/abc123XYZ',
+    'включи https://youtu.be/abc123XYZ',
+])
+def test_bare_or_imperative_link_stays_hard_path(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is False
+    assert finalize_music_route(plan)[:2] == ('PLAY_MUSIC', True)
+
+
+@pytest.mark.parametrize('text', ['а может включишь lofi', 'пожалуйста включишь lofi'])
+def test_future_request_without_music_noun_uses_classifier(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+
+
+def test_future_request_needs_classifier():
+    text = 'а может включишь музыку'
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    route, use, _ = finalize_music_route(plan, classifier_route='PLAY_MUSIC')
+    assert route == 'PLAY_MUSIC' and use
+
+
+@pytest.mark.parametrize('text', [
+    'включи Ёлка — пожалуйста',
+    'включи lofi — Пожалуйста',
+    'включи lofi - Please',
+    'включи Ёлка — Пожалуйста пожалуйста',
+    'включи lofi — пожалуйста пожалуйста',
+    'включи Smiths — Please, Please, Please',
+    'включи lofi — пожалуйста погромче',
+    'включи Ёлка — Пожалуйста, погромче',
+])
+def test_polite_after_dash_defers_to_classifier(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+
+
+@pytest.mark.parametrize(('text', 'allowed'), [
+    ('включи-ка громче', False),
+    ('включи -ка громче', False),
+    ('включи-ка громче музыку', False),
+    ('включи громче музыку!', False),
+    ('включи Сплин', True),
+    ('классный трек', True),
+    ('а может включишь', False),
+    ('а может включишь?', False),
+    ('а может включишь!', False),
+    ('а может включишь пожалуйста', False),
+    ('а может включишь lofi?', False),
+    ('а может включишь lofi', True),
+    ('а может включишь)', False),
+    ('а может включишь :)', False),
+    ('а может включишь 🙂', False),
+    ('а может включишь xD', False),
+    ('а может включишь xd', False),
+    ('а может включишь xDD', False),
+    ('а может включишь :D', False),
+    ('а может включишь :3', False),
+    ('а может включишь lofi)', True),
+    ('музыку!', True),
+    ('Музыка...', True),
+    ('музыка?', False),
+])
+def test_soft_play_volume_unit(text, allowed):
+    from modules.discord.music_intent import soft_play_allowed
+    assert soft_play_allowed(text) is allowed
+
+
+@pytest.mark.parametrize('text', ['включи lofi тише', 'включи lofi тише плиз'])
+def test_volume_inside_query_defers_with_original_text(text):
+    candidate = candidate_music_intent(text)
+    assert candidate and candidate['query'] == 'lofi тише'
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
+
+
+def test_future_request_question_stays_chat():
+    from modules.discord.music_intent import resolve_music_route
+    assert resolve_music_route('а может включишь lofi?', classifier_route='PLAY_MUSIC')[:2] == ('CHAT', False)
+
+
+@pytest.mark.parametrize(('text', 'query'), [
+    ('а может включишь lofi', 'lofi'),
+    ('пожалуйста включишь Сплин', 'Сплин'),
+])
+def test_future_request_builds_clean_query(text, query):
+    candidate = candidate_music_intent(text)
+    assert candidate and candidate['query'] == query and candidate.get('defer') == '1'
+
+
+@pytest.mark.parametrize(('text', 'query'), [
+    ('эй, нейра, вруби ревели горы', 'ревели горы'),
+    ('можешь включить lofi', 'lofi'),
+    ('давай включи ревели горы', 'ревели горы'),
+    ('Включи, пожалуйста, ревели горы', 'ревели горы'),
+    ('включи-ка музыку', 'upbeat happy music'),
+    ('включи)', 'upbeat happy music'),
+    ('включи 🙂', 'upbeat happy music'),
+    ('включи :D', 'upbeat happy music'),
+    ('включи xD', 'upbeat happy music'),
+    ('включи Queen (Live)', 'Queen (Live)'),
+    ('поставь Bohemian Rhapsody (Remastered 2011)', 'Bohemian Rhapsody (Remastered 2011)'),
+    ('включи lofi)', 'lofi'),
+    ('включи Queen (Live) :)', 'Queen (Live)'),
+    ('включи Мне не страшно', 'Мне не страшно'),
+    ('включи lofi =)', 'lofi'),
+    ('включи lofi :-)', 'lofi'),
+    ('включи lofi ((', 'lofi'),
+    ('включи lofi (', 'lofi'),
+    ('включи Queen (Live) ((', 'Queen (Live)'),
+    ('включи lofi =)=)', 'lofi'),
+    ('включи lofi =(=(', 'lofi'),
+    ('включи lofi хд', 'lofi'),
+    ('включи lofi ХДД', 'lofi'),
+    ('включи Foxd', 'Foxd'),
+    ('включи lofi:D', 'lofi'),
+    ('включи lofi<3', 'lofi'),
+    ('включи lofi=)', 'lofi'),
+    ('включи lofi=)=)', 'lofi'),
+    ('включи lofi:)xd', 'lofi'),
+    ('включи Redd', 'Redd'),
+    ('включи lofi :)', 'lofi'),
+    ('а может включишь lofi)', 'lofi'),
+    ('включи мне lofi', 'lofi'),
+    ('поставь нам Сплин', 'Сплин'),
+    ('а может включишь мне lofi', 'lofi'),
+    ('включи мне', 'upbeat happy music'),
+    ('врубай :)', 'upbeat happy music'),
+    ('включи, нейра, lofi', 'lofi'),
+    ('включи, пожалуйста, нейра, lofi', 'lofi'),
+    ('включи Каста', 'Каста'),
+    ('поставь Тамару', 'Тамару'),
+    ('включи-ка Каста', 'Каста'),
+    ('включи lofi потише', 'lofi'),
+    ('включи lofi, тише', 'lofi'),
+    ('включи lofi пожалуйста', 'lofi'),
+    ('включи lofi погромче пожалуйста', 'lofi'),
+    ('включи lofi пожалуйста, громче', 'lofi'),
+    ('включи lofi пожалуйста, погромче', 'lofi'),
+    ('включи lofi - пожалуйста, погромче', 'lofi'),
+    ('включи Please Please Please, громче', 'Please Please Please'),
+    ('включи Please Please Please, погромче', 'Please Please Please'),
+    ('включи Please Please Please, потише пожалуйста', 'Please Please Please'),
+    ('включи lofi please', 'lofi'),
+    ('включи lofi, пожалуйста, пожалуйста', 'lofi'),
+    ('включи Please Please Please', 'Please Please Please'),
+    ('включи Please Please Please пожалуйста', 'Please Please Please'),
+    ('включи Ёлка — Пожалуйста', 'Ёлка — Пожалуйста'),
+    ('включи Ёлка - Пожалуйста', 'Ёлка - Пожалуйста'),
+    ('включи Ёлка — пожалуйста', 'Ёлка — пожалуйста'),
+    ('включи lofi — Пожалуйста', 'lofi — Пожалуйста'),
+    ('включи lofi - Please', 'lofi - Please'),
+    ('включи lofi - пожалуйста', 'lofi'),
+    ('включи Ёлка — Пожалуйста пожалуйста', 'Ёлка — Пожалуйста пожалуйста'),
+    ('включи lofi — пожалуйста пожалуйста', 'lofi — пожалуйста пожалуйста'),
+    ('включи Smiths — Please, Please, Please', 'Smiths — Please, Please, Please'),
+    ('включи Please, Please, Please пожалуйста', 'Please, Please, Please'),
+    ('зайди в войс и врубай Каста', 'Каста'),
+    ('зайди в войс и поставьте Сплин', 'Сплин'),
+    ('зайди в войс и заиграйте Каста', 'Каста'),
+    ('включи Ленинград — Тише пожалуйста', 'Ленинград — Тише'),
+    ('зайди в войс и включи музыку', 'upbeat happy music'),
+])
+def test_music_query_is_clean(text, query):
+    candidate = candidate_music_intent(text)
+    assert candidate and candidate['action'] == 'music.play'
+    assert candidate['query'] == query
 
 
 @pytest.mark.parametrize('text', ['play song test', 'включи трек test', 'https://youtu.be/abc123XYZ', 'пауза', 'join voice'])
@@ -530,6 +815,20 @@ class _Player:
 def _emit_track_end(bot, player, track, reason):
     player.current = None
     asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=track, reason=reason)))
+
+
+@pytest.mark.parametrize('text', [
+    "включи lofi" + " " * 3700 + "x" + ")" * 289,
+    "включи lofi" + "—" * 3980 + "x",
+    "включи lofi" + "," * 3980 + "x",
+    "включи lofi " + ":) " * 1330 + "y",
+    "включи lofi " + "xd " * 1320 + "q",
+])
+def test_emoticon_stripping_is_linear_on_long_input(text):
+    import time
+    start = time.perf_counter()
+    plan_music_route(text)
+    assert time.perf_counter() - start < 1.0
 
 
 def test_youtube_failure_falls_back_to_soundcloud_once_through_listeners(monkeypatch):
