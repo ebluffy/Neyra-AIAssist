@@ -17,7 +17,7 @@ from core.reflection.engine import ReflectionEngine
 from core.runtime.identity import UnifiedIdentityMapper
 from core.tools import builtins
 from modules.discord import music as music_module
-from modules.discord.music_intent import finalize_music_route, plan_music_route, resolve_music_route
+from modules.discord.music_intent import candidate_music_intent, finalize_music_route, plan_music_route, resolve_music_route
 from offline_support import offline_agent
 from test_stage3a import discord_message
 
@@ -202,12 +202,46 @@ def test_gif_urls_and_negations_cannot_reenter_classifier_music_path(text):
 
 @pytest.mark.parametrize('text', [
     'че я тебя попросил включить музыку, а ты замолчала',
+    'я просил включить музыку',
+    'ты не включила музыку',
+    'почему музыку не включила?',
+    'включить музыку не могу, ноут тормозит',
     'я просил включить музыку, а ты молчишь',
-    'почему ты не поставила трек, я же просил',
 ])
 def test_music_complaints_do_not_start_playback(text):
     plan = plan_music_route(text)
     assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('CHAT', False)
+
+
+@pytest.mark.parametrize('text', [
+    'ну включи музыку',
+    'а включи трек',
+    'слушай, включи музыку',
+    'Нейра, можешь пожалуйста включить музыку',
+    'можешь, пожалуйста, включить трек',
+    'пожалуйста нейра включи lofi',
+    'ну давай вруби что-нибудь',
+    'can you play lofi',
+    'could you play lofi',
+])
+def test_imperative_prefixes_stay_hard_path(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is False
+    route, use, _ = finalize_music_route(plan)
+    assert route == 'PLAY_MUSIC' and use
+
+
+@pytest.mark.parametrize(('text', 'query'), [
+    ('эй, нейра, вруби ревели горы', 'ревели горы'),
+    ('можешь включить lofi', 'lofi'),
+    ('давай включи ревели горы', 'ревели горы'),
+    ('Включи, пожалуйста, ревели горы', 'ревели горы'),
+    ('включи-ка музыку', 'upbeat happy music'),
+])
+def test_music_query_is_clean(text, query):
+    candidate = candidate_music_intent(text)
+    assert candidate and candidate['action'] == 'music.play'
+    assert candidate['query'] == query
 
 
 @pytest.mark.parametrize('text', ['play song test', 'включи трек test', 'https://youtu.be/abc123XYZ', 'пауза', 'join voice'])

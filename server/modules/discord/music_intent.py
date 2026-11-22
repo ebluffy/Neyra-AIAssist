@@ -38,18 +38,23 @@ PLAY_VERB_STRIP_RE = re.compile(
     r"^(" + "|".join(_PLAY_VERBS) + r"|music|музыка)\s+",
     re.IGNORECASE,
 )
-_IMPERATIVE_PLAY_RE = re.compile(
-    r"^(?:(?:эй[,\s]+)?нейра[,\s:-]*)?"
-    r"(?:(?:можешь|можно|давай|плиз|пожалуйста|please)[,\s]+)?"
-    r"(?:" + "|".join(_PLAY_VERBS) + r")\b",
+_URL_RE = re.compile(r"(?:[a-z][a-z0-9+.-]*:)?//[^\s<>\"']+", re.IGNORECASE)
+
+
+_LEAD_WORDS = (
+    r"эй|ну|а|слушай|нейра|давай|можешь|можно|пожалуйста|плиз|please|can\s+you|could\s+you"
+)
+_LEAD_RE = re.compile(r"^(?:(?:" + _LEAD_WORDS + r")[\s,:;-]*){0,3}", re.IGNORECASE)
+_IMPERATIVE_VERBS_RE = re.compile(
+    r"^(?:включи|включите|включай|вруби|врубай|врубите|поставь|заиграй|play)\b",
     re.IGNORECASE,
 )
-
-
-def imperative_play(text: str) -> bool:
-    """Play verb must lead the command; a complaint may mention it mid-sentence."""
-    return bool(_IMPERATIVE_PLAY_RE.match((text or "").strip()))
-_URL_RE = re.compile(r"(?:[a-z][a-z0-9+.-]*:)?//[^\s<>\"']+", re.IGNORECASE)
+_INFINITIVE_RE = re.compile(r"^(?:включить)\b", re.IGNORECASE)
+_MODAL_RE = re.compile(r"(?:можешь|можно|can\s+you|could\s+you)", re.IGNORECASE)
+_MUSIC_VERB_STEM_RE = re.compile(
+    r"\b(?:включ\w*|постав\w*|вруб\w*|заигр\w*|просил\w*|прошу|просим)\b",
+    re.IGNORECASE,
+)
 
 
 def _routing_text(text: str) -> str:
@@ -118,6 +123,25 @@ def has_play_verb(text: str) -> bool:
     return bool(PLAY_VERB_RE.search(_routing_text(text)))
 
 
+def imperative_play_end(text: str) -> int:
+    """End index of a leading play command, or 0 when the text is not a command."""
+    t = (text or "").strip()
+    lead = _LEAD_RE.match(t)
+    rest = t[lead.end():]
+    modal = bool(_MODAL_RE.search(lead.group(0)))
+    verb = _IMPERATIVE_VERBS_RE.match(rest)
+    if verb is None and modal:
+        verb = _INFINITIVE_RE.match(rest)
+    if verb is None:
+        return 0
+    return lead.end() + verb.end()
+
+
+def imperative_play(text: str) -> bool:
+    """Play verb must lead the command; a complaint may mention it mid-sentence."""
+    return imperative_play_end(text) > 0
+
+
 def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
     """Classifier-only PLAY needs short command line or explicit play verb."""
     content = text or ""
@@ -126,7 +150,9 @@ def soft_play_allowed(text: str, *, soft_music: Optional[bool] = None) -> bool:
         return False
     if imperative_play(content):
         return True
-    return len(re.findall(r"\w+", content, flags=re.UNICODE)) <= 6
+    if _MUSIC_VERB_STEM_RE.search(content):
+        return False
+    return len(re.findall(r"\w+", content, flags=re.UNICODE)) <= 8
 
 
 def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
@@ -170,16 +196,19 @@ def candidate_music_intent(text: str) -> Optional[dict[str, str]]:
             lowered,
         )
     )
-    if not imperative_play(raw) and not _supported_music_link(raw) and not wants_voice_play:
+    end = imperative_play_end(raw)
+    if not end and not _supported_music_link(raw) and not wants_voice_play:
         return None
-    q = re.sub(r"^(эй\s+нейра|нейра|please|пожалуйста)[,:\s-]*", "", raw, flags=re.IGNORECASE).strip()
-    q = PLAY_VERB_STRIP_RE.sub("", q).strip()
+    q = raw[end:] if end else raw
+    q = re.sub(r"^[\s,.!?;:-]+", "", q)
+    q = re.sub(r"^(?:-?ка|пожалуйста|плиз|там)[\s,.:;-]*", "", q, flags=re.IGNORECASE)
     q = re.sub(
         r"^(трек|track|песн[юяуи]|музык[ауеи]|плейлист|playlist)\s+",
         "",
         q,
         flags=re.IGNORECASE,
     ).strip()
+    q = re.sub(r"^[\s,.!?;:-]+", "", q).strip()
     q = re.sub(
         r"(зайди|зайти)\s+в\s+(войс|голос\w*)\s*(и\s+)?|"
         r"\b(в\s+войс[еу]?|в\s+голос(овой)?\s*канал[еу]?)\b",
