@@ -296,6 +296,41 @@ def test_duplicate_queued_track_keeps_fallback_meta(monkeypatch):
     assert 'x-1' not in service.fallback_meta_by_track
 
 
+def test_two_copies_each_get_their_own_soundcloud_retry(monkeypatch):
+    service = music_module.MusicService(NS())
+    first = NS(title='X', identifier='x-1')
+    second = NS(title='X', identifier='x-1')
+    service.fallback_meta_by_track['x-1'] = {'query': 'x song', 'leftovers': [], 'sc_attempted': False}
+    player = _Player()
+    player.current = first
+    player.queue.append(second)
+    calls = []
+    sc_tracks = [NS(title='SC1', identifier='sc-1'), NS(title='SC2', identifier='sc-2')]
+
+    async def fake_search(wavelink_mod, query, node):
+        calls.append(query)
+        return [sc_tracks[len(calls) - 1]]
+
+    monkeypatch.setattr(music_module, '_search_tracks', fake_search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+
+    asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=first)))
+    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=first, reason='loadFailed')))
+    assert calls == ['scsearch:x song']
+    assert player.current.identifier == 'sc-1'
+    assert service.fallback_meta_by_track['x-1']['sc_attempted'] is False
+
+    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=player.current, reason='finished')))
+    assert player.current.identifier == 'x-1'
+    asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=second)))
+    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=second, reason='loadFailed')))
+    assert calls == ['scsearch:x song', 'scsearch:x song']
+    assert player.current.identifier == 'sc-2'
+    assert player.stopped == 0
+
+
 class _Queue(list):
     def get(self):
         return self.pop(0) if self else None

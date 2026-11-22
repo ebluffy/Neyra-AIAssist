@@ -850,9 +850,11 @@ async def _play_soundcloud_fallback(
     player: Any,
     guild_id: str,
     failed_track: Any = None,
+    meta: Optional[dict[str, Any]] = None,
 ) -> bool:
     """One SoundCloud retry for the failed track's own query."""
-    meta = _fallback_meta(service, failed_track)
+    if meta is None:
+        meta = _fallback_meta(service, failed_track)
     query = _clean_soundcloud_query(str(meta.get("query") or ""))
     if not query or meta.get("sc_attempted"):
         return False
@@ -887,6 +889,9 @@ async def _play_next_youtube_fallback(
 ) -> bool:
     """Try next search hit after login/bot/load failure. Returns True if a play was started."""
     meta = _fallback_meta(service, failed_track)
+    if failed_track is not None and _key_still_queued(player, _track_key(failed_track)):
+        # A queued copy keeps the shared meta; this attempt mutates only its own copy.
+        meta = {**meta, "leftovers": list(meta.get("leftovers") or [])}
     query = str(meta.get("query") or "")
     leftovers = list(meta.get("leftovers") or [])
     while leftovers:
@@ -906,7 +911,7 @@ async def _play_next_youtube_fallback(
                 title,
                 ex,
             )
-    if await _play_soundcloud_fallback(service, player, guild_id, failed_track):
+    if await _play_soundcloud_fallback(service, player, guild_id, failed_track, meta):
         return True
     return False
 
