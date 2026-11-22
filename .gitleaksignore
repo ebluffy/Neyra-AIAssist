@@ -39,3 +39,5 @@ ab180e3882cef17db5c752e5a3cb0b242dec9280:devtools/deploy/test_neyra_web_env.py:g
 98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:249
 98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:255
 98fbc067c273d6823694c56d485e68915cf46004:server/tests/test_admin_config_api.py:generic-api-key:265
+# Fake BETTER_AUTH_SECRET fixture in test_neyra_web_env.py of commit 42f55d3 (not a secret); tip marks it gitleaks:allow.
+42f55d3ed620ee8ae775de60b3d0f7ad21b8ec48:devtools/deploy/test_neyra_web_env.py:generic-api-key:162
