@@ -12,7 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger("neyra.health")
 
