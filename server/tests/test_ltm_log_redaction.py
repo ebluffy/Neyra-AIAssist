@@ -2,11 +2,13 @@
 
 import asyncio
 import logging
+import traceback
 from types import SimpleNamespace
 
 import pytest
 
 from core.agent.session_archive import archive_session
+from core.reflection.engine import ReflectionEngine
 from core.memory import ltm_maintenance
 
 SENTINEL = "provider-body-private-sentinel"
@@ -83,7 +85,9 @@ def test_legacy_summarize_sanitizes_provider_error(tmp_path):
             )
         )
     assert SENTINEL not in str(excinfo.value)
+    assert SENTINEL not in "".join(traceback.format_exception(excinfo.value))
     assert excinfo.value.error_class == "RuntimeError"
+    assert excinfo.value.__cause__ is None and excinfo.value.__suppress_context__
 
 
 def test_session_archive_does_not_log_provider_body(caplog):
@@ -116,3 +120,48 @@ def test_session_archive_does_not_log_provider_body(caplog):
     assert result["ran"] is True
     assert SENTINEL not in caplog.text
     assert "error_class=RuntimeError" in caplog.text
+
+
+def _reflection_engine(tmp_path, caplog):
+    async def failure(*args, **kwargs):
+        raise RuntimeError(SENTINEL)
+
+    from core.llm import retry
+    agent = SimpleNamespace(
+        diary=SimpleNamespace(add_entry=lambda **kwargs: True),
+        llm_memory=object(),
+        memory_hub=None,
+    )
+    config = {"logging": {"chat_log": str(tmp_path / "chat.log")}, "memory": {}}
+    engine = ReflectionEngine(config, agent)
+    return engine, retry
+
+
+def test_hourly_diary_does_not_log_provider_body(tmp_path, caplog, monkeypatch):
+    engine, retry = _reflection_engine(tmp_path, caplog)
+    logs = "\n".join(f"line {i}" for i in range(8))
+    monkeypatch.setattr(engine, "_get_logs_for_last_hour", lambda: logs)
+    monkeypatch.setattr(retry, "ainvoke_with_rate_limit_backoff", _raiser())
+    with caplog.at_level(logging.ERROR):
+        out = asyncio.run(engine.hourly_diary_note())
+    assert out == ""
+    assert SENTINEL not in caplog.text
+    assert "error_class=RuntimeError" in caplog.text
+
+
+def test_small_reflection_does_not_log_provider_body(tmp_path, caplog, monkeypatch):
+    engine, retry = _reflection_engine(tmp_path, caplog)
+    logs = "\n".join(f"line {i}" for i in range(8))
+    monkeypatch.setattr(engine, "_get_logs_for_last_hours", lambda hours: logs)
+    monkeypatch.setattr(retry, "ainvoke_with_rate_limit_backoff", _raiser())
+    with caplog.at_level(logging.ERROR):
+        out = asyncio.run(engine.small_reflection())
+    assert out == ""
+    assert SENTINEL not in caplog.text
+    assert "error_class=RuntimeError" in caplog.text
+
+
+def _raiser():
+    async def failure(*args, **kwargs):
+        raise RuntimeError(SENTINEL)
+    return failure
