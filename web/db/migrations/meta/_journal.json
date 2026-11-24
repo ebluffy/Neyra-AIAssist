@@ -64,6 +64,13 @@
       "when": 1794940830725,
       "tag": "0008_big_johnny_blaze",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795540895816,
+      "tag": "0009_display_name_from_email",
+      "breakpoints": true
     }
   ]
 }

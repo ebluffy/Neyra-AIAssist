@@ -13,6 +13,45 @@ from typing import Any, Optional
 PROFILE_KEYS: tuple[str, ...] = ()
 PROFILE_LABELS_RU: dict[str, str] = {}
 
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
+MAX_SPEAKER_LABEL_LENGTH = 64
+
+
+def clean_speaker_label(value: Optional[str]) -> str:
+    text = _CONTROL_RE.sub(" ", str(value or ""))
+    return re.sub(r"\s+", " ", text).strip()[:MAX_SPEAKER_LABEL_LENGTH]
+
+
+_GENERIC_LABELS = {"user", "api_user", "ws_user", "unknown", "пользователь"}
+# Технические заглушки app.py для webhook/WS/API без имени. Настоящие ники
+# вроде dark_user сюда не попадают.
+_KNOWN_PLACEHOLDER_LABELS = {
+    "webhook_user",
+    "telegram_user",
+    "discord_user",
+    "slack_user",
+    "whatsapp_user",
+    "matrix_user",
+    "email_user",
+    "console_user",
+    "desktop_user",
+    "app_user",
+    "plugin_user",
+    "openai_user",
+    "openrouter_user",
+    "anthropic_user",
+    "google_user",
+    "gemini_user",
+    "local_user",
+    "ollama_user",
+}
+
+
+def is_generic_speaker_label(value: Optional[str]) -> bool:
+    text = clean_speaker_label(value).casefold()
+    return not text or text in _GENERIC_LABELS or text in _KNOWN_PLACEHOLDER_LABELS
+
+
 _KNOWN_NAME_RE = re.compile(
     r"(?i)^\s*(?:зовут|имя|real\s*name|called)\s*[:\-]?\s*(.+?)\s*$"
 )
@@ -78,10 +117,14 @@ def speaker_ref_from_account(
     known_name: Optional[str] = None,
 ) -> str:
     """Label for prompts: known name + nick, else display/handle only."""
-    nick = (display_name or "").strip() or (handle or "").strip()
-    kn = (known_name or "").strip()
+    nick = clean_speaker_label(display_name) or clean_speaker_label(handle)
+    if is_generic_speaker_label(nick):
+        nick = ""
+    kn = clean_speaker_label(known_name)
+    if is_generic_speaker_label(kn):
+        kn = ""
     if kn and nick and kn.casefold() != nick.casefold():
         return f"{kn} (ник: {nick})"
     if kn:
         return kn
-    return nick or "user"
+    return nick

@@ -1131,6 +1131,8 @@ class MemoryHub:
         known = known_name_from_facts(facts)
         handle = ""
         display = str(person.get("display_name") or "").strip()
+        if "@" in display and " " not in display:
+            display = display.split("@", 1)[0].strip()
         for a in accounts:
             if str(a.get("platform") or "").lower() == "discord":
                 handle = str(a.get("handle") or "").strip() or handle
@@ -1141,7 +1143,7 @@ class MemoryHub:
             handle = aliases[0] if aliases else ""
         title = speaker_ref_from_account(
             handle=handle, display_name=display, known_name=known
-        )
+        ) or "пользователя"
         lines = [f"Досье на {title}:"]
         for a in accounts:
             plat = str(a.get("platform") or "").strip()

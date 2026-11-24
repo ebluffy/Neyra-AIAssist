@@ -49,6 +49,7 @@ def test_mode_reaches_shared_turn_prompt_and_context_retry(talk_agent, mode):
         assert "speaker facts" not in prompt
         assert "computed-fact-SENTINEL" not in prompt
         assert "Never expose private reasoning" in prompt
+        assert "do not ask them to introduce themselves" in prompt
         if mode == "default":
             assert "[CONVERSATION MODE:" not in prompt
         else:

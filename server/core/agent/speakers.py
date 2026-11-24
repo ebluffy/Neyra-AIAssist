@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger("neyra.agent.speakers")
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
 def resolve_speaker_label(
@@ -15,13 +18,23 @@ def resolve_speaker_label(
     author_display_name: Optional[str] = None,
 ) -> str:
     """Nick/display label; real name only from explicit facts (Memory v2)."""
-    from core.memory.person_profile import known_name_from_facts, speaker_ref_from_account
+    from core.memory.person_profile import (
+        clean_speaker_label,
+        is_generic_speaker_label,
+        known_name_from_facts,
+        speaker_ref_from_account,
+    )
 
-    u = (username or "").strip()
-    disp = (author_display_name or "").strip()
+    lookup = (username or "").strip()
+    u = clean_speaker_label(lookup)
+    if _UUID_RE.fullmatch(u) or is_generic_speaker_label(u):
+        u = ""
+    disp = clean_speaker_label(author_display_name)
+    if is_generic_speaker_label(disp):
+        disp = ""
     person = None
-    if hub is not None and (u or discord_user_id):
-        person = hub.find_person(u, discord_id=discord_user_id)
+    if hub is not None and (lookup or discord_user_id):
+        person = hub.find_person(lookup, discord_id=discord_user_id)
     if person:
         pid = str(person.get("id") or "").strip()
         facts: list = []
@@ -29,19 +42,19 @@ def resolve_speaker_label(
             facts = hub.list_person_facts(pid, limit=20) if hub is not None else []
         except Exception:
             facts = []
-        known = known_name_from_facts(facts)
-        handle = u
+        known = clean_speaker_label(known_name_from_facts(facts))
+        handle = clean_speaker_label(u)
         for acc in person.get("accounts") or []:
             if str(acc.get("platform") or "").lower() == "discord":
-                handle = str(acc.get("handle") or "").strip() or handle
-                disp = str(acc.get("display_name") or "").strip() or disp
+                handle = clean_speaker_label(acc.get("handle")) or handle
+                disp = clean_speaker_label(acc.get("display_name")) or disp
                 break
         return speaker_ref_from_account(
             handle=handle or None,
             display_name=disp or None,
             known_name=known or None,
         )
-    return disp or u or "user"
+    return disp or u or ""
 
 
 def format_spoken_user_message(text: str, speaker_label: str) -> str:

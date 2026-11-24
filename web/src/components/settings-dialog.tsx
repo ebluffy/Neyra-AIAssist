@@ -40,6 +40,7 @@ import {
   playButtonClickSound,
 } from '../lib/ui-sounds';
 import { emitToast, soonToast } from '../lib/toast';
+import { defaultDisplayName } from '../../lib/display-name';
 import { authClient } from '../../lib/auth-client';
 import { discordLinkErrorMessage } from '../../lib/discord-link-errors';
 
@@ -185,12 +186,13 @@ export function SettingsDialog({
   const [responseSound, setResponseSound] = useState(true);
 
   // Profile Edit
-  const [editName, setEditName] = useState(user.name || '');
+  const [editName, setEditName] = useState(defaultDisplayName(user.email, user.name) || 'Пользователь');
   const [savingName, setSavingName] = useState(false);
   const [discordLinkPending, setDiscordLinkPending] = useState(false);
   const [onlyMentions, setOnlyMentions] = useState(true);
 
-  const hasNameChanged = editName.trim() !== (user.name || '').trim() && editName.trim().length > 0;
+  const savedDisplayName = defaultDisplayName(user.email, user.name) || 'Пользователь';
+  const hasNameChanged = editName.trim() !== savedDisplayName.trim() && editName.trim().length > 0;
 
   const handleLinkDiscord = async () => {
     if (discordLinkPending) return;
@@ -267,8 +269,8 @@ export function SettingsDialog({
     setCursorRing(readFlag('neyra:cursor-ring', true));
     setSounds(isUiSoundsEnabled());
     setContextMenuNeyra(readFlag('neyra:context-menu-mode-neyra', true));
-    setEditName(user.name || '');
-  }, [open, initialTab, user.name]);
+    setEditName(defaultDisplayName(user.email, user.name) || 'Пользователь');
+  }, [open, initialTab, user.name, user.email]);
 
   useEffect(() => {
     if (!open) return;

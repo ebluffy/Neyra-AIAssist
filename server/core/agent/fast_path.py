@@ -209,6 +209,19 @@ def _publish_home_event(
         logger.debug("fast_path: event publish failed: %s", e)
 
 
+def _resolve_speaker(
+    agent: Any, username, discord_user_id, author_display_name, speaker_name=None
+) -> str:
+    if speaker_name is not None:
+        from core.memory.person_profile import clean_speaker_label
+
+        return clean_speaker_label(speaker_name)
+    try:
+        return agent._resolve_speaker_label(username, discord_user_id, author_display_name)
+    except Exception:
+        return ""
+
+
 async def try_handle_fast_path(
     agent: Any,
     *,
@@ -222,6 +235,7 @@ async def try_handle_fast_path(
     source: str,
     person_id: Optional[str] = None,
     origin: Optional[dict] = None,
+    speaker_name: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """
     If Fast-Path hits: publish home.* event, finalize turn, return chat result dict.
@@ -243,12 +257,9 @@ async def try_handle_fast_path(
     trace = ACTIVE_TRACE.get()
     if trace is not None:
         trace.memory_owner_id = internal_uid
-    try:
-        speaker_label = agent._resolve_speaker_label(
-            username, discord_user_id, author_display_name
-        )
-    except Exception:
-        speaker_label = str(username or author_display_name or "user")
+    speaker_label = _resolve_speaker(
+        agent, username, discord_user_id, author_display_name, speaker_name
+    )
 
     if hit.intent == "repeat_last" or hit.event_type.endswith("repeat_last"):
         resolved = resolve_repeat_last(

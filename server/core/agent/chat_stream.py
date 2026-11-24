@@ -40,6 +40,7 @@ async def iter_chat_stream(
     person_id: Optional[str] = None,
     progress: bool = False,
     model: Optional[str] = None,
+    speaker_name: Optional[str] = None,
 ) -> AsyncIterator[dict]:
     """Yield token/error/done chunks for streaming chat."""
     try:
@@ -57,6 +58,7 @@ async def iter_chat_stream(
             source="chat_stream",
             person_id=person_id,
             origin=origin_from_discord_context(discord_context),
+            speaker_name=speaker_name,
         )
         if fp is not None:
             if progress:
@@ -95,6 +97,7 @@ async def iter_chat_stream(
         discord_context=discord_context,
         person_id=person_id,
         model=model,
+        speaker_name=speaker_name,
     )
     try:
         try:

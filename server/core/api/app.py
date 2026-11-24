@@ -219,6 +219,19 @@ async def _ws_wait(tasks):
     return await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
 
+def _speaker_name_override(
+    *,
+    username: object = None,
+    display_name: object = None,
+    platform_user_id: object = None,
+    has_context: bool = False,
+) -> Optional[str]:
+    """Empty label only when no name source exists; memory owner stays in username."""
+    if username or display_name or platform_user_id or has_context:
+        return None
+    return ""
+
+
 def _trace_id(request: Request) -> str:
     tid = getattr(request.state, "trace_id", "")
     if not tid:
@@ -1768,15 +1781,29 @@ def build_app(
     async def v1_chat(body: ChatRequest, request: Request, _role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
         web_identity = getattr(request.state, "web_identity", None)
+        api_username = (body.username or "").strip()
+        effective_username = (
+            web_identity.person_id
+            if web_identity is not None
+            else api_username or ("" if body.platform_user_id else "api_user")
+        )
         out = await agent.chat(
             user_message=body.text,
-            username=web_identity.person_id if web_identity is not None else body.username or "api_user",
+            username=effective_username,
             discord_user_id=None if web_identity is not None else body.platform_user_id,
             channel_id=body.channel_id,
             author_display_name=web_identity.name if web_identity is not None else body.author_display_name,
             avatar_url=None if web_identity is not None else body.avatar_url,
             person_id=web_identity.person_id if web_identity is not None else None,
             model=body.model,
+            speaker_name=(
+                _speaker_name_override(
+                    username=effective_username if web_identity is not None else api_username,
+                    display_name=web_identity.name if web_identity is not None else body.author_display_name,
+                    platform_user_id=None if web_identity is not None else body.platform_user_id,
+                    has_context=web_identity is None and body.discord_context is not None,
+                )
+            ),
             **({"discord_context": body.discord_context} if web_identity is None and body.discord_context is not None else {}),
         )
         if isinstance(out, dict):
@@ -5156,10 +5183,18 @@ def build_app(
             disp = payload.get("author_display_name") or payload.get("display_name")
             chat_reply = await agent.chat(
                 user_message=txt,
-                username=str(payload.get("username") or f"{provider}_user"),
+                username=(
+                    str(payload.get("username") or "").strip()
+                    or ("" if payload.get("user_id") else f"{provider}_user")
+                ),
                 discord_user_id=str(payload.get("user_id") or ""),
                 channel_id=str(payload.get("channel_id") or f"{provider}:{endpoint_id}"),
                 author_display_name=str(disp).strip() if disp else None,
+                speaker_name=_speaker_name_override(
+                    username=str(payload.get("username") or "").strip(),
+                    display_name=disp,
+                    platform_user_id=payload.get("user_id"),
+                ),
             )
         return {"accepted": True, "provider": provider, "endpoint_id": endpoint_id, "reply": chat_reply}
 
@@ -5278,6 +5313,7 @@ def build_app(
             platform_user_id: str,
             channel_id: str,
             ws_author_disp,
+            speaker_name,
         ) -> None:
             phases = set()
             stream = agent.chat_stream(
@@ -5289,6 +5325,7 @@ def build_app(
                 author_display_name=ws_identity.name if ws_identity is not None else ws_author_disp,
                 person_id=getattr(ws_identity, "person_id", None),
                 model=parsed.model,
+                speaker_name=speaker_name,
                 **({"discord_context": parsed.discord_context} if ws_identity is None and parsed.discord_context is not None else {}),
             )
             try:
@@ -5418,8 +5455,9 @@ def build_app(
                     if not text:
                         await websocket.send_json({"type": "error", "code": "empty_text", "trace_id": trace_id})
                         continue
-                    username = (parsed.username or "ws_user").strip() or "ws_user"
                     platform_user_id = (parsed.platform_user_id or "").strip()
+                    raw_ws_username = (parsed.username or "").strip()
+                    username = raw_ws_username or ("" if platform_user_id else "ws_user")
                     channel_id = (parsed.channel_id or "ws").strip() or "ws"
                     ws_disp = parsed.author_display_name or parsed.display_name
                     ws_author_disp = str(ws_disp).strip() if ws_disp else None
@@ -5443,6 +5481,12 @@ def build_app(
                         _stream_chat(
                             parsed, text, vision_images, attachment_text,
                             username, platform_user_id, channel_id, ws_author_disp,
+                            _speaker_name_override(
+                                username=ws_identity.person_id if ws_identity is not None else raw_ws_username,
+                                display_name=ws_identity.name if ws_identity is not None else ws_author_disp,
+                                platform_user_id=None if ws_identity is not None else platform_user_id,
+                                has_context=ws_identity is None and parsed.discord_context is not None,
+                            ),
                         )
                     )
                     continue

@@ -3,6 +3,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { APIError, createAuthMiddleware } from 'better-auth/api';
 import { BASE_ERROR_CODES } from '@better-auth/core/error';
 import { getDatabase } from './db';
+import { defaultDisplayName } from './display-name';
 import { readAuthEnv } from './env';
 import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, roleField } from './auth-policy';
 import {
@@ -33,6 +34,26 @@ export function takeResetLink(email: string): string | null {
   return entry.url;
 }
 
+export function normalizeNewUser<T extends { email?: string | null; name?: string | null }>(
+  user: T,
+): T & { name: string } {
+  const fallback = String((user as { id?: string }).id ?? '').slice(0, 8);
+  return { ...user, name: defaultDisplayName(user.email, user.name) || fallback || 'user' };
+}
+
+export function discordProfileUser(profile: {
+  id: string;
+  email?: string | null;
+  username?: string;
+  global_name?: string | null;
+}): { email: string; name: string } {
+  const email = profile.email ?? `${profile.id}@discord.placeholder.invalid`;
+  return {
+    email,
+    name: defaultDisplayName(email, profile.global_name || profile.username) || profile.id.slice(0, 8),
+  };
+}
+
 // Discord OAuth: ключи приходят из env стенда. Если их нет — провайдер не включается
 // вовсе, чтобы кнопка на входе не вела в никуда.
 function discordProvider() {
@@ -50,9 +71,7 @@ function discordProvider() {
       disableImplicitSignUp: true,
       // Discord отдаёт email: null для аккаунтов, заведённых только по телефону.
       // Заглушка не адрес для писем, а стабильный идентификатор внутри .invalid.
-      mapProfileToUser: (profile: { id: string; email?: string | null }) => ({
-        email: profile.email ?? `${profile.id}@discord.placeholder.invalid`,
-      }),
+      mapProfileToUser: discordProfileUser,
     },
   };
 }
@@ -68,6 +87,8 @@ export const ACCOUNT_LINKING = {
   enabled: true,
   requireLocalEmailVerified: true,
   allowDifferentEmails: true,
+  // При явной привязке Discord подтягиваем его ник в профиль сайта.
+  updateUserInfoOnLink: true,
 } as const;
 
 function createAuth() {
@@ -97,6 +118,11 @@ function createAuth() {
     // ответ забаненному неотличим от ответа на неверный пароль ни телом, ни
     // временем. Хук срабатывает и для email/пароля, и для OAuth-входа.
     databaseHooks: {
+      user: {
+        create: {
+          before: async (user) => ({ data: normalizeNewUser(user) }),
+        },
+      },
       session: {
         create: {
           before: async (data) => {

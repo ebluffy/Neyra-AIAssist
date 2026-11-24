@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { Avatar, Button, IconButton, NeyraLogo } from '../ui';
+import { defaultDisplayName } from '../../../lib/display-name';
 import { resetChatId, resolveTabKey } from '../../../lib/chat-id';
 import { signOut } from '../../../lib/auth-client';
 import { ru } from '../../i18n';
@@ -369,7 +370,7 @@ export function AppSidebar({
   }
 
   const isAdmin = user?.role === 'admin';
-  const displayName = user?.name && user.name !== user.email ? user.name : user?.email || 'Пользователь';
+  const displayName = defaultDisplayName(user?.email, user?.name) || 'Пользователь';
 
   // Filter threads by search query
   const query = searchQuery.trim().toLowerCase();

@@ -1,4 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose';
+import { defaultDisplayName } from './display-name';
 
 export interface IdentityUser {
   id: string;
@@ -50,7 +51,7 @@ export function buildIdentityClaims(
     iss: issuer,
     sub: user.id,
     role: user.role ?? 'user',
-    name: user.name ?? user.email ?? user.id,
+    name: defaultDisplayName(user.email, user.name),
     chat_id: options.chat_id ?? crypto.randomUUID(),
     message_id: options.message_id ?? crypto.randomUUID(),
     task: options.task ?? 'chat',
