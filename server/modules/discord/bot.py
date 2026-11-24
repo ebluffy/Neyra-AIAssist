@@ -1196,6 +1196,9 @@ class NeyraDiscordBot(discord.Client):
                     track = str(res_inner.get("track") or "").strip()
                     author = str(res_inner.get("author") or "").strip()
                     candidates = res_inner.get("candidates") if isinstance(res_inner.get("candidates"), list) else []
+                    playlist = bool(res_inner.get("playlist"))
+                    queued_count = int(res_inner.get("queued") or 0)
+                    truncated = bool(res_inner.get("truncated"))
                     if status == "joined":
                         ch = str(res_inner.get("channel") or "voice").strip()
                         await message.reply(
@@ -1212,11 +1215,11 @@ class NeyraDiscordBot(discord.Client):
                     else:
                         base = f"**{_clip_field(track or 'неизвестный трек', 500)}**"
                     if status == "queued":
-                        title = "В очереди"
+                        title = "Плейлист в очереди" if playlist else "В очереди"
                         desc = base
                         col = COL_BRAND
                     elif status in ("started",):
-                        title = "Играет"
+                        title = "Играет плейлист" if playlist else "Играет"
                         desc = base
                         col = COL_OK
                     else:
@@ -1225,11 +1228,19 @@ class NeyraDiscordBot(discord.Client):
                         col = COL_BRAND
                     source = str(res_inner.get("source") or "").strip()
                     if status in ("started", "queued") and source:
-                        from modules.discord.music import _source_label
+                        from modules.discord.music import MAX_PLAYLIST_TRACKS, _source_label
                         desc += f"\n\n**Источник:** {_source_label(source)}"
+                    if playlist and queued_count:
+                        desc += f"\n\n**В очереди:** {queued_count} трек(ов)"
+                    if playlist and truncated:
+                        total = int(res_inner.get("playlist_total") or 0)
+                        desc += (
+                            f"\n_Взяты первые {MAX_PLAYLIST_TRACKS} из {total} треков._"
+                        )
                     if candidates:
                         found = "\n".join([f"・ {_clip_field(str(x), 120)}" for x in candidates[:5]])
-                        desc += f"\n\n**Варианты поиска:**\n{found}"
+                        heading = "Первые треки" if playlist else "Варианты поиска"
+                        desc += f"\n\n**{heading}:**\n{found}"
                     await message.reply(
                         embed=_music_status_embed(title, _clip_field(desc, 3800), color=col),
                         mention_author=False,

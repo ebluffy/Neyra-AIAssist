@@ -40,6 +40,31 @@ PLUGIN_DOWNLOAD_URLS: dict[tuple[str, str], str] = {
     ),
 }
 
+YOUTUBE_SNAPSHOT_URL = (
+    "https://maven.lavalink.dev/snapshots/dev/lavalink/youtube/youtube-plugin/"
+    "{ver}/youtube-plugin-{ver}.jar"
+)
+SHA_VERSION_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+
+
+def _is_snapshot_version(version: str) -> bool:
+    return bool(SHA_VERSION_RE.fullmatch(str(version or "").strip()))
+
+
+def _version_from_jar_name(name: str) -> str:
+    match = re.search(r"youtube-plugin-([0-9A-Za-z.]+)\.jar$", str(name or ""))
+    return match.group(1) if match else ""
+
+
+def _plugin_download_url(gid: str, aid: str, version: str) -> str:
+    if (gid, aid) == ("dev.lavalink.youtube", "youtube-plugin") and _is_snapshot_version(version):
+        return YOUTUBE_SNAPSHOT_URL.format(ver=version)
+    template = PLUGIN_DOWNLOAD_URLS.get((gid, aid))
+    if not template:
+        raise KeyError(f"{gid}:{aid}")
+    return template.format(ver=version)
+
+
 GITHUB_LATEST_TAG_API = {
     ("dev.lavalink.youtube", "youtube-plugin"): "https://api.github.com/repos/lavalink-devs/youtube-source/releases/latest",
 }
@@ -183,6 +208,14 @@ def _sync_youtube_plugin_version_in_yaml(cfg: Path, new_ver: str) -> None:
         text,
         count=1,
     )
+    if n:
+        snapshot = "true" if _is_snapshot_version(new_ver) else "false"
+        new_text = re.sub(
+            r'(dependency:\s*"dev\.lavalink\.youtube:youtube-plugin:[^"]+"\s*\n\s*snapshot:\s*)(true|false)',
+            rf"\g<1>{snapshot}",
+            new_text,
+            count=1,
+        )
     if n and new_text != text:
         cfg.write_text(new_text, encoding="utf-8")
         print(f"[OK] Updated application.yml dependency youtube-plugin -> {new_ver}")
@@ -266,11 +299,11 @@ def main() -> int:
     failed = False
     for gid, aid, ver in deps:
         key = (gid, aid)
-        tmpl = PLUGIN_DOWNLOAD_URLS.get(key)
-        if not tmpl:
+        try:
+            url = _plugin_download_url(gid, aid, ver)
+        except KeyError:
             print(f"[WARN] Нет URL для {gid}:{aid}:{ver} — добавь в PLUGIN_DOWNLOAD_URLS в fetch_lavalink_plugins.py")
             continue
-        url = tmpl.format(ver=ver)
         dest = plugins_dir / f"{aid}-{ver}.jar"
         if args.force or not _is_valid_plugin_jar(dest):
             need_any = True
@@ -283,9 +316,9 @@ def main() -> int:
                     existing = sorted(plugins_dir.glob("youtube-plugin-*.jar"), reverse=True)
                     keep = next((p for p in existing if _is_valid_plugin_jar(p)), None)
                     if keep is not None:
-                        m = re.search(r"youtube-plugin-([0-9.]+)\.jar$", keep.name)
-                        if m:
-                            _sync_youtube_plugin_version_in_yaml(cfg, m.group(1))
+                        old_version = _version_from_jar_name(keep.name)
+                        if old_version:
+                            _sync_youtube_plugin_version_in_yaml(cfg, old_version)
                         print(f"[WARN] Оставляю существующий плагин: {keep.name}")
                         continue
                 failed = True
