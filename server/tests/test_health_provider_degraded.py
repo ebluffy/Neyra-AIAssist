@@ -489,3 +489,143 @@ def test_fetch_lavalink_info_ignores_non_json():
         transport=transport,
     )
     assert (status, payload) == (200, {})
+
+
+def _cli_config(tmp_path, *, cli_path=None, auth_file=None, talk_provider="oc"):
+    sandbox = tmp_path / "cli-sandbox"
+    sandbox.mkdir(exist_ok=True)
+    binary = tmp_path / "opencode"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+    auth = sandbox / "auth.json"
+    auth.write_text('{"api":{"type":"api","key":"k"}}\n', encoding="utf-8")
+    return {
+        "paths": {"data_dir": str(tmp_path)},
+        "llm": {
+            "provider": "aihope",
+            "providers": {
+                "aihope": {"base_url": "https://aihope.invalid/v1"},
+                "oc": {
+                    "kind": "cli",
+                    "experimental": True,
+                    "cli_path": str(cli_path or binary),
+                    "auth_file": str(auth_file or auth),
+                    "sandbox": str(sandbox),
+                },
+            },
+            "talk_model": {"provider": talk_provider, "model": "m"},
+            "brain_model": {"provider": "oc", "model": "m"},
+            "memory_model": {"provider": "oc", "model": "m"},
+            "vision_model": {"provider": "oc", "model": "m"},
+        },
+    }
+
+
+def test_all_cli_roles_have_no_openai_connections(tmp_path):
+    from core.llm.profile import iter_unique_provider_connections
+
+    assert iter_unique_provider_connections(_cli_config(tmp_path)) == []
+
+
+def test_all_cli_roles_report_ok_after_runtime_validation(monkeypatch, tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    monkeypatch.setattr("httpx.get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("http probe")))
+    monitor = HealthMonitor(_cli_config(tmp_path), project_root=tmp_path, llm_activity=None)
+    backend = asyncio.run(monitor._check_backend())
+    assert backend["ok"] is True
+    assert backend["provider"] == "oc"
+    assert backend["providers"][0]["provider"] == "oc"
+    assert backend["providers"][0]["probe"] == "cli"
+
+
+def test_all_cli_roles_report_broken_binary(monkeypatch, tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    monitor = HealthMonitor(
+        _cli_config(tmp_path, cli_path=tmp_path / "missing-opencode"),
+        project_root=tmp_path,
+        llm_activity=None,
+    )
+    backend = asyncio.run(monitor._check_backend())
+    assert backend["ok"] is False
+    assert backend["providers"][0]["error"] == "cli_path_unavailable"
+
+
+def test_cli_without_cli_path_uses_which(monkeypatch, tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    config = _cli_config(tmp_path)
+    binary = config["llm"]["providers"]["oc"].pop("cli_path")
+    config["llm"]["providers"]["oc"]["cli"] = "opencode"
+    monkeypatch.setattr("core.llm.cli_provider.shutil.which", lambda name: binary)
+    backend = asyncio.run(HealthMonitor(config, project_root=tmp_path)._check_backend())
+    assert backend["ok"] is True
+
+
+def test_relative_auth_file_resolves_from_data_dir(tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    config = _cli_config(tmp_path, auth_file="cli-sandbox/auth.json")
+    backend = asyncio.run(HealthMonitor(config, project_root=tmp_path)._check_backend())
+    assert backend["ok"] is True
+
+
+def test_auth_outside_sandbox_is_reported(tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    outside = tmp_path / "auth.json"
+    outside.write_text('{"api":{"type":"api","key":"k"}}\n', encoding="utf-8")
+    backend = asyncio.run(
+        HealthMonitor(
+            _cli_config(tmp_path, auth_file=outside),
+            project_root=tmp_path,
+        )._check_backend()
+    )
+    assert backend["ok"] is False
+    assert backend["providers"][0]["error"] == "cli_config_invalid"
+
+
+def test_mixed_http_and_cli_checks_both(monkeypatch, tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+
+    from core.runtime.health import HealthMonitor
+
+    monkeypatch.setattr("httpx.get", lambda *a, **k: SimpleNamespace(status_code=200))
+    config = _cli_config(tmp_path, talk_provider="aihope")
+    backend = asyncio.run(HealthMonitor(config, project_root=tmp_path)._check_backend())
+    assert backend["ok"] is True
+    assert [p["provider"] for p in backend["providers"]] == ["aihope", "oc"]
+
+    broken = _cli_config(
+        tmp_path, talk_provider="aihope", cli_path=tmp_path / "missing-opencode"
+    )
+    backend = asyncio.run(HealthMonitor(broken, project_root=tmp_path)._check_backend())
+    assert backend["ok"] is False
+    assert backend["providers"][1]["error"] == "cli_path_unavailable"
+
+
+def test_cli_branch_honors_rate_limit_degradation(tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    probe = {"error_class": "RateLimitError", "http_status": 429, "at": "now"}
+    monitor = HealthMonitor(
+        _cli_config(tmp_path), project_root=tmp_path, llm_activity=lambda: probe
+    )
+    backend = asyncio.run(monitor._check_backend())
+    assert backend["ok"] is False
+    assert backend["degraded"] is True
+    assert backend["degraded_reason"] == probe
