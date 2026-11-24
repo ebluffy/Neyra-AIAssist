@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, lt, sql } from 'drizzle-orm';
 import { getDatabase } from './db';
 import { conversation, folder, message } from '../db/schema';
 
@@ -6,6 +6,8 @@ export type Conversation = typeof conversation.$inferSelect;
 export type ChatMessage = typeof message.$inferSelect;
 
 export interface NewChatMessage {
+  /** Клиентский id: нужен, чтобы удаление/retry совпадали после reload. */
+  id?: string;
   role: 'user' | 'assistant';
   content: string;
   model?: string | null;
@@ -109,7 +111,7 @@ export async function appendMessage(
   const rows = await db()
     .insert(message)
     .values({
-      id: crypto.randomUUID(),
+      id: item.id ?? crypto.randomUUID(),
       conversationId,
       role: item.role,
       content: item.content,
@@ -178,7 +180,7 @@ export interface MessagePage {
 export async function listMessages(
   userId: string,
   conversationId: string,
-  options: { limit?: number; offset?: number } = {},
+  options: { limit?: number; offset?: number; order?: 'asc' | 'desc' } = {},
 ): Promise<MessagePage> {
   const owner = await ownedConversation(userId, conversationId);
   if (!owner) throw new Error('conversation_not_found');
@@ -188,18 +190,121 @@ export async function listMessages(
     .select({ count: sql<number>`count(*)::int` })
     .from(message)
     .where(eq(message.conversationId, conversationId));
+  const descending = options.order === 'desc';
   const rows = await db()
     .select()
     .from(message)
     .where(eq(message.conversationId, conversationId))
-    .orderBy(asc(message.createdAt), asc(message.id))
+    .orderBy(
+      descending ? desc(message.createdAt) : asc(message.createdAt),
+      descending ? desc(message.id) : asc(message.id),
+    )
     .limit(limit + 1)
     .offset(offset);
+  const items = rows.slice(0, limit);
+  if (descending) items.reverse();
   return {
-    items: rows.slice(0, limit),
+    items,
     total: Number(total_row?.count ?? 0),
     has_more: rows.length > limit,
   };
+}
+
+export async function messageExists(
+  userId: string,
+  conversationId: string,
+  messageId: string,
+): Promise<boolean> {
+  const owner = await ownedConversation(userId, conversationId);
+  if (!owner) throw new Error('conversation_not_found');
+  const rows = await db()
+    .select({ id: message.id })
+    .from(message)
+    .where(and(eq(message.id, messageId), eq(message.conversationId, conversationId)))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * Записывает ответ: существующую строку обновляет на месте (retry сохраняет
+ * позицию и createdAt), новую — вставляет.
+ */
+export async function upsertMessage(
+  userId: string,
+  conversationId: string,
+  item: NewChatMessage,
+): Promise<ChatMessage> {
+  const owner = await ownedConversation(userId, conversationId);
+  if (!owner) throw new Error('conversation_not_found');
+  if (owner.archivedAt) throw new Error('conversation_archived');
+  const model = item.model ? item.model.slice(0, 200) : null;
+  if (item.id) {
+    const rows = await db()
+      .update(message)
+      .set({
+        content: item.content,
+        model,
+        status: item.status || 'done',
+        errorCode: item.errorCode || null,
+        attachments: item.attachments ?? null,
+      })
+      .where(and(eq(message.id, item.id), eq(message.conversationId, conversationId)))
+      .returning();
+    if (rows[0]) {
+      await db()
+        .update(conversation)
+        .set({ updatedAt: new Date(), ...(model ? { model } : {}) })
+        .where(conversationOwnershipWhere(userId, conversationId));
+      return rows[0];
+    }
+  }
+  return appendMessage(userId, conversationId, item);
+}
+
+/** Удаляет одно сообщение; при withPreviousUser — пару «вопрос + ответ». */
+export async function deleteMessage(
+  userId: string,
+  conversationId: string,
+  messageId: string,
+  options: { withPreviousUser?: boolean } = {},
+): Promise<boolean> {
+  const owner = await ownedConversation(userId, conversationId);
+  if (!owner) throw new Error('conversation_not_found');
+  const rows = await db()
+    .select()
+    .from(message)
+    .where(and(eq(message.id, messageId), eq(message.conversationId, conversationId)))
+    .limit(1);
+  const target = rows[0];
+  if (!target) return false;
+  if (options.withPreviousUser && target.role === 'assistant') {
+    const previous = await db()
+      .select({ id: message.id, role: message.role })
+      .from(message)
+      .where(
+        and(
+          eq(message.conversationId, conversationId),
+          lt(message.createdAt, target.createdAt),
+        ),
+      )
+      .orderBy(desc(message.createdAt), desc(message.id))
+      .limit(1);
+    if (previous[0]?.role === 'user') {
+      await db().delete(message).where(eq(message.id, previous[0].id));
+    }
+  }
+  await db().delete(message).where(eq(message.id, messageId));
+  return true;
+}
+
+export async function countMessages(userId: string, conversationId: string): Promise<number> {
+  const owner = await ownedConversation(userId, conversationId);
+  if (!owner) throw new Error('conversation_not_found');
+  const [row] = await db()
+    .select({ count: sql<number>`count(*)::int` })
+    .from(message)
+    .where(eq(message.conversationId, conversationId));
+  return Number(row?.count ?? 0);
 }
 
 export async function updateConversation(

@@ -58,6 +58,8 @@ export interface AppSidebarProps {
   onOpenSettings?: () => void;
   onSelectThread?: (threadId: string) => void;
   onDeleteThread?: (threadId: string) => void;
+  /** Список тредов с сервера. Если передан, компонент не читает localStorage сам. */
+  threads?: ChatThreadItem[];
   adminOpen?: boolean;
   onOpenAdmin?: () => void;
   onCloseAdmin?: () => void;
@@ -75,6 +77,7 @@ export function AppSidebar({
   onOpenSettings,
   onSelectThread,
   onDeleteThread,
+  threads: threadsProp,
   adminOpen,
   onOpenAdmin,
   onCloseAdmin,
@@ -98,8 +101,9 @@ export function AppSidebar({
   const [activeTab, setActiveTab] = useState<'chats' | 'notes'>('chats');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Threads state
-  const [threads, setThreads] = useState<ChatThreadItem[]>([]);
+  // Threads state: controlled by the chat page when server history is available.
+  const [localThreads, setLocalThreads] = useState<ChatThreadItem[]>([]);
+  const threads = threadsProp ?? localThreads;
 
   // Notes state
   const [notes, setNotes] = useState<UserNote[]>([]);
@@ -209,6 +213,7 @@ export function AppSidebar({
 
   // Read & sync threads from localStorage
   useEffect(() => {
+    if (threadsProp !== undefined) return;
     try {
       const raw = window.localStorage.getItem(threadsStorageKey);
       let list: ChatThreadItem[] = raw ? JSON.parse(raw) : [];
@@ -243,21 +248,25 @@ export function AppSidebar({
         } catch {}
       }
 
-      setThreads(list);
+      setLocalThreads(list);
     } catch {
-      setThreads([]);
+      setLocalThreads([]);
     }
-  }, [threadsStorageKey, threadTitle, activeThreadId]);
+  }, [threadsStorageKey, threadTitle, activeThreadId, threadsProp]);
 
   function handleDeleteThread(e: React.MouseEvent, threadId: string) {
     e.stopPropagation();
+    if (threadsProp !== undefined) {
+      onDeleteThread?.(threadId);
+      return;
+    }
     const updated = threads.filter((t) => t.id !== threadId);
     try {
       window.localStorage.setItem(threadsStorageKey, JSON.stringify(updated));
       window.localStorage.removeItem(`neyra:thread-messages:${userId}:${threadId}`);
       window.localStorage.removeItem(`neyra:pinned-messages:${userId}:${threadId}`);
     } catch {}
-    setThreads(updated);
+    setLocalThreads(updated);
     if (onDeleteThread) {
       onDeleteThread(threadId);
     } else if (activeThreadId === threadId) {

@@ -10,7 +10,7 @@ import { getAuth } from '../../../../lib/auth';
 import { readChatEnv } from '../../../../lib/env';
 import { createIdentityToken } from '../../../../lib/identity';
 import { getLinkedDiscordId } from '../../../../lib/discord-account';
-import { appendMessage, ensureConversation } from '../../../../lib/chat-store';
+import { appendMessage, ensureConversation, messageExists, upsertMessage } from '../../../../lib/chat-store';
 import {
   beginChatStream,
   checkChatRateLimit,
@@ -19,6 +19,8 @@ import {
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+const HISTORY_WRITE_TIMEOUT_MS = 5_000;
 
 const SAFE_ERROR_MESSAGES: Record<string, string> = {
   core_timeout: 'Ядро Нейры не ответило вовремя. Попробуйте позже.',
@@ -164,16 +166,22 @@ export async function POST(request: Request) {
 
   const historyUserId = session.user.id;
   const historyAttachments = parsed.data.attachments ?? null;
+  const historyUserMessageId = parsed.data.user_message_id;
+  const historyAssistantMessageId = parsed.data.assistant_message_id;
+  const historyRetry = parsed.data.retry === true;
   let historyReady = false;
 
   return new Promise<Response>((resolve) => {
     let socket: WebSocket | undefined;
     let output: ReadableStreamDefaultController<Uint8Array>;
     let finished = false;
+    let terminal = false;
     let replied = false;
     let receivedHello = false;
     let cancelled = false;
     let assistantSettled = false;
+    let assistantSaved = false;
+    let pendingSettle: { content: string; status: string; errorCode?: string } | null = null;
     let streamedText = '';
     let endReason: { status: 'stopped' | 'error'; code?: string } | undefined;
     let helloDeadline: ReturnType<typeof setTimeout> | undefined;
@@ -210,24 +218,57 @@ export async function POST(request: Request) {
     }
 
     function emitSanitized(event: SseChatEvent) {
-      output.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      try {
+        output.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      } catch {
+        // Клиент уже закрыл поток: ответ всё равно записан в историю.
+      }
     }
 
-    function settleAssistant(content: string, status: string, errorCode?: string) {
-      if (!historyReady || assistantSettled) return;
+    async function settleAssistant(
+      content: string,
+      status: string,
+      errorCode?: string,
+    ): Promise<boolean> {
+      if (!historyReady) {
+        // Ответ может прийти раньше, чем закончится запись вопроса.
+        pendingSettle = { content, status, ...(errorCode ? { errorCode } : {}) };
+        return false;
+      }
+      if (assistantSettled) return assistantSaved;
       const finalContent = content.trim() || streamedText.trim() || '(ответ не завершён)';
       assistantSettled = true;
-      void appendMessage(historyUserId, chatId, {
-        role: 'assistant',
-        content: finalContent,
-        model: historyModel,
-        status,
-        errorCode: errorCode ?? null,
-      }).catch(() => {});
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        // Зависшая запись не должна держать SSE и слот лимита: клиент получит
+        // history_saved=false, а ход останется в локальном кэше.
+        await Promise.race([
+          upsertMessage(historyUserId, chatId, {
+            id: historyAssistantMessageId,
+            role: 'assistant',
+            content: finalContent,
+            model: historyModel,
+            status,
+            errorCode: errorCode ?? null,
+          }),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error('history_write_timeout')),
+              HISTORY_WRITE_TIMEOUT_MS,
+            );
+          }),
+        ]);
+        assistantSaved = true;
+      } catch {
+        assistantSaved = false;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      return assistantSaved;
     }
 
     function fail(code: string, message: string, status = 502) {
-      if (finished) return;
+      if (finished || terminal) return;
       endReason = { status: 'error', code };
       if (replied) {
         settleAssistant('', 'error', code);
@@ -321,15 +362,27 @@ export async function POST(request: Request) {
           if (!cancelled) {
             try {
               await ensureConversation(historyUserId, chatId, text, historyModel);
-              await appendMessage(historyUserId, chatId, {
-                role: 'user',
-                content: text,
-                model: historyModel,
-                attachments: historyAttachments,
-              });
+              // Retry пишет вопрос только если его действительно нет в истории;
+              // ответ обновляется на месте (upsert), поэтому порядок не ломается.
+              const shouldWriteUser = !historyRetry
+                || !(await messageExists(historyUserId, chatId, historyUserMessageId!));
+              if (shouldWriteUser) {
+                await appendMessage(historyUserId, chatId, {
+                  id: historyUserMessageId,
+                  role: 'user',
+                  content: text,
+                  model: historyModel,
+                  attachments: historyAttachments,
+                });
+              }
               historyReady = true;
             } catch {
               console.warn('chat_history_write_failed');
+            }
+            if (pendingSettle) {
+              const queued = pendingSettle;
+              pendingSettle = null;
+              settleAssistant(queued.content, queued.status, queued.errorCode);
             }
             if (endReason) settleAssistant('', endReason.status, endReason.code);
           }
@@ -352,11 +405,8 @@ export async function POST(request: Request) {
 
       resetIdleTimer();
 
+      if (finished || terminal) return;
       if (!['token', 'thinking', 'phase', 'done', 'error'].includes(String(event.type))) return;
-
-      if (event.type === 'done' && typeof event.text === 'string') {
-        settleAssistant(event.text.trim() || '(пустой ответ)', 'done');
-      }
 
       if ((event.type === 'token' || event.type === 'done') && typeof event.text !== 'string') {
         fail('core_protocol_error', getSafeErrorMessage('core_protocol_error'));
@@ -388,17 +438,23 @@ export async function POST(request: Request) {
         });
         emitSanitized(sanitized);
       } else if (event.type === 'done') {
+        terminal = true;
         const usage = ContextUsageSchema.safeParse(event.usage);
         const turnStats = TurnStatsSchema.safeParse(event.turn_stats);
-        const sanitized = SseChatEventSchema.parse({
-          type: 'done',
-          text: String(event.text),
-          ...(usage.success ? { usage: usage.data } : {}),
-          ...(turnStats.success ? { turn_stats: turnStats.data } : {}),
+        const doneText = String(event.text);
+        void settleAssistant(doneText.trim() || '(пустой ответ)', 'done').then((saved) => {
+          const sanitized = SseChatEventSchema.parse({
+            type: 'done',
+            text: doneText,
+            ...(usage.success ? { usage: usage.data } : {}),
+            ...(turnStats.success ? { turn_stats: turnStats.data } : {}),
+            history_saved: saved,
+          });
+          emitSanitized(sanitized);
+          finish();
         });
-        emitSanitized(sanitized);
-        finish();
       } else if (event.type === 'error') {
+        terminal = true;
         const rawCode = typeof event.code === 'string' && event.code ? event.code : 'core_error';
         // Ядро уже отдаёт публичную причину (например, лимит провайдера). Не заменяем
         // её общим текстом; общий — только когда причина не пришла.
@@ -406,14 +462,16 @@ export async function POST(request: Request) {
         const safeMessage = USER_FACING_CORE_CODES.has(rawCode) && coreMessage
           ? coreMessage
           : getSafeErrorMessage(rawCode);
-        if (!assistantSettled) settleAssistant('', 'error', rawCode);
-        const sanitized = SseChatEventSchema.parse({
-          type: 'error',
-          code: rawCode,
-          message: safeMessage,
+        void settleAssistant('', 'error', rawCode).then((saved) => {
+          const sanitized = SseChatEventSchema.parse({
+            type: 'error',
+            code: rawCode,
+            message: safeMessage,
+            history_saved: saved,
+          });
+          emitSanitized(sanitized);
+          finish();
         });
-        emitSanitized(sanitized);
-        finish();
       }
     });
 

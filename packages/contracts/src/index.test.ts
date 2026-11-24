@@ -34,6 +34,26 @@ describe('browser → BFF: chat request', () => {
     expect(ChatRequestSchema.safeParse({ text: 'hello', chat_id: uuid, model: 'gpt', attachments: [{ upload_id: uploadId }] }).success).toBe(true);
     expect(ChatRequestSchema.safeParse({ text: '' }).success).toBe(false);
     expect(ChatRequestSchema.safeParse({ text: 'hello', extra: true }).success).toBe(false);
+    expect(
+      ChatRequestSchema.safeParse({
+        text: 'hello',
+        user_message_id: uuid,
+        assistant_message_id: uuid,
+        retry: true,
+      }).success,
+    ).toBe(true);
+    expect(
+      ChatRequestSchema.safeParse({ text: 'hello', assistant_message_id: 'not-a-uuid' }).success,
+    ).toBe(false);
+    expect(ChatRequestSchema.safeParse({ text: 'hello', retry: true }).success).toBe(false);
+    expect(
+      ChatRequestSchema.safeParse({
+        text: 'hello',
+        retry: true,
+        assistant_message_id: uuid,
+        user_message_id: uuid,
+      }).success,
+    ).toBe(true);
     expect(ChatRequestSchema.safeParse({ text: 'hello', attachments: Array.from({ length: 5 }, () => ({ upload_id: uploadId })) }).success).toBe(false);
   });
 

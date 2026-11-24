@@ -2,6 +2,7 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { getAuth } from '../../../lib/auth';
 import { getUserOnboardingCompleted } from '../../../lib/admin-users';
+import { listConversations } from '../../../lib/chat-store';
 import { ChatView } from './chat-view';
 
 export const dynamic = 'force-dynamic';
@@ -18,5 +19,21 @@ export default async function ChatPage() {
   } catch {
     discordId = null;
   }
-  return <ChatView user={{ ...session.user, discord_id: discordId }} />;
+  let initialThreads: { id: string; title: string; updatedAt: string }[] = [];
+  try {
+    const page = await listConversations(session.user.id, { limit: 100 });
+    initialThreads = page.items.map((item) => ({
+      id: item.id,
+      title: item.title,
+      updatedAt: item.updatedAt.toISOString(),
+    }));
+  } catch {
+    initialThreads = [];
+  }
+  return (
+    <ChatView
+      user={{ ...session.user, discord_id: discordId }}
+      initialThreads={initialThreads}
+    />
+  );
 }

@@ -20,9 +20,11 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     const url = new URL(request.url);
     const limit = Number.parseInt(url.searchParams.get('message_limit') || '', 10);
     const offset = Number.parseInt(url.searchParams.get('message_offset') || '', 10);
+    const order = url.searchParams.get('message_order') === 'desc' ? 'desc' : 'asc';
     const page = await listMessages(user.id, id, {
       ...(Number.isFinite(limit) ? { limit } : {}),
       ...(Number.isFinite(offset) ? { offset } : {}),
+      order,
     });
     return NextResponse.json({
       ok: true,

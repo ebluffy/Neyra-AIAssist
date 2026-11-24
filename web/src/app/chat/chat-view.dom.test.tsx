@@ -16,11 +16,38 @@ vi.mock('next/navigation', () => ({
 beforeAll(() => { Element.prototype.scrollIntoView = vi.fn(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); window.name = ''; mockReplace.mockClear(); });
 
+function historyResponse(): Response {
+  return new Response(JSON.stringify({ ok: true, data: { items: [], messages: [] } }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/** История чата ходит в /api/conversations; в этих тестах она пустая. */
+function stubFetch(mock: ReturnType<typeof vi.fn>) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href.startsWith('/api/conversations') && (!init || !init.method || init.method === 'GET')) {
+        return Promise.resolve(historyResponse());
+      }
+      return mock(url, init);
+    }),
+  );
+}
+
+function chatPosts(fetchMock: ReturnType<typeof vi.fn>): [unknown, RequestInit | undefined][] {
+  return fetchMock.mock.calls.filter(
+    ([url, init]) => String(url) === '/api/chat' && Boolean((init as RequestInit | undefined)?.body),
+  ) as [unknown, RequestInit | undefined][];
+}
+
 function sseResponse(tokenText = 'привет'): Response {
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(new TextEncoder().encode(`data: {"type":"token","text":"${tokenText}"}\n\n`));
-      controller.enqueue(new TextEncoder().encode(`data: {"type":"done","text":"${tokenText}"}\n\n`));
+      controller.enqueue(new TextEncoder().encode(`data: {"type":"done","text":"${tokenText}","history_saved":true}\n\n`));
       controller.close();
     },
   });
@@ -41,7 +68,7 @@ function sseStatsResponse(): Response {
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(new TextEncoder().encode('data: {"type":"token","text":"готово"}\n\n'));
-      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: 'done', text: 'готово', turn_stats: stats })}\n\n`));
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: 'done', text: 'готово', turn_stats: stats, history_saved: true })}\n\n`));
       controller.close();
     },
   });
@@ -61,14 +88,14 @@ function sseErrorResponse(message = 'Ошибка обработки'): Response
 describe('ChatView conversation', () => {
   it('sends one chat_id for every message of the same conversation and scopes key to user (AR-11)', async () => {
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => sseResponse());
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
     render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
 
     const input = screen.getByPlaceholderText(ru.placeholder);
     for (const text of ['первое', 'второе']) {
       fireEvent.change(input, { target: { value: text } });
       fireEvent.submit(input.closest('form')!);
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(text === 'первое' ? 1 : 2));
+      await waitFor(() => expect(chatPosts(fetchMock)).toHaveLength(text === 'первое' ? 1 : 2));
       await waitFor(() => expect(screen.queryByText('Нейра думает…')).toBeNull());
     }
 
@@ -77,11 +104,19 @@ describe('ChatView conversation', () => {
     expect(bodies[0].chat_id).toBeTruthy();
     expect(bodies[1].chat_id).toBe(bodies[0].chat_id);
     expect(sessionStorage.getItem(`neyra.chat_id:u1:${resolveTabKey(window)}`)).toBe(bodies[0].chat_id);
+
+    const stored = JSON.parse(
+      window.localStorage.getItem(`neyra:thread-messages:u1:${bodies[0].chat_id}`) || '[]',
+    ) as { synced?: boolean }[];
+    expect(stored.length).toBeGreaterThan(0);
+    expect(stored.every((item) => item.synced === true)).toBe(true);
+    window.localStorage.removeItem(`neyra:thread-messages:u1:${bodies[0].chat_id}`);
+    window.localStorage.removeItem(`neyra:threads:u1`);
   });
 
   it('shows per-turn timing and expands the lane breakdown after done', async () => {
     const fetchMock = vi.fn(async () => sseStatsResponse());
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
     render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
 
     const input = screen.getByPlaceholderText(ru.placeholder);
@@ -103,7 +138,7 @@ describe('ChatView conversation', () => {
       { id: 'old', role: 'assistant', content: 'старый ответ', stats: { lanes: null } },
     ]));
     const fetchMock = vi.fn(async () => sseResponse());
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
     try {
       render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
       expect(await screen.findByText('старый ответ')).toBeTruthy();
@@ -116,22 +151,22 @@ describe('ChatView conversation', () => {
   it('opens a new thread in a tab that inherited sessionStorage (AR-11)', async () => {
     sessionStorage.setItem('neyra.chat_id:u1:opener-tab', 'old-thread');
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => sseResponse());
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
     render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
 
     const input = screen.getByPlaceholderText(ru.placeholder);
     fireEvent.change(input, { target: { value: 'новая вкладка' } });
     fireEvent.submit(input.closest('form')!);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(chatPosts(fetchMock)).toHaveLength(1));
 
-    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const body = JSON.parse(String(chatPosts(fetchMock)[0][1]?.body));
     expect(body.chat_id).toBeTruthy();
     expect(body.chat_id).not.toBe('old-thread');
   });
 
   it('removes empty assistant message bubble when stream emits error before any token (AR-7)', async () => {
     const fetchMock = vi.fn(async () => sseErrorResponse('Сервер перегружен'));
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
     render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
 
     const input = screen.getByPlaceholderText(ru.placeholder);
@@ -152,7 +187,7 @@ describe('ChatView conversation', () => {
       if (callCount === 1) return sseErrorResponse('Сбой сети');
       return sseResponse('Успешный ответ после повтора');
     });
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
 
     render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
     const input = screen.getByPlaceholderText(ru.placeholder);
@@ -180,8 +215,10 @@ describe('ChatView conversation', () => {
   });
 
   it('deleting failed exchange removes both error alert and user message (§4.1)', async () => {
-    const fetchMock = vi.fn(async () => sseErrorResponse('Неисправимая ошибка'));
-    vi.stubGlobal('fetch', fetchMock);
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      sseErrorResponse('Неисправимая ошибка'),
+    );
+    stubFetch(fetchMock);
 
     render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
     const input = screen.getByPlaceholderText(ru.placeholder);
@@ -198,11 +235,20 @@ describe('ChatView conversation', () => {
     // Both error alert and user message should be gone
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(screen.queryByText('ошибочное сообщение')).toBeNull();
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url).includes('/messages/') &&
+            (init as RequestInit | undefined)?.method === 'DELETE',
+        ),
+      ).toBe(true),
+    );
   });
 
   it('clicking "Новый чат" resets messages and issues a fresh chat_id (AR-12)', async () => {
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => sseResponse());
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
     render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
 
     const input = screen.getByPlaceholderText(ru.placeholder);
@@ -210,7 +256,7 @@ describe('ChatView conversation', () => {
     fireEvent.submit(input.closest('form')!);
     await waitFor(() => expect(screen.getByText('привет')).toBeTruthy());
 
-    const firstBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const firstBody = JSON.parse(String(chatPosts(fetchMock)[0][1]?.body));
     const firstChatId = firstBody.chat_id;
 
     // Click "Новый чат"
@@ -224,16 +270,16 @@ describe('ChatView conversation', () => {
     // Next message uses fresh chat_id
     fireEvent.change(input, { target: { value: 'второй чат' } });
     fireEvent.submit(input.closest('form')!);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(chatPosts(fetchMock)).toHaveLength(2));
 
-    const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    const secondBody = JSON.parse(String(chatPosts(fetchMock)[1][1]?.body));
     expect(secondBody.chat_id).toBeTruthy();
     expect(secondBody.chat_id).not.toBe(firstChatId);
   });
 
   it('aborts the request when the page unmounts mid-answer', async () => {
     let aborted = false;
-    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    stubFetch(vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init.signal?.addEventListener('abort', () => { aborted = true; reject(new DOMException('aborted', 'AbortError')); });
     })));
     const view = render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
@@ -262,7 +308,7 @@ describe('ChatView conversation', () => {
   it('preserves full thread title for CSS truncation and does not slice without ellipsis (§2)', async () => {
     const longPrompt = 'Расскажи про архитектуру и принципы работы распределённой системы';
     const fetchMock = vi.fn(async () => sseResponse('готово'));
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
 
     render(<ChatView user={{ id: 'u1', email: 'a@example.com', name: 'Аня', role: 'user' }} />);
     const input = screen.getByPlaceholderText(ru.placeholder);
@@ -371,8 +417,8 @@ describe('ChatView conversation', () => {
     expect(screen.getAllByText('Сообщение из первого треда').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Ответ первого треда')).toBeTruthy();
 
-    // Switch to thread 2 from sidebar
-    fireEvent.click(screen.getByText('Второй сохранённый тред'));
+    // Switch to thread 2 from sidebar (локальные треды подмешиваются после reconcile)
+    fireEvent.click(await screen.findByText('Второй сохранённый тред'));
 
     // Messages from thread 2 displayed!
     expect(screen.getAllByText('Сообщение из второго треда').length).toBeGreaterThanOrEqual(1);
@@ -456,7 +502,7 @@ describe('ChatView conversation', () => {
       }
       return sseResponse('ок');
     });
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
     const { container } = render(
       <ChatView user={{ id: 'u-att', email: 'att@example.com', name: 'Атт', role: 'user' }} />
     );
@@ -508,7 +554,7 @@ describe('ChatView conversation', () => {
       }
       return sseResponse('ок');
     });
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
     const { container } = render(
       <ChatView
         user={{ id: userId, email: 'switch@example.com', name: 'Свитч', role: 'user' }}
@@ -547,7 +593,7 @@ describe('ChatView conversation', () => {
       if (String(url) === '/api/attachments') return uploadPromise;
       return sseResponse('ок');
     });
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
     const { container } = render(
       <ChatView user={{ id: userId, email: 'late@example.com', name: 'Поздний', role: 'user' }} />
     );
@@ -586,15 +632,18 @@ describe('ChatView conversation', () => {
     ]));
 
     const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => sseResponse('ответ'));
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch(fetchMock);
     render(<ChatView user={{ id: userId, email: 'retry@example.com', name: 'Ретрай', role: 'user' }} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Повторить' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(chatPosts(fetchMock)).toHaveLength(1));
 
-    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const body = JSON.parse(String(chatPosts(fetchMock)[0][1]?.body));
     expect(body.text).toBe('Старый вопрос');
     expect(body.attachments).toBeUndefined();
+    expect(body.retry).toBe(true);
+    expect(body.assistant_message_id).toBe('a-old');
+    expect(body.user_message_id).toBe('u-old');
   });
 
   it('pins message from message action button and syncs to localStorage and thread panel', () => {
@@ -637,6 +686,919 @@ describe('ChatView conversation', () => {
     expect(screen.getAllByText('Ответ с важной информацией').length).toBeGreaterThanOrEqual(2);
 
     unmount();
+  });
+
+  it('loads the tab thread messages and server threads from the BFF', async () => {
+    const userId = 'hist-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${chatId}`,
+      JSON.stringify([{ id: 'stale', role: 'user', content: 'локальная копия', synced: true }]),
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: { items: [{ id: chatId, title: 'Серверный тред', updatedAt: '2026-11-20T10:00:00Z' }] },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              messages: [
+                { id: 's1', role: 'user', content: 'вопрос из базы', status: 'done' },
+                { id: 's2', role: 'assistant', content: 'ответ из базы', status: 'done' },
+              ],
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'hist@example.com', name: 'История', role: 'user' }} />);
+
+    expect(await screen.findByText('ответ из базы')).toBeTruthy();
+    expect(screen.queryByText('локальная копия')).toBeNull();
+    expect(await screen.findByRole('button', { name: 'Серверный тред' })).toBeTruthy();
+
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${chatId}`);
+  });
+
+  it('renames the thread on the server from the thread panel', async () => {
+    const userId = 'rename-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: { items: [{ id: chatId, title: 'Старое имя', updatedAt: '2026-11-20T10:00:00Z' }] },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href === `/api/conversations/${chatId}` && init?.method === 'PATCH') {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(JSON.stringify({ ok: true, data: { messages: [] } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <ChatView
+        user={{ id: userId, email: 'rename@example.com', name: 'Имя', role: 'user' }}
+        initialThreadPanelOpen
+      />,
+    );
+    expect(await screen.findByText('Старое имя')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Переименовать диалог' }));
+    fireEvent.change(screen.getByLabelText('Название темы'), { target: { value: 'Новое имя' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url) === `/api/conversations/${chatId}` &&
+            (init as RequestInit | undefined)?.method === 'PATCH' &&
+            String((init as RequestInit).body).includes('Новое имя'),
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it('archives a thread on the server when it is deleted from the sidebar', async () => {
+    const userId = 'delete-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: { items: [{ id: chatId, title: 'Удаляемый тред', updatedAt: '2026-11-20T10:00:00Z' }] },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href === `/api/conversations/${chatId}` && init?.method === 'DELETE') {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(JSON.stringify({ ok: true, data: { messages: [] } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'del@example.com', name: 'Удаление', role: 'user' }} />);
+    await screen.findByText('Удаляемый тред');
+
+    fireEvent.click(screen.getByLabelText('Удалить Удаляемый тред'));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url) === `/api/conversations/${chatId}` &&
+            (init as RequestInit | undefined)?.method === 'DELETE',
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(screen.queryByText('Удаляемый тред')).toBeNull());
+  });
+
+  it('takes the server list as the base and migrates legacy pins', async () => {
+    const userId = 'merge-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    const stats = {
+      duration_ms: 8400,
+      llm_ms: 7200,
+      output_tokens: 240,
+      tokens_per_second: 33.3,
+      lanes: {
+        brain: { calls: 1, duration_ms: 3100, model: 'opencode-go/deepseek-v4.1-flash' },
+        talk: { calls: 1, duration_ms: 2600, model: 'opencode/qwen3.8-27b', output_tokens: 240 },
+      },
+    };
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${chatId}`,
+      JSON.stringify([
+        { id: 'local-user', role: 'user', content: 'вопрос' },
+        { id: 'local-assistant', role: 'assistant', content: 'ответ', stats },
+      ]),
+    );
+    window.localStorage.setItem(
+      `neyra:pinned-messages:${userId}:${chatId}`,
+      JSON.stringify(['local-assistant']),
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Тред', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              messages: [
+                { id: 'srv-user', role: 'user', content: 'вопрос', status: 'done' },
+                { id: 'srv-assistant', role: 'assistant', content: 'ответ', status: 'done' },
+              ],
+              total: 2,
+              has_more: false,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'merge@example.com', name: 'Мерж', role: 'user' }} />);
+
+    expect(await screen.findByText('8,4 с')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Открепить сообщение' })).toBeTruthy();
+    expect(
+      window.localStorage.getItem(`neyra:pinned-messages:${userId}:${chatId}`),
+    ).toBe(JSON.stringify(['srv-assistant']));
+
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:pinned-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('applies a deletion made on another device instead of trusting a longer cache', async () => {
+    const userId = 'remote-delete-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${chatId}`,
+      JSON.stringify([
+        { id: 'u1', role: 'user', content: 'первый вопрос', synced: true },
+        { id: 'a1', role: 'assistant', content: 'первый ответ', synced: true },
+        { id: 'u2', role: 'user', content: 'удалённый вопрос', synced: true },
+        { id: 'a2', role: 'assistant', content: 'удалённый ответ', synced: true },
+      ]),
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Тред', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              messages: [
+                { id: 'u1', role: 'user', content: 'первый вопрос', status: 'done' },
+                { id: 'a1', role: 'assistant', content: 'первый ответ', status: 'done' },
+              ],
+              total: 2,
+              has_more: false,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'rd@example.com', name: 'РД', role: 'user' }} />);
+
+    expect(await screen.findByText('первый ответ')).toBeTruthy();
+    expect(screen.queryByText('удалённый вопрос')).toBeNull();
+    expect(screen.queryByText('удалённый ответ')).toBeNull();
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('keeps a turn whose history write failed (synced: false)', async () => {
+    const userId = 'unsynced-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${chatId}`,
+      JSON.stringify([
+        { id: 'u1', role: 'user', content: 'старый вопрос', synced: true },
+        { id: 'a1', role: 'assistant', content: 'старый ответ', synced: true },
+        { id: 'u2', role: 'user', content: 'несохранённый вопрос', synced: false },
+        { id: 'a2', role: 'assistant', content: 'несохранённый ответ', synced: false },
+      ]),
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Тред', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              messages: [
+                { id: 'u1', role: 'user', content: 'старый вопрос', status: 'done' },
+                { id: 'a1', role: 'assistant', content: 'старый ответ', status: 'done' },
+              ],
+              total: 2,
+              has_more: false,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'un@example.com', name: 'Ан', role: 'user' }} />);
+    expect(await screen.findByText('несохранённый ответ')).toBeTruthy();
+    const saved = JSON.parse(
+      window.localStorage.getItem(`neyra:thread-messages:${userId}:${chatId}`) || '[]',
+    ) as { id: string; synced?: boolean }[];
+    expect(saved.find((item) => item.id === 'u2')?.synced).toBe(false);
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('keeps an unsynced 502 exchange even when another device added a newer turn', async () => {
+    const userId = 'unsynced-remote-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${chatId}`,
+      JSON.stringify([
+        { id: 'u1', role: 'user', content: 'первый вопрос', synced: true },
+        { id: 'a1', role: 'assistant', content: 'первый ответ', synced: true },
+        { id: 'err-u', role: 'user', content: 'вопрос с 502', synced: false },
+        { id: 'err-a', role: 'assistant', content: 'ядро недоступно', error: 'core_unavailable', synced: false },
+      ]),
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Тред', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              messages: [
+                { id: 'u1', role: 'user', content: 'первый вопрос', status: 'done' },
+                { id: 'a1', role: 'assistant', content: 'первый ответ', status: 'done' },
+                { id: 'uB', role: 'user', content: 'вопрос с ПК B', status: 'done' },
+                { id: 'aB', role: 'assistant', content: 'ответ с ПК B', status: 'done' },
+              ],
+              total: 4,
+              has_more: false,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'ur@example.com', name: 'УР', role: 'user' }} />);
+    expect(await screen.findByText('ответ с ПК B')).toBeTruthy();
+    expect(screen.getByText('вопрос с 502')).toBeTruthy();
+    expect(screen.getByRole('alert')).toBeTruthy();
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('clears synced local messages when the thread is empty on the server', async () => {
+    const userId = 'emptied-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${chatId}`,
+      JSON.stringify([
+        { id: 'u1', role: 'user', content: 'удалённое сообщение', synced: true },
+        { id: 'a1', role: 'assistant', content: 'удалённый ответ', synced: true },
+      ]),
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Тред', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(
+          JSON.stringify({ ok: true, data: { messages: [], total: 0, has_more: false } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'empty@example.com', name: 'Пусто', role: 'user' }} />);
+    await waitFor(() => expect(screen.queryByText('удалённый ответ')).toBeNull());
+    expect(screen.queryByText('удалённое сообщение')).toBeNull();
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('maps duplicate legacy messages to server ids in order', async () => {
+    const userId = 'duplicate-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${chatId}`,
+      JSON.stringify([
+        { id: 'L1', role: 'user', content: 'продолжи' },
+        { id: 'L2', role: 'assistant', content: 'ответ 1' },
+        { id: 'L3', role: 'user', content: 'продолжи' },
+        { id: 'L4', role: 'assistant', content: 'ответ 2' },
+      ]),
+    );
+    window.localStorage.setItem(
+      `neyra:pinned-messages:${userId}:${chatId}`,
+      JSON.stringify(['L1', 'L3']),
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Тред', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              messages: [
+                { id: 'S1', role: 'user', content: 'продолжи', status: 'done' },
+                { id: 'S2', role: 'assistant', content: 'ответ 1', status: 'done' },
+                { id: 'S3', role: 'user', content: 'продолжи', status: 'done' },
+                { id: 'S4', role: 'assistant', content: 'ответ 2', status: 'done' },
+              ],
+              total: 4,
+              has_more: false,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'dup@example.com', name: 'Дуп', role: 'user' }} />);
+    await waitFor(() =>
+      expect(
+        window.localStorage.getItem(`neyra:pinned-messages:${userId}:${chatId}`),
+      ).toBe(JSON.stringify(['S1', 'S3'])),
+    );
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:pinned-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('keeps pre-#105 legacy history that has no server counterpart', async () => {
+    const userId = 'legacy-history-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${chatId}`,
+      JSON.stringify([
+        { id: 'L1', role: 'user', content: 'старый вопрос 1' },
+        { id: 'L2', role: 'assistant', content: 'старый ответ 1' },
+        { id: 'L3', role: 'user', content: 'старый вопрос 2' },
+        { id: 'L4', role: 'assistant', content: 'старый ответ 2' },
+      ]),
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Тред', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              messages: [
+                { id: 'S5', role: 'user', content: 'новый вопрос', status: 'done' },
+                { id: 'S6', role: 'assistant', content: 'новый ответ', status: 'done' },
+              ],
+              total: 2,
+              has_more: false,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'legacy@example.com', name: 'Легаси', role: 'user' }} />);
+    expect(await screen.findByText('новый ответ')).toBeTruthy();
+    expect(screen.getByText('старый вопрос 1')).toBeTruthy();
+    expect(screen.getByText('старый ответ 2')).toBeTruthy();
+    await waitFor(() => {
+      const stored = JSON.parse(
+        window.localStorage.getItem(`neyra:thread-messages:${userId}:${chatId}`) || '[]',
+      ) as { id: string }[];
+      expect(stored.map((item) => item.id)).toEqual([
+        'L1',
+        'L2',
+        'L3',
+        'L4',
+        'S5',
+        'S6',
+      ]);
+    });
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('does not consume an unsynced message as a legacy match', async () => {
+    const userId = 'unsynced-match-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${chatId}`,
+      JSON.stringify([
+        { id: 'UA', role: 'user', content: 'да', synced: false },
+        { id: 'AERR', role: 'assistant', content: 'ответ не сохранился', synced: false },
+      ]),
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Тред', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              messages: [
+                { id: 'SB', role: 'user', content: 'да', status: 'done' },
+                { id: 'AB', role: 'assistant', content: 'ответ с сервера', status: 'done' },
+              ],
+              total: 2,
+              has_more: false,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'um@example.com', name: 'УМ', role: 'user' }} />);
+    expect(await screen.findByText('ответ с сервера')).toBeTruthy();
+    expect(screen.getByText('ответ не сохранился')).toBeTruthy();
+    expect(screen.getAllByText('да').length).toBeGreaterThanOrEqual(2);
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('matches legacy history only once across two syncs', async () => {
+    const userId = 'legacy-twice-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:${chatId}`,
+      JSON.stringify([
+        { id: 'L1', role: 'user', content: 'да' },
+        { id: 'L2', role: 'assistant', content: 'старый ответ' },
+      ]),
+    );
+    window.localStorage.setItem(
+      `neyra:pinned-messages:${userId}:${chatId}`,
+      JSON.stringify(['L1']),
+    );
+    let serverMessages: unknown[] = [];
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Тред', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: { messages: serverMessages, total: serverMessages.length, has_more: false },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const first = render(
+      <ChatView user={{ id: userId, email: 'twice@example.com', name: 'Дважды', role: 'user' }} />,
+    );
+    await waitFor(() => {
+      const stored = JSON.parse(
+        window.localStorage.getItem(`neyra:thread-messages:${userId}:${chatId}`) || '[]',
+      ) as { id: string; localOnly?: boolean }[];
+      expect(stored.map((item) => [item.id, item.localOnly])).toEqual([
+        ['L1', true],
+        ['L2', true],
+      ]);
+    });
+    first.unmount();
+
+    serverMessages = [
+      { id: 'SB', role: 'user', content: 'да', status: 'done' },
+      { id: 'AB', role: 'assistant', content: 'новый ответ', status: 'done' },
+    ];
+    render(<ChatView user={{ id: userId, email: 'twice@example.com', name: 'Дважды', role: 'user' }} />);
+    expect(await screen.findByText('новый ответ')).toBeTruthy();
+    expect(screen.getByText('старый ответ')).toBeTruthy();
+    expect(screen.getAllByText('да').length).toBeGreaterThanOrEqual(2);
+    await waitFor(() => {
+      const stored = JSON.parse(
+        window.localStorage.getItem(`neyra:thread-messages:${userId}:${chatId}`) || '[]',
+      ) as { id: string }[];
+      expect(stored.map((item) => item.id)).toEqual(['L1', 'L2', 'SB', 'AB']);
+    });
+    expect(
+      window.localStorage.getItem(`neyra:pinned-messages:${userId}:${chatId}`),
+    ).toBe(JSON.stringify(['L1']));
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:pinned-messages:${userId}:${chatId}`);
+    window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('shows a new thread in the sidebar when chat fails before core hello', async () => {
+    const userId = 'http-error-user';
+    resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(JSON.stringify({ ok: true, data: { items: [] } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (href.startsWith('/api/conversations/')) {
+        return new Response(JSON.stringify({ error: 'not_found' }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ error: 'core_unavailable' }), {
+        status: 502,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'http@example.com', name: 'HTTP', role: 'user' }} />);
+    const input = screen.getByPlaceholderText(ru.placeholder);
+    fireEvent.change(input, { target: { value: 'вопрос до hello' } });
+    fireEvent.submit(input.closest('form')!);
+
+    expect(await screen.findByRole('button', { name: 'вопрос до hello' })).toBeTruthy();
+    window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('keeps the SSR thread list when the history API is unavailable', async () => {
+    const userId = 'unavailable-user';
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.startsWith('/api/conversations')) {
+        return new Response(JSON.stringify({ error: 'history_unavailable' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <ChatView
+        user={{ id: userId, email: 'down@example.com', name: 'Даун', role: 'user' }}
+        initialThreads={[{ id: 'srv-1', title: 'Серверный тред', updatedAt: '2026-11-20T10:00:00Z' }]}
+      />,
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(screen.getByText('Серверный тред')).toBeTruthy();
+  });
+
+  it('drops a local thread archived on another device', async () => {
+    const userId = 'archived-user';
+    window.localStorage.setItem(
+      `neyra:threads:${userId}`,
+      JSON.stringify([{ id: 'archived-thread', title: 'Удалённый на ПК', updatedAt: '2026-11-20T10:00:00Z' }]),
+    );
+    window.localStorage.setItem(
+      `neyra:thread-messages:${userId}:archived-thread`,
+      JSON.stringify([{ id: 'm1', role: 'user', content: 'старое' }]),
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(JSON.stringify({ ok: true, data: { items: [] } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (href.startsWith('/api/conversations/archived-thread?')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: { conversation: { id: 'archived-thread', archivedAt: '2026-11-21T10:00:00Z' } },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'arch@example.com', name: 'Архив', role: 'user' }} />);
+
+    await waitFor(() =>
+      expect(window.localStorage.getItem(`neyra:thread-messages:${userId}:archived-thread`)).toBeNull(),
+    );
+    expect(screen.queryByText('Удалённый на ПК')).toBeNull();
+    window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('does not remove the thread when the archive request fails', async () => {
+    const userId = 'archive-fail-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Живой тред', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href === `/api/conversations/${chatId}` && init?.method === 'DELETE') {
+        return new Response(JSON.stringify({ error: 'history_unavailable' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(JSON.stringify({ ok: true, data: { messages: [], total: 0, has_more: false } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'fail@example.com', name: 'Фейл', role: 'user' }} />);
+    await screen.findByText('Живой тред');
+    fireEvent.click(screen.getByLabelText('Удалить Живой тред'));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url) === `/api/conversations/${chatId}` &&
+            (init as RequestInit | undefined)?.method === 'DELETE',
+        ),
+      ).toBe(true),
+    );
+    expect(screen.getAllByText('Живой тред').length).toBeGreaterThan(0);
+  });
+
+  it('archives the thread on clear and starts a fresh chat', async () => {
+    const userId = 'clear-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Тред для очистки', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href === `/api/conversations/${chatId}` && init?.method === 'DELETE') {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(JSON.stringify({ ok: true, data: { messages: [], total: 0, has_more: false } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <ChatView
+        user={{ id: userId, email: 'clear@example.com', name: 'Клир', role: 'user' }}
+        initialThreadPanelOpen
+      />,
+    );
+    await screen.findByText('Тред для очистки');
+    fireEvent.click(screen.getByRole('button', { name: 'Очистить диалог' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Да, очистить' }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url) === `/api/conversations/${chatId}` &&
+            (init as RequestInit | undefined)?.method === 'DELETE',
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(sessionStorage.getItem(`neyra.chat_id:${userId}:${resolveTabKey(window)}`)).not.toBe(chatId),
+    );
+  });
+
+  it('keeps the old thread name when the rename request fails', async () => {
+    const userId = 'rename-fail-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Старое имя', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href === `/api/conversations/${chatId}` && init?.method === 'PATCH') {
+        return new Response(JSON.stringify({ error: 'history_unavailable' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(JSON.stringify({ ok: true, data: { messages: [], total: 0, has_more: false } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <ChatView
+        user={{ id: userId, email: 'rf@example.com', name: 'РФ', role: 'user' }}
+        initialThreadPanelOpen
+      />,
+    );
+    await screen.findByText('Старое имя');
+    fireEvent.click(screen.getByRole('button', { name: 'Переименовать диалог' }));
+    fireEvent.change(screen.getByLabelText('Название темы'), { target: { value: 'Новое имя' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url) === `/api/conversations/${chatId}` &&
+            (init as RequestInit | undefined)?.method === 'PATCH',
+        ),
+      ).toBe(true),
+    );
+    expect(screen.queryByText('Новое имя')).toBeNull();
+    expect(screen.getAllByText('Старое имя').length).toBeGreaterThan(0);
+  });
+
+  it('shows a thread whose first turn ended with a core error', async () => {
+    const userId = 'error-thread-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    let listCalls = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        listCalls += 1;
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              items:
+                listCalls === 1
+                  ? []
+                  : [{ id: chatId, title: 'Тред с ошибкой', updatedAt: '2026-11-20T10:00:00Z' }],
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(JSON.stringify({ ok: true, data: { messages: [], total: 0, has_more: false } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseErrorResponse('Сбой ядра');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatView user={{ id: userId, email: 'err@example.com', name: 'Ошибка', role: 'user' }} />);
+    const input = screen.getByPlaceholderText(ru.placeholder);
+    fireEvent.change(input, { target: { value: 'вопрос' } });
+    fireEvent.submit(input.closest('form')!);
+
+    expect(await screen.findByText('Тред с ошибкой')).toBeTruthy();
   });
 });
 
