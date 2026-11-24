@@ -21,6 +21,70 @@ logger = logging.getLogger("neyra.health")
 LLM_DEGRADATION_WINDOW_SECONDS = 600
 
 
+def _cli_provider_health(cfg: dict, server_root: Path) -> list[dict]:
+    """CLI readiness through the same CliSettings/validation path as runtime."""
+    from core.llm.cli_provider import CliProviderError, CliSettings
+    from core.llm.profile import (
+        LLM_ROLE_ORDER,
+        provider_kind,
+        resolve_role_provider,
+        resolved_brain_model,
+        resolved_memory_model,
+        resolved_talk_model,
+        resolved_vision_model_id,
+    )
+    from core.runtime.paths import resolve_data_dir
+
+    llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+    raw = llm.get("providers") if isinstance(llm, dict) else None
+    providers_cfg = raw if isinstance(raw, dict) else {}
+    data_dir = resolve_data_dir(server_root, cfg)
+    resolvers = {
+        "talk_model": resolved_talk_model,
+        "brain_model": resolved_brain_model,
+        "memory_model": resolved_memory_model,
+        "vision_model": resolved_vision_model_id,
+    }
+    seen: set[str] = set()
+    out: list[dict] = []
+    for role in LLM_ROLE_ORDER:
+        name = resolve_role_provider(cfg, role)
+        if not name or name in seen or provider_kind(cfg, name) != "cli":
+            continue
+        seen.add(name)
+        block = providers_cfg.get(name)
+        block = block if isinstance(block, dict) else {}
+        resolver = resolvers.get(role)
+        model = ""
+        if resolver is not None:
+            try:
+                model = resolver(cfg, name)
+            except Exception:
+                model = ""
+        try:
+            if not model:
+                raise CliProviderError("cli_model_missing")
+            settings = CliSettings.from_config(
+                block,
+                model=model,
+                data_dir=str(data_dir),
+                default_sandbox=str(data_dir / "cli-sandbox"),
+            )
+            cli_path = Path(settings.cli_path).expanduser()
+            if not cli_path.is_file() or not os.access(cli_path, os.X_OK):
+                raise CliProviderError("cli_path_unavailable")
+        except CliProviderError as e:
+            code = "cli_path_unavailable" if str(e) == "cli_path_unavailable" else "cli_config_invalid"
+            logger.warning("health CLI provider invalid | provider=%s error=%s", name, type(e).__name__)
+            out.append({"ok": False, "provider": name, "probe": "cli", "error": code})
+        except Exception as e:
+            logger.warning("health CLI provider invalid | provider=%s error=%s", name, type(e).__name__)
+            out.append({"ok": False, "provider": name, "probe": "cli", "error": "cli_config_invalid"})
+        else:
+            out.append({"ok": True, "provider": name, "probe": "cli"})
+    return out
+
+
 def discord_resident_enabled(project_root: Optional[Path]) -> bool:
     """Whether the resident discord plugin is enabled in plugin.yaml."""
     root = Path(project_root) if project_root is not None else None
@@ -260,9 +324,6 @@ class HealthMonitor:
             return out
 
         conns = list(iter_unique_provider_connections(self.config))
-        if not conns:
-            return _apply_degradation({"ok": False, "error": "no_llm_providers", "providers": []})
-
         timeout = httpx.Timeout(self.llm_timeout_seconds, connect=min(8.0, self.llm_timeout_seconds))
 
         async def _one(conn) -> dict:
@@ -292,16 +353,22 @@ class HealthMonitor:
                     "error": str(e)[:300],
                 }
 
-        providers = list(await asyncio.gather(*[_one(c) for c in conns]))
-        ok = bool(providers) and all(bool(p.get("ok")) for p in providers)
+        http_results = list(await asyncio.gather(*[_one(c) for c in conns])) if conns else []
+        server_root = self._project_root or Path(__file__).resolve().parents[2]
+        providers = http_results + _cli_provider_health(self.config, server_root)
+        if not providers:
+            return _apply_degradation({"ok": False, "error": "no_llm_providers", "providers": []})
+        ok = all(bool(p.get("ok")) for p in providers)
         out: dict = {
             "ok": ok,
             "provider": ",".join(str(p.get("provider") or "") for p in providers),
             "providers": providers,
         }
         if len(providers) == 1:
-            out["url"] = providers[0].get("url")
-            out["status_code"] = providers[0].get("status_code")
+            if providers[0].get("url"):
+                out["url"] = providers[0]["url"]
+            if providers[0].get("status_code") is not None:
+                out["status_code"] = providers[0]["status_code"]
             if providers[0].get("error"):
                 out["error"] = providers[0]["error"]
         elif not ok:

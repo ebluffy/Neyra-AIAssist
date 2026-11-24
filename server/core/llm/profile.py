@@ -584,8 +584,10 @@ def iter_unique_provider_connections(cfg: dict) -> list[OpenAICompatibleConnecti
     """
     seen: set[str] = set()
     out: list[OpenAICompatibleConnection] = []
+    role_providers: list[str] = []
     for role in LLM_ROLE_ORDER:
         lane_provider = resolve_role_provider(cfg, role)
+        role_providers.append(lane_provider)
         if lane_provider and provider_kind(cfg, lane_provider) == "cli":
             # CLI-провайдер не OpenAI-совместимый: у него нет base_url/ключа.
             continue
@@ -594,6 +596,11 @@ def iter_unique_provider_connections(cfg: dict) -> list[OpenAICompatibleConnecti
             continue
         seen.add(conn.provider)
         out.append(conn)
+    if not out and role_providers and all(
+        p and provider_kind(cfg, p) == "cli" for p in role_providers
+    ):
+        # Все роли на CLI: llm.provider — лишь остаток конфига, HTTP-проба не нужна.
+        return []
     if not out:
         default_provider = resolve_role_provider(cfg)
         if provider_kind(cfg, default_provider) != "cli":
