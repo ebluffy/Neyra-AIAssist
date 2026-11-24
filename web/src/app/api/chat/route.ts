@@ -10,6 +10,7 @@ import { getAuth } from '../../../../lib/auth';
 import { readChatEnv } from '../../../../lib/env';
 import { createIdentityToken } from '../../../../lib/identity';
 import { getLinkedDiscordId } from '../../../../lib/discord-account';
+import { appendMessage, ensureConversation } from '../../../../lib/chat-store';
 import {
   beginChatStream,
   checkChatRateLimit,
@@ -141,12 +142,15 @@ export async function POST(request: Request) {
     );
   }
 
+  const historyModel = parsed.data.model?.slice(0, 200);
+
   const payload = {
     type: 'chat',
     text,
     username: session.user.email,
     platform_user_id: session.user.id,
     channel_id: channelId,
+    ...(historyModel ? { model: historyModel } : {}),
     ...(parsed.data.attachments?.length ? { attachments: parsed.data.attachments } : {}),
   };
 
@@ -158,6 +162,10 @@ export async function POST(request: Request) {
     );
   }
 
+  const historyUserId = session.user.id;
+  const historyAttachments = parsed.data.attachments ?? null;
+  let historyReady = false;
+
   return new Promise<Response>((resolve) => {
     let socket: WebSocket | undefined;
     let output: ReadableStreamDefaultController<Uint8Array>;
@@ -165,24 +173,36 @@ export async function POST(request: Request) {
     let replied = false;
     let receivedHello = false;
     let cancelled = false;
+    let assistantSettled = false;
+    let streamedText = '';
+    let endReason: { status: 'stopped' | 'error'; code?: string } | undefined;
     let helloDeadline: ReturnType<typeof setTimeout> | undefined;
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let overallTimer: ReturnType<typeof setTimeout> | undefined;
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) { output = controller; },
-      cancel() { cancelled = true; finish(true); },
+      cancel() {
+        cancelled = true;
+        endReason = { status: 'stopped' };
+        finish(true);
+      },
     });
 
     function finish(force = false) {
       if (finished) return;
+      if (endReason) settleAssistant('', endReason.status, endReason.code);
       finished = true;
       endChatStream(userId);
       clearTimeout(helloDeadline);
       clearTimeout(idleTimer);
       clearTimeout(overallTimer);
       request.signal.removeEventListener('abort', abort);
-      if (!cancelled) output.close();
+      try {
+        output.close();
+      } catch {
+        // already cancelled by the client
+      }
       if (socket) {
         if (force || socket.readyState === WebSocket.CONNECTING) socket.terminate();
         else if (socket.readyState === WebSocket.OPEN) socket.close(1000);
@@ -193,9 +213,24 @@ export async function POST(request: Request) {
       output.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
     }
 
+    function settleAssistant(content: string, status: string, errorCode?: string) {
+      if (!historyReady || assistantSettled) return;
+      const finalContent = content.trim() || streamedText.trim() || '(ответ не завершён)';
+      assistantSettled = true;
+      void appendMessage(historyUserId, chatId, {
+        role: 'assistant',
+        content: finalContent,
+        model: historyModel,
+        status,
+        errorCode: errorCode ?? null,
+      }).catch(() => {});
+    }
+
     function fail(code: string, message: string, status = 502) {
       if (finished) return;
+      endReason = { status: 'error', code };
       if (replied) {
+        settleAssistant('', 'error', code);
         const safeMsg = getSafeErrorMessage(code) || message;
         try {
           const sseEvent = SseChatEventSchema.parse({ type: 'error', code, message: safeMsg });
@@ -212,6 +247,9 @@ export async function POST(request: Request) {
 
     function abort() {
       if (finished) return;
+      cancelled = true;
+      endReason = { status: 'stopped' };
+      if (replied) settleAssistant('', 'stopped');
       if (!replied) {
         replied = true;
         resolve(NextResponse.json({ error: 'client_aborted', message: 'Запрос отменён.' }, { status: 499 }));
@@ -279,13 +317,31 @@ export async function POST(request: Request) {
           'X-Accel-Buffering': 'no',
         } }));
 
-        try {
-          socket!.send(JSON.stringify(payload), error => {
-            if (error) fail('core_unavailable', getSafeErrorMessage('core_unavailable'));
-          });
-        } catch {
-          fail('core_unavailable', getSafeErrorMessage('core_unavailable'));
-        }
+        void (async () => {
+          if (!cancelled) {
+            try {
+              await ensureConversation(historyUserId, chatId, text, historyModel);
+              await appendMessage(historyUserId, chatId, {
+                role: 'user',
+                content: text,
+                model: historyModel,
+                attachments: historyAttachments,
+              });
+              historyReady = true;
+            } catch {
+              console.warn('chat_history_write_failed');
+            }
+            if (endReason) settleAssistant('', endReason.status, endReason.code);
+          }
+          if (finished) return;
+          try {
+            socket!.send(JSON.stringify(payload), error => {
+              if (error) fail('core_unavailable', getSafeErrorMessage('core_unavailable'));
+            });
+          } catch {
+            fail('core_unavailable', getSafeErrorMessage('core_unavailable'));
+          }
+        })();
         return;
       }
 
@@ -297,6 +353,10 @@ export async function POST(request: Request) {
       resetIdleTimer();
 
       if (!['token', 'thinking', 'phase', 'done', 'error'].includes(String(event.type))) return;
+
+      if (event.type === 'done' && typeof event.text === 'string') {
+        settleAssistant(event.text.trim() || '(пустой ответ)', 'done');
+      }
 
       if ((event.type === 'token' || event.type === 'done') && typeof event.text !== 'string') {
         fail('core_protocol_error', getSafeErrorMessage('core_protocol_error'));
@@ -315,6 +375,7 @@ export async function POST(request: Request) {
         });
         emitSanitized(sanitized);
       } else if (event.type === 'token') {
+        streamedText += String(event.text);
         const sanitized = SseChatEventSchema.parse({
           type: 'token',
           text: String(event.text),
@@ -345,6 +406,7 @@ export async function POST(request: Request) {
         const safeMessage = USER_FACING_CORE_CODES.has(rawCode) && coreMessage
           ? coreMessage
           : getSafeErrorMessage(rawCode);
+        if (!assistantSettled) settleAssistant('', 'error', rawCode);
         const sanitized = SseChatEventSchema.parse({
           type: 'error',
           code: rawCode,

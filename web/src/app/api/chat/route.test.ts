@@ -6,6 +6,11 @@ import { getAuth } from '../../../../lib/auth';
 import { CHAT_REQUESTS_PER_WINDOW, resetChatLimitsForTests } from '../../../../lib/chat-limits';
 
 const factory = vi.hoisted(() => ({ create: vi.fn() }));
+const history = vi.hoisted(() => ({ ensure: vi.fn(), append: vi.fn() }));
+vi.mock('../../../../lib/chat-store', () => ({
+  ensureConversation: history.ensure,
+  appendMessage: history.append,
+}));
 vi.mock('../../../../lib/auth', () => ({ getAuth: vi.fn() }));
 vi.mock('ws', () => ({ default: class {
   static CONNECTING = 0;
@@ -38,6 +43,8 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     socket.close = vi.fn(() => { socket.readyState = 3; socket.emit('close', 1000); });
     socket.terminate = vi.fn(() => { socket.readyState = 3; socket.emit('close', 1006); });
     factory.create.mockReset().mockReturnValue(socket);
+    history.ensure.mockReset().mockResolvedValue({});
+    history.append.mockReset().mockResolvedValue({});
     vi.mocked(getAuth).mockReturnValue({ api: { getSession: vi.fn().mockResolvedValue({
       user: { id: 'usr-42', name: 'Алиса', email: 'alice@example.test', role: 'admin' },
     }) } } as unknown as ReturnType<typeof getAuth>);
@@ -67,6 +74,107 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     vi.mocked(getAuth).mockReturnValue({ api: { getSession: vi.fn().mockResolvedValue(null) } } as unknown as ReturnType<typeof getAuth>);
     expect((await POST(request())).status).toBe(401);
     expect(factory.create).not.toHaveBeenCalled();
+  });
+
+  it('persists the user message and the completed answer', async () => {
+    const response = await hello();
+    message({ type: 'done', text: 'готовый ответ' });
+    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
+
+    expect(response.status).toBe(200);
+    expect(history.ensure).toHaveBeenCalledWith('usr-42', validUuid, 'Привет!', undefined);
+    expect(history.append).toHaveBeenNthCalledWith(1, 'usr-42', validUuid, {
+      role: 'user',
+      content: 'Привет!',
+      model: undefined,
+      attachments: null,
+    });
+    expect(history.append).toHaveBeenNthCalledWith(2, 'usr-42', validUuid, {
+      role: 'assistant',
+      content: 'готовый ответ',
+      model: undefined,
+      status: 'done',
+      errorCode: null,
+    });
+  });
+
+  it('saves partial text on a core error', async () => {
+    await hello();
+    message({ type: 'token', text: 'частичный ' });
+    message({ type: 'error', code: 'core_error', message: 'boom' });
+    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
+    expect(history.append).toHaveBeenNthCalledWith(2, 'usr-42', validUuid, {
+      role: 'assistant',
+      content: 'частичный',
+      model: undefined,
+      status: 'error',
+      errorCode: 'core_error',
+    });
+  });
+
+  it('saves an answer placeholder for empty done', async () => {
+    await hello();
+    message({ type: 'done', text: '' });
+    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
+    expect(history.append.mock.calls[1][2]).toMatchObject({
+      role: 'assistant',
+      content: '(пустой ответ)',
+      status: 'done',
+    });
+  });
+
+  it('does not write the user message before core hello', async () => {
+    await connecting();
+    expect(history.append).not.toHaveBeenCalled();
+    socket.emit('error');
+  });
+
+  it('saves partial text when the client cancels the stream', async () => {
+    const response = await hello();
+    message({ type: 'token', text: 'частичный' });
+    await response.body?.cancel();
+    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
+    expect(history.append.mock.calls[1][2]).toMatchObject({
+      role: 'assistant',
+      content: 'частичный',
+      status: 'stopped',
+    });
+  });
+
+  it('keeps the error code when the core dies while history is writing', async () => {
+    let release: ((value: unknown) => void) | undefined;
+    history.ensure.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    await hello();
+    socket.emit('close');
+    release?.({});
+    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
+    expect(history.append.mock.calls[1][2]).toMatchObject({
+      role: 'assistant',
+      content: '(ответ не завершён)',
+      status: 'error',
+      errorCode: 'core_disconnected',
+    });
+  });
+
+  it('marks a Stop during history writing as stopped', async () => {
+    let release: ((value: unknown) => void) | undefined;
+    history.ensure.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    const controller = new AbortController();
+    await hello(controller.signal);
+    controller.abort();
+    release?.({});
+    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
+    expect(history.append.mock.calls[1][2]).toMatchObject({
+      role: 'assistant',
+      content: '(ответ не завершён)',
+      status: 'stopped',
+    });
+  });
+
+  it('forwards the selected model to the core and to history', async () => {
+    await hello(undefined, { text: 'Привет!', chat_id: validUuid, model: 'm1' });
+    expect(JSON.parse(socket.send.mock.calls[0][0])).toMatchObject({ model: 'm1' });
+    expect(history.ensure).toHaveBeenCalledWith('usr-42', validUuid, 'Привет!', 'm1');
   });
 
   it('does not accept the x-smoke-test bypass in production code (AR-16)', async () => {
