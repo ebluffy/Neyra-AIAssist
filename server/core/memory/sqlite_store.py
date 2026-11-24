@@ -123,6 +123,8 @@ class SqliteStore:
                     raise
             # Heal: v3 marked applied but merge_proposals missing (old executescript bug).
             self._ensure_merge_proposals_table()
+            # Heal: v8 DBs were migrated before semantic_restore_queue existed.
+            self._ensure_semantic_restore_queue()
             self._backfill_person_accounts_from_meta()
             self._backfill_handle_norm()
 

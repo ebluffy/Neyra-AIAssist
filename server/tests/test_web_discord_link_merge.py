@@ -347,3 +347,13 @@ def test_wipe_people_clears_semantic_restore_queue(tmp_path):
     assert out["merge_proposals"] == 1
     assert hub.sqlite.list_merge_proposals() == []
     hub.close()
+
+
+def test_semantic_restore_queue_is_healed_on_startup(tmp_path):
+    hub = _hub(tmp_path)
+    hub.sqlite._conn.execute("DROP TABLE semantic_restore_queue")
+    hub.close()
+    hub = _hub(tmp_path)
+    hub.sqlite.queue_semantic_restore(1, "survivor", "source", ["doc"])
+    assert hub.sqlite.pending_semantic_restores()[0]["chroma_ids"] == ["doc"]
+    hub.close()
