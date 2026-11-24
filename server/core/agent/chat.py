@@ -36,6 +36,7 @@ async def run_chat(
     discord_context=None,
     person_id: Optional[str] = None,
     model: Optional[str] = None,
+    speaker_name: Optional[str] = None,
 ) -> dict:
     """Run one non-streaming chat turn; return text/sounds/thoughts/raw."""
     try:
@@ -53,6 +54,7 @@ async def run_chat(
             source="chat",
             person_id=person_id,
             origin=origin_from_discord_context(discord_context),
+            speaker_name=speaker_name,
         )
         if fp is not None:
             return fp
@@ -76,6 +78,7 @@ async def run_chat(
         discord_context=discord_context,
         person_id=person_id,
         model=model,
+        speaker_name=speaker_name,
     )
     try:
         try:

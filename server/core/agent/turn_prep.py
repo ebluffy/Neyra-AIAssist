@@ -97,6 +97,7 @@ async def prepare_turn(
     discord_context=None,
     person_id: Optional[str] = None,
     model: Optional[str] = None,
+    speaker_name: Optional[str] = None,
 ) -> TurnPrep:
     """Gather RAG/people/tools/vision inputs and build brain system prompt."""
     internal_uid = agent._resolve_internal_user_id(discord_user_id, username, person_id)
@@ -155,7 +156,12 @@ async def prepare_turn(
     diary_ctx = agent.memory_hub.diary_recent_text(limit=6, owner_id=internal_uid, channel_id=channel_id)
     web_ctx = agent._handle_websearch_trigger(user_message)
     tool_ctx = agent._collect_tool_context(user_message)
-    speaker_label = agent._resolve_speaker_label(username, discord_user_id, author_display_name)
+    if speaker_name is not None:
+        from core.memory.person_profile import clean_speaker_label
+
+        speaker_label = clean_speaker_label(speaker_name)
+    else:
+        speaker_label = agent._resolve_speaker_label(username, discord_user_id, author_display_name)
     wm_snip = "" if scope.kind == "shared" else agent._read_working_memory_for_prompt(internal_uid)
 
     has_vis = bool(vision_images)

@@ -87,6 +87,25 @@ describe('PATCH /api/me (AR-74, AR-80)', () => {
     expect(setUserOnboardingCompleted).toHaveBeenCalledWith('usr-42', true);
   });
 
+  it('collapses control characters in a saved name', async () => {
+    const response = await PATCH(patch({ name: '  Боб\nИван  ' }));
+    expect(response.status).toBe(200);
+    expect(setUserName).toHaveBeenCalledWith('usr-42', 'Боб Иван');
+  });
+
+  it('rejects a name longer than 64 characters', async () => {
+    const response = await PATCH(patch({ name: 'x'.repeat(65) }));
+    expect(response.status).toBe(400);
+    expect(setUserName).not.toHaveBeenCalled();
+  });
+
+  it('rejects an email as the name instead of rewriting it', async () => {
+    const response = await PATCH(patch({ name: 'ivan@work.ru' }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ ok: false, error: 'bad_request' });
+    expect(setUserName).not.toHaveBeenCalled();
+  });
+
   it('rejects an empty name', async () => {
     const response = await PATCH(patch({ name: '   ' }));
     expect(response.status).toBe(400);

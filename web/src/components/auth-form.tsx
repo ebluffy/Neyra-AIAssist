@@ -13,6 +13,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { Button, PasswordField, TextField, NeyraLogo } from './ui';
+import { defaultDisplayName } from '../../lib/display-name';
 import { signIn, signUp } from '../../lib/auth-client';
 import { credentialsSchema, authErrorText } from '../../lib/auth-policy';
 import type { AuthConfig } from '../../lib/env';
@@ -168,7 +169,7 @@ export function AuthForm({
         mode === 'signup'
           ? await signUp.email({
               ...parsedCreds.data,
-              name: parsedCreds.data.email,
+              name: defaultDisplayName(parsedCreds.data.email),
               invite: token,
             } as Parameters<typeof signUp.email>[0])
           : await signIn.email(parsedCreds.data);

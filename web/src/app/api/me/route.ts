@@ -5,11 +5,12 @@ import {
   setUserName,
 } from '../../../../lib/admin-users';
 import { jsonError, jsonOk, readJson } from '../../../../lib/admin-http';
+import { cleanDisplayName, defaultDisplayName, isEmailLike, sanitizeDisplayName } from '../../../../lib/display-name';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const MAX_NAME_LENGTH = 100;
+const MAX_NAME_LENGTH = 64;
 
 // AR-80: признак онбординга хранится на сервере, а не в localStorage браузера.
 // Иначе на новом устройстве уже знакомый пользователь снова попадает в /onboarding.
@@ -32,7 +33,7 @@ export async function GET(request: Request) {
     return jsonError(503, 'db_error', 'Профиль временно недоступен.');
   }
   return jsonOk({
-    name: session.user.name ?? '',
+    name: defaultDisplayName(session.user.email, session.user.name),
     onboarding_completed: state.value,
   });
 }
@@ -77,13 +78,17 @@ export async function PATCH(request: Request) {
     if (typeof body.name !== 'string') {
       return jsonError(400, 'bad_request', 'Поле name должно быть строкой.');
     }
-    name = body.name.trim();
+    name = sanitizeDisplayName(body.name);
     if (!name) {
       return jsonError(400, 'bad_request', 'Имя не может быть пустым.');
+    }
+    if (isEmailLike(name)) {
+      return jsonError(400, 'bad_request', 'Имя не может быть email-адресом.');
     }
     if (name.length > MAX_NAME_LENGTH) {
       return jsonError(400, 'bad_request', `Имя длиннее ${MAX_NAME_LENGTH} символов.`);
     }
+    name = cleanDisplayName(name);
     const result = await setUserName(session.user.id, name);
     if (!result.ok) {
       return jsonError(

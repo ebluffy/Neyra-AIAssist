@@ -24,6 +24,14 @@ describe('web/lib/identity', () => {
     vi.unstubAllEnvs();
   });
 
+  it('uses the email local part when the stored name is the email', () => {
+    const claims = buildIdentityClaims(
+      { id: 'u1', role: 'user', name: 'dima2_05@mail.ru', email: 'dima2_05@mail.ru' },
+      { now: 1700000000 },
+    );
+    expect(claims.name).toBe('dima2_05');
+  });
+
   it('includes discord_id only when the account is linked', () => {
     const linked = buildIdentityClaims({ ...dummyUser, discord_id: '123456789' }, { now: 1700000000 });
     expect(linked.discord_id).toBe('123456789');
@@ -67,10 +75,17 @@ describe('web/lib/identity', () => {
     expect(claims.message_id.length).toBeGreaterThan(0);
   });
 
-  it('falls back to email or user id when name is absent', () => {
+  it('does not use a UUID or placeholder when name and email are absent', () => {
+    const claims = buildIdentityClaims({ id: 'usr-uuid', role: 'user' }, { now: 1700000000 });
+    expect(claims.name).toBe('');
+    expect(claims.name).not.toBe('usr-uuid');
+    expect(claims.name).not.toBe('Пользователь');
+  });
+
+  it('falls back to the email local part when name is absent', () => {
     const userWithoutName = { id: 'usr-1', email: 'mail@test.com' };
     const claims = buildIdentityClaims(userWithoutName);
-    expect(claims.name).toBe('mail@test.com');
+    expect(claims.name).toBe('mail');
     expect(claims.role).toBe('user');
   });
 

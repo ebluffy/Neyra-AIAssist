@@ -68,8 +68,41 @@ def verify_web_identity(token: str) -> WebIdentity:
         raise InvalidWebIdentity() from exc
 
 
+def _sync_web_display_name(hub: Any, person_id: str, identity: WebIdentity) -> None:
+    """Sync the JWT name unless an admin/custom dossier name must win."""
+    from core.memory.person_profile import clean_speaker_label
+
+    name = clean_speaker_label(identity.name)
+    if not name or not person_id:
+        return
+    try:
+        person = hub.sqlite.get_person(person_id)
+        current = str((person or {}).get("display_name") or "").strip()
+        account = hub.sqlite.get_account("web", identity.user_id)
+        web_display = str((account or {}).get("display_name") or "").strip()
+        email_like = "@" in current and " " not in current
+        if current and current != web_display and not email_like:
+            # An admin or the user set a name that no longer mirrors the JWT.
+            return
+        if name != web_display:
+            hub.sqlite.upsert_person_account(
+                person_id=person_id,
+                platform="web",
+                platform_user_id=identity.user_id,
+                display_name=name,
+            )
+        accounts = hub.sqlite.list_accounts_for_person(person_id)
+        if not any(str(a.get("platform") or "").lower() == "discord" for a in accounts):
+            if not current or email_like or current == web_display:
+                hub.sqlite.upsert_person(person_id=person_id, display_name=name)
+    except Exception:
+        logger.warning("web display name sync failed | person=%s", person_id)
+
+
 def provision_web_identity(hub: Any, identity: WebIdentity) -> WebIdentity:
     """Map a signed web user to the linked Discord person when the account is bound."""
+    from core.memory.person_profile import clean_speaker_label
+
     if hub is None:
         return identity
     retry = getattr(hub, "retry_semantic_restores", None)
@@ -79,6 +112,10 @@ def provision_web_identity(hub: Any, identity: WebIdentity) -> WebIdentity:
         except Exception:
             logger.warning("semantic restore retry hook failed")
     account = hub.sqlite.get_account("web", identity.user_id)
+    if account is not None:
+        _sync_web_display_name(
+            hub, str(account.get("person_id") or "").strip(), identity
+        )
     discord_person = None
     if identity.discord_id:
         discord_account = hub.sqlite.get_account("discord", identity.discord_id)
@@ -90,7 +127,7 @@ def provision_web_identity(hub: Any, identity: WebIdentity) -> WebIdentity:
                 person_id=discord_person,
                 platform="web",
                 platform_user_id=identity.user_id,
-                display_name=(identity.name or "").strip() or None,
+                display_name=clean_speaker_label(identity.name) or None,
             )
             return replace(identity, person_id=discord_person)
         web_person = str(account.get("person_id") or "").strip()
@@ -119,7 +156,7 @@ def provision_web_identity(hub: Any, identity: WebIdentity) -> WebIdentity:
         row = hub.ensure_person_for_account(
             platform="web",
             platform_user_id=identity.user_id,
-            display_name=(identity.name or "").strip() or None,
+            display_name=clean_speaker_label(identity.name) or None,
         )
         person_id = row.get("id")
     if not isinstance(person_id, str) or not person_id.strip():

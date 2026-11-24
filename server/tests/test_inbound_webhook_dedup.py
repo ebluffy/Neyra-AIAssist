@@ -46,3 +46,26 @@ def test_inbound_dedup_by_body_hash_without_header(client, stub_agent):
     assert r3.status_code == 200
     assert r3.json()["data"].get("deduplicated") is False
     assert stub_agent.chat.await_count == 2
+
+
+def test_inbound_webhook_user_id_keeps_discord_owner_and_empty_label(client, stub_agent):
+    import uuid
+
+    path = f"/v1/webhooks/in/vk/ep-{uuid.uuid4().hex[:8]}"
+    response = client.post(path, json={"text": "hi", "user_id": "123"})
+    assert response.status_code == 200, response.text
+    kwargs = stub_agent.chat.await_args.kwargs
+    assert kwargs["username"] == ""
+    assert kwargs["discord_user_id"] == "123"
+    assert kwargs["speaker_name"] is None
+
+
+def test_inbound_webhook_without_user_id_keeps_placeholder_owner_only(client, stub_agent):
+    import uuid
+
+    path = f"/v1/webhooks/in/vk/ep-{uuid.uuid4().hex[:8]}"
+    response = client.post(path, json={"text": "hi"})
+    assert response.status_code == 200, response.text
+    kwargs = stub_agent.chat.await_args.kwargs
+    assert kwargs["username"] == "vk_user"
+    assert kwargs["speaker_name"] == ""

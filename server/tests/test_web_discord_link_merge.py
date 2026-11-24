@@ -357,3 +357,21 @@ def test_semantic_restore_queue_is_healed_on_startup(tmp_path):
     hub.sqlite.queue_semantic_restore(1, "survivor", "source", ["doc"])
     assert hub.sqlite.pending_semantic_restores()[0]["chroma_ids"] == ["doc"]
     hub.close()
+
+
+def test_provision_updates_web_dossier_name(tmp_path):
+    hub = _hub(tmp_path)
+    person = hub.ensure_person_for_account(
+        platform="web", platform_user_id="web-name-1", display_name="a@b.co"
+    )
+    identity = WebIdentity(
+        person_id=person["id"], role="user", name="a", user_id="web-name-1"
+    )
+    provision_web_identity(hub, identity)
+    assert hub.get_person_summary(person["id"]).startswith("Досье на a:")
+    renamed = WebIdentity(
+        person_id=person["id"], role="user", name="Иван", user_id="web-name-1"
+    )
+    provision_web_identity(hub, renamed)
+    assert hub.get_person_summary(person["id"]).startswith("Досье на Иван:")
+    hub.close()
