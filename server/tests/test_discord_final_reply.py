@@ -4,10 +4,12 @@ import asyncio
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
+import aiohttp
 import discord
 import pytest
 
 from core.runtime.event_bus import NOTIFY_DISCORD_MESSAGE_SENT
+from modules.discord import bot as bot_module
 from modules.discord.bot import NeyraDiscordBot, chunk_codeblock_message, chunk_message
 
 
@@ -187,3 +189,65 @@ def test_real_core_context_retry_still_sends_only_one_final_reply(tmp_path):
         assert agent.memory_hub.affect_for_account('123')['relation']['observed']
     finally:
         agent.memory_hub.close()
+
+
+def _connector_error():
+    return aiohttp.ClientConnectorError(
+        NS(host='discord.test', port=443, ssl=False), OSError(111, 'refused')
+    )
+
+
+@pytest.mark.parametrize('error', [
+    aiohttp.ConnectionTimeoutError('timeout'),
+    _connector_error(),
+])
+def test_transient_send_error_retries_final_reply(monkeypatch, error):
+    bot, channel, starter, kwargs = fixture_parts()
+    bot.agent.chat_stream.return_value = chunks({'type': 'done', 'text': 'answer'})
+    starter.reply.side_effect = [error, NS(id=100)]
+    monkeypatch.setattr(bot_module, '_SEND_RETRY_DELAY', 0)
+    asyncio.run(NeyraDiscordBot._run_chat_reply(bot, **kwargs))
+    assert starter.reply.await_count == 2
+    assert channel.send.await_count == 0
+    bot.agent.event_bus.publish.assert_called_once()
+    assert bot.agent.event_bus.publish.call_args.args[0].payload['message_ids'] == [100]
+
+
+def test_persistent_connect_timeout_is_logged_not_raised(monkeypatch):
+    bot, channel, starter, kwargs = fixture_parts()
+    bot.agent.chat_stream.return_value = chunks({'type': 'done', 'text': 'answer'})
+    starter.reply.side_effect = aiohttp.ConnectionTimeoutError('timeout')
+    monkeypatch.setattr(bot_module, '_SEND_RETRY_DELAY', 0)
+    asyncio.run(NeyraDiscordBot._run_chat_reply(bot, **kwargs))
+    assert starter.reply.await_count == 2
+    bot.agent.event_bus.publish.assert_not_called()
+
+
+@pytest.mark.parametrize('failure', ['exception', 'error_chunk'])
+def test_error_reply_send_failure_does_not_raise(monkeypatch, failure):
+    bot, channel, starter, kwargs = fixture_parts()
+    if failure == 'exception':
+        bot.agent.chat_stream.side_effect = RuntimeError('boom')
+    else:
+        bot.agent.chat_stream.return_value = chunks({'type': 'error', 'text': 'boom'})
+    starter.reply.side_effect = aiohttp.ConnectionTimeoutError('timeout')
+    monkeypatch.setattr(bot_module, '_SEND_RETRY_DELAY', 0)
+    asyncio.run(NeyraDiscordBot._run_chat_reply(bot, **kwargs))
+    assert starter.reply.await_count == 2
+    channel.send.assert_not_awaited()
+    bot.agent.event_bus.publish.assert_not_called()
+
+
+def test_multipart_reply_retries_failed_part(monkeypatch):
+    bot, channel, starter, kwargs = fixture_parts()
+    kwargs['starter_message'] = None
+    text = 'a' * 1901
+    assert len(chunk_message(text, limit=1900)) == 2
+    bot.agent.chat_stream.return_value = chunks({'type': 'done', 'text': text})
+    channel.send.side_effect = [NS(id=101), aiohttp.ConnectionTimeoutError('timeout'), NS(id=102)]
+    monkeypatch.setattr(bot_module, '_SEND_RETRY_DELAY', 0)
+    asyncio.run(NeyraDiscordBot._run_chat_reply(bot, **kwargs))
+    assert channel.send.await_count == 3
+    payload = bot.agent.event_bus.publish.call_args.args[0].payload
+    assert payload['message_ids'] == [101, 102]
+    assert payload['parts'] == 2
