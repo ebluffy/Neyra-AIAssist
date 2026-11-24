@@ -104,7 +104,7 @@ export type KernelAttachment = z.infer<typeof KernelAttachmentSchema>;
 export const ChatRequestSchema = z.object({
   text: z.string().min(1).max(6000),
   chat_id: z.string().uuid().optional(),
-  model: z.string().min(1).optional(),
+  model: z.string().min(1).max(200).optional(),
   attachments: z.array(z.union([AttachmentSchema, StoredAttachmentSchema])).max(4).optional(),
 }).strict();
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
@@ -113,7 +113,7 @@ export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 export const KernelChatRequestSchema = z.object({
   text: z.string().min(1).max(6000),
   ...kernelIdentity,
-  model: z.string().min(1).optional(),
+  model: z.string().min(1).max(200).optional(),
   attachments: z.array(KernelAttachmentSchema).max(4).optional(),
 }).strict();
 export type KernelChatRequest = z.infer<typeof KernelChatRequestSchema>;

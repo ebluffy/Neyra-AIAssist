@@ -71,6 +71,13 @@
       "when": 1795540895816,
       "tag": "0009_display_name_from_email",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795549201422,
+      "tag": "0010_web_history",
+      "breakpoints": true
     }
   ]
 }

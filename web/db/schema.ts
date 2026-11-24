@@ -81,6 +81,40 @@ export const inviteUse = pgTable('invite_use', {
   usedAt: timestamp('used_at', { withTimezone: true }).defaultNow().notNull(),
 }, table => [index('invite_use_invite_idx').on(table.inviteId, table.usedAt)]);
 
+// Чаты и сообщения сайта: история должна переживать перезагрузку и другое устройство.
+export const folder = pgTable('folder', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  position: integer('position').default(0).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, table => [index('folder_user_idx').on(table.userId, table.position)]);
+export const conversation = pgTable('conversation', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  title: text('title').default('Новый диалог').notNull(),
+  model: text('model'),
+  pinned: boolean('pinned').default(false).notNull(),
+  folderId: text('folder_id').references(() => folder.id, { onDelete: 'set null' }),
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
+}, table => [
+  index('conversation_user_updated_idx').on(table.userId, table.updatedAt),
+  index('conversation_user_pinned_idx').on(table.userId, table.pinned),
+]);
+export const message = pgTable('message', {
+  id: text('id').primaryKey(),
+  conversationId: text('conversation_id').notNull().references(() => conversation.id, { onDelete: 'cascade' }),
+  role: text('role').notNull(),
+  content: text('content').notNull(),
+  model: text('model'),
+  status: text('status').default('done').notNull(),
+  errorCode: text('error_code'),
+  attachments: jsonb('attachments'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, table => [index('message_conversation_created_idx').on(table.conversationId, table.createdAt)]);
+
 // Настройки сайта, управляемые админом (пока — режим регистрации).
 export const siteSetting = pgTable('site_setting', {
   key: text('key').primaryKey(),

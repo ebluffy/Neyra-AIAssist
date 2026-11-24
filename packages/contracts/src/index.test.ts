@@ -167,6 +167,10 @@ describe('server-only payloads', () => {
     expect(ChatRequestSchema.safeParse({ text: 'hello', username: 'alice' }).success).toBe(false);
     expect(KernelChatRequestSchema.safeParse({ ...request, extra: true }).success).toBe(false);
     expect(KernelChatRequestSchema.safeParse({ ...request, attachments: [{ upload_id: uploadId }] }).success).toBe(false);
+    expect(ChatRequestSchema.safeParse({ text: 'hello', model: 'm'.repeat(200) }).success).toBe(true);
+    expect(ChatRequestSchema.safeParse({ text: 'hello', model: 'm'.repeat(201) }).success).toBe(false);
+    expect(KernelChatRequestSchema.safeParse({ ...request, model: 'm'.repeat(200) }).success).toBe(true);
+    expect(KernelChatRequestSchema.safeParse({ ...request, model: 'm'.repeat(201) }).success).toBe(false);
   });
 
   it('keeps model_trace in kernel events and rejects it in browser events', () => {
