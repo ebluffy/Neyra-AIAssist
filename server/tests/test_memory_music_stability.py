@@ -590,7 +590,7 @@ def test_soundcloud_without_meta_uses_failed_track_query(monkeypatch):
     assert calls == ['scsearch:Artist A - Track A']
 
 
-def test_soundcloud_uses_guild_query_for_same_track(monkeypatch):
+def test_soundcloud_uses_failed_track_metadata(monkeypatch):
     service = music_module.MusicService(NS())
     service.fallback_query_by_guild['g'] = ('a-same', 'last query')
     failed = NS(title='Track A', author='Artist A', identifier='a-same')
@@ -602,7 +602,7 @@ def test_soundcloud_uses_guild_query_for_same_track(monkeypatch):
 
     monkeypatch.setattr(music_module, '_search_tracks', search)
     assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
-    assert service.fallback_meta_by_track['sc-same']['query'] == 'last query'
+    assert service.fallback_meta_by_track['sc-same']['query'] == 'Artist A - Track A'
 
 
 def test_stop_resets_guild_fallback_state():
@@ -630,6 +630,226 @@ def test_fallback_meta_is_per_track():
     music_module._register_fallback_meta(service, second, 'second query')
     assert music_module._fallback_meta(service, first)['query'] == 'first query'
     assert music_module._fallback_meta(service, second)['query'] == 'second query'
+
+
+def test_stop_clears_playlist_queue_before_stopping():
+    class Queue(list):
+        def clear(self):
+            super().clear()
+
+    class Player:
+        def __init__(self):
+            self.queue = Queue([NS(identifier='a'), NS(identifier='b')])
+            self.stopped = False
+
+        async def stop(self, force=False):
+            assert self.queue == []
+            self.stopped = force
+
+    player = Player()
+    asyncio.run(music_module._stop_playback(player))
+    assert player.stopped is True
+    assert player.queue == []
+
+
+def test_playlist_queue_is_atomic():
+    class Queue(list):
+        def __init__(self):
+            super().__init__()
+            self.batches = []
+
+        async def put_wait(self, item):
+            batch = list(item) if isinstance(item, list) else [item]
+            self.batches.append(batch)
+            self.extend(batch)
+
+        def put(self, item):
+            self.extend(item if isinstance(item, list) else [item])
+
+        def remove(self, item):
+            super().remove(item)
+
+    class Player:
+        def __init__(self, playing):
+            self.playing = playing
+            self.queue = Queue()
+            self.played = []
+            self.queue_at_play = []
+
+        async def play(self, track, replace=False):
+            self.queue_at_play.append(list(self.queue))
+            self.played.append(track)
+
+    first, second, third = NS(identifier='1'), NS(identifier='2'), NS(identifier='3')
+    queued = Player(True)
+    asyncio.run(music_module._queue_playlist(queued, first, [second, third]))
+    assert queued.played == []
+    assert queued.queue.batches == [[first, second, third]]
+
+    started = Player(False)
+    asyncio.run(music_module._queue_playlist(started, first, [second, third]))
+    assert started.played == [first]
+    assert started.queue_at_play == [[second, third]]
+    assert started.queue == [second, third]
+
+
+def test_soundcloud_prefers_youtube_metadata_over_raw_query():
+    service = music_module.MusicService(NS())
+    failed = NS(
+        title='GORILLA GLU & LIL NAKUR - GORILLA GLU, LIL NAKUR - BARMALEY [OFFICIAL MUSIC VIDEO]',
+        author='GORILLA GLU & LIL NAKUR',
+    )
+    queries = music_module._soundcloud_queries(
+        service, 'g', failed, {'query': 'Горила глу бармалей'}
+    )
+    assert queries[0] == 'GORILLA GLU & LIL NAKUR - GORILLA GLU, LIL NAKUR - BARMALEY'
+    assert queries[-1] == 'Горила глу бармалей'
+
+
+def test_soundcloud_metadata_keeps_real_words():
+    assert music_module._clean_soundcloud_metadata('Lana Del Rey - Video Games') == 'Lana Del Rey - Video Games'
+    assert music_module._clean_soundcloud_metadata('Track (Official Video)') == 'Track'
+    assert music_module._clean_soundcloud_metadata('Miyagi - Topic', author=True) == 'Miyagi'
+
+
+def test_short_youtube_playlist_id_is_accepted():
+    query, error = music_module._normalize_play_query(
+        'https://music.youtube.com/playlist?list=LM'
+    )
+    assert error is None
+    assert query == 'https://www.youtube.com/playlist?list=LM'
+
+
+def test_soundcloud_guild_query_only_for_same_track():
+    service = music_module.MusicService(NS())
+    service.fallback_query_by_guild['g'] = ('same', 'last query')
+    same = NS(identifier='same')
+    other = NS(identifier='other')
+    assert music_module._soundcloud_queries(service, 'g', same, {})[-1] == 'last query'
+    assert music_module._soundcloud_queries(service, 'g', other, {}) == []
+
+
+def test_watch_url_with_list_stays_single_track():
+    query, error = music_module._normalize_play_query(
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL1234567890'
+    )
+    assert error is None
+    assert query == 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+    assert music_module._is_youtube_playlist_url(query) is False
+
+
+def test_playlist_action_queues_all_tracks(monkeypatch):
+    import sys
+    import types
+
+    fake_wavelink = types.ModuleType('wavelink')
+    fake_wavelink.Player = type('Player', (), {})
+    monkeypatch.setitem(sys.modules, 'wavelink', fake_wavelink)
+
+    class Queue(list):
+        def __init__(self):
+            super().__init__()
+            self.batches = []
+
+        def put(self, item):
+            self.extend(item if isinstance(item, list) else [item])
+
+        async def put_wait(self, item):
+            batch = list(item) if isinstance(item, list) else [item]
+            self.batches.append(batch)
+            self.extend(batch)
+
+        def remove(self, item):
+            super().remove(item)
+
+    class Player:
+        def __init__(self):
+            self.playing = False
+            self.queue = Queue()
+            self.played = []
+            self.node = NS(identifier='n')
+
+        async def play(self, track, replace=False):
+            self.played.append(track)
+            self.playing = True
+
+    tracks = [
+        NS(title=f'T{i}', author='A', identifier=f'id{i}', source='youtube')
+        for i in range(150)
+    ]
+    player = Player()
+    voice = NS(id=2, name='v')
+    guild = NS(id=1, get_channel=lambda cid: voice, get_member=lambda uid: None, voice_client=None)
+    ctx = NS(agent=NS(discord_client=NS(get_guild=lambda gid: guild)), config={})
+    adapter = NS(
+        connected=True,
+        ranked_node_configs=lambda: [{'identifier': 'n'}],
+        is_node_available=lambda _: True,
+        ensure_node_connected=AsyncMock(return_value=NS(identifier='n')),
+        mark_node_failed=Mock(),
+        last_error='',
+    )
+    service = music_module.MusicService(adapter)
+
+    async def search(wavelink_mod, query, node):
+        return list(tracks)
+
+    async def connect(**kwargs):
+        return player
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    monkeypatch.setattr(music_module, '_connect_voice_player', connect)
+    payload = {
+        'query': 'https://music.youtube.com/playlist?list=PL1234567890',
+        'guild_id': '1',
+        'voice_channel_id': '2',
+        'randomize': True,
+    }
+    result = asyncio.run(music_module._handle_action_async(ctx, service, 'music.play', payload))
+    assert result['ok'] is True, result
+    assert result['status'] == 'started', result
+    assert result['playlist'] is True
+    assert result['queued'] == 99
+    assert result['playlist_total'] == 150
+    assert result['truncated'] is True
+    assert [t.identifier for t in player.played] == ['id0']
+    assert len(player.queue) == 99
+
+    player.playing = True
+    result = asyncio.run(music_module._handle_action_async(ctx, service, 'music.play', payload))
+    assert result['status'] == 'queued'
+    assert result['queued'] == 100
+    assert len(player.queue) == 199
+
+
+def test_youtube_music_playlist_is_normalized():
+    query, error = music_module._normalize_play_query(
+        "включи https://music.youtube.com/playlist?list=PL1234567890&si=abc&dril=1"
+    )
+    assert error is None
+    assert query == "https://www.youtube.com/playlist?list=PL1234567890"
+    assert music_module._is_youtube_playlist_url(query) is True
+
+
+def test_playlist_search_flattens_tracks():
+    class FakePlaylist:
+        def __iter__(self):
+            yield NS(title='one', identifier='one')
+            yield NS(title='two', identifier='two')
+
+    class FakePlayable:
+        @staticmethod
+        async def search(query, **kwargs):
+            return FakePlaylist()
+
+    tracks = asyncio.run(
+        music_module._search_tracks(
+            NS(Playable=FakePlayable),
+            "https://www.youtube.com/playlist?list=PL1234567890",
+            None,
+        )
+    )
+    assert [t.identifier for t in tracks] == ['one', 'two']
 
 
 @pytest.mark.parametrize(('raw', 'expected'), [

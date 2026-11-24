@@ -7,11 +7,13 @@ server:
 
 lavalink:
   # plugins/*.jar в git часто — Git LFS pointer → Lavalink падает с ZipException. Починка: python scripts/fetch_lavalink_plugins.py
-  # youtube-plugin: версию держим в sync с https://github.com/lavalink-devs/youtube-source/releases/latest (на момент правки latest = 1.18.2)
+  # youtube-plugin: 1.18.2 ещё не содержит PS4-UA фикс TVHTML5 (b33460b), из-за
+  # которого YouTube отдаёт "The page needs to be reloaded". Держим snapshot
+  # b33460b до выхода релиза с этим коммитом.
   pluginsDir: "./plugins"
   plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
-      snapshot: false
+    - dependency: "dev.lavalink.youtube:youtube-plugin:b33460b38ad13b5cd07da75e46444397cf0ea2df"
+      snapshot: true
     - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
       snapshot: false
   server:

@@ -84,6 +84,8 @@ _ALLOWED_MUSIC_HOSTS = frozenset(
     }
 )
 
+MAX_PLAYLIST_TRACKS = 100
+
 # Returned as normalize error when a URL was present but not an allowed music source.
 ONLY_ALLOWED_MUSIC_URLS = "only_allowed_music_urls"
 
@@ -150,6 +152,29 @@ def _youtube_video_id(url: str) -> str:
     return ""
 
 
+def _youtube_playlist_id(url: str) -> str:
+    try:
+        parsed = urlparse(_url_for_parse(url))
+    except Exception:
+        return ""
+    if (parsed.scheme or "").lower() not in ("", "http", "https"):
+        return ""
+    if not _is_youtube_host(parsed.hostname or ""):
+        return ""
+    path = (parsed.path or "").strip("/")
+    if path and path.split("/")[0] not in ("playlist",):
+        return ""
+    qs = parse_qs(parsed.query or "")
+    playlist_id = str((qs.get("list") or [""])[0] or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", playlist_id):
+        return ""
+    return playlist_id
+
+
+def _is_youtube_playlist_url(url: str) -> bool:
+    return bool(_youtube_playlist_id(url))
+
+
 def _normalize_allowed_music_url(text: str) -> str:
     """Extract and normalize URL from allowed music sources (SoundCloud, Bandcamp, Vimeo, Twitch)."""
     url = _extract_any_url(text)
@@ -211,9 +236,12 @@ def _canonical_youtube_url_from_text(text: str) -> str:
     if not url:
         return ""
     vid = _youtube_video_id(url)
-    if not vid:
-        return ""
-    return f"https://www.youtube.com/watch?v={vid}"
+    if vid:
+        return f"https://www.youtube.com/watch?v={vid}"
+    playlist_id = _youtube_playlist_id(url)
+    if playlist_id:
+        return f"https://www.youtube.com/playlist?list={playlist_id}"
+    return ""
 
 
 def _looks_like_url(text: str) -> bool:
@@ -933,6 +961,43 @@ def _clean_soundcloud_query(raw: str) -> str:
     return q
 
 
+def _clean_soundcloud_metadata(value: str, *, author: bool = False) -> str:
+    text = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", str(value or ""))
+    if author:
+        text = re.sub(r"\s*-\s*Topic\s*$", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip(" -–—")
+
+
+def _soundcloud_queries(
+    service: MusicService, guild_id: str, failed_track: Any, meta: dict[str, Any]
+) -> list[str]:
+    """Prefer the failed YouTube track's metadata over the raw user wording."""
+    title = _clean_soundcloud_metadata(str(getattr(failed_track, "title", "") or ""))
+    author = _clean_soundcloud_metadata(
+        str(getattr(failed_track, "author", "") or ""), author=True
+    )
+    raw = _query_for_failed_track(service, guild_id, failed_track, meta)
+    out: list[str] = []
+    useful_title = (
+        len(title) >= 4
+        and title.casefold() not in {"yt", "youtube", "track", "audio", "video", "music"}
+    )
+    if useful_title and author and author.casefold() not in title.casefold():
+        out.append(f"{author} - {title}")
+    if useful_title:
+        out.append(title)
+    if raw:
+        out.append(raw)
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in out:
+        key = item.casefold()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
 async def _play_soundcloud_fallback(
     service: MusicService,
     player: Any,
@@ -947,23 +1012,29 @@ async def _play_soundcloud_fallback(
     if "soundcloud" in source or source == "sc":
         logger.info("discord.music soundcloud fallback skipped | guild=%s already soundcloud", guild_id)
         return False
-    raw_query = _query_for_failed_track(service, guild_id, failed_track, meta)
-    query = _clean_soundcloud_query(raw_query)
-    if not query or meta.get("sc_attempted"):
-        logger.info(
-            "discord.music soundcloud fallback skipped | guild=%s query=%r attempted=%s",
-            guild_id, raw_query, bool(meta.get("sc_attempted")),
-        )
+    if meta.get("sc_attempted"):
+        logger.info("discord.music soundcloud fallback skipped | guild=%s attempted=True", guild_id)
         return False
     meta["sc_attempted"] = True
-    try:
-        node = getattr(player, "node", None)
-        tracks = await _search_tracks(sys.modules.get("wavelink"), f"scsearch:{query}", node)
-    except Exception as ex:
-        logger.warning("discord.music soundcloud fallback search failed | guild=%s error=%s", guild_id, ex)
-        return False
+    node = getattr(player, "node", None)
+    tracks: list[Any] = []
+    for raw_query in _soundcloud_queries(service, guild_id, failed_track, meta):
+        query = _clean_soundcloud_query(raw_query)
+        if not query:
+            continue
+        try:
+            tracks = await _search_tracks(sys.modules.get("wavelink"), f"scsearch:{query}", node)
+        except Exception as ex:
+            logger.warning(
+                "discord.music soundcloud fallback search failed | guild=%s query=%r error=%s",
+                guild_id, query, ex,
+            )
+            continue
+        if tracks:
+            logger.info("discord.music soundcloud fallback match | guild=%s query=%r", guild_id, query)
+            break
+        logger.info("discord.music soundcloud fallback empty | guild=%s query=%r", guild_id, query)
     if not tracks:
-        logger.info("discord.music soundcloud fallback empty | guild=%s", guild_id)
         return False
     try:
         await player.play(tracks[0], replace=True)
@@ -1031,6 +1102,33 @@ async def _play_next_youtube_fallback(
     if await _play_soundcloud_fallback(service, player, guild_id, failed_track, meta):
         return True
     return False
+
+
+async def _stop_playback(player: Any) -> None:
+    """Drop the queue first, then stop: track_end(stopped) must not advance."""
+    try:
+        player.queue.clear()
+    except Exception:
+        pass
+    await player.stop(force=True)
+
+
+async def _queue_playlist(player: Any, track: Any, tail: list[Any]) -> None:
+    """Insert a playlist atomically so two requests cannot interleave tracks."""
+    if bool(getattr(player, "playing", False)):
+        await player.queue.put_wait([track, *tail])
+        return
+    if tail:
+        player.queue.put(tail)
+    try:
+        await player.play(track, replace=False)
+    except Exception:
+        for item in tail:
+            try:
+                player.queue.remove(item)
+            except Exception:
+                pass
+        raise
 
 
 async def _advance_queue(player: Any) -> bool:
@@ -1275,7 +1373,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                 await player.pause(False)
                 return {"ok": True, "status": "resumed", "request_id": str(payload.get("request_id") or "")}
             if action == MUSIC_STOP:
-                await player.stop(force=True)
+                await _stop_playback(player)
                 service.reset_fallback_state(str(guild_id))
                 return {"ok": True, "status": "stopped", "request_id": str(payload.get("request_id") or "")}
             if action == MUSIC_SKIP:
@@ -1341,7 +1439,8 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
             if not tracks:
                 last_error = f"nothing found for '{query}'"
                 continue
-            is_random = bool(payload.get("randomize"))
+            playlist_mode = _is_youtube_playlist_url(query)
+            is_random = bool(payload.get("randomize")) and not playlist_mode
             top_k = int(payload.get("random_top_k") or 5)
             top_k = max(1, min(top_k, 10))
             pool = list(tracks)[:top_k]
@@ -1360,6 +1459,17 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
             # Keep other top hits so track_exception can skip "requires login" videos.
             chosen_key = _track_key(track)
             leftovers = [t for t in pool if _track_key(t) != chosen_key]
+            if playlist_mode:
+                # A playlist is played as a queue; do not turn it into a one-track search.
+                playlist_total = len(tracks)
+                playlist_tracks = list(tracks)[:MAX_PLAYLIST_TRACKS]
+                track = playlist_tracks[0]
+                chosen_key = _track_key(track)
+                leftovers = []
+                queue_tail = [t for t in playlist_tracks[1:] if _track_key(t) != chosen_key]
+            else:
+                playlist_total = 0
+                queue_tail = []
             service.fallback_query_by_guild[str(guild_id)] = (chosen_key, query)
             _register_fallback_meta(
                 service,
@@ -1370,10 +1480,10 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
             )
             candidates = [
                 f"{str(getattr(t, 'author', '') or 'Unknown')} - {str(getattr(t, 'title', '') or '')}".strip()
-                for t in pool
+                for t in (playlist_tracks[:5] if playlist_mode else pool)
             ]
             if bool(getattr(player, "playing", False)):
-                await player.queue.put_wait(track)
+                await _queue_playlist(player, track, queue_tail)
                 return {
                     "ok": True,
                     "status": "queued",
@@ -1383,8 +1493,12 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                     "node": str(getattr(node, "identifier", "")),
                     "request_id": str(payload.get("request_id") or ""),
                     "candidates": candidates,
+                    "playlist": playlist_mode,
+                    "playlist_total": playlist_total,
+                    "truncated": playlist_total > MAX_PLAYLIST_TRACKS,
+                    "queued": len(queue_tail) + 1,
                 }
-            await player.play(track, replace=False)
+            await _queue_playlist(player, track, queue_tail)
             return {
                 "ok": True,
                 "status": "started",
@@ -1394,6 +1508,10 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                 "node": str(getattr(node, "identifier", "")),
                 "request_id": str(payload.get("request_id") or ""),
                 "candidates": candidates,
+                "playlist": playlist_mode,
+                "playlist_total": playlist_total,
+                "truncated": playlist_total > MAX_PLAYLIST_TRACKS,
+                "queued": len(queue_tail),
             }
         except Exception as ex:  # pragma: no cover
             last_error = str(ex)
