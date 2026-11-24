@@ -22,6 +22,7 @@ import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
 
+import aiohttp
 import discord
 import httpx
 from discord import app_commands
@@ -123,6 +124,32 @@ COL_BRAND = 0x5865F2
 COL_OK = 0x57F287
 COL_ERR = 0xED4245
 COL_WARN = 0xFEE75C
+
+
+# Only pre-request failures are safe to retry: the message was not sent yet.
+_TRANSIENT_SEND_ERRORS = (aiohttp.ConnectionTimeoutError, aiohttp.ClientConnectorError)
+_SEND_FAILURES = (discord.HTTPException, aiohttp.ClientError, asyncio.TimeoutError)
+_SEND_RETRY_DELAY = 1.0
+
+
+async def _send_with_retry(sender, text: str, *, attempts: int = 2):
+    """Send a Discord message, retrying connect-level failures without duplicates."""
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return await sender(text)
+        except _TRANSIENT_SEND_ERRORS as ex:
+            last_error = ex
+            logger.warning(
+                "discord send retry | attempt=%s/%s error=%s",
+                attempt + 1,
+                attempts,
+                type(ex).__name__,
+            )
+            if attempt + 1 < attempts:
+                await asyncio.sleep(_SEND_RETRY_DELAY)
+    assert last_error is not None
+    raise last_error
 
 
 def _extract_lyrics_song_query(text: str) -> str:
@@ -1349,9 +1376,12 @@ class NeyraDiscordBot(discord.Client):
         discord_context=None,
     ) -> None:
         async def send_first(text: str):
-            if starter_message is not None:
-                return await starter_message.reply(text, mention_author=False)
-            return await text_channel.send(text)
+            sender = (
+                functools.partial(starter_message.reply, mention_author=False)
+                if starter_message is not None
+                else text_channel.send
+            )
+            return await _send_with_retry(sender, text)
 
         try:
             result = None
@@ -1377,14 +1407,14 @@ class NeyraDiscordBot(discord.Client):
             logger.exception("Не удалось подготовить ответ Discord")
             try:
                 await send_first(public_chat_error({}))
-            except discord.HTTPException:
+            except _SEND_FAILURES:
                 logger.exception("Не удалось отправить сообщение об ошибке Discord")
             return
 
         if generation_failed:
             try:
                 await send_first(public_chat_error(result))
-            except discord.HTTPException:
+            except _SEND_FAILURES:
                 logger.exception("Не удалось отправить сообщение об ошибке Discord")
             return
 
@@ -1395,9 +1425,9 @@ class NeyraDiscordBot(discord.Client):
             first = await send_first(parts[0])
             sent_ids: list[int] = [first.id]
             for part in parts[1:]:
-                sent = await text_channel.send(part)
+                sent = await _send_with_retry(text_channel.send, part)
                 sent_ids.append(sent.id)
-        except discord.HTTPException:
+        except _SEND_FAILURES:
             logger.exception("Не удалось отправить готовый ответ Discord")
             return
 
