@@ -4,6 +4,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { ThreadPanel, ChatMessageItem } from './thread-panel';
 
+vi.mock('../../../lib/chat-export', () => ({ downloadChat: vi.fn(() => true) }));
+
 describe('ThreadPanel', () => {
   const sampleMessages: ChatMessageItem[] = [
     {
@@ -241,16 +243,18 @@ describe('ThreadPanel', () => {
     expect(defaultProps.onToggleCompactView).toHaveBeenCalledWith(true);
   });
 
-  it('AR-84: renders SoonAction when exportData is false, and triggers soonToast on click', async () => {
-    const toastModule = await import('../../lib/toast');
-    const spy = vi.spyOn(toastModule, 'soonToast');
+  it('P5: exports the current thread in the selected format', async () => {
+    const { downloadChat } = await import('../../../lib/chat-export');
 
     render(<ThreadPanel {...defaultProps} />);
-    const exportBtn = screen.getByRole('button', { name: 'Экспорт диалога' });
-    expect(exportBtn).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Экспорт диалога' }));
+    fireEvent.click(screen.getByText('Markdown (.md)'));
 
-    fireEvent.click(exportBtn);
-    expect(spy).toHaveBeenCalledWith('Экспорт диалога', undefined);
+    expect(downloadChat).toHaveBeenCalledWith(
+      defaultProps.threadTitle,
+      defaultProps.messages,
+      'markdown',
+    );
   });
 
   it('ensures model_trace is never leaked or exposed', () => {

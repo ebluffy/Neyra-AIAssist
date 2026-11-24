@@ -17,7 +17,7 @@ export const FLAGS = {
   providersCatalog: false, // каталог провайдеров
   threadsDb: false, // история из БД
   notes: false, // заметки
-  exportData: false, // экспорт данных
+  exportData: false, // ПКМ-экспорт и экспорт всех данных (панель треда работает всегда)
   memory: false, // память: факты, дневник, LTM (P2)
   chatBranching: false, // ветвление диалогов (P1)
   chatModelPicker: false, // выбор модели в композере (P1)

@@ -20,12 +20,12 @@ import {
   Hash,
   MessageSquare,
   Copy,
-  Download,
 } from 'lucide-react';
 import type { StoredAttachment } from '@neyra/contracts';
-import { Button, IconButton, ExportMenu, VoicePanel, SoonAction } from '../ui';
-import { isEnabled } from '../../lib/feature-flags';
+import { Button, IconButton, ExportMenu, VoicePanel } from '../ui';
 import { playButtonClickSound } from '../../lib/ui-sounds';
+import { emitToast } from '../../lib/toast';
+import { downloadChat } from '../../../lib/chat-export';
 
 export type ThreadPanelTab = 'about' | 'pinned' | 'attachments' | 'voice' | 'settings';
 
@@ -203,20 +203,17 @@ export function ThreadPanel({
             <span className="text-[14px] font-semibold tracking-tight text-[var(--text)]">Панель треда</span>
           </div>
           <div className="flex items-center gap-1">
-            {isEnabled('exportData') ? (
-              <ExportMenu threadTitle={threadTitle} />
-            ) : (
-              <SoonAction actionName="Экспорт диалога">
-                <IconButton
-                  type="button"
-                  aria-label="Экспорт диалога"
-                  tooltip="Скоро: экспорт диалога"
-                  icon={<Download size={15} />}
-                  variant="ghost"
-                  size="sm"
-                />
-              </SoonAction>
-            )}
+            <ExportMenu
+              threadTitle={threadTitle}
+              onExport={(format) => {
+                if (!downloadChat(threadTitle, messages, format)) {
+                  emitToast({
+                    message: 'Разрешите всплывающие окна, чтобы сохранить PDF.',
+                    tone: 'danger',
+                  });
+                }
+              }}
+            />
             <IconButton
               type="button"
               aria-label="Закрыть панель треда"
