@@ -5,11 +5,15 @@
 - Control API Neyra (`server/core/api`) по умолчанию слушает `127.0.0.1`. Всё нелокальное — недоверенное, пока не закрыто.
 - **Политика Wave 1 (осознанно):** если **не задан ни один** из `API_TOKEN` / `API_KEY` / `API_VIEWER_TOKEN` / `API_MAINT_TOKEN`, роль `anon` и доступ ко всем эндпоинтам **только при bind на loopback**. Non-loopback без токенов → процесс не стартует (`assert_api_bind_safe`). Обязательные токены даже на localhost — отдельное ужесточение, не Wave 1.
 - Когда токены заданы: `viewer` — чтение; `maint+` — soft-restart; `admin` — чат/мутации. Минимум прав.
+- **Desktop-мост:** `/v1/desktop/bridge` и `/v1/desktop/voice` принимают только `Authorization: Bearer` с ролью `admin`; анонимный loopback-доступ, который получает остальной API, им **не** выдаётся (`server/core/desktop/routes.py:57-67`, отказ — close 1008). Desktop тратит LLM/аудио и управляет ПК, поэтому стоит отдельно от общей Wave 1-политики.
+- **Fail-closed без токенов:** при пустых `API_TOKEN` / `API_KEY` / `API_VIEWER_TOKEN` / `API_MAINT_TOKEN` старт падает не только на non-loopback bind, но и когда задан `api.public_base_url` — даже при bind на `127.0.0.1` (`server/core/api/app.py:283-300`).
 - **Gate дашборда:** отдельный ключ доступа (хеш PBKDF2 в `server/data/dashboard_auth.sqlite`, минимум **32** символа при setup). Первый `POST /v1/dashboard/auth/setup` — пока ключ не задан; без Bearer — только с **консольного** loopback (нет `CF-Connecting-IP`/`X-Real-IP`); с публичного края — только primary `API_TOKEN` (не viewer/maint). Login/setup выдаёт короткоживущий **session token** (SPA — `sessionStorage`); `_resolve_role` принимает сессию как **admin** наряду с `API_TOKEN` / viewer / maint. Неудачные login — rate-limit по IP.
 
 Dashboard login и rotate используют общий счётчик неудачных проверок ключа по IP: пять ошибок в скользящем окне 300 секунд, затем 429 **до** проверки ключа, даже если ключ верный. Существующая сессия при lockout остаётся действительной. Счётчик хранится в памяти процесса и сбрасывается при его рестарте.
 
 `POST /v1/dashboard/auth/rotate` требует действительную dashboard-сессию Bearer и `current_key` / `new_key`; старые сессии отзываются, новая выдаётся в `data.session_token`. Ответ содержит `trace_id` и `data.rotated: true`. Ошибка текущего ключа не должна очищать сессию вкладки. Logout требует действительную сессию; повторный logout с отозванным токеном возвращает 401. Logout-all принимает admin API token или действительную dashboard-сессию.
+
+Сессия дашборда живёт 12 часов (`_SESSION_TTL_SECONDS` в `server/core/api/dashboard_auth.py:21`). И login, и rotate удаляют все прежние сессии (`dashboard_auth.py:194-206`), поэтому после входа или смены ключа другая вкладка или устройство получает 401 и возвращается на экран входа — это ожидаемое поведение, а не сбой.
 
 ## Секреты
 

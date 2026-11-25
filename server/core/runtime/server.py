@@ -121,7 +121,14 @@ def run_neyra_server(config: dict) -> None:
 
     agent = NeyraAgent(config)
     reflection = ReflectionEngine(config, agent)
-    monitor = HealthMonitor(config, project_root=root)
+
+    from core.agent.model_trace import recent_provider_rate_limit
+
+    monitor = HealthMonitor(
+        config,
+        project_root=root,
+        llm_activity=lambda: recent_provider_rate_limit(agent),
+    )
 
     app = build_app(
         config,

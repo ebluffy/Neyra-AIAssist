@@ -8,15 +8,52 @@ llm:
       # Enable only if the gateway supports stream_options.include_usage.
       capabilities:
         supports_stream_usage: false
+        # Set false if this gateway has no /v1/responses: talk falls back to
+        # /chat/completions instead of failing every turn.
+        # supports_responses: false
     openrouter:
       base_url: "https://openrouter.ai/api/v1"
+
+    # Experimental CLI backend (#77): ядро вызывает установленный OpenCode через
+    # bwrap. Требует bubblewrap на хосте, experimental: true и путь к версии CLI.
+    # Инструменты в запрос не попадают: read-only конфиг + плагин, HOME — tmpfs.
+    # Картинки vision-лейна передаются через `opencode run -f`.
+    # Рассуждение задаётся в роли: thinking_effort: "off"|low|medium|high|max.
+    # off/on в YAML 1.1 — булевы значения, поэтому off пишите в кавычках.
+    # OpenCode принимает variant; для DeepSeek доступны low/high/max, поэтому
+    # medium по умолчанию ведёт в high, off/default — без variant. Переопределить
+    # можно через llm.providers.<name>.variants: {"off": "", "medium": high}.
+    # Ограничения: brain без tools, max_tokens не поддерживается.
+    # oc:
+    #   kind: cli
+    #   cli: opencode
+    #   backend: run
+    #   experimental: true
+    #   # Только каталог проверенной версии CLI (provider-runtimes/opencode/...).
+    #   # Держите копию внутри paths.data_dir: OpenBot чистит свой
+    #   # provider-runtimes и может удалить бинарь во время обновления.
+    #   cli_path: "<paths.data_dir>/cli-runtime/provider-runtimes/opencode/linux-x64/2.3.0/bin/opencode"
+    #   # Необязателен: по умолчанию <paths.data_dir>/cli-sandbox. Относительный
+    #   # путь считается от data_dir, абсолютный должен быть внутри него.
+    #   # sandbox: "<путь из paths.data_dir>/cli-sandbox"
+    #   # Файл авторизации OpenCode; read-only bind внутрь песочницы.
+    #   # Только внутри cli-sandbox. Относительный путь — от data_dir.
+    #   # auth_file: "<путь из paths.data_dir>/cli-sandbox/data/opencode/auth.json"
+    #   timeout_seconds: 120
+    # Затем: talk_model/brain_model/memory_model: {provider: oc, model: "opencode/<model>"}
 
   # Optional plugin generation role. If omitted, uses brain_model/provider.
   # coder_model:
   #   provider: aihope
   #   model: "your-coder-model"
 
+  # Model ids (of the current talk provider) allowed for the web role.
+  # The configured default talk model is always allowed. Empty = default only.
+  chat_models_allowed_for_web: []
+
   talk_model:
+    # off|low|medium|high|max; CLI maps it to OpenCode variant.
+    # thinking_effort: "off"
     responses:
       enabled: false
       warmup_on_start: false
@@ -40,6 +77,7 @@ llm:
     primary_first_token_timeout_seconds: 20.0
 
   brain_model:
+    # thinking_effort: "off"
     provider: aihope
     model: "gpt-6-luna"
     model_deep: "gpt-6-luna"
@@ -49,6 +87,7 @@ llm:
     max_retries: 1
 
   memory_model:
+    # thinking_effort: "medium"
     provider: aihope
     model: "gpt-6-luna"
     temperature: 0.6
@@ -56,8 +95,11 @@ llm:
     max_retries: 1
 
   vision_model:
+    # thinking_effort: "off"
     enabled: true
-    use_brain_model_for_vision: true
+    # true отдаёт картинки brain; false использует отдельный vision_model
+    # (включая CLI, где картинки идут через opencode run -f).
+    use_brain_model_for_vision: false
     provider: aihope
     model: "gpt-6-luna"
     max_tokens: 800

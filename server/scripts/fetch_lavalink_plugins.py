@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Скачать JAR-плагины Lavalink v4 (youtube-source, LavaSrc и т.д.).
+Скачать JAR-плагины Lavalink v4 (youtube-source, LavaSrc, soundy-plugin).
 
 В репозитории под modules/discord/lavalink/plugins/*.jar часто лежат Git LFS pointer-файлы
 (~130 байт) — Lavalink падает с java.util.zip.ZipException: zip END header not found.
+
+soundy-plugin (MIT, pin 1.1.1 + SHA-256) нужен для SoundCloud: Lavaplayer 2.2.6
+не умеет их новые AAC-HLS-потоки и падает с "Did not detect any supported formats".
 
 Пример:
   python scripts/fetch_lavalink_plugins.py
@@ -13,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import ssl
@@ -36,9 +40,45 @@ PLUGIN_DOWNLOAD_URLS: dict[tuple[str, str], str] = {
     ),
 }
 
+YOUTUBE_SNAPSHOT_URL = (
+    "https://maven.lavalink.dev/snapshots/dev/lavalink/youtube/youtube-plugin/"
+    "{ver}/youtube-plugin-{ver}.jar"
+)
+SHA_VERSION_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+
+
+def _is_snapshot_version(version: str) -> bool:
+    return bool(SHA_VERSION_RE.fullmatch(str(version or "").strip()))
+
+
+def _version_from_jar_name(name: str) -> str:
+    match = re.search(r"youtube-plugin-([0-9A-Za-z.]+)\.jar$", str(name or ""))
+    return match.group(1) if match else ""
+
+
+def _plugin_download_url(gid: str, aid: str, version: str) -> str:
+    if (gid, aid) == ("dev.lavalink.youtube", "youtube-plugin") and _is_snapshot_version(version):
+        return YOUTUBE_SNAPSHOT_URL.format(ver=version)
+    template = PLUGIN_DOWNLOAD_URLS.get((gid, aid))
+    if not template:
+        raise KeyError(f"{gid}:{aid}")
+    return template.format(ver=version)
+
+
 GITHUB_LATEST_TAG_API = {
     ("dev.lavalink.youtube", "youtube-plugin"): "https://api.github.com/repos/lavalink-devs/youtube-source/releases/latest",
 }
+
+# SoundCloud switched to AAC-HLS; Lavaplayer's built-in source fails with
+# "Did not detect any supported formats". soundy-plugin (MIT) adds AAC-HLS
+# support. Pin both version and SHA-256 so a compromised release cannot be
+# silently substituted.
+SOUNDY_VERSION = "1.1.1"
+SOUNDY_URL = (
+    "https://github.com/lpaiu-cs/soundy-plugin/releases/download/"
+    f"v{SOUNDY_VERSION}/soundy-plugin-{SOUNDY_VERSION}.jar"
+)
+SOUNDY_SHA256 = "1fd0c2f41f214ffb8b33fe744584b1efbbe14edbd31ef7c4cb73f7fd4df4f5ac"
 
 
 def _http_get_json(url: str, timeout: float = 30.0) -> dict | None:
@@ -86,6 +126,52 @@ def _is_git_lfs_pointer(path: Path) -> bool:
     return head.startswith("version https://git-lfs.github.com/spec/v1")
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _ensure_soundy_plugin(plugins_dir: Path, *, force: bool = False) -> bool:
+    """Install pinned soundy-plugin JAR and remove stale versions."""
+    dest = plugins_dir / f"soundy-plugin-{SOUNDY_VERSION}.jar"
+    if not force and _is_valid_plugin_jar(dest) and _sha256_file(dest) == SOUNDY_SHA256:
+        print(f"[OK] soundy-plugin уже на месте: {dest.name}")
+        ok = True
+    else:
+        try:
+            _http_download(SOUNDY_URL, dest)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+            print(f"[ERR] Не удалось скачать soundy-plugin: {e}", file=sys.stderr)
+            return False
+        if not _is_valid_plugin_jar(dest):
+            print(f"[ERR] soundy-plugin не похож на JAR: {dest}", file=sys.stderr)
+            return False
+        actual = _sha256_file(dest)
+        if actual != SOUNDY_SHA256:
+            print(
+                f"[ERR] SHA-256 soundy-plugin не совпал: ожидался {SOUNDY_SHA256}, получен {actual}",
+                file=sys.stderr,
+            )
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+            return False
+        print(f"[OK] soundy-plugin {SOUNDY_VERSION} установлен (sha256={actual[:12]}…)")
+        ok = True
+    for old in plugins_dir.glob("soundy-plugin-*.jar"):
+        if old.resolve() != dest.resolve():
+            try:
+                old.unlink()
+                print(f"Removed old soundy plugin: {old.name}")
+            except OSError as e:
+                print(f"[WARN] Не удалось удалить старый soundy jar: {e}", file=sys.stderr)
+    return ok
+
+
 def _prune_other_youtube_plugin_jars(plugins_dir: Path, keep: Path) -> None:
     """Оставляем один youtube-plugin-*.jar, чтобы Lavalink не подхватил несколько версий."""
     try:
@@ -122,6 +208,14 @@ def _sync_youtube_plugin_version_in_yaml(cfg: Path, new_ver: str) -> None:
         text,
         count=1,
     )
+    if n:
+        snapshot = "true" if _is_snapshot_version(new_ver) else "false"
+        new_text = re.sub(
+            r'(dependency:\s*"dev\.lavalink\.youtube:youtube-plugin:[^"]+"\s*\n\s*snapshot:\s*)(true|false)',
+            rf"\g<1>{snapshot}",
+            new_text,
+            count=1,
+        )
     if n and new_text != text:
         cfg.write_text(new_text, encoding="utf-8")
         print(f"[OK] Updated application.yml dependency youtube-plugin -> {new_ver}")
@@ -162,6 +256,11 @@ def main() -> int:
         action="store_true",
         help="Подставить последний tag youtube-plugin с GitHub (lavalink-devs/youtube-source) вместо версии из YAML",
     )
+    ap.add_argument(
+        "--skip-soundy",
+        action="store_true",
+        help="Не скачивать soundy-plugin (только YouTube/LavaSrc); SoundCloud останется недоступен",
+    )
     args = ap.parse_args()
 
     cfg: Path = args.config.resolve()
@@ -200,11 +299,11 @@ def main() -> int:
     failed = False
     for gid, aid, ver in deps:
         key = (gid, aid)
-        tmpl = PLUGIN_DOWNLOAD_URLS.get(key)
-        if not tmpl:
+        try:
+            url = _plugin_download_url(gid, aid, ver)
+        except KeyError:
             print(f"[WARN] Нет URL для {gid}:{aid}:{ver} — добавь в PLUGIN_DOWNLOAD_URLS в fetch_lavalink_plugins.py")
             continue
-        url = tmpl.format(ver=ver)
         dest = plugins_dir / f"{aid}-{ver}.jar"
         if args.force or not _is_valid_plugin_jar(dest):
             need_any = True
@@ -217,9 +316,9 @@ def main() -> int:
                     existing = sorted(plugins_dir.glob("youtube-plugin-*.jar"), reverse=True)
                     keep = next((p for p in existing if _is_valid_plugin_jar(p)), None)
                     if keep is not None:
-                        m = re.search(r"youtube-plugin-([0-9.]+)\.jar$", keep.name)
-                        if m:
-                            _sync_youtube_plugin_version_in_yaml(cfg, m.group(1))
+                        old_version = _version_from_jar_name(keep.name)
+                        if old_version:
+                            _sync_youtube_plugin_version_in_yaml(cfg, old_version)
                         print(f"[WARN] Оставляю существующий плагин: {keep.name}")
                         continue
                 failed = True
@@ -238,7 +337,12 @@ def main() -> int:
 
     if not need_any:
         print("Все известные плагины уже валидные JAR.")
-    return 1 if failed else 0
+
+    soundy_ok = True
+    if not args.skip_soundy:
+        soundy_ok = _ensure_soundy_plugin(plugins_dir, force=args.force)
+
+    return 1 if (failed or not soundy_ok) else 0
 
 
 if __name__ == "__main__":

@@ -5,8 +5,8 @@
 - HTTP API: `/v1/*`
 - WebSocket:
 
-  - `/v1/ws/chat`
-  - `/v1/ws/audio`
+  - `/v1/ws/chat` — рабочий канал чата.
+  - `/v1/ws/audio` — **канал-заглушка**: сокет принимает аудио и отвечает `transcript.interim`/`transcript.final`, но текст распознавания — литерал `[stub] received N chunks / M bytes`, настоящего STT за ним нет, а `/v1/meta` отдаёт `ws_audio_stub: true` (`server/core/api/app.py:4308-4390`). Рабочее аудио идёт через `/v1/desktop/voice`; не публикуйте `/v1/ws/audio` как рабочий канал.
 
 ## Локальная разработка
 
@@ -35,3 +35,5 @@
 ## Дашборд и дорожная карта
 
 Веб-дашборд (`server/dashboard/`) в основном использует REST `/v1`. Двусторонний WebSocket-мост дашборда и Event Bus — backlog в [`docs/PLAN.md`](../../PLAN.md). Эндпоинты `/v1/ws/chat` и `/v1/ws/audio` предназначены для программных клиентов (в т.ч. будущий `client/`).
+
+**Проверено 2026-11-22:** `wss://neyra.owyx.site/api/v1/ws/chat` проходит через Cloudflare/frp; с admin Bearer получены `hello`, `pong` и `done` с `turn_stats`.

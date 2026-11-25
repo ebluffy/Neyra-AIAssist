@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
@@ -15,7 +16,8 @@ from core.memory.hub import MemoryHub
 from core.reflection.engine import ReflectionEngine
 from core.runtime.identity import UnifiedIdentityMapper
 from core.tools import builtins
-from modules.discord.music_intent import finalize_music_route, plan_music_route, resolve_music_route
+from modules.discord import music as music_module
+from modules.discord.music_intent import candidate_music_intent, finalize_music_route, plan_music_route, resolve_music_route
 from offline_support import offline_agent
 from test_stage3a import discord_message
 
@@ -198,11 +200,1088 @@ def test_gif_urls_and_negations_cannot_reenter_classifier_music_path(text):
     assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('CHAT', False)
 
 
+@pytest.mark.parametrize('text', [
+    'че я тебя попросил включить музыку, а ты замолчала',
+    'я просил включить музыку',
+    'ты не включила музыку',
+    'почему музыку не включила?',
+    'включить музыку не могу, ноут тормозит',
+    'я просил включить музыку, а ты молчишь',
+    'почему музыка замолчала?',
+    'где музыка?',
+    'музыка не играет',
+    'музыка пропала',
+    'ты выключила музыку',
+    'не надо музыку',
+    'я просил зайти в войс и включить музыку',
+    'почему тебя нет в войсе, я хотел музыку',
+    'ты не зашла в войс',
+    'ты почему не в войсе',
+    'зайди в войс, почему молчишь',
+    'включи громче…',
+    'включи погромче!',
+    'включи громче музыку!',
+    'включи громче — музыку',
+    'включи громче — пожалуйста',
+    'включи погромче - плиз',
+    'включи тише — please',
+    'включи тише, пожалуйста, тише',
+    'включи тише плиз тише',
+    'включи тише пожалуйста тише',
+    'включи громче please громче',
+    'включи-ка громче',
+    'включи -ка громче',
+    'включи-ка потише',
+    'включи-ка громче музыку',
+    'включи громче песню',
+    'включи потише трек',
+    'включи громче пожалуйста погромче',
+    'включи громче — пожалуйста пожалуйста',
+    'включи тише — Please, please',
+    'включи громче пожалуйста',
+    'включи погромче, пожалуйста!',
+    'включи громче плиз плиз',
+    'включи погромче, пожалуйста, пожалуйста',
+    'ты включишь музыку или нет?',
+    'ты включишь музыку завтра?',
+    'можно включить погромче?',
+])
+def test_music_complaints_do_not_start_playback(text):
+    plan = plan_music_route(text)
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('CHAT', False)
+
+
+@pytest.mark.parametrize('text', [
+    'ну включи музыку',
+    'а включи трек',
+    'слушай, включи музыку',
+    'Нейра, можешь пожалуйста включить музыку',
+    'можешь, пожалуйста, включить трек',
+    'пожалуйста нейра включи lofi',
+    'ну давай вруби что-нибудь',
+    'can you play lofi',
+    'could you play lofi',
+    'Нейра, ты можешь включить музыку?',
+    'ты можешь включить музыку?',
+    'поставьте музыку',
+    'Neyra, play lofi',
+    'зайди в войс и включи музыку',
+])
+def test_imperative_prefixes_stay_hard_path(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is False
+    route, use, _ = finalize_music_route(plan)
+    assert route == 'PLAY_MUSIC' and use
+
+
+@pytest.mark.parametrize(('text', 'query'), [
+    ('включи Сплин — Выхода нет', 'Сплин — Выхода нет'),
+    ('включи Земфира — Почему', 'Земфира — Почему'),
+    ('включи песню Не надо', 'Не надо'),
+    ('включи Ленинград — Тише', 'Ленинград — Тише'),
+    ('включи Тише воды ниже травы', 'Тише воды ниже травы'),
+    ('зайди в войс и включи Земфира — Почему', 'Земфира — Почему'),
+])
+def test_complaint_inside_song_title_defers_to_classifier(text, query):
+    candidate = candidate_music_intent(text)
+    assert candidate and candidate['query'] == query
+    assert candidate.get('block') is None
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+
+
+def test_generic_complaint_after_verb_goes_to_classifier():
+    plan = plan_music_route('включи мозги, почему опять не то')
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+
+
+@pytest.mark.parametrize('text', [
+    'не надо https://youtu.be/abc123XYZ',
+    'почему не играет https://youtu.be/abc123XYZ?',
+])
+def test_link_with_complaint_needs_classifier(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[0] == 'CHAT'
+
+
+@pytest.mark.parametrize('text', [
+    'https://youtu.be/abc123XYZ',
+    'включи https://youtu.be/abc123XYZ',
+])
+def test_bare_or_imperative_link_stays_hard_path(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is False
+    assert finalize_music_route(plan)[:2] == ('PLAY_MUSIC', True)
+
+
+@pytest.mark.parametrize('text', ['а может включишь lofi', 'пожалуйста включишь lofi'])
+def test_future_request_without_music_noun_uses_classifier(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+
+
+def test_future_request_needs_classifier():
+    text = 'а может включишь музыку'
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    route, use, _ = finalize_music_route(plan, classifier_route='PLAY_MUSIC')
+    assert route == 'PLAY_MUSIC' and use
+
+
+@pytest.mark.parametrize('text', [
+    'включи Ёлка — пожалуйста',
+    'включи lofi — Пожалуйста',
+    'включи lofi - Please',
+    'включи Ёлка — Пожалуйста пожалуйста',
+    'включи lofi — пожалуйста пожалуйста',
+    'включи Smiths — Please, Please, Please',
+    'включи lofi — пожалуйста погромче',
+    'включи Ёлка — Пожалуйста, погромче',
+])
+def test_polite_after_dash_defers_to_classifier(text):
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+
+
+@pytest.mark.parametrize(('text', 'allowed'), [
+    ('включи-ка громче', False),
+    ('включи -ка громче', False),
+    ('включи-ка громче музыку', False),
+    ('включи громче музыку!', False),
+    ('включи Сплин', True),
+    ('классный трек', True),
+    ('а может включишь', False),
+    ('а может включишь?', False),
+    ('а может включишь!', False),
+    ('а может включишь пожалуйста', False),
+    ('а может включишь lofi?', False),
+    ('а может включишь lofi', True),
+    ('а может включишь)', False),
+    ('а может включишь :)', False),
+    ('а может включишь 🙂', False),
+    ('а может включишь xD', False),
+    ('а может включишь xd', False),
+    ('а может включишь xDD', False),
+    ('а может включишь :D', False),
+    ('а может включишь :3', False),
+    ('а может включишь lofi)', True),
+    ('музыку!', True),
+    ('Музыка...', True),
+    ('музыка?', False),
+])
+def test_soft_play_volume_unit(text, allowed):
+    from modules.discord.music_intent import soft_play_allowed
+    assert soft_play_allowed(text) is allowed
+
+
+@pytest.mark.parametrize('text', ['включи lofi тише', 'включи lofi тише плиз'])
+def test_volume_inside_query_defers_with_original_text(text):
+    candidate = candidate_music_intent(text)
+    assert candidate and candidate['query'] == 'lofi тише'
+    plan = plan_music_route(text)
+    assert plan.needs_classifier is True
+    assert finalize_music_route(plan, classifier_route='CHAT')[0] == 'CHAT'
+    assert finalize_music_route(plan, classifier_route='PLAY_MUSIC')[:2] == ('PLAY_MUSIC', True)
+
+
+def test_future_request_question_stays_chat():
+    from modules.discord.music_intent import resolve_music_route
+    assert resolve_music_route('а может включишь lofi?', classifier_route='PLAY_MUSIC')[:2] == ('CHAT', False)
+
+
+@pytest.mark.parametrize(('text', 'query'), [
+    ('а может включишь lofi', 'lofi'),
+    ('пожалуйста включишь Сплин', 'Сплин'),
+])
+def test_future_request_builds_clean_query(text, query):
+    candidate = candidate_music_intent(text)
+    assert candidate and candidate['query'] == query and candidate.get('defer') == '1'
+
+
+@pytest.mark.parametrize(('text', 'query'), [
+    ('эй, нейра, вруби ревели горы', 'ревели горы'),
+    ('можешь включить lofi', 'lofi'),
+    ('давай включи ревели горы', 'ревели горы'),
+    ('Включи, пожалуйста, ревели горы', 'ревели горы'),
+    ('включи-ка музыку', 'upbeat happy music'),
+    ('включи)', 'upbeat happy music'),
+    ('включи 🙂', 'upbeat happy music'),
+    ('включи :D', 'upbeat happy music'),
+    ('включи xD', 'upbeat happy music'),
+    ('включи Queen (Live)', 'Queen (Live)'),
+    ('поставь Bohemian Rhapsody (Remastered 2011)', 'Bohemian Rhapsody (Remastered 2011)'),
+    ('включи lofi)', 'lofi'),
+    ('включи Queen (Live) :)', 'Queen (Live)'),
+    ('включи Мне не страшно', 'Мне не страшно'),
+    ('включи lofi =)', 'lofi'),
+    ('включи lofi :-)', 'lofi'),
+    ('включи lofi ((', 'lofi'),
+    ('включи lofi (', 'lofi'),
+    ('включи Queen (Live) ((', 'Queen (Live)'),
+    ('включи lofi =)=)', 'lofi'),
+    ('включи lofi =(=(', 'lofi'),
+    ('включи lofi хд', 'lofi'),
+    ('включи lofi ХДД', 'lofi'),
+    ('включи Foxd', 'Foxd'),
+    ('включи lofi:D', 'lofi'),
+    ('включи lofi<3', 'lofi'),
+    ('включи lofi=)', 'lofi'),
+    ('включи lofi=)=)', 'lofi'),
+    ('включи lofi:)xd', 'lofi'),
+    ('включи Redd', 'Redd'),
+    ('включи lofi :)', 'lofi'),
+    ('а может включишь lofi)', 'lofi'),
+    ('включи мне lofi', 'lofi'),
+    ('поставь нам Сплин', 'Сплин'),
+    ('а может включишь мне lofi', 'lofi'),
+    ('включи мне', 'upbeat happy music'),
+    ('врубай :)', 'upbeat happy music'),
+    ('включи, нейра, lofi', 'lofi'),
+    ('включи, пожалуйста, нейра, lofi', 'lofi'),
+    ('включи Каста', 'Каста'),
+    ('поставь Тамару', 'Тамару'),
+    ('включи-ка Каста', 'Каста'),
+    ('включи lofi потише', 'lofi'),
+    ('включи lofi, тише', 'lofi'),
+    ('включи lofi пожалуйста', 'lofi'),
+    ('включи lofi погромче пожалуйста', 'lofi'),
+    ('включи lofi пожалуйста, громче', 'lofi'),
+    ('включи lofi пожалуйста, погромче', 'lofi'),
+    ('включи lofi - пожалуйста, погромче', 'lofi'),
+    ('включи Please Please Please, громче', 'Please Please Please'),
+    ('включи Please Please Please, погромче', 'Please Please Please'),
+    ('включи Please Please Please, потише пожалуйста', 'Please Please Please'),
+    ('включи lofi please', 'lofi'),
+    ('включи lofi, пожалуйста, пожалуйста', 'lofi'),
+    ('включи Please Please Please', 'Please Please Please'),
+    ('включи Please Please Please пожалуйста', 'Please Please Please'),
+    ('включи Ёлка — Пожалуйста', 'Ёлка — Пожалуйста'),
+    ('включи Ёлка - Пожалуйста', 'Ёлка - Пожалуйста'),
+    ('включи Ёлка — пожалуйста', 'Ёлка — пожалуйста'),
+    ('включи lofi — Пожалуйста', 'lofi — Пожалуйста'),
+    ('включи lofi - Please', 'lofi - Please'),
+    ('включи lofi - пожалуйста', 'lofi'),
+    ('включи Ёлка — Пожалуйста пожалуйста', 'Ёлка — Пожалуйста пожалуйста'),
+    ('включи lofi — пожалуйста пожалуйста', 'lofi — пожалуйста пожалуйста'),
+    ('включи Smiths — Please, Please, Please', 'Smiths — Please, Please, Please'),
+    ('включи Please, Please, Please пожалуйста', 'Please, Please, Please'),
+    ('зайди в войс и врубай Каста', 'Каста'),
+    ('зайди в войс и поставьте Сплин', 'Сплин'),
+    ('зайди в войс и заиграйте Каста', 'Каста'),
+    ('включи Ленинград — Тише пожалуйста', 'Ленинград — Тише'),
+    ('зайди в войс и включи музыку', 'upbeat happy music'),
+])
+def test_music_query_is_clean(text, query):
+    candidate = candidate_music_intent(text)
+    assert candidate and candidate['action'] == 'music.play'
+    assert candidate['query'] == query
+
+
 @pytest.mark.parametrize('text', ['play song test', 'включи трек test', 'https://youtu.be/abc123XYZ', 'пауза', 'join voice'])
 def test_music_commands_survive_media_guard(text):
     plan = plan_music_route(text, has_media=True)
     route, use, _ = finalize_music_route(plan)
     assert route == 'PLAY_MUSIC' and use
+
+
+def test_all_clients_failed_goes_straight_to_soundcloud(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='A', author='Artist', identifier='a-skip')
+    service.fallback_meta_by_track['a-skip'] = {
+        'query': 'track a',
+        'leftovers': [NS(title='hit', identifier='hit-1')],
+        'sc_attempted': False,
+    }
+    player = _Player()
+    player.current = failed
+    calls = []
+
+    async def search(wavelink_mod, query, node):
+        calls.append(query)
+        return [NS(title='SC', author='A', identifier='sc-skip', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    asyncio.run(
+        bot.on_wavelink_track_exception(
+            NS(player=player, track=failed, exception={'message': 'All clients failed to load'})
+        )
+    )
+    assert calls == ['scsearch:track a']
+    assert [t.identifier for t in player.played] == ['sc-skip']
+
+
+@pytest.mark.parametrize(('err', 'expected'), [
+    ('All clients failed', True),
+    ({'message': 'All clients failed', 'cause': 'login'}, True),
+    ('Something else', False),
+    (None, False),
+    (RuntimeError('allclientsfailed'), True),
+])
+def test_is_all_clients_failed(err, expected):
+    assert music_module._is_all_clients_failed(err) is expected
+
+
+def test_soundcloud_track_failure_does_not_loop(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='SC', identifier='sc-loop', source='soundcloud')
+    player = _Player()
+    player.current = failed
+    calls = []
+
+    async def search(wavelink_mod, query, node):
+        calls.append(query)
+        return [NS(title='SC2', identifier='sc-loop-2', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_next_youtube_fallback(service, player, 'g', failed)) is False
+    assert calls == []
+    assert player.played == []
+
+
+def test_soundcloud_replacement_is_marked_attempted(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='YT', author='A', identifier='yt-mark')
+    service.fallback_meta_by_track['yt-mark'] = {
+        'query': 'track mark',
+        'leftovers': [],
+        'sc_attempted': False,
+    }
+    player = _Player()
+    player.current = failed
+    calls = []
+
+    async def search(wavelink_mod, query, node):
+        calls.append(query)
+        return [NS(title='SC', author='A', identifier='sc-mark', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    sc_track = player.current
+    assert service.fallback_meta_by_track['sc-mark']['sc_attempted'] is True
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', sc_track)) is False
+    assert calls == ['scsearch:track mark']
+
+
+def test_soundcloud_without_meta_uses_failed_track_query(monkeypatch):
+    service = music_module.MusicService(NS())
+    service.fallback_query_by_guild['g'] = ('other-track', 'last query')
+    failed = NS(title='Track A', author='Artist A', identifier='a-new')
+    player = _Player()
+    player.current = failed
+    calls = []
+
+    async def search(wavelink_mod, query, node):
+        calls.append(query)
+        return [NS(title='SC', author='Artist A', identifier='sc-new', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    assert calls == ['scsearch:Artist A - Track A']
+
+
+def test_soundcloud_uses_failed_track_metadata(monkeypatch):
+    service = music_module.MusicService(NS())
+    service.fallback_query_by_guild['g'] = ('a-same', 'last query')
+    failed = NS(title='Track A', author='Artist A', identifier='a-same')
+    player = _Player()
+    player.current = failed
+
+    async def search(wavelink_mod, query, node):
+        return [NS(title='SC', author='A', identifier='sc-same', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    assert service.fallback_meta_by_track['sc-same']['query'] == 'Artist A - Track A'
+
+
+def test_stop_resets_guild_fallback_state():
+    service = music_module.MusicService(NS())
+    service.fallback_query_by_guild['g'] = ('k', 'q')
+    service.handle('music.stop', {'guild_id': 'g'})
+    assert 'g' not in service.fallback_query_by_guild
+
+
+@pytest.mark.parametrize(('source', 'label'), [
+    ('youtube', 'YouTube'),
+    ('yt', 'YouTube'),
+    ('soundcloud', 'SoundCloud'),
+    ('sc', 'SoundCloud'),
+    ('', 'неизвестно'),
+])
+def test_music_source_label(source, label):
+    assert music_module._source_label(source) == label
+
+
+def test_fallback_meta_is_per_track():
+    service = music_module.MusicService(NS())
+    first, second = NS(identifier='a'), NS(identifier='b')
+    music_module._register_fallback_meta(service, first, 'first query')
+    music_module._register_fallback_meta(service, second, 'second query')
+    assert music_module._fallback_meta(service, first)['query'] == 'first query'
+    assert music_module._fallback_meta(service, second)['query'] == 'second query'
+
+
+def test_stop_clears_playlist_queue_before_stopping():
+    class Queue(list):
+        def clear(self):
+            super().clear()
+
+    class Player:
+        def __init__(self):
+            self.queue = Queue([NS(identifier='a'), NS(identifier='b')])
+            self.stopped = False
+
+        async def stop(self, force=False):
+            assert self.queue == []
+            self.stopped = force
+
+    player = Player()
+    asyncio.run(music_module._stop_playback(player))
+    assert player.stopped is True
+    assert player.queue == []
+
+
+def test_playlist_queue_is_atomic():
+    class Queue(list):
+        def __init__(self):
+            super().__init__()
+            self.batches = []
+
+        async def put_wait(self, item):
+            batch = list(item) if isinstance(item, list) else [item]
+            self.batches.append(batch)
+            self.extend(batch)
+
+        def put(self, item):
+            self.extend(item if isinstance(item, list) else [item])
+
+        def remove(self, item):
+            super().remove(item)
+
+    class Player:
+        def __init__(self, playing):
+            self.playing = playing
+            self.queue = Queue()
+            self.played = []
+            self.queue_at_play = []
+
+        async def play(self, track, replace=False):
+            self.queue_at_play.append(list(self.queue))
+            self.played.append(track)
+
+    first, second, third = NS(identifier='1'), NS(identifier='2'), NS(identifier='3')
+    queued = Player(True)
+    asyncio.run(music_module._queue_playlist(queued, first, [second, third]))
+    assert queued.played == []
+    assert queued.queue.batches == [[first, second, third]]
+
+    started = Player(False)
+    asyncio.run(music_module._queue_playlist(started, first, [second, third]))
+    assert started.played == [first]
+    assert started.queue_at_play == [[second, third]]
+    assert started.queue == [second, third]
+
+
+def test_soundcloud_prefers_youtube_metadata_over_raw_query():
+    service = music_module.MusicService(NS())
+    failed = NS(
+        title='GORILLA GLU & LIL NAKUR - GORILLA GLU, LIL NAKUR - BARMALEY [OFFICIAL MUSIC VIDEO]',
+        author='GORILLA GLU & LIL NAKUR',
+    )
+    queries = music_module._soundcloud_queries(
+        service, 'g', failed, {'query': 'Горила глу бармалей'}
+    )
+    assert queries[0] == 'GORILLA GLU & LIL NAKUR - GORILLA GLU, LIL NAKUR - BARMALEY'
+    assert queries[-1] == 'Горила глу бармалей'
+
+
+def test_soundcloud_metadata_keeps_real_words():
+    assert music_module._clean_soundcloud_metadata('Lana Del Rey - Video Games') == 'Lana Del Rey - Video Games'
+    assert music_module._clean_soundcloud_metadata('Track (Official Video)') == 'Track'
+    assert music_module._clean_soundcloud_metadata('Miyagi - Topic', author=True) == 'Miyagi'
+
+
+def test_short_youtube_playlist_id_is_accepted():
+    query, error = music_module._normalize_play_query(
+        'https://music.youtube.com/playlist?list=LM'
+    )
+    assert error is None
+    assert query == 'https://www.youtube.com/playlist?list=LM'
+
+
+def test_soundcloud_guild_query_only_for_same_track():
+    service = music_module.MusicService(NS())
+    service.fallback_query_by_guild['g'] = ('same', 'last query')
+    same = NS(identifier='same')
+    other = NS(identifier='other')
+    assert music_module._soundcloud_queries(service, 'g', same, {})[-1] == 'last query'
+    assert music_module._soundcloud_queries(service, 'g', other, {}) == []
+
+
+def test_watch_url_with_list_stays_single_track():
+    query, error = music_module._normalize_play_query(
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL1234567890'
+    )
+    assert error is None
+    assert query == 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+    assert music_module._is_youtube_playlist_url(query) is False
+
+
+def test_playlist_action_queues_all_tracks(monkeypatch):
+    import sys
+    import types
+
+    fake_wavelink = types.ModuleType('wavelink')
+    fake_wavelink.Player = type('Player', (), {})
+    monkeypatch.setitem(sys.modules, 'wavelink', fake_wavelink)
+
+    class Queue(list):
+        def __init__(self):
+            super().__init__()
+            self.batches = []
+
+        def put(self, item):
+            self.extend(item if isinstance(item, list) else [item])
+
+        async def put_wait(self, item):
+            batch = list(item) if isinstance(item, list) else [item]
+            self.batches.append(batch)
+            self.extend(batch)
+
+        def remove(self, item):
+            super().remove(item)
+
+    class Player:
+        def __init__(self):
+            self.playing = False
+            self.queue = Queue()
+            self.played = []
+            self.node = NS(identifier='n')
+
+        async def play(self, track, replace=False):
+            self.played.append(track)
+            self.playing = True
+
+    tracks = [
+        NS(title=f'T{i}', author='A', identifier=f'id{i}', source='youtube')
+        for i in range(150)
+    ]
+    player = Player()
+    voice = NS(id=2, name='v')
+    guild = NS(id=1, get_channel=lambda cid: voice, get_member=lambda uid: None, voice_client=None)
+    ctx = NS(agent=NS(discord_client=NS(get_guild=lambda gid: guild)), config={})
+    adapter = NS(
+        connected=True,
+        ranked_node_configs=lambda: [{'identifier': 'n'}],
+        is_node_available=lambda _: True,
+        ensure_node_connected=AsyncMock(return_value=NS(identifier='n')),
+        mark_node_failed=Mock(),
+        last_error='',
+    )
+    service = music_module.MusicService(adapter)
+
+    async def search(wavelink_mod, query, node):
+        return list(tracks)
+
+    async def connect(**kwargs):
+        return player
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    monkeypatch.setattr(music_module, '_connect_voice_player', connect)
+    payload = {
+        'query': 'https://music.youtube.com/playlist?list=PL1234567890',
+        'guild_id': '1',
+        'voice_channel_id': '2',
+        'randomize': True,
+    }
+    result = asyncio.run(music_module._handle_action_async(ctx, service, 'music.play', payload))
+    assert result['ok'] is True, result
+    assert result['status'] == 'started', result
+    assert result['playlist'] is True
+    assert result['queued'] == 99
+    assert result['playlist_total'] == 150
+    assert result['truncated'] is True
+    assert [t.identifier for t in player.played] == ['id0']
+    assert len(player.queue) == 99
+
+    player.playing = True
+    result = asyncio.run(music_module._handle_action_async(ctx, service, 'music.play', payload))
+    assert result['status'] == 'queued'
+    assert result['queued'] == 100
+    assert len(player.queue) == 199
+
+
+def test_youtube_music_playlist_is_normalized():
+    query, error = music_module._normalize_play_query(
+        "включи https://music.youtube.com/playlist?list=PL1234567890&si=abc&dril=1"
+    )
+    assert error is None
+    assert query == "https://www.youtube.com/playlist?list=PL1234567890"
+    assert music_module._is_youtube_playlist_url(query) is True
+
+
+def test_playlist_search_flattens_tracks():
+    class FakePlaylist:
+        def __iter__(self):
+            yield NS(title='one', identifier='one')
+            yield NS(title='two', identifier='two')
+
+    class FakePlayable:
+        @staticmethod
+        async def search(query, **kwargs):
+            return FakePlaylist()
+
+    tracks = asyncio.run(
+        music_module._search_tracks(
+            NS(Playable=FakePlayable),
+            "https://www.youtube.com/playlist?list=PL1234567890",
+            None,
+        )
+    )
+    assert [t.identifier for t in tracks] == ['one', 'two']
+
+
+@pytest.mark.parametrize(('raw', 'expected'), [
+    ('ytsearch:ревели горы', 'ревели горы'),
+    ('scsearch:lofi', 'lofi'),
+    ('https://youtu.be/abc123XYZ', ''),
+    ('', ''),
+])
+def test_clean_soundcloud_query(raw, expected):
+    assert music_module._clean_soundcloud_query(raw) == expected
+
+
+def test_failed_track_advances_queue_when_fallback_is_empty(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='YT', identifier='yt-2')
+    service.fallback_meta_by_track['yt-2'] = {'query': 'nothing', 'leftovers': [], 'sc_attempted': False}
+    queued = NS(title='Next', identifier='next-1')
+    player = _Player()
+    player.current = failed
+    player.queue.append(queued)
+
+    async def empty_search(wavelink_mod, query, node):
+        return []
+
+    monkeypatch.setattr(music_module, '_search_tracks', empty_search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=failed)))
+    _emit_track_end(bot, player, failed, 'loadFailed')
+    assert [t.identifier for t in player.played] == ['next-1']
+    assert player.stopped == 0
+
+
+def test_fallback_uses_leftovers_of_the_failed_track(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='A', identifier='a-1')
+    other_hit = NS(title='B hit', identifier='b-hit')
+    own_hit = NS(title='A hit', identifier='a-hit')
+    service.fallback_meta_by_track['a-1'] = {
+        'query': 'track a',
+        'leftovers': [own_hit],
+        'sc_attempted': False,
+    }
+    service.fallback_meta_by_track['b-1'] = {
+        'query': 'track b',
+        'leftovers': [other_hit],
+        'sc_attempted': False,
+    }
+    player = _Player()
+    player.current = failed
+
+    async def no_search(wavelink_mod, query, node):
+        raise AssertionError('soundcloud must not be needed')
+
+    monkeypatch.setattr(music_module, '_search_tracks', no_search)
+    assert asyncio.run(music_module._play_next_youtube_fallback(service, player, 'g', failed)) is True
+    assert [t.identifier for t in player.played] == ['a-hit']
+    assert service.fallback_meta_by_track['a-hit']['query'] == 'track a'
+
+
+def test_exception_and_load_failed_race_does_not_lose_queue(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='A', identifier='a-race')
+    service.fallback_meta_by_track['a-race'] = {'query': 'a', 'leftovers': [], 'sc_attempted': False}
+    queued = NS(title='B', identifier='b-race')
+    player = _Player()
+    player.current = failed
+    player.queue.append(queued)
+
+    async def slow_sc(wavelink_mod, query, node):
+        await asyncio.sleep(0.05)
+        return [NS(title='SC', identifier='sc-race')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', slow_sc)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+
+    async def race():
+        exc = asyncio.create_task(bot.on_wavelink_track_exception(NS(player=player, track=failed)))
+        await asyncio.sleep(0.01)
+        player.current = None
+        end = asyncio.create_task(
+            bot.on_wavelink_track_end(NS(player=player, track=failed, reason='loadFailed'))
+        )
+        await asyncio.gather(exc, end)
+
+    asyncio.run(race())
+    assert [t.identifier for t in player.played] == ['sc-race']
+    assert [t.identifier for t in player.queue] == ['b-race']
+    assert player.stopped == 0
+
+
+def test_exception_and_load_failed_race_advances_queue_when_sc_empty(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='A', identifier='a-race2')
+    service.fallback_meta_by_track['a-race2'] = {'query': 'a', 'leftovers': [], 'sc_attempted': False}
+    queued = NS(title='B', identifier='b-race2')
+    player = _Player()
+    player.current = failed
+    player.queue.append(queued)
+
+    async def slow_empty(wavelink_mod, query, node):
+        await asyncio.sleep(0.05)
+        return []
+
+    monkeypatch.setattr(music_module, '_search_tracks', slow_empty)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+
+    async def race():
+        exc = asyncio.create_task(bot.on_wavelink_track_exception(NS(player=player, track=failed)))
+        await asyncio.sleep(0.01)
+        player.current = None
+        end = asyncio.create_task(
+            bot.on_wavelink_track_end(NS(player=player, track=failed, reason='loadFailed'))
+        )
+        await asyncio.gather(exc, end)
+
+    asyncio.run(race())
+    assert [t.identifier for t in player.played] == ['b-race2']
+    assert player.stopped == 0
+
+
+def test_duplicate_queued_track_keeps_fallback_meta(monkeypatch):
+    service = music_module.MusicService(NS())
+    track = NS(title='X', identifier='x-1')
+    service.fallback_meta_by_track['x-1'] = {'query': 'x', 'leftovers': [], 'sc_attempted': False}
+    player = _Player()
+    player.current = track
+    player.queue.append(NS(title='X', identifier='x-1'))
+
+    async def empty_search(wavelink_mod, query, node):
+        return []
+
+    monkeypatch.setattr(music_module, '_search_tracks', empty_search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    _emit_track_end(bot, player, track, 'finished')
+    assert 'x-1' in service.fallback_meta_by_track
+    _emit_track_end(bot, player, track, 'finished')
+    assert 'x-1' not in service.fallback_meta_by_track
+
+
+def test_two_copies_each_get_their_own_soundcloud_retry(monkeypatch):
+    service = music_module.MusicService(NS())
+    first = NS(title='X', identifier='x-1')
+    second = NS(title='X', identifier='x-1')
+    service.fallback_meta_by_track['x-1'] = {'query': 'x song', 'leftovers': [], 'sc_attempted': False}
+    player = _Player()
+    player.current = first
+    player.queue.append(second)
+    calls = []
+    sc_tracks = [NS(title='SC1', identifier='sc-1'), NS(title='SC2', identifier='sc-2')]
+
+    async def fake_search(wavelink_mod, query, node):
+        calls.append(query)
+        return [sc_tracks[len(calls) - 1]]
+
+    monkeypatch.setattr(music_module, '_search_tracks', fake_search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+
+    asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=first)))
+    _emit_track_end(bot, player, first, 'loadFailed')
+    assert calls == ['scsearch:x song']
+    assert [t.identifier for t in player.played] == ['sc-1']
+    assert service.fallback_meta_by_track['x-1']['sc_attempted'] is False
+
+    player.current = player.played[-1]
+    _emit_track_end(bot, player, player.current, 'finished')
+    assert player.current.identifier == 'x-1'
+    asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=second)))
+    _emit_track_end(bot, player, second, 'loadFailed')
+    assert calls == ['scsearch:x song', 'scsearch:x song']
+    assert [t.identifier for t in player.played] == ['sc-1', 'x-1', 'sc-2']
+    assert player.stopped == 0
+
+
+def _race_exception_end(bot, player, track, reason='loadFailed'):
+    async def scenario():
+        exc = asyncio.create_task(bot.on_wavelink_track_exception(NS(player=player, track=track)))
+        await asyncio.sleep(0.01)
+        player.current = None
+        end = asyncio.create_task(
+            bot.on_wavelink_track_end(NS(player=player, track=track, reason=reason))
+        )
+        await asyncio.gather(exc, end)
+
+    asyncio.run(scenario())
+
+
+def test_fast_fallback_failure_advances_queue_once(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='NoMeta', identifier='nometa-1')
+    player = _Player()
+    player.current = failed
+    player.queue.append(NS(title='B', identifier='b-1'))
+    player.queue.append(NS(title='C', identifier='c-1'))
+
+    async def empty_search(wavelink_mod, query, node):
+        return []
+
+    monkeypatch.setattr(music_module, '_search_tracks', empty_search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    _race_exception_end(bot, player, failed)
+    assert [t.identifier for t in player.played] == ['b-1']
+    assert [t.identifier for t in player.queue] == ['c-1']
+    assert player.stopped == 0
+
+
+def test_finished_race_advances_queue_once(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='NoMeta', identifier='nometa-fin')
+    player = _Player()
+    player.current = failed
+    player.queue.append(NS(title='B', identifier='b-fin'))
+    player.queue.append(NS(title='C', identifier='c-fin'))
+
+    async def empty_search(wavelink_mod, query, node):
+        return []
+
+    monkeypatch.setattr(music_module, '_search_tracks', empty_search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    _race_exception_end(bot, player, failed, reason='finished')
+    assert [t.identifier for t in player.played] == ['b-fin']
+    assert [t.identifier for t in player.queue] == ['c-fin']
+    assert player.stopped == 0
+
+
+def test_finished_race_with_soundcloud_keeps_queue(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='X', identifier='x-fin')
+    service.fallback_meta_by_track['x-fin'] = {'query': 'x', 'leftovers': [], 'sc_attempted': False}
+    player = _Player()
+    player.current = failed
+    player.queue.append(NS(title='B', identifier='b-fin2'))
+
+    async def slow_sc(wavelink_mod, query, node):
+        await asyncio.sleep(0.05)
+        return [NS(title='SC', identifier='sc-fin')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', slow_sc)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    _race_exception_end(bot, player, failed, reason='finished')
+    assert [t.identifier for t in player.played] == ['sc-fin']
+    assert [t.identifier for t in player.queue] == ['b-fin2']
+    assert player.stopped == 0
+
+
+def test_two_copies_race_each_get_soundcloud_retry(monkeypatch):
+    service = music_module.MusicService(NS())
+    first = NS(title='X', identifier='x-race')
+    second = NS(title='X', identifier='x-race')
+    service.fallback_meta_by_track['x-race'] = {'query': 'x', 'leftovers': [], 'sc_attempted': False}
+    player = _Player()
+    player.current = first
+    player.queue.append(second)
+    calls = []
+    sc = [NS(title='SC1', identifier='sc-r1'), NS(title='SC2', identifier='sc-r2')]
+
+    async def slow_sc(wavelink_mod, query, node):
+        await asyncio.sleep(0.05)
+        calls.append(query)
+        return [sc[len(calls) - 1]]
+
+    monkeypatch.setattr(music_module, '_search_tracks', slow_sc)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    _race_exception_end(bot, player, first)
+    assert player.current.identifier == 'sc-r1'
+    _emit_track_end(bot, player, player.current, 'finished')
+    assert player.current.identifier == 'x-race'
+    _race_exception_end(bot, player, second)
+    assert calls == ['scsearch:x', 'scsearch:x']
+    assert player.current.identifier == 'sc-r2'
+    assert player.stopped == 0
+    assert 'x-race' not in service.fallback_handled_tracks
+class _Queue(list):
+    def get(self):
+        return self.pop(0) if self else None
+
+
+class _Player:
+    def __init__(self, guild_id='g'):
+        self.guild = NS(id=guild_id)
+        self.current = None
+        self.queue = _Queue()
+        self.played = []
+        self.stopped = 0
+        self.node = None
+
+    async def play(self, track, replace=False):
+        await asyncio.sleep(0)
+        self.played.append(track)
+        self.current = track
+
+    async def stop(self, force=False):
+        self.stopped += 1
+        self.current = None
+
+
+def _emit_track_end(bot, player, track, reason):
+    player.current = None
+    asyncio.run(bot.on_wavelink_track_end(NS(player=player, track=track, reason=reason)))
+
+
+@pytest.mark.parametrize('text', [
+    "включи lofi" + " " * 3700 + "x" + ")" * 289,
+    "включи lofi" + "—" * 3980 + "x",
+    "включи lofi" + "," * 3980 + "x",
+    "включи lofi " + ":) " * 1330 + "y",
+    "включи lofi " + "xd " * 1320 + "q",
+])
+def test_emoticon_stripping_is_linear_on_long_input(text):
+    import time
+    start = time.perf_counter()
+    plan_music_route(text)
+    assert time.perf_counter() - start < 1.0
+
+
+def test_soundcloud_fallback_notifies_text_channel(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='YT', identifier='yt-channel')
+    service.fallback_meta_by_track['yt-channel'] = {
+        'query': 'track',
+        'leftovers': [],
+        'sc_attempted': False,
+        'text_channel_id': '555',
+    }
+    text_channel = NS(send=AsyncMock())
+    guild = NS(get_channel=lambda cid: text_channel if cid == 555 else None)
+    player = _Player()
+    player.guild = guild
+    player.channel = NS(send=AsyncMock())
+    player.current = failed
+
+    async def search(wavelink_mod, query, node):
+        return [NS(title='SC track', author='Artist', identifier='sc-channel', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    text_channel.send.assert_awaited_once()
+    assert 'SoundCloud' in text_channel.send.await_args.args[0]
+    player.channel.send.assert_not_awaited()
+
+
+def test_soundcloud_fallback_notifies_thread(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='YT', identifier='yt-thread')
+    service.fallback_meta_by_track['yt-thread'] = {
+        'query': 'track',
+        'leftovers': [],
+        'sc_attempted': False,
+        'text_channel_id': '557',
+    }
+    thread = NS(send=AsyncMock())
+    guild = NS(
+        get_channel=lambda cid: None,
+        get_channel_or_thread=lambda cid: thread if cid == 557 else None,
+    )
+    player = _Player()
+    player.guild = guild
+
+    async def search(wavelink_mod, query, node):
+        return [NS(title='SC', author='A', identifier='sc-thread', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    thread.send.assert_awaited_once()
+
+
+def test_soundcloud_notify_failure_does_not_break_fallback(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='YT', identifier='yt-channel2')
+    service.fallback_meta_by_track['yt-channel2'] = {
+        'query': 'track',
+        'leftovers': [],
+        'sc_attempted': False,
+        'text_channel_id': '556',
+    }
+    text_channel = NS(send=AsyncMock(side_effect=RuntimeError('no perms')))
+    guild = NS(get_channel=lambda cid: text_channel if cid == 556 else None)
+    player = _Player()
+    player.guild = guild
+
+    async def search(wavelink_mod, query, node):
+        return [NS(title='SC track', author='Artist', identifier='sc-channel2', source='soundcloud')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', search)
+    assert asyncio.run(music_module._play_soundcloud_fallback(service, player, 'g', failed)) is True
+    text_channel.send.assert_awaited_once()
+
+
+def test_youtube_failure_falls_back_to_soundcloud_once_through_listeners(monkeypatch):
+    service = music_module.MusicService(NS())
+    failed = NS(title='YT', identifier='yt-1')
+    service.fallback_meta_by_track['yt-1'] = {'query': 'там ревели горы', 'sc_attempted': False}
+    player = _Player()
+    player.current = failed
+    calls = []
+
+    async def fake_search(wavelink_mod, query, node):
+        calls.append(query)
+        return [NS(title='Там ревели горы', identifier='sc-1')]
+
+    monkeypatch.setattr(music_module, '_search_tracks', fake_search)
+    bot = NS()
+    ctx = NS(agent=NS(discord_client=bot), config={}, _discord_plugin_music_service=service)
+    music_module._attach_track_end_listener(ctx)
+    asyncio.run(bot.on_wavelink_track_exception(NS(player=player, track=failed)))
+    _emit_track_end(bot, player, failed, 'loadFailed')
+    assert calls == ['scsearch:там ревели горы']
+    assert [t.identifier for t in player.played] == ['sc-1']
+    assert player.stopped == 0
+
+    sc = player.current
+    _emit_track_end(bot, player, sc, 'finished')
+    assert player.stopped == 1
+    assert 'yt-1' not in service.fallback_meta_by_track
+    assert 'yt-1' not in service.fallback_handled_tracks
 
 
 def test_unsupported_media_is_rejected_before_voice_or_lavalink(monkeypatch):
@@ -318,6 +1397,32 @@ def test_working_memory_provider_failure_keeps_snapshot_and_next_refresh_recover
     monkeypatch.setattr(retry, 'ainvoke_with_rate_limit_backoff', success)
     asyncio.run(refresh_working_memory_async(agent, agent.config, **params))
     assert 'Updated verified' in agent.memory_hub.sqlite.latest_wm_snapshot(user_id='owner')['content']
+    agent.memory_hub.close()
+
+
+def test_emotion_ltm_sync_does_not_log_provider_body(tmp_path, monkeypatch, caplog):
+    from core.memory.emotional_layer import compact_emotion_for_ltm
+    from core.llm import retry
+    agent = offline_agent(tmp_path)
+    agent.config['memory']['emotional_layer'] = {'enabled': True, 'ltm_emotion_sync': True}
+
+    async def failure(*args, **kwargs):
+        raise RuntimeError('provider-body-private-sentinel')
+
+    monkeypatch.setattr(retry, 'ainvoke_with_rate_limit_backoff', failure)
+    with caplog.at_level(logging.WARNING):
+        out = asyncio.run(
+            compact_emotion_for_ltm(
+                agent,
+                agent.config,
+                user_message='test',
+                assistant_text='reply',
+                speaker_label='Test',
+            )
+        )
+    assert out == ''
+    assert 'provider-body-private-sentinel' not in caplog.text
+    assert 'RuntimeError' in caplog.text
     agent.memory_hub.close()
 
 

@@ -70,6 +70,11 @@ class SqliteStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        # Unicode-aware lower(): SQLite LIKE/lower() fold ASCII only, so Cyrillic
+        # admin search would be case-sensitive without this helper.
+        self._conn.create_function(
+            "py_lower", 1, lambda value: value.lower() if isinstance(value, str) else value, deterministic=True
+        )
         self.migrate()
 
     @property
@@ -118,6 +123,8 @@ class SqliteStore:
                     raise
             # Heal: v3 marked applied but merge_proposals missing (old executescript bug).
             self._ensure_merge_proposals_table()
+            # Heal: v8 DBs were migrated before semantic_restore_queue existed.
+            self._ensure_semantic_restore_queue()
             self._backfill_person_accounts_from_meta()
             self._backfill_handle_norm()
 
@@ -139,6 +146,7 @@ class SqliteStore:
         cols = self._table_columns("merge_log")
         if "undone_at" not in cols:
             self._conn.execute("ALTER TABLE merge_log ADD COLUMN undone_at TEXT")
+        self._ensure_semantic_restore_queue()
 
     def _migrate_v5(self) -> None:
         for table in ("diary_notes", "journal_entries"):
@@ -264,8 +272,9 @@ class SqliteStore:
                         """
                         INSERT INTO chat_log(
                             ts, role, user_id, display_name, channel_id, source,
-                            text, turn_id, latency_ms, emotion, mood, meta
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            text, turn_id, latency_ms, emotion, mood, meta,
+                            platform, guild_id, native_message_id, native_created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             to_utc_iso(row.get("ts")) if row.get("ts") else _now_iso(),
@@ -280,6 +289,10 @@ class SqliteStore:
                             row.get("emotion"),
                             row.get("mood"),
                             meta,
+                            row.get("platform"),
+                            row.get("guild_id"),
+                            row.get("native_message_id"),
+                            to_utc_iso(row.get("native_created_at")) if row.get("native_created_at") else None,
                         ),
                     )
                     ids.append(int(cur.lastrowid))
@@ -371,6 +384,7 @@ class SqliteStore:
             "journal_entries",
             "working_memory_snapshots",
             "semantic_outbox",
+            "semantic_restore_queue",
         }
         if table not in allowed:
             raise ValueError(f"count_table: unknown table {table}")
@@ -391,6 +405,7 @@ class SqliteStore:
             "journal_entries",
             "working_memory_snapshots",
             "semantic_outbox",
+            "semantic_restore_queue",
         }
         if table not in allowed:
             raise ValueError(f"clear_table: unknown table {table}")
@@ -668,6 +683,24 @@ class SqliteStore:
             )
             return [self._row_to_dict(r) for r in cur.fetchall()]
 
+    def merge_history_exists(self, person_a: str, person_b: str) -> bool:
+        a = (person_a or "").strip()
+        b = (person_b or "").strip()
+        if not a or not b:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM merge_log
+                WHERE (survivor_id = ? AND source_id = ?)
+                   OR (survivor_id = ? AND source_id = ?)
+                LIMIT 1
+                """,
+                (a, b, b, a),
+            ).fetchone()
+        return row is not None
+
+
     def find_person_ids_by_handle_norm(self, handle: str) -> list[str]:
         """Exact handle_norm match only (never display_name). May return multiple people."""
         h = (handle or "").strip().casefold()
@@ -720,6 +753,23 @@ class SqliteStore:
                 (a, b, reason, _now_iso()),
             )
             return int(cur.lastrowid)
+
+    def merge_proposal_exists(self, person_a: str, person_b: str) -> bool:
+        a = (person_a or "").strip()
+        b = (person_b or "").strip()
+        if not a or not b:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM merge_proposals
+                WHERE (person_a = ? AND person_b = ?)
+                   OR (person_a = ? AND person_b = ?)
+                LIMIT 1
+                """,
+                (a, b, b, a),
+            ).fetchone()
+        return row is not None
 
     def list_merge_proposals(self, *, status: str = "pending", limit: int = 50) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 200))
@@ -890,6 +940,22 @@ class SqliteStore:
                     "UPDATE person_facts SET person_id = ? WHERE person_id = ?",
                     (survivor_id, source_id),
                 )
+                chat_cur = self._conn.execute(
+                    "SELECT id FROM chat_log WHERE user_id = ?", (source_id,)
+                )
+                chat_ids = [int(r["id"]) for r in chat_cur.fetchall()]
+                self._conn.execute(
+                    "UPDATE chat_log SET user_id = ? WHERE user_id = ?",
+                    (survivor_id, source_id),
+                )
+                wm_cur = self._conn.execute(
+                    "SELECT id FROM working_memory_snapshots WHERE user_id = ?", (source_id,)
+                )
+                wm_ids = [int(r["id"]) for r in wm_cur.fetchall()]
+                self._conn.execute(
+                    "UPDATE working_memory_snapshots SET user_id = ? WHERE user_id = ?",
+                    (survivor_id, source_id),
+                )
                 self._conn.execute(
                     """
                     UPDATE people
@@ -924,6 +990,8 @@ class SqliteStore:
                     "facts": facts_sample,
                     "fact_ids": fact_ids,
                     "accounts": accounts,
+                    "chat_ids": chat_ids,
+                    "wm_ids": wm_ids,
                     "survivor_before": {
                         "display_name": survivor_display,
                         "aliases": s_aliases or [survivor_id],
@@ -1041,6 +1109,99 @@ class SqliteStore:
                     pass
                 raise
 
+    def merge_log_count(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS n FROM merge_log").fetchone()
+        return int(row["n"]) if row else 0
+
+    def _ensure_semantic_restore_queue(self) -> None:
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS semantic_restore_queue(
+                merge_log_id INTEGER PRIMARY KEY,
+                survivor_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                chroma_ids TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        cols = self._table_columns("semantic_restore_queue")
+        if "attempts" not in cols:
+            self._conn.execute(
+                "ALTER TABLE semantic_restore_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+            )
+
+    def delete_merge_log(self, merge_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM merge_log WHERE id = ?", (int(merge_id),))
+
+    def queue_semantic_restore(self, merge_id: int, survivor_id: str, source_id: str, chroma_ids: list[str]) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO semantic_restore_queue(merge_log_id, survivor_id, source_id, chroma_ids, attempts, created_at)
+                VALUES (?, ?, ?, ?, 0, ?)
+                """,
+                (int(merge_id), survivor_id, source_id, self._dumps([str(x) for x in chroma_ids if x]), _now_iso()),
+            )
+
+    def pending_semantic_restores(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT merge_log_id, survivor_id, source_id, chroma_ids, attempts FROM semantic_restore_queue ORDER BY merge_log_id"
+            ).fetchall()
+        out = []
+        for row in rows:
+            try:
+                ids = json.loads(row["chroma_ids"] or "[]")
+            except Exception:
+                ids = []
+            out.append({
+                "merge_log_id": int(row["merge_log_id"]),
+                "survivor_id": str(row["survivor_id"] or ""),
+                "source_id": str(row["source_id"] or ""),
+                "chroma_ids": [str(x) for x in ids if x],
+                "attempts": int(row["attempts"] or 0),
+            })
+        return out
+
+    def bump_semantic_restore_attempts(self, merge_id: int) -> int:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE semantic_restore_queue SET attempts = attempts + 1 WHERE merge_log_id = ?",
+                (int(merge_id),),
+            )
+            row = self._conn.execute(
+                "SELECT attempts FROM semantic_restore_queue WHERE merge_log_id = ?", (int(merge_id),)
+            ).fetchone()
+        return int(row["attempts"]) if row else 0
+
+    def clear_semantic_restore(self, merge_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM semantic_restore_queue WHERE merge_log_id = ?", (int(merge_id),))
+
+    def update_merge_chroma_ids(self, merge_id: int, chroma_ids: list[str]) -> None:
+        ids = [str(x) for x in (chroma_ids or []) if x]
+        with self._lock:
+            row = self._conn.execute("SELECT snapshot FROM merge_log WHERE id = ?", (int(merge_id),)).fetchone()
+            if not row:
+                return
+            snap = row["snapshot"]
+            if isinstance(snap, str) and snap.strip():
+                try:
+                    snap = json.loads(snap)
+                except Exception:
+                    snap = {}
+            if not isinstance(snap, dict):
+                snap = {}
+            snap["chroma_ids"] = ids
+            self._conn.execute(
+                "UPDATE merge_log SET snapshot = ? WHERE id = ?",
+                (self._dumps(snap), int(merge_id)),
+            )
+
     def undo_merge_atomic(self, merge_id: int) -> dict[str, Any]:
         """Restore source from snapshot: move facts back, restore survivor fields."""
         with self._lock:
@@ -1137,6 +1298,22 @@ class SqliteStore:
                                 "UPDATE person_facts SET person_id = ? WHERE id = ?",
                                 (source_id, int(fid)),
                             )
+
+                wm_ids_snap = [int(x) for x in (snap.get("wm_ids") or []) if x is not None]
+                if wm_ids_snap:
+                    wm_placeholders = ",".join("?" * len(wm_ids_snap))
+                    self._conn.execute(
+                        f"UPDATE working_memory_snapshots SET user_id = ? WHERE id IN ({wm_placeholders}) AND user_id = ?",
+                        (source_id, *wm_ids_snap, survivor_id),
+                    )
+
+                chat_ids_snap = [int(x) for x in (snap.get("chat_ids") or []) if x is not None]
+                if chat_ids_snap:
+                    chat_placeholders = ",".join("?" * len(chat_ids_snap))
+                    self._conn.execute(
+                        f"UPDATE chat_log SET user_id = ? WHERE id IN ({chat_placeholders}) AND user_id = ?",
+                        (source_id, *chat_ids_snap, survivor_id),
+                    )
 
                 accounts_not_restored: list[str] = []
                 for acc in snap.get("accounts") or []:
@@ -1313,6 +1490,7 @@ class SqliteStore:
                     "survivor_id": survivor_id,
                     "merge_log_id": int(merge_id),
                     "accounts_not_restored": accounts_not_restored,
+                    "chroma_ids": [str(x) for x in (snap.get("chroma_ids") or []) if x],
                 }
             except Exception:
                 try:

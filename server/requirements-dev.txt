@@ -3,5 +3,12 @@ pytest>=8.0.0
 pytest-timeout>=2.3.0
 # Real message objects for offline talk-prompt tests; no provider clients required.
 langchain-core>=0.3.0
+langchain-openai>=0.2.0  # talk-model clone test needs ChatOpenAI in CI
 # Offline message/command adapter tests; never logs in to Discord.
 discord.py>=2.3.0
+aiohttp>=3.10,<4
+PyJWT==2.15.1  # web identity tests use the same verifier as runtime
+cryptography>=42.0.0  # vault tests use the same AES-GCM path as runtime
+# Offline attachment validation/extraction uses the production parsers.
+Pillow>=10.0.0
+pypdf==6.21.4

@@ -6,6 +6,7 @@ import json
 import logging
 import uuid
 import threading
+import time
 from functools import wraps
 from datetime import datetime
 from pathlib import Path
@@ -127,13 +128,16 @@ class MemoryHub:
             for scope in ("mood", "relations"):
                 self._generations[scope] = self._generations.get(scope, 0) + 1
 
-    def affect_for_account(self, discord_id):
-        # Account ID is authoritative; aliases/display names never select a relationship.
+    def affect_for_account(self, discord_id, person_id=None):
+        # A verified web identity names the person directly. Account ID is authoritative
+        # only when there is no signed identity; aliases/display names never select a relationship.
         with self.sqlite.lock:
+            if person_id:
+                return self.affect_snapshot(person_id if self.sqlite.get_person(person_id) else None)
             account = self.sqlite.get_account("discord", str(discord_id)) if discord_id else None
             return self.affect_snapshot(account["person_id"] if account else None)
 
-    def apply_affect_turn(self, *, turn_id, discord_id, text, generations):
+    def apply_affect_turn(self, *, turn_id, discord_id, text, generations, person_id=None):
         with self._write_lock, self.sqlite.lock:
             if generations != self.affect_generations():
                 return False
@@ -144,10 +148,14 @@ class MemoryHub:
             relations_on = feature_enabled(self.config, "memory.relations.enabled")
             if not (mood_on or relations_on):
                 return False
-            account = self.sqlite.get_account("discord", str(discord_id)) if discord_id else None
-            if discord_id and account is None and relations_on:
-                person = self.ensure_person_for_account(platform="discord", platform_user_id=str(discord_id))
-                account = {"person_id": person["id"]}
+            if person_id:
+                # Never mint a Discord card for a web identity: that would be a second person.
+                account = {"person_id": person_id} if self.sqlite.get_person(person_id) else None
+            else:
+                account = self.sqlite.get_account("discord", str(discord_id)) if discord_id else None
+                if discord_id and account is None and relations_on:
+                    person = self.ensure_person_for_account(platform="discord", platform_user_id=str(discord_id))
+                    account = {"person_id": person["id"]}
             return self.affect.apply_turn(turn_id=turn_id, person_id=account["person_id"] if account else None, text=text,
                                           mood_enabled=mood_on, relations_enabled=relations_on)
 
@@ -705,20 +713,98 @@ class MemoryHub:
             reason=reason or "merge",
             proposal_id=proposal_id,
         )
+        self._migrate_semantic_merge(source, survivor, stats.get("merge_log_id"))
         return stats
+
+    def _migrate_semantic_merge(self, source: str, survivor: str, merge_id: Any) -> list[str]:
+        chroma_ids: list[str] = []
+        try:
+            chroma_ids = list(self.mutate_semantic(self.semantic.migrate_user_id, source, survivor) or [])
+            if merge_id:
+                self.sqlite.update_merge_chroma_ids(int(merge_id), chroma_ids)
+        except Exception as e:
+            logger.warning("semantic owner migration failed: %s", type(e).__name__)
+            if chroma_ids:
+                try:
+                    self.mutate_semantic(self.semantic.migrate_user_id, survivor, source, chroma_ids)
+                except Exception:
+                    logger.warning("semantic migration rollback failed")
+            if merge_id:
+                try:
+                    self.sqlite.undo_merge_atomic(int(merge_id))
+                    self.sqlite.delete_merge_log(int(merge_id))
+                except Exception as undo_err:
+                    logger.warning("merge rollback after semantic failure failed: %s", type(undo_err).__name__)
+            raise
+        return chroma_ids
 
     def apply_merge_proposal(self, proposal_id: int) -> dict[str, Any]:
         """Apply pending proposal under one SQLite transaction (race-safe)."""
+        proposal = self.sqlite.get_merge_proposal(int(proposal_id))
+        if not proposal:
+            raise ValueError("proposal_not_found")
+        survivor = str(proposal.get("person_a") or "").strip()
+        source = str(proposal.get("person_b") or "").strip()
         _log_id, stats = self.sqlite.merge_people_atomic(
-            survivor_id="",  # overridden from proposal inside txn
-            source_id="",
+            survivor_id=survivor,
+            source_id=source,
             reason=f"proposal:{int(proposal_id)}",
             proposal_id=int(proposal_id),
         )
+        self._migrate_semantic_merge(source, survivor, stats.get("merge_log_id"))
         return stats
 
     def undo_merge(self, merge_log_id: int) -> dict[str, Any]:
-        return self.sqlite.undo_merge_atomic(int(merge_log_id))
+        stats = self.sqlite.undo_merge_atomic(int(merge_log_id))
+        chroma_ids = list(stats.get("chroma_ids") or [])
+        if chroma_ids:
+            try:
+                self.mutate_semantic(
+                    self.semantic.migrate_user_id,
+                    str(stats.get("survivor_id") or ""),
+                    str(stats.get("restored_id") or ""),
+                    chroma_ids,
+                )
+            except Exception as e:
+                self.sqlite.queue_semantic_restore(
+                    int(merge_log_id),
+                    str(stats.get("survivor_id") or ""),
+                    str(stats.get("restored_id") or ""),
+                    chroma_ids,
+                )
+                stats["semantic_restore_pending"] = True
+                logger.warning("semantic owner restore pending: %s", type(e).__name__)
+        return stats
+
+    def retry_semantic_restores(self) -> int:
+        now = time.monotonic()
+        if now - float(getattr(self, "_semantic_retry_at", 0.0) or 0.0) < 60.0:
+            return 0
+        self._semantic_retry_at = now
+        done = 0
+        for item in self.sqlite.pending_semantic_restores():
+            ids = list(item.get("chroma_ids") or [])
+            if not ids:
+                self.sqlite.clear_semantic_restore(int(item["merge_log_id"]))
+                continue
+            try:
+                moved = list(self.mutate_semantic(
+                    self.semantic.migrate_user_id,
+                    str(item.get("survivor_id") or ""),
+                    str(item.get("source_id") or ""),
+                    ids,
+                ) or [])
+            except Exception as e:
+                logger.warning("semantic restore retry failed: %s", type(e).__name__)
+                continue
+            if set(ids) - set(moved):
+                attempts = self.sqlite.bump_semantic_restore_attempts(int(item["merge_log_id"]))
+                if attempts >= 3:
+                    self.sqlite.clear_semantic_restore(int(item["merge_log_id"]))
+                continue
+            self.sqlite.clear_semantic_restore(int(item["merge_log_id"]))
+            done += 1
+        return done
 
     @serialized_wipe
     def wipe(self, scopes: list[str], *, backup_dir: Optional[Path] = None) -> dict[str, Any]:
@@ -768,7 +854,7 @@ class MemoryHub:
         if "people" in wanted:
             if "relations" not in out:
                 out["relations"] = self.affect.reset("relations")
-            out["people"] = self.sqlite.clear_table("people")
+            # Clear dependents first: people removal hides its own child deletes.
             try:
                 out["merge_log"] = self.sqlite.clear_table("merge_log")
             except Exception:
@@ -777,6 +863,11 @@ class MemoryHub:
                 out["merge_proposals"] = self.sqlite.clear_table("merge_proposals")
             except Exception:
                 out["merge_proposals"] = 0
+            out["people"] = self.sqlite.clear_table("people")
+            try:
+                out["semantic_restore"] = self.sqlite.clear_table("semantic_restore_queue")
+            except Exception:
+                out["semantic_restore"] = 0
         if "diary" in wanted:
             out["diary"] = self.sqlite.clear_table("diary_notes")
         if "journal" in wanted:
@@ -1040,6 +1131,8 @@ class MemoryHub:
         known = known_name_from_facts(facts)
         handle = ""
         display = str(person.get("display_name") or "").strip()
+        if "@" in display and " " not in display:
+            display = display.split("@", 1)[0].strip()
         for a in accounts:
             if str(a.get("platform") or "").lower() == "discord":
                 handle = str(a.get("handle") or "").strip() or handle
@@ -1050,7 +1143,7 @@ class MemoryHub:
             handle = aliases[0] if aliases else ""
         title = speaker_ref_from_account(
             handle=handle, display_name=display, known_name=known
-        )
+        ) or "пользователя"
         lines = [f"Досье на {title}:"]
         for a in accounts:
             plat = str(a.get("platform") or "").strip()

@@ -15,6 +15,7 @@ from core.agent.reply_pipeline import (
     visible_token_budget,
 )
 from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
+from core.agent.chat_log import origin_from_discord_context
 from core.agent.turn_finalize import finalize_successful_turn
 from core.agent.turn_prep import prepare_turn
 
@@ -33,6 +34,9 @@ async def run_chat(
     lyrics_marker: str,
     avatar_url: Optional[str] = None,
     discord_context=None,
+    person_id: Optional[str] = None,
+    model: Optional[str] = None,
+    speaker_name: Optional[str] = None,
 ) -> dict:
     """Run one non-streaming chat turn; return text/sounds/thoughts/raw."""
     try:
@@ -48,6 +52,9 @@ async def run_chat(
             vision_images=vision_images,
             lyrics_marker=lyrics_marker,
             source="chat",
+            person_id=person_id,
+            origin=origin_from_discord_context(discord_context),
+            speaker_name=speaker_name,
         )
         if fp is not None:
             return fp
@@ -69,6 +76,9 @@ async def run_chat(
         log_lane="chat",
         avatar_url=avatar_url,
         discord_context=discord_context,
+        person_id=person_id,
+        model=model,
+        speaker_name=speaker_name,
     )
     try:
         try:
@@ -123,12 +133,14 @@ async def run_chat(
         final_messages_used = messages
 
         try:
+            from core.agent.llm_setup import talk_model_for
+            base_talk = talk_model_for(agent, model)
             cap_llm = (
-                agent.llm_talk.bind(
+                base_talk.bind(
                     max_tokens=max(agent.reply_max_tokens, agent.lyrics_reply_max_tokens)
                 )
                 if prep.lyrics_mode
-                else agent.llm_talk
+                else base_talk
             )
             from core.agent.talk_sessions import responses_talk_model
             cap_llm = responses_talk_model(agent, cap_llm)
@@ -192,6 +204,7 @@ async def run_chat(
             saved_facts=prep.saved_facts,
             source="chat",
             stm_trimmed=False,
+            origin=origin_from_discord_context(discord_context),
         )
         log_micro_plan_metrics(agent)
         return {

@@ -17,6 +17,9 @@ if str(SERVER_ROOT) not in sys.path:
 @pytest.fixture(autouse=True)
 def isolate_runtime_data(monkeypatch):
     monkeypatch.delenv("NEYRA_DATA_DIR", raising=False)
+    # Tests use ephemeral vaults; production requires NEYRA_VAULT_KEY (AR-3).
+    monkeypatch.delenv("NEYRA_VAULT_KEY", raising=False)
+    monkeypatch.setenv("NEYRA_VAULT_DEV", "1")
 
 
 @pytest.fixture()
@@ -37,6 +40,7 @@ def api_config(data_dir: Path, tmp_path: Path) -> dict[str, Any]:
             "token": "admin-secret-token-xxxxxxxx",
             "viewer_token": "viewer-secret-token-xxxxxxx",
             "maint_token": "maint-secret-token-xxxxxxxx",
+            "web_token": "web-secret-token-xxxxxxxxxx",
             "public_base_url": "",
             "public_path_prefix": "/api",
             "audit_log_enabled": False,
@@ -127,4 +131,5 @@ def auth_headers() -> dict[str, dict[str, str]]:
         "admin": {"Authorization": "Bearer admin-secret-token-xxxxxxxx"},
         "viewer": {"Authorization": "Bearer viewer-secret-token-xxxxxxx"},
         "maint": {"Authorization": "Bearer maint-secret-token-xxxxxxxx"},
+        "web": {"Authorization": "Bearer web-secret-token-xxxxxxxxxx"},
     }

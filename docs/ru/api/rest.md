@@ -10,6 +10,8 @@
 
 `POST /v1/chat` и сообщение `chat` в `/v1/ws/chat` принимают необязательный `discord_context`. Старые запросы без поля совместимы.
 
+`POST /v1/chat` и сообщение `chat` в `/v1/ws/chat` принимают необязательный `model` — id модели текущего talk-провайдера (провайдер не меняется). Без поля используется настроенный `llm.talk_model`; неверный id отклоняется валидацией запроса. Роль `web` может выбрать только default или id из `llm.chat_models_allowed_for_web`.
+
 ```json
 {
   "text": "Привет",
@@ -29,7 +31,7 @@
 
 В промпты передаётся отдельный human-блок метаданных без `message.content`, максимум с 10 упоминаниями. Полный типизированный объект остаётся в pipeline. При streaming-повторе с урезанным контекстом блок убирается. Discord запрещает произвольные user/role/everyone-пинги из ответа модели; явный reply может упомянуть автора исходного сообщения.
 
-REST `data.model_trace` и финальный WS `done.model_trace` содержат `turn_id`, UTC `timestamp`, `status`, `error_class`, `queue_wait_ms`, `without_llm` и `calls[]`. `queue_wait_ms` — ожидание сессии канала до старта хода, включая прогрев; оно не входит в длительность вызова. Вызов содержит `lane`, `purpose`, `attempt`, `retry_layer`, `sdk_retries`, `provider`, `configured_model`, `reported_model`, `has_images`, `status`, `error_class`, `headers_ms`, `http_status`, `first_event_ms`, `first_event_type`, `first_text_delta_ms`, `first_meaningful_token_ms`, `duration_ms`. Неизвестное поле остаётся `null`. Отсутствующий ID провайдера — `reported_model=null`, а не подстановка настроенной модели. `attempt` считает вызовы pipeline. `retry_layer` — `stream_timeout`, `stream_error`, `responses_history`, `empty_reply` или `context_overflow`; внутренние повторы SDK считаются отдельно в `sdk_retries`. У вызова также `first_reasoning_ms`, `terminal_event`, `incomplete_reason`, `truncated` и `usage.reasoning_tokens`, когда провайдер их прислал. Если Responses может выдать больше, чем `reply_max_tokens`, стрим и `done.text` режутся одной и той же функцией; при остановке по видимому лимиту `incomplete_reason=visible_cap`, а удалённая цепочка этим хвостом не продолжается. Chat-completions по `max_tokens` так не режется. Повтор Responses из-за истории в стриме ловит обёртка стрима, поэтому слой будет `stream_error`, а класс исключения — `ResponsesRetryable`. В нестриминговом вызове тот же повтор идёт через `invoke` и слой `responses_history`. Brain-native vision отмечается на вызове brain. Успешный ход по-прежнему лежит в `chat_log.meta.model_trace` строк user/assistant. Сорванный или отменённый ход пишется отдельной строкой `role=model_trace` с пустым текстом: её видно в SQLite, и `list_chat` / recall её не отдают в диалог. Завершённые/ошибочные/отменённые ходы публикуются как `llm.turn.completed`. HTTP Responses (метод, путь без query и userinfo, статус, длительность до заголовков у стрима) пишется в `system.log` логгером `neyra.llm.http` на INFO, без тела, ключа и текста.
+`POST /v1/chat` (admin) дополнительно отдаёт безопасный `data.turn_stats`; он же приходит в WS `done` и desktop bridge `done`. Поля: `duration_ms` — весь ход в мс; `llm_ms` — сумма `duration_ms` вызовов в мс (параллельные вызовы складываются); `output_tokens` — суммарные выходные токены; `tokens_per_second` — ток/с только по вызовам, где есть `output_tokens`; `lanes.{brain,talk,memory,vision}` — `calls`, `duration_ms` (мс), опциональные `model`, `input_tokens`, `output_tokens`. `turn_stats` может отсутствовать, если в ходе не было вызовов LLM; `output_tokens` и `tokens_per_second` опциональны (провайдер не прислал usage); в `lanes` только реально вызванные лейны; если у отчёта нет общего времени, `duration_ms` равен `llm_ms`. Browser SSE и WS-кадры браузера `model_trace` не содержат. REST `data.model_trace` и desktop bridge `done.model_trace` содержат `turn_id`, UTC `timestamp`, `status`, `error_class`, `queue_wait_ms`, `without_llm` и `calls[]`. `queue_wait_ms` — ожидание сессии канала до старта хода, включая прогрев; оно не входит в длительность вызова. Вызов содержит `lane`, `purpose`, `attempt`, `retry_layer`, `sdk_retries`, `provider`, `configured_model`, `reported_model`, `has_images`, `status`, `error_class`, `headers_ms`, `http_status`, `first_event_ms`, `first_event_type`, `first_text_delta_ms`, `first_meaningful_token_ms`, `duration_ms`. Неизвестное поле остаётся `null`. Отсутствующий ID провайдера — `reported_model=null`, а не подстановка настроенной модели. `attempt` считает вызовы pipeline. `retry_layer` — `stream_timeout`, `stream_error`, `responses_history`, `empty_reply` или `context_overflow`; внутренние повторы SDK считаются отдельно в `sdk_retries`. У вызова также `first_reasoning_ms`, `terminal_event`, `incomplete_reason`, `truncated` и `usage.reasoning_tokens`, когда провайдер их прислал. Если Responses может выдать больше, чем `reply_max_tokens`, стрим и `done.text` режутся одной и той же функцией; при остановке по видимому лимиту `incomplete_reason=visible_cap`, а удалённая цепочка этим хвостом не продолжается. Chat-completions по `max_tokens` так не режется. Повтор Responses из-за истории в стриме ловит обёртка стрима, поэтому слой будет `stream_error`, а класс исключения — `ResponsesRetryable`. В нестриминговом вызове тот же повтор идёт через `invoke` и слой `responses_history`. Brain-native vision отмечается на вызове brain. Успешный ход по-прежнему лежит в `chat_log.meta.model_trace` строк user/assistant. Сорванный или отменённый ход пишется отдельной строкой `role=model_trace` с пустым текстом: её видно в SQLite, и `list_chat` / recall её не отдают в диалог. Завершённые/ошибочные/отменённые ходы публикуются как `llm.turn.completed`. HTTP Responses (метод, путь без query и userinfo, статус, длительность до заголовков у стрима) пишется в `system.log` логгером `neyra.llm.http` на INFO, без тела, ключа и текста.
 
 `GET /v1/llm/activity?limit=20` доступен viewer/maint/admin; limit 1–100. Возвращает `data.items`, новые первыми, из буфера последних 200 ходов. Отчёты не содержат текстов диалога, user/channel IDs, ключей и внутреннего мышления. Буфер очищается при рестарте. Discord `/model` приватно показывает последний собственный ход в текущем канале без вызова LLM.
 
@@ -42,13 +44,28 @@ REST `data.model_trace` и финальный WS `done.model_trace` содерж
 System → события памяти. Admin delete/wipe API сохранены. Activity также
 включает отдельные background reports (`kind`, nullable `parent_turn_id`),
 тайминги и usage при наличии. Хранятся отдельно 200 ходов и 200 jobs; выдача
-activity объединяет их по времени. Подробнее — [PLAN §12: телеметрия](../../PLAN.md#память-проверка-работы-и-улучшения).
+activity объединяет их по времени. Подробнее — [PLAN §8.3: телеметрия](../../PLAN.md#83-память-проверка-работы-и-улучшения).
 
 - Env: `INTERNAL_API_*` → `API_*` (старт падает, если старые имена заданы; dual-read нет).
 - `POST /v1/plugins/{id}/reload|restart` — on_demand: hot re-import; resident: soft-restart ядра (`restart_scheduled`).
 - Health входящего webhook `GET .../health` требует viewer+, если токены настроены.
-- WebSocket-чат — только **admin** (как `POST /v1/chat`).
+- WebSocket-чат — **admin** или отдельный **web**-ключ с валидным `X-Neyra-Identity` (как `POST /v1/chat` для админа).
 - Bind не loopback без токенов → процесс не стартует.
+
+## Каталог Discord, конфиг и логи (admin)
+
+- `GET /v1/config` — снимок для админки: лейны (`provider`, `model`, `resolved_model`, `temperature`, `context_window`, `max_tokens`, `reply_max_tokens`), провайдеры, лимиты памяти, автосжатие, MCP (только имена/флаги), версия, uptime и флаги секретов. Значения секретов не отдаются.
+- `PUT /v1/config` — частичная запись по белому списку (`updates`). Неизвестное поле, чужой провайдер или значение вне диапазона — 400 до записи. Файл слоя пишется атомарно, предыдущий остаётся `.bak`; при сбое пересборки LLM слой восстанавливается из `.bak`, память откатывается, LLM пересобирается на старых значениях. `requires_restart_fields` перечисляет только реально требующие рестарта поля; `memory.session_archive.*` применяется сразу.
+- `POST /v1/config/update` — прежний endpoint с другим белым списком; оставлен для старых клиентов. Новый интерфейс использует `PUT /v1/config`; со временем старый будет удалён.
+- `GET /v1/logs/tail?lines=1..1000` — хвост системного лога для админки. Секреты маскируются до обрезки строки; наружу отдаётся только имя файла.
+- `GET /v1/logs?source=&tail=` — общий просмотр логов (viewer+), источники `system`, `audit`, `chat`, `health`, `lavalink`, `plugin:{id}`. Это не замена `/v1/logs/tail`: tail — только system.log и admin.
+- `GET /v1/admin/discord/guilds` — серверы с числом каналов/участников; `limit`/`offset`.
+- `GET /v1/admin/discord/guilds/{id}` — сервер, каналы и участники (`member_limit`).
+- `GET /v1/admin/discord/members` — участники с фильтрами `guild_id`, `q`, `limit`, `offset`.
+- `GET /v1/admin/discord/messages` — история `chat_log` с `guild_id`, `channel_id`, `person_id`, `from`, `to`, `q`, `cursor`, `limit`. `to` без времени включает весь день; смещения приводятся к UTC. Курсор — `id`, сортировка по `id DESC`, поэтому страницы не теряют строки. При поиске `total` ограничен 10 000 (`total_capped`).
+- `GET /v1/admin/discord/users/{person_id}/stats` — сообщения, ходы, каналы и график по дням.
+
+Для сайта: `GET /v1/web/me`, `POST/GET /v1/attachments*` и `/v1/ws/chat` принимают отдельный `API_WEB_TOKEN` (роль `web`) только вместе с валидным `X-Neyra-Identity`. Этот ключ не даёт админские и viewer-ручки.
 
 ## Core
 - `GET /v1/meta` — api_version, public_url, public_v1, dashboard_url, features
@@ -65,7 +82,7 @@ activity объединяет их по времени. Подробнее — [
 - `POST /v1/config/update`
 - `POST /v1/backup/run`
 - `GET /v1/backup/list` — локальные zip-архивы BackupManager + `last_restore_apply` (`applied`/`failed`)
-- `POST /v1/backup/restore` — `{ archive_name, confirm: "RESTORE" }` (admin); сначала проверка архива, затем `pre_restore` бэкап, затем staging + pending; живая память меняется только при старте ядра (soft-restart обязателен); логи не трогаются
+- `POST /v1/backup/restore` — `{ archive_name, confirm: "<archive_name>" }` (confirm обязан совпадать с именем архива) (admin); сначала проверка архива, затем `pre_restore` бэкап, затем staging + pending; живая память меняется только при старте ядра (soft-restart обязателен); логи не трогаются
 
 ## Plugins
 - `GET /v1/plugins`

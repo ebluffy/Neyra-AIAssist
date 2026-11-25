@@ -22,6 +22,7 @@ import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
 
+import aiohttp
 import discord
 import httpx
 from discord import app_commands
@@ -123,6 +124,32 @@ COL_BRAND = 0x5865F2
 COL_OK = 0x57F287
 COL_ERR = 0xED4245
 COL_WARN = 0xFEE75C
+
+
+# Only pre-request failures are safe to retry: the message was not sent yet.
+_TRANSIENT_SEND_ERRORS = (aiohttp.ConnectionTimeoutError, aiohttp.ClientConnectorError)
+_SEND_FAILURES = (discord.HTTPException, aiohttp.ClientError, asyncio.TimeoutError)
+_SEND_RETRY_DELAY = 1.0
+
+
+async def _send_with_retry(sender, text: str, *, attempts: int = 2):
+    """Send a Discord message, retrying connect-level failures without duplicates."""
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return await sender(text)
+        except _TRANSIENT_SEND_ERRORS as ex:
+            last_error = ex
+            logger.warning(
+                "discord send retry | attempt=%s/%s error=%s",
+                attempt + 1,
+                attempts,
+                type(ex).__name__,
+            )
+            if attempt + 1 < attempts:
+                await asyncio.sleep(_SEND_RETRY_DELAY)
+    assert last_error is not None
+    raise last_error
 
 
 def _extract_lyrics_song_query(text: str) -> str:
@@ -315,6 +342,10 @@ class NeyraDiscordBot(discord.Client):
         self._music_waiters: dict[str, asyncio.Future] = {}
         self._music_timeout_s: float = float(disc_cfg.get("music_result_timeout_seconds", 25.0))
         self._proactive_channel_id = parse_snowflake((disc_cfg.get("proactive") or {}).get("channel_id")) if isinstance(disc_cfg.get("proactive"), dict) else None
+        # Non-blocking Discord catalog writer (guilds/channels/members); started on ready.
+        self._catalog = None
+        self._catalog_sync_task = None
+        self._catalog_guild_tasks: set[asyncio.Task] = set()
 
         self.agent.event_bus.subscribe(MUSIC_RESULT, self._on_music_result)
 
@@ -563,9 +594,241 @@ class NeyraDiscordBot(discord.Client):
             if request_id:
                 self._music_waiters.pop(request_id, None)
 
+    # --- Discord catalog (guilds/channels/members) ---------------------------
+    # Gateway handlers only enqueue; SQLite writes happen in a background task so
+    # a locked database never stalls the bot.
+
+    def _catalog_store(self):
+        hub = getattr(self.agent, "memory_hub", None)
+        return getattr(hub, "sqlite", None) if hub is not None else None
+
+    def _setup_catalog(self) -> None:
+        if self._catalog is not None:
+            return
+        store = self._catalog_store()
+        if store is None:
+            logger.info("Discord catalog: memory hub unavailable, catalog disabled")
+            return
+        try:
+            from core.memory.discord_catalog import DiscordCatalogWriter
+
+            self._catalog = DiscordCatalogWriter(store)
+            self._catalog.start()
+        except Exception:
+            logger.exception("Discord catalog: writer failed to start")
+
+    def _queue_guild(self, guild) -> None:
+        if self._catalog is None or guild is None:
+            return
+        icon = getattr(guild, "icon", None)
+        me = getattr(guild, "me", None)
+        joined = getattr(me, "joined_at", None) if me is not None else None
+        self._catalog.submit(
+            "guild",
+            guild_id=str(guild.id),
+            name=getattr(guild, "name", None),
+            icon_url=str(icon.url) if icon is not None else None,
+            description=getattr(guild, "description", None),
+            joined_at=joined.isoformat() if joined else None,
+        )
+
+    def _queue_channel(self, channel) -> None:
+        if self._catalog is None or channel is None:
+            return
+        guild = getattr(channel, "guild", None)
+        if guild is None:
+            return
+        parent = getattr(channel, "parent_id", None)
+        self._catalog.submit(
+            "channel",
+            channel_id=str(channel.id),
+            guild_id=str(guild.id),
+            name=getattr(channel, "name", None),
+            channel_type=str(getattr(channel, "type", "")),
+            parent_id=str(parent) if parent else None,
+        )
+
+    def _person_for_discord_id(self, discord_id: str) -> str | None:
+        """Read an existing discord_id → person mapping; never create one here."""
+        store = self._catalog_store()
+        if store is None:
+            return None
+        try:
+            account = store.get_account("discord", str(discord_id))
+        except Exception:
+            logger.debug("Discord catalog: person lookup failed | discord_id=%s", discord_id, exc_info=True)
+            return None
+        person_id = account.get("person_id") if isinstance(account, dict) else None
+        return str(person_id) if person_id else None
+
+    def _queue_member(self, member, *, removed: bool = False) -> None:
+        if self._catalog is None or member is None:
+            return
+        guild = getattr(member, "guild", None)
+        if guild is None:
+            return
+        if removed:
+            self._catalog.submit("member_remove", guild_id=str(guild.id), discord_id=str(member.id))
+            return
+        self._catalog.submit(
+            "member",
+            guild_id=str(guild.id),
+            discord_id=str(member.id),
+            username=getattr(member, "name", None),
+            display_name=getattr(member, "display_name", None),
+            is_bot=bool(getattr(member, "bot", False)),
+            # Event handlers stay non-blocking; full sync resolves person_id in a worker.
+            person_id=None,
+        )
+
+    async def _sync_guild(self, guild, sync_start: str) -> int:
+        """Одна гильдия: backpressure, без prune/участников для недоступной/нечанканной."""
+        if self._catalog is None or guild is None:
+            return 0
+        guild_id = str(guild.id)
+        await self._catalog.submit_wait(
+            "guild",
+            guild_id=guild_id,
+            name=getattr(guild, "name", None),
+            icon_url=str(guild.icon.url) if getattr(guild, "icon", None) is not None else None,
+            description=getattr(guild, "description", None),
+            joined_at=(
+                guild.me.joined_at.isoformat()
+                if getattr(guild, "me", None) is not None and getattr(guild.me, "joined_at", None)
+                else None
+            ),
+        )
+        queued = 1
+        for channel in getattr(guild, "channels", []) or []:
+            await self._catalog.submit_wait(
+                "channel",
+                channel_id=str(channel.id),
+                guild_id=guild_id,
+                name=getattr(channel, "name", None),
+                channel_type=str(getattr(channel, "type", "")),
+                parent_id=str(channel.parent_id) if getattr(channel, "parent_id", None) else None,
+            )
+            queued += 1
+        available = not bool(getattr(guild, "unavailable", False))
+        chunked = bool(getattr(guild, "chunked", True))
+        if available and chunked:
+            for member in getattr(guild, "members", []) or []:
+                await self._catalog.submit_wait(
+                    "member",
+                    guild_id=guild_id,
+                    discord_id=str(member.id),
+                    username=getattr(member, "name", None),
+                    display_name=getattr(member, "display_name", None),
+                    is_bot=bool(getattr(member, "bot", False)),
+                    person_id=await asyncio.to_thread(self._person_for_discord_id, str(member.id)),
+                )
+                queued += 1
+            await self._catalog.submit_wait("guild_prune", guild_id=guild_id, before=sync_start)
+            queued += 1
+        else:
+            logger.info("Discord catalog: prune skipped | guild=%s unavailable=%s chunked=%s",
+                        guild_id, not available, chunked)
+        return queued
+
+    async def _sync_catalog(self) -> None:
+        """Queue every guild, channel and cached member; wait for backpressure."""
+        if self._catalog is None:
+            return
+        sync_start = datetime.now(timezone.utc).isoformat()
+        queued = 0
+        try:
+            from core.memory.discord_catalog import list_guild_ids
+
+            store = self._catalog_store()
+            known = set(await asyncio.to_thread(list_guild_ids, store)) if store is not None else set()
+            current = {str(guild.id) for guild in self.guilds}
+            for stale in sorted(known - current):
+                await self._catalog.submit_wait("guild_delete", guild_id=stale)
+            for guild in list(self.guilds):
+                queued += await self._sync_guild(guild, sync_start)
+            logger.info(
+                "Discord catalog: initial sync queued | guilds=%s items=%s dropped=%s",
+                len(self.guilds), queued, self._catalog.dropped,
+            )
+        except Exception:
+            logger.exception("Discord catalog: initial sync failed")
+
+    async def on_guild_update(self, before, after):
+        self._queue_guild(after)
+
+    async def on_guild_remove(self, guild):
+        if self._catalog is not None and guild is not None:
+            self._catalog.submit("guild_delete", guild_id=str(guild.id))
+
+    def _start_catalog_sync(self) -> None:
+        if self._catalog is None:
+            return
+        if self._catalog_sync_task is None or self._catalog_sync_task.done():
+            self._catalog_sync_task = asyncio.create_task(
+                self._sync_catalog(), name="neyra-discord-catalog-sync"
+            )
+
+    async def _run_guild_sync(self, guild) -> None:
+        try:
+            await self._sync_guild(guild, datetime.now(timezone.utc).isoformat())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Discord catalog: guild join sync failed | guild=%s", getattr(guild, "id", "?"))
+
+    async def on_guild_join(self, guild):
+        if self._catalog is None or guild is None:
+            return
+        task = asyncio.create_task(
+            self._run_guild_sync(guild),
+            name=f"neyra-discord-guild-sync-{guild.id}",
+        )
+        self._catalog_guild_tasks.add(task)
+        task.add_done_callback(self._catalog_guild_tasks.discard)
+
+    async def on_guild_channel_create(self, channel):
+        self._queue_channel(channel)
+
+    async def on_guild_channel_update(self, before, after):
+        self._queue_channel(after)
+
+    async def on_guild_channel_delete(self, channel):
+        if self._catalog is not None and getattr(channel, "guild", None) is not None:
+            self._catalog.submit("channel_delete", channel_id=str(channel.id))
+
+    async def on_member_join(self, member):
+        self._queue_member(member)
+
+    async def on_member_update(self, before, after):
+        self._queue_member(after)
+
+    async def on_member_remove(self, member):
+        self._queue_member(member, removed=True)
+
+    async def close(self):
+        if self._catalog_sync_task is not None and not self._catalog_sync_task.done():
+            self._catalog_sync_task.cancel()
+            try:
+                await self._catalog_sync_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._catalog_sync_task = None
+        for task in list(self._catalog_guild_tasks):
+            task.cancel()
+        self._catalog_guild_tasks.clear()
+        if self._catalog is not None:
+            try:
+                await self._catalog.stop()
+            except Exception:
+                logger.exception("Discord catalog: stop failed")
+            self._catalog = None
+        await super().close()
+
     async def on_ready(self):
         # Shared runtime handle for in-process music + other Discord-adjacent plugins.
         self.agent.discord_client = self
+        self._setup_catalog()
+        self._start_catalog_sync()
         await self.change_presence(
             activity=discord.Activity(type=discord.ActivityType.listening, name="текст и музыка · Нейра")
         )
@@ -933,6 +1196,9 @@ class NeyraDiscordBot(discord.Client):
                     track = str(res_inner.get("track") or "").strip()
                     author = str(res_inner.get("author") or "").strip()
                     candidates = res_inner.get("candidates") if isinstance(res_inner.get("candidates"), list) else []
+                    playlist = bool(res_inner.get("playlist"))
+                    queued_count = int(res_inner.get("queued") or 0)
+                    truncated = bool(res_inner.get("truncated"))
                     if status == "joined":
                         ch = str(res_inner.get("channel") or "voice").strip()
                         await message.reply(
@@ -949,20 +1215,32 @@ class NeyraDiscordBot(discord.Client):
                     else:
                         base = f"**{_clip_field(track or 'неизвестный трек', 500)}**"
                     if status == "queued":
-                        title = "В очереди"
+                        title = "Плейлист в очереди" if playlist else "В очереди"
                         desc = base
                         col = COL_BRAND
                     elif status in ("started",):
-                        title = "Играет"
+                        title = "Играет плейлист" if playlist else "Играет"
                         desc = base
                         col = COL_OK
                     else:
                         title = "Музыка"
                         desc = base or "Готово."
                         col = COL_BRAND
+                    source = str(res_inner.get("source") or "").strip()
+                    if status in ("started", "queued") and source:
+                        from modules.discord.music import MAX_PLAYLIST_TRACKS, _source_label
+                        desc += f"\n\n**Источник:** {_source_label(source)}"
+                    if playlist and queued_count:
+                        desc += f"\n\n**В очереди:** {queued_count} трек(ов)"
+                    if playlist and truncated:
+                        total = int(res_inner.get("playlist_total") or 0)
+                        desc += (
+                            f"\n_Взяты первые {MAX_PLAYLIST_TRACKS} из {total} треков._"
+                        )
                     if candidates:
                         found = "\n".join([f"・ {_clip_field(str(x), 120)}" for x in candidates[:5]])
-                        desc += f"\n\n**Варианты поиска:**\n{found}"
+                        heading = "Первые треки" if playlist else "Варианты поиска"
+                        desc += f"\n\n**{heading}:**\n{found}"
                     await message.reply(
                         embed=_music_status_embed(title, _clip_field(desc, 3800), color=col),
                         mention_author=False,
@@ -1109,9 +1387,12 @@ class NeyraDiscordBot(discord.Client):
         discord_context=None,
     ) -> None:
         async def send_first(text: str):
-            if starter_message is not None:
-                return await starter_message.reply(text, mention_author=False)
-            return await text_channel.send(text)
+            sender = (
+                functools.partial(starter_message.reply, mention_author=False)
+                if starter_message is not None
+                else text_channel.send
+            )
+            return await _send_with_retry(sender, text)
 
         try:
             result = None
@@ -1137,14 +1418,14 @@ class NeyraDiscordBot(discord.Client):
             logger.exception("Не удалось подготовить ответ Discord")
             try:
                 await send_first(public_chat_error({}))
-            except discord.HTTPException:
+            except _SEND_FAILURES:
                 logger.exception("Не удалось отправить сообщение об ошибке Discord")
             return
 
         if generation_failed:
             try:
                 await send_first(public_chat_error(result))
-            except discord.HTTPException:
+            except _SEND_FAILURES:
                 logger.exception("Не удалось отправить сообщение об ошибке Discord")
             return
 
@@ -1155,9 +1436,9 @@ class NeyraDiscordBot(discord.Client):
             first = await send_first(parts[0])
             sent_ids: list[int] = [first.id]
             for part in parts[1:]:
-                sent = await text_channel.send(part)
+                sent = await _send_with_retry(text_channel.send, part)
                 sent_ids.append(sent.id)
-        except discord.HTTPException:
+        except _SEND_FAILURES:
             logger.exception("Не удалось отправить готовый ответ Discord")
             return
 

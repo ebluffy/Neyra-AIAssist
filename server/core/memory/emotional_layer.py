@@ -61,5 +61,5 @@ async def compact_emotion_for_ltm(
             line = line[:217] + "…"
         return line
     except Exception as e:
-        logger.warning("ltm_emotion_sync: %s", e)
+        logger.warning("ltm_emotion_sync failed | error_class=%s", type(e).__name__)
         return ""

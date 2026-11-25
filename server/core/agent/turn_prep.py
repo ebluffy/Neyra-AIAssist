@@ -95,9 +95,12 @@ async def prepare_turn(
     log_lane: str = "chat",
     avatar_url: Optional[str] = None,
     discord_context=None,
+    person_id: Optional[str] = None,
+    model: Optional[str] = None,
+    speaker_name: Optional[str] = None,
 ) -> TurnPrep:
     """Gather RAG/people/tools/vision inputs and build brain system prompt."""
-    internal_uid = agent._resolve_internal_user_id(discord_user_id, username)
+    internal_uid = agent._resolve_internal_user_id(discord_user_id, username, person_id)
     from core.agent.model_trace import ACTIVE_TRACE
     trace = ACTIVE_TRACE.get()
     if trace is not None:
@@ -114,7 +117,8 @@ async def prepare_turn(
         pass
 
     # Account-first person card (create/bind on first contact)
-    if getattr(agent, "memory_hub", None) is not None and discord_user_id:
+    # A signed web identity already names the person: never mint a Discord card for it.
+    if getattr(agent, "memory_hub", None) is not None and discord_user_id and not person_id:
         try:
             agent.memory_hub.ensure_person_for_account(
                 platform="discord",
@@ -136,9 +140,9 @@ async def prepare_turn(
     mentioned = agent._detect_mentioned_names(user_message)
     if discord_context is not None and getattr(agent, "memory_hub", None) is not None:
         from core.agent.people_context import known_discord_mentions
-        for person_id in known_discord_mentions(agent.memory_hub, discord_context):
-            if person_id not in mentioned:
-                mentioned.append(person_id)
+        for mentioned_pid in known_discord_mentions(agent.memory_hub, discord_context):
+            if mentioned_pid not in mentioned:
+                mentioned.append(mentioned_pid)
     if username or discord_user_id:
         person = agent.memory_hub.find_person(username or "", discord_id=discord_user_id)
         if person and person["id"] not in mentioned:
@@ -152,7 +156,12 @@ async def prepare_turn(
     diary_ctx = agent.memory_hub.diary_recent_text(limit=6, owner_id=internal_uid, channel_id=channel_id)
     web_ctx = agent._handle_websearch_trigger(user_message)
     tool_ctx = agent._collect_tool_context(user_message)
-    speaker_label = agent._resolve_speaker_label(username, discord_user_id, author_display_name)
+    if speaker_name is not None:
+        from core.memory.person_profile import clean_speaker_label
+
+        speaker_label = clean_speaker_label(speaker_name)
+    else:
+        speaker_label = agent._resolve_speaker_label(username, discord_user_id, author_display_name)
     wm_snip = "" if scope.kind == "shared" else agent._read_working_memory_for_prompt(internal_uid)
 
     has_vis = bool(vision_images)
@@ -168,13 +177,19 @@ async def prepare_turn(
 
     brain_native_vis = bool(vision_images) and agent._uses_brain_native_vision()
     attached_caption = ""
+    requested_model = str(model or "").strip()
+    default_talk_model = str(getattr(agent, "llm_talk_model", "") or "")
+    model_is_default = not requested_model or requested_model == default_talk_model
     vplan = plan_talk_vision(
         vision_images,
         brain_native_vis=brain_native_vis,
-        talk_model=str(getattr(agent, "llm_talk_model", "") or ""),
+        talk_model=requested_model or default_talk_model,
         brain_model=str(getattr(agent, "llm_brain_model", "") or ""),
+        # Keep the configured vision gate; an arbitrary override is not
+        # assumed to be the vision client, so talk gets a caption instead of
+        # raw pixels.
         has_vision_llm=agent.llm_vision is not None,
-        talk_is_vision_client=agent.llm_talk is agent.llm_vision,
+        talk_is_vision_client=agent.llm_talk is agent.llm_vision and model_is_default,
         vision_is_brain_client=agent.llm_vision is agent.llm_brain,
     )
     if vplan.need_talk_caption:
@@ -250,7 +265,8 @@ async def prepare_turn(
     hub = getattr(agent, "memory_hub", None)
     if hub is not None:
         from core.memory.affect import talk_state
-        prep.affect_data = talk_state(await asyncio.to_thread(hub.affect_for_account, discord_user_id))
+        trusted_person_id = person_id or getattr(trace, "person_id", None)
+        prep.affect_data = talk_state(await asyncio.to_thread(hub.affect_for_account, discord_user_id, trusted_person_id))
     from core.agent.talk_messages import assistant_state_data
     state = assistant_state_data(prep)
     if state:

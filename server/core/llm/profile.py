@@ -7,10 +7,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 logger = logging.getLogger("neyra.llm_profile")
 
@@ -76,7 +79,34 @@ _DEFAULT_CAPABILITIES: dict[str, bool] = {
     "supports_vision": True,
     "supports_tool_calls": False,
     "supports_stream_usage": False,
+    # Opt-out for providers/gateways without /v1/responses. Default true keeps
+    # existing configurations working; set false to force chat/completions.
+    "supports_responses": True,
 }
+
+_BOOL_TRUE = frozenset({"true", "1", "yes", "on"})
+_BOOL_FALSE = frozenset({"false", "0", "no", "off"})
+
+
+def _as_bool(value: Any, *, key: str, provider: str) -> bool | None:
+    """Strict capability parser; None means "keep the default"."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _BOOL_TRUE:
+            return True
+        if text in _BOOL_FALSE:
+            return False
+    logger.warning(
+        "Провайдер '%s': capabilities.%s=%r не распознан как bool, оставляю default",
+        provider,
+        key,
+        value,
+    )
+    return None
 
 
 @dataclass(frozen=True)
@@ -96,6 +126,55 @@ def _first_env(*names: str) -> str:
         if v:
             return v
     return ""
+
+
+def is_private_endpoint(base_url: str) -> bool:
+    """Локальный/домашний адрес: loopback, частные сети, Tailscale, *.local, *.ts.net."""
+    host = (urlparse(str(base_url or "")).hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in {"localhost", "host.docker.internal"}:
+        return True
+    if host.endswith(".local") or host.endswith(".ts.net") or host.endswith(".home.arpa"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return True
+    return ip in ipaddress.ip_network("100.64.0.0/10")
+
+
+def provider_kind(cfg: dict, provider: str) -> str:
+    """Вид провайдера: openai (шлюз), local, cli. По умолчанию openai."""
+    block = _providers_block(cfg).get(provider)
+    if isinstance(block, dict):
+        kind = str(block.get("kind") or "").strip().lower()
+        if kind:
+            return kind
+    return "openai"
+
+
+def _vault_provider_key(cfg: dict, provider: str) -> str:
+    """API-ключ из шифрованного vault (data_dir/secrets). Никогда не из YAML.
+
+    data_dir резолвится как у ядра (NEYRA_DATA_DIR → paths.data_dir), ошибка
+    чтения vault не превращается в молчаливый «ключа нет».
+    """
+    if not provider:
+        return ""
+    from core.runtime.paths import resolve_data_dir
+
+    server_root = Path(__file__).resolve().parents[2]
+    data_dir = resolve_data_dir(server_root, cfg)
+    from core.llm.provider_secrets import store_for
+
+    try:
+        return store_for(data_dir).get_strict(provider)
+    except Exception:
+        logger.exception("Vault ключей провайдеров недоступен | provider=%s", provider)
+        raise
 
 
 # Совпадает с legacy DEPRECATED_OPENROUTER_MODELS в core/agent.py для ID моделей.
@@ -392,18 +471,22 @@ def resolve_openai_compatible_connection(
     if not provider:
         provider = "aihope"
 
-    if provider not in _OPENAI_COMPATIBLE_PRESETS:
-        known = ", ".join(sorted(_OPENAI_COMPATIBLE_PRESETS))
-        raise ValueError(
-            f"Неизвестный LLM-провайдер '{provider}'. "
-            f"Допустимые значения: {known}."
-        )
-
-    preset = _OPENAI_COMPATIBLE_PRESETS[provider]
     llm = _llm_block(cfg)
     prov_over = _providers_block(cfg).get(provider)
     if not isinstance(prov_over, dict):
         prov_over = {}
+
+    preset = _OPENAI_COMPATIBLE_PRESETS.get(provider)
+    if preset is None:
+        # Свободный провайдер: любой OpenAI-совместимый шлюз, добавленный
+        # пользователем в llm.providers.<name> с собственным base_url.
+        if not str(prov_over.get("base_url") or "").strip():
+            known = ", ".join(sorted(_OPENAI_COMPATIBLE_PRESETS))
+            raise ValueError(
+                f"Провайдер '{provider}' не описан: задайте "
+                f"llm.providers.{provider}.base_url или выберите из {known}."
+            )
+        preset = {}
 
     base_url = str(
         prov_over.get("base_url")
@@ -432,17 +515,41 @@ def resolve_openai_compatible_connection(
         api_key = _first_env("AIHOPE_API_KEY")
     if not api_key and provider == "ollama":
         api_key = "ollama"
+    if not api_key:
+        api_key = _vault_provider_key(cfg, provider)
+    if not api_key:
+        # OpenAI-клиенту нужен непустой ключ даже для своего шлюза. Для
+        # локального адреса ставим заглушку, чтобы ядро поднималось без
+        # рестарта в цикле; для внешнего — тоже заглушку, но с явной ошибкой.
+        kind = str(prov_over.get("kind") or "").strip().lower()
+        if kind == "local" or is_private_endpoint(base_url):
+            api_key = "local"
+            logger.info(
+                "Провайдер '%s' — локальный адрес без ключа, использую заглушку", provider
+            )
+        else:
+            api_key = "missing-api-key"
+            logger.error(
+                "API ключ для провайдера '%s' не задан: запросы будут падать с 401. "
+                "Добавь ключ в админке (Провайдеры → Ключ) или llm.providers.%s.api_key",
+                provider,
+                provider,
+            )
 
     caps = dict(_DEFAULT_CAPABILITIES)
     raw_caps = llm.get("capabilities")
     if isinstance(raw_caps, dict):
         for k, v in raw_caps.items():
             if k in _DEFAULT_CAPABILITIES:
-                caps[k] = bool(v)
+                parsed = _as_bool(v, key=k, provider=provider)
+                if parsed is not None:
+                    caps[k] = parsed
     if isinstance(prov_over.get("capabilities"), dict):
         for k, v in prov_over["capabilities"].items():
             if k in _DEFAULT_CAPABILITIES:
-                caps[k] = bool(v)
+                parsed = _as_bool(v, key=k, provider=provider)
+                if parsed is not None:
+                    caps[k] = parsed
 
     headers: dict[str, str] = {}
     if isinstance(llm.get("default_headers"), dict):
@@ -477,14 +584,27 @@ def iter_unique_provider_connections(cfg: dict) -> list[OpenAICompatibleConnecti
     """
     seen: set[str] = set()
     out: list[OpenAICompatibleConnection] = []
+    role_providers: list[str] = []
     for role in LLM_ROLE_ORDER:
+        lane_provider = resolve_role_provider(cfg, role)
+        role_providers.append(lane_provider)
+        if lane_provider and provider_kind(cfg, lane_provider) == "cli":
+            # CLI-провайдер не OpenAI-совместимый: у него нет base_url/ключа.
+            continue
         conn = resolve_openai_compatible_connection(cfg, role=role)
         if conn.provider in seen:
             continue
         seen.add(conn.provider)
         out.append(conn)
+    if not out and role_providers and all(
+        p and provider_kind(cfg, p) == "cli" for p in role_providers
+    ):
+        # Все роли на CLI: llm.provider — лишь остаток конфига, HTTP-проба не нужна.
+        return []
     if not out:
-        out.append(resolve_openai_compatible_connection(cfg))
+        default_provider = resolve_role_provider(cfg)
+        if provider_kind(cfg, default_provider) != "cli":
+            out.append(resolve_openai_compatible_connection(cfg))
     return out
 
 

@@ -38,6 +38,8 @@ class DiscordReference(ContextObject):
 class DiscordMessage(ContextObject):
     id: str = Field(min_length=1, max_length=120)
     content: str = Field(max_length=6000)
+    # Original Discord timestamp (ISO). Optional: older callers/tests omit it.
+    created_at: str | None = Field(default=None, max_length=40)
     mentions: list[DiscordUser] = Field(default_factory=list, max_length=100)
     reference: DiscordReference | None = None
 
@@ -88,7 +90,13 @@ def context_from_message(message, bot_id: str) -> DiscordContext:
         "current_user": user_metadata(message.author),
         "channel": {"id": str(message.channel.id), "name": getattr(message.channel, "name", None), "type": str(message.channel.type)},
         "guild": {"id": str(guild.id), "name": guild.name} if guild else None,
-        "message": {"id": str(message.id), "content": message.content[:6000], "mentions": [user_metadata(u) for u in message.mentions[:100]], "reference": ref},
+        "message": {
+            "id": str(message.id),
+            "content": message.content[:6000],
+            "created_at": message.created_at.isoformat() if getattr(message, "created_at", None) else None,
+            "mentions": [user_metadata(u) for u in message.mentions[:100]],
+            "reference": ref,
+        },
         "addressed_to_bot": guild is None or any(str(u.id) == bot_id for u in message.mentions) or (author is not None and str(author.id) == bot_id),
         "response_target": {"channel_id": str(message.channel.id), "message_id": str(message.id)},
     })

@@ -18,6 +18,7 @@ from core.agent.reply_pipeline import (
     visible_token_budget,
 )
 from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
+from core.agent.chat_log import origin_from_discord_context
 from core.agent.turn_finalize import finalize_successful_turn
 from core.agent.turn_prep import prepare_turn
 
@@ -36,6 +37,10 @@ async def iter_chat_stream(
     lyrics_marker: str,
     avatar_url: Optional[str] = None,
     discord_context=None,
+    person_id: Optional[str] = None,
+    progress: bool = False,
+    model: Optional[str] = None,
+    speaker_name: Optional[str] = None,
 ) -> AsyncIterator[dict]:
     """Yield token/error/done chunks for streaming chat."""
     try:
@@ -51,8 +56,13 @@ async def iter_chat_stream(
             vision_images=vision_images,
             lyrics_marker=lyrics_marker,
             source="chat_stream",
+            person_id=person_id,
+            origin=origin_from_discord_context(discord_context),
+            speaker_name=speaker_name,
         )
         if fp is not None:
+            if progress:
+                yield {"type": "phase", "phase": "answer"}
             text = str(fp.get("text") or "")
             if text:
                 yield {"type": "token", "text": text}
@@ -71,6 +81,8 @@ async def iter_chat_stream(
             raise
         logger.warning("fast_path (stream) failed (soft, continue brain): %s", fp_e)
 
+    if progress:
+        yield {"type": "phase", "phase": "retrieval"}
     prep = await prepare_turn(
         agent,
         user_message=user_message,
@@ -83,6 +95,9 @@ async def iter_chat_stream(
         log_lane="stream",
         avatar_url=avatar_url,
         discord_context=discord_context,
+        person_id=person_id,
+        model=model,
+        speaker_name=speaker_name,
     )
     try:
         try:
@@ -101,6 +116,8 @@ async def iter_chat_stream(
         except Exception as thr_e:
             logger.warning("session_archive stm_threshold failed (soft): %s", thr_e)
 
+        if progress:
+            yield {"type": "phase", "phase": "plan"}
         caption_ok = (prep.attached_caption or "").strip()
         try:
             brain_context = await agent._run_brain_tool_phase(
@@ -131,10 +148,13 @@ async def iter_chat_stream(
             }
             return
 
+        if progress:
+            yield {"type": "phase", "phase": "answer"}
         system_prompt = build_talk_system_prompt(agent, prep, brain_context=brain_context)
-        stream_llm = agent.llm_talk
+        from core.agent.llm_setup import talk_model_for
+        stream_llm = talk_model_for(agent, model)
         if prep.lyrics_mode:
-            stream_llm = agent.llm_talk.bind(
+            stream_llm = stream_llm.bind(
                 max_tokens=max(agent.reply_max_tokens, agent.lyrics_reply_max_tokens)
             )
         from core.agent.talk_sessions import responses_talk_model
@@ -145,7 +165,7 @@ async def iter_chat_stream(
                 "Зрение: %s, изображений=%s | talk_model=%s",
                 mode,
                 len(vision_images),
-                getattr(agent, "llm_talk_model", agent.llm_model),
+                model or getattr(agent, "llm_talk_model", agent.llm_model),
             )
 
         messages = build_talk_messages(
@@ -161,7 +181,7 @@ async def iter_chat_stream(
         reasoning_filter = ReasoningFilter()
         raw_chunk_count = 0
         yielded_chunk_count = 0
-        from core.agent.model_trace import ACTIVE_TRACE
+        from core.agent.model_trace import ACTIVE_TRACE, is_rate_limit_error
         trace = ACTIVE_TRACE.get()
 
         def reset_hidden_attempt():
@@ -312,7 +332,7 @@ async def iter_chat_stream(
                             channel_id=channel_id,
                             error=str(e2),
                         )
-                        yield {"type": "error", "code": "generation_failed", "text": public_chat_error({})}
+                        yield {"type": "error", "code": "generation_failed", "text": public_chat_error({}), "rate_limit": is_rate_limit_error(e2)}
                         return
             elif yielded_chunk_count > 0:
                 salvaged_error = e
@@ -323,7 +343,7 @@ async def iter_chat_stream(
                     channel_id=channel_id,
                     error=err_str,
                 )
-                yield {"type": "error", "code": "generation_failed", "text": public_chat_error({})}
+                yield {"type": "error", "code": "generation_failed", "text": public_chat_error({}), "rate_limit": is_rate_limit_error(e)}
                 return
 
         if salvaged_error is not None:
@@ -367,6 +387,7 @@ async def iter_chat_stream(
             saved_facts=prep.saved_facts,
             source="chat_stream",
             stm_trimmed=context_exceeded,
+            origin=origin_from_discord_context(discord_context),
         )
         log_micro_plan_metrics(agent)
         logger.debug("Стрим завершён | sounds=%s | len=%s", sounds, len(clean_text))

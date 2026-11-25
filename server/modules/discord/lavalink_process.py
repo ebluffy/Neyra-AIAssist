@@ -24,7 +24,8 @@ logger = logging.getLogger("neyra.discord.lavalink")
 
 _LOCK = threading.Lock()
 _OWNED_PROC: Optional[subprocess.Popen] = None
-_DEFAULT_PASSWORD = "youshallnotpass"
+_INSECURE_PASSWORDS = {"", "youshallnotpass", "CHANGE_ME"}
+_SAFE_PASSWORD_RE = re.compile(r"^[A-Za-z0-9_.~-]{16,}$")
 
 
 def _music_cfg(config: dict[str, Any]) -> dict[str, Any]:
@@ -53,8 +54,7 @@ def _local_node(music: dict[str, Any]) -> Optional[dict[str, Any]]:
 
 
 def _node_password(node: dict[str, Any]) -> str:
-    pwd = str(node.get("password") or "").strip()
-    return pwd or _DEFAULT_PASSWORD
+    return str(node.get("password") or "").strip()
 
 
 def _port_open(host: str, port: int, timeout: float = 0.4) -> bool:
@@ -130,6 +130,96 @@ def _terminate_pid(pid: int, *, wait_s: float = 8.0) -> None:
         pass
 
 
+def _ensure_soundy_yaml(text: str) -> tuple[str, bool]:
+    """Ensure SoundCloud uses soundy-plugin and built-in source is disabled."""
+    original = text
+    # The first `soundcloud:` is lavalink.server.sources.soundcloud; the second
+    # (inside lavasrc) is unrelated and must not be touched.
+    text, _ = re.subn(
+        r"(?m)^(\s*soundcloud:\s*)(?:true|false)\s*$",
+        r"\1false",
+        text,
+        count=1,
+    )
+    lines = text.splitlines()
+    if not any(line.strip().startswith("soundcloud:") for line in lines):
+        sources_idx = next((i for i, line in enumerate(lines) if line.strip() == "sources:"), None)
+        if sources_idx is not None:
+            youtube_idx = next(
+                (
+                    i
+                    for i in range(sources_idx + 1, len(lines))
+                    if lines[i].strip().startswith("youtube:")
+                ),
+                None,
+            )
+            if youtube_idx is not None:
+                indent = lines[youtube_idx][: len(lines[youtube_idx]) - len(lines[youtube_idx].lstrip())]
+                lines.insert(youtube_idx + 1, f"{indent}soundcloud: false")
+            else:
+                lines.insert(sources_idx + 1, "      soundcloud: false")
+    plugins_idx = next((i for i, line in enumerate(lines) if line == "plugins:"), None)
+    if plugins_idx is None:
+        lines.extend(["plugins:", "  soundy:", "    enabled: true"])
+    else:
+        end = next(
+            (i for i in range(plugins_idx + 1, len(lines)) if lines[i] and not lines[i].startswith(" ")),
+            len(lines),
+        )
+        soundy_idx = next(
+            (i for i in range(plugins_idx + 1, end) if lines[i].strip() == "soundy:"),
+            None,
+        )
+        if soundy_idx is None:
+            lines[plugins_idx + 1 : plugins_idx + 1] = ["  soundy:", "    enabled: true"]
+        else:
+            enabled_idx = next(
+                (i for i in range(soundy_idx + 1, end) if lines[i].strip().startswith("enabled:")),
+                None,
+            )
+            if enabled_idx is None:
+                lines.insert(soundy_idx + 1, "    enabled: true")
+            elif lines[enabled_idx].strip() != "enabled: true":
+                lines[enabled_idx] = "    enabled: true"
+    text = "\n".join(lines) + "\n"
+    return text, text != original
+
+
+def _force_safe_lavalink_log_levels(text: str) -> tuple[str, bool]:
+    """Never log YouTube OAuth tokens/refresh tokens at DEBUG/TRACE."""
+    original = text
+    for key in (
+        "lavalink",
+        "dev.lavalink.youtube",
+        "com.sedmelluq.discord.lavaplayer",
+        "com.github.topi314.lavasrc",
+    ):
+        text, _ = re.subn(
+            rf"(?m)^(\s*{re.escape(key)}:\s*)(?:DEBUG|TRACE)\s*$",
+            r"\1INFO",
+            text,
+        )
+    return text, text != original
+
+
+def _harden_lavalink_permissions(lava_dir: Path) -> None:
+    """application.yml contains OAuth refresh token; logs must not be world-readable."""
+    for name, mode in (("application.yml", 0o600), ("lavalink.log", 0o600), ("Lavalink.jar", 0o640)):
+        path = lava_dir / name
+        if path.exists():
+            try:
+                path.chmod(mode)
+            except OSError:
+                logger.debug("discord.lavalink: chmod failed for %s", path, exc_info=True)
+    plugins = lava_dir / "plugins"
+    if plugins.is_dir():
+        for jar in plugins.glob("*.jar"):
+            try:
+                jar.chmod(0o640)
+            except OSError:
+                logger.debug("discord.lavalink: chmod failed for %s", jar, exc_info=True)
+
+
 def _ensure_application_yml(lava_dir: Path, *, password: str) -> Path:
     """Ensure application.yml exists and matches node password + loopback bind."""
     yml = lava_dir / "application.yml"
@@ -145,7 +235,7 @@ def _ensure_application_yml(lava_dir: Path, *, password: str) -> Path:
 
     text2, n_pwd = re.subn(
         r'(?m)^(\s*password:\s*")[^"]*(")',
-        rf'\1{password}\2',
+        lambda m: m.group(1) + password + m.group(2),
         text,
         count=1,
     )
@@ -168,40 +258,60 @@ def _ensure_application_yml(lava_dir: Path, *, password: str) -> Path:
         text2,
         count=1,
     )
+    text2, n_soundy = _ensure_soundy_yaml(text2)
+    text2, n_safe_logs = _force_safe_lavalink_log_levels(text2)
     repaired = text2 != text
     if created or repaired:
         yml.write_text(text2, encoding="utf-8")
         if created:
             logger.info(
                 "discord.lavalink: created application.yml from example "
-                "(password_set=%s loopback_bind=%s http_off=%s local_off=%s)",
+                "(password_set=%s loopback_bind=%s http_off=%s local_off=%s soundy=%s safe_logs=%s)",
                 n_pwd > 0,
                 n_addr > 0,
                 n_http > 0,
                 n_local > 0,
+                n_soundy,
+                n_safe_logs,
             )
         else:
             logger.warning(
                 "discord.lavalink: repaired application.yml "
-                "(password_aligned=%s loopback_bind=%s http_off=%s local_off=%s)",
+                "(password_aligned=%s loopback_bind=%s http_off=%s local_off=%s soundy=%s safe_logs=%s)",
                 n_pwd > 0 and repaired,
                 n_addr > 0,
                 n_http > 0,
                 n_local > 0,
+                n_soundy,
+                n_safe_logs,
             )
     return yml
 
 
-def _spawn_jar(java: str, jar: Path, lava_dir: Path, log_path: Path) -> subprocess.Popen:
+def _spawn_jar(
+    java: str,
+    jar: Path,
+    lava_dir: Path,
+    log_path: Path,
+    *,
+    jvm_tmp_dir: Path | None = None,
+) -> subprocess.Popen:
     log_f = open(log_path, "a", encoding="utf-8", errors="replace")
     creationflags = 0
     if os.name == "nt":
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
             subprocess, "DETACHED_PROCESS", 0
         )
+    cmd = [java]
+    if jvm_tmp_dir is not None:
+        # A root-owned /tmp/lava-jni-natives from an old root-run JVM makes
+        # NativeLibraryLoader fail for udpqueue/dave-jvm when Lavalink runs as
+        # openbot. Keep JNI extraction inside the plugin directory instead.
+        cmd.append(f"-Djava.io.tmpdir={jvm_tmp_dir}")
+    cmd += ["-jar", str(jar)]
     try:
         return subprocess.Popen(
-            [java, "-jar", str(jar)],
+            cmd,
             cwd=str(lava_dir),
             stdout=log_f,
             stderr=subprocess.STDOUT,
@@ -214,7 +324,12 @@ def _spawn_jar(java: str, jar: Path, lava_dir: Path, log_path: Path) -> subproce
         raise
 
 
-def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[bool, str]:
+def ensure_managed_lavalink(
+    config: dict[str, Any],
+    plugin_dir: Path,
+    *,
+    max_wait_s: float | None = None,
+) -> tuple[bool, str]:
     """Ensure local Lavalink is up when Discord music expects a loopback node."""
     global _OWNED_PROC
 
@@ -231,7 +346,15 @@ def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[b
     host = parsed.hostname or "127.0.0.1"
     port = int(parsed.port or 2333)
     password = _node_password(node)
+    if password in _INSECURE_PASSWORDS or not _SAFE_PASSWORD_RE.fullmatch(password):
+        return (
+            False,
+            "discord.music.nodes[].password must be a random URL-safe value "
+            "(16+ chars: A-Z, a-z, 0-9, _, ., ~, -); generate one with secrets.token_urlsafe(32)",
+        )
     wait_s = float(music.get("managed_lavalink_ready_seconds") or 90)
+    if max_wait_s is not None:
+        wait_s = min(wait_s, max(1.0, float(max_wait_s)))
 
     if _port_open(host, port):
         return True, f"already listening on {host}:{port}"
@@ -250,6 +373,7 @@ def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[b
 
     try:
         _ensure_application_yml(lava_dir, password=password)
+        _harden_lavalink_permissions(lava_dir)
     except FileNotFoundError as e:
         return False, str(e)
 
@@ -279,7 +403,13 @@ def ensure_managed_lavalink(config: dict[str, Any], plugin_dir: Path) -> tuple[b
                 pass
 
         try:
-            proc = _spawn_jar(java, jar, lava_dir, log_path)
+            tmp_dir = lava_dir / "tmp"
+            tmp_dir.mkdir(mode=0o700, exist_ok=True)
+            try:
+                tmp_dir.chmod(0o700)
+            except OSError:
+                logger.debug("discord.lavalink: could not chmod jvm tmp dir", exc_info=True)
+            proc = _spawn_jar(java, jar, lava_dir, log_path, jvm_tmp_dir=tmp_dir)
         except OSError as e:
             return False, f"failed to spawn Lavalink: {e}"
 

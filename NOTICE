@@ -1,0 +1,17 @@
+Neyra-AIAssist includes a native computer-use implementation adapted from
+the accessibility snapshot and element-reference approach of agent-desktop.
+
+agent-desktop
+https://github.com/vercel-labs/agent-desktop
+Upstream revision: 9eb9b296192fcb70bda25e918cd6dd66abfa3d0d
+License: Apache License, Version 2.0
+Attribution: the agent-desktop project and its contributors.
+
+The Neyra adaptation is in client/src-tauri/src/computer/. It selects a small
+foreground-window accessibility tree, uses snapshot-scoped references and
+native accessibility actions, and adds Neyra policy, confirmation,
+cancellation, reference invalidation and sanitized error handling.
+It does not include the full agent-desktop CLI or its Linux backend.
+
+The upstream license is reproduced in third_party/agent-desktop/LICENSE.
+See THIRD_PARTY.md for provenance and modifications.

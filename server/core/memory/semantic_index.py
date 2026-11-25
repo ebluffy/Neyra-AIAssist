@@ -25,6 +25,11 @@ class SemanticIndex(Protocol):
     def count(self) -> int:
         ...
 
+    def migrate_user_id(
+        self, old_user_id: str, new_user_id: str, ids: Optional[list[str]] = None
+    ) -> list[str]:
+        ...
+
     def add_knowledge(
         self, text: str, metadata: Optional[dict[str, Any]] = None
     ) -> tuple[bool, str]:
@@ -65,3 +70,9 @@ class ChromaSemanticIndex:
         self, text: str, metadata: Optional[dict[str, Any]] = None
     ) -> tuple[bool, str]:
         return self._ltm.add_knowledge(text, metadata or {})
+
+    def migrate_user_id(
+        self, old_user_id: str, new_user_id: str, ids: Optional[list[str]] = None
+    ) -> list[str]:
+        migrate = getattr(self._ltm, "migrate_user_metadata", None)
+        return list(migrate(old_user_id, new_user_id, ids) or []) if callable(migrate) else []

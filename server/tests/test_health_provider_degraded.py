@@ -1,0 +1,631 @@
+"""AR-55 (health при 429 провайдера): деградация backend по источнику /v1/llm/activity.
+
+Никакой сети и реальных провайдеров: httpx и перечень провайдеров подменяются,
+готовность проверяется через TestClient со stub-агентом из conftest.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
+
+
+def _failed_report(*, minutes_ago=0, error_class=None, http_status=None):
+    ts = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+    calls = []
+    if http_status is not None:
+        calls.append({"http_status": http_status, "status": "failed"})
+    return {
+        "timestamp": ts,
+        "status": "failed",
+        "error_class": error_class,
+        "calls": calls,
+        "kind": "turn",
+    }
+
+
+def _seed(agent, report):
+    from core.agent.model_trace import activity_for
+
+    activity_for(agent).append(
+        SimpleNamespace(user_id=None, channel_id=None), report
+    )
+
+
+class TestRecentProviderRateLimit:
+    def test_http_429_in_window_is_reported(self, stub_agent):
+        from core.agent.model_trace import recent_provider_rate_limit
+
+        _seed(stub_agent, _failed_report(minutes_ago=2, http_status=429,
+                                         error_class="RateLimitError"))
+        hit = recent_provider_rate_limit(stub_agent)
+        assert hit is not None
+        assert hit["http_status"] == 429
+        assert hit["error_class"] == "RateLimitError"
+        assert hit["at"]
+
+    def test_rate_limit_error_class_without_status_is_reported(self, stub_agent):
+        from core.agent.model_trace import recent_provider_rate_limit
+
+        _seed(stub_agent, _failed_report(minutes_ago=1, error_class="RateLimitError"))
+        hit = recent_provider_rate_limit(stub_agent)
+        assert hit is not None
+        assert hit["http_status"] is None
+        assert hit["error_class"] == "RateLimitError"
+
+    def test_old_failure_outside_window_is_ignored(self, stub_agent):
+        from core.agent.model_trace import recent_provider_rate_limit
+
+        _seed(stub_agent, _failed_report(minutes_ago=60, http_status=429,
+                                         error_class="RateLimitError"))
+        assert recent_provider_rate_limit(stub_agent) is None
+
+    def test_long_turn_that_failed_now_is_fresh(self, stub_agent):
+        """Окно считается по времени отказа, а не по времени старта хода (P3 ревью)."""
+        from core.agent.model_trace import recent_provider_rate_limit
+
+        now = datetime.now(timezone.utc)
+        report = _failed_report(minutes_ago=30, http_status=429,
+                                error_class="RateLimitError")
+        report["ended_at"] = (now - timedelta(minutes=1)).isoformat()
+        report["calls"][0]["ended_at"] = report["ended_at"]
+        _seed(stub_agent, report)
+        hit = recent_provider_rate_limit(stub_agent)
+        assert hit is not None
+        assert hit["at"] == report["ended_at"]
+
+    def test_old_rate_limit_is_not_refreshed_by_a_later_turn_end(self, stub_agent):
+        """Время берётся у самого rate-limit-вызова, а не у конца хода (P3 ревью)."""
+        from core.agent.model_trace import recent_provider_rate_limit
+
+        now = datetime.now(timezone.utc)
+        report = _failed_report(minutes_ago=40, http_status=429,
+                                error_class="RateLimitError")
+        report["ended_at"] = now.isoformat()
+        report["calls"][0]["ended_at"] = (now - timedelta(minutes=20)).isoformat()
+        report["calls"].append({"status": "failed", "error_class": "TimeoutError",
+                                "ended_at": now.isoformat()})
+        _seed(stub_agent, report)
+        assert recent_provider_rate_limit(stub_agent) is None
+
+    def test_stale_long_turn_without_failure_time_stays_ignored(self, stub_agent):
+        from core.agent.model_trace import recent_provider_rate_limit
+
+        _seed(stub_agent, _failed_report(minutes_ago=30, http_status=429,
+                                         error_class="RateLimitError"))
+        assert recent_provider_rate_limit(stub_agent) is None
+
+    def test_completed_turn_and_unrelated_failure_are_ignored(self, stub_agent):
+        from core.agent.model_trace import recent_provider_rate_limit
+
+        ok = _failed_report(minutes_ago=0, http_status=429)
+        ok["status"] = "completed"
+        _seed(stub_agent, ok)
+        _seed(stub_agent, _failed_report(minutes_ago=0, error_class="TimeoutError"))
+        assert recent_provider_rate_limit(stub_agent) is None
+
+
+class TestHealthMonitorBackendDegraded:
+    def _backend(self, monkeypatch, tmp_path, *, probe, providers=1):
+        import asyncio
+
+        from core.runtime.health import HealthMonitor
+
+        conn = SimpleNamespace(provider="fake", base_url="http://127.0.0.1:9",
+                               api_key="k", default_headers={})
+        monkeypatch.setattr(
+            "core.llm.profile.iter_unique_provider_connections",
+            lambda config: [conn] if providers else [],
+        )
+        monkeypatch.setattr(
+            "httpx.get",
+            lambda *a, **k: SimpleNamespace(status_code=200),
+        )
+        monitor = HealthMonitor(
+            {"paths": {"data_dir": str(tmp_path)}},
+            project_root=tmp_path,
+            llm_activity=(lambda: probe) if probe is not None else None,
+        )
+        return asyncio.run(monitor._check_backend())
+
+    def test_models_ok_but_recent_429_marks_backend_not_ok(self, monkeypatch, tmp_path):
+        probe = {"error_class": "RateLimitError", "http_status": 429, "at": "now"}
+        backend = self._backend(monkeypatch, tmp_path, probe=probe)
+        assert backend["degraded"] is True
+        assert backend["degraded_reason"] == probe
+        assert backend["ok"] is False
+
+    def test_no_recent_429_keeps_backend_ok(self, monkeypatch, tmp_path):
+        backend = self._backend(monkeypatch, tmp_path, probe=None)
+        assert backend["degraded"] is False
+        assert backend["ok"] is True
+
+    def test_no_providers_and_recent_429_still_degraded(self, monkeypatch, tmp_path):
+        probe = {"error_class": "RateLimitError", "http_status": 429, "at": "now"}
+        backend = self._backend(monkeypatch, tmp_path, probe=probe, providers=0)
+        assert backend["degraded"] is True
+        assert backend["ok"] is False
+
+
+class TestHealthReadyEndpoint:
+    def test_ready_503_when_provider_429_in_window(self, client, auth_headers, monkeypatch):
+        probe = {"error_class": "RateLimitError", "http_status": 429, "at": "now"}
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: probe
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 503
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["llm_provider"]["ok"] is False
+        assert checks["llm_provider"]["reason"] == probe
+        assert checks["memory_hub"]["ok"] is True
+
+    def test_ready_200_when_no_recent_429(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 200
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["llm_provider"]["ok"] is True
+
+    def test_ready_503_when_configured_lavalink_is_down(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: {"checked": True, "ok": False, "error": "ConnectError"},
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 503
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"]["checked"] is True
+        assert checks["lavalink"]["ok"] is False
+
+    def test_ready_200_when_lavalink_is_not_configured(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: {"checked": False, "ok": True, "reason": "no music nodes"},
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 200
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"] == {
+            "name": "lavalink",
+            "checked": False,
+            "ok": True,
+            "reason": "no music nodes",
+        }
+
+
+    def test_ready_200_when_discord_is_disabled(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: False)
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: (_ for _ in ()).throw(AssertionError("must not probe")),
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 200
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"] == {
+            "name": "lavalink",
+            "checked": False,
+            "ok": True,
+            "reason": "discord disabled",
+        }
+
+    def test_ready_503_when_lavalink_probe_raises(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 503
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"] == {"name": "lavalink", "checked": True, "ok": False}
+
+    def test_ready_hides_lavalink_infrastructure(self, client, auth_headers, monkeypatch):
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+        monkeypatch.setattr(
+            "core.runtime.health.check_lavalink",
+            lambda config: {
+                "checked": True,
+                "ok": True,
+                "url": "http://user:pass@internal:2333",
+                "version": "4.2.2",
+                "plugins": ["soundy"],
+                "status_code": 200,
+            },
+        )
+        r = client.get("/v1/health/ready", headers=auth_headers["viewer"])
+        assert r.status_code == 200
+        raw = r.text
+        assert "internal:2333" not in raw
+        assert "user:pass" not in raw
+        assert "4.2.2" not in raw
+        assert "soundy" not in raw
+        checks = {c["name"]: c for c in r.json()["data"]["checks"]}
+        assert checks["lavalink"] == {"name": "lavalink", "checked": True, "ok": True, "status_code": 200}
+
+    def test_ready_caches_lavalink_probe(self, client, auth_headers, monkeypatch):
+        calls = {"enabled": 0, "probe": 0}
+        monkeypatch.setattr(
+            "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+        )
+
+        def enabled(root):
+            calls["enabled"] += 1
+            return True
+
+        def probe(config):
+            calls["probe"] += 1
+            return {"checked": True, "ok": True}
+
+        monkeypatch.setattr("core.runtime.health.discord_resident_enabled", enabled)
+        monkeypatch.setattr("core.runtime.health.check_lavalink", probe)
+        assert client.get("/v1/health/ready", headers=auth_headers["viewer"]).status_code == 200
+        assert client.get("/v1/health/ready", headers=auth_headers["viewer"]).status_code == 200
+        assert calls == {"enabled": 1, "probe": 1}
+
+
+def test_check_lavalink_accepts_any_live_node(monkeypatch):
+    from core.runtime.health import check_lavalink
+
+    config = {
+        "discord": {
+            "music": {
+                "nodes": [
+                    {"uri": "http://user:pass@down.invalid:2333"},
+                    {"uri": "http://up.invalid:2333"},
+                ]
+            }
+        }
+    }
+    calls = {"n": 0}
+
+    def fake_fetch(uri, password, deadline):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("down")
+        return 200, {"version": "4.2.2", "plugins": [{"name": "soundy"}]}
+
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", fake_fetch)
+    result = check_lavalink(config)
+    assert result["ok"] is True
+    assert result["checked"] is True
+    assert result["nodes_total"] == 2
+    assert result["nodes_ok"] == 1
+    assert result["version"] == "4.2.2"
+    assert "url" not in result
+    assert "pass" not in str(result)
+
+
+def test_check_lavalink_status_code_matches_live_node(monkeypatch):
+    from core.runtime.health import check_lavalink
+
+    config = {"discord": {"music": {"nodes": [{"uri": "http://one:2333"}, {"uri": "http://two:2333"}]}}}
+    calls = {"n": 0}
+
+    def fake_fetch(uri, password, deadline):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return 200, {"version": "4.2.2"}
+        return 500, {}
+
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", fake_fetch)
+    result = check_lavalink(config)
+    assert result["ok"] is True
+    assert result["status_code"] == 200
+    assert result["nodes_ok"] == 1
+    assert result["nodes_total"] == 2
+
+
+def test_check_lavalink_failure_fields_describe_same_node(monkeypatch):
+    from core.runtime.health import check_lavalink
+
+    config = {"discord": {"music": {"nodes": [{"uri": "http://one:2333"}, {"uri": "http://two:2333"}]}}}
+    calls = {"n": 0}
+
+    def fake_fetch(uri, password, deadline):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("down")
+        return 500, {}
+
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", fake_fetch)
+    result = check_lavalink(config)
+    assert result["ok"] is False
+    assert result["error"] == "RuntimeError"
+    assert "status_code" not in result
+
+
+def test_ready_single_flight_for_parallel_probes(client, auth_headers, monkeypatch):
+    import time as clock
+    from concurrent.futures import ThreadPoolExecutor
+
+    calls = {"probe": 0}
+    monkeypatch.setattr(
+        "core.agent.model_trace.recent_provider_rate_limit", lambda agent: None
+    )
+    monkeypatch.setattr("core.runtime.health.discord_resident_enabled", lambda root: True)
+
+    def probe(config):
+        calls["probe"] += 1
+        clock.sleep(0.1)
+        return {"checked": True, "ok": True}
+
+    monkeypatch.setattr("core.runtime.health.check_lavalink", probe)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(
+            pool.map(
+                lambda _: client.get("/v1/health/ready", headers=auth_headers["viewer"]).status_code,
+                range(2),
+            )
+        )
+    assert statuses == [200, 200]
+    assert calls["probe"] == 1
+
+
+def test_check_lavalink_stops_at_total_deadline(monkeypatch):
+    import threading
+    import time as clock
+
+    from core.runtime.health import check_lavalink
+
+    release = threading.Event()
+    calls: list[str] = []
+
+    def slow_fetch(uri, password, deadline):
+        calls.append(uri)
+        release.wait(5)
+        return 200, {}
+
+    monkeypatch.setattr("core.runtime.health._fetch_lavalink_info", slow_fetch)
+    config = {"discord": {"music": {"nodes": [{"uri": "http://one:2333"}, {"uri": "http://two:2333"}]}}}
+    started = clock.monotonic()
+    try:
+        result = check_lavalink(config)
+    finally:
+        release.set()
+    elapsed = clock.monotonic() - started
+    assert elapsed < 2.5
+    assert result["ok"] is False
+    assert result["error"] == "timeout"
+    assert calls == ["http://one:2333"]
+
+
+def test_fetch_lavalink_info_honours_deadline():
+    import time as clock
+
+    import httpx
+    import pytest
+
+    from core.runtime.health import _fetch_lavalink_info
+
+    class SlowStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b'{"version":'
+            clock.sleep(0.2)
+            yield b'"4.2.2"}'
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            stream=SlowStream(),
+        )
+    )
+    with pytest.raises(TimeoutError):
+        _fetch_lavalink_info(
+            "http://lavalink:2333",
+            "secret",
+            clock.monotonic() + 0.05,
+            transport=transport,
+        )
+
+
+def test_fetch_lavalink_info_caps_body_and_keeps_auth():
+    import httpx
+    import pytest
+
+    from core.runtime.health import _fetch_lavalink_info
+
+    captured = {}
+
+    def handler(request):
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b'{"v":"' + b"x" * 1_048_576 + b'"}',
+        )
+
+    with pytest.raises(ValueError, match="too large"):
+        _fetch_lavalink_info(
+            "http://lavalink:2333",
+            "secret",
+            __import__("time").monotonic() + 2.0,
+            transport=httpx.MockTransport(handler),
+        )
+    assert captured["auth"] == "secret"
+
+
+def test_fetch_lavalink_info_ignores_non_json():
+    import time as clock
+
+    import httpx
+
+    from core.runtime.health import _fetch_lavalink_info
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<html>no</html>",
+        )
+    )
+    status, payload = _fetch_lavalink_info(
+        "http://lavalink:2333",
+        "",
+        clock.monotonic() + 2.0,
+        transport=transport,
+    )
+    assert (status, payload) == (200, {})
+
+
+def _cli_config(tmp_path, *, cli_path=None, auth_file=None, talk_provider="oc"):
+    sandbox = tmp_path / "cli-sandbox"
+    sandbox.mkdir(exist_ok=True)
+    binary = tmp_path / "opencode"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+    auth = sandbox / "auth.json"
+    auth.write_text('{"api":{"type":"api","key":"k"}}\n', encoding="utf-8")
+    return {
+        "paths": {"data_dir": str(tmp_path)},
+        "llm": {
+            "provider": "aihope",
+            "providers": {
+                "aihope": {"base_url": "https://aihope.invalid/v1"},
+                "oc": {
+                    "kind": "cli",
+                    "experimental": True,
+                    "cli_path": str(cli_path or binary),
+                    "auth_file": str(auth_file or auth),
+                    "sandbox": str(sandbox),
+                },
+            },
+            "talk_model": {"provider": talk_provider, "model": "m"},
+            "brain_model": {"provider": "oc", "model": "m"},
+            "memory_model": {"provider": "oc", "model": "m"},
+            "vision_model": {"provider": "oc", "model": "m"},
+        },
+    }
+
+
+def test_all_cli_roles_have_no_openai_connections(tmp_path):
+    from core.llm.profile import iter_unique_provider_connections
+
+    assert iter_unique_provider_connections(_cli_config(tmp_path)) == []
+
+
+def test_all_cli_roles_report_ok_after_runtime_validation(monkeypatch, tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    monkeypatch.setattr("httpx.get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("http probe")))
+    monitor = HealthMonitor(_cli_config(tmp_path), project_root=tmp_path, llm_activity=None)
+    backend = asyncio.run(monitor._check_backend())
+    assert backend["ok"] is True
+    assert backend["provider"] == "oc"
+    assert backend["providers"][0]["provider"] == "oc"
+    assert backend["providers"][0]["probe"] == "cli"
+
+
+def test_all_cli_roles_report_broken_binary(monkeypatch, tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    monitor = HealthMonitor(
+        _cli_config(tmp_path, cli_path=tmp_path / "missing-opencode"),
+        project_root=tmp_path,
+        llm_activity=None,
+    )
+    backend = asyncio.run(monitor._check_backend())
+    assert backend["ok"] is False
+    assert backend["providers"][0]["error"] == "cli_path_unavailable"
+
+
+def test_cli_without_cli_path_uses_which(monkeypatch, tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    config = _cli_config(tmp_path)
+    binary = config["llm"]["providers"]["oc"].pop("cli_path")
+    config["llm"]["providers"]["oc"]["cli"] = "opencode"
+    monkeypatch.setattr("core.llm.cli_provider.shutil.which", lambda name: binary)
+    backend = asyncio.run(HealthMonitor(config, project_root=tmp_path)._check_backend())
+    assert backend["ok"] is True
+
+
+def test_relative_auth_file_resolves_from_data_dir(tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    config = _cli_config(tmp_path, auth_file="cli-sandbox/auth.json")
+    backend = asyncio.run(HealthMonitor(config, project_root=tmp_path)._check_backend())
+    assert backend["ok"] is True
+
+
+def test_auth_outside_sandbox_is_reported(tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    outside = tmp_path / "auth.json"
+    outside.write_text('{"api":{"type":"api","key":"k"}}\n', encoding="utf-8")
+    backend = asyncio.run(
+        HealthMonitor(
+            _cli_config(tmp_path, auth_file=outside),
+            project_root=tmp_path,
+        )._check_backend()
+    )
+    assert backend["ok"] is False
+    assert backend["providers"][0]["error"] == "cli_config_invalid"
+
+
+def test_mixed_http_and_cli_checks_both(monkeypatch, tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+
+    from core.runtime.health import HealthMonitor
+
+    monkeypatch.setattr("httpx.get", lambda *a, **k: SimpleNamespace(status_code=200))
+    config = _cli_config(tmp_path, talk_provider="aihope")
+    backend = asyncio.run(HealthMonitor(config, project_root=tmp_path)._check_backend())
+    assert backend["ok"] is True
+    assert [p["provider"] for p in backend["providers"]] == ["aihope", "oc"]
+
+    broken = _cli_config(
+        tmp_path, talk_provider="aihope", cli_path=tmp_path / "missing-opencode"
+    )
+    backend = asyncio.run(HealthMonitor(broken, project_root=tmp_path)._check_backend())
+    assert backend["ok"] is False
+    assert backend["providers"][1]["error"] == "cli_path_unavailable"
+
+
+def test_cli_branch_honors_rate_limit_degradation(tmp_path):
+    import asyncio
+
+    from core.runtime.health import HealthMonitor
+
+    probe = {"error_class": "RateLimitError", "http_status": 429, "at": "now"}
+    monitor = HealthMonitor(
+        _cli_config(tmp_path), project_root=tmp_path, llm_activity=lambda: probe
+    )
+    backend = asyncio.run(monitor._check_backend())
+    assert backend["ok"] is False
+    assert backend["degraded"] is True
+    assert backend["degraded_reason"] == probe

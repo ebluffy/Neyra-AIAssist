@@ -1,0 +1,2047 @@
+'use client';
+
+import React, { useCallback, useState, useRef, type FormEvent, useEffect, type KeyboardEvent } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import {
+  ArrowDown,
+  ArrowUp,
+  Copy,
+  Check,
+  Edit2,
+  FileText,
+  Image as ImageIcon,
+  Link as LinkIcon,
+  LogOut,
+  MessageSquare,
+  PanelLeft,
+  PanelRight,
+  Pin,
+  PinOff,
+  Plus,
+  RefreshCw,
+  Settings,
+  Shield,
+  Sparkles,
+  Square,
+  Trash2,
+  X,
+  History,
+  Activity,
+  Mic,
+} from 'lucide-react';
+import { SseChatEventSchema, StoredAttachmentSchema, TurnStatsSchema, type StoredAttachment, type TurnStats } from '@neyra/contracts';
+import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, ModelPicker, ShareDialog, type ContextUsage } from '../../components/ui';
+import { isEnabled } from '../../lib/feature-flags';
+import { signOut } from '../../../lib/auth-client';
+import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
+import { SettingsDialog } from '../../components/settings-dialog';
+import { emitToast } from '../../lib/toast';
+import { discordLinkErrorMessage } from '../../../lib/discord-link-errors';
+import { ChannelsNav } from '../../components/channels/channels-nav';
+import { AppSidebar, type ChatThreadItem } from '../../components/layout/app-sidebar';
+import { ThreadPanel, type ThreadPanelTab } from '../../components/chat/thread-panel';
+import {
+  archiveThread,
+  deleteMessageExchange,
+  fetchConversationMeta,
+  fetchThreadMessages,
+  fetchThreads,
+  renameThread,
+  type HistoryMessage,
+} from '../../../lib/chat-history';
+import { TurnStatsFooter } from '../../components/chat/turn-stats';
+import {
+  playModalOpenSound,
+  playModalCloseSound,
+  playButtonClickSound,
+  isUiSoundsEnabled,
+  setUiSoundsEnabled,
+} from '../../lib/ui-sounds';
+import { ru } from '../../i18n';
+
+export type ChatMessageAttachment = StoredAttachment;
+
+export interface ChatMessageItem {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  pending?: boolean;
+  error?: string | null;
+  isRetrying?: boolean;
+  attachments?: ChatMessageAttachment[];
+  stats?: TurnStats;
+  /** Подтверждено записью на сервере: без этого флага сообщение считается локальным. */
+  synced?: boolean;
+  /** Легаси-переписка до #105: уже сопоставлена с сервером и больше не участвует в merge. */
+  localOnly?: boolean;
+}
+
+function historyMessageToChat(item: HistoryMessage): ChatMessageItem {
+  return {
+    id: item.id,
+    role: item.role,
+    content: item.content,
+    error: item.status === 'error' ? item.errorCode || 'Ошибка при обработке ответа.' : null,
+    attachments: item.attachments ?? undefined,
+    synced: true,
+  };
+}
+
+function mergeThreads(primary: ChatThreadItem[], extra: ChatThreadItem[]): ChatThreadItem[] {
+  const seen = new Set(primary.map((item) => item.id));
+  const merged = [...primary, ...extra.filter((item) => item.id !== 'current' && !seen.has(item.id))];
+  return merged.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+}
+
+interface MergedHistory {
+  messages: ChatMessageItem[];
+  /** Легаси-сообщения получают серверный id: на них нужно перенести пины. */
+  pinIdMap: Map<string, string>;
+}
+
+/**
+ * Основа — серверный список (id общие, удаления с других устройств видны).
+ * С локальных копий по id переносятся stats/pending; локальные незаписанные
+ * сообщения остаются только хвостом после последнего серверного.
+ */
+function mergeHistoryMessages(local: ChatMessageItem[], server: ChatMessageItem[]): MergedHistory {
+  const pinIdMap = new Map<string, string>();
+  if (local.length === 0) return { messages: server, pinIdMap };
+
+  const serverIds = new Set(server.map((item) => item.id));
+  const byId = new Map(local.map((item) => [item.id, item]));
+  const localIndex = new Map(local.map((item, index) => [item.id, index]));
+
+  // Легаси (без флага synced) сопоставляем по порядку: очередь на каждый
+  // role:content, чтобы одинаковые реплики не забирали чужой пин. Сообщения
+  // с явным synced в очередь не попадают: у них уже есть id или свой статус.
+  const legacyQueues = new Map<string, ChatMessageItem[]>();
+  for (const item of local) {
+    if (serverIds.has(item.id) || !item.content || item.synced !== undefined || item.localOnly) continue;
+    const key = `${item.role}:${item.content}`;
+    const queue = legacyQueues.get(key) ?? [];
+    queue.push(item);
+    legacyQueues.set(key, queue);
+  }
+  const matched = new Set<string>();
+  const anchors: (number | null)[] = [];
+  const merged = server.map((item) => {
+    const exact = byId.get(item.id);
+    if (exact) {
+      matched.add(exact.id);
+      anchors.push(localIndex.get(exact.id) ?? null);
+      return {
+        ...item,
+        ...(exact.stats ? { stats: exact.stats } : {}),
+        ...(exact.pending ? { pending: true } : {}),
+        ...(exact.isRetrying ? { isRetrying: true } : {}),
+      };
+    }
+    const legacy = legacyQueues.get(`${item.role}:${item.content}`)?.shift();
+    if (!legacy) {
+      anchors.push(null);
+      return item;
+    }
+    matched.add(legacy.id);
+    anchors.push(localIndex.get(legacy.id) ?? null);
+    pinIdMap.set(legacy.id, item.id);
+    return { ...item, ...(legacy.stats ? { stats: legacy.stats } : {}) };
+  });
+
+  const unsynced = local.filter(
+    (item) => item.synced === false && !serverIds.has(item.id) && !matched.has(item.id),
+  );
+  // Легаси без пары на сервере (переписка до #105) сохраняем и ставим на своё
+  // место: перед первым серверным сообщением, чей локальный якорь позже него.
+  const keepLeft = local.flatMap((item, index) =>
+    (item.synced === undefined || item.localOnly)
+      && !serverIds.has(item.id)
+      && !matched.has(item.id)
+      ? [{ item: item.localOnly ? item : { ...item, localOnly: true }, index }]
+      : [],
+  );
+  if (keepLeft.length === 0) {
+    return { messages: [...merged, ...unsynced], pinIdMap };
+  }
+  if (anchors.every((anchor) => anchor === null)) {
+    return { messages: [...keepLeft.map((entry) => entry.item), ...merged, ...unsynced], pinIdMap };
+  }
+  const children: ChatMessageItem[][] = merged.map(() => []);
+  const trailing: ChatMessageItem[] = [];
+  let cursor = 0;
+  for (let i = 0; i < anchors.length; i += 1) {
+    const anchor = anchors[i];
+    if (anchor === null) continue;
+    for (const entry of keepLeft) {
+      if (entry.index >= cursor && entry.index < anchor) {
+        children[i].push(entry.item);
+        cursor = Math.max(cursor, entry.index + 1);
+      }
+    }
+    cursor = Math.max(cursor, anchor + 1);
+  }
+  for (const entry of keepLeft) {
+    if (entry.index >= cursor) trailing.push(entry.item);
+  }
+  const ordered = merged.flatMap((item, i) => [...children[i], item]);
+  return { messages: [...ordered, ...trailing, ...unsynced], pinIdMap };
+}
+
+function readLocalThreads(userId: string): ChatThreadItem[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(`neyra:threads:${userId}`);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function removeLocalThreadCache(userId: string, threadId: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${threadId}`);
+    window.localStorage.removeItem(`neyra:pinned-messages:${userId}:${threadId}`);
+    const threads = readLocalThreads(userId).filter((thread) => thread.id !== threadId);
+    window.localStorage.setItem(`neyra:threads:${userId}`, JSON.stringify(threads));
+  } catch {}
+}
+
+function normaliseStoredMessages(raw: unknown): ChatMessageItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item): ChatMessageItem[] => {
+    if (!item || typeof item !== 'object') return [];
+    const message = item as ChatMessageItem;
+    if ((message.role !== 'user' && message.role !== 'assistant') || typeof message.content !== 'string') return [];
+    if (!message.stats) return [message];
+    const stats = TurnStatsSchema.safeParse(message.stats);
+    if (stats.success) return [{ ...message, stats: stats.data }];
+    const rest = { ...message };
+    delete rest.stats;
+    return [rest];
+  });
+}
+
+
+function humanizeErrorMessage(rawError?: string | null): { message: string; hint?: string } {
+  if (!rawError) return { message: 'Произошла ошибка при обработке запроса.' };
+  const lower = rawError.toLowerCase();
+  if (lower.includes('rate_limit') || lower.includes('ratelimit') || lower.includes('429') || lower.includes('лимит') || lower.includes('openai') || lower.includes('quota')) {
+    return {
+      message: 'Модель упёрлась в лимит провайдера — попробуйте позже.',
+      hint: 'Сброс суточного лимита обычно происходит в 03:00 МСК.',
+    };
+  }
+  if (lower.includes('context') || lower.includes('контекст') || lower.includes('length')) {
+    return {
+      message: 'Запрос слишком длинный для контекста модели.',
+      hint: 'Попробуйте сократить текст или начать новый диалог.',
+    };
+  }
+  if (lower.includes('timeout') || lower.includes('таймаут') || lower.includes('не ответило вовремя')) {
+    return {
+      message: 'Ядро Нейры не ответило вовремя.',
+      hint: 'Попробуйте повторить запрос через несколько секунд.',
+    };
+  }
+  if (lower.includes('unavailable') || lower.includes('недоступен') || lower.includes('connect')) {
+    return {
+      message: 'Провайдер или сервис модели временно недоступен.',
+      hint: 'Попробуйте повторить запрос чуть позже.',
+    };
+  }
+  // Незнакомую причину показываем как есть: ядро уже отдаёт наружу только
+  // безопасные формулировки (сырой текст провайдера фильтруется на сервере).
+  const text = rawError.trim().slice(0, 240);
+  if (text) return { message: text };
+  return {
+    message: 'Не удалось подготовить ответ. Попробуйте ещё раз.',
+    hint: 'Если ошибка повторяется, проверьте состояние ядра в админке.',
+  };
+}
+
+export interface ChatViewProps {
+  user: { id: string; email?: string | null; name?: string | null; role?: string | null; discord_id?: string | null };
+  initialMessages?: ChatMessageItem[];
+  initialUsage?: ContextUsage | null;
+  initialThreadPanelOpen?: boolean;
+  initialThreadPanelTab?: ThreadPanelTab;
+  initialPinnedMessageIds?: string[];
+  initialThreads?: ChatThreadItem[];
+}
+
+export function ChatView({
+  user,
+  initialMessages,
+  initialUsage,
+  initialThreadPanelOpen,
+  initialThreadPanelTab,
+  initialPinnedMessageIds,
+  initialThreads,
+}: ChatViewProps) {
+  const router = useRouter();
+  const [messages, setMessages] = useState<ChatMessageItem[]>(() => {
+    if (initialMessages && initialMessages.length > 0) return initialMessages;
+    if (typeof window === 'undefined') return [];
+    try {
+      const currentTabChatId = resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
+      const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${currentTabChatId}`);
+      if (raw) {
+        return normaliseStoredMessages(JSON.parse(raw));
+      }
+    } catch {}
+    return [];
+  });
+  const [input, setInput] = useState('');
+  const [thinking, setThinking] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [lastUserMessage, setLastUserMessage] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [customTitle, setCustomTitle] = useState<string | null>(null);
+  const [threads, setThreads] = useState<ChatThreadItem[]>(initialThreads ?? []);
+  const hadMessagesRef = useRef<boolean>((initialMessages?.length ?? 0) > 0);
+  const localOnlyThreadIdsRef = useRef<Set<string> | null>(null);
+  const refreshSeqRef = useRef(0);
+  const messagesRevisionRef = useRef(0);
+  // Десктоп: сайдбар можно свернуть, чтобы чат занимал всё окно (§ волна 4).
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [shareActive, setShareActive] = useState<{ expiresAt: string | null } | null>(null);
+  const [shareLoading, setShareLoading] = useState(false);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const settingsParam = params.get('settings');
+    const openAccounts = settingsParam === 'accounts';
+    const linkFailed = params.get('link_error') === '1';
+    if (settingsParam) {
+      setSettingsOpen(true);
+      if (['profile', 'accounts', 'appearance', 'notifications', 'privacy', 'data', 'danger'].includes(settingsParam)) {
+        setSettingsTab(settingsParam as typeof settingsTab);
+      }
+    }
+    if (linkFailed) {
+      emitToast({
+        title: 'Discord',
+        message: discordLinkErrorMessage(params.get('error')),
+        tone: 'danger',
+      });
+    }
+    if (settingsParam || linkFailed) {
+      params.delete('error');
+      params.delete('link_error');
+      params.delete('settings');
+      const qs = params.toString();
+      window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''));
+    }
+  }, []);
+
+  const [settingsTab, setSettingsTab] = useState<'profile' | 'accounts' | 'appearance' | 'notifications' | 'privacy' | 'data' | 'danger'>('profile');
+
+  // Wave 5 Step 2: Thread Panel states
+  const [threadPanelOpen, setThreadPanelOpen] = useState(initialThreadPanelOpen ?? false);
+  const panelToggleRef = useRef<HTMLButtonElement | null>(null);
+  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
+  const [uiSoundsEnabled, setUiSoundsEnabledState] = useState(true);
+  const [compactViewEnabled, setCompactViewEnabled] = useState(false);
+  const [pinnedMessageIds, setPinnedMessageIds] = useState<string[]>(() => {
+    if (initialPinnedMessageIds && initialPinnedMessageIds.length > 0) return initialPinnedMessageIds;
+    return [];
+  });
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [panelInitialTab, setPanelInitialTab] = useState<ThreadPanelTab>(initialThreadPanelTab || 'about');
+
+  // V2 UI states
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [attachments, setAttachments] = useState<ChatMessageAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [attachmentsAvailable, setAttachmentsAvailable] = useState(true);
+  const [attachmentsChecked, setAttachmentsChecked] = useState(false);
+  const [uploadingCount, setUploadingCount] = useState(0);
+  const [phaseLabel, setPhaseLabel] = useState<string | null>(null);
+  const [usage, setUsage] = useState<ContextUsage | null>(() => initialUsage || null);
+
+  // AR-80: серверный признак онбординга проверяется в chat/page.tsx до рендера чата.
+  useEffect(() => {
+    try {
+      setSidebarCollapsed(window.localStorage.getItem('neyra:sidebar-collapsed') === '1');
+      if (initialThreadPanelOpen === undefined) {
+        const savedPanelOpen = window.localStorage.getItem('neyra:thread-panel-open');
+        // На телефоне панель — drawer на 320 px и закрывает чат с композером.
+        // Сохранённое «открыто» с десктопа не должно открывать её поверх чата.
+        const narrow = typeof window.matchMedia === 'function'
+          ? window.matchMedia('(max-width: 1023px)').matches
+          : false;
+        if (savedPanelOpen !== null && !narrow) {
+          setThreadPanelOpen(savedPanelOpen === '1');
+        }
+      }
+      const savedAutoScroll = window.localStorage.getItem('neyra:autoscroll');
+      if (savedAutoScroll !== null) {
+        setAutoScrollEnabled(savedAutoScroll !== '0');
+      }
+      setUiSoundsEnabledState(isUiSoundsEnabled());
+      const savedCompact = window.localStorage.getItem('neyra:compact-view');
+      if (savedCompact !== null) {
+        setCompactViewEnabled(savedCompact === '1');
+      }
+    } catch {}
+  }, [initialThreadPanelOpen]);
+
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  const attachMenuRef = useRef<HTMLDivElement | null>(null);
+  const profileTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  // Tab-scoped and user-bound chat id (§3, AR-1, AR-11)
+  const [chatId, setChatId] = useState(() => {
+    if (typeof window === 'undefined') return resolveChatId(null, 'ssr', user.id);
+    return resolveChatId(window.sessionStorage, resolveTabKey(window), user.id);
+  });
+  // Актуальный тред для асинхронной загрузки: результат не должен прилипнуть
+  // к диалогу, который уже сменили.
+  const chatIdRef = useRef(chatId);
+  useEffect(() => {
+    chatIdRef.current = chatId;
+  }, [chatId]);
+
+  useEffect(() => {
+    setShareOpen(false);
+    setShareUrl(null);
+    setShareActive(null);
+  }, [chatId]);
+
+  // Серверный список тредов. Локальный кэш подмешивается только для тредов,
+  // которых ещё нет на сервере (404), а архивные с других устройств выкидываются.
+  const refreshThreads = useCallback(async (
+    signal?: AbortSignal,
+    options: { reconcileLocal?: boolean } = {},
+  ) => {
+    if (typeof window === 'undefined') return;
+    const seq = refreshSeqRef.current + 1;
+    refreshSeqRef.current = seq;
+    let server: ChatThreadItem[] = [];
+    try {
+      const list = await fetchThreads(signal);
+      if (seq !== refreshSeqRef.current) return;
+      if (list === null) {
+        // 401/503: серверный список не трогаем, но локальные треды не прячем.
+        setThreads((prev) => mergeThreads(prev, readLocalThreads(user.id)));
+        return;
+      }
+      server = list.map((item) => ({
+        id: item.id,
+        title: item.title,
+        updatedAt: item.updatedAt,
+      }));
+    } catch {
+      setThreads((prev) => mergeThreads(prev, readLocalThreads(user.id)));
+      return;
+    }
+    if (signal?.aborted || seq !== refreshSeqRef.current) return;
+    const serverIds = new Set(server.map((thread) => thread.id));
+    if (options.reconcileLocal || localOnlyThreadIdsRef.current === null) {
+      const allowed = new Set(localOnlyThreadIdsRef.current ?? []);
+      for (const id of serverIds) allowed.delete(id);
+      for (const thread of readLocalThreads(user.id)) {
+        if (serverIds.has(thread.id)) continue;
+        if (signal?.aborted) return;
+        const meta = await fetchConversationMeta(thread.id, signal);
+        if (seq !== refreshSeqRef.current) return;
+        if (meta === null || meta === 'missing') {
+          allowed.add(thread.id);
+          continue;
+        }
+        if (meta.archived) {
+          removeLocalThreadCache(user.id, thread.id);
+          allowed.delete(thread.id);
+          continue;
+        }
+        allowed.add(thread.id);
+      }
+      localOnlyThreadIdsRef.current = allowed;
+    }
+    if (seq !== refreshSeqRef.current) return;
+    const allowed = localOnlyThreadIdsRef.current ?? new Set<string>();
+    const localOnly = readLocalThreads(user.id).filter(
+      (thread) => allowed.has(thread.id) && !serverIds.has(thread.id),
+    );
+    setThreads(mergeThreads(server, localOnly));
+  }, [user.id]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshThreads(controller.signal, { reconcileLocal: true });
+    return () => controller.abort();
+  }, [refreshThreads]);
+
+  // Заголовок активного треда приходит с сервера (в т.ч. после переименования
+  // на другом устройстве) и переживает reload.
+  useEffect(() => {
+    const current = threads.find((thread) => thread.id === chatId);
+    if (current) setCustomTitle(current.title);
+  }, [threads, chatId]);
+
+  // История текущего треда: сервер важнее локального кэша, но короткий
+  // локальный список (например, если запись только что сорвалась) не теряем.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const targetId = chatId;
+    const revision = messagesRevisionRef.current;
+    const controller = new AbortController();
+    void fetchThreadMessages(targetId, controller.signal)
+      .then((page) => {
+        if (controller.signal.aborted || chatIdRef.current !== targetId) return;
+        // Пока грузили историю, в тред добавили новый ход: старый ответ сервера
+        // не должен затирать его (ответ придёт после записи нового хода).
+        if (revision !== messagesRevisionRef.current) return;
+        if (!page) return;
+        const mapped = page.messages.map(historyMessageToChat);
+        setMessages((prev) => {
+          const merged = mergeHistoryMessages(prev, mapped);
+          if (merged.pinIdMap.size > 0) {
+            setPinnedMessageIds((pins) => {
+              const next = pins.map((id) => merged.pinIdMap.get(id) ?? id);
+              if (next.some((id, index) => id !== pins[index])) {
+                try {
+                  window.localStorage.setItem(
+                    `neyra:pinned-messages:${user.id}:${targetId}`,
+                    JSON.stringify(next),
+                  );
+                } catch {}
+              }
+              return next;
+            });
+          }
+          return merged.messages;
+        });
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [chatId]);
+
+  // Load pinned messages whenever chatId or user.id changes
+  useEffect(() => {
+    if (initialPinnedMessageIds !== undefined) return;
+    if (typeof window === 'undefined' || !chatId || !user?.id) {
+      setPinnedMessageIds([]);
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(`neyra:pinned-messages:${user.id}:${chatId}`);
+      setPinnedMessageIds(raw ? JSON.parse(raw) : []);
+    } catch {
+      setPinnedMessageIds([]);
+    }
+  }, [chatId, user?.id, initialPinnedMessageIds]);
+
+  // Leave page cancels active upstream connection
+  useEffect(() => () => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+  }, []);
+
+  // Keyboard navigation & global close on Escape
+  useEffect(() => {
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // Esc принадлежит верхнему слою: модалка настроек/админки, затем меню.
+      if (document.querySelector('[role="dialog"][aria-modal="true"], dialog[open]')) return;
+      if (profileMenuOpen) {
+        setProfileMenuOpen(false);
+        return;
+      }
+      setSidebarOpen(false);
+      setAttachMenuOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [profileMenuOpen]);
+
+  // Close menus on outside click
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (profileMenuRef.current && !profileMenuRef.current.contains(target) && !profileTriggerRef.current?.contains(target)) {
+        setProfileMenuOpen(false);
+      }
+      if (attachMenuRef.current && !attachMenuRef.current.contains(target)) {
+        setAttachMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  // Scroll detection for "Вниз" floating pill
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setShowScrollDown(distanceToBottom > 120);
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Auto-scroll when new messages arrive if near bottom
+  useEffect(() => {
+    if (autoScrollEnabled && !showScrollDown) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, thinking, showScrollDown, autoScrollEnabled]);
+
+  // Auto-resize textarea
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = '24px';
+    const newHeight = Math.min(Math.max(textarea.scrollHeight, 24), 144);
+    textarea.style.height = `${newHeight}px`;
+  }, [input]);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    setShowScrollDown(false);
+  };
+
+  // Sync messages & thread list to localStorage per user (§3, AR-12)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !chatId || !user?.id) return;
+    const threadsKey = `neyra:threads:${user.id}`;
+    const msgsKey = `neyra:thread-messages:${user.id}:${chatId}`;
+
+    try {
+      if (messages.length > 0) {
+        // Save thread messages
+        window.localStorage.setItem(msgsKey, JSON.stringify(messages));
+
+        // Derive thread title from first user message
+        const firstUser = messages.find((m) => m.role === 'user')?.content.trim();
+        const derivedTitle = customTitle || (firstUser ? firstUser.split('\n')[0].slice(0, 80) : 'Диалог');
+
+        const rawThreads = window.localStorage.getItem(threadsKey);
+        let list: { id: string; title: string; updatedAt: string }[] = rawThreads ? JSON.parse(rawThreads) : [];
+        const existingIdx = list.findIndex((t) => t.id === chatId);
+        if (existingIdx >= 0) {
+          list[existingIdx] = {
+            ...list[existingIdx],
+            title: derivedTitle,
+            updatedAt: new Date().toISOString(),
+          };
+        } else {
+          list = [
+            {
+              id: chatId,
+              title: derivedTitle,
+              updatedAt: new Date().toISOString(),
+            },
+            ...list,
+          ];
+        }
+        window.localStorage.setItem(threadsKey, JSON.stringify(list));
+        setThreads((prev) => {
+          const now = new Date().toISOString();
+          const idx = prev.findIndex((thread) => thread.id === chatId);
+          if (idx >= 0) {
+            // Заголовок не трогаем: серверный важнее, а переименование
+            // применяется в handleRenameThread после успешного PATCH.
+            return prev.map((thread, i) =>
+              i === idx
+                ? { ...thread, updatedAt: now }
+                : thread,
+            );
+          }
+          // Новый тред появляется в списке после ответа сервера: кэш не должен
+          // перекрывать серверный заголовок и порядок.
+          return prev;
+        });
+      } else {
+        // When messages are empty (new chat or deleted exchange)
+        window.localStorage.removeItem(msgsKey);
+        const rawThreads = window.localStorage.getItem(threadsKey);
+        if (rawThreads) {
+          const list: { id: string; title: string }[] = JSON.parse(rawThreads);
+          const filtered = list.filter((t) => t.id !== chatId);
+          window.localStorage.setItem(threadsKey, JSON.stringify(filtered));
+        }
+        if (hadMessagesRef.current) {
+          setThreads((prev) => prev.filter((thread) => thread.id !== chatId));
+          setCustomTitle(null);
+        }
+      }
+    } catch {}
+    hadMessagesRef.current = messages.length > 0;
+  }, [messages, chatId, user?.id, customTitle]);
+
+  const switchThread = (targetThreadId: string) => {
+    if (streaming) {
+      stopGeneration();
+    }
+    setChatId(targetThreadId);
+    chatIdRef.current = targetThreadId;
+    // Состояние композера и индикаторов принадлежит прошлому треду: не переносим
+    // вложения, usage и фазу в чужой диалог.
+    setAttachments([]);
+    setAttachmentError(null);
+    setAttachMenuOpen(false);
+    setUsage(null);
+    setPhaseLabel(null);
+    try {
+      sessionStorage.setItem(`neyra.chat_id:${user.id}:${resolveTabKey(window)}`, targetThreadId);
+      const raw = window.localStorage.getItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
+      if (raw) {
+        setMessages(JSON.parse(raw));
+      } else {
+        setMessages([]);
+      }
+      const rawPins = window.localStorage.getItem(`neyra:pinned-messages:${user.id}:${targetThreadId}`);
+      setPinnedMessageIds(rawPins ? JSON.parse(rawPins) : []);
+      const targetThread = threads.find((t) => t.id === targetThreadId);
+      if (targetThread) {
+        setCustomTitle(targetThread.title);
+      } else {
+        const rawThreads = window.localStorage.getItem(`neyra:threads:${user.id}`);
+        if (rawThreads) {
+          const list = JSON.parse(rawThreads);
+          const localThread = list.find((t: any) => t.id === targetThreadId);
+          setCustomTitle(localThread ? localThread.title : null);
+        }
+      }
+    } catch {
+      setMessages([]);
+      setPinnedMessageIds([]);
+    }
+    setSidebarOpen(false);
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  };
+
+  const deleteThread = (targetThreadId: string) => {
+    void archiveThread(targetThreadId).then((ok) => {
+      if (!ok) {
+        emitToast({
+          title: 'Диалог',
+          message: 'Не удалось удалить диалог. Попробуйте ещё раз.',
+          tone: 'danger',
+        });
+        return;
+      }
+      removeLocalThreadCache(user.id, targetThreadId);
+      localOnlyThreadIdsRef.current?.delete(targetThreadId);
+      setThreads((prev) => prev.filter((thread) => thread.id !== targetThreadId));
+      if (chatIdRef.current === targetThreadId) {
+        startNewChat();
+      }
+    });
+  };
+
+  const startNewChat = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    const newId =
+      typeof window === 'undefined'
+        ? resolveChatId(null, 'ssr', user.id)
+        : resetChatId(window.sessionStorage, resolveTabKey(window), user.id);
+    setChatId(newId);
+    chatIdRef.current = newId;
+    setMessages([]);
+    setPinnedMessageIds([]);
+    setCustomTitle(null);
+    setThinking(false);
+    setStreaming(false);
+    setSidebarOpen(false);
+    setAttachments([]);
+    setAttachmentError(null);
+    setUsage(null);
+    setPhaseLabel(null);
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  };
+
+  const handleToggleThreadPanel = () => {
+    setThreadPanelOpen((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem('neyra:thread-panel-open', next ? '1' : '0');
+      } catch {}
+      if (next) {
+        playModalOpenSound();
+      } else {
+        playModalCloseSound();
+      }
+      return next;
+    });
+  };
+
+  const handleCloseThreadPanel = () => {
+    setThreadPanelOpen(false);
+    try {
+      window.localStorage.setItem('neyra:thread-panel-open', '0');
+    } catch {}
+    playModalCloseSound();
+    panelToggleRef.current?.focus();
+  };
+
+  // «Начать диалог» из панели треда: на узком экране закрываем drawer,
+  // затем ставим фокус в поле ввода, чтобы сразу писать.
+  const handleStartChatFromPanel = () => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
+      setThreadPanelOpen(false);
+      try {
+        window.localStorage.setItem('neyra:thread-panel-open', '0');
+      } catch {}
+    }
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  // «Прикрепить файл» из пустой вкладки «Вложения»: на узком экране
+  // закрываем панель и сразу открываем системный выбор файла.
+  const handleAttachFileFromPanel = () => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
+      setThreadPanelOpen(false);
+      try {
+        window.localStorage.setItem('neyra:thread-panel-open', '0');
+      } catch {}
+    }
+    requestAnimationFrame(() => fileInputRef.current?.click());
+  };
+
+  const handleTogglePinMessage = (msgId: string) => {
+    setPinnedMessageIds((prev) => {
+      const isPinned = prev.includes(msgId);
+      const next = isPinned ? prev.filter((id) => id !== msgId) : [...prev, msgId];
+      try {
+        window.localStorage.setItem(`neyra:pinned-messages:${user.id}:${chatId}`, JSON.stringify(next));
+      } catch {}
+      playButtonClickSound();
+      return next;
+    });
+  };
+
+  const handleJumpToMessage = (msgId: string) => {
+    const el = document.getElementById(`message-${msgId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setHighlightedMessageId(msgId);
+      setTimeout(() => {
+        setHighlightedMessageId(null);
+      }, 1500);
+    }
+  };
+
+  const handleRenameThread = (newTitle: string) => {
+    const trimmed = newTitle.trim();
+    if (!trimmed) return;
+    void renameThread(chatId, trimmed).then((ok) => {
+      if (!ok) {
+        emitToast({
+          title: 'Диалог',
+          message: 'Не удалось переименовать диалог. Попробуйте ещё раз.',
+          tone: 'danger',
+        });
+        return;
+      }
+      setCustomTitle(trimmed);
+      setThreads((prev) =>
+        prev.map((thread) =>
+          thread.id === chatId
+            ? { ...thread, title: trimmed, updatedAt: new Date().toISOString() }
+            : thread,
+        ),
+      );
+      try {
+        const threadsKey = `neyra:threads:${user.id}`;
+        const list = readLocalThreads(user.id);
+        const idx = list.findIndex((thread) => thread.id === chatId);
+        if (idx >= 0) {
+          list[idx] = { ...list[idx], title: trimmed, updatedAt: new Date().toISOString() };
+          window.localStorage.setItem(threadsKey, JSON.stringify(list));
+        }
+      } catch {}
+    });
+  };
+
+  const handleOpenShare = async () => {
+    setShareOpen(true);
+    setShareUrl(null);
+    setShareActive(null);
+    try {
+      const response = await fetch(`/api/conversations/${chatId}/share`, {
+        headers: { accept: 'application/json' },
+      });
+      if (!response.ok) return;
+      const payload = await response.json().catch(() => null) as {
+        data?: { active?: boolean; expires_at?: string | null };
+      } | null;
+      if (payload?.data?.active) {
+        setShareActive({ expiresAt: payload.data.expires_at ?? null });
+      }
+    } catch {
+      // Не блокируем диалог: создать ссылку всё равно можно.
+    }
+  };
+
+  const handleCreateShare = async (options: { ttl: '24h' | '7d' | '30d' | 'never' }) => {
+    setShareLoading(true);
+    try {
+      const response = await fetch(`/api/conversations/${chatId}/share`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ ttl: options.ttl }),
+      });
+      const payload = await response.json().catch(() => null) as {
+        data?: { url?: string; expires_at?: string | null };
+        error?: string;
+      } | null;
+      const path = payload?.data?.url;
+      if (!response.ok || !path) {
+        emitToast({
+          title: 'Поделиться',
+          message:
+            payload?.error === 'not_found'
+              ? 'Сначала отправьте сообщение в этот диалог.'
+              : 'Не удалось создать ссылку. Попробуйте ещё раз.',
+          tone: 'danger',
+        });
+        return;
+      }
+      setShareUrl(`${window.location.origin}${path}`);
+      setShareActive({ expiresAt: payload?.data?.expires_at ?? null });
+    } catch {
+      emitToast({
+        title: 'Поделиться',
+        message: 'Не удалось создать ссылку. Попробуйте ещё раз.',
+        tone: 'danger',
+      });
+    } finally {
+      setShareLoading(false);
+    }
+  };
+
+  const handleRevokeShare = async () => {
+    try {
+      const response = await fetch(`/api/conversations/${chatId}/share`, {
+        method: 'DELETE',
+        headers: { accept: 'application/json' },
+      });
+      if (!response.ok) throw new Error('revoke_failed');
+      setShareUrl(null);
+      setShareActive(null);
+      emitToast({ message: 'Ссылка отозвана', tone: 'success' });
+    } catch {
+      emitToast({
+        title: 'Поделиться',
+        message: 'Не удалось отозвать ссылку. Попробуйте ещё раз.',
+        tone: 'danger',
+      });
+    }
+  };
+
+  const handleClearThread = () => {
+    const targetId = chatId;
+    void archiveThread(targetId).then((ok) => {
+      if (!ok) {
+        emitToast({
+          title: 'Диалог',
+          message: 'Не удалось очистить диалог. Попробуйте ещё раз.',
+          tone: 'danger',
+        });
+        return;
+      }
+      removeLocalThreadCache(user.id, targetId);
+      localOnlyThreadIdsRef.current?.delete(targetId);
+      setThreads((prev) => prev.filter((thread) => thread.id !== targetId));
+      if (chatIdRef.current === targetId) startNewChat();
+      playButtonClickSound();
+    });
+  };
+
+  const handleToggleAutoScroll = (enabled: boolean) => {
+    setAutoScrollEnabled(enabled);
+    try {
+      window.localStorage.setItem('neyra:autoscroll', enabled ? '1' : '0');
+    } catch {}
+  };
+
+  const handleToggleUiSounds = (enabled: boolean) => {
+    setUiSoundsEnabledState(enabled);
+    setUiSoundsEnabled(enabled);
+  };
+
+  const handleToggleCompactView = (enabled: boolean) => {
+    setCompactViewEnabled(enabled);
+    try {
+      window.localStorage.setItem('neyra:compact-view', enabled ? '1' : '0');
+    } catch {}
+  };
+
+  // Close thread panel on Escape key and return focus to toggle button
+  useEffect(() => {
+    if (!threadPanelOpen) return;
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // Верхний слой (настройки/админка) закрывает сам себя; панель не трогаем.
+      if (document.querySelector('[role="dialog"][aria-modal="true"], dialog[open]')) return;
+      if (profileMenuOpen) return;
+      e.stopPropagation();
+      handleCloseThreadPanel();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [threadPanelOpen, profileMenuOpen]);
+
+  const stopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setStreaming(false);
+    setThinking(false);
+    setMessages(prev =>
+      prev.map(m => (m.pending ? { ...m, pending: false } : m))
+    );
+    void refreshThreads();
+  };
+
+  const handleCopyMessage = async (msgId: string, content: string) => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(content);
+        setCopiedMessageId(msgId);
+        setTimeout(() => setCopiedMessageId(null), 2000);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  // Возможность вложений проверяем один раз при открытии меню: при выключенном
+  // ядре кнопка честно гаснет, а не обещает загрузку.
+  const toggleAttachMenu = async () => {
+    if (attachMenuOpen) {
+      setAttachMenuOpen(false);
+      return;
+    }
+    if (!attachmentsChecked) {
+      try {
+        const response = await fetch('/api/attachments', { cache: 'no-store' });
+        const payload = await response.json().catch(() => null) as { available?: boolean; message?: string } | null;
+        setAttachmentsChecked(true);
+        if (payload?.available === false) {
+          setAttachmentsAvailable(false);
+          setAttachmentError(payload.message || 'Вложения скоро: ядро не подключено.');
+          return;
+        }
+      } catch {
+        // Сеть недоступна — не блокируем меню, ошибка покажется при загрузке.
+      }
+    }
+    setAttachMenuOpen(true);
+  };
+
+  // Attachment handling (§3.2: limit 4 files, 8MB each). Файл сначала уходит
+  // в /api/attachments, и в сообщение попадают только id/kind/mime/name/size из ответа.
+  const handleFilesSelected = async (files: FileList | null) => {
+    setAttachMenuOpen(false);
+    if (!files || files.length === 0) return;
+
+    setAttachmentError(null);
+    if (!attachmentsAvailable) {
+      setAttachmentError('Вложения скоро: ядро не подключено.');
+      return;
+    }
+
+    const maxFiles = 4;
+    const maxSizeBytes = 8 * 1024 * 1024; // 8 MB
+    const selected = Array.from(files);
+
+    if (attachments.length + selected.length > maxFiles) {
+      setAttachmentError(`Максимум ${maxFiles} файла(ов).`);
+      return;
+    }
+    for (const file of selected) {
+      if (file.size > maxSizeBytes) {
+        setAttachmentError(`Файл «${file.name}» превышает лимит 8 МБ.`);
+        return;
+      }
+    }
+
+    setUploadingCount(count => count + 1);
+    const uploadChatId = chatId;
+    try {
+      const form = new FormData();
+      form.set('chat_id', uploadChatId);
+      for (const file of selected) form.append('files', file, file.name);
+      const response = await fetch('/api/attachments', { method: 'POST', body: form });
+      const payload = await response.json().catch(() => null) as {
+        attachments?: unknown;
+        data?: { attachments?: unknown };
+        error?: string;
+        message?: string;
+      } | null;
+
+      if (!response.ok) {
+        if (payload?.error === 'attachments_unavailable') setAttachmentsAvailable(false);
+        throw new Error(payload?.message || 'Не удалось загрузить вложение.');
+      }
+
+      const raw = Array.isArray(payload?.attachments) ? payload.attachments : payload?.data?.attachments;
+      const parsed = StoredAttachmentSchema.array().safeParse(raw);
+      if (!parsed.success || parsed.data.length !== selected.length) {
+        throw new Error('Ядро вернуло вложение в неизвестном формате.');
+      }
+      if (chatIdRef.current !== uploadChatId) return;
+      setAttachments(prev => [...prev, ...parsed.data]);
+    } catch (error) {
+      if (chatIdRef.current === uploadChatId) {
+        setAttachmentError(error instanceof Error ? error.message : 'Не удалось загрузить вложение.');
+      }
+    } finally {
+      setUploadingCount(count => Math.max(0, count - 1));
+    }
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments(prev => prev.filter(a => a.id !== id));
+    setAttachmentError(null);
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} Б`;
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} КБ`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+  };
+
+  const markHistorySynced = (assistantId: string) => {
+    setMessages((prev) => {
+      const index = prev.findIndex((item) => item.id === assistantId);
+      if (index < 0) return prev;
+      return prev.map((item, i) =>
+        item.id === assistantId || (i === index - 1 && item.role === 'user')
+          ? { ...item, synced: true }
+          : item,
+      );
+    });
+  };
+
+  // Helper to execute SSE request
+  const executeChatRequest = async (
+    textToSend: string,
+    targetAssistantMsgId: string,
+    currentAttachments: ChatMessageAttachment[],
+    options: { userMessageId?: string; retry?: boolean } = {},
+  ) => {
+    setThinking(true);
+    setStreaming(true);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    let assistantText = '';
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: textToSend,
+          chat_id: chatId,
+          attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
+          assistant_message_id: targetAssistantMsgId,
+          ...(options.userMessageId ? { user_message_id: options.userMessageId } : {}),
+          ...(options.retry ? { retry: true } : {}),
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        void refreshThreads();
+        let errDesc =
+          response.status === 502 || response.status === 503
+            ? 'Сервис Нейры временно недоступен. Попробуйте повторить запрос позже.'
+            : `Ошибка сервера (HTTP ${response.status})`;
+        try {
+          const errData = await response.json();
+          if (errData?.message) errDesc = errData.message;
+          else if (errData?.error) errDesc = errData.error;
+        } catch {
+          // non-JSON error
+        }
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === targetAssistantMsgId
+              ? { ...m, pending: false, error: errDesc, isRetrying: false }
+              : m
+          )
+        );
+        return;
+      }
+
+      if (!response.body) {
+        void refreshThreads();
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === targetAssistantMsgId
+              ? { ...m, pending: false, error: 'Сервер не вернул поток ответа.', isRetrying: false }
+              : m
+          )
+        );
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const jsonStr = trimmed.slice(5).trim();
+          if (!jsonStr) continue;
+
+          try {
+            const rawEvent = JSON.parse(jsonStr);
+            const parsed = SseChatEventSchema.safeParse(rawEvent);
+            if (!parsed.success) continue;
+            const event = parsed.data;
+
+            if (event.type === 'token') {
+              setThinking(false);
+              setPhaseLabel(null);
+              assistantText += event.text;
+              const updatedText = assistantText;
+              setMessages(prev =>
+                prev.map(m =>
+                  m.id === targetAssistantMsgId
+                    ? { ...m, content: updatedText, error: null, isRetrying: false, pending: true }
+                    : m
+                )
+              );
+            } else if (event.type === 'thinking') {
+              setThinking(true);
+            } else if (event.type === 'phase') {
+              setThinking(true);
+              setPhaseLabel(event.label || event.phase);
+            } else if (event.type === 'done') {
+              setThinking(false);
+              setPhaseLabel(null);
+              if (event.text || event.turn_stats) {
+                if (event.text) assistantText = event.text;
+                setMessages(prev =>
+                  prev.map(m =>
+                    m.id === targetAssistantMsgId
+                      ? {
+                          ...m,
+                          ...(event.text ? { content: event.text } : {}),
+                          ...(event.turn_stats ? { stats: event.turn_stats } : {}),
+                          pending: false,
+                          error: null,
+                          isRetrying: false,
+                        }
+                      : m
+                  )
+                );
+              }
+              if (event.usage) setUsage(event.usage);
+              if (event.history_saved === true) markHistorySynced(targetAssistantMsgId);
+              void refreshThreads();
+            } else if (event.type === 'error') {
+              setThinking(false);
+              setPhaseLabel(null);
+              void refreshThreads();
+              if (event.history_saved === true) markHistorySynced(targetAssistantMsgId);
+              const errMsg = event.message || 'Ошибка обработки запроса.';
+              setMessages(prev =>
+                prev.map(m =>
+                  m.id === targetAssistantMsgId
+                    ? { ...m, pending: false, error: errMsg, isRetrying: false }
+                    : m
+                )
+              );
+            }
+          } catch {
+            // Ignore non-json fragments
+          }
+        }
+      }
+
+      setMessages(prev =>
+        prev.map(m =>
+          m.id === targetAssistantMsgId
+            ? { ...m, pending: false, isRetrying: false }
+            : m
+        )
+      );
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        // Stopped by user
+      } else {
+        void refreshThreads();
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === targetAssistantMsgId
+              ? { ...m, pending: false, error: ru.networkError, isRetrying: false }
+              : m
+          )
+        );
+      }
+    } finally {
+      setStreaming(false);
+      setThinking(false);
+      setPhaseLabel(null);
+      abortControllerRef.current = null;
+    }
+  };
+
+  const sendMessage = async (textToSend: string) => {
+    const text = textToSend.trim();
+    if (!text || streaming || uploadingCount > 0) return;
+
+    setInput('');
+    setLastUserMessage(text);
+    const activeAttachments = [...attachments];
+    setAttachments([]);
+    setAttachmentError(null);
+
+    const userMsgId = crypto.randomUUID();
+    const assistantMsgId = crypto.randomUUID();
+    messagesRevisionRef.current += 1;
+
+    // Новый тред виден сразу, даже если ядро ответит 502 до hello.
+    localOnlyThreadIdsRef.current = new Set([
+      ...(localOnlyThreadIdsRef.current ?? []),
+      chatId,
+    ]);
+    setThreads((prev) => {
+      if (prev.some((thread) => thread.id === chatId)) return prev;
+      const title = text.split('\n')[0].trim().slice(0, 80) || 'Новый диалог';
+      return [{ id: chatId, title, updatedAt: new Date().toISOString() }, ...prev];
+    });
+
+    setMessages(prev => [
+      ...prev,
+      { id: userMsgId, role: 'user', content: text, attachments: activeAttachments, synced: false },
+      { id: assistantMsgId, role: 'assistant', content: '', pending: true, synced: false },
+    ]);
+
+    await executeChatRequest(text, assistantMsgId, activeAttachments, { userMessageId: userMsgId });
+  };
+
+  // V2 Retry flow (§4.1): Reuses existing exchange, shows spinner in error block, no duplicate user message
+  const handleRetry = async (assistantMsgId: string) => {
+    if (streaming) return;
+
+    const assistantIndex = messages.findIndex(m => m.id === assistantMsgId);
+    if (assistantIndex === -1) return;
+
+    // Find preceding user message
+    let userText = lastUserMessage;
+    let userMessageId: string | undefined;
+    let userAttachments: ChatMessageAttachment[] = [];
+    for (let i = assistantIndex - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        userText = messages[i].content;
+        userMessageId = messages[i].id;
+        // В localStorage могли остаться вложения старого формата (local id/isImage).
+        // В ядро уходят только метаданные, прошедшие StoredAttachmentSchema.
+        userAttachments = (messages[i].attachments ?? []).flatMap((attachment) => {
+          const parsed = StoredAttachmentSchema.safeParse(attachment);
+          return parsed.success ? [parsed.data] : [];
+        });
+        break;
+      }
+    }
+
+    if (!userText) return;
+    messagesRevisionRef.current += 1;
+
+    // Mark assistant message as retrying with spinner
+    setMessages(prev =>
+      prev.map(m =>
+        m.id === assistantMsgId
+          ? { ...m, isRetrying: true, content: '' }
+          : m
+      )
+    );
+
+    await executeChatRequest(userText, assistantMsgId, userAttachments, { retry: true, userMessageId });
+  };
+
+  // V2 Delete exchange (§4.1): Removes error and its preceding user message
+  const handleDeleteExchange = (assistantMsgId: string) => {
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.id === assistantMsgId);
+      if (idx === -1) return prev;
+      if (idx > 0 && prev[idx - 1].role === 'user') {
+        return prev.filter((_, i) => i !== idx && i !== idx - 1);
+      }
+      return prev.filter(m => m.id !== assistantMsgId);
+    });
+    void deleteMessageExchange(chatId, assistantMsgId).then((ok) => {
+      if (!ok) {
+        emitToast({
+          title: 'Диалог',
+          message: 'Не удалось удалить обмен из истории. После перезагрузки он может вернуться.',
+          tone: 'danger',
+        });
+      }
+    });
+  };
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    sendMessage(input);
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage(input);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+      router.replace('/login');
+      router.refresh();
+    } catch {
+      router.replace('/login');
+    }
+  };
+
+  // Keyboard navigation for profile menu
+  const handleProfileMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setProfileMenuOpen(false);
+      profileTriggerRef.current?.focus();
+      return;
+    }
+    const items = profileMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]');
+    if (!items || items.length === 0) return;
+
+    const currentIndex = Array.from(items).indexOf(document.activeElement as HTMLElement);
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIndex = currentIndex < items.length - 1 ? currentIndex + 1 : 0;
+      items[nextIndex]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIndex = currentIndex > 0 ? currentIndex - 1 : items.length - 1;
+      items[prevIndex]?.focus();
+    }
+  };
+
+  // Derive thread title for header (truncated via CSS)
+  const firstUserMsg = messages.find(m => m.role === 'user')?.content.trim();
+  const threadTitle = customTitle || (messages.length > 0
+    ? (firstUserMsg ? firstUserMsg.split('\n')[0] : 'Диалог')
+    : ru.chat);
+
+  return (
+    <div data-chat-shell className="relative flex h-[100svh] min-h-0 w-full bg-[var(--bg)] text-[var(--text)] overflow-hidden">
+      <AmbientBackground />
+      <AppSidebar
+        activeSection="chat"
+        user={user}
+        threadTitle={threadTitle}
+        activeThreadId={chatId}
+        onNewChat={startNewChat}
+        onSelectThread={switchThread}
+        onDeleteThread={deleteThread}
+        threads={threads}
+        mobileOpen={sidebarOpen}
+        onCloseMobile={() => setSidebarOpen(false)}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
+
+      {/* Main Column */}
+      <div className="flex-1 flex flex-col h-full overflow-hidden relative">
+        {/* Header 56px (§2: No «← На главную», mobile menu on right with «Новый чат») */}
+        <header
+          data-context="thread-header"
+          data-id={chatId}
+          data-title={threadTitle}
+          className="h-14 min-h-[56px] border-b border-[var(--border)] bg-[var(--bg)] px-3 sm:px-4 flex items-center justify-between gap-2 z-20 pt-[env(safe-area-inset-top)]"
+        >
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 mr-2">
+            <IconButton
+              type="button"
+              aria-label="Открыть панель"
+              tooltip="Открыть панель"
+              icon={<PanelLeft size={18} />}
+              variant="ghost"
+              size="md"
+              className="lg:hidden text-[var(--text-muted)] shrink-0"
+              onClick={() => setSidebarOpen(true)}
+            />
+            <h1
+              className="text-[15px] font-medium text-[var(--text)] truncate min-w-0 max-w-[260px] sm:max-w-[400px] md:max-w-xl"
+              title={threadTitle}
+            >
+              {threadTitle}
+            </h1>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[var(--radius-sm)] bg-[var(--surface-2)] text-xs text-[var(--text-muted)] border border-[var(--border)]">
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--success)]" />
+              <span>Neyra AI</span>
+            </span>
+            <IconButton
+              ref={panelToggleRef}
+              type="button"
+              aria-label="Панель треда"
+              tooltip="Панель треда"
+              aria-expanded={threadPanelOpen}
+              icon={<PanelRight size={18} />}
+              variant={threadPanelOpen ? 'secondary' : 'ghost'}
+              size="md"
+              className={`shrink-0 ${threadPanelOpen ? 'text-[var(--text)] bg-[var(--surface-3)]' : 'text-[var(--text-muted)]'}`}
+              onClick={handleToggleThreadPanel}
+            />
+          </div>
+        </header>
+
+        {/* Content Area with Split Layout for Right Thread Panel */}
+        <div className="flex-1 flex flex-row min-h-0 overflow-hidden relative">
+          {/* Main Feed Column */}
+          <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden relative">
+
+        {/* Messages Feed (max 720px column) (§3) */}
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 overflow-y-auto px-4 md:px-6 py-6"
+          aria-label="Сообщения чата"
+        >
+          <div className="content-column space-y-6">
+            {/* Empty State */}
+            {messages.length === 0 && (
+              <div className="flex flex-col items-center justify-center text-center pt-12 md:pt-20 pb-6 select-none space-y-6">
+                <div className="flex flex-col items-center">
+                  <NeyraLogo size={42} />
+                  <h2 className="text-[26px] md:text-[30px] font-semibold tracking-tight text-[var(--text)] mt-4 mb-2">
+                    {ru.emptyChat}
+                  </h2>
+                  <p className="text-[14px] text-[var(--text-muted)] max-w-[380px]">
+                    Задайте вопрос или выберите быстрый сценарий.
+                  </p>
+                </div>
+
+                <div className="w-full max-w-[580px] grid grid-cols-1 sm:grid-cols-3 gap-2 px-2 animate-chips">
+                  <Chip
+                    onClick={() => sendMessage('Что нового в памяти?')}
+                    className="w-full min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-2 hover:-translate-y-px hover:!text-[var(--text)]"
+                  >
+                    <Sparkles size={14} className="shrink-0 text-[var(--text-muted)]" />
+                    <span>Что нового в памяти?</span>
+                  </Chip>
+                  <Chip
+                    onClick={() => sendMessage('Суммируй вчерашний диалог')}
+                    className="w-full min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-2 hover:-translate-y-px hover:!text-[var(--text)]"
+                  >
+                    <History size={14} className="shrink-0 text-[var(--text-muted)]" />
+                    <span className="sm:hidden whitespace-nowrap">Суммируй вчера</span>
+                    <span className="hidden sm:inline">Суммируй вчерашний диалог</span>
+                  </Chip>
+                  <Chip
+                    onClick={() => sendMessage('Проверь состояние сервера')}
+                    className="w-full min-h-11 justify-center gap-1.5 py-2.5 sm:min-h-0 sm:py-2 hover:-translate-y-px hover:!text-[var(--text)]"
+                  >
+                    <Activity size={14} className="shrink-0 text-[var(--text-muted)]" />
+                    <span className="sm:hidden whitespace-nowrap">Статус сервера</span>
+                    <span className="hidden sm:inline">Проверь состояние сервера</span>
+                  </Chip>
+                </div>
+              </div>
+            )}
+
+            {/* Conversation Messages */}
+            {messages.map(msg => (
+              <div
+                key={msg.id}
+                id={`message-${msg.id}`}
+                data-context="chat-message"
+                data-id={msg.id}
+                data-text={msg.content}
+                data-role={msg.role}
+                className={`flex flex-col w-full ${msg.role === 'user' ? 'items-end' : 'items-start'} ${
+                  highlightedMessageId === msg.id
+                    ? 'ring-2 ring-[var(--accent)] bg-[var(--surface-2)]/70 rounded-[var(--radius)] p-2.5 transition-all duration-300'
+                    : 'transition-all duration-300'
+                }`}
+              >
+                {msg.role === 'user' ? (
+                  // User Message (§3: surface-2 bubble, right, max 78%)
+                  <div className="flex flex-col items-end max-w-[78%] group/usermsg">
+                    <div className="rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border)] px-3.5 py-2.5 text-[15px] leading-[24px] text-[var(--text)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                      {msg.content}
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-[var(--border)] flex flex-wrap gap-1.5">
+                          {msg.attachments.map(att => (
+                            <span
+                              key={att.id}
+                              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius-sm)] bg-[var(--surface-3)] text-xs text-[var(--text-muted)]"
+                            >
+                              {att.kind === 'image' ? <ImageIcon size={12} /> : <FileText size={12} />}
+                              <span>{att.name}</span>
+                              <span className="text-[10px] text-[var(--text-subtle)]">({formatFileSize(att.size)})</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 mt-1 opacity-0 group-hover/usermsg:opacity-100 focus-within:opacity-100 transition-opacity">
+                      <button
+                        type="button"
+                        onClick={() => handleTogglePinMessage(msg.id)}
+                        aria-label={pinnedMessageIds.includes(msg.id) ? 'Открепить сообщение' : 'Закрепить сообщение'}
+                        title={pinnedMessageIds.includes(msg.id) ? 'Открепить' : 'Закрепить'}
+                        className={`flex items-center gap-1 text-[11px] p-1 rounded hover:bg-[var(--surface-3)] cursor-pointer ${
+                          pinnedMessageIds.includes(msg.id)
+                            ? 'text-[var(--text)] font-medium opacity-100'
+                            : 'text-[var(--text-subtle)] hover:text-[var(--text)]'
+                        }`}
+                      >
+                        {pinnedMessageIds.includes(msg.id) ? <PinOff size={12} /> : <Pin size={12} />}
+                        <span>{pinnedMessageIds.includes(msg.id) ? 'Открепить' : 'Закрепить'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyMessage(msg.id, msg.content)}
+                        aria-label={copiedMessageId === msg.id ? 'Скопировано' : 'Скопировать сообщение'}
+                        className="text-[var(--text-subtle)] hover:text-[var(--text)] flex items-center gap-1 text-[11px] p-1 rounded hover:bg-[var(--surface-3)] cursor-pointer"
+                      >
+                        {copiedMessageId === msg.id ? (
+                          <Check size={12} className="text-[var(--success)]" />
+                        ) : (
+                          <Copy size={12} />
+                        )}
+                        <span>{copiedMessageId === msg.id ? 'Скопировано' : 'Копировать'}</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : msg.error ? (
+                  // Failed Exchange Error Block: humanized message + icon buttons with tooltips
+                  (() => {
+                    const parsed = humanizeErrorMessage(msg.error);
+                    return (
+                      <div
+                        role="alert"
+                        className="w-full rounded-[var(--radius)] border border-[var(--danger)] bg-[var(--danger-quiet)] p-3.5 text-xs text-[var(--danger)] flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                      >
+                        <div className="flex flex-col gap-1 min-w-0">
+                          <span className="font-medium text-[var(--danger)] leading-relaxed">{parsed.message}</span>
+                          {parsed.hint && (
+                            <span className="text-[11px] text-[var(--text-muted)] font-normal">{parsed.hint}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                          <IconButton
+                            type="button"
+                            aria-label="Повторить"
+                            tooltip={msg.isRetrying ? 'Повторяю…' : 'Повторить'}
+                            icon={
+                              <span className="flex items-center">
+                                <RefreshCw size={14} className={msg.isRetrying ? 'animate-spin' : ''} />
+                                <span className="sr-only">Повторить</span>
+                              </span>
+                            }
+                            variant="secondary"
+                            size="sm"
+                            disabled={msg.isRetrying || streaming}
+                            onClick={() => handleRetry(msg.id)}
+                          />
+                          <IconButton
+                            type="button"
+                            aria-label="Удалить"
+                            tooltip="Удалить"
+                            icon={
+                              <span className="flex items-center">
+                                <Trash2 size={14} />
+                                <span className="sr-only">Удалить</span>
+                              </span>
+                            }
+                            variant="ghost"
+                            size="sm"
+                            disabled={msg.isRetrying || streaming}
+                            onClick={() => handleDeleteExchange(msg.id)}
+                            className="text-[var(--danger)] hover:bg-[var(--danger-quiet)]"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : (
+                  // Assistant Message (§3: NO bubble, article typography, full width)
+                  <div className="w-full flex flex-col group relative">
+                    <div className="text-[12px] font-medium text-[var(--text-subtle)] mb-1 select-none flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        {msg.pending && !msg.content ? (
+                          <NeyraLogo size={16} className="avatar-thinking" />
+                        ) : null}
+                        <span>{ru.assistantRole}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {msg.content && (
+                          <button
+                            type="button"
+                            onClick={() => handleTogglePinMessage(msg.id)}
+                            aria-label={pinnedMessageIds.includes(msg.id) ? 'Открепить сообщение' : 'Закрепить сообщение'}
+                            title={pinnedMessageIds.includes(msg.id) ? 'Открепить' : 'Закрепить'}
+                            className={`opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity flex items-center gap-1 text-[11px] p-1 rounded hover:bg-[var(--surface-3)] cursor-pointer ${
+                              pinnedMessageIds.includes(msg.id)
+                                ? 'opacity-100 text-[var(--text)] font-medium'
+                                : 'text-[var(--text-subtle)] hover:text-[var(--text)]'
+                            }`}
+                          >
+                            {pinnedMessageIds.includes(msg.id) ? <PinOff size={12} /> : <Pin size={12} />}
+                            <span>{pinnedMessageIds.includes(msg.id) ? 'Открепить' : 'Закрепить'}</span>
+                          </button>
+                        )}
+                        {msg.content && (
+                          <button
+                            type="button"
+                            onClick={() => handleCopyMessage(msg.id, msg.content)}
+                            aria-label={copiedMessageId === msg.id ? 'Скопировано' : 'Скопировать ответ'}
+                            className="opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity text-[var(--text-subtle)] hover:text-[var(--text)] flex items-center gap-1 text-[11px] p-1 rounded hover:bg-[var(--surface-3)] cursor-pointer"
+                          >
+                            {copiedMessageId === msg.id ? (
+                              <Check size={12} className="text-[var(--success)]" />
+                            ) : (
+                              <Copy size={12} />
+                            )}
+                            <span>{copiedMessageId === msg.id ? 'Скопировано' : 'Копировать'}</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="text-[15px] leading-[24px] text-[var(--text)] w-full">
+                      {msg.content ? (
+                        <>
+                          <MarkdownMessage content={msg.content} />
+                          {msg.pending && (
+                            <span
+                              className="inline-block w-[2px] h-[1em] bg-[var(--accent)] ml-1 animate-pulse align-middle"
+                              aria-hidden="true"
+                            />
+                          )}
+                        </>
+                      ) : msg.pending ? (
+                        // V2 Thinking 3-dots indicator with real bounce animation (§4.3, §4.5)
+                        <div
+                          className="flex items-center gap-2 py-2 text-[var(--text-subtle)] select-none"
+                          role="status"
+                          aria-label="Нейра думает…"
+                        >
+                          <span className="sr-only">Нейра думает…</span>
+                          <span className="text-[13px] text-[var(--text-muted)] font-medium">{phaseLabel || 'Думаю…'}</span>
+                          <div className="flex items-center gap-1">
+                            <span
+                              className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] dot-bounce"
+                              style={{ animationDelay: '0ms' }}
+                            />
+                            <span
+                              className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] dot-bounce"
+                              style={{ animationDelay: '120ms' }}
+                            />
+                            <span
+                              className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] dot-bounce"
+                              style={{ animationDelay: '240ms' }}
+                            />
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                    {msg.role === 'assistant' && msg.stats && !msg.pending && (
+                      <TurnStatsFooter stats={msg.stats} />
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            <div ref={messagesEndRef} />
+          </div>
+        </div>
+
+        {/* Scroll down floating pill */}
+        {showScrollDown && (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            aria-label="Прокрутить вниз"
+            className="absolute bottom-24 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 px-3.5 py-1.5 rounded-[var(--radius-full)] bg-[var(--surface-3)] border border-[var(--border-strong)] text-xs font-medium text-[var(--text)] shadow-lg hover:bg-[var(--surface-2)] transition-all cursor-pointer"
+          >
+            <ArrowDown size={13} />
+            <span>Вниз</span>
+          </button>
+        )}
+
+        {/* Sticky Composer (§3) */}
+        <footer className="sticky bottom-0 z-20 bg-[var(--bg)]/90 backdrop-blur-md pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] px-4 border-t border-transparent">
+          <div className="content-column space-y-2">
+            {/* Optional Context Indicator (§5.2) */}
+            <div className="flex items-center justify-between pb-1.5 px-1">
+              {isEnabled('chatModelPicker') ? <ModelPicker /> : <div />}
+              {usage && <ContextIndicator usage={usage} onNewChat={startNewChat} />}
+            </div>
+
+            <form onSubmit={handleSubmit} data-context="composer" className="flex flex-col">
+              {/* Hidden file inputs (§3.2) */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={e => void handleFilesSelected(e.target.files)}
+              />
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={e => void handleFilesSelected(e.target.files)}
+              />
+
+              {/* Attachment error banner */}
+              {attachmentError && (
+                <div className="mb-1.5 px-3 py-1.5 text-xs text-[var(--danger)] bg-[var(--danger-quiet)] border border-[var(--danger)] rounded-[var(--radius-sm)] flex items-center justify-between">
+                  <span>{attachmentError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setAttachmentError(null)}
+                    className="text-[var(--danger)] hover:opacity-80"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              )}
+
+              {uploadingCount > 0 && (
+                <div role="status" className="mb-1.5 px-3 py-1.5 text-xs text-[var(--text-muted)] bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)]">
+                  Загружаю вложение…
+                </div>
+              )}
+
+
+              {/* Composer container */}
+              <div className="relative rounded-[var(--radius-lg)] bg-[var(--surface-2)] border border-[var(--border)] p-2.5 shadow-panel focus-within:border-[var(--accent)] transition-colors flex flex-col gap-2">
+                {/* File chips row (§3.2) */}
+                {attachments.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 pb-2 border-b border-[var(--border)]">
+                    {attachments.map(att => (
+                      <div
+                        key={att.id}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[var(--radius-sm)] bg-[var(--surface-3)] border border-[var(--border)] text-xs text-[var(--text)] group"
+                      >
+                        {att.kind === 'image' ? (
+                          <ImageIcon size={13} className="text-[var(--accent)] shrink-0" />
+                        ) : (
+                          <FileText size={13} className="text-[var(--text-muted)] shrink-0" />
+                        )}
+                        <span className="truncate max-w-[140px] font-medium">{att.name}</span>
+                        <span className="text-[10px] text-[var(--text-subtle)]">
+                          {formatFileSize(att.size)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(att.id)}
+                          aria-label={`Удалить ${att.name}`}
+                          className="text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors ml-0.5 cursor-pointer"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Input row: Attach button + Textarea + Send button */}
+                <div className="flex items-center gap-2">
+                  {/* Plus button & Attachment popover (§3.2) */}
+                  <div className="relative shrink-0" ref={attachMenuRef}>
+                    <IconButton
+                      type="button"
+                      aria-label="Прикрепить файл"
+                      title={attachmentsAvailable ? 'Прикрепить файл' : 'Вложения скоро: ядро не подключено'}
+                      icon={<Plus size={16} />}
+                      variant="ghost"
+                      size="md"
+                      rounded
+                      disabled={streaming || uploadingCount > 0 || !attachmentsAvailable}
+                      onClick={() => void toggleAttachMenu()}
+                      className="text-[var(--text-muted)] hover:text-[var(--text)] bg-[var(--surface-3)]"
+                    />
+
+                    {attachMenuOpen && attachmentsAvailable && (
+                      <div
+                        role="menu"
+                        aria-label="Прикрепить"
+                        className="absolute bottom-full left-0 mb-2 w-36 rounded-[var(--radius)] bg-[var(--surface-2)] border border-[var(--border-strong)] shadow-panel p-1 z-50 text-xs flex flex-col gap-0.5"
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
+                          onClick={() => fileInputRef.current?.click()}
+                        >
+                          <FileText size={14} className="text-[var(--text-muted)]" />
+                          <span>Файл</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[var(--text)] hover:bg-[var(--surface-3)] transition-colors text-left cursor-pointer"
+                          onClick={() => imageInputRef.current?.click()}
+                        >
+                          <ImageIcon size={14} className="text-[var(--accent)]" />
+                          <span>Изображение</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Voice input stub */}
+                  <SoonAction featureName="Голосовой ввод">
+                    <IconButton
+                      type="button"
+                      aria-label="Голосовой ввод"
+                      tooltip="Голосовой ввод"
+                      icon={<Mic size={15} />}
+                      variant="ghost"
+                      size="md"
+                      rounded
+                      disabled={streaming}
+                      className="text-[var(--text-muted)] hover:text-[var(--text)] bg-[var(--surface-3)] shrink-0"
+                    />
+                  </SoonAction>
+
+                  {/* Textarea without inner focus ring (§3.1) */}
+                  <textarea
+                    ref={textareaRef}
+                    value={input}
+                    onChange={e => setInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder={ru.placeholder}
+                    disabled={streaming}
+                    rows={1}
+                    aria-label="Сообщение"
+                    className="flex-1 self-center bg-transparent border-0 outline-none resize-none text-[15px] leading-[24px] text-[var(--text)] placeholder-[var(--text-subtle)] placeholder:leading-[24px] max-h-36 min-h-[24px] py-1 focus:outline-none focus:ring-0 focus-visible:outline-none"
+                  />
+
+                  {/* Stop or Send button (§3.3) */}
+                  {streaming ? (
+                    <IconButton
+                      type="button"
+                      aria-label={ru.stop}
+                      icon={<Square size={13} className="text-[var(--danger)] fill-current" />}
+                      variant="secondary"
+                      size="md"
+                      rounded
+                      onClick={stopGeneration}
+                      className="shrink-0 bg-[var(--surface-3)] border-transparent hover:bg-[var(--surface-3)]"
+                    />
+                  ) : (
+                    <IconButton
+                      type="submit"
+                      aria-label={ru.send}
+                      disabled={(!input.trim() && attachments.length === 0) || uploadingCount > 0}
+                      icon={<ArrowUp size={20} />}
+                      variant={input.trim() || attachments.length > 0 ? 'primary' : 'ghost'}
+                      size="md"
+                      rounded
+                      className={`shrink-0 transition-colors ${
+                        input.trim() || attachments.length > 0
+                          ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
+                          : 'bg-[var(--surface-3)] text-[var(--text-subtle)]'
+                      }`}
+                    />
+                  )}
+                </div>
+              </div>
+            </form>
+          </div>
+        </footer>
+      </div>
+
+      {/* Right Thread Panel (320px column on desktop / overlay on mobile) */}
+      <ThreadPanel
+        open={threadPanelOpen}
+        onClose={handleCloseThreadPanel}
+        threadId={chatId}
+        threadTitle={threadTitle}
+        messages={messages}
+        pinnedMessageIds={pinnedMessageIds}
+        onTogglePinMessage={handleTogglePinMessage}
+        onJumpToMessage={handleJumpToMessage}
+        onRenameThread={handleRenameThread}
+        onClearThread={handleClearThread}
+        onShare={handleOpenShare}
+        autoScroll={autoScrollEnabled}
+        onToggleAutoScroll={handleToggleAutoScroll}
+        uiSounds={uiSoundsEnabled}
+        onToggleUiSounds={handleToggleUiSounds}
+        compactView={compactViewEnabled}
+        onToggleCompactView={handleToggleCompactView}
+        initialTab={panelInitialTab}
+        onStartChat={handleStartChatFromPanel}
+        onAttachFile={handleAttachFileFromPanel}
+      />
+    </div>
+  </div>
+
+      <ShareDialog
+        open={shareOpen}
+        onClose={() => {
+          setShareOpen(false);
+          setShareUrl(null);
+          setShareActive(null);
+        }}
+        threadId={chatId}
+        threadTitle={threadTitle}
+        shareUrl={shareUrl}
+        activeShare={shareActive}
+        onRequestShare={handleCreateShare}
+        onRevokeShare={handleRevokeShare}
+        loading={shareLoading}
+      />
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        user={user}
+        initialTab={settingsTab}
+        onSignOut={handleSignOut}
+      />
+    </div>
+  );
+}

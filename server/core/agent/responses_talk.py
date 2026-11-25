@@ -123,7 +123,11 @@ class ResponsesTalk:
     def __init__(self, agent, model, tx, options=None):
         self.agent, self.bound, self.tx = agent, model, tx
         self.options = dict(getattr(model, "kwargs", {}) or {}) | (options or {})
-        self.model_name = agent.llm_talk_model
+        bound_model = self.options.get("model")
+        if not bound_model:
+            settings = getattr(model, "settings", None)
+            bound_model = getattr(settings, "model", None)
+        self.model_name = str(bound_model or getattr(model, "model_name", None) or agent.llm_talk_model)
         self.connection = tx.connection or connection(agent)
         tx.connection = self.connection
 

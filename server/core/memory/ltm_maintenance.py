@@ -21,6 +21,14 @@ from typing import Any, Optional
 logger = logging.getLogger("neyra.ltm")
 
 
+class LtmSummarizeError(RuntimeError):
+    """Sanitized LTM summarize failure: provider body never reaches logs or API."""
+
+    def __init__(self, cause: BaseException):
+        self.error_class = type(cause).__name__
+        super().__init__(f"LTM summarize failed | error_class={self.error_class}")
+
+
 def _mutate(agent, operation, *args, **kwargs):
     hub = getattr(agent, "memory_hub", None)
     if hub is not None:
@@ -151,7 +159,10 @@ async def _legacy_execute_ltm_summarize(
         planned = []
         for owner, group in groups.items():
             combined = "\n\n---\n\n".join((r[2] or "") for r in group)
-            digest_text = await agent.summarize_ltm_corpus(combined, consolidation=False)
+            try:
+                digest_text = await agent.summarize_ltm_corpus(combined, consolidation=False)
+            except Exception as e:
+                raise LtmSummarizeError(e) from None
             if not (digest_text or "").strip():
                 raise RuntimeError("Empty memory digest; source records retained")
             meta = {
@@ -289,7 +300,12 @@ async def _clustered_execute_ltm_summarize(
             try:
                 digest_text = await agent.summarize_ltm_corpus(combined, consolidation=True)
             except Exception as e:
-                logger.exception("LTM cluster %s bin %s: LLM ошибка: %s", ci, bi, e)
+                logger.warning(
+                    "LTM cluster %s bin %s: LLM failed | error_class=%s",
+                    ci,
+                    bi,
+                    type(e).__name__,
+                )
                 cluster_ok = False
                 break
 
@@ -540,5 +556,6 @@ async def run_scheduled_summarize(agent: Any, config: dict, root: Optional[Path]
         logger.info("LTM scheduled summarize | keys=%s", list(out.keys()))
         return {"skipped": False, **out}
     except Exception as e:
-        logger.exception("LTM scheduled summarize failed: %s", e)
-        return {"skipped": False, "error": str(e)[:500]}
+        error_class = getattr(e, "error_class", type(e).__name__)
+        logger.warning("LTM scheduled summarize failed | error_class=%s", error_class)
+        return {"skipped": False, "error": error_class}

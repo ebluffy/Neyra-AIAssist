@@ -22,6 +22,8 @@ requests>=2.31.0
 fastapi>=0.115.0
 uvicorn>=0.30.0
 python-multipart>=0.0.9
+PyJWT==2.15.1  # Fixed HS256 web identity verification
+cryptography>=42.0.0  # AES-256-GCM для vault ключей провайдеров
 
 # ── Config ───────────────────────────────────────────────────
 pyyaml>=6.0.0
@@ -30,11 +32,13 @@ python-dotenv>=1.0.0
 # ── Utils ────────────────────────────────────────────────────
 python-dateutil>=2.9.0
 rich>=13.0.0
+pypdf==6.21.4  # Bounded PDF attachment extraction worker
 Pillow>=10.0.0  # сжатие картинок для vision (до 1024×768 и т.п.)
 
 # ── Discord Text Bot (+ voice for music / Lavalink) ─────────────────────────
 discord.py[voice]>=2.5.0,<3
-wavelink>=3.4.1
+aiohttp>=3.10,<4  # ConnectionTimeoutError/ClientConnectorError for Discord send retry
+wavelink==3.5.2  # Lavalink 4.2 loadtracks uses data/tracks shape; tested with soundy-plugin
 # PyNaCl + davey come from discord.py[voice] (DAVE E2EE required since discord.py 2.7)
 
 

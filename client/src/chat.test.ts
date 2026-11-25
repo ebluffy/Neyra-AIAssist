@@ -1,0 +1,165 @@
+import { describe, expect, it } from 'vitest';
+import { bindProfileSession, callsLabel, clock, composerSlot, daypart, ensureSessionId, firstServerSession, historyGroups, modelLabel, normalizeTurnStats, profileSessionRepair, selectedProfile, sessionOrNew, storedThreads, switchThread, threadTitle, tokenSpeed, turnDuration, type ChatThread } from './chat';
+import { themeId } from './theme';
+
+describe('chat composer', () => {
+  it('keeps the live button until there is text', () => {
+    expect(composerSlot('')).toBe('live');
+    expect(composerSlot('   ')).toBe('live');
+    expect(composerSlot('привет')).toBe('send');
+  });
+  it('names a thread from the first thing the user said', () => {
+    expect(threadTitle([])).toBe('Новый чат');
+    expect(threadTitle([{ role: 'user', content: '  коротко  ' }])).toBe('коротко');
+    expect(threadTitle([{ role: 'user', content: 'а'.repeat(50) }])).toHaveLength(43);
+  });
+  it('greets by the time of day', () => {
+    expect(daypart(0)).toBe('Доброй ночи');
+    expect(daypart(9)).toBe('Доброе утро');
+    expect(daypart(14)).toBe('Добрый день');
+    expect(daypart(20)).toBe('Добрый вечер');
+    expect(daypart(23)).toBe('Доброй ночи');
+  });
+  it('formats a recording clock', () => {
+    expect(clock(0)).toBe('0:00');
+    expect(clock(9500)).toBe('0:10');
+  });
+  it('formats per-turn timing, model and speed', () => {
+    expect(turnDuration(8400)).toBe('8,4 с');
+    expect(turnDuration(62000)).toBe('1 мин 2 с');
+    expect(turnDuration(999.6)).toBe('1,0 с');
+    expect(turnDuration(59_999)).toBe('1 мин 0 с');
+    expect(turnDuration(119_600)).toBe('2 мин 0 с');
+    expect(callsLabel(1)).toBe('1 вызов');
+    expect(callsLabel(2)).toBe('2 вызова');
+    expect(callsLabel(5)).toBe('5 вызовов');
+    expect(callsLabel(11)).toBe('11 вызовов');
+    expect(callsLabel(21)).toBe('21 вызов');
+    expect(callsLabel(22)).toBe('22 вызова');
+    expect(modelLabel('opencode-go/deepseek-v4.1-flash')).toBe('Deepseek V4.1 Flash');
+    expect(tokenSpeed(33.3)).toBe('33,3 ток/с');
+  });
+  it('normalizes turn stats and drops corrupt telemetry', () => {
+    const good = {
+      duration_ms: 8400,
+      llm_ms: 7200,
+      output_tokens: 240,
+      tokens_per_second: 33.3,
+      lanes: {
+        talk: { calls: 1, duration_ms: 2600, model: 'm', output_tokens: 240 },
+        brain: { calls: 2, duration_ms: 3100 },
+        extra: { calls: 1, duration_ms: 1 },
+      },
+    };
+    expect(normalizeTurnStats(good)).toEqual({
+      duration_ms: 8400,
+      llm_ms: 7200,
+      output_tokens: 240,
+      tokens_per_second: 33.3,
+      lanes: {
+        talk: { calls: 1, duration_ms: 2600, model: 'm', output_tokens: 240 },
+        brain: { calls: 2, duration_ms: 3100 },
+      },
+    });
+    expect(normalizeTurnStats(null)).toBeUndefined();
+    expect(normalizeTurnStats({ ...good, lanes: null })).toBeUndefined();
+    expect(normalizeTurnStats({ ...good, lanes: { talk: { calls: '1', duration_ms: 2 } } })).toBeUndefined();
+    expect(normalizeTurnStats({ ...good, duration_ms: -1 })).toBeUndefined();
+  });
+
+  it('persists turn stats with the thread', () => {
+    const stats = { duration_ms: 8400, llm_ms: 7200, lanes: { talk: { calls: 1, duration_ms: 2600 } } };
+    const stored = storedThreads([{
+      id: 't', title: 'T', sessionId: '11111111-1111-4111-8111-111111111111', updated: 1,
+      messages: [{ id: 'm', role: 'assistant', content: 'ok', kind: 'text', stats }],
+    }]);
+    expect(stored[0].messages[0].stats).toEqual(stats);
+  });
+});
+
+describe('chat session', () => {
+  it('does not store an empty session id', () => {
+    const fresh = sessionOrNew('', []);
+    expect(fresh).toMatch(/^[0-9a-f-]{36}$/);
+    const kept = '11111111-1111-4111-8111-111111111111';
+    expect(sessionOrNew(undefined, [{ sessionId: kept }])).toBe(kept);
+    expect(sessionOrNew(kept, [])).toBe(kept);
+  });
+  it('нет профиля → добавили сервер → id треда == profile.session_id', () => {
+    const threadSession = '11111111-1111-4111-8111-111111111111';
+    const created = '22222222-2222-4222-8222-222222222222';
+    expect(firstServerSession(false, created, threadSession)).toBe(threadSession);
+    expect(firstServerSession(true, created, threadSession)).toBe(threadSession);
+    expect(firstServerSession(true, created, '')).toBe(created);
+    const fresh = firstServerSession(false, created, '');
+    expect(fresh).not.toBe(created);
+    expect(ensureSessionId(fresh)).toBe(fresh);
+  });
+  it('replaces a broken profile session with the chat session', () => {
+    const chosen = '11111111-1111-4111-8111-111111111111';
+    expect(profileSessionRepair('broken', chosen)).toBe(chosen);
+    expect(profileSessionRepair('', chosen)).toBe(chosen);
+    expect(profileSessionRepair(chosen, '22222222-2222-4222-8222-222222222222')).toBeNull();
+    expect(profileSessionRepair(undefined, chosen)).toBeNull();
+    expect(ensureSessionId('broken')).not.toBe('broken');
+  });
+  it('binds the chosen server to the open thread and restores that server', () => {
+    const threadSession = '11111111-1111-4111-8111-111111111111';
+    const profiles = [
+      { id: 'a', session_id: threadSession },
+      { id: 'b', session_id: '22222222-2222-4222-8222-222222222222' },
+    ];
+    expect(selectedProfile(profiles, 'b')?.id).toBe('b');
+    expect(selectedProfile(profiles, 'missing')?.id).toBe('a');
+    const bound = bindProfileSession(profiles, 'b', threadSession);
+    expect(bound.find(item => item.id === 'b')?.session_id).toBe(threadSession);
+    expect(bound[0].session_id).toBe(threadSession);
+  });
+});
+
+describe('thread switch', () => {
+  it('keeps an empty thread empty', () => {
+    const filled: ChatThread = { id: 'a', title: 'A', sessionId: '11111111-1111-4111-8111-111111111111', updated: 1, messages: [{ id: 'm', role: 'user', content: 'секрет', kind: 'text' }] };
+    const empty: ChatThread = { id: 'b', title: 'Новый чат', sessionId: '22222222-2222-4222-8222-222222222222', updated: 2, messages: [] };
+    const next = switchThread([filled, empty], 'a', filled.messages, 'b');
+    expect(next?.activeId).toBe('b');
+    expect(next?.messages).toEqual([]);
+    expect(next?.threads.find(thread => thread.id === 'b')?.messages).toEqual([]);
+    expect(next?.threads.find(thread => thread.id === 'a')?.messages.map(message => message.content)).toEqual(['секрет']);
+  });
+});
+
+describe('history groups', () => {
+  const thread = (id: string, updated: number): ChatThread => ({ id, updated, title: id, sessionId: '', messages: [] });
+
+  it.each([[2026, 2, 9], [2026, 10, 2], [2026, 0, 1]])('uses local calendar boundaries on %i/%i/%i', (year, month, day) => {
+    const now = new Date(year, month, day, 0, 30).getTime();
+    const midnight = new Date(year, month, day).getTime();
+    const yesterday = new Date(year, month, day - 1).getTime();
+    const threads = [thread('earlier', yesterday - 1), thread('yesterday-end', midnight - 1), thread('today', midnight), thread('yesterday-start', yesterday)];
+    const original = [...threads];
+
+    expect(historyGroups(threads, now).map(group => [group.label, group.threads.map(item => item.id)])).toEqual([
+      ['Сегодня', ['today']],
+      ['Вчера', ['yesterday-end', 'yesterday-start']],
+      ['Ранее', ['earlier']],
+    ]);
+    expect(threads).toEqual(original);
+  });
+
+  it('omits empty sections', () => {
+    const now = new Date(2026, 0, 2, 12).getTime();
+    expect(historyGroups([], now)).toEqual([]);
+    expect(historyGroups([thread('old', new Date(2025, 11, 30).getTime())], now).map(group => group.label)).toEqual(['Ранее']);
+  });
+});
+
+describe('themes', () => {
+  it('falls back to the Neyra theme', () => {
+    expect(themeId('neyra')).toBe('neyra');
+    expect(themeId('dark')).toBe('dark');
+    expect(themeId('light')).toBe('light');
+    expect(themeId('purple')).toBe('neyra');
+    expect(themeId(undefined)).toBe('neyra');
+  });
+});
