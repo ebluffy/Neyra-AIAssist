@@ -170,7 +170,7 @@ PostgreSQL, схема `public`, миграции — Drizzle.
 | `conversations` | Чаты | `id`, `user_id`, `title`, `model`, `pinned`, `folder_id`, `active_leaf_id`, `created_at`, `updated_at`, `archived_at` |
 | `messages` | Сообщения | `id`, `conversation_id`, `parent_id?`, `role`, `content` (jsonb), `model`, `tokens_in`, `tokens_out`, `status`, `error_code`, `created_at` |
 | `attachments` | Вложения | `id`, `message_id`, `kind`, `path`, `mime`, `size`, `meta` (jsonb) |
-| `shares` | Доступ для вошедших (без публичного) | `id`, `conversation_id`, `token`, `expires_at`, `created_by` |
+| `share` | Ссылки на диалог для вошедших (без публичного) | `id`, `conversation_id`, `user_id`, `token_hash` (SHA-256, сам токен не хранится), `expires_at`, `revoked_at`, `created_at` |
 | `model_providers` | Провайдеры | `id`, `kind`, `base_url`, `api_key_enc`, `enabled` |
 | `models` | Модели | `id`, `provider_id`, `model_id`, `label`, `visibility`, `allowed_roles`, `is_default` |
 | `user_settings` | Настройки пользователя | `user_id`, `theme`, `density`, `default_model`, `language` |

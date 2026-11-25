@@ -115,6 +115,20 @@ export const message = pgTable('message', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, table => [index('message_conversation_created_idx').on(table.conversationId, table.createdAt)]);
 
+// Ссылка на диалог только для вошедших. В базе хранится hash токена, не сам токен.
+export const share = pgTable('share', {
+  id: text('id').primaryKey(),
+  conversationId: text('conversation_id').notNull().references(() => conversation.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  tokenHash: text('token_hash').notNull().unique(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, table => [
+  index('share_conversation_idx').on(table.conversationId),
+  index('share_user_idx').on(table.userId),
+]);
+
 // Настройки сайта, управляемые админом (пока — режим регистрации).
 export const siteSetting = pgTable('site_setting', {
   key: text('key').primaryKey(),

@@ -1140,6 +1140,63 @@ describe('ChatView conversation', () => {
     window.localStorage.removeItem(`neyra:threads:${userId}`);
   });
 
+  it('shows an existing active share after reopening the dialog and can revoke it', async () => {
+    const userId = 'share-active-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Активный шаринг', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href === `/api/conversations/${chatId}/share` && (!init || !init.method || init.method === 'GET')) {
+        return new Response(
+          JSON.stringify({ ok: true, data: { active: true, expires_at: '2026-12-02T00:00:00Z' } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href === `/api/conversations/${chatId}/share` && init?.method === 'DELETE') {
+        return new Response(JSON.stringify({ ok: true, data: { revoked: 1 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(JSON.stringify({ ok: true, data: { messages: [], total: 0, has_more: false } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <ChatView
+        user={{ id: userId, email: 'share2@example.com', name: 'Шаринг 2', role: 'user' }}
+        initialThreadPanelOpen
+      />,
+    );
+    await screen.findByText('Активный шаринг');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Поделиться диалогом' }));
+    expect(await screen.findByText(/Есть активная ссылка до/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Создать новую ссылку' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отозвать ссылку' }));
+    await waitFor(() => expect(screen.queryByText(/Есть активная ссылка до/)).toBeNull());
+    expect(screen.getByRole('button', { name: 'Сформировать ссылку' })).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url) === `/api/conversations/${chatId}/share` &&
+          (init as RequestInit | undefined)?.method === 'DELETE',
+      ),
+    ).toBe(true);
+  });
+
   it('keeps pre-#105 legacy history that has no server counterpart', async () => {
     const userId = 'legacy-history-user';
     const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
@@ -1317,6 +1374,72 @@ describe('ChatView conversation', () => {
     window.localStorage.removeItem(`neyra:thread-messages:${userId}:${chatId}`);
     window.localStorage.removeItem(`neyra:pinned-messages:${userId}:${chatId}`);
     window.localStorage.removeItem(`neyra:threads:${userId}`);
+  });
+
+  it('creates and revokes an auth-only share link from the thread panel', async () => {
+    const userId = 'share-user';
+    const chatId = resolveChatId(sessionStorage, resolveTabKey(window), userId);
+    const token = 't'.repeat(43);
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href === '/api/conversations?limit=100') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { items: [{ id: chatId, title: 'Тред для шаринга', updatedAt: '2026-11-20T10:00:00Z' }] } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href === `/api/conversations/${chatId}/share` && init?.method === 'POST') {
+        return new Response(
+          JSON.stringify({ ok: true, data: { url: `/share/${token}`, expires_at: null } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (href === `/api/conversations/${chatId}/share` && init?.method === 'DELETE') {
+        return new Response(JSON.stringify({ ok: true, data: { revoked: 1 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (href.startsWith(`/api/conversations/${chatId}?`)) {
+        return new Response(JSON.stringify({ ok: true, data: { messages: [], total: 0, has_more: false } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sseResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <ChatView
+        user={{ id: userId, email: 'share@example.com', name: 'Шаринг', role: 'user' }}
+        initialThreadPanelOpen
+      />,
+    );
+    await screen.findByText('Тред для шаринга');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Поделиться диалогом' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Сформировать ссылку' }));
+
+    const input = await screen.findByDisplayValue(`${window.location.origin}/share/${token}`);
+    expect(input).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url) === `/api/conversations/${chatId}/share` &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      ),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отозвать ссылку' }));
+    await waitFor(() => expect(screen.queryByDisplayValue(`${window.location.origin}/share/${token}`)).toBeNull());
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url) === `/api/conversations/${chatId}/share` &&
+          (init as RequestInit | undefined)?.method === 'DELETE',
+      ),
+    ).toBe(true);
   });
 
   it('shows a new thread in the sidebar when chat fails before core hello', async () => {

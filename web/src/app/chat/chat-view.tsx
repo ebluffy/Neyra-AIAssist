@@ -31,7 +31,7 @@ import {
   Mic,
 } from 'lucide-react';
 import { SseChatEventSchema, StoredAttachmentSchema, TurnStatsSchema, type StoredAttachment, type TurnStats } from '@neyra/contracts';
-import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, ModelPicker, type ContextUsage } from '../../components/ui';
+import { Button, IconButton, Chip, Avatar, NeyraLogo, MarkdownMessage, ContextIndicator, AmbientBackground, SoonAction, ModelPicker, ShareDialog, type ContextUsage } from '../../components/ui';
 import { isEnabled } from '../../lib/feature-flags';
 import { signOut } from '../../../lib/auth-client';
 import { resolveChatId, resolveTabKey, resetChatId } from '../../../lib/chat-id';
@@ -310,6 +310,10 @@ export function ChatView({
   // Десктоп: сайдбар можно свернуть, чтобы чат занимал всё окно (§ волна 4).
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [shareActive, setShareActive] = useState<{ expiresAt: string | null } | null>(null);
+  const [shareLoading, setShareLoading] = useState(false);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const settingsParam = params.get('settings');
@@ -410,6 +414,12 @@ export function ChatView({
   const chatIdRef = useRef(chatId);
   useEffect(() => {
     chatIdRef.current = chatId;
+  }, [chatId]);
+
+  useEffect(() => {
+    setShareOpen(false);
+    setShareUrl(null);
+    setShareActive(null);
   }, [chatId]);
 
   // Серверный список тредов. Локальный кэш подмешивается только для тредов,
@@ -866,6 +876,82 @@ export function ChatView({
         }
       } catch {}
     });
+  };
+
+  const handleOpenShare = async () => {
+    setShareOpen(true);
+    setShareUrl(null);
+    setShareActive(null);
+    try {
+      const response = await fetch(`/api/conversations/${chatId}/share`, {
+        headers: { accept: 'application/json' },
+      });
+      if (!response.ok) return;
+      const payload = await response.json().catch(() => null) as {
+        data?: { active?: boolean; expires_at?: string | null };
+      } | null;
+      if (payload?.data?.active) {
+        setShareActive({ expiresAt: payload.data.expires_at ?? null });
+      }
+    } catch {
+      // Не блокируем диалог: создать ссылку всё равно можно.
+    }
+  };
+
+  const handleCreateShare = async (options: { ttl: '24h' | '7d' | '30d' | 'never' }) => {
+    setShareLoading(true);
+    try {
+      const response = await fetch(`/api/conversations/${chatId}/share`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ ttl: options.ttl }),
+      });
+      const payload = await response.json().catch(() => null) as {
+        data?: { url?: string; expires_at?: string | null };
+        error?: string;
+      } | null;
+      const path = payload?.data?.url;
+      if (!response.ok || !path) {
+        emitToast({
+          title: 'Поделиться',
+          message:
+            payload?.error === 'not_found'
+              ? 'Сначала отправьте сообщение в этот диалог.'
+              : 'Не удалось создать ссылку. Попробуйте ещё раз.',
+          tone: 'danger',
+        });
+        return;
+      }
+      setShareUrl(`${window.location.origin}${path}`);
+      setShareActive({ expiresAt: payload?.data?.expires_at ?? null });
+    } catch {
+      emitToast({
+        title: 'Поделиться',
+        message: 'Не удалось создать ссылку. Попробуйте ещё раз.',
+        tone: 'danger',
+      });
+    } finally {
+      setShareLoading(false);
+    }
+  };
+
+  const handleRevokeShare = async () => {
+    try {
+      const response = await fetch(`/api/conversations/${chatId}/share`, {
+        method: 'DELETE',
+        headers: { accept: 'application/json' },
+      });
+      if (!response.ok) throw new Error('revoke_failed');
+      setShareUrl(null);
+      setShareActive(null);
+      emitToast({ message: 'Ссылка отозвана', tone: 'success' });
+    } catch {
+      emitToast({
+        title: 'Поделиться',
+        message: 'Не удалось отозвать ссылку. Попробуйте ещё раз.',
+        tone: 'danger',
+      });
+    }
   };
 
   const handleClearThread = () => {
@@ -1919,6 +2005,7 @@ export function ChatView({
         onJumpToMessage={handleJumpToMessage}
         onRenameThread={handleRenameThread}
         onClearThread={handleClearThread}
+        onShare={handleOpenShare}
         autoScroll={autoScrollEnabled}
         onToggleAutoScroll={handleToggleAutoScroll}
         uiSounds={uiSoundsEnabled}
@@ -1931,6 +2018,22 @@ export function ChatView({
       />
     </div>
   </div>
+
+      <ShareDialog
+        open={shareOpen}
+        onClose={() => {
+          setShareOpen(false);
+          setShareUrl(null);
+          setShareActive(null);
+        }}
+        threadId={chatId}
+        threadTitle={threadTitle}
+        shareUrl={shareUrl}
+        activeShare={shareActive}
+        onRequestShare={handleCreateShare}
+        onRevokeShare={handleRevokeShare}
+        loading={shareLoading}
+      />
 
       <SettingsDialog
         open={settingsOpen}

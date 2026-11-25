@@ -20,6 +20,7 @@ import type { AuthConfig } from '../../lib/env';
 import type { RegistrationMode } from '../../lib/registration-mode';
 import { ru } from '../i18n';
 import { emitToast } from '../lib/toast';
+import { sanitizeNextPath } from '../../lib/safe-next';
 
 function DiscordIcon({ size = 20 }: { size?: number }) {
   return (
@@ -35,6 +36,8 @@ export interface AuthFormProps {
   initialError?: string;
   invite?: string;
   registrationMode?: RegistrationMode;
+  /** Куда вернуть после входа (только относительный путь). */
+  next?: string;
 }
 
 export function AuthForm({
@@ -43,8 +46,10 @@ export function AuthForm({
   initialError = '',
   invite = '',
   registrationMode,
+  next,
 }: AuthFormProps) {
   const router = useRouter();
+  const safeNext = sanitizeNextPath(next);
   const [error, setError] = useState(initialError);
   const [fieldErrors, setFieldErrors] = useState<{
     email?: string;
@@ -114,7 +119,7 @@ export function AuthForm({
       // Simulate or call Discord OAuth provider
       await signIn.social({
         provider: 'discord',
-        callbackURL: '/',
+        callbackURL: safeNext || '/',
       });
     } catch {
       setError('Не удалось подключиться к Discord. Попробуйте позже.');
@@ -178,7 +183,7 @@ export function AuthForm({
         setError(authErrorText(result.error.code, result.error.message));
         return;
       }
-      router.replace('/');
+      router.replace(safeNext || '/');
       router.refresh();
     } catch {
       setError(ru.networkError);
