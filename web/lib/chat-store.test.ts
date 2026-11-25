@@ -30,6 +30,7 @@ import {
   deleteConversation,
   listConversations,
   updateConversation,
+  upsertMessage,
   ensureConversation,
   clampOffset,
   conversationOwnerWhere,
@@ -200,5 +201,22 @@ describe('mutation ownership filters', () => {
       expect.arrayContaining(['user_id', 'archived_at']),
     );
     expect(collect(condition, 'value')).toContain('u1');
+  });
+});
+
+describe('message updates', () => {
+  it('updates an existing answer in place without touching createdAt', async () => {
+    mocks.limit.mockResolvedValue([{ id: 'c1', userId: 'u1', archivedAt: null }]);
+    mocks.returning.mockResolvedValue([{ id: 'm1', content: 'новый ответ' }]);
+    await upsertMessage('u1', 'c1', {
+      id: 'm1',
+      role: 'assistant',
+      content: 'новый ответ',
+      status: 'done',
+    });
+    expect(mocks.set).toHaveBeenCalled();
+    const patch = mocks.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(patch).toMatchObject({ content: 'новый ответ', status: 'done' });
+    expect(patch).not.toHaveProperty('createdAt');
   });
 });

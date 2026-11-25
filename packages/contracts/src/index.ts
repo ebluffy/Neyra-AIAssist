@@ -80,8 +80,8 @@ export const SseChatEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('token'), text: z.string() }).strict(),
   z.object({ type: z.literal('thinking'), text: z.string().optional() }).strict(),
   z.object({ type: z.literal('phase'), phase: z.string().min(1).max(40), label: z.string().min(1).max(120).optional() }).strict(),
-  z.object({ type: z.literal('done'), text: z.string(), usage: ContextUsageSchema.optional(), turn_stats: TurnStatsSchema.optional() }).strict(),
-  z.object({ type: z.literal('error'), code: z.string(), message: z.string() }).strict(),
+  z.object({ type: z.literal('done'), text: z.string(), usage: ContextUsageSchema.optional(), turn_stats: TurnStatsSchema.optional(), history_saved: z.boolean().optional() }).strict(),
+  z.object({ type: z.literal('error'), code: z.string(), message: z.string(), history_saved: z.boolean().optional() }).strict(),
 ]);
 export type SseChatEvent = z.infer<typeof SseChatEventSchema>;
 
@@ -106,7 +106,16 @@ export const ChatRequestSchema = z.object({
   chat_id: z.string().uuid().optional(),
   model: z.string().min(1).max(200).optional(),
   attachments: z.array(z.union([AttachmentSchema, StoredAttachmentSchema])).max(4).optional(),
-}).strict();
+  // Клиентские id сообщений: BFF сохраняет их в историю, чтобы удаление обмена
+  // и retry работали и после перезагрузки, а не только в локальном кэше.
+  user_message_id: z.string().uuid().optional(),
+  assistant_message_id: z.string().uuid().optional(),
+  retry: z.boolean().optional(),
+}).strict().refine(
+  (value) =>
+    !value.retry || (Boolean(value.assistant_message_id) && Boolean(value.user_message_id)),
+  'retry requires both message ids',
+);
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 
 // BFF → ядро: identity заполняет только BFF из проверенной сессии.

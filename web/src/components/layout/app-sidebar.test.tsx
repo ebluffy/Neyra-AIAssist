@@ -48,6 +48,31 @@ describe('AppSidebar', () => {
     expect(screen.getByText('Каналы (Discord)')).toBeDefined();
   });
 
+  it('renders a controlled server list and does not touch localStorage on delete', () => {
+    const threads = [{ id: 'srv-1', title: 'Тред с сервера', updatedAt: '2026-11-20T10:00:00Z' }];
+    const onDeleteThread = vi.fn();
+    window.localStorage.setItem(
+      `neyra:threads:${normalUser.id}`,
+      JSON.stringify([{ id: 'local-1', title: 'Локальный тред' }]),
+    );
+
+    render(
+      <AppSidebar
+        activeSection="chat"
+        user={normalUser}
+        threads={threads}
+        onDeleteThread={onDeleteThread}
+      />,
+    );
+
+    expect(screen.getByText('Тред с сервера')).toBeDefined();
+    expect(screen.queryByText('Локальный тред')).toBeNull();
+
+    fireEvent.click(screen.getByLabelText('Удалить Тред с сервера'));
+    expect(onDeleteThread).toHaveBeenCalledWith('srv-1');
+    expect(window.localStorage.getItem(`neyra:threads:${normalUser.id}`)).toContain('Локальный тред');
+  });
+
   it('filters chat threads by search query', async () => {
     const threads = [
       { id: '1', title: 'Вопрос по Python', updatedAt: '2026-01-01' },

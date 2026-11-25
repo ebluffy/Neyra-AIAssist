@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, type FormEvent, useEffect, type KeyboardEvent } from 'react';
+import React, { useCallback, useState, useRef, type FormEvent, useEffect, type KeyboardEvent } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -39,8 +39,17 @@ import { SettingsDialog } from '../../components/settings-dialog';
 import { emitToast } from '../../lib/toast';
 import { discordLinkErrorMessage } from '../../../lib/discord-link-errors';
 import { ChannelsNav } from '../../components/channels/channels-nav';
-import { AppSidebar } from '../../components/layout/app-sidebar';
+import { AppSidebar, type ChatThreadItem } from '../../components/layout/app-sidebar';
 import { ThreadPanel, type ThreadPanelTab } from '../../components/chat/thread-panel';
+import {
+  archiveThread,
+  deleteMessageExchange,
+  fetchConversationMeta,
+  fetchThreadMessages,
+  fetchThreads,
+  renameThread,
+  type HistoryMessage,
+} from '../../../lib/chat-history';
 import { TurnStatsFooter } from '../../components/chat/turn-stats';
 import {
   playModalOpenSound,
@@ -62,6 +71,142 @@ export interface ChatMessageItem {
   isRetrying?: boolean;
   attachments?: ChatMessageAttachment[];
   stats?: TurnStats;
+  /** Подтверждено записью на сервере: без этого флага сообщение считается локальным. */
+  synced?: boolean;
+  /** Легаси-переписка до #105: уже сопоставлена с сервером и больше не участвует в merge. */
+  localOnly?: boolean;
+}
+
+function historyMessageToChat(item: HistoryMessage): ChatMessageItem {
+  return {
+    id: item.id,
+    role: item.role,
+    content: item.content,
+    error: item.status === 'error' ? item.errorCode || 'Ошибка при обработке ответа.' : null,
+    attachments: item.attachments ?? undefined,
+    synced: true,
+  };
+}
+
+function mergeThreads(primary: ChatThreadItem[], extra: ChatThreadItem[]): ChatThreadItem[] {
+  const seen = new Set(primary.map((item) => item.id));
+  const merged = [...primary, ...extra.filter((item) => item.id !== 'current' && !seen.has(item.id))];
+  return merged.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+}
+
+interface MergedHistory {
+  messages: ChatMessageItem[];
+  /** Легаси-сообщения получают серверный id: на них нужно перенести пины. */
+  pinIdMap: Map<string, string>;
+}
+
+/**
+ * Основа — серверный список (id общие, удаления с других устройств видны).
+ * С локальных копий по id переносятся stats/pending; локальные незаписанные
+ * сообщения остаются только хвостом после последнего серверного.
+ */
+function mergeHistoryMessages(local: ChatMessageItem[], server: ChatMessageItem[]): MergedHistory {
+  const pinIdMap = new Map<string, string>();
+  if (local.length === 0) return { messages: server, pinIdMap };
+
+  const serverIds = new Set(server.map((item) => item.id));
+  const byId = new Map(local.map((item) => [item.id, item]));
+  const localIndex = new Map(local.map((item, index) => [item.id, index]));
+
+  // Легаси (без флага synced) сопоставляем по порядку: очередь на каждый
+  // role:content, чтобы одинаковые реплики не забирали чужой пин. Сообщения
+  // с явным synced в очередь не попадают: у них уже есть id или свой статус.
+  const legacyQueues = new Map<string, ChatMessageItem[]>();
+  for (const item of local) {
+    if (serverIds.has(item.id) || !item.content || item.synced !== undefined || item.localOnly) continue;
+    const key = `${item.role}:${item.content}`;
+    const queue = legacyQueues.get(key) ?? [];
+    queue.push(item);
+    legacyQueues.set(key, queue);
+  }
+  const matched = new Set<string>();
+  const anchors: (number | null)[] = [];
+  const merged = server.map((item) => {
+    const exact = byId.get(item.id);
+    if (exact) {
+      matched.add(exact.id);
+      anchors.push(localIndex.get(exact.id) ?? null);
+      return {
+        ...item,
+        ...(exact.stats ? { stats: exact.stats } : {}),
+        ...(exact.pending ? { pending: true } : {}),
+        ...(exact.isRetrying ? { isRetrying: true } : {}),
+      };
+    }
+    const legacy = legacyQueues.get(`${item.role}:${item.content}`)?.shift();
+    if (!legacy) {
+      anchors.push(null);
+      return item;
+    }
+    matched.add(legacy.id);
+    anchors.push(localIndex.get(legacy.id) ?? null);
+    pinIdMap.set(legacy.id, item.id);
+    return { ...item, ...(legacy.stats ? { stats: legacy.stats } : {}) };
+  });
+
+  const unsynced = local.filter(
+    (item) => item.synced === false && !serverIds.has(item.id) && !matched.has(item.id),
+  );
+  // Легаси без пары на сервере (переписка до #105) сохраняем и ставим на своё
+  // место: перед первым серверным сообщением, чей локальный якорь позже него.
+  const keepLeft = local.flatMap((item, index) =>
+    (item.synced === undefined || item.localOnly)
+      && !serverIds.has(item.id)
+      && !matched.has(item.id)
+      ? [{ item: item.localOnly ? item : { ...item, localOnly: true }, index }]
+      : [],
+  );
+  if (keepLeft.length === 0) {
+    return { messages: [...merged, ...unsynced], pinIdMap };
+  }
+  if (anchors.every((anchor) => anchor === null)) {
+    return { messages: [...keepLeft.map((entry) => entry.item), ...merged, ...unsynced], pinIdMap };
+  }
+  const children: ChatMessageItem[][] = merged.map(() => []);
+  const trailing: ChatMessageItem[] = [];
+  let cursor = 0;
+  for (let i = 0; i < anchors.length; i += 1) {
+    const anchor = anchors[i];
+    if (anchor === null) continue;
+    for (const entry of keepLeft) {
+      if (entry.index >= cursor && entry.index < anchor) {
+        children[i].push(entry.item);
+        cursor = Math.max(cursor, entry.index + 1);
+      }
+    }
+    cursor = Math.max(cursor, anchor + 1);
+  }
+  for (const entry of keepLeft) {
+    if (entry.index >= cursor) trailing.push(entry.item);
+  }
+  const ordered = merged.flatMap((item, i) => [...children[i], item]);
+  return { messages: [...ordered, ...trailing, ...unsynced], pinIdMap };
+}
+
+function readLocalThreads(userId: string): ChatThreadItem[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(`neyra:threads:${userId}`);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function removeLocalThreadCache(userId: string, threadId: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(`neyra:thread-messages:${userId}:${threadId}`);
+    window.localStorage.removeItem(`neyra:pinned-messages:${userId}:${threadId}`);
+    const threads = readLocalThreads(userId).filter((thread) => thread.id !== threadId);
+    window.localStorage.setItem(`neyra:threads:${userId}`, JSON.stringify(threads));
+  } catch {}
 }
 
 function normaliseStoredMessages(raw: unknown): ChatMessageItem[] {
@@ -124,6 +269,7 @@ export interface ChatViewProps {
   initialThreadPanelOpen?: boolean;
   initialThreadPanelTab?: ThreadPanelTab;
   initialPinnedMessageIds?: string[];
+  initialThreads?: ChatThreadItem[];
 }
 
 export function ChatView({
@@ -133,6 +279,7 @@ export function ChatView({
   initialThreadPanelOpen,
   initialThreadPanelTab,
   initialPinnedMessageIds,
+  initialThreads,
 }: ChatViewProps) {
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessageItem[]>(() => {
@@ -155,6 +302,11 @@ export function ChatView({
   const [showScrollDown, setShowScrollDown] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [customTitle, setCustomTitle] = useState<string | null>(null);
+  const [threads, setThreads] = useState<ChatThreadItem[]>(initialThreads ?? []);
+  const hadMessagesRef = useRef<boolean>((initialMessages?.length ?? 0) > 0);
+  const localOnlyThreadIdsRef = useRef<Set<string> | null>(null);
+  const refreshSeqRef = useRef(0);
+  const messagesRevisionRef = useRef(0);
   // Десктоп: сайдбар можно свернуть, чтобы чат занимал всё окно (§ волна 4).
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -258,6 +410,115 @@ export function ChatView({
   const chatIdRef = useRef(chatId);
   useEffect(() => {
     chatIdRef.current = chatId;
+  }, [chatId]);
+
+  // Серверный список тредов. Локальный кэш подмешивается только для тредов,
+  // которых ещё нет на сервере (404), а архивные с других устройств выкидываются.
+  const refreshThreads = useCallback(async (
+    signal?: AbortSignal,
+    options: { reconcileLocal?: boolean } = {},
+  ) => {
+    if (typeof window === 'undefined') return;
+    const seq = refreshSeqRef.current + 1;
+    refreshSeqRef.current = seq;
+    let server: ChatThreadItem[] = [];
+    try {
+      const list = await fetchThreads(signal);
+      if (seq !== refreshSeqRef.current) return;
+      if (list === null) {
+        // 401/503: серверный список не трогаем, но локальные треды не прячем.
+        setThreads((prev) => mergeThreads(prev, readLocalThreads(user.id)));
+        return;
+      }
+      server = list.map((item) => ({
+        id: item.id,
+        title: item.title,
+        updatedAt: item.updatedAt,
+      }));
+    } catch {
+      setThreads((prev) => mergeThreads(prev, readLocalThreads(user.id)));
+      return;
+    }
+    if (signal?.aborted || seq !== refreshSeqRef.current) return;
+    const serverIds = new Set(server.map((thread) => thread.id));
+    if (options.reconcileLocal || localOnlyThreadIdsRef.current === null) {
+      const allowed = new Set(localOnlyThreadIdsRef.current ?? []);
+      for (const id of serverIds) allowed.delete(id);
+      for (const thread of readLocalThreads(user.id)) {
+        if (serverIds.has(thread.id)) continue;
+        if (signal?.aborted) return;
+        const meta = await fetchConversationMeta(thread.id, signal);
+        if (seq !== refreshSeqRef.current) return;
+        if (meta === null || meta === 'missing') {
+          allowed.add(thread.id);
+          continue;
+        }
+        if (meta.archived) {
+          removeLocalThreadCache(user.id, thread.id);
+          allowed.delete(thread.id);
+          continue;
+        }
+        allowed.add(thread.id);
+      }
+      localOnlyThreadIdsRef.current = allowed;
+    }
+    if (seq !== refreshSeqRef.current) return;
+    const allowed = localOnlyThreadIdsRef.current ?? new Set<string>();
+    const localOnly = readLocalThreads(user.id).filter(
+      (thread) => allowed.has(thread.id) && !serverIds.has(thread.id),
+    );
+    setThreads(mergeThreads(server, localOnly));
+  }, [user.id]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshThreads(controller.signal, { reconcileLocal: true });
+    return () => controller.abort();
+  }, [refreshThreads]);
+
+  // Заголовок активного треда приходит с сервера (в т.ч. после переименования
+  // на другом устройстве) и переживает reload.
+  useEffect(() => {
+    const current = threads.find((thread) => thread.id === chatId);
+    if (current) setCustomTitle(current.title);
+  }, [threads, chatId]);
+
+  // История текущего треда: сервер важнее локального кэша, но короткий
+  // локальный список (например, если запись только что сорвалась) не теряем.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const targetId = chatId;
+    const revision = messagesRevisionRef.current;
+    const controller = new AbortController();
+    void fetchThreadMessages(targetId, controller.signal)
+      .then((page) => {
+        if (controller.signal.aborted || chatIdRef.current !== targetId) return;
+        // Пока грузили историю, в тред добавили новый ход: старый ответ сервера
+        // не должен затирать его (ответ придёт после записи нового хода).
+        if (revision !== messagesRevisionRef.current) return;
+        if (!page) return;
+        const mapped = page.messages.map(historyMessageToChat);
+        setMessages((prev) => {
+          const merged = mergeHistoryMessages(prev, mapped);
+          if (merged.pinIdMap.size > 0) {
+            setPinnedMessageIds((pins) => {
+              const next = pins.map((id) => merged.pinIdMap.get(id) ?? id);
+              if (next.some((id, index) => id !== pins[index])) {
+                try {
+                  window.localStorage.setItem(
+                    `neyra:pinned-messages:${user.id}:${targetId}`,
+                    JSON.stringify(next),
+                  );
+                } catch {}
+              }
+              return next;
+            });
+          }
+          return merged.messages;
+        });
+      })
+      .catch(() => {});
+    return () => controller.abort();
   }, [chatId]);
 
   // Load pinned messages whenever chatId or user.id changes
@@ -381,6 +642,22 @@ export function ChatView({
           ];
         }
         window.localStorage.setItem(threadsKey, JSON.stringify(list));
+        setThreads((prev) => {
+          const now = new Date().toISOString();
+          const idx = prev.findIndex((thread) => thread.id === chatId);
+          if (idx >= 0) {
+            // Заголовок не трогаем: серверный важнее, а переименование
+            // применяется в handleRenameThread после успешного PATCH.
+            return prev.map((thread, i) =>
+              i === idx
+                ? { ...thread, updatedAt: now }
+                : thread,
+            );
+          }
+          // Новый тред появляется в списке после ответа сервера: кэш не должен
+          // перекрывать серверный заголовок и порядок.
+          return prev;
+        });
       } else {
         // When messages are empty (new chat or deleted exchange)
         window.localStorage.removeItem(msgsKey);
@@ -390,8 +667,13 @@ export function ChatView({
           const filtered = list.filter((t) => t.id !== chatId);
           window.localStorage.setItem(threadsKey, JSON.stringify(filtered));
         }
+        if (hadMessagesRef.current) {
+          setThreads((prev) => prev.filter((thread) => thread.id !== chatId));
+          setCustomTitle(null);
+        }
       }
     } catch {}
+    hadMessagesRef.current = messages.length > 0;
   }, [messages, chatId, user?.id, customTitle]);
 
   const switchThread = (targetThreadId: string) => {
@@ -417,11 +699,16 @@ export function ChatView({
       }
       const rawPins = window.localStorage.getItem(`neyra:pinned-messages:${user.id}:${targetThreadId}`);
       setPinnedMessageIds(rawPins ? JSON.parse(rawPins) : []);
-      const rawThreads = window.localStorage.getItem(`neyra:threads:${user.id}`);
-      if (rawThreads) {
-        const list = JSON.parse(rawThreads);
-        const targetThread = list.find((t: any) => t.id === targetThreadId);
-        setCustomTitle(targetThread ? targetThread.title : null);
+      const targetThread = threads.find((t) => t.id === targetThreadId);
+      if (targetThread) {
+        setCustomTitle(targetThread.title);
+      } else {
+        const rawThreads = window.localStorage.getItem(`neyra:threads:${user.id}`);
+        if (rawThreads) {
+          const list = JSON.parse(rawThreads);
+          const localThread = list.find((t: any) => t.id === targetThreadId);
+          setCustomTitle(localThread ? localThread.title : null);
+        }
       }
     } catch {
       setMessages([]);
@@ -434,19 +721,22 @@ export function ChatView({
   };
 
   const deleteThread = (targetThreadId: string) => {
-    try {
-      window.localStorage.removeItem(`neyra:thread-messages:${user.id}:${targetThreadId}`);
-      window.localStorage.removeItem(`neyra:pinned-messages:${user.id}:${targetThreadId}`);
-      const raw = window.localStorage.getItem(`neyra:threads:${user.id}`);
-      if (raw) {
-        const list = JSON.parse(raw);
-        const filtered = list.filter((t: { id: string }) => t.id !== targetThreadId);
-        window.localStorage.setItem(`neyra:threads:${user.id}`, JSON.stringify(filtered));
+    void archiveThread(targetThreadId).then((ok) => {
+      if (!ok) {
+        emitToast({
+          title: 'Диалог',
+          message: 'Не удалось удалить диалог. Попробуйте ещё раз.',
+          tone: 'danger',
+        });
+        return;
       }
-    } catch {}
-    if (chatId === targetThreadId) {
-      startNewChat();
-    }
+      removeLocalThreadCache(user.id, targetThreadId);
+      localOnlyThreadIdsRef.current?.delete(targetThreadId);
+      setThreads((prev) => prev.filter((thread) => thread.id !== targetThreadId));
+      if (chatIdRef.current === targetThreadId) {
+        startNewChat();
+      }
+    });
   };
 
   const startNewChat = () => {
@@ -549,36 +839,52 @@ export function ChatView({
   const handleRenameThread = (newTitle: string) => {
     const trimmed = newTitle.trim();
     if (!trimmed) return;
-    setCustomTitle(trimmed);
-    try {
-      const threadsKey = `neyra:threads:${user.id}`;
-      const rawThreads = window.localStorage.getItem(threadsKey);
-      if (rawThreads) {
-        let list: { id: string; title: string; updatedAt: string }[] = JSON.parse(rawThreads);
-        const idx = list.findIndex((t) => t.id === chatId);
+    void renameThread(chatId, trimmed).then((ok) => {
+      if (!ok) {
+        emitToast({
+          title: 'Диалог',
+          message: 'Не удалось переименовать диалог. Попробуйте ещё раз.',
+          tone: 'danger',
+        });
+        return;
+      }
+      setCustomTitle(trimmed);
+      setThreads((prev) =>
+        prev.map((thread) =>
+          thread.id === chatId
+            ? { ...thread, title: trimmed, updatedAt: new Date().toISOString() }
+            : thread,
+        ),
+      );
+      try {
+        const threadsKey = `neyra:threads:${user.id}`;
+        const list = readLocalThreads(user.id);
+        const idx = list.findIndex((thread) => thread.id === chatId);
         if (idx >= 0) {
           list[idx] = { ...list[idx], title: trimmed, updatedAt: new Date().toISOString() };
           window.localStorage.setItem(threadsKey, JSON.stringify(list));
         }
-      }
-    } catch {}
+      } catch {}
+    });
   };
 
   const handleClearThread = () => {
-    setMessages([]);
-    setPinnedMessageIds([]);
-    try {
-      window.localStorage.removeItem(`neyra:thread-messages:${user.id}:${chatId}`);
-      window.localStorage.removeItem(`neyra:pinned-messages:${user.id}:${chatId}`);
-      const threadsKey = `neyra:threads:${user.id}`;
-      const rawThreads = window.localStorage.getItem(threadsKey);
-      if (rawThreads) {
-        const list = JSON.parse(rawThreads);
-        const filtered = list.filter((t: any) => t.id !== chatId);
-        window.localStorage.setItem(threadsKey, JSON.stringify(filtered));
+    const targetId = chatId;
+    void archiveThread(targetId).then((ok) => {
+      if (!ok) {
+        emitToast({
+          title: 'Диалог',
+          message: 'Не удалось очистить диалог. Попробуйте ещё раз.',
+          tone: 'danger',
+        });
+        return;
       }
-    } catch {}
-    playButtonClickSound();
+      removeLocalThreadCache(user.id, targetId);
+      localOnlyThreadIdsRef.current?.delete(targetId);
+      setThreads((prev) => prev.filter((thread) => thread.id !== targetId));
+      if (chatIdRef.current === targetId) startNewChat();
+      playButtonClickSound();
+    });
   };
 
   const handleToggleAutoScroll = (enabled: boolean) => {
@@ -625,6 +931,7 @@ export function ChatView({
     setMessages(prev =>
       prev.map(m => (m.pending ? { ...m, pending: false } : m))
     );
+    void refreshThreads();
   };
 
   const handleCopyMessage = async (msgId: string, content: string) => {
@@ -736,11 +1043,24 @@ export function ChatView({
     return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
   };
 
+  const markHistorySynced = (assistantId: string) => {
+    setMessages((prev) => {
+      const index = prev.findIndex((item) => item.id === assistantId);
+      if (index < 0) return prev;
+      return prev.map((item, i) =>
+        item.id === assistantId || (i === index - 1 && item.role === 'user')
+          ? { ...item, synced: true }
+          : item,
+      );
+    });
+  };
+
   // Helper to execute SSE request
   const executeChatRequest = async (
     textToSend: string,
     targetAssistantMsgId: string,
-    currentAttachments: ChatMessageAttachment[]
+    currentAttachments: ChatMessageAttachment[],
+    options: { userMessageId?: string; retry?: boolean } = {},
   ) => {
     setThinking(true);
     setStreaming(true);
@@ -757,11 +1077,15 @@ export function ChatView({
           text: textToSend,
           chat_id: chatId,
           attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
+          assistant_message_id: targetAssistantMsgId,
+          ...(options.userMessageId ? { user_message_id: options.userMessageId } : {}),
+          ...(options.retry ? { retry: true } : {}),
         }),
         signal: controller.signal,
       });
 
       if (!response.ok) {
+        void refreshThreads();
         let errDesc =
           response.status === 502 || response.status === 503
             ? 'Сервис Нейры временно недоступен. Попробуйте повторить запрос позже.'
@@ -784,6 +1108,7 @@ export function ChatView({
       }
 
       if (!response.body) {
+        void refreshThreads();
         setMessages(prev =>
           prev.map(m =>
             m.id === targetAssistantMsgId
@@ -856,9 +1181,13 @@ export function ChatView({
                 );
               }
               if (event.usage) setUsage(event.usage);
+              if (event.history_saved === true) markHistorySynced(targetAssistantMsgId);
+              void refreshThreads();
             } else if (event.type === 'error') {
               setThinking(false);
               setPhaseLabel(null);
+              void refreshThreads();
+              if (event.history_saved === true) markHistorySynced(targetAssistantMsgId);
               const errMsg = event.message || 'Ошибка обработки запроса.';
               setMessages(prev =>
                 prev.map(m =>
@@ -885,6 +1214,7 @@ export function ChatView({
       if (err instanceof Error && err.name === 'AbortError') {
         // Stopped by user
       } else {
+        void refreshThreads();
         setMessages(prev =>
           prev.map(m =>
             m.id === targetAssistantMsgId
@@ -913,14 +1243,26 @@ export function ChatView({
 
     const userMsgId = crypto.randomUUID();
     const assistantMsgId = crypto.randomUUID();
+    messagesRevisionRef.current += 1;
+
+    // Новый тред виден сразу, даже если ядро ответит 502 до hello.
+    localOnlyThreadIdsRef.current = new Set([
+      ...(localOnlyThreadIdsRef.current ?? []),
+      chatId,
+    ]);
+    setThreads((prev) => {
+      if (prev.some((thread) => thread.id === chatId)) return prev;
+      const title = text.split('\n')[0].trim().slice(0, 80) || 'Новый диалог';
+      return [{ id: chatId, title, updatedAt: new Date().toISOString() }, ...prev];
+    });
 
     setMessages(prev => [
       ...prev,
-      { id: userMsgId, role: 'user', content: text, attachments: activeAttachments },
-      { id: assistantMsgId, role: 'assistant', content: '', pending: true },
+      { id: userMsgId, role: 'user', content: text, attachments: activeAttachments, synced: false },
+      { id: assistantMsgId, role: 'assistant', content: '', pending: true, synced: false },
     ]);
 
-    await executeChatRequest(text, assistantMsgId, activeAttachments);
+    await executeChatRequest(text, assistantMsgId, activeAttachments, { userMessageId: userMsgId });
   };
 
   // V2 Retry flow (§4.1): Reuses existing exchange, shows spinner in error block, no duplicate user message
@@ -932,10 +1274,12 @@ export function ChatView({
 
     // Find preceding user message
     let userText = lastUserMessage;
+    let userMessageId: string | undefined;
     let userAttachments: ChatMessageAttachment[] = [];
     for (let i = assistantIndex - 1; i >= 0; i--) {
       if (messages[i].role === 'user') {
         userText = messages[i].content;
+        userMessageId = messages[i].id;
         // В localStorage могли остаться вложения старого формата (local id/isImage).
         // В ядро уходят только метаданные, прошедшие StoredAttachmentSchema.
         userAttachments = (messages[i].attachments ?? []).flatMap((attachment) => {
@@ -947,6 +1291,7 @@ export function ChatView({
     }
 
     if (!userText) return;
+    messagesRevisionRef.current += 1;
 
     // Mark assistant message as retrying with spinner
     setMessages(prev =>
@@ -957,7 +1302,7 @@ export function ChatView({
       )
     );
 
-    await executeChatRequest(userText, assistantMsgId, userAttachments);
+    await executeChatRequest(userText, assistantMsgId, userAttachments, { retry: true, userMessageId });
   };
 
   // V2 Delete exchange (§4.1): Removes error and its preceding user message
@@ -969,6 +1314,15 @@ export function ChatView({
         return prev.filter((_, i) => i !== idx && i !== idx - 1);
       }
       return prev.filter(m => m.id !== assistantMsgId);
+    });
+    void deleteMessageExchange(chatId, assistantMsgId).then((ok) => {
+      if (!ok) {
+        emitToast({
+          title: 'Диалог',
+          message: 'Не удалось удалить обмен из истории. После перезагрузки он может вернуться.',
+          tone: 'danger',
+        });
+      }
     });
   };
 
@@ -1035,6 +1389,7 @@ export function ChatView({
         onNewChat={startNewChat}
         onSelectThread={switchThread}
         onDeleteThread={deleteThread}
+        threads={threads}
         mobileOpen={sidebarOpen}
         onCloseMobile={() => setSidebarOpen(false)}
         onOpenSettings={() => setSettingsOpen(true)}

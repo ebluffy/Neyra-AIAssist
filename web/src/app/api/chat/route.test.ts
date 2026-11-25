@@ -6,10 +6,17 @@ import { getAuth } from '../../../../lib/auth';
 import { CHAT_REQUESTS_PER_WINDOW, resetChatLimitsForTests } from '../../../../lib/chat-limits';
 
 const factory = vi.hoisted(() => ({ create: vi.fn() }));
-const history = vi.hoisted(() => ({ ensure: vi.fn(), append: vi.fn() }));
+const history = vi.hoisted(() => ({
+  ensure: vi.fn(),
+  append: vi.fn(),
+  upsert: vi.fn(),
+  exists: vi.fn(),
+}));
 vi.mock('../../../../lib/chat-store', () => ({
   ensureConversation: history.ensure,
   appendMessage: history.append,
+  upsertMessage: history.upsert,
+  messageExists: history.exists,
 }));
 vi.mock('../../../../lib/auth', () => ({ getAuth: vi.fn() }));
 vi.mock('ws', () => ({ default: class {
@@ -45,6 +52,8 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     factory.create.mockReset().mockReturnValue(socket);
     history.ensure.mockReset().mockResolvedValue({});
     history.append.mockReset().mockResolvedValue({});
+    history.upsert.mockReset().mockResolvedValue({});
+    history.exists.mockReset().mockResolvedValue(true);
     vi.mocked(getAuth).mockReturnValue({ api: { getSession: vi.fn().mockResolvedValue({
       user: { id: 'usr-42', name: 'Алиса', email: 'alice@example.test', role: 'admin' },
     }) } } as unknown as ReturnType<typeof getAuth>);
@@ -79,17 +88,19 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
   it('persists the user message and the completed answer', async () => {
     const response = await hello();
     message({ type: 'done', text: 'готовый ответ' });
-    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(history.upsert).toHaveBeenCalledTimes(1));
 
     expect(response.status).toBe(200);
     expect(history.ensure).toHaveBeenCalledWith('usr-42', validUuid, 'Привет!', undefined);
-    expect(history.append).toHaveBeenNthCalledWith(1, 'usr-42', validUuid, {
+    expect(history.append).toHaveBeenCalledWith('usr-42', validUuid, {
+      id: undefined,
       role: 'user',
       content: 'Привет!',
       model: undefined,
       attachments: null,
     });
-    expect(history.append).toHaveBeenNthCalledWith(2, 'usr-42', validUuid, {
+    expect(history.upsert).toHaveBeenCalledWith('usr-42', validUuid, {
+      id: undefined,
       role: 'assistant',
       content: 'готовый ответ',
       model: undefined,
@@ -102,8 +113,9 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     await hello();
     message({ type: 'token', text: 'частичный ' });
     message({ type: 'error', code: 'core_error', message: 'boom' });
-    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
-    expect(history.append).toHaveBeenNthCalledWith(2, 'usr-42', validUuid, {
+    await vi.waitFor(() => expect(history.upsert).toHaveBeenCalledTimes(1));
+    expect(history.upsert).toHaveBeenCalledWith('usr-42', validUuid, {
+      id: undefined,
       role: 'assistant',
       content: 'частичный',
       model: undefined,
@@ -115,8 +127,8 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
   it('saves an answer placeholder for empty done', async () => {
     await hello();
     message({ type: 'done', text: '' });
-    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
-    expect(history.append.mock.calls[1][2]).toMatchObject({
+    await vi.waitFor(() => expect(history.upsert).toHaveBeenCalledTimes(1));
+    expect(history.upsert.mock.calls[0][2]).toMatchObject({
       role: 'assistant',
       content: '(пустой ответ)',
       status: 'done',
@@ -126,6 +138,7 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
   it('does not write the user message before core hello', async () => {
     await connecting();
     expect(history.append).not.toHaveBeenCalled();
+    expect(history.upsert).not.toHaveBeenCalled();
     socket.emit('error');
   });
 
@@ -133,8 +146,8 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     const response = await hello();
     message({ type: 'token', text: 'частичный' });
     await response.body?.cancel();
-    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
-    expect(history.append.mock.calls[1][2]).toMatchObject({
+    await vi.waitFor(() => expect(history.upsert).toHaveBeenCalledTimes(1));
+    expect(history.upsert.mock.calls[0][2]).toMatchObject({
       role: 'assistant',
       content: 'частичный',
       status: 'stopped',
@@ -147,8 +160,8 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     await hello();
     socket.emit('close');
     release?.({});
-    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
-    expect(history.append.mock.calls[1][2]).toMatchObject({
+    await vi.waitFor(() => expect(history.upsert).toHaveBeenCalledTimes(1));
+    expect(history.upsert.mock.calls[0][2]).toMatchObject({
       role: 'assistant',
       content: '(ответ не завершён)',
       status: 'error',
@@ -163,8 +176,8 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     await hello(controller.signal);
     controller.abort();
     release?.({});
-    await vi.waitFor(() => expect(history.append).toHaveBeenCalledTimes(2));
-    expect(history.append.mock.calls[1][2]).toMatchObject({
+    await vi.waitFor(() => expect(history.upsert).toHaveBeenCalledTimes(1));
+    expect(history.upsert.mock.calls[0][2]).toMatchObject({
       role: 'assistant',
       content: '(ответ не завершён)',
       status: 'stopped',
@@ -175,6 +188,85 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     await hello(undefined, { text: 'Привет!', chat_id: validUuid, model: 'm1' });
     expect(JSON.parse(socket.send.mock.calls[0][0])).toMatchObject({ model: 'm1' });
     expect(history.ensure).toHaveBeenCalledWith('usr-42', validUuid, 'Привет!', 'm1');
+  });
+
+  it('stores client message ids so delete/retry survive a reload', async () => {
+    const userMessageId = '22222222-2222-4222-8222-222222222222';
+    const assistantMessageId = '33333333-3333-4333-8333-333333333333';
+    await hello(undefined, {
+      text: 'Привет!',
+      chat_id: validUuid,
+      user_message_id: userMessageId,
+      assistant_message_id: assistantMessageId,
+    });
+    message({ type: 'done', text: 'ответ' });
+    await vi.waitFor(() => expect(history.upsert).toHaveBeenCalledTimes(1));
+    expect(history.append.mock.calls[0][2]).toMatchObject({ id: userMessageId, role: 'user' });
+    expect(history.upsert.mock.calls[0][2]).toMatchObject({
+      id: assistantMessageId,
+      role: 'assistant',
+    });
+  });
+
+  it('retry updates the failed answer in place and does not add a second question', async () => {
+    const userMessageId = '44444444-4444-4444-8444-444444444444';
+    const assistantMessageId = '55555555-5555-4555-8555-555555555555';
+    history.exists.mockResolvedValue(true);
+    await hello(undefined, {
+      text: 'Привет!',
+      chat_id: validUuid,
+      user_message_id: userMessageId,
+      assistant_message_id: assistantMessageId,
+      retry: true,
+    });
+    message({ type: 'done', text: 'ответ после повтора' });
+    await vi.waitFor(() => expect(history.upsert).toHaveBeenCalledTimes(1));
+    expect(history.append).not.toHaveBeenCalled();
+    expect(history.exists).toHaveBeenCalledWith('usr-42', validUuid, userMessageId);
+    expect(history.upsert).toHaveBeenCalledWith('usr-42', validUuid, {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: 'ответ после повтора',
+      model: undefined,
+      status: 'done',
+      errorCode: null,
+    });
+  });
+
+  it('retry recreates the question only when it is absent from history', async () => {
+    const userMessageId = '66666666-6666-4666-8666-666666666666';
+    const assistantMessageId = '77777777-7777-4777-8777-777777777777';
+    history.exists.mockResolvedValue(false);
+    await hello(undefined, {
+      text: 'Привет!',
+      chat_id: validUuid,
+      user_message_id: userMessageId,
+      assistant_message_id: assistantMessageId,
+      retry: true,
+    });
+    message({ type: 'done', text: 'ответ' });
+    await vi.waitFor(() => expect(history.upsert).toHaveBeenCalledTimes(1));
+    expect(history.append).toHaveBeenCalledTimes(1);
+    expect(history.append.mock.calls[0][2]).toMatchObject({ id: userMessageId, role: 'user' });
+  });
+
+  it('reports history_saved=false when the answer write fails', async () => {
+    history.upsert.mockRejectedValueOnce(new Error('db is down'));
+    const response = await hello();
+    message({ type: 'done', text: 'ответ' });
+    const text = await response.text();
+    expect(text).toContain('"history_saved":false');
+  });
+
+  it('closes the stream with history_saved=false when the answer write hangs', async () => {
+    const response = await hello();
+    vi.useFakeTimers();
+    history.upsert.mockReturnValueOnce(new Promise(() => {}));
+    message({ type: 'done', text: 'ответ' });
+    await vi.advanceTimersByTimeAsync(5_100);
+    const text = await response.text();
+    expect(text).toContain('"history_saved":false');
+    vi.useRealTimers();
   });
 
   it('does not accept the x-smoke-test bypass in production code (AR-16)', async () => {
@@ -330,7 +422,7 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     expect(responseText).toContain('data: {"type":"token","text":"Привет, "}\n\n');
     expect(responseText).toContain('data: {"type":"thinking","text":"думаю..."}\n\n');
     expect(responseText).toContain('data: {"type":"token","text":"мир!"}\n\n');
-    expect(responseText).toContain('data: {"type":"done","text":"Привет, мир!"}\n\n');
+    expect(responseText).toContain('data: {"type":"done","text":"Привет, мир!","history_saved":true}\n\n');
 
     // Crucial check: verify that model_trace, thoughts, sounds are stripped
     expect(responseText).not.toContain('internal_thoughts');

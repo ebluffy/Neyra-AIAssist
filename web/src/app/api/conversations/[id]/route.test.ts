@@ -46,10 +46,24 @@ describe('conversation API', () => {
         has_more: false,
       },
     });
-    expect(listMessages).toHaveBeenCalledWith('u1', 'c1', { limit: 10, offset: 20 });
+    expect(listMessages).toHaveBeenCalledWith('u1', 'c1', { limit: 10, offset: 20, order: 'asc' });
 
     vi.mocked(getConversation).mockResolvedValue(null);
     expect((await GET(new Request('http://localhost/api/conversations/c1'), context)).status).toBe(404);
+  });
+
+  it('passes the descending message order for the latest page', async () => {
+    vi.mocked(getConversation).mockResolvedValue({ id: 'c1' } as never);
+    vi.mocked(listMessages).mockResolvedValue({ items: [], total: 0, has_more: false } as never);
+    const response = await GET(
+      new Request('http://localhost/api/conversations/c1?message_limit=500&message_order=desc'),
+      context,
+    );
+    expect(response.status).toBe(200);
+    expect(listMessages).toHaveBeenCalledWith('u1', 'c1', {
+      limit: 500,
+      order: 'desc',
+    });
   });
 
   it('patches title and pin, rejecting invalid values', async () => {
