@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
   const limit = vi.fn();
   const where = vi.fn();
+  const transaction = vi.fn();
   const from = vi.fn();
   const select = vi.fn();
   const updateWhere = vi.fn();
@@ -15,13 +16,18 @@ const mocks = vi.hoisted(() => {
   return {
     limit, where, from, select,
     updateWhere, returning, set, update,
-    deleteWhere, deleteReturning, remove,
+    deleteWhere, deleteReturning, remove, transaction,
   };
 });
 
 vi.mock('./db', () => ({
   getDatabase: () => ({
-    db: { select: mocks.select, update: mocks.update, delete: mocks.remove },
+    db: {
+      select: mocks.select,
+      update: mocks.update,
+      delete: mocks.remove,
+      transaction: mocks.transaction,
+    },
   }),
 }));
 
@@ -46,6 +52,9 @@ beforeEach(() => {
   mocks.where.mockReturnValue({ limit: mocks.limit });
   mocks.from.mockReturnValue({ where: mocks.where });
   mocks.select.mockReturnValue({ from: mocks.from });
+  mocks.transaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
+    cb({ update: mocks.update }),
+  );
   mocks.update.mockReturnValue({ set: mocks.set });
   mocks.set.mockReturnValue({ where: mocks.updateWhere });
   mocks.updateWhere.mockReturnValue({ returning: mocks.returning });
@@ -218,5 +227,27 @@ describe('message updates', () => {
     const patch = mocks.set.mock.calls[0][0] as Record<string, unknown>;
     expect(patch).toMatchObject({ content: 'новый ответ', status: 'done' });
     expect(patch).not.toHaveProperty('createdAt');
+  });
+});
+
+describe('archive revokes shares', () => {
+  it('deleteConversation revokes links in the same transaction', async () => {
+    await expect(deleteConversation('u1', 'c1')).resolves.toBe(true);
+    expect(mocks.transaction).toHaveBeenCalledTimes(1);
+    const sharePatch = mocks.set.mock.calls[1][0] as Record<string, unknown>;
+    expect(sharePatch.revokedAt).toBeInstanceOf(Date);
+    const condition = mocks.updateWhere.mock.calls[1][0];
+    expect(collect(condition, 'name')).toEqual(
+      expect.arrayContaining(['conversation_id', 'revoked_at']),
+    );
+    expect(collect(condition, 'value')).toContain('c1');
+  });
+
+  it('archiving through updateConversation also revokes links', async () => {
+    mocks.limit.mockResolvedValue([{ id: 'c1', userId: 'u1', archivedAt: null }]);
+    await updateConversation('u1', 'c1', { archived: true });
+    expect(mocks.transaction).toHaveBeenCalledTimes(1);
+    expect(mocks.set.mock.calls[0][0]).toMatchObject({ archivedAt: expect.any(Date) });
+    expect(mocks.set.mock.calls[1][0]).toMatchObject({ revokedAt: expect.any(Date) });
   });
 });

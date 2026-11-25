@@ -1,15 +1,17 @@
 import { AuthForm } from '../../components/auth-form';
 import { readAuthConfig, type AuthConfig } from '../../../lib/env';
 import { getRegistrationMode } from '../../../lib/site-settings';
+import { sanitizeNextPath } from '../../../lib/safe-next';
 
 export const dynamic = 'force-dynamic';
 
 export default async function Login({
   searchParams,
 }: {
-  searchParams?: Promise<{ mode?: string; invite?: string; error?: string }>;
+  searchParams?: Promise<{ mode?: string; invite?: string; error?: string; next?: string }>;
 }) {
   const params = searchParams ? await searchParams : undefined;
+  const next = sanitizeNextPath(params?.next);
   const config = readAuthConfig();
   const effectiveConfig: AuthConfig = {
     authMode: (params?.mode as any) || config.authMode,
@@ -18,5 +20,12 @@ export default async function Login({
   };
   // Ссылку «Регистрация» прячем, когда регистрация закрыта админом.
   const registrationMode = await getRegistrationMode();
-  return <AuthForm mode="login" config={effectiveConfig} registrationMode={registrationMode} />;
+  return (
+    <AuthForm
+      mode="login"
+      config={effectiveConfig}
+      registrationMode={registrationMode}
+      next={next}
+    />
+  );
 }

@@ -78,6 +78,13 @@
       "when": 1795549201422,
       "tag": "0010_web_history",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795605801974,
+      "tag": "0011_web_shares",
+      "breakpoints": true
     }
   ]
 }

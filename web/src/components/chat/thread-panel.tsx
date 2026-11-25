@@ -20,6 +20,7 @@ import {
   Hash,
   MessageSquare,
   Copy,
+  Share2,
 } from 'lucide-react';
 import type { StoredAttachment } from '@neyra/contracts';
 import { Button, IconButton, ExportMenu, VoicePanel } from '../ui';
@@ -53,6 +54,7 @@ export interface ThreadPanelProps {
   onJumpToMessage: (messageId: string) => void;
   onRenameThread: (newTitle: string) => void;
   onClearThread: () => void;
+  onShare?: () => void;
   autoScroll: boolean;
   onToggleAutoScroll: (enabled: boolean) => void;
   uiSounds: boolean;
@@ -84,6 +86,7 @@ export function ThreadPanel({
   onJumpToMessage,
   onRenameThread,
   onClearThread,
+  onShare,
   autoScroll,
   onToggleAutoScroll,
   uiSounds,
@@ -203,6 +206,17 @@ export function ThreadPanel({
             <span className="text-[14px] font-semibold tracking-tight text-[var(--text)]">Панель треда</span>
           </div>
           <div className="flex items-center gap-1">
+            {onShare && (
+              <IconButton
+                type="button"
+                aria-label="Поделиться диалогом"
+                tooltip="Поделиться"
+                icon={<Share2 size={16} />}
+                variant="ghost"
+                size="sm"
+                onClick={onShare}
+              />
+            )}
             <ExportMenu
               threadTitle={threadTitle}
               onExport={(format) => {

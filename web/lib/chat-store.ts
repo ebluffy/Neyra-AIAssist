@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, isNull, lt, sql } from 'drizzle-orm';
 import { getDatabase } from './db';
-import { conversation, folder, message } from '../db/schema';
+import { conversation, folder, message, share } from '../db/schema';
 
 export type Conversation = typeof conversation.$inferSelect;
 export type ChatMessage = typeof message.$inferSelect;
@@ -329,6 +329,23 @@ export async function updateConversation(
     values.folderId = patch.folderId;
   }
   if (typeof patch.archived === 'boolean') values.archivedAt = patch.archived ? new Date() : null;
+  if (patch.archived === true) {
+    // Удаление/архивация убивает и выданные ссылки: восстановление диалога
+    // не должно «оживлять» старый доступ.
+    return db().transaction(async (tx) => {
+      const rows = await tx
+        .update(conversation)
+        .set(values)
+        .where(conversationOwnershipWhere(userId, id))
+        .returning();
+      if (!rows[0]) return null;
+      await tx
+        .update(share)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(share.conversationId, id), isNull(share.revokedAt)));
+      return rows[0];
+    });
+  }
   const rows = await db()
     .update(conversation)
     .set(values)
@@ -338,12 +355,19 @@ export async function updateConversation(
 }
 
 export async function deleteConversation(userId: string, id: string): Promise<boolean> {
-  const rows = await db()
-    .update(conversation)
-    .set({ archivedAt: new Date(), updatedAt: new Date() })
-    .where(conversationOwnershipWhere(userId, id))
-    .returning({ id: conversation.id });
-  return rows.length > 0;
+  return db().transaction(async (tx) => {
+    const rows = await tx
+      .update(conversation)
+      .set({ archivedAt: new Date(), updatedAt: new Date() })
+      .where(conversationOwnershipWhere(userId, id))
+      .returning({ id: conversation.id });
+    if (rows.length === 0) return false;
+    await tx
+      .update(share)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(share.conversationId, id), isNull(share.revokedAt)));
+    return true;
+  });
 }
 
 export async function listFolders(userId: string) {

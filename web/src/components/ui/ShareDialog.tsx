@@ -14,7 +14,10 @@ export interface ShareDialogProps {
   threadId: string;
   threadTitle?: string;
   shareUrl?: string | null;
-  onRequestShare?: (options: { ttl: '24h' | '7d' | '30d' | 'never'; access: 'auth' | 'public' }) => void;
+  onRequestShare?: (options: { ttl: '24h' | '7d' | '30d' | 'never' }) => void;
+  onRevokeShare?: () => void;
+  /** Метаданные активной ссылки без токена: токен сервер не хранит. */
+  activeShare?: { expiresAt: string | null } | null;
   loading?: boolean;
 }
 
@@ -25,11 +28,21 @@ export function ShareDialog({
   threadTitle = 'Диалог с Нейрой',
   shareUrl,
   onRequestShare,
+  onRevokeShare,
+  activeShare,
   loading = false,
 }: ShareDialogProps) {
   const [copied, setCopied] = useState(false);
   const [ttl, setTtl] = useState<'24h' | '7d' | '30d' | 'never'>('7d');
-  const [access, setAccess] = useState<'auth' | 'public'>('auth');
+
+  const activeLabel = activeShare
+    ? activeShare.expiresAt
+      ? `Есть активная ссылка до ${new Date(activeShare.expiresAt).toLocaleString('ru-RU', {
+          dateStyle: 'short',
+          timeStyle: 'short',
+        })}.`
+      : 'Есть бессрочная активная ссылка.'
+    : null;
 
   const handleCopy = async () => {
     if (!shareUrl) return;
@@ -52,27 +65,19 @@ export function ShareDialog({
       className="max-w-[480px]"
     >
       <div className="space-y-4 pt-2">
-        <div className="grid grid-cols-2 gap-3">
-          <Select
-            label="Срок действия"
-            value={ttl}
-            onChange={(e) => setTtl(e.target.value as typeof ttl)}
-          >
-            <option value="24h">24 часа</option>
-            <option value="7d">7 дней</option>
-            <option value="30d">30 дней</option>
-            <option value="never">Бессрочно</option>
-          </Select>
-
-          <Select
-            label="Доступ"
-            value={access}
-            onChange={(e) => setAccess(e.target.value as typeof access)}
-          >
-            <option value="auth">Только вошедшим</option>
-            <option value="public">По ссылке всем</option>
-          </Select>
-        </div>
+        <Select
+          label="Срок действия"
+          value={ttl}
+          onChange={(e) => setTtl(e.target.value as typeof ttl)}
+        >
+          <option value="24h">24 часа</option>
+          <option value="7d">7 дней</option>
+          <option value="30d">30 дней</option>
+          <option value="never">Бессрочно</option>
+        </Select>
+        <p className="text-[11px] text-[var(--text-subtle)]">
+          Ссылку смогут открыть только вошедшие. Новая ссылка отзывает предыдущую.
+        </p>
 
         {shareUrl ? (
           <div className="space-y-2">
@@ -92,31 +97,49 @@ export function ShareDialog({
               </Button>
             </div>
             <p className="text-[11px] text-[var(--text-subtle)]">
-              Доступ открыт на чтение. Вы можете отозвать ссылку в любое время в настройках диалога.
+              Ссылку могут открыть только вошедшие. Доступ на чтение; отозвать можно в любой момент.
             </p>
-          </div>
-        ) : onRequestShare ? (
-          <div className="pt-2">
-            <Button
-              variant="primary"
-              size="md"
-              onClick={() => onRequestShare({ ttl, access })}
-              loading={loading}
-              disabled={loading}
-              className="w-full gap-2"
-            >
-              <Share2 size={14} />
-              <span>Сформировать ссылку</span>
-            </Button>
+            {onRevokeShare && (
+              <Button variant="secondary" size="sm" onClick={onRevokeShare} className="w-full">
+                Отозвать ссылку
+              </Button>
+            )}
           </div>
         ) : (
-          <div className="pt-2">
-            <SoonAction actionName="Публичный доступ к диалогам">
-              <Button variant="primary" size="md" disabled className="w-full gap-2">
+          <div className="space-y-2">
+            {activeLabel && (
+              <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-2)] p-3 space-y-2">
+                <p className="text-xs text-[var(--text-muted)]">{activeLabel}</p>
+                <p className="text-[11px] text-[var(--text-subtle)]">
+                  Сам токен сервер не хранит, поэтому показать старую ссылку нельзя — только отозвать.
+                </p>
+                {onRevokeShare && (
+                  <Button variant="secondary" size="sm" onClick={onRevokeShare} className="w-full">
+                    Отозвать ссылку
+                  </Button>
+                )}
+              </div>
+            )}
+            {onRequestShare ? (
+              <Button
+                variant="primary"
+                size="md"
+                onClick={() => onRequestShare({ ttl })}
+                loading={loading}
+                disabled={loading}
+                className="w-full gap-2"
+              >
                 <Share2 size={14} />
-                <span>Сформировать ссылку (Скоро)</span>
+                <span>{activeLabel ? 'Создать новую ссылку' : 'Сформировать ссылку'}</span>
               </Button>
-            </SoonAction>
+            ) : (
+              <SoonAction actionName="Ссылки на диалоги">
+                <Button variant="primary" size="md" disabled className="w-full gap-2">
+                  <Share2 size={14} />
+                  <span>Сформировать ссылку (Скоро)</span>
+                </Button>
+              </SoonAction>
+            )}
           </div>
         )}
 
