@@ -41,6 +41,7 @@ async def iter_chat_stream(
     progress: bool = False,
     model: Optional[str] = None,
     speaker_name: Optional[str] = None,
+    deep_think: bool = False,
 ) -> AsyncIterator[dict]:
     """Yield token/error/done chunks for streaming chat."""
     try:
@@ -116,37 +117,58 @@ async def iter_chat_stream(
         except Exception as thr_e:
             logger.warning("session_archive stm_threshold failed (soft): %s", thr_e)
 
-        if progress:
-            yield {"type": "phase", "phase": "plan"}
         caption_ok = (prep.attached_caption or "").strip()
-        try:
-            brain_context = await agent._run_brain_tool_phase(
-                user_message=user_message,
-                speaker_label=prep.speaker_label,
-                vision_caption=caption_ok or None,
-                vision_images=vision_images if prep.brain_native_vis else None,
-                brain_system=prep.brain_sys,
-                **({"context_data": prep.brain_data} if getattr(prep, "brain_data", "") else {}),
-                **({"discord_context": prep.discord_context} if getattr(prep, "discord_context", None) is not None else {}),
-                lyrics_mode=prep.lyrics_mode,
-            )
-        except Exception as e:
-            from core.agent.brain_phase import BRAIN_DOWN_USER_MESSAGE
+        from core.agent.brain_policy import brain_mode, should_run_brain
 
-            err_str = (str(e) or "").strip() or type(e).__name__
-            logger.error("Brain phase (stream) failed — abort talk: %s", e)
-            agent._publish_chat_turn_failed(
-                internal_user_id=prep.internal_uid,
-                channel_id=channel_id,
-                error=f"brain: {err_str}",
-            )
-            yield {
-                "type": "error",
-                "code": "brain_unavailable",
-                "text": BRAIN_DOWN_USER_MESSAGE,
-                "sounds": ["bruh"],
-            }
-            return
+        run_brain, brain_reason = should_run_brain(
+            agent,
+            prep,
+            deep_think=deep_think,
+            user_message=user_message,
+            vision_images=vision_images,
+        )
+        brain_context = ""
+        if not run_brain:
+            logger.debug("Brain skipped | reason=%s", brain_reason)
+        else:
+            if progress:
+                yield {"type": "phase", "phase": "deep_think" if deep_think else "plan"}
+            try:
+                brain_context = await agent._run_brain_tool_phase(
+                    user_message=user_message,
+                    speaker_label=prep.speaker_label,
+                    vision_caption=caption_ok or None,
+                    vision_images=vision_images if prep.brain_native_vis else None,
+                    brain_system=prep.brain_sys,
+                    **({"context_data": prep.brain_data} if getattr(prep, "brain_data", "") else {}),
+                    **({"discord_context": prep.discord_context} if getattr(prep, "discord_context", None) is not None else {}),
+                    lyrics_mode=prep.lyrics_mode,
+                )
+            except Exception as e:
+                err_str = (str(e) or "").strip() or type(e).__name__
+                # A tool-loop may have already changed the PC/memory before it failed.
+                tools_executed = bool(getattr(e, "tools_executed", False))
+                # Explicit Deep Think and native vision cannot fall back silently.
+                if tools_executed or deep_think or prep.brain_native_vis or brain_mode(agent.config) == "always":
+                    from core.agent.brain_phase import BRAIN_DOWN_USER_MESSAGE
+
+                    logger.error("Brain phase (stream) failed — abort talk: %s", e)
+                    agent._publish_chat_turn_failed(
+                        internal_user_id=prep.internal_uid,
+                        channel_id=channel_id,
+                        error=f"brain: {err_str}",
+                    )
+                    yield {
+                        "type": "error",
+                        "code": "brain_unavailable",
+                        "text": BRAIN_DOWN_USER_MESSAGE,
+                        "sounds": ["bruh"],
+                    }
+                    return
+                from core.text_resources import prompt_text
+
+                logger.warning("Brain phase (stream) failed (auto, continue talk-only): %s", e)
+                brain_context = prompt_text("talk.tools_unavailable")
 
         if progress:
             yield {"type": "phase", "phase": "answer"}

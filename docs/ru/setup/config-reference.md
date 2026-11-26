@@ -7,6 +7,7 @@
 - `assistant` — `name`, `persona_path` / `appearance_path` (persona pack), `system_prompt` как fallback
 - `paths.data_dir` — корень runtime-данных (default `server/data` от корня репо; override — `NEYRA_DATA_DIR`)
 - `agent.fast_path` — allowlist команд умного дома (выкл. по умолчанию; публикует `home.*`; multi-client e2e — Этап 3+)
+- `agent.brain.mode` — `auto` (brain только при инструментах/native vision/Deep Think), `off` (brain только при явном Deep Think и native vision, без tool-intent) или `always` (каждый ход). По умолчанию `auto`.
 - `agent.conversation_mode` в `server/config/agent.yaml` — глобальный стиль talk-ответов: `default` (persona без изменений), `brief` (кратко), `detailed` (подробно), `technical` (технически), `no_jokes` (без шуток/сарказма). Отсутствующий ключ равнозначен `default`; неизвестные значения и неверные типы отклоняются.
 - Слои в `server/config/` — defaults: `server/config/*.example.yaml`; полный список ключей: `python server/scripts/regen_config_keys_md.py` из корня репозитория (вывод в stdout):
   - `llm.yaml` — по ролям **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** с **`provider`**; провайдеры — **`llm.providers.<name>`**. Без top-level `BACKEND` / `openrouter:` / `vision:`.

@@ -150,6 +150,72 @@ def test_rest_chat_passes_model_override(tmp_path):
         agent.memory_hub.close()
 
 
+def test_rest_chat_passes_deep_think(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi.testclient import TestClient
+
+    from core.api import build_app
+    from offline_support import offline_agent
+
+    agent = offline_agent(tmp_path)
+    agent.chat = AsyncMock(return_value={"text": "ok", "sounds": [], "thoughts": "", "raw": "ok"})
+    app = build_app(
+        agent.config,
+        shared_agent=agent,
+        shared_monitor=MagicMock(run_once=AsyncMock(return_value={"ok": True})),
+        shared_backup_manager=MagicMock(),
+        project_root=tmp_path,
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/chat",
+                json={"text": "hi", "deep_think": True},
+                headers={"Authorization": "Bearer offline-admin-token"},
+            )
+        assert response.status_code == 200
+        assert agent.chat.await_args.kwargs["deep_think"] is True
+    finally:
+        agent.memory_hub.close()
+
+
+def test_ws_chat_passes_deep_think(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi.testclient import TestClient
+
+    from core.api import build_app
+    from offline_support import offline_agent
+
+    agent = offline_agent(tmp_path)
+    seen = {}
+
+    async def fake_stream(*args, **kwargs):
+        seen.update(kwargs)
+        yield {"type": "done", "text": "ok", "sounds": [], "model_trace": None}
+
+    agent.chat_stream = fake_stream
+    app = build_app(
+        agent.config,
+        shared_agent=agent,
+        shared_monitor=MagicMock(run_once=AsyncMock(return_value={"ok": True})),
+        shared_backup_manager=MagicMock(),
+        project_root=tmp_path,
+    )
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect(
+                "/v1/ws/chat", headers={"Authorization": "Bearer offline-admin-token"}
+            ) as ws:
+                assert ws.receive_json()["type"] == "hello"
+                ws.send_json({"type": "chat", "text": "hello", "deep_think": True})
+                assert ws.receive_json()["type"] == "done"
+        assert seen.get("deep_think") is True
+    finally:
+        agent.memory_hub.close()
+
+
 def test_talk_model_for_clones_chat_openai_model_name():
     from langchain_openai import ChatOpenAI
 

@@ -114,6 +114,30 @@ describe('ChatView conversation', () => {
     window.localStorage.removeItem(`neyra:threads:u1`);
   });
 
+  it('sends deep_think only when the composer toggle is on', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => sseResponse());
+    stubFetch(fetchMock);
+    render(<ChatView user={{ id: 'u-deep', email: 'deep@example.com', name: 'Дип', role: 'user' }} />);
+
+    const input = screen.getByPlaceholderText(ru.placeholder);
+    fireEvent.change(input, { target: { value: 'обычный вопрос' } });
+    fireEvent.submit(input.closest('form')!);
+    await waitFor(() => expect(chatPosts(fetchMock)).toHaveLength(1));
+    expect(JSON.parse(String(chatPosts(fetchMock)[0][1]?.body))).not.toHaveProperty('deep_think');
+
+    const toggle = screen.getByRole('button', { name: 'Deep Think' });
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(window.localStorage.getItem('neyra:deep-think:u-deep')).toBe('1');
+
+    fireEvent.change(input, { target: { value: 'глубокий вопрос' } });
+    fireEvent.submit(input.closest('form')!);
+    await waitFor(() => expect(chatPosts(fetchMock)).toHaveLength(2));
+    expect(JSON.parse(String(chatPosts(fetchMock)[1][1]?.body)).deep_think).toBe(true);
+    window.localStorage.removeItem('neyra:deep-think:u-deep');
+    window.localStorage.removeItem(`neyra:threads:u-deep`);
+  });
+
   it('shows per-turn timing and expands the lane breakdown after done', async () => {
     const fetchMock = vi.fn(async () => sseStatsResponse());
     stubFetch(fetchMock);

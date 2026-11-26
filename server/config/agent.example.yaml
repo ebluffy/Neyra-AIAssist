@@ -2,6 +2,10 @@
 # EN/RU: see docs/PLAN.md section 1c; docs/en/setup/config-reference.md; docs/ru/setup/config-reference.md
 #
 agent:
+  # EN: auto — brain only for tools/native vision/Deep Think; off — only explicit Deep Think/native vision; always — every turn.
+  # RU: auto — brain только при инструментах/native vision/Deep Think; off — только явный Deep Think/native vision; always — каждый ход.
+  brain:
+    mode: auto
   # Allow a separate talk call to rephrase consecutive repeated answers.
   de_repeat:
     enabled: true

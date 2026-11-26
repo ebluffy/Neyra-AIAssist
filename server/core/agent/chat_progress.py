@@ -1,5 +1,5 @@
 """Public context counters: actual provider inputs and configured context windows."""
-PHASES = {'retrieval': 'Собираю контекст…', 'plan': 'Думаю…', 'answer': 'Формулирую ответ…'}
+PHASES = {'retrieval': 'Собираю контекст…', 'plan': 'Думаю…', 'deep_think': 'Deep Think', 'answer': 'Формулирую ответ…'}
 LANES = ('talk', 'brain', 'memory', 'vision')
 
 

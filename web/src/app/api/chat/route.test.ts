@@ -269,6 +269,16 @@ describe('POST /api/chat WebSocket → SSE bridge (no network)', () => {
     vi.useRealTimers();
   });
 
+  it('forwards deep_think to the core only when enabled', async () => {
+    await hello(undefined, { text: 'Привет!', chat_id: validUuid, deep_think: true });
+    expect(JSON.parse(socket.send.mock.calls[0][0])).toMatchObject({ deep_think: true });
+
+    vi.clearAllMocks();
+    resetChatLimitsForTests();
+    await hello(undefined, { text: 'Привет!', chat_id: validUuid });
+    expect(JSON.parse(socket.send.mock.calls[0][0])).not.toHaveProperty('deep_think');
+  });
+
   it('does not accept the x-smoke-test bypass in production code (AR-16)', async () => {
     vi.stubEnv('SMOKE_TEST', '1');
     vi.mocked(getAuth).mockReturnValue({ api: { getSession: vi.fn().mockResolvedValue(null) } } as unknown as ReturnType<typeof getAuth>);

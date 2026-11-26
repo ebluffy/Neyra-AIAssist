@@ -45,6 +45,8 @@ describe('browser → BFF: chat request', () => {
     expect(
       ChatRequestSchema.safeParse({ text: 'hello', assistant_message_id: 'not-a-uuid' }).success,
     ).toBe(false);
+    expect(ChatRequestSchema.safeParse({ text: 'hello', deep_think: true }).success).toBe(true);
+    expect(ChatRequestSchema.safeParse({ text: 'hello', deep_think: 'yes' }).success).toBe(false);
     expect(ChatRequestSchema.safeParse({ text: 'hello', retry: true }).success).toBe(false);
     expect(
       ChatRequestSchema.safeParse({
