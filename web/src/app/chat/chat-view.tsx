@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import {
   ArrowDown,
   ArrowUp,
+  Brain,
   Copy,
   Check,
   Edit2,
@@ -366,6 +367,7 @@ export function ChatView({
   const [uploadingCount, setUploadingCount] = useState(0);
   const [phaseLabel, setPhaseLabel] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(() => initialUsage || null);
+  const [deepThink, setDeepThink] = useState(false);
 
   // AR-80: серверный признак онбординга проверяется в chat/page.tsx до рендера чата.
   useEffect(() => {
@@ -391,8 +393,9 @@ export function ChatView({
       if (savedCompact !== null) {
         setCompactViewEnabled(savedCompact === '1');
       }
+      setDeepThink(window.localStorage.getItem(`neyra:deep-think:${user.id}`) === '1');
     } catch {}
-  }, [initialThreadPanelOpen]);
+  }, [initialThreadPanelOpen, user.id]);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -1141,6 +1144,15 @@ export function ChatView({
     });
   };
 
+  const toggleDeepThink = () => {
+    const next = !deepThink;
+    setDeepThink(next);
+    try {
+      window.localStorage.setItem(`neyra:deep-think:${user.id}`, next ? '1' : '0');
+    } catch {}
+    playButtonClickSound();
+  };
+
   // Helper to execute SSE request
   const executeChatRequest = async (
     textToSend: string,
@@ -1164,6 +1176,7 @@ export function ChatView({
           chat_id: chatId,
           attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
           assistant_message_id: targetAssistantMsgId,
+          ...(deepThink ? { deep_think: true } : {}),
           ...(options.userMessageId ? { user_message_id: options.userMessageId } : {}),
           ...(options.retry ? { retry: true } : {}),
         }),
@@ -1944,6 +1957,20 @@ export function ChatView({
                       className="text-[var(--text-muted)] hover:text-[var(--text)] bg-[var(--surface-3)] shrink-0"
                     />
                   </SoonAction>
+
+                  <IconButton
+                    type="button"
+                    aria-label="Deep Think"
+                    aria-pressed={deepThink}
+                    tooltip={deepThink ? 'Deep Think включён: дольше, но глубже' : 'Deep Think: глубже анализ, дольше ответ'}
+                    icon={<Brain size={15} />}
+                    variant={deepThink ? 'secondary' : 'ghost'}
+                    size="md"
+                    rounded
+                    disabled={streaming}
+                    onClick={toggleDeepThink}
+                    className={`shrink-0 ${deepThink ? 'text-[var(--accent)] bg-[var(--accent-quiet)] border-[var(--accent)]' : 'text-[var(--text-muted)] hover:text-[var(--text)] bg-[var(--surface-3)]'}`}
+                  />
 
                   {/* Textarea without inner focus ring (§3.1) */}
                   <textarea

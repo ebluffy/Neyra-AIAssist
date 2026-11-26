@@ -746,6 +746,7 @@ class NeyraAgent:
         person_id: Optional[str] = None,
         model: Optional[str] = None,
         speaker_name: Optional[str] = None,
+        deep_think: bool = False,
     ) -> dict:
         """
         Основной метод чата.
@@ -787,6 +788,7 @@ class NeyraAgent:
                 person_id=person_id,
                 model=model,
                 speaker_name=speaker_name,
+                deep_think=deep_think,
             )
             status = "failed" if out.get("code") in ("brain_unavailable", "generation_failed") else None
             if trace.talk_session is not None and status is None:
@@ -826,6 +828,7 @@ class NeyraAgent:
         progress: bool = False,
         model: Optional[str] = None,
         speaker_name: Optional[str] = None,
+        deep_think: bool = False,
     ):
         """
         Стриминговый чат — yield'ит токены сразу как модель их генерирует.
@@ -864,6 +867,7 @@ class NeyraAgent:
             person_id=person_id, progress=progress,
             model=model,
             speaker_name=speaker_name,
+            deep_think=deep_think,
         )
         try:
             await self._enter_talk_session(trace, discord_user_id, username, channel_id, discord_context, person_id)

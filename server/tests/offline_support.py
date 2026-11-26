@@ -63,7 +63,7 @@ def offline_config(root):
     return {
         "paths": {"data_dir": str(root / "data")},
         "assistant": {"system_prompt": "Offline persona"},
-        "agent": {"conversation_mode": "default"},
+        "agent": {"conversation_mode": "default", "brain": {"mode": "always"}},
         "api": {"host": "127.0.0.1", "port": 8787, "token": "offline-admin-token", "viewer_token": "offline-viewer-token", "maint_token": "offline-maint-token", "rate_limit_requests_per_minute": 0, "audit_log_enabled": True},
         "dashboard": {"enabled": False},
         "logging": {"level": "INFO", "system_log": str(root / "logs" / "system.log")},

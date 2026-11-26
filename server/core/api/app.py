@@ -502,6 +502,7 @@ class ChatRequest(_ApiBody):
         max_length=200,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$",
     )
+    deep_think: bool = False
     discord_context: DiscordContext | None = None
 
 
@@ -725,6 +726,7 @@ class WsChatMessage(_ApiBody):
         max_length=200,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$",
     )
+    deep_think: bool = False
     discord_context: DiscordContext | None = None
     attachments: list[StoredAttachment] = Field(default_factory=list, max_length=4)
 
@@ -1796,6 +1798,7 @@ def build_app(
             avatar_url=None if web_identity is not None else body.avatar_url,
             person_id=web_identity.person_id if web_identity is not None else None,
             model=body.model,
+            deep_think=body.deep_think,
             speaker_name=(
                 _speaker_name_override(
                     username=effective_username if web_identity is not None else api_username,
@@ -5325,6 +5328,7 @@ def build_app(
                 author_display_name=ws_identity.name if ws_identity is not None else ws_author_disp,
                 person_id=getattr(ws_identity, "person_id", None),
                 model=parsed.model,
+                deep_think=parsed.deep_think,
                 speaker_name=speaker_name,
                 **({"discord_context": parsed.discord_context} if ws_identity is None and parsed.discord_context is not None else {}),
             )

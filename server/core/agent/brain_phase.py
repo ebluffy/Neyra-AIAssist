@@ -14,6 +14,14 @@ from core.text_resources import message_text, prompt_text
 
 logger = logging.getLogger("neyra.agent.brain_phase")
 
+
+class BrainPhaseError(RuntimeError):
+    """Brain failed; tools_executed tells callers whether actions may have run."""
+
+    def __init__(self, message: str, *, tools_executed: bool = False):
+        super().__init__(message)
+        self.tools_executed = bool(tools_executed)
+
 # User-facing stub when brain is down. Plain text only (no [SOUND:] tags).
 BRAIN_DOWN_USER_MESSAGE = message_text("brain.unavailable")
 
@@ -122,6 +130,7 @@ async def run_brain_tool_phase(
             cap = max(agent.brain_max_tokens, cap)
         brain_llm = agent.llm_brain.bind(max_tokens=cap)
 
+    tool_attempts = 0
     try:
         if not use_tool_loop:
             response = await invoke(agent, brain_llm, messages, lane="brain", purpose="routing", images=bool(vision_images), invoker=agent._ainvoke_text_with_fallback)
@@ -183,6 +192,7 @@ async def run_brain_tool_phase(
                         args = {}
                 if not tname:
                     continue
+                tool_attempts += 1
                 if tname in desktop_tools:
                     if loop_limits:
                         remaining = loop_limits["max_seconds"] - (time.monotonic() - started)
@@ -229,9 +239,11 @@ async def run_brain_tool_phase(
         )
         return extract_think_blocks(text)[0].strip()
     except Exception as e:
-        # Brain is required: do not silently continue with talk-only (GLM without Luna).
+        executed = tool_attempts > 0 or any(isinstance(message, ToolMessage) for message in messages)
+        if desktop_turn is not None and bool(getattr(desktop_turn, "outcome_unknown", False)):
+            executed = True
         logger.error("Brain phase failed (talk will not run): %s", e)
-        raise
+        raise BrainPhaseError(str(e), tools_executed=executed) from e
     finally:
         DESKTOP_TURN.reset(turn_token)
 

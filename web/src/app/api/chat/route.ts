@@ -153,6 +153,7 @@ export async function POST(request: Request) {
     platform_user_id: session.user.id,
     channel_id: channelId,
     ...(historyModel ? { model: historyModel } : {}),
+    ...(parsed.data.deep_think ? { deep_think: true } : {}),
     ...(parsed.data.attachments?.length ? { attachments: parsed.data.attachments } : {}),
   };
 

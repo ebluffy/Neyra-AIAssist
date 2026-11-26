@@ -60,6 +60,18 @@ def test_done_lane_usage_uses_provider_inputs_and_config_limits(real_api, auth_h
     assert all(e['label'] for e in events if e['type']=='phase')
 
 
+def test_ws_labels_deep_think_phase(client, auth_headers, stub_agent):
+    async def stream(*args, **kwargs):
+        yield {'type': 'phase', 'phase': 'deep_think'}
+        yield {'type': 'done', 'text': 'ok', 'model_trace': None}
+
+    stub_agent.chat_stream = stream
+    events = turn(client, auth_headers)
+    assert [e for e in events if e['type'] == 'phase'] == [
+        {'type': 'phase', 'phase': 'deep_think', 'label': 'Deep Think'},
+    ]
+
+
 def test_hidden_retry_does_not_duplicate_phases_or_reuse_old_usage(real_api, auth_headers):
     http, agent = real_api
     attempts = 0

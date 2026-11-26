@@ -314,6 +314,24 @@ def test_step_budget_stops_an_endless_tool_loop():
     assert sum(p['type'] == 'client_tool_call' for p in client.packets) == 3
 
 
+def test_failure_after_a_tool_call_marks_tools_executed():
+    registry, client, m = connect()
+
+    def on_call(n):
+        if n == 2:
+            raise RuntimeError('model failed after the tool ran')
+
+    brain = ScriptedBrain(
+        [('client_fs_read', {'arguments': {'path': '/x'}})],
+        on_call=on_call,
+    )
+    agent = FakeAgent(brain, {'mcp_client': {'llm_tool_calls': False}, 'desktop_agent': {'max_steps': 3}})
+    with pytest.raises(brain_phase.BrainPhaseError) as exc:
+        run_turn(agent, registry, m)
+    assert exc.value.tools_executed is True
+    assert sum(p['type'] == 'client_tool_call' for p in client.packets) == 1
+
+
 def test_slow_model_invoke_is_cut_by_the_wall_clock(monkeypatch):
     recorded = []
 

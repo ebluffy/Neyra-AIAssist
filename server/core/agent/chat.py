@@ -37,6 +37,7 @@ async def run_chat(
     person_id: Optional[str] = None,
     model: Optional[str] = None,
     speaker_name: Optional[str] = None,
+    deep_think: bool = False,
 ) -> dict:
     """Run one non-streaming chat turn; return text/sounds/thoughts/raw."""
     try:
@@ -98,33 +99,57 @@ async def run_chat(
             logger.warning("session_archive stm_threshold failed (soft): %s", thr_e)
 
         caption_ok = (prep.attached_caption or "").strip()
-        try:
-            brain_context = await agent._run_brain_tool_phase(
-                user_message=user_message,
-                speaker_label=prep.speaker_label,
-                vision_caption=caption_ok or None,
-                vision_images=vision_images if prep.brain_native_vis else None,
-                brain_system=prep.brain_sys,
-                **({"context_data": prep.brain_data} if getattr(prep, "brain_data", "") else {}),
-                **({"discord_context": prep.discord_context} if getattr(prep, "discord_context", None) is not None else {}),
-                lyrics_mode=prep.lyrics_mode,
-            )
-        except Exception as e:
-            from core.agent.brain_phase import BRAIN_DOWN_USER_MESSAGE
+        from core.agent.brain_policy import brain_mode, should_run_brain
 
-            logger.error("Brain phase failed — abort talk: %s", e)
-            agent._publish_chat_turn_failed(
-                internal_user_id=prep.internal_uid,
-                channel_id=channel_id,
-                error=f"brain: {e}",
-            )
-            return {
-                "code": "brain_unavailable",
-                "text": BRAIN_DOWN_USER_MESSAGE,
-                "sounds": ["bruh"],
-                "thoughts": "",
-                "raw": "",
-            }
+        run_brain, brain_reason = should_run_brain(
+            agent,
+            prep,
+            deep_think=deep_think,
+            user_message=user_message,
+            vision_images=vision_images,
+        )
+        brain_context = ""
+        if not run_brain:
+            logger.debug("Brain skipped | reason=%s", brain_reason)
+        else:
+            try:
+                brain_context = await agent._run_brain_tool_phase(
+                    user_message=user_message,
+                    speaker_label=prep.speaker_label,
+                    vision_caption=caption_ok or None,
+                    vision_images=vision_images if prep.brain_native_vis else None,
+                    brain_system=prep.brain_sys,
+                    **({"context_data": prep.brain_data} if getattr(prep, "brain_data", "") else {}),
+                    **({"discord_context": prep.discord_context} if getattr(prep, "discord_context", None) is not None else {}),
+                    lyrics_mode=prep.lyrics_mode,
+                )
+            except Exception as e:
+                # A tool-loop may have already changed the PC/memory before it failed:
+                # do not tell talk to retry blindly.
+                tools_executed = bool(getattr(e, "tools_executed", False))
+                # Explicit Deep Think and native vision have no fallback: talk would
+                # answer without the requested analysis or image facts.
+                if tools_executed or deep_think or prep.brain_native_vis or brain_mode(agent.config) == "always":
+                    from core.agent.brain_phase import BRAIN_DOWN_USER_MESSAGE
+
+                    logger.error("Brain phase failed — abort talk: %s", e)
+                    agent._publish_chat_turn_failed(
+                        internal_user_id=prep.internal_uid,
+                        channel_id=channel_id,
+                        error=f"brain: {e}",
+                    )
+                    return {
+                        "code": "brain_unavailable",
+                        "text": BRAIN_DOWN_USER_MESSAGE,
+                        "sounds": ["bruh"],
+                        "thoughts": "",
+                        "raw": "",
+                    }
+                # Auto tool intent: a planner failure must not kill a normal reply.
+                from core.text_resources import prompt_text
+
+                logger.warning("Brain phase failed (auto, continue talk-only): %s", e)
+                brain_context = prompt_text("talk.tools_unavailable")
 
         system_prompt = build_talk_system_prompt(agent, prep, brain_context=brain_context)
         messages = build_talk_messages(

@@ -111,6 +111,7 @@ export const ChatRequestSchema = z.object({
   user_message_id: z.string().uuid().optional(),
   assistant_message_id: z.string().uuid().optional(),
   retry: z.boolean().optional(),
+  deep_think: z.boolean().optional(),
 }).strict().refine(
   (value) =>
     !value.retry || (Boolean(value.assistant_message_id) && Boolean(value.user_message_id)),
@@ -123,6 +124,7 @@ export const KernelChatRequestSchema = z.object({
   text: z.string().min(1).max(6000),
   ...kernelIdentity,
   model: z.string().min(1).max(200).optional(),
+  deep_think: z.boolean().optional(),
   attachments: z.array(KernelAttachmentSchema).max(4).optional(),
 }).strict();
 export type KernelChatRequest = z.infer<typeof KernelChatRequestSchema>;
@@ -154,6 +156,7 @@ const browserWsChat = z.object({
   type: z.literal('chat'),
   text: z.string().min(1).max(6000),
   model: z.string().min(1).optional(),
+  deep_think: z.boolean().optional(),
   attachments: z.array(AttachmentSchema).max(4).optional(),
 }).strict();
 export const WsChatMessageSchema = z.discriminatedUnion('type', [
@@ -169,6 +172,7 @@ const kernelWsChat = z.object({
   ...kernelWsIdentity,
   display_name: z.string().max(120).optional(),
   model: z.string().min(1).optional(),
+  deep_think: z.boolean().optional(),
   attachments: z.array(KernelAttachmentSchema).max(4).optional(),
 }).strict();
 export const KernelWsChatMessageSchema = z.discriminatedUnion('type', [

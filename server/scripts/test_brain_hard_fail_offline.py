@@ -64,7 +64,7 @@ async def _run_chat_brain_fail() -> None:
 
     prep = _prep()
     agent = SimpleNamespace(
-        config={},
+        config={"agent": {"brain": {"mode": "always"}}},
         _run_brain_tool_phase=AsyncMock(side_effect=_brain),
         _ainvoke_text_with_fallback=AsyncMock(side_effect=_talk),
         _publish_chat_turn_failed=MagicMock(),
@@ -124,7 +124,7 @@ async def _run_stream_brain_fail() -> None:
 
     prep = _prep()
     agent = SimpleNamespace(
-        config={},
+        config={"agent": {"brain": {"mode": "always"}}},
         _run_brain_tool_phase=AsyncMock(side_effect=_brain),
         _astream_text_with_fallback=_astream,
         _publish_chat_turn_failed=MagicMock(),
@@ -182,7 +182,7 @@ async def _run_brain_phase_raises() -> None:
             raise RuntimeError("luna_http_500")
 
     agent = SimpleNamespace(
-        config={},
+        config={"agent": {"brain": {"mode": "always"}}},
         short_memory=SimpleNamespace(get_history=lambda: []),
         tools={},
         llm_brain=BoomLLM(),
